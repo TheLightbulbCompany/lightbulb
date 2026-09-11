@@ -535,8 +535,13 @@ def _validate_member_shape(kind: str, role: str, listen_mode: str | None) -> Non
         raise ValueError("human members require listenMode null")
 
 
-def _uuid_hex_prefix(agent_id: str) -> str:
-    return uuid.UUID(agent_id).hex[:8]
+def _uuid_hex_prefix(member_id: str) -> str:
+    # Agent IDs are UUIDs; Clerk user IDs are not, so humans get a stable
+    # derived one rather than a ValueError.
+    try:
+        return uuid.UUID(member_id).hex[:8]
+    except ValueError:
+        return uuid.uuid5(uuid.NAMESPACE_OID, member_id).hex[:8]
 
 
 def _handle_candidate(name: str, agent_id: str) -> str:
@@ -562,6 +567,30 @@ def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
         else:
             handles[agent_id] = f"{candidate[:23]}-{_uuid_hex_prefix(agent_id)}"
     return handles
+
+
+def with_human_handles(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Room members with every human carrying a mention handle.
+
+    Agent handles stay workspace-derived and never move to make room for a
+    human; humans take their candidate in user-ID order, falling back to the
+    same collision suffix agents use.
+
+    ponytail: handles are unique per room only, so one person can read as
+    ``@aden`` here and ``@aden-1f2e3d4c`` next door. Upgrade path: a
+    workspace-wide human handle table stamped at membership time.
+    """
+    taken = {str(row["mentionHandle"]) for row in members if row.get("kind") == "agent" and row.get("mentionHandle")}
+    handles: dict[str, str] = {}
+    humans = sorted((row for row in members if row.get("kind") == "human"), key=lambda row: str(row["id"]))
+    for row in humans:
+        user_id = str(row["id"])
+        candidate = _handle_candidate(str(row.get("displayName") or user_id), user_id)
+        if candidate in taken:
+            candidate = f"{candidate[:23]}-{_uuid_hex_prefix(user_id)}"
+        taken.add(candidate)
+        handles[user_id] = candidate
+    return [{**row, "mentionHandle": handles[str(row["id"])]} if row.get("kind") == "human" else row for row in members]
 
 
 def canonical_message(item: dict[str, Any], *, original_request: bool = False) -> CanonicalMessage:
@@ -824,7 +853,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         unread_count=max(0, int(meta["lastSeq"]) - floor),
         updated_at=meta["updatedAt"],
         delivery_key=meta["deliveryKey"],
-        members=[_room_member(row) for row in members],
+        members=[_room_member(row) for row in with_human_handles(members)],
         last_read_seq=last_read,
         created_at=meta["createdAt"],
     )
@@ -1253,18 +1282,23 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
 
 
 def parse_agent_mentions(text: str, members: list[dict]) -> list[dict]:
-    by_handle: dict[str, list[str]] = {}
+    """Structured mentions for every member handle named in agent-authored text.
+
+    Callers pass members through :func:`with_human_handles` so humans are
+    addressable by the same ``@handle`` grammar agents use.
+    """
+    by_handle: dict[str, list[tuple[str, str]]] = {}
     for member in members:
         handle = member.get("mentionHandle")
-        if member.get("kind") == "agent" and isinstance(handle, str) and handle:
-            by_handle.setdefault(handle.lower(), []).append(member["id"])
-    found: set[str] = set()
-    for handle, agent_ids in by_handle.items():
-        if len(agent_ids) != 1:
+        if member.get("kind") in {"agent", "human"} and isinstance(handle, str) and handle:
+            by_handle.setdefault(handle.lower(), []).append((member["kind"], member["id"]))
+    found: set[tuple[str, str]] = set()
+    for handle, refs in by_handle.items():
+        if len(refs) != 1:
             continue
         if re.search(rf"(?<![A-Za-z0-9_-])@{re.escape(handle)}(?![A-Za-z0-9_-])", text, re.IGNORECASE):
-            found.add(agent_ids[0])
-    return [{"kind": "agent", "id": agent_id} for agent_id in sorted(found)]
+            found.add(refs[0])
+    return [{"kind": kind, "id": member_id} for kind, member_id in sorted(found)]
 
 
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
@@ -1285,7 +1319,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    members = await messaging_repo.list_members(room_id)
+    members = with_human_handles(await messaging_repo.list_members(room_id))
     mentions = parse_agent_mentions(request.text, members)
     targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
     req_hash = messaging_repo.request_hash(

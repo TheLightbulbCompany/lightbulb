@@ -10,24 +10,21 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-slack-parity-messaging-design.md` — the "Sidebar", "Room header", "Details / thread panel" sections, the Phase 3 row of "Phases and acceptance", the Phase-3 rows of "Backend touches", "States and accessibility", "Coordination", and "Open decisions".
 
-**Baseline:** `origin/main` at `0d3eb91b1`. Phases 0–1 shipped (`timeline.ts`, `RoomTimeline.tsx`, `RoomMessageItem.tsx`, `mentions.ts`, `EmojiPicker.tsx`, `messageLinks.ts`, permalinks); Phase 2 (composer) is being planned in parallel by another agent — see Coordination.
+**Baseline:** `origin/main` at `68c52c359` (rebased 2026-09-11 — was `0d3eb91b1` when this plan was first drafted; the rebase pulled in PR #2483, merge commit `e271ee947`, among 11 other commits). Phases 0–1 shipped (`timeline.ts`, `RoomTimeline.tsx`, `RoomMessageItem.tsx`, `mentions.ts`, `EmojiPicker.tsx`, `messageLinks.ts`, permalinks); Phase 2 (composer) is being planned in parallel by another agent — see Coordination.
 
 ---
 
-## Inputs considered — PR #2482 and PR #2483 (Forge / `Isol8Admin`)
+## Inputs considered — PR #2482 and PR #2483 (Forge / `Isol8Admin`) — RECONCILED 2026-09-11
 
-Both were opened 2026-09-11 against an older `main`, and **#2483 supersedes #2482**: #2483 carries #2482's entire frontend change (three-way sidebar split, `canRename` split from `canManageMembers`, "Group chat" copy, `types.ts` label) *plus* a backend guard and its tests, and closes issue #2479. #2482 has no backend change at all.
+This plan was originally written assuming neither PR would merge. Since then the repo owner ruled on both, via `AskUserQuestion`, and the state on `main` changed:
 
-**This plan SUPERSEDES both.** Concrete mismatches with the spec:
+- **#2483 MERGED** (merge commit `e271ee947`, now in this branch's baseline). It shipped, against `origin/main`: (a) a DM-rename guard in `patch_room` (`core/services/messaging.py`) — `meta.get("kind") == "dm"` → `ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")` — plus two service tests (`test_patch_room_allows_group_chat_admin_and_rejects_direct_message_rename`, `test_patch_room_keeps_admin_permission_check_in_front_of_persistence`) and one repo test (`test_patch_room_name_persists_to_room_and_sidebar_catalog`); (b) a third top-level **"Group chats"** sidebar section in `RoomDirectory.tsx`, splitting what was a two-way `Channels`/`Direct messages` filter into three; (c) `canRename` split from `canManageMembers` in `RoomPanel.tsx` (rename now opens to `channel` *and* `group-dm`, never `dm`; member add/remove stays `channel`-only) and the matching split in `MessagingWorkspaceContext.tsx`'s `roomProps` spread; (d) rename moved from a "Channel name" heading to a "{Channel|Group chat} name" heading, still inside the Details body (not the header); (e) `roomKindLabel["group-dm"]` and `roomDisplayName`'s group-dm fallback renamed `"Group message"` → `"Group chat"` in `types.ts`; (f) four pre-existing test repairs across `RoomDirectory.test.tsx`, `RoomPanel.test.tsx`, `MessagingWorkspaceContext.test.tsx`, `MessagesIntegration.test.tsx`, plus an unrelated `ProvisioningStepper.test.tsx` Clerk-mock fix. It closed issue #2479.
+- **#2482 CLOSED**, superseded by #2483 (per the owner's ruling). It carried everything in #2483's frontend change *except* the backend guard, plus one thing #2483 dropped: a "name a group chat at creation" enhancement to the `RoomDirectory.tsx` creation dialog (optional name field for `group-dm`, dialog title/button copy). **#2477 also CLOSED**, folded into Phase 2 Task 2's typeahead.
+- **The owner ruled the sidebar follows the spec**: group DMs are rows *inside* "Direct messages", with stacked avatars — **no third "Group chats" section.** Both PRs' sidebar split is rejected regardless of merge state.
 
-1. **Sidebar sections.** Both add a third top-level `"Group chats"` section. The spec enumerates the order exactly — "**Starred** (if any) · **Channels** · **Direct messages** · **Drafts** (if any) · **More**" — and its row anatomy puts group DMs *inside* Direct messages ("avatar for DM, **stacked avatars for group DM**"). Task 7 builds the spec's five groups; a fourth built-in group would then have to be deleted.
-2. **Rename lives in the wrong place.** Both keep rename as a "Rename channel" button inside the Details body. The spec's header rule is "overflow (Copy link, **Rename**, Leave, Details)". Task 9 moves it; the PR's control would be removed in the same PR that merged it.
-3. **Copy.** Both rewrite `roomKindLabel["group-dm"]` to `"Group chat"` and the create-dialog option to `"Group chat"`. The spec's vocabulary throughout is "group DM" (`roomKindLabel` today reads `"Group message"`). No open decision covers a vocabulary change, and "builder must not invent" applies — Phase 3 keeps `"Group message"`.
-4. **Collision surface.** Between them the two PRs touch `RoomDirectory.tsx`, `RoomPanel.tsx`, `MessagingWorkspaceContext.tsx`, `types.ts`, `messaging.css` and `MessagesIntegration.test.tsx` — the exact five files Tasks 6–11 rewrite. Merging either buys one behaviour (Task 3 below) at the cost of a guaranteed rebase of every Phase 3 task.
+**What this plan now does, task by task** (detail in each task below): Task 3 keeps #2483's DM-rename guard (verbatim behaviour, generalized to `patch_room_meta`'s `updates` dict so a topic-only PATCH on a DM stays legal) and deletes its now-superseded test scaffolding rather than duplicating it. Task 7 removes #2483's "Group chats" section, folding group DMs back into Direct messages with stacked avatars per the spec, and also carries forward #2482's create-dialog naming field (the natural home — no task in this plan otherwise touches the creation dialog). Task 9 starts its header-overflow rename UI from #2483's *current* Details-body rename (not the pre-#2483 "Channel name" version) and deletes the Details-body rename machinery it supersedes, including the RoomPanel tests #2483 added for it. Task 12 drops the "close #2482/#2483" step — both are already resolved — but otherwise ships as planned.
 
-**What is kept, with credit:** #2483's backend finding is real and correct — `patch_room` today lets a DM owner set a `name` on a DM, which `roomDisplayName` then renders instead of the counterpart's name, with no UI to clear it. Task 3, Step 1 reproduces that guard (`meta.get("kind") == "dm"` → `ROOM_FORBIDDEN`) and its two service tests, and keeps rename open to `group-dm`.
-
-**Action for the controller (Task 12):** close **#2482** as superseded by #2483, and **#2483** as superseded by this plan's Task 3, linking the Phase 3 PR. Do not merge or modify either PR at any point.
+**Vocabulary — kept, not reverted:** the spec's prose uses "group DM" throughout (`docs/superpowers/specs/2026-09-11-slack-parity-messaging-design.md:33,58,95`) but never prescribes an exact `roomKindLabel` UI string. #2483 already shipped `"group-dm": "Group chat"` to `main`, merged and live. Reverting a merged, owner-accepted copy change with no spec text to justify the revert would itself be an invention with no authorization, so this plan keeps `"Group chat"` (see Task 7).
 
 ---
 
@@ -638,11 +635,13 @@ git commit -m "feat(messaging): owner-defined sidebar sections on a PREF row"
 
 *Suggested model: sonnet — generalising one repo writer plus two guarded commands.*
 
+**#2483 already shipped part of this task to `main`:** the DM-rename guard inside `patch_room` (`meta.get("kind") == "dm"` → `ROOM_FORBIDDEN`, message "Direct messages cannot be renamed.") is live today, gating the still-named `patch_room_name`. It is unconditional today because `PatchRoomRequest` has no `topic` field yet; this task's job is to generalize it (scope the guard to `"name" in updates` so a topic-only PATCH on a DM keeps working) while renaming the underlying repo call. Two service tests and one repo test shipped alongside it and are **deleted, not kept**, in Steps 4 and 6 below — they test the exact same guard/ordering behaviour this task's own tests cover, against a function name (`patch_room_name`) this task removes.
+
 **Files:**
-- Modify: `apps/backend/core/repositories/messaging_repo.py:961-1000` (`patch_room_name` → `patch_room_meta`)
-- Modify: `apps/backend/core/services/messaging.py` (`ROOM_TOPIC_MAX_CHARS`, `validate_room_topic`, `PatchRoomRequest` L164, `RoomSummary`, `_room_detail`, `list_rooms`, `patch_room` L895, new `leave_room`)
+- Modify: `apps/backend/core/repositories/messaging_repo.py:961-996` (`patch_room_name` → `patch_room_meta`)
+- Modify: `apps/backend/core/services/messaging.py` (`ROOM_TOPIC_MAX_CHARS`, `validate_room_topic`, `PatchRoomRequest` L164, `RoomSummary`, `_room_detail`, `list_rooms`, `patch_room` L895–899 — already carries #2483's guard, this task generalizes it — new `leave_room`)
 - Modify: `apps/backend/routers/messaging.py`
-- Test: both messaging test files (append)
+- Test: both messaging test files (append the tests below; **delete** the three tests #2483 shipped for the guard — see Steps 4 and 6)
 
 **Interfaces:**
 - Consumes: Task 1's `RoomSummary` additions.
@@ -755,10 +754,14 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
 
 - [ ] **Step 4: Run the repository test to verify it passes**
 
-Run: `cd apps/backend && env -u ECS_CONTAINER_METADATA_URI_V4 ENVIRONMENT=test uv run pytest tests/unit/repositories/test_messaging_repo.py -q`
-Expected: all passed (the suite already includes `test_patch_room_name_persists_to_room_and_sidebar_catalog` if #2483 landed; if the name still appears, rename its call to `patch_room_meta({"name": ...})`).
+**Delete** `test_patch_room_name_persists_to_room_and_sidebar_catalog` from this file — it calls `repo.patch_room_name(...)`, which no longer exists after this step, and the test above (`test_patch_room_meta_writes_name_topic_and_mirrors_only_the_name`) supersedes it: same rename + catalog-mirror assertions, plus topic and clear-both coverage #2483 never had.
 
-- [ ] **Step 5: Write the failing service tests**
+Run: `cd apps/backend && env -u ECS_CONTAINER_METADATA_URI_V4 ENVIRONMENT=test uv run pytest tests/unit/repositories/test_messaging_repo.py -q`
+Expected: all passed.
+
+- [ ] **Step 5: Write the failing service tests, and delete the two #2483 tests they supersede**
+
+**First, delete** `test_patch_room_allows_group_chat_admin_and_rejects_direct_message_rename` and `test_patch_room_keeps_admin_permission_check_in_front_of_persistence` from `apps/backend/tests/unit/services/test_messaging_service_review_findings.py` — both shipped with #2483 and both `monkeypatch.setattr(messaging.messaging_repo, "patch_room_name", ...)`, an attribute Step 3 above removed; left in place they error (not fail) the moment the suite runs. The two tests below supersede them one-for-one — same guard, same admin-check-before-persistence ordering, generalized to `patch_room_meta` and extended with topic coverage.
 
 Append to `apps/backend/tests/unit/services/test_messaging_service_review_findings.py`:
 
@@ -890,7 +893,8 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
     updates = request.named_updates()
     # A DM's display name is derived from its counterpart; a stored name would
-    # shadow it with nothing in the UI able to clear it. (Finding from #2483.)
+    # shadow it with nothing in the UI able to clear it. (Finding from #2483,
+    # merged to main — this generalizes the same guard to updates-scoping.)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     if not updates:
@@ -1185,7 +1189,7 @@ The carried-over Phase 1 item: the message menu's "mark unread from here". #2475
 
 **Files:**
 - Modify: `apps/backend/core/repositories/messaging_repo.py:1045-1069` (`mark_unread`)
-- Modify: `apps/backend/core/services/messaging.py:1240-1244` (`mark_room_unread`) + new `MarkUnreadRequest`
+- Modify: `apps/backend/core/services/messaging.py:1242-1245` (`mark_room_unread` — shifted +2 lines by #2483's `patch_room` guard, earlier in this file) + new `MarkUnreadRequest`
 - Modify: `apps/backend/routers/messaging.py:210-212`
 - Test: both messaging test files (append)
 
@@ -1591,13 +1595,15 @@ git commit -m "feat(messaging): client and hook wiring for prefs, sections, pins
 
 *Suggested model: sonnet — pure helpers plus a row component; the shape is fully specified.*
 
+**#2483 shipped a third "Group chats" sidebar section to `main`** (`RoomDirectory.tsx`, currently lines 133–160: `(["Channels", "Group chats", "Direct messages"] as const).map(...)`, filtering strictly by `room.kind`). The repo owner ruled the sidebar follows the spec instead — group DMs are rows *inside* "Direct messages", with stacked avatars, no third section. Step 9 below **replaces that whole block** with `groupRooms`'s four-group output (Starred · custom sections · Channels · Direct messages, the last folding in both `dm` and `group-dm`); its own tests (Step 1's `groupRooms` suite and Step 6's component suite) were already written against the spec's structure, not #2483's, so they need no further change on that count — but Step 11 below calls out the one *pre-existing* test #2483 added that asserts the now-rejected "Group chats" region and must be replaced. This step also carries forward #2482's "name a group chat at creation" field (that PR was superseded by #2483 for everything else, but #2483 dropped this one piece, and the owner separately approved carrying it — see Step 12): no other Phase 3 task touches `RoomDirectory.tsx`'s creation dialog.
+
 **Files:**
 - Create: `apps/frontend/src/components/messaging/roomSections.ts`
 - Create: `apps/frontend/src/components/messaging/sidebarPrefs.ts`
 - Create: `apps/frontend/src/components/messaging/RoomDirectoryRow.tsx`
-- Modify: `apps/frontend/src/components/messaging/RoomDirectory.tsx:133-155`
+- Modify: `apps/frontend/src/components/messaging/RoomDirectory.tsx` (L133–160 group rendering — Step 9; L61, L180, L184, L195–196, L223 creation dialog naming — Step 12)
 - Modify: `apps/frontend/src/components/messaging/messaging.css`
-- Test: `apps/frontend/src/components/messaging/__tests__/roomSections.test.ts` (create), `__tests__/RoomDirectory.test.tsx` (append)
+- Test: `apps/frontend/src/components/messaging/__tests__/roomSections.test.ts` (create), `__tests__/RoomDirectory.test.tsx` (append new tests; replace the superseded "Group chats" test — Step 11)
 
 **Interfaces:**
 - Consumes: Task 6's `DirectoryRoom` fields `starred`, `muted`, `sectionId`, and `RoomSection`.
@@ -1776,9 +1782,37 @@ export function writeSidebarPrefs(scope: string, prefs: SidebarPrefs): void {
 }
 ```
 
-- [ ] **Step 6: Write the failing directory test**
+- [ ] **Step 6: Replace the superseded "Group chats" test, and write the failing directory tests**
 
-Append to `apps/frontend/src/components/messaging/__tests__/RoomDirectory.test.tsx`:
+**First, delete** `it("separates channels, group chats, and direct messages while preserving selection and unread counts", ...)` (shipped by #2483) from `apps/frontend/src/components/messaging/__tests__/RoomDirectory.test.tsx` — it asserts a `region` named "Group chats" the owner ruled out. Replace it with:
+
+```tsx
+it("separates channels from direct messages, keeping group DMs — with stacked avatars — inside Direct messages, while preserving selection and unread counts", () => {
+  const onSelectRoom = vi.fn();
+  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} currentRoomId="friday-dm" participants={[]}
+    onSelectRoom={onSelectRoom} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} rooms={[
+    { ...base, ...phase3 },
+    { ...base, ...phase3, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 3 },
+    { ...base, ...phase3, roomId: "group", kind: "group-dm", name: "Launch crew", participants: [alice, atlas] },
+  ]} />);
+  expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /Launch/ })).toBeInTheDocument();
+  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const groupRow = directMessages.getByRole("button", { name: /Launch crew/ });
+  expect(within(groupRow).getByRole("img", { name: "Alice" })).toBeInTheDocument();
+  expect(within(groupRow).getByRole("img", { name: "Atlas" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Group chats" })).not.toBeInTheDocument();
+  const row = directMessages.getByRole("button", { name: /Friday/ });
+  expect(row).toHaveAttribute("aria-current", "page");
+  expect(within(row).getByLabelText("3 unread messages")).toHaveTextContent("3");
+  expect(within(row).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
+  fireEvent.click(row);
+  expect(onSelectRoom).toHaveBeenCalledWith("friday-dm");
+});
+```
+
+`base`, `friday`, `alice`, `atlas` are the fixtures already declared at the top of this file. This test uses `phase3` (declared just below) the same way every other new test in this step does.
+
+Then append to `apps/frontend/src/components/messaging/__tests__/RoomDirectory.test.tsx`:
 
 ```tsx
 const phase3 = { topic: null, starred: false, muted: false, sectionId: null };
@@ -1996,14 +2030,89 @@ Append to `apps/frontend/src/components/messaging/messaging.css`:
 .room-directory-faces > :nth-child(2) { margin-left: -8px; }
 ```
 
-- [ ] **Step 11: Run, scan, commit**
+- [ ] **Step 11: Name a group chat at creation — carries #2482's dropped field**
+
+#2482 (closed, superseded by #2483) added one thing #2483 never carried: an optional name field for a group DM in the creation dialog, and split the DM/group-chat submit copy. The owner approved keeping it (`AskUserQuestion`, 2026-09-11) when reconciling this plan. It lands here because Step 9 above already rewrites this file's neighbouring markup and no other Phase 3 task touches the creation dialog. Against the **current** `RoomDirectory.tsx` (post-#2483, pre-Step-9-edit line numbers):
+
+Replace L61 —
+```tsx
+const validName = kind !== "channel" || (name.trim().length >= 1 && name.trim().length <= 80);
+```
+— with:
+```tsx
+const validName = kind === "channel"
+  ? name.trim().length >= 1 && name.trim().length <= 80
+  : kind === "group-dm" ? name.trim().length <= 80 : true;
+```
+
+Replace L180's `onCreate?.(...)` call —
+```tsx
+const created = await onCreate?.({ kind, name: kind === "channel" ? name.trim() : null, members: [...selected.values()] });
+```
+— with:
+```tsx
+const created = await onCreate?.({ kind, name: kind === "dm" ? null : name.trim() || null, members: [...selected.values()] });
+```
+
+Replace L184's `DialogTitle` —
+```tsx
+<DialogTitle>{kind === "channel" ? "Create a channel" : "New message"}</DialogTitle>
+```
+— with:
+```tsx
+<DialogTitle>{kind === "channel" ? "Create a channel" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
+```
+
+Replace L195–196's name field (currently channel-only) —
+```tsx
+{kind === "channel" && <><label htmlFor={`${id}-name`}>Channel name</label>
+  <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
+```
+— with:
+```tsx
+{kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
+  <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
+```
+
+Replace L223's submit button —
+```tsx
+<Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : "Start message"}</Button></div>
+```
+— with:
+```tsx
+<Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></div>
+```
+
+Test — append to `RoomDirectory.test.tsx`:
+```tsx
+it("creates a named group chat with a flexible mix of participants", async () => {
+  const onCreate = vi.fn().mockResolvedValue(true);
+  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} rooms={[]} participants={[alice, atlas]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  fireEvent.change(screen.getByLabelText("Conversation type"), { target: { value: "group-dm" } });
+  const dialog = screen.getByRole("dialog", { name: "New group chat" });
+  fireEvent.change(within(dialog).getByLabelText("Group chat name (optional)"), { target: { value: "Launch crew" } });
+  fireEvent.click(within(dialog).getByLabelText("Select Alice"));
+  fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Start group chat" }));
+  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+    kind: "group-dm", name: "Launch crew",
+    members: expect.arrayContaining([expect.objectContaining({ kind: "human", id: "alice" }), expect.objectContaining({ kind: "agent", id: "atlas" })]),
+  })));
+});
+```
+
+**Fix one now-broken existing assertion:** `apps/frontend/src/components/workspace/__tests__/MessagesIntegration.test.tsx` creates a DM via `fireEvent.click(screen.getByRole("button", { name: "Start message" }))` — the button's copy just split by kind, so change that line to `{ name: "Start direct message" }`.
+
+- [ ] **Step 12: Run, scan, commit**
 
 Run: `cd apps/frontend && pnpm test -- src/components/messaging src/components/workspace && pnpm lint src/components/messaging && node scripts/brand-tokens-scan.mjs src`
 Expected: PASS; `0`. (Existing `RoomDirectory`/`MessagesIntegration` tests need the four new `RoomSummary` fields on their fixtures and `sections={[]}` — update those fixtures in this commit.)
 
 ```bash
 git add apps/frontend/src/components/messaging/roomSections.ts apps/frontend/src/components/messaging/sidebarPrefs.ts apps/frontend/src/components/messaging/RoomDirectoryRow.tsx apps/frontend/src/components/messaging/RoomDirectory.tsx apps/frontend/src/components/messaging/messageLinks.ts apps/frontend/src/components/messaging/messaging.css apps/frontend/src/components/messaging/__tests__ apps/frontend/src/components/workspace/__tests__
-git commit -m "feat(messaging): starred group, mute, unread-first sort and collapsible sidebar groups"
+git commit -m "feat(messaging): starred group, mute, unread-first sort, collapsible sidebar groups, and named group-chat creation"
 ```
 
 ---
@@ -2279,13 +2388,15 @@ git commit -m "feat(messaging): custom sidebar sections, drag reorder and leave 
 
 *Suggested model: sonnet — one extracted component with a clear contract, replacing existing markup.*
 
+**Starts from #2483's current rename UI, not pre-#2483 code.** #2483 already moved rename from a flat "Channel name" heading to a `{visibleRoom?.kind === "channel" ? "Channel" : "Group chat"} name` heading (still in the Details body — `RoomPanel.tsx` lines 486–490 today) and split the gating flag into `canRename` (`kind !== "dm"`, line 262) vs `canManageMembers` (`kind === "channel"`, line 263). This task moves rename out of the Details body into the header overflow (`RoomHeader.tsx`'s own dialog, Step 3), which makes `canRename`, `roomNameDraft`, and the `management === "rename"` branches of `openManagement`/`saveManagement`/the shared `Dialog` in `RoomPanel.tsx` **dead code** — Step 4 below deletes them explicitly, and the three RoomPanel tests #2483 wrote for that Details-body rename dialog move (as coverage, superseded) to `RoomHeader.test.tsx` in Step 1.
+
 **Files:**
 - Create: `apps/frontend/src/components/messaging/RoomHeader.tsx`
-- Modify: `apps/frontend/src/components/messaging/RoomPanel.tsx:417-460` (header + tabs + the inline `room-members` panel), `:483-487` (drop the Details "Rename channel" section)
-- Modify: `apps/frontend/src/components/messaging/MessagingWorkspaceContext.tsx:321-363` (`roomProps`)
+- Modify: `apps/frontend/src/components/messaging/RoomPanel.tsx:425-463` (header + tabs + the inline `room-members` panel), `:486-490` (drop the Details "{Channel|Group chat} name" section), `:262,264,268-290,541-556` (delete the now-dead `canRename`/rename-dialog machinery — Step 4)
+- Modify: `apps/frontend/src/components/messaging/MessagingWorkspaceContext.tsx:321-365` (`roomProps`)
 - Modify: `apps/frontend/src/components/messaging/messaging.css`
 - Modify: `apps/infra/openclaw/skills/lightbulb/references/surfaces.md`
-- Test: `__tests__/RoomHeader.test.tsx` (create), `__tests__/RoomPanel.test.tsx` (append)
+- Test: `__tests__/RoomHeader.test.tsx` (create), `__tests__/RoomPanel.test.tsx` (append new tests; **delete** four superseded ones — Step 4)
 
 **Interfaces:**
 - Consumes: Task 6's `RoomSummary.topic/starred/muted`, `useRooms.setRoomPrefs` / `leaveRoom`, and Task 3's `PatchRoomRequest.topic`.
@@ -2531,9 +2642,9 @@ export function RoomHeader({ room, roomName, counterparts, participantCount, can
 
 Write both dialogs out in full, mirroring `RoomPanel`'s shipped management dialog (`onOpenAutoFocus` / `onCloseAutoFocus` focus restoration, `disabled={!actionable || pending}`, pending labels "Saving…" / "Leaving…").
 
-- [ ] **Step 4: Rewire `RoomPanel.tsx`**
+- [ ] **Step 4: Rewire `RoomPanel.tsx`, and delete the rename machinery #2483 put in the Details body**
 
-Replace the `<header className="room-header">…</header>` block (L422–443) with `<RoomHeader … search={<RoomMessageSearch … />} />`, passing:
+Replace the `<header className="room-header">…</header>` block (currently L425–446) with `<RoomHeader … search={<RoomMessageSearch … />} />`, passing:
 
 ```tsx
         canEditRoom={visibleRoom?.kind !== "dm" && (viewer?.role === "owner" || viewer?.role === "admin")}
@@ -2543,9 +2654,28 @@ Replace the `<header className="room-header">…</header>` block (L422–443) wi
         onOpenDetails={(tab) => { closeDetail(); setDetailsTab(tab ?? "members"); setContextCollapsed(false); }}
 ```
 
-Delete the inline `membersOpen` state, the `room-members-trigger` button and the `{membersOpen && <section id={`${id}-members`} …>}` block (L440–441, L450–460) — the facepile replaces them and Task 11's Members tab is the single members surface. Delete the Details "Channel name" section (L483–487) — rename now lives in the header overflow.
+Delete the inline `membersOpen` state, the `room-members-trigger` button (currently L443–444) and the `{membersOpen && <section id={`${id}-members`} …>}` block (currently L453–463) — the facepile replaces them and Task 11's Members tab is the single members surface. Delete the Details "{Channel|Group chat} name" section (currently L486–490, `{canRename && onRenameRoom && <section aria-labelledby={`${id}-room-name`}>…`) — rename now lives in the header overflow.
 
-In the tab bar (L444–449) rename the second tab to `Details` and append the pinned count:
+**Delete the rename machinery this orphans** — all of it is reachable today only from the section just deleted:
+- `canRename` (currently L262) — remove the variable; `canManageMembers` (L263) stays, it still gates the remove-member dialog.
+- `management`'s type: today `useState<"rename" | MemberRef | null>(null)`; narrow to `useState<MemberRef | null>(null)` — `"rename"` is never a value again.
+- `openManagement`'s `action: "rename" | MemberRef` parameter narrows to `action: MemberRef`; drop the `setRoomNameDraft(...)` line inside it.
+- `roomNameDraft` state and `setRoomNameDraft` — delete; `RoomHeader` owns its own rename draft.
+- `removalTarget` (L264): drop the now-always-true `management !== "rename" &&` guard — `management` can only ever be a `MemberRef` now.
+- `saveManagement` (L275–290): drop the `management === "rename" ? …` branches in both the early-return guard and the try body — it becomes remove-member-only.
+- The shared `Dialog` (L541 today, `open={management !== null && (management === "rename" ? canRename : canManageMembers)}`): simplify to `open={management !== null && canManageMembers}`.
+- `DialogContent`'s `onOpenAutoFocus` (`if (management !== "rename") { … }`): the condition is now always true — drop the guard, always preventDefault + focus `managementCancel`.
+- `DialogHeader`'s title/description and the form's rename `<input>` block (L545–552): drop every `management === "rename" ? … : …` ternary, keeping only the "Remove member" / removal-confirmation copy; delete the rename `<div className="grid gap-2">…</div>` block entirely.
+
+**Delete the four RoomPanel tests this supersedes** from `apps/frontend/src/components/messaging/__tests__/RoomPanel.test.tsx` — all exercise the Details-body rename dialog just removed, and Step 1's new `RoomHeader.test.tsx` tests (`"renames from the overflow menu and never offers it on a DM"`, plus the star/mute/topic tests) cover the same ground against the new location:
+- `"renames a channel in a centered dialog with pending, retry, and focus restoration"`
+- `"lets a group chat admin rename the chat without exposing channel membership controls"` (shipped by #2483)
+- `"never offers renaming for a direct message"` (shipped by #2483)
+- `"closes channel management if the viewer loses admin permission"`
+
+In the `it.each(["dm", "group-dm", "channel"])("does not expose management without room admin permission (%s)", ...)` test that stays, drop its now-meaningless `expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();` line — `RoomPanel` never renders a Rename button at all any more, regardless of admin state — and keep only the `Remove Friday` assertion.
+
+In the tab bar (currently L447–452) rename the second tab to `Details` and append the pinned count:
 
 ```tsx
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
@@ -2555,7 +2685,7 @@ Add to `RoomPanelProps`: `pinnedMessageIds?: readonly string[]; onSetPrefs?: (pr
 
 - [ ] **Step 5: Thread through the context**
 
-In `MessagingWorkspaceContext.tsx`, replace the `rooms.activeRoom?.kind === "channel" && …` spread (L349–358) with:
+In `MessagingWorkspaceContext.tsx`, replace the `rooms.activeRoom && rooms.activeRoom.kind !== "dm" && …` spread (currently L349–360 — #2483 already split it into an `onRenameRoom`-always / `addMemberCandidates`+`onAddMember`+`onRemoveMember`-channel-only shape; the code below keeps that shape and only adds `onSetTopic`) with:
 
 ```tsx
     pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds ?? [],
@@ -3053,11 +3183,16 @@ Links and About; pin and "mark unread from here" in the message menu.
 No new table, no new GSI, no new attribute definition — every field lands on an
 existing item shape in `lightbulb-{env}-messaging`, so `deploy.yml` is unchanged.
 
-### Supersedes
-Closes #2482 and #2483. Both split the sidebar into a third "Group chats"
-section, which contradicts the spec's group order, and both leave Rename in the
-Details body rather than the header overflow. #2483's DM-rename guard is kept —
-see `patch_room` and `test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm`.
+### Relative to #2482 / #2483
+#2482 is already closed (superseded by #2483). #2483 already merged to `main`
+(`e271ee947`) — its DM-rename guard ships here verbatim (generalized to
+`patch_room_meta`; see `patch_room` and
+`test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm`). Per the owner's
+ruling on 2026-09-11, this PR **removes** #2483's third "Group chats" sidebar
+section (group DMs now render inside Direct messages, per spec) and **moves**
+Rename out of the Details body #2483 put it in, into the header overflow. It
+also recreates #2482's "name a group chat at creation" field, which #2483
+dropped — the owner approved carrying it forward.
 
 ### Verification
 - backend `uv run pytest tests/ -q`; ruff clean
@@ -3068,16 +3203,7 @@ see `patch_room` and `test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm
 - acceptance: starred room survives a reload on another device; a muted room never notifies or badges; a pinned message appears in Pins for every member
 ```
 
-- [ ] **Step 8: Close the superseded PRs**
-
-```bash
-gh pr close 2482 --repo TheLightbulbCompany/lightbulb --comment "Superseded by #2483, and then by Phase 3 (<PR url>): the three-way sidebar split contradicts the spec's group order (Starred · Channels · Direct messages) and rename moves to the header overflow. No code from this PR is lost — the DM-rename guard ships in Phase 3."
-gh pr close 2483 --repo TheLightbulbCompany/lightbulb --comment "Superseded by Phase 3 (<PR url>), which carries this PR's DM-rename guard verbatim. The sidebar split and the Details-body rename control are replaced by the spec's group order and header overflow."
-```
-
-Do not merge or modify either PR.
-
-- [ ] **Step 9: Ship**
+- [ ] **Step 8: Ship**
 
 Merge (the `claude-review` job is the required check; CodeRabbit/Greptile are gone). Verify on dev. Then, and only when the deploy queue reads `0`:
 
@@ -3109,3 +3235,5 @@ Watch with `gh run watch <id> --repo TheLightbulbCompany/lightbulb --exit-status
 **Type consistency:** `set_member_prefs(room_id, kind, member_id, updates)` (Task 1 → 3 unaffected); `patch_room_meta(room_id, updates)` replaces `patch_room_name` at its single call site (Task 3, and Task 4's `set_pin` deliberately writes META directly rather than routing through it, because pins are a list-mutation under the same CAS); `mark_unread(..., from_seq=)` (Task 5 → 6 → 10); `MemberPrefsRequest` / `RoomSection` / `SectionsRequest` are the same names backend and frontend (Tasks 1, 2 → 6 → 7, 8); `groupRooms(rooms, sections, { sort, nameOf })` (Task 7 → 8); `RoomDirectoryRow` props are declared in full in Task 7 and only populated further in Task 8; `menuExtras` is the same prop name on `RoomMessageContent` and `RoomMessageItem` (Task 10); `DetailsTab` is defined once in Task 11 and imported by `RoomPanel` in the same task; `onSetPrefs` means "the active room" on `RoomPanelProps` and "(roomId, prefs)" on `RoomDirectoryProps` — deliberately different arities for different surfaces, and both are spelled out in their Interfaces blocks.
 
 **Spec contradicted by code (one):** the pins row's `room.updated` live event does not exist; `room.metadata.changed` is reused (Assumption 1).
+
+**#2482/#2483 reconciliation (done 2026-09-11, against the rebased baseline `68c52c359`):** every `file:line` citation into `messaging.py`, `messaging_repo.py`, `RoomDirectory.tsx`, `RoomPanel.tsx`, `MessagingWorkspaceContext.tsx` was re-verified against the current tree; Tasks 3, 7, 9, 12 were rewritten to start from #2483's shipped code (the DM-rename guard, the "Group chats" section, the split `canRename`/`canManageMembers`, the "Group chat" copy) rather than from the pre-#2483 baseline the plan originally assumed. One judgment call with no spec text either way: `roomKindLabel["group-dm"]` stays `"Group chat"` (#2483's shipped, merged copy) rather than reverting to the plan's original `"Group message"` stance, because the spec never prescribes the literal string and reverting a merged, owner-accepted change would itself be an uninvited invention — see the "Inputs considered" section's "Vocabulary" note.

@@ -103,6 +103,19 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("keeps the triggering thread on live agent runs", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    const runId = "thread-run";
+    act(() => {
+      for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "thread-frame", type: "room.run.frame", occurredAt: "2026-09-10T00:01:00Z",
+        payload: { roomId: room.roomId, agentId: room.members[1].id, runId, threadRootMessageId: firstMessage.messageId,
+          frame: { type: "chunk", content: "Thread answer", runId, agentId: room.members[1].id } },
+      });
+    });
+    expect(result.current.runs[0]).toMatchObject({ runId, threadRootMessageId: firstMessage.messageId });
+  });
   it("replaces active room state with the member upsert response", async () => {
     const updated = { ...room, roomRevision: 2, members: [...room.members, { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }] };
     messaging.upsertMember.mockResolvedValue(updated);

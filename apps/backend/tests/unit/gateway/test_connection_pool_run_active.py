@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -76,6 +77,45 @@ def test_clear_active_run_retains_authorizing_session_for_terminal_idempotency()
 
     assert conn._active_runs == {}
     assert conn._terminal_run_ids == {"run-1": SESSION_KEY}
+
+
+@pytest.mark.asyncio
+async def test_timeout_cleanup_keeps_thread_routing_through_approval_followup(monkeypatch):
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    conn._room_run_context = {}
+    conn._run_state = {}
+    conn._terminal_run_ids = {}
+    conn._live_publish_lock = asyncio.Lock()
+    conn.owner_id = "owner-1"
+    published = []
+
+    class FakePublisher:
+        async def publish_room(self, _room_id, event):
+            published.append(event)
+
+    async def get_room(_room_id):
+        return {"ownerId": "owner-1"}
+
+    async def get_member(_room_id, _kind, _agent_id):
+        return {"id": AGENT_ID}
+
+    monkeypatch.setattr("core.repositories.messaging_repo.get_room", get_room)
+    monkeypatch.setattr("core.repositories.messaging_repo.get_member", get_member)
+    monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: FakePublisher())
+
+    conn.mark_run_active(SESSION_KEY, agent_id=AGENT_ID, thread_root_message_id="thread-1")
+    conn._clear_active_run(SESSION_KEY, preserve_room_context=True)
+    assert conn.has_active_runs is False
+    conn._mark_awaiting_approval(SESSION_KEY)
+    assert conn._is_true_terminal(SESSION_KEY, "final") is False
+
+    await conn._publish_room_frame(SESSION_KEY, {"type": "chunk", "content": "followup", "runId": "run-2"})
+
+    assert published[0]["payload"]["threadRootMessageId"] == "thread-1"
+    assert conn._is_true_terminal(SESSION_KEY, "final") is True
+    conn._clear_active_run(SESSION_KEY, "run-2")
+    assert conn._room_run_context == {}
 
 
 @pytest.mark.parametrize(

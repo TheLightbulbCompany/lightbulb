@@ -295,6 +295,10 @@ class GatewayConnection:
         # Non-emptiness is the load-bearing signal for the parked-vs-dead
         # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
         self._active_runs: Dict[str, Dict[str, Any]] = {}
+        # Room-routing metadata may outlive `_active_runs` briefly when an
+        # ingress POST times out after OpenClaw accepted it. It is deliberately
+        # separate so uncertain delivery never keeps a connection "active".
+        self._room_run_context: Dict[str, Dict[str, Any]] = {}
         # Recently terminal run IDs retain their session key so idempotent abort
         # still passes current room authorization after the active entry is
         # cleared. Bounded insertion-order map; runtime state remains
@@ -552,6 +556,7 @@ class GatewayConnection:
         agent_id: str | None = None,
         member_id: str | None = None,
         event_kind: str | None = None,
+        thread_root_message_id: str | None = None,
     ) -> None:
         """Record an in-flight run for *session_key* (parked-vs-dead signal).
 
@@ -574,6 +579,8 @@ class GatewayConnection:
         """
         key = session_key.lower()
         now = time.monotonic()
+        if not hasattr(self, "_room_run_context"):
+            self._room_run_context = {}
         existing = self._active_runs.get(key)
         if existing is not None:
             existing["started_at"] = now
@@ -587,6 +594,9 @@ class GatewayConnection:
                 # room_event re-mark must not flip an in-flight addressed
                 # run's suppression state (see `_publish_room_frame`).
                 existing["event_kind"] = event_kind
+            if thread_root_message_id and existing.get("thread_root_message_id") is None:
+                existing["thread_root_message_id"] = thread_root_message_id
+                self._room_run_context[key] = {"thread_root_message_id": thread_root_message_id}
             return
         self._active_runs[key] = {
             "started_at": now,
@@ -594,6 +604,7 @@ class GatewayConnection:
             "agent_id": agent_id or "",
             "run_id": None,
             "event_kind": event_kind,
+            "thread_root_message_id": thread_root_message_id,
             # Canonical dispatch member id for the run-completion push audience.
             "member_id": member_id,
             # Set when OpenClaw emits an approval-requested agent event for this
@@ -601,6 +612,9 @@ class GatewayConnection:
             # `final` that closes the approval bracket does NOT end the run.
             "awaiting_approval": False,
         }
+        self._room_run_context[key] = {"thread_root_message_id": thread_root_message_id}
+        while len(self._room_run_context) > 256:
+            self._room_run_context.pop(next(iter(self._room_run_context)), None)
 
     def _touch_run(self, session_key: str, run_id: str | None = None) -> None:
         """Bump ``last_event_at`` on the active run keyed by *session_key*.
@@ -632,9 +646,18 @@ class GatewayConnection:
         """
         self._run_state.clear()
 
-    def _clear_active_run(self, session_key: str, run_id: str | None = None) -> None:
+    def _clear_active_run(
+        self,
+        session_key: str,
+        run_id: str | None = None,
+        *,
+        preserve_room_context: bool = False,
+    ) -> None:
         """Pop an active run and retain its terminal ID for idempotent abort."""
-        active = self._active_runs.pop(session_key.lower(), None)
+        key = session_key.lower()
+        active = self._active_runs.pop(key, None)
+        if not preserve_room_context:
+            getattr(self, "_room_run_context", {}).pop(key, None)
         terminal_id = run_id or (active or {}).get("run_id")
         if terminal_id:
             self._terminal_run_ids[terminal_id] = session_key.lower()
@@ -698,6 +721,9 @@ class GatewayConnection:
         run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["awaiting_approval"] = True
+        room_context = getattr(self, "_room_run_context", {}).get(session_key.lower())
+        if room_context is not None:
+            room_context["awaiting_approval"] = True
 
     def _is_true_terminal(self, session_key: str, state: str) -> bool:
         """True iff this chat-terminal event genuinely ends the per-session run.
@@ -727,11 +753,18 @@ class GatewayConnection:
         """
         if state in ("error", "aborted"):
             return True
-        run = self._active_runs.get(session_key.lower())
+        key = session_key.lower()
+        run = self._active_runs.get(key) or getattr(self, "_room_run_context", {}).get(key)
         if run is not None and run.get("awaiting_approval"):
             # Suppress Run A's genuine terminal final so the per-session window
             # survives the approval; the separate follow-up run's final clears it.
             run["awaiting_approval"] = False
+            active = self._active_runs.get(key)
+            if active is not None:
+                active["awaiting_approval"] = False
+            room_context = getattr(self, "_room_run_context", {}).get(key)
+            if room_context is not None:
+                room_context["awaiting_approval"] = False
             return False
         return True
 
@@ -1413,7 +1446,9 @@ class GatewayConnection:
         parsed = parse_lightbulb_session_key(session_key)
         if parsed is None or frame.get("type") not in _ROOM_SAFE_FRAME_TYPES:
             return
-        active = self._active_runs.get(session_key.lower())
+        key = session_key.lower()
+        active = self._active_runs.get(key)
+        room_context = active or getattr(self, "_room_run_context", {}).get(key)
         if (active or {}).get("event_kind") == "room_event" and frame.get("type") in {"chunk", "thinking"}:
             return
         from core.repositories import messaging_repo
@@ -1435,6 +1470,7 @@ class GatewayConnection:
                 "roomId": parsed["room_id"],
                 "agentId": parsed["agent_id"],
                 "runId": run_id,
+                "threadRootMessageId": (room_context or {}).get("thread_root_message_id"),
                 "frame": normalized,
             },
             room_id=parsed["room_id"],
@@ -2296,6 +2332,7 @@ class GatewayConnection:
                     list(self._active_runs.keys()),
                 )
                 self._active_runs.clear()
+                getattr(self, "_room_run_context", {}).clear()
                 self._parked = False
                 self._emit_status_change(
                     "GATEWAY_DOWN_DEAD",
@@ -2458,6 +2495,7 @@ class GatewayConnection:
         # Drop active-run state. close() means we don't expect to talk to
         # this OpenClaw process again under this connection instance.
         self._active_runs.clear()
+        getattr(self, "_room_run_context", {}).clear()
         self._parked = False
 
 
@@ -2543,6 +2581,7 @@ class GatewayConnectionPool:
         agent_id: str | None = None,
         member_id: str | None = None,
         event_kind: str | None = None,
+        thread_root_message_id: str | None = None,
     ) -> None:
         """Public entry point for the chat dispatcher.
 
@@ -2560,7 +2599,13 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn.mark_run_active(session_key, agent_id, member_id=member_id, event_kind=event_kind)
+        conn.mark_run_active(
+            session_key,
+            agent_id,
+            member_id=member_id,
+            event_kind=event_kind,
+            thread_root_message_id=thread_root_message_id,
+        )
 
     async def subscribe_room_session(self, user_id: str, session_key: str) -> None:
         """Stream a room session's run events to the owner's connection.
@@ -2574,7 +2619,7 @@ class GatewayConnectionPool:
             return
         await conn.subscribe_room_session(session_key)
 
-    def clear_active_run(self, user_id: str, session_key: str) -> None:
+    def clear_active_run(self, user_id: str, session_key: str, *, preserve_room_context: bool = False) -> None:
         """Tear down the active-run window opened by ``mark_run_active``.
 
         The dispatcher marks a run active *before* issuing chat.send so the
@@ -2582,13 +2627,15 @@ class GatewayConnectionPool:
         never reaches OpenClaw (timeout, container unreachable, gateway error),
         no terminal event will ever arrive to clear the window — leaving a stale
         entry that keeps the connection parking on a WS drop forever. The
-        dispatcher calls this on the chat.send failure path. Silently no-ops
-        when no connection exists. Idempotent.
+        dispatcher calls this on the chat.send failure path. When delivery is
+        uncertain, ``preserve_room_context`` retains only bounded routing
+        metadata for frames that may still arrive; it does not keep the run
+        active. Silently no-ops when no connection exists. Idempotent.
         """
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn._clear_active_run(session_key)
+        conn._clear_active_run(session_key, preserve_room_context=preserve_room_context)
 
     def mark_side_run(self, user_id: str, run_id: str) -> None:
         """Record *run_id* as a side-channel (`/btw`) run on *user_id*'s

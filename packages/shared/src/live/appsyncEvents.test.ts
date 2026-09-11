@@ -336,11 +336,18 @@ describe("data delivery", () => {
       event: [JSON.stringify(
         liveEvent({
           type: "room.run.frame",
-          payload: { roomId: "room-1", agentId: "a", runId: "x", frame: { type: "chunk", content: "hi", runId: "x" } },
+          payload: {
+            roomId: "room-1",
+            agentId: "a",
+            runId: "x",
+            threadRootMessageId: "thread-1",
+            frame: { type: "chunk", content: "hi", runId: "x" },
+          },
         }),
       )],
     });
     expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toMatchObject({ threadRootMessageId: "thread-1" });
     client.close();
   });
 

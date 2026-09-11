@@ -211,7 +211,7 @@ export interface LiveEventEnvelope<T extends LiveEventType, P> {
 }
 
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
-export type RoomRunFrame = { roomId: string; agentId: string; runId: string; frame: ChatIncomingMessage };
+export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
 export type RoomAccessRemoved = { roomId: string; roomRevision: number };
@@ -333,7 +333,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "room.typing.changed":
       return str(payload.roomId) && str(payload.userId) && text(payload.displayName) && str(payload.expiresAt);
     case "room.run.frame":
-      return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && chatFrameValid(payload.frame);
+      return str(payload.roomId) && str(payload.agentId) && str(payload.runId) &&
+        (payload.threadRootMessageId === undefined || nullableString(payload.threadRootMessageId)) && chatFrameValid(payload.frame);
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);

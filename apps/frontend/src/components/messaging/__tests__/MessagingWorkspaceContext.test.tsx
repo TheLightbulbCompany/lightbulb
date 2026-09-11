@@ -28,9 +28,10 @@ vi.mock("../RoomDirectory", () => ({ RoomDirectory: (props: RoomDirectoryProps) 
   directory = props;
   return <nav aria-label="Conversations" />;
 } }));
+const editLast = vi.fn();
 vi.mock("../RoomPanel", () => ({ RoomPanel: (props: RoomPanelProps) => {
   panel = props;
-  return <section aria-label="Messages">{renderComposer && <RoomComposer {...props.composer} />}</section>;
+  return <section aria-label="Messages">{renderComposer && <RoomComposer {...props.composer} onEditLast={editLast} />}</section>;
 } }));
 
 import { MessagingWorkspaceProvider, useMessagingWorkspace, type MessagingWorkspaceValue } from "../MessagingWorkspaceContext";
@@ -403,6 +404,17 @@ it("moves to the next room on Alt+ArrowDown and the next unread on Alt+Shift+Arr
 
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true, shiftKey: true });
   expect(state.selectRoom).toHaveBeenLastCalledWith(unreadRoom.roomId);
+});
+
+it("moves rooms on Alt+ArrowUp from inside the composer instead of editing the last message", () => {
+  renderComposer = true;
+  state.rooms = [room, { ...room, roomId: "room-3" }];
+  compose();
+
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp", altKey: true });
+
+  expect(state.selectRoom).toHaveBeenCalledWith("room-3");
+  expect(editLast).not.toHaveBeenCalled();
 });
 
 it("opens the shortcut sheet on Cmd+/", () => {

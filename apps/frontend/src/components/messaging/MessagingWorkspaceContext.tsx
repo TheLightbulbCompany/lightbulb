@@ -10,7 +10,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
-import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "@/components/teams/shared/lib/keyboardShortcuts";
+import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { resolveTypedMentions } from "./mentions";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
@@ -102,13 +102,13 @@ export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null 
  * toggled via `onShowShortcuts`).
  *
  * The room-navigation (⌥) branches are ignored while a Radix dialog/menu is
- * open or an IME composition is in progress; the ⌥ combos are additionally
- * skipped when the event target is a text field, since the OS may otherwise
- * turn Option+key into an inserted character there. `defaultPrevented`
- * covers everything the composer or a typeahead already handled (e.g. its
- * own plain-ArrowUp "edit last message"). `⌘/` is evaluated BEFORE the
- * dialog guard — it must still toggle the shortcut sheet closed while that
- * very dialog (its own `role="dialog"`) is open.
+ * open or an IME composition is in progress. They deliberately still fire
+ * from inside the composer — that is where the owner's hands are, and the
+ * combos are modified, so they are not what anyone types into a message.
+ * `defaultPrevented` covers everything the composer or a typeahead already
+ * handled (e.g. its own plain-ArrowUp "edit last message"). `⌘/` is
+ * evaluated BEFORE the dialog guard — it must still toggle the shortcut
+ * sheet closed while that very dialog (its own `role="dialog"`) is open.
  */
 export function useMessagingShortcuts(
   rooms: readonly RoomSummary[],
@@ -127,7 +127,6 @@ export function useMessagingShortcuts(
       if (hasBlockingShortcutDialog() || document.querySelector("[role='menu']")) return;
       if (!event.altKey || event.metaKey || event.ctrlKey) return;
       if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-      if (isKeyboardShortcutTextInputTarget(event.target)) return;
       const direction = event.key === "ArrowDown" ? 1 : -1;
       const next = event.shiftKey
         ? nextUnreadRoomId(rooms, activeRoomId, direction)

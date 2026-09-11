@@ -463,7 +463,9 @@ function ComposerAttempt({
             return;
           }
         }
-        if (event.key === "ArrowUp" && !text && onEditLast) {
+        // Plain ArrowUp only — ⌥↑ is the window-level previous-room shortcut,
+        // and swallowing it here would make it dead from the composer.
+        if (event.key === "ArrowUp" && !event.altKey && !text && onEditLast) {
           event.preventDefault();
           onEditLast();
           return;

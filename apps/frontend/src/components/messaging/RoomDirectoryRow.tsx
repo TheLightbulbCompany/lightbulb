@@ -15,9 +15,10 @@ export interface RoomDirectoryRowProps {
   /** The room has an unsent draft — PR B's pencil glyph. */
   draft?: boolean;
   onSelect: () => void;
-  onToggleStar: () => void;
-  onToggleMute: () => void;
-  onMarkUnread: () => void;
+  /** Star/mute are omitted from the menu when the caller cannot persist them. */
+  onToggleStar?: () => void;
+  onToggleMute?: () => void;
+  onMarkUnread?: () => void;
   onCopyLink: () => void;
   onMoveToSection?: (sectionId: string | null) => void;
   sections: readonly RoomSection[];
@@ -36,13 +37,13 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
       {room.kind === "dm" && room.participants.length === 1
         ? <ParticipantAvatar participant={room.participants[0]} size="sm" />
         : room.kind === "group-dm" && faces.length > 0
-          ? <span className="room-directory-faces">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" />)}</span>
+          ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" />)}</span>
           : <Icon size={16} aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>
         <span className="sr-only">{roomKindLabel[room.kind]}</span>
       </span>
-      {room.starred && <Star size={12} aria-label="Starred" className="room-directory-star" />}
+      {room.starred && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
       {badge && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
       {draft && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
@@ -52,9 +53,9 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={busy}><MoreHorizontal aria-hidden="true" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>
-        <DropdownMenuItem onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute conversation" : "Mute conversation"}</DropdownMenuItem>
-        <DropdownMenuItem onSelect={onMarkUnread}><MailOpen aria-hidden="true" />Mark unread</DropdownMenuItem>
+        {onToggleStar && <DropdownMenuItem onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>}
+        {onToggleMute && <DropdownMenuItem onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute conversation" : "Mute conversation"}</DropdownMenuItem>}
+        {onMarkUnread && <DropdownMenuItem onSelect={onMarkUnread}><MailOpen aria-hidden="true" />Mark unread</DropdownMenuItem>}
         <DropdownMenuItem onSelect={onCopyLink}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
         {onMoveToSection && <>
           <DropdownMenuSeparator />

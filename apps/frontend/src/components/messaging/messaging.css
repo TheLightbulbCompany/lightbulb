@@ -200,9 +200,12 @@
   .room-context { border-left: 0; }
   .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
   .room-panel button, .room-directory button, .room-run summary { min-height: 44px; }
-  /* Icon-only sidebar controls (collapse chevron, next unread, new conversation)
-     need the 44px in both axes; the sort select is a touch target too. */
-  .room-directory-heading-actions button, .room-directory-group-header button { min-width: 44px; }
+  /* Icon-only sidebar controls (collapse chevron, next unread, new conversation,
+     the row overflow trigger — which carries .room-directory-actions on the
+     button itself) need the 44px in both axes; the sort select is a touch
+     target too. */
+  .room-directory-heading-actions button, .room-directory-group-header button,
+  .room-directory-actions { min-width: 44px; }
   .room-directory select { min-height: 44px; }
   .room-composer textarea, .room-input { font-size: 1rem; }
   .room-message { gap: 8px; }
@@ -237,7 +240,7 @@
 .room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--foreground); }
 
 .room-directory-group-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.room-directory-group-header .room-directory-group { margin-bottom: 4px; }
+.room-directory-group-header .room-directory-group { flex: 1 1 auto; margin-bottom: 4px; }
 .room-directory-muted { color: var(--muted-foreground); }
 .room-directory-star { flex: none; color: var(--muted-foreground); }
 .room-directory-tag { flex: none; font-size: .75rem; color: var(--muted-foreground); }

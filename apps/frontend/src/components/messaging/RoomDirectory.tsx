@@ -71,6 +71,10 @@ function DirectoryContent({
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
   const [prefs, setPrefs] = useState(() => readSidebarPrefs(ownerScopeId));
   const savePrefs = useAsyncAction();
+  // The row `savePrefs` is acting on, so one in-flight star doesn't disable
+  // every other row's trigger. Only read while `savePrefs.pending`, so a
+  // stale value after the action settles is inert.
+  const [actingRoomId, setActingRoomId] = useState<string | null>(null);
   const validName = kind === "channel"
     ? name.trim().length >= 1 && name.trim().length <= 80
     : kind === "group-dm" ? name.trim().length <= 80 : true;
@@ -90,6 +94,7 @@ function DirectoryContent({
 
   function setRoomPrefs(roomId: string, next: MemberPrefsRequest, fallback: string) {
     if (!onSetPrefs) return;
+    setActingRoomId(roomId);
     void savePrefs.run(() => onSetPrefs(roomId, next), fallback);
   }
 
@@ -168,25 +173,34 @@ function DirectoryContent({
     {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
     {groups.map((group) => {
       const collapsed = prefs.collapsed.includes(group.id);
+      // Collapsing hides rooms, never activity or your place: the header keeps
+      // the group's unread count, and the room you are reading stays on screen
+      // so `aria-current` survives a ⌘K / next-unread / permalink jump into a
+      // collapsed group.
+      const unread = group.rooms.reduce((total, room) => total + (room.muted ? 0 : room.unreadCount), 0);
+      const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
+      const listId = `${id}-group-${group.id}`;
       return <section key={group.id} aria-label={group.label}>
         <div className="room-directory-group-header">
           <h3 className="room-directory-group">{group.label}</h3>
-          <Button variant="ghost" size="icon-sm" aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.label}`}
+          {collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>}
+          <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId}
+            aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.label}`}
             onClick={() => updatePrefs({ collapsed: collapsed ? prefs.collapsed.filter((groupId) => groupId !== group.id) : [...prefs.collapsed, group.id] })}>
             {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
           </Button>
         </div>
-        {!collapsed && <ul>{group.rooms.map((room) => {
+        <ul id={listId}>{visible.map((room) => {
           const label = roomDisplayName(room, room.participants);
           return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
             active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
-            busy={markingUnread === room.roomId || savePrefs.pending}
+            busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
             onSelect={() => onSelectRoom(room.roomId)}
-            onToggleStar={() => setRoomPrefs(room.roomId, { starred: !room.starred }, `Could not ${room.starred ? "unstar" : "star"} ${label}.`)}
-            onToggleMute={() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`)}
-            onMarkUnread={() => void markRoomUnread(room.roomId, label)}
+            onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred }, `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
+            onToggleMute={onSetPrefs && (() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`))}
+            onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
             onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
-        })}</ul>}
+        })}</ul>
       </section>;
     })}
     {draftedRooms.length > 0 && <section aria-label="Drafts">

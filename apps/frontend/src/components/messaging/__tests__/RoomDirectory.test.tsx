@@ -55,10 +55,11 @@ it("separates channels from direct messages, keeping group DMs — with stacked 
   ]} />);
   expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
   const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
-  const groupRow = directMessages.getByRole("button", { name: /^Alice/ });
-  expect(groupRow).toHaveTextContent("Launch crew");
-  expect(within(groupRow).getByRole("img", { name: "Alice" })).toBeInTheDocument();
-  expect(within(groupRow).getByRole("img", { name: "Atlas" })).toBeInTheDocument();
+  // The facepile is decorative — the row already announces "Launch crew" — so
+  // the avatars are found with `hidden`.
+  const groupRow = directMessages.getByRole("button", { name: /^Launch crew/ });
+  expect(within(groupRow).getByRole("img", { name: "Alice", hidden: true })).toBeInTheDocument();
+  expect(within(groupRow).getByRole("img", { name: "Atlas", hidden: true })).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Group chats" })).not.toBeInTheDocument();
   const row = directMessages.getByRole("button", { name: /^Friday/ });
   expect(row).toHaveAttribute("aria-current", "page");
@@ -236,6 +237,43 @@ it("collapses a group and keeps the collapse across a remount", async () => {
   unmount();
   render(<RoomDirectory {...props} />);
   expect(screen.getByRole("button", { name: "Expand Channels" })).toBeInTheDocument();
+});
+
+it("keeps a collapsed group's unread count on its header", async () => {
+  window.localStorage.clear();
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} rooms={[
+      { ...base, roomId: "loud", name: "Loud", unreadCount: 4 },
+      { ...base, roomId: "hushed", name: "Hushed", unreadCount: 9, muted: true },
+    ]} />);
+  const toggle = screen.getByRole("button", { name: "Collapse Channels" });
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await userEvent.click(toggle);
+  expect(screen.queryByRole("button", { name: /^Loud/ })).not.toBeInTheDocument();
+  // The muted room's 9 stay out of the count, exactly as they stay off its row.
+  expect(screen.getByLabelText("4 unread messages in Channels")).toHaveTextContent("4");
+  expect(screen.getByRole("button", { name: "Expand Channels" })).toHaveAttribute("aria-expanded", "false");
+});
+
+it("keeps the open room visible inside a collapsed group", async () => {
+  window.localStorage.clear();
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]} currentRoomId="open"
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} rooms={[
+      { ...base, roomId: "open", name: "Open" },
+      { ...base, roomId: "other", name: "Other" },
+    ]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Collapse Channels" }));
+  expect(screen.queryByRole("button", { name: /^Other/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Open/ })).toHaveAttribute("aria-current", "page");
+});
+
+it("leaves out menu items the caller cannot act on", async () => {
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" participants={[]}
+    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  expect(await screen.findByRole("menuitem", { name: "Copy link" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Star conversation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Mark unread" })).not.toBeInTheDocument();
 });
 
 it("creates a named group chat with a flexible mix of participants", async () => {

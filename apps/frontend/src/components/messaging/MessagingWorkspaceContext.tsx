@@ -263,6 +263,15 @@ export function MessagingWorkspaceProvider({
     await rooms.upsertMember({ kind: "agent", id: agentId, role: "member", listenMode });
   }
 
+  async function addMember(member: MemberRef) {
+    await rooms.upsertMember({
+      kind: member.kind,
+      id: member.id,
+      role: "member",
+      listenMode: member.kind === "agent" ? "mentions" : null,
+    });
+  }
+
   const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
   const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
@@ -299,6 +308,14 @@ export function MessagingWorkspaceProvider({
     onSelectParticipant: selectParticipant,
     onRetry: () => void rooms.refreshRoom(),
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
+    ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(
+      rooms.activeRoom.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
+    ) ? {
+      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
+        (member) => member.kind === candidate.kind && member.id === candidate.id,
+      )),
+      onAddMember: addMember,
+    } : {}),
     onAbortRun: (runId) => void rooms.abortRun(runId),
     onSteerRun: (runId, text) => void rooms.steerRun(runId, text),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),

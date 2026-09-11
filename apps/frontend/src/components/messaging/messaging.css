@@ -68,6 +68,11 @@
 .room-thread-replies { border-top: 1px solid var(--border); margin-top: 8px; }
 .room-members { padding: 12px 20px; border-bottom: 1px solid var(--border); max-height: 280px; overflow: auto; }
 .room-member { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 0; }
+.room-members-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.room-member-picker { display: grid; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.room-member-picker fieldset { display: grid; gap: 4px; }
+.room-member-choice { display: flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; }
+.room-member-choice > span:nth-last-child(2) { flex: 1; }
 .room-empty, .room-blocked { padding: 32px 20px; }
 .room-empty p { margin-top: 8px; max-width: 48ch; }
 .room-blocked { align-content: center; justify-items: center; gap: 16px; text-align: center; }

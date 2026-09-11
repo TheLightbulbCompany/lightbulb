@@ -296,6 +296,14 @@ export type CanonicalRoomMessage = {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
+  attachments: CanonicalAttachment[];
+};
+
+export type CanonicalAttachment = {
+  id: string;
+  fileName: string;
+  contentType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  size: number;
 };
 
 export type LightbulbRoomIngress = {
@@ -380,10 +388,33 @@ function rfc3339(v: unknown, path: string): string {
   return s;
 }
 
+const ATTACHMENT_EXTENSIONS: Record<CanonicalAttachment["contentType"], string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+
+function attachment(v: unknown, path: string): CanonicalAttachment {
+  const r = obj(v, path, ["id", "fileName", "contentType", "size"]);
+  const fileName = nonEmpty(r.fileName, `${path}.fileName`);
+  if (Buffer.byteLength(fileName, "utf8") > 255 || /[\\/\x00-\x1f\x7f]/u.test(fileName)) {
+    throw new Invalid(`${path}.fileName: expected safe filename metadata`);
+  }
+  const size = int(r.size, `${path}.size`);
+  if (size > 5 * 1024 * 1024) throw new Invalid(`${path}.size: exceeds 5242880 bytes`);
+  return {
+    id: uuid(r.id, `${path}.id`),
+    fileName,
+    contentType: oneOf(r.contentType, `${path}.contentType`, Object.keys(ATTACHMENT_EXTENSIONS) as CanonicalAttachment["contentType"][]),
+    size,
+  };
+}
+
 function canonicalMessage(v: unknown, path: string): CanonicalRoomMessage {
   const r = obj(v, path, [
     "messageId", "roomId", "messageSeq", "roomRevision", "author", "text", "mentions",
-    "replyToMessageId", "threadRootMessageId", "createdAt", "runId",
+    "replyToMessageId", "threadRootMessageId", "createdAt", "runId", "attachments",
   ]);
   const authorRaw = obj(r.author, `${path}.author`, ["kind", "id", "displayName"]);
   const author = {
@@ -406,6 +437,7 @@ function canonicalMessage(v: unknown, path: string): CanonicalRoomMessage {
     threadRootMessageId: nullableUuid(r.threadRootMessageId, `${path}.threadRootMessageId`),
     createdAt: rfc3339(r.createdAt, `${path}.createdAt`),
     runId: r.runId === null ? null : nonEmpty(r.runId, `${path}.runId`),
+    attachments: list(r.attachments ?? [], `${path}.attachments`, 4).map((a, i) => attachment(a, `${path}.attachments[${i}]`)),
   };
 }
 
@@ -650,6 +682,14 @@ export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomI
       commandBody: message.text,
       inboundHistory: toHistoryEntries(event.recentHistory),
     },
+    media: message.attachments.map((item) => ({
+      path: `/home/node/.openclaw/media/messaging/attachments/${room.id}/${item.id}${ATTACHMENT_EXTENSIONS[item.contentType]}`,
+      contentType: item.contentType,
+      kind: "image" as const,
+      fileName: item.fileName,
+      sizeBytes: item.size,
+      messageId: message.messageId,
+    })),
     access: {
       commands: { authorized: commandAuthorized },
       mentions: {

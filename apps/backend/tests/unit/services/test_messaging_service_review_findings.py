@@ -145,7 +145,7 @@ async def test_mark_unread_requires_membership_and_uses_join_floor(monkeypatch):
 
     response = await mark_room_unread(auth, room_id)
 
-    mark.assert_awaited_once_with(room_id, "user_owner", joined_seq=7)
+    mark.assert_awaited_once_with(room_id, "user_owner", joined_seq=7, from_seq=None)
     assert response.last_read_seq == 7
 
 
@@ -490,3 +490,24 @@ async def test_set_pin_publishes_only_when_the_repo_actually_changed_pins(monkey
     )
     assert await messaging.set_pin(auth, "room-1", "m-2", True) == "detail"
     publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_room_unread_threads_from_seq_and_defaults_to_the_whole_room(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    room_id = str(uuid.uuid4())
+    member = {"kind": "human", "id": "member", "role": "member", "joinedSeq": 2}
+    mark = AsyncMock(return_value=4)
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"roomId": room_id}, member)))
+    monkeypatch.setattr(messaging.messaging_repo, "mark_unread", mark)
+
+    await messaging.mark_room_unread(auth, room_id, messaging.MarkUnreadRequest(from_seq=5))
+    assert mark.await_args.kwargs == {"joined_seq": 2, "from_seq": 5}
+
+    await messaging.mark_room_unread(auth, room_id)
+    assert mark.await_args.kwargs == {"joined_seq": 2, "from_seq": None}
+
+
+def test_mark_unread_request_rejects_a_non_positive_sequence():
+    with pytest.raises(ValueError):
+        messaging.MarkUnreadRequest(from_seq=0)

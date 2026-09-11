@@ -1134,12 +1134,15 @@ async def set_read_cursor(room_id: str, user_id: str, last_read_seq: int) -> int
     return await get_read_cursor(room_id, user_id)
 
 
-async def mark_unread(room_id: str, user_id: str, *, joined_seq: int) -> int:
-    """Leave at least the latest room message unread without advancing the cursor."""
+async def mark_unread(room_id: str, user_id: str, *, joined_seq: int, from_seq: int | None = None) -> int:
+    """Leave the latest room message (or everything from ``from_seq`` on)
+    unread without ever advancing the cursor."""
     meta = await get_room(room_id)
     if meta is None:
         raise RoomNotFound(room_id)
-    target = max(int(joined_seq), max(0, int(meta["lastSeq"]) - 1))
+    last_seq = int(meta["lastSeq"])
+    ceiling = min(int(from_seq) - 1, last_seq) if from_seq is not None else last_seq - 1
+    target = max(int(joined_seq), max(0, ceiling))
     try:
         await run_in_thread(
             _table().update_item,

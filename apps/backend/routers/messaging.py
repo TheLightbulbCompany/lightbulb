@@ -32,6 +32,7 @@ from core.services.messaging import (
     CreateMessageRequest,
     CreateRoomRequest,
     LiveConfig,
+    MarkUnreadRequest,
     MemberPrefsRequest,
     MessagePage,
     PatchRoomRequest,
@@ -354,8 +355,12 @@ async def set_room_read_cursor(
 
 
 @router.post("/messaging/rooms/{room_id}/unread", response_model=ReadCursorResponse)
-async def mark_room_unread(room_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await service.mark_room_unread(auth, room_id)
+async def mark_room_unread(
+    room_id: str,
+    request: MarkUnreadRequest | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await service.mark_room_unread(auth, room_id, request)
 
 
 @router.post("/messaging/typing", status_code=204)

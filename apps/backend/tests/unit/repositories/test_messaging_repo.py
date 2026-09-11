@@ -733,3 +733,23 @@ async def test_set_pin_appends_removes_is_idempotent_and_caps_at_fifty(table):
     assert len((await repo.get_room(room_id))["pinnedMessageIds"]) == 50
     with pytest.raises(repo.PinLimitExceeded):
         await repo.set_pin(room_id, "m-over", True)
+
+
+@pytest.mark.asyncio
+async def test_mark_unread_from_a_sequence_leaves_that_message_and_everything_after_unread(table):
+    room_id, _ = await _room()
+    for index in range(1, 6):
+        await _post(room_id, text=f"m{index}", client_id=f"c-{index}")
+    await repo.set_read_cursor(room_id, USER_A, 5)
+    assert await repo.get_read_cursor(room_id, USER_A) == 5
+
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0, from_seq=3) == 2
+    assert await repo.get_read_cursor(room_id, USER_A) == 2
+
+    # Never moves the cursor forward: marking from a later message is a no-op.
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0, from_seq=5) == 2
+    # No from_seq keeps the shipped whole-room behaviour, floored at joined_seq.
+    await repo.set_read_cursor(room_id, USER_A, 5)
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0) == 4
+    await repo.set_read_cursor(room_id, USER_A, 5)
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=3, from_seq=1) == 3

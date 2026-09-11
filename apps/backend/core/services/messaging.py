@@ -377,6 +377,10 @@ class ReadCursorResponse(ContractModel):
     last_read_seq: int = Field(ge=0)
 
 
+class MarkUnreadRequest(ContractModel):
+    from_seq: int | None = Field(default=None, ge=1)
+
+
 class TypingRequest(ContractModel):
     room_id: uuid.UUID
     is_typing: bool
@@ -1558,9 +1562,18 @@ async def set_read_cursor(auth: AuthContext, room_id: str, request: ReadCursorRe
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
 
 
-async def mark_room_unread(auth: AuthContext, room_id: str) -> ReadCursorResponse:
+async def mark_room_unread(
+    auth: AuthContext, room_id: str, request: MarkUnreadRequest | None = None
+) -> ReadCursorResponse:
+    """Whole-room by default; ``fromSeq`` leaves that message and everything
+    after it unread ("mark unread from here")."""
     _, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    value = await messaging_repo.mark_unread(room_id, auth.user_id, joined_seq=int(member.get("joinedSeq", 0)))
+    value = await messaging_repo.mark_unread(
+        room_id,
+        auth.user_id,
+        joined_seq=int(member.get("joinedSeq", 0)),
+        from_seq=request.from_seq if request else None,
+    )
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
 
 

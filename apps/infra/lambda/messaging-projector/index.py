@@ -21,6 +21,10 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MESSAGING_TABLE = os.environ.get("MESSAGING_TABLE", "")
+USERS_TABLE = os.environ.get("USERS_TABLE", "")
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+MAX_PUSH_TOKENS = 100
+PUSH_BODY_CHARS = 180
 HTTP_ENDPOINT = os.environ.get("APPSYNC_EVENTS_HTTP_ENDPOINT", "")
 REGION = os.environ.get("APPSYNC_EVENTS_REGION", os.environ.get("AWS_REGION", ""))
 MAX_EVENT_BYTES = 230 * 1024
@@ -239,7 +243,85 @@ def _query_rows(pk: str, prefix: str) -> list[dict[str, Any]]:
         cursor = {"ExclusiveStartKey": response["LastEvaluatedKey"]}
 
 
-def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
+def _push_tokens(user_id: str) -> list[str]:
+    """Expo tokens registered by one user, newest device order irrelevant.
+
+    Best-effort by contract: a users-table fault must never stop the AppSync
+    delivery hints the rest of the loop is publishing.
+    """
+    if not USERS_TABLE:
+        return []
+    try:
+        item = _ddb().get_item(
+            TableName=USERS_TABLE,
+            Key={"user_id": {"S": user_id}},
+            ConsistentRead=True,
+        ).get("Item")
+        devices = (_deserialize_map(item).get("push_tokens") if item else None) or {}
+        return [
+            entry["token"]
+            for entry in devices.values()
+            if isinstance(entry, dict) and isinstance(entry.get("token"), str) and entry["token"]
+        ]
+    except Exception as exc:  # noqa: BLE001 - push is best-effort
+        logger.warning("projector push token read failed error_type=%s", type(exc).__name__)
+        return []
+
+
+def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any]) -> None:
+    """One Expo request for every token this message notified. Never raises.
+
+    No ticket handling: the projector has read-only DynamoDB access.
+    """
+    # ponytail: no token pruning; prune DeviceNotRegistered when the projector
+    # gets write access to the users table.
+    if not tokens:
+        return
+    try:
+        if len(tokens) > MAX_PUSH_TOKENS:
+            # ponytail: one request, extra tokens dropped. Chunk into batches of
+            # 100 when a single room outgrows it.
+            logger.warning(
+                "projector push capped tokens=%d sent=%d", len(tokens), MAX_PUSH_TOKENS
+            )
+            tokens = tokens[:MAX_PUSH_TOKENS]
+        author = message["author"]["displayName"]
+        # Every room kind may be nameless (CreateRoomRequest.name is optional).
+        name = meta.get("name") if meta.get("kind") == "channel" else None
+        title = f"{author} in #{name}" if name else author
+        data = {
+            "roomId": message["roomId"],
+            "messageId": message["messageId"],
+            "messageSeq": message["messageSeq"],
+            "threadRootMessageId": message["threadRootMessageId"],
+        }
+        body = json.dumps([
+            {
+                "to": token,
+                "title": title,
+                # A whitespace-only caption is an attachment, not a body.
+                "body": message["text"].strip()[:PUSH_BODY_CHARS] or "Sent an image",
+                "data": data,
+                "sound": "default",
+            }
+            for token in tokens
+        ]).encode("utf-8")
+        request = urllib.request.Request(
+            EXPO_PUSH_URL,
+            data=body,
+            headers={"content-type": "application/json", "accept": "application/json"},
+            method="POST",
+        )
+        # A non-2xx arrives as HTTPError, so the one except below covers it.
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+    except Exception as exc:  # noqa: BLE001 - push is best-effort
+        logger.warning(
+            "projector push send failed tokens=%d error_type=%s", len(tokens), type(exc).__name__
+        )
+
+
+def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
     root = message["threadRootMessageId"]
@@ -253,6 +335,7 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
             and (row.get("messageId") == root or row.get("threadRootMessageId") == root)
         }
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
+    tokens: list[str] = []
     for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
         user_id = candidate["id"]
         # Recheck membership after discovery, including remove/rejoin history floor.
@@ -272,6 +355,10 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
             and seq > read.get("lastReadSeq", 0)
             and (meta.get("kind") in {"dm", "group-dm"} or user_id in mentioned or user_id in participants)
         )
+        # Mute is client-side everywhere else; push is server-side by nature,
+        # so it is the one surface that has to honour it here.
+        if notify and member.get("muted") is not True:
+            tokens.extend(_push_tokens(user_id))
         # Content stays behind an authenticated HTTP read, even if access is
         # removed between this membership check and the user's delivery.
         _publish(f"/users/{key}", {
@@ -281,6 +368,7 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
             "payload": {"roomId": room_id, "messageId": message["messageId"],
                         "messageSeq": seq, "threadRootMessageId": root, "notify": notify},
         })
+    return tokens
 
 
 def _current_credentials():
@@ -374,8 +462,12 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
-    _notify_members(message, meta)
+    tokens = _notify_members(message, meta)
     _publish(f"/rooms/{message['roomId']}/{delivery_key}", event)
+    # Push LAST: a raising publish replays the whole record, and Expo has no
+    # eventId dedupe, so an earlier send would banner every member twice.
+    # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.
+    _send_push(tokens, message, meta)
 
 
 def _project_live(item: dict[str, Any]) -> None:

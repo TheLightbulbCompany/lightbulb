@@ -4,6 +4,7 @@ pub mod device_token;
 pub mod file_access;
 pub mod keychain;
 pub mod local_mcp;
+pub mod local_sessions;
 mod node_client;
 mod node_invoke;
 pub mod pair_client;
@@ -1465,7 +1466,12 @@ end tell"#,
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
         })
+        .manage(local_sessions::enrollment::Controller::default())
         .invoke_handler(tauri::generate_handler![
+            local_sessions::enrollment::local_sessions_auth,
+            local_sessions::enrollment::local_sessions_status,
+            local_sessions::enrollment::local_sessions_set,
+            local_sessions::enrollment::local_sessions_revoke,
             send_auth_token,
             is_desktop,
             get_node_status,
@@ -1507,6 +1513,15 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
+
+            // Native sharing is an independent consented service. A missing
+            // OpenClaw sidecar/gateway cannot prevent a retained pair restoring it.
+            let sharing_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if sharing_app.state::<local_sessions::enrollment::Controller>().restore(&sharing_app).await.is_err() {
+                    log("[local-sessions] sharing restore unavailable; check Desktop settings");
+                }
+            });
 
             // Start the node host from persisted pair state, if any — so a
             // backgrounded launch (login item, relaunch after an update)

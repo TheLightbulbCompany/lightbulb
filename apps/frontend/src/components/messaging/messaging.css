@@ -12,7 +12,8 @@
 .room-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .room-conversation[hidden] { display: none; }
 .room-header { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
-.room-tabs { display: flex; flex-shrink: 0; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--border); }
+.room-tabs { display: flex; flex-shrink: 0; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.room-tab { white-space: nowrap; }
 .room-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; }
 .room-tab[aria-current="page"] { color: var(--foreground); border-bottom-color: var(--foreground); font-weight: 600; }
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
@@ -60,6 +61,7 @@
 .room-composer textarea { min-height: 64px; max-height: 200px; resize: vertical; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; caret-color: var(--foreground); }
 .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: .75rem; padding: 0 4px; }
+.room-respond-hint { padding: 0 4px; font-size: .75rem; }
 .room-send { width: 36px; height: 36px; border-radius: 8px; }
 .room-composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .room-image-previews, .room-message-images { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -85,6 +87,19 @@
 .room-context-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 16px; }
 .room-context-body > section + section { margin-top: 16px; }
 .room-context-record { margin: 12px 0 20px; overflow-wrap: anywhere; }
+.room-resource-owner + .room-resource-owner { border-top: 1px solid var(--border); padding-top: 16px; }
+.room-resource-device { margin: 12px 0 16px; padding-left: 12px; border-left: 1px solid var(--border); overflow-wrap: anywhere; }
+.room-resource-label { display: flex; align-items: center; gap: 6px; }
+.room-resource-session { display: flex; flex-direction: column; width: 100%; padding: 8px; margin-top: 4px; text-align: left; border-radius: 4px; cursor: pointer; }
+.room-resource-session:hover { background: var(--accent); }
+.local-session-summary { padding: 12px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 6px; max-height: 35%; overflow: auto; }
+.local-session-summary summary { cursor: pointer; }
+.local-session-event { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.local-session-pagination { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; }
+.local-session-pagination p { flex-basis: 100%; }
+.local-session-composer { max-height: 45%; overflow: auto; }
+.local-session-composer label { overflow-wrap: anywhere; }
+.local-session-composer textarea { flex-shrink: 0; }
 .room-thread-replies { border-top: 1px solid var(--border); margin-top: 8px; }
 .room-members { padding: 12px 20px; border-bottom: 1px solid var(--border); max-height: 280px; overflow: auto; }
 .room-member { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 0; }
@@ -200,3 +215,8 @@
   .participant-avatar[data-agent-state="running"] { animation: none; }
   .room-panel *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }
 }
+
+.room-shortcuts { display: grid; gap: 4px; margin: 8px 0 16px; }
+.room-shortcuts > div { display: flex; align-items: baseline; gap: 12px; }
+.room-shortcuts dt { flex: none; min-width: 88px; }
+.room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--foreground); }

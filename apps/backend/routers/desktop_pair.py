@@ -33,8 +33,17 @@ from core.services.desktop_pair_live import (
     push_desktop_revoke_live,
 )
 from core.services.node_proxy import force_close_device
+from core.services import local_sessions
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
+
+
+@router.put("/local-sessions/enrollment", response_model=local_sessions.EnrollmentResponse)
+async def set_local_sessions_enrollment(
+    body: local_sessions.EnrollmentRequest,
+    ctx: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.set_enrollment(ctx, body)
 
 
 class PairPermissions(BaseModel):

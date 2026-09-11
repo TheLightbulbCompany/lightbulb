@@ -10,6 +10,42 @@ from core.services.openclaw_work import (
 )
 
 
+@pytest.mark.asyncio
+async def test_canonical_ingress_mints_optional_room_grant_after_membership_check(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    from core.services import local_session_grants
+    from core.services import openclaw_work as work
+
+    room = "11111111-1111-4111-8111-111111111111"
+    event = "22222222-2222-4222-8222-222222222222"
+    meta, member = {"ownerId": "owner_test", "roomId": room}, {"id": "friday"}
+    pool = Mock(ensure_connection=AsyncMock(), subscribe_room_session=AsyncMock())
+    monkeypatch.setattr(work, "get_gateway_pool", lambda: pool)
+    manager = Mock(resolve_running_container=AsyncMock(return_value=({"gateway_token": "dummy"}, "127.0.0.1")))
+    monkeypatch.setattr(work, "get_ecs_manager", lambda: manager)
+    monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
+    membership = AsyncMock(return_value=member)
+    monkeypatch.setattr(work.messaging_repo, "get_member", membership)
+    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=lambda **kw: {"eventId": event}))
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    post = AsyncMock(return_value=httpx.Response(202))
+    monkeypatch.setattr(worker, "_post", post)
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
+    body = post.call_args.args[1]
+    assert "invocation" not in body
+    caller = local_session_grants.verify(post.call_args.args[3])
+    assert (caller.owner_id, caller.room_id, caller.agent_id) == ("owner_test", room, "friday")
+    membership.return_value = None
+    post.reset_mock()
+    await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
+    post.assert_not_called()
+    membership.return_value = member
+    monkeypatch.delenv("PAPERCLIP_SERVICE_TOKEN_KEY")
+    await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
+    assert post.call_args.args[3] is None
+
+
 class FakeSqs:
     def __init__(self):
         self.visibility_calls = []
@@ -19,6 +55,31 @@ class FakeSqs:
 
     def delete_message(self, **kwargs):
         pass
+
+
+@pytest.mark.asyncio
+async def test_invocation_header_keeps_canonical_body_and_gateway_authorization_unchanged(monkeypatch):
+    import json
+    from core.services import local_session_grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    grant = local_session_grants.mint(
+        "owner_test", "11111111-1111-4111-8111-111111111111", "friday", "22222222-2222-4222-8222-222222222222"
+    )
+    body = {"version": 1, "eventId": "canonical"}
+
+    async def receive(request):
+        assert json.loads(request.content) == body
+        assert grant not in request.content.decode()
+        assert request.headers["Authorization"] == "Bearer gateway-dummy"
+        assert request.headers["X-Lightbulb-Local-Session-Token"] == grant
+        return httpx.Response(202)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(receive)) as client:
+        worker = OpenClawWorkWorker(sqs_client=FakeSqs(), http_client=client)
+        await worker._post(
+            "http://127.0.0.1:18789/plugins/lightbulb-channel/inbound/friday", body, "gateway-dummy", grant
+        )
 
 
 @pytest.mark.asyncio
@@ -74,7 +135,7 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
         async def resolve_running_container(self, _owner):
             return {"gateway_token": "gw"}, "10.0.0.9"
 
-    async def fake_post(_url, _body, _token):
+    async def fake_post(_url, _body, _token, _invocation):
         raise httpx.ReadTimeout("read timed out")
 
     monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
@@ -145,7 +206,7 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     class RefusedResponse:
         status_code = 409
 
-    async def fake_post(_url, _body, _token):
+    async def fake_post(_url, _body, _token, _invocation):
         return RefusedResponse()
 
     async def fake_list_members(_room_id):
@@ -184,7 +245,7 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("event_kind", "outcome"),
-    [("room_event", "ignored"), ("room_event", "replayed"), ("user_request", "replayed")],
+    [("room_event", "ignored"), ("room_event", "gate_error"), ("room_event", "replayed"), ("user_request", "replayed")],
 )
 async def test_consumed_outcome_clears_synthetic_run(monkeypatch, event_kind, outcome):
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())

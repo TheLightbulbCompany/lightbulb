@@ -198,3 +198,30 @@ async def test_verified_operator_message_uses_paperclip_relay(app, connection_se
 
     assert response.status_code == 200
     relay.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_local_session_raw_envelope_limit_precedes_ingestion(app, connection_service):
+    connection_service.get_connection.return_value = {
+        "user_id": "user-1",
+        "org_id": "org-1",
+        "connection_type": "local-session",
+        "auth_kind": "device",
+        "client_id": "lightbulb-local-sessions",
+        "device_id": "a" * 64,
+    }
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(side_effect=AssertionError("oversized input must not be ingested"))
+    machine.management.send_message_async = AsyncMock()
+    with patch("core.services.local_session_relay.get_local_session_relay", return_value=machine):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "conn-1", "content-type": "application/json"},
+                content=" " * 16384 + "{}",
+            )
+    assert response.status_code == 200
+    assert machine.management.send_message_async.call_args.args == (
+        "conn-1",
+        {"type": "local.session.error", "code": "INVALID_REQUEST"},
+    )

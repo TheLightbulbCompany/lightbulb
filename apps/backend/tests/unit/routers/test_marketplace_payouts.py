@@ -86,7 +86,9 @@ def seller_client():
     from main import app
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="seller_test")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_seller", org_id="seller_test", org_role="org:admin"
+    )
     try:
         yield TestClient(app)
     finally:

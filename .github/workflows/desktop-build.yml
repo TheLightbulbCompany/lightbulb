@@ -18,8 +18,9 @@
 #
 # Native on.push.paths gating replaces the old dorny/paths-filter + per-step
 # `if:` hack (which existed only because the CDK pipeline can't express
-# per-job paths). build-desktop-prod `needs` build-desktop-dev so it reuses
-# the warm Rust cache (shared-key: desktop).
+# per-job paths). Main pushes publish dev only; manual dispatch builds dev
+# then prod. build-desktop-prod `needs` build-desktop-dev so it reuses the
+# warm Rust cache (shared-key: desktop).
 
 name: desktop-build
 'on':
@@ -225,6 +226,7 @@ jobs:
       run: security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true
   build-desktop-prod:
     name: BuildDesktopProd
+    if: github.event_name == 'workflow_dispatch'
     runs-on:
     - self-hosted
     - macos-desktop

@@ -20,7 +20,7 @@ import pytest
 
 from routers import container as container_router
 
-OWNER = "user_test_123"
+OWNER = "org_test_456"
 IP = "10.0.1.5"
 TOKEN = "gw-token"
 

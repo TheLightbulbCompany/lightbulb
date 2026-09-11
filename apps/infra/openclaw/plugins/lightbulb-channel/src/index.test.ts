@@ -118,6 +118,16 @@ function ingress(overrides: Record<string, unknown> = {}): LightbulbRoomIngress 
 
 function config() {
   return {
+    agents: {
+      defaults: { utilityModel: "anthropic/claude-haiku-4-5" },
+      entries: {
+        [FRIDAY]: {
+          name: "Friday",
+          params: { paperclip: { role: "ceo", title: "Chief Executive", capabilities: "Strategy" } },
+        },
+        [GAUGE]: { name: "Gauge" },
+      },
+    },
     session: { groupScope: "per-group" },
     channels: {
       defaults: {
@@ -193,6 +203,16 @@ function inboundSdk(overrides: Partial<LightbulbSdk> = {}): LightbulbSdk {
         },
       };
     }) as any,
+    prepareSimpleCompletionModelForAgent: vi.fn(async () => ({
+      model: { provider: "anthropic", id: "claude-haiku-4-5" },
+      auth: { apiKey: "test", mode: "api-key" },
+      selection: { provider: "anthropic", modelId: "claude-haiku-4-5", agentDir: "/tmp/friday" },
+    })) as any,
+    completeWithPreparedSimpleCompletionModel: vi.fn(async () => ({
+      role: "assistant",
+      content: [{ type: "text", text: "DISPATCH" }],
+      stopReason: "stop",
+    })) as any,
     ...overrides,
   };
 }
@@ -635,6 +655,103 @@ describe("strict LightbulbRoomIngress", () => {
 });
 
 describe("native inbound context and delivery", () => {
+  it("uses the utility model to consume irrelevant ambient messages without a full agent turn", async () => {
+    const prepare = vi.fn(async () => ({
+      model: { provider: "anthropic", id: "claude-haiku-4-5" },
+      auth: { apiKey: "test", mode: "api-key" },
+      selection: { provider: "anthropic", modelId: "claude-haiku-4-5", agentDir: "/tmp/friday" },
+    }));
+    const complete = vi.fn(async () => ({
+      role: "assistant",
+      content: [{ type: "text", text: "IGNORE" }],
+      stopReason: "stop",
+    }));
+    const sdk = inboundSdk({
+      prepareSimpleCompletionModelForAgent: prepare,
+      completeWithPreparedSimpleCompletionModel: complete,
+    } as any);
+    const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+    const message = canonicalMessage({ mentions: [], text: "Lunch arrived in the kitchen." });
+
+    const outcome = await dispatchRoomEvent(
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      ingress({ eventKind: "room_event", message, mentions: [] }),
+    );
+
+    expect(outcome).toBe("ignored");
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ agentId: FRIDAY, useUtilityModel: true }));
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ maxTokens: 16, temperature: 0, reasoning: "off" }),
+    }));
+    const prompt = JSON.parse((complete.mock.calls[0]![0] as any).context.messages[0].content);
+    expect(prompt.agent).toEqual({
+      name: "Friday",
+      role: "ceo",
+      title: "Chief Executive",
+      capabilities: "Strategy",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the ambient utility model does not return a supported decision", async () => {
+    const sdk = inboundSdk({
+      prepareSimpleCompletionModelForAgent: vi.fn(async () => ({
+        model: { provider: "anthropic", id: "claude-haiku-4-5" },
+        auth: { apiKey: "test", mode: "api-key" },
+        selection: { provider: "anthropic", modelId: "claude-haiku-4-5", agentDir: "/tmp/friday" },
+      })),
+      completeWithPreparedSimpleCompletionModel: vi.fn(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "maybe" }],
+        stopReason: "stop",
+      })),
+    } as any);
+    const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+    const message = canonicalMessage({ mentions: [], text: "Ambient update." });
+
+    const outcome = await dispatchRoomEvent(
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      ingress({ eventKind: "room_event", message, mentions: [] }),
+    );
+
+    expect(outcome).toBe("gate_error");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed instead of falling back to the primary model when no utility model is configured", async () => {
+    const prepare = vi.fn();
+    const sdk = inboundSdk({ prepareSimpleCompletionModelForAgent: prepare } as any);
+    const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+    const cfg = config();
+    delete cfg.agents.defaults.utilityModel;
+
+    const outcome = await dispatchRoomEvent(
+      { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      ingress({ eventKind: "room_event", message: canonicalMessage({ mentions: [] }), mentions: [] }),
+    );
+
+    expect(outcome).toBe("gate_error");
+    expect(prepare).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an agent disables the configured default utility model", async () => {
+    const prepare = vi.fn();
+    const sdk = inboundSdk({ prepareSimpleCompletionModelForAgent: prepare } as any);
+    const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+    const cfg = config();
+    cfg.agents.entries[FRIDAY].utilityModel = "";
+
+    const outcome = await dispatchRoomEvent(
+      { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      ingress({ eventKind: "room_event", message: canonicalMessage({ mentions: [] }), mentions: [] }),
+    );
+
+    expect(outcome).toBe("gate_error");
+    expect(prepare).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("forwards only current attachments as native media under the trusted OpenClaw media root", async () => {
     const sdk = inboundSdk();
     const current = [
@@ -709,6 +826,8 @@ describe("native inbound context and delivery", () => {
       commands: { authorized: true },
       mentions: { wasMentioned: true, explicitlyMentionedBot: true },
     });
+    expect(sdk.prepareSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(sdk.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
   it("marks ambient agent ingress non-command and supplies symmetric native pair-loop facts", async () => {
@@ -835,6 +954,35 @@ describe("native inbound context and delivery", () => {
 });
 
 describe("private ingress handler", () => {
+  it("returns a consumed ignored status for an ambient gate decline", async () => {
+    const event = ingress({
+      eventKind: "room_event",
+      message: canonicalMessage({ mentions: [], text: "Lunch arrived in the kitchen." }),
+      mentions: [],
+    });
+    const sdk = inboundSdk({
+      readJsonWebhookBodyOrReject: vi.fn(async () => ({ ok: true, value: event })),
+      prepareSimpleCompletionModelForAgent: vi.fn(async () => ({
+        model: { provider: "anthropic", id: "claude-haiku-4-5" },
+        auth: { apiKey: "test", mode: "api-key" },
+        selection: { provider: "anthropic", modelId: "claude-haiku-4-5", agentDir: "/tmp/friday" },
+      })),
+      completeWithPreparedSimpleCompletionModel: vi.fn(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "IGNORE" }],
+        stopReason: "stop",
+      })),
+    } as any);
+    const state = handlerDeps({ sdk });
+    const res = responseRecorder();
+
+    await createInboundHandler(state.deps)(request(), res);
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).status).toBe("ignored");
+    expect(state.dispatch).not.toHaveBeenCalled();
+  });
+
   it("applies the exact body guard contract before parsing", async () => {
     const guard = vi.fn(() => true);
     const read = vi.fn(async () => ({ ok: false as const }));
@@ -908,6 +1056,30 @@ describe("private ingress handler", () => {
     await createInboundHandler(self.deps)(request(), selfRes);
     expect(selfRes.statusCode).toBe(409);
     expect(self.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("commits native admission refusals before returning 409", async () => {
+    const resolveIngress = vi.fn(async () => ({
+      ...dispatchedIngress(),
+      ingress: { admission: "deny" },
+    }));
+    const event = ingress();
+    const sdk = inboundSdk({
+      readJsonWebhookBodyOrReject: vi.fn(async () => ({ ok: true, value: event })),
+      resolveStableChannelMessageIngress: resolveIngress,
+    } as any);
+    const handler = createInboundHandler(handlerDeps({ sdk }).deps);
+    const first = responseRecorder();
+    const replay = responseRecorder();
+
+    await handler(request(), first);
+    await handler(request(), replay);
+
+    expect(first.statusCode).toBe(409);
+    expect(JSON.parse(first.body).error).toBe("not_admitted");
+    expect(replay.statusCode).toBe(202);
+    expect(JSON.parse(replay.body).status).toBe("replayed");
+    expect(resolveIngress).toHaveBeenCalledOnce();
   });
 
   it("deduplicates a committed canonical event id", async () => {

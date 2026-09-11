@@ -26,7 +26,7 @@ from core.services.messaging import ApiProblem, canonical_message, json_body_siz
 logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
-_HISTORY_LIMIT = 50
+_HISTORY_LIMIT = 20
 _VISIBILITY_SECONDS = 300
 _RETRY_VISIBILITY_SECONDS = 10
 _VISIBILITY_REFRESH_SECONDS = 120
@@ -376,8 +376,28 @@ class OpenClawWorkWorker:
         url = f"http://{ip}:18789/plugins/lightbulb-channel/inbound/{member['id']}"
         try:
             response = await self._post(url, body, token)
+            if response.status_code == 409:
+                # The plugin uses 409 only for permanent admission refusals
+                # (including the native agent-pair loop guard). Retrying after
+                # its cooldown would resurrect the causal chain.
+                pool.clear_active_run(owner_id, session_key)
+                if event_kind == "room_event":
+                    put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted"})
+                return
             if response.status_code != 202:
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
+            try:
+                outcome = response.json().get("status")
+            except (AttributeError, TypeError, ValueError):
+                outcome = "unknown"
+            if outcome not in {"dispatched", "ignored", "gate_error", "replayed"}:
+                outcome = "unknown"
+            if outcome == "replayed":
+                pool.clear_active_run(owner_id, session_key)
+            if event_kind == "room_event":
+                put_metric("messaging.ambient_gate", dimensions={"outcome": outcome})
+                if outcome in {"ignored", "gate_error"}:
+                    pool.clear_active_run(owner_id, session_key)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             # The plugin dedupes ingress by eventId (effect-once), so a timed-out
             # or dropped POST is safe to retry soon; holding the full 300s

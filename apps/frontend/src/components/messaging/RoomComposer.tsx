@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
 import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,27 @@ const FORMAT_CONTROLS: { style: MarkdownStyle; label: string; Icon: typeof Bold;
   { style: "codeblock", label: "Code block", Icon: SquareCode, keys: "Meta+Shift+C Control+Shift+C" },
   { style: "link", label: "Link", Icon: Link2 },
 ];
+
+// The mention list and the emoji list are identical chrome around a
+// different row body — one listbox, ARIA wiring, and pick/hover behaviour.
+function TypeaheadList<T>({ id, label, items, activeIndex, optionId, renderRow, onHover, onPick }: {
+  id: string;
+  label: string;
+  items: readonly T[];
+  activeIndex: number;
+  optionId: (index: number) => string;
+  renderRow: (item: T) => ReactNode;
+  onHover: (index: number) => void;
+  onPick: (index: number) => void;
+}) {
+  return <div id={id} className="room-typeahead" role="listbox" aria-label={label}>
+    {items.map((item, index) => <button key={optionId(index)} id={optionId(index)} type="button" role="option" tabIndex={-1}
+      aria-selected={index === activeIndex} className="room-choice room-choice-button" data-active={index === activeIndex || undefined}
+      onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => onHover(index)} onClick={() => onPick(index)}>
+      {renderRow(item)}
+    </button>)}
+  </div>;
+}
 
 export function RoomComposer(props: RoomComposerProps) {
   return <ComposerAttempt key={props.clientMessageId} {...props} />;
@@ -386,22 +407,16 @@ function ComposerAttempt({
     </div>
     {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop images to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
-    {mentionOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Mention a room member">
-      {options.map((member, index) => <button key={`${member.kind}:${member.id}`} id={`${fieldId}-option-${index}`} type="button" role="option" tabIndex={-1}
-        aria-selected={index === activeIndex} className="room-choice room-choice-button" data-active={index === activeIndex || undefined}
-        onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(member)}>
+    {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label="Mention a room member" items={options} activeIndex={activeIndex}
+      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
+      renderRow={(member) => <>
         <ParticipantAvatar participant={member} size="sm" />
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
           <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
-      </button>)}
-    </div>}
-    {emojiOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Insert an emoji">
-      {emojiOptions.map((entry, index) => <button key={entry.emoji} id={`${fieldId}-option-${index}`} type="button" role="option" tabIndex={-1}
-        aria-selected={index === activeIndex} className="room-choice room-choice-button" data-active={index === activeIndex || undefined}
-        onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => chooseEmoji(entry.emoji)}>
-        <span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span>
-      </button>)}
-    </div>}
+      </>} />}
+    {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
+      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
+      renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
       aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}

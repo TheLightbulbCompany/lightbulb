@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from core.containers.workspace import Workspace
@@ -15,6 +16,20 @@ from core.services.messaging import (
     create_room,
     get_agent_receipt,
 )
+
+
+@pytest.mark.asyncio
+async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypatch):
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({}, {})))
+    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.set_reaction(
+            auth, str(uuid.uuid4()), str(uuid.uuid4()), messaging.SetReactionRequest(emoji="👍", active=True)
+        )
+    assert exc.value.error.code == "MESSAGE_NOT_FOUND"
+    with pytest.raises(ValueError):
+        messaging.SetReactionRequest(emoji="not-an-emoji", active=True)
 
 
 @pytest.mark.asyncio

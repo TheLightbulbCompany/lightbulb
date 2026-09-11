@@ -28,6 +28,15 @@ it("names a DM for its counterpart and uses canonical author and member activity
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
 });
 
+it("shows persisted reactions and removes the viewer's reaction from a thread", async () => {
+  const onSetReaction = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} onSetReaction={onSetReaction} messages={[{ ...message, reactions: { "👍": ["owner", "other"] } }]} />);
+  expect(screen.getByRole("button", { name: "Remove 👍 reaction, 2" })).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
+  await userEvent.click(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("button", { name: "Remove 👍 reaction, 2" }));
+  expect(onSetReaction).toHaveBeenCalledWith("message", "👍", false);
+});
+
 it("excludes only the signed-in human when naming a group DM", () => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm" }} participants={[owner, { ...owner, id: "alice", displayName: "Alice" }, { ...friday, id: "owner", displayName: "Atlas" }]} messages={[]} />);
   expect(screen.getByRole("heading", { name: "Alice and Atlas" })).toBeInTheDocument();

@@ -47,6 +47,7 @@ export interface RoomPanelProps {
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
+  onSetReaction?: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   addMemberCandidates?: readonly DirectoryParticipant[];
   onAddMember?: (member: MemberRef) => Promise<void>;
   onAbortRun?: (runId: string) => void;
@@ -157,6 +158,7 @@ function RoomContent({
   onSelectParticipant,
   onRetry,
   onListenModeChange,
+  onSetReaction,
   addMemberCandidates = [],
   onAddMember,
   onAbortRun,
@@ -166,6 +168,8 @@ function RoomContent({
   narrow,
 }: RoomPanelProps) {
   const id = useId();
+  const [reactionPending, setReactionPending] = useState<string | null>(null);
+  const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
@@ -258,6 +262,23 @@ function RoomContent({
           {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
         </div>
         <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
+        {onSetReaction && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
+          {(["👍", "❤️", "😂", "🎉", "👀", "✅"] as const).map((emoji) => {
+            const users = message.reactions?.[emoji] ?? [];
+            const selected = users.includes(currentUserId);
+            return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
+              aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}
+              disabled={!actionable || reactionPending !== null}
+              onClick={async () => {
+                setReactionPending(message.messageId);
+                setReactionError(null);
+                try { await onSetReaction(message.messageId, emoji, !selected); }
+                catch { setReactionError(message.messageId); }
+                finally { setReactionPending(null); }
+              }}>{emoji}{users.length > 0 && <span>{users.length}</span>}</Button>;
+          })}
+          {reactionError === message.messageId && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
+        </div>}
         {!!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
         {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
           {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}

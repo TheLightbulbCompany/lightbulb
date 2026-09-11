@@ -48,7 +48,10 @@ export function mergeCanonicalMessages(
   incoming: readonly CanonicalRoomMessage[],
 ): CanonicalRoomMessage[] {
   const byId = new Map(current.map((message) => [message.messageId, message]));
-  for (const message of incoming) byId.set(message.messageId, message);
+  for (const message of incoming) {
+    const previous = byId.get(message.messageId);
+    if ((previous?.reactionRevision ?? 0) <= (message.reactionRevision ?? 0)) byId.set(message.messageId, message);
+  }
   return [...byId.values()].sort((left, right) => left.messageSeq - right.messageSeq);
 }
 
@@ -240,7 +243,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
 
   useEffect(() => {
     if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
-    void reconcile(lastSequence(messagesRef.current));
+    void reconcile(0);
     reconcileRuns();
   }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile, reconcileRuns]);
 
@@ -260,6 +263,12 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     }
     if (event.type === "room.metadata.changed" && event.payload.roomId === activeRoomId) {
       void mutateRoom();
+      return;
+    }
+    if (event.type === "room.message.reactions.changed" && event.payload.roomId === activeRoomId) {
+      const merged = mergeCanonicalMessages(messagesRef.current, [event.payload]);
+      messagesRef.current = merged;
+      setMessages(merged);
       return;
     }
     if (event.type === "room.message.created" && event.payload.roomId === activeRoomId) {
@@ -354,6 +363,16 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       throw error;
     }
   }, [activeRoomId, messaging, mutateRooms]);
+
+  const setReaction = useCallback(async (messageId: string, emoji: string, active: boolean) => {
+    if (!activeRoomId || accessRemoved) throw new Error("No room selected.");
+    const runGeneration = generation.current;
+    const message = await messaging.setReaction(activeRoomId, messageId, emoji, active);
+    if (generation.current !== runGeneration || message.roomId !== activeRoomId) return;
+    const merged = mergeCanonicalMessages(messagesRef.current, [message]);
+    messagesRef.current = merged;
+    setMessages(merged);
+  }, [activeRoomId, accessRemoved, messaging]);
 
   const reconcileSend = useCallback(async (clientMessageId: string) => {
     const request = requests.current.get(clientMessageId);
@@ -504,6 +523,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     upsertMember,
     removeMember,
     sendMessage,
+    setReaction,
     uploadAttachment,
     downloadAttachment,
     reconcileSend,

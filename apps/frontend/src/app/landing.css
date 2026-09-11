@@ -1354,23 +1354,6 @@
   stroke-width: 7;
 }
 
-/* ---- the room, switched off ----
-   The room swaps the two GROUND/TYPE tokens rather than restyling every rule:
-   --cream (the ground everything paints with) becomes midnight, --midnight
-   (the type colour) becomes cream. The steps and edges follow. */
-[data-lb-theme="dark"] .ld-page {
-  --cream: #0F1A2B;
-  --cream-deep: #16223a;
-  --cream-deeper: #1d2b45;
-  --edge: rgba(245, 239, 226, 0.14);
-  --edge-soft: rgba(245, 239, 226, 0.09);
-  --midnight: #F5EFE2;
-  --midnight-soft: rgba(245, 239, 226, 0.78);
-  /* §06 "Decided": labels on a MIDNIGHT ground are brass (5.18:1 AA). The
-     64%-midnight value used on cream would be invisible here. */
-  --midnight-muted: #B68235;
-  --midnight-faint: rgba(245, 239, 226, 0.55);
-}
 
 [data-lb-theme="dark"] .ld-lamp-glass {
   fill: color-mix(in srgb, var(--midnight) 6%, transparent);

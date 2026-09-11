@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from core.auth import AuthContext, get_current_user  # noqa: E402
 
 
-CALLER_ID = "user_caller"
+CALLER_ID = "human_caller"
 
 
 @pytest.fixture

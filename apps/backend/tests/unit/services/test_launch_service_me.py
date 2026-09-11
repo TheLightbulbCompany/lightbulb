@@ -101,7 +101,7 @@ async def test_me_is_read_only_and_claims_the_row():
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
     ):
-        body = await launch_service.me(AuthContext(user_id="user_1", email="me@x.com"), _sched(+5))
+        body = await launch_service.me(AuthContext(user_id="user_1", org_id="org_1", email="me@x.com"), _sched(+5))
     join.assert_not_awaited()
     claim.assert_awaited_once_with("me@x.com", "user_1")
     assert body["joined"] is True and body["position"] == 300
@@ -190,15 +190,15 @@ async def test_me_no_row_at_all():
     suggested.assert_not_awaited()
 
 
-async def test_me_row_without_joined_at_is_not_joined():
+async def test_me_org_row_without_joined_at_skips_suggestion():
     """A row minted by referral attribution is NOT sheet membership — only
     the explicit join stamps joined_at."""
     body, claim, _, suggested = await _me(_row(joined_at=None), suggested_name="Northwind Ceramics")
     claim.assert_awaited_once()  # the claim still runs on any existing row
     assert body["joined"] is False and body["position"] is None
-    # Onboarded + not yet joined -> exactly the case the field exists for.
-    assert body["suggested_display_name"] == "Northwind Ceramics"
-    suggested.assert_awaited_once_with("user_1")
+    # Workspace callers cannot join the personal competition.
+    assert body["suggested_display_name"] is None
+    suggested.assert_not_awaited()
 
 
 async def test_me_suggested_display_name_is_null_and_uncalled_once_joined():

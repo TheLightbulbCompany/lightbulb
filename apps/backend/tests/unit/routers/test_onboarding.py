@@ -78,7 +78,7 @@ def test_submit_records_the_answer_and_returns_staged(client):
         # Friday is the one this submission produced (grow path -> the
         # registrable domain, not the raw URL).
         brief_text="work on acme.com",
-        submitted_by="user_abc",
+        submitted_by="human_abc",
     )
 
 

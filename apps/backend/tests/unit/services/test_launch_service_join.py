@@ -135,7 +135,7 @@ async def test_first_join_writes_membership_and_sends_the_email():
     with _Harness() as h:
         body = await launch_service.join_sheet(AUTH, _sched(), display_name="  Acme  ", public=False)
     h.join.assert_awaited_once_with("me@x.com", referred_by=None, source="sheet")
-    h.claim.assert_awaited_once_with("me@x.com", "user_1")
+    h.claim.assert_awaited_once_with("me@x.com", "human_1")
     # ONE atomic write carries membership + the join-time fields.
     h.mark_joined.assert_awaited_once_with("me@x.com", display_name="Acme", public=False)
     h.update_fields.assert_not_awaited()

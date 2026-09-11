@@ -116,9 +116,9 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
     assert body["status"] == "ok"
     assert body["provider_choice"] == "byo_key"
     assert body["byo_provider"] == "anthropic"
-    mock_get_secret_arn.assert_awaited_once_with("user_test_123", "anthropic")
+    mock_get_secret_arn.assert_awaited_once_with("org_test_456", "anthropic")
     mock_set_pc.assert_awaited_once_with(
-        "user_test_123",
+        "org_test_456",
         provider_choice="byo_key",
         byo_provider="anthropic",
         # Non-chatgpt switch always passes connector_user_id=None so the repo
@@ -470,7 +470,7 @@ async def test_personal_switch_away_still_revokes(
     assert mock_revoke.await_count == 2
     assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
     assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
-    mock_delete_auth.assert_awaited_once_with(user_id="user_test_123")
+    mock_delete_auth.assert_awaited_once_with(user_id="org_test_456")
 
 
 @pytest.mark.asyncio

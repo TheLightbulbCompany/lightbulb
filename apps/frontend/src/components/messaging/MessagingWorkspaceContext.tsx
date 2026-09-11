@@ -293,10 +293,9 @@ export function MessagingWorkspaceProvider({
     }
   }, [sendRoomMessage, rooms.activeRoomId, scope]);
 
-  // draft/threadDraft aren't read in the body — they're the signal to
-  // recompute, since listDraftRoomIds reads localStorage, not props.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const draftRoomIds = useMemo(() => listDraftRoomIds(scope), [scope, draft, threadDraft]);
+  // Read every render: localStorage is the source, so no prop dependency
+  // could describe when this changes.
+  const draftRoomIds = listDraftRoomIds(scope);
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);

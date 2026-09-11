@@ -19,11 +19,6 @@ import type { Listing } from "@/lib/marketplace/types";
  * the buyer's Teams roster as they're created (the Paperclip roster is the
  * source of truth), and routines land paused for the buyer to enable from
  * Teams.
- *
- * Plan gating is server-side: a company needing Ultra 409s "Requires Ultra
- * Pro" for a standard-plan owner (the button can't know the viewer's plan —
- * this page renders signed-out too), so that error gets an upgrade link to
- * Settings instead of a bare retry.
  */
 export function DeployCompanyButton({ listing }: { listing: Listing }) {
   const company = companyMeta(listing);
@@ -93,11 +88,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
           role="alert"
         >
           {error}{" "}
-          {/Ultra/i.test(error) ? (
-            <Link href="/settings" className="font-bold underline hover:opacity-80">
-              Upgrade in Settings
-            </Link>
-          ) : /open the app/i.test(error) ? (
+          {/open the app/i.test(error) ? (
             <Link href="/chat" className="font-bold underline hover:opacity-80">
               Open the app
             </Link>

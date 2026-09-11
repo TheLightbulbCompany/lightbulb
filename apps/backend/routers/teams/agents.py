@@ -31,14 +31,12 @@ from core.services.paperclip_adapter_config import (
 )
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
-    PaperclipAgentCreateReplayMiss,
     shared_admin_client,
 )
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
     paperclip_agent_intent,
 )
-from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 from core.services.agent_provenance import stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
@@ -555,9 +553,6 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     """
     creator_user_id = _creator_user_id(ctx)
     owner_id = _resolve_owner_id(ctx)
-    # At the cap, the same logical operation may replay its existing Paperclip
-    # agent, but Paperclip atomically refuses a missing operation key.
-    at_agent_budget = await is_at_agent_budget(owner_id)
     # Mint the service token with owner_id (NOT the creator's user_id).
     # The OpenClaw container is keyed by owner_id (org_id for org members,
     # user_id for personal owners). The WS Lambda authorizer puts service
@@ -587,23 +582,19 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
             budget_monthly_cents=body.budget_monthly_cents,
         ),
     )
-    try:
-        paperclip_agent = await _admin().create_agent(
-            session_cookie=await _user_session(ctx),
-            company_id=ctx.company_id,
-            name=body.name,
-            role=body.role,
-            adapter_type=OPENCLAW_GATEWAY_TYPE,
-            adapter_config=adapter_config,
-            title=body.title,
-            capabilities=body.capabilities,
-            reports_to=body.reports_to,
-            budget_monthly_cents=body.budget_monthly_cents,
-            idempotency_key=idempotency_key,
-            idempotency_replay_only=at_agent_budget,
-        )
-    except PaperclipAgentCreateReplayMiss as exc:
-        raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL) from exc
+    paperclip_agent = await _admin().create_agent(
+        session_cookie=await _user_session(ctx),
+        company_id=ctx.company_id,
+        name=body.name,
+        role=body.role,
+        adapter_type=OPENCLAW_GATEWAY_TYPE,
+        adapter_config=adapter_config,
+        title=body.title,
+        capabilities=body.capabilities,
+        reports_to=body.reports_to,
+        budget_monthly_cents=body.budget_monthly_cents,
+        idempotency_key=idempotency_key,
+    )
 
     # Pair with the owner's OpenClaw container if reachable. Failure is
     # non-fatal — the next container provision picks the agent up via

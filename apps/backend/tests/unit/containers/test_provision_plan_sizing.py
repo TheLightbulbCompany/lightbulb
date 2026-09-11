@@ -16,13 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.containers.ecs_manager import (
+    AGENT_RELIABILITY_RESIZE_THRESHOLD,
     PER_USER_CPU,
     PER_USER_MEMORY_MIB,
     ULTRA_CPU,
     ULTRA_MEMORY_MIB,
     EcsManager,
 )
-from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +179,29 @@ class TestSizeForOwner:
         )
         monkeypatch.setattr(
             "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-            AsyncMock(return_value=COMPANY_STANDARD_PLAN_MAX_AGENTS + 1),
+            AsyncMock(return_value=AGENT_RELIABILITY_RESIZE_THRESHOLD + 1),
         )
         assert await manager._size_for_owner("owner") == (ULTRA_CPU, ULTRA_MEMORY_MIB)
+
+    @pytest.mark.asyncio
+    async def test_large_roster_emits_fixed_dimension_warning(self, manager, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("standard"))
+        )
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(return_value=26),
+        )
+        metric = MagicMock()
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", metric)
+
+        assert await manager._size_for_owner("owner") == (ULTRA_CPU, ULTRA_MEMORY_MIB)
+
+        metric.assert_any_call(
+            "container.large_agent_roster_observed",
+            dimensions={"threshold": "over_25"},
+        )
+        assert "26 live agents" in caplog.text
 
     @pytest.mark.asyncio
     async def test_agent_count_exactly_at_budget_stays_standard(self, manager, monkeypatch):
@@ -191,7 +211,7 @@ class TestSizeForOwner:
         )
         monkeypatch.setattr(
             "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-            AsyncMock(return_value=COMPANY_STANDARD_PLAN_MAX_AGENTS),
+            AsyncMock(return_value=AGENT_RELIABILITY_RESIZE_THRESHOLD),
         )
         assert await manager._size_for_owner("owner") == (PER_USER_CPU, PER_USER_MEMORY_MIB)
 

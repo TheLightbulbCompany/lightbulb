@@ -70,11 +70,13 @@ SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
 ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
 SPOT_PLACEMENT_FALLBACK_S = 300.0
 
-# Ultra tier box (large marketplace companies exceeding the flat tier's
-# agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
+# Ultra tier box. 2 vCPU / 8 GB — same constant home as PER_USER_* so the
 # resize/register paths and the webhook tier logic pull sizes from one place.
 ULTRA_CPU = "2048"
 ULTRA_MEMORY_MIB = "8192"
+
+# Operational boot-reliability floor, never a billing or admission limit.
+AGENT_RELIABILITY_RESIZE_THRESHOLD = 10
 
 # The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
 # tier, and it must be sonnet: config.py makes sonnet the trial's
@@ -533,9 +535,9 @@ class EcsManager:
         """The (cpu, memory) a provision/reprovision must register for ``owner_id``.
 
         ``ultra_pro`` owners run the large ``ULTRA_CPU`` / ``ULTRA_MEMORY_MIB``
-        box (large marketplace companies past the flat tier's agent budget);
+        box;
         everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box —
-        UNLESS their live agent count is over the standard budget, see below.
+        UNLESS their live agent count crosses the reliability floor below.
 
         Deriving the size from the billing plan HERE is what makes the Ultra
         size DURABLE. The upgrade webhook resizes the running container, but the
@@ -547,9 +549,7 @@ class EcsManager:
         size of its own — so the box always tracks the owner's plan.
 
         **Agent count is the second input, and it is a RELIABILITY floor, not a
-        billing signal.** ``COMPANY_STANDARD_PLAN_MAX_AGENTS`` was previously
-        enforced only where an owner acquires many agents AT ONCE — a marketplace
-        company-package deploy, or a Stripe plan transition. Nothing watched
+        billing signal or product entitlement.** Nothing else needs to watch
         ORGANIC growth, and agents arrive one at a time from several paths: the
         /chat ``agents.create`` RPC, the Teams REST endpoint, a marketplace
         single-agent hire, and Atlas (the in-house recruiter) creating them
@@ -593,7 +593,6 @@ class EcsManager:
         if (account or {}).get("plan") == "ultra_pro":
             return ULTRA_CPU, ULTRA_MEMORY_MIB
 
-        from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
         from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 
         try:
@@ -609,15 +608,24 @@ class EcsManager:
                 exc_info=True,
             )
             agent_count = 0
-        if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            logger.info(
-                "owner %s has %d live agents (> %d) on a non-Ultra plan; sizing the "
-                "container to the Ultra box so its boot does not contend itself to death",
+        if agent_count > 25:
+            logger.warning(
+                "owner %s has %d live agents during container sizing; monitor boot storage and contention",
                 owner_id,
                 agent_count,
-                COMPANY_STANDARD_PLAN_MAX_AGENTS,
             )
-            put_metric("container.size_upgraded_by_agent_count", dimensions={"reason": "organic_growth"})
+            put_metric(
+                "container.large_agent_roster_observed",
+                dimensions={"threshold": "over_25"},
+            )
+        if agent_count > AGENT_RELIABILITY_RESIZE_THRESHOLD:
+            logger.info(
+                "owner %s has %d live agents (> %d); applying the operational container reliability size floor",
+                owner_id,
+                agent_count,
+                AGENT_RELIABILITY_RESIZE_THRESHOLD,
+            )
+            put_metric("container.reliability_size_upgrade", dimensions={"reason": "live_agent_roster"})
             return ULTRA_CPU, ULTRA_MEMORY_MIB
         return PER_USER_CPU, PER_USER_MEMORY_MIB
 

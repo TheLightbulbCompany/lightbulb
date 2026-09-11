@@ -14,7 +14,6 @@ export function companyMeta(listing: Listing): CompanyManifest | null {
 export function CompanyCard({ listing }: { listing: Listing }) {
   const company = companyMeta(listing);
   if (!company) return null;
-  const locked = company.min_plan === "ultra_pro";
   return (
     <Link
       href={`/marketplace/listing/${listing.listing_id}`}
@@ -22,15 +21,9 @@ export function CompanyCard({ listing }: { listing: Listing }) {
     >
       <div className="flex items-start justify-between gap-2">
         <h3 className="font-editorial-serif text-xl text-[var(--midnight)]">{company.name}</h3>
-        {locked ? (
-          <span className="rounded-full bg-[var(--cream-deep)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight)]">
-            Requires Ultra
-          </span>
-        ) : (
-          <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">
-            One-click deploy
-          </span>
-        )}
+        <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">
+          One-click deploy
+        </span>
       </div>
       <p className="line-clamp-2 text-sm leading-relaxed text-[var(--midnight-soft)]">{company.description}</p>
       <div className="mt-auto flex flex-wrap gap-x-4 gap-y-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">

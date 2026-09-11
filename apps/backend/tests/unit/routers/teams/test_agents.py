@@ -142,6 +142,15 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
         "_gateway_url_for_env",
         lambda: f"wss://ws-dev.{GW_APEX}",
     )
+    count_agents = AsyncMock(return_value=11)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    )
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
 
     r = client.post(
         "/api/v1/teams/agents",
@@ -152,6 +161,8 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     call = admin.create_agent.await_args
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
     assert call.kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:teams:")
+    assert "idempotency_replay_only" not in call.kwargs
+    count_agents.assert_not_awaited()
     adapter_cfg = dict(call.kwargs["adapter_config"])
     # devicePrivateKeyPem is a freshly-minted ed25519 key (non-deterministic),
     # so assert it's a valid PEM separately and compare the stable fields.

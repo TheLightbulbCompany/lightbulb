@@ -59,7 +59,7 @@ describe("<CompanyListingCard>", () => {
     expect(screen.queryByRole("button", { name: /deploy company/i })).toBeNull();
   });
 
-  it("Requires Ultra error renders the settings upgrade link", async () => {
+  it("legacy Ultra metadata and errors do not render an upgrade prompt", async () => {
     vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra"));
     render(<CompanyListingCard listing={companyListing("ultra_pro")} />);
 
@@ -67,11 +67,8 @@ describe("<CompanyListingCard>", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/requires ultra/i);
-    expect(screen.getByRole("link", { name: /upgrade in settings/i })).toHaveAttribute(
-      "href",
-      "/settings",
-    );
-    // Recoverable: the deploy button stays for a retry after upgrading.
+    expect(screen.queryByText(/^ultra$/i)).toBeNull();
+    expect(screen.queryByRole("link", { name: /upgrade in settings/i })).toBeNull();
     expect(screen.getByRole("button", { name: /deploy company/i })).toBeEnabled();
   });
 });

@@ -19,7 +19,6 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
-from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.config_schema import gate_config
 from core.services.efs_file_lock import (
     chown_uid_1000_best_effort,
@@ -318,36 +317,13 @@ BEDROCK_CONTEXT_TOKENS = 200_000
 # were — so the whole fleet has 20 GiB, shared. Ten agents x 10 GiB is 5x the
 # disk.
 #
-# THE ARITHMETIC. Reserve half the disk for everything that is not session
-# history, then split the rest across the governed agent cap:
-#
-#     20480 MiB  task ephemeral storage (Fargate default, undeclared)
-#   - 10240 MiB  reserved: extended image layers (~3 GiB; the Dockerfile targets
-#                2-3 GB), /tmp incl. the chromium user-data profile, the shared
-#                state/openclaw.sqlite + WAL, litestream's restore working set,
-#                and free-space headroom — a full disk is one of the ways SQLite
-#                reports "database is locked", which is exactly how the 11-agent
-#                owner crash-looped on 2026-08-14
-#   = 10240 MiB  for session stores
-#   /       10   COMPANY_STANDARD_PLAN_MAX_AGENTS
-#   =  1024 MiB  per agent, evicting down to 819 MiB
-#
-# Steady state is the high-water mark, so a full 10-agent owner settles at
-# 10 x 819 MiB = 8 GiB against a 10 GiB allowance. highWaterBytes is emitted
-# explicitly rather than left to upstream's 0.8 ratio for the same reason
-# AGENT_MAX_CONCURRENT is pinned: the ratio is an upstream default, the steady
-# state above depends on it, and 8.1 already moved one default under us.
-#
-# KNOWN CEILING: an `ultra_pro` owner has no agent cap at all (agent_budget.py
-# returns early on the plan), so N > 10 breaks this arithmetic. Bounding that
-# needs either a per-owner agent cap or a declared ephemeralStorage — and the
-# latter is a two-place change, because ecs_manager's per-user clone rebuilds
-# register_task_definition kwargs from a whitelist that omits the field.
-TASK_EPHEMERAL_STORAGE_MIB = 20 * 1024
-SESSION_STORE_RESERVED_MIB = 10 * 1024
-SESSION_MAX_DISK_MIB = (TASK_EPHEMERAL_STORAGE_MIB - SESSION_STORE_RESERVED_MIB) // COMPANY_STANDARD_PLAN_MAX_AGENTS
-# Upstream's DEFAULT_SESSION_DISK_BUDGET_HIGH_WATER_RATIO, pinned.
-SESSION_HIGH_WATER_MIB = SESSION_MAX_DISK_MIB * 8 // 10
+# Fixed per-agent budget: ordinary large identity rosters fit on the existing
+# 20 GiB task without turning identity count into a commercial entitlement.
+# ponytail: very large simultaneously active rosters still need measured task
+# storage work; keep the ECS reliability size-up until production boot metrics
+# show Standard rosters above ten no longer contend.
+SESSION_MAX_DISK_MIB = 256
+SESSION_HIGH_WATER_MIB = 204
 
 # ---------------------------------------------------------------------------
 # Tool deny lists — SINGLE SOURCE. node_proxy.py REPLACES tools.deny wholesale

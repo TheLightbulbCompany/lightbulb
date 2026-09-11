@@ -24,7 +24,6 @@ from core.services.messaging import (
 )
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
-    PaperclipAgentCreateReplayMiss,
     PaperclipApiError,
 )
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -390,20 +389,14 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
     model = params.get("model")
     inner = params.get("params") or {}
     meta = read_from_agent_entry({"params": inner}) if inner.get("paperclip") else None
-    from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
-
-    try:
-        paperclip_agent = await create_paperclip_for_chat(
-            creator_user_id=user_id,
-            owner_id=owner_id,
-            name=name,
-            role=role,
-            model=model,
-            meta=meta,
-            idempotency_replay_only=await is_at_agent_budget(owner_id),
-        )
-    except PaperclipAgentCreateReplayMiss as exc:
-        raise ApiProblem("MEMBER_LIMIT", AGENT_BUDGET_EXCEEDED_DETAIL) from exc
+    paperclip_agent = await create_paperclip_for_chat(
+        creator_user_id=user_id,
+        owner_id=owner_id,
+        name=name,
+        role=role,
+        model=model,
+        meta=meta,
+    )
     pool = get_gateway_pool()
     await pair_with_openclaw(
         owner_id=owner_id,

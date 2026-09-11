@@ -100,26 +100,19 @@ async def test_workspace_downgrade_resizes_small_company_down():
 
 
 @pytest.mark.asyncio
-async def test_workspace_downgrade_defers_for_oversized_company():
-    with patch.object(handlers, "put_metric") as put_metric:
+async def test_workspace_downgrade_with_large_roster_resizes_without_count_lookup():
+    count_agents = AsyncMock(return_value=37)
+    with patch(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    ):
         repo, manager = await _drive(
             _event(), account=_account(plan="ultra_pro"), agents=[{"id": str(i)} for i in range(11)]
         )
 
     assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    manager.resize_user_container.assert_not_awaited()
-    put_metric.assert_any_call("ultra.downgrade_deferred_oversized", 1)
-
-
-@pytest.mark.asyncio
-async def test_workspace_downgrade_defers_when_paperclip_count_is_unavailable():
-    """A zero Paperclip count is unknown, never evidence of a safe downsize."""
-    with patch.object(handlers, "put_metric") as put_metric:
-        repo, manager = await _drive(_event(), account=_account(plan="ultra_pro"), agents=[])
-
-    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    manager.resize_user_container.assert_not_awaited()
-    put_metric.assert_any_call("ultra.downgrade_deferred_unknown_count", 1)
+    manager.resize_user_container.assert_awaited_once_with("org_workspace", new_cpu="1024", new_memory="4096")
+    count_agents.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -69,3 +69,20 @@ it("shows hint for non-image files but does not upload them", async () => {
   expect(form).not.toHaveAttribute("data-dropping");
   expect(upload).not.toHaveBeenCalled();
 });
+
+it("external drop target handler uses current onUploadAttachment after re-render", async () => {
+  const upload1 = vi.fn(async () => attachment);
+  const upload2 = vi.fn(async () => ({ ...attachment, id: "att-2" }));
+  const { rerender } = render(<Harness onUploadAttachment={upload1} />);
+  const form = screen.getByRole("form", { name: "Message composer" });
+  const file = new File(["x"], "shot.png", { type: "image/png" });
+
+  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
+  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [file] } });
+  await waitFor(() => expect(upload1).toHaveBeenCalledWith(file));
+
+  rerender(<Harness onUploadAttachment={upload2} />);
+  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
+  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [file] } });
+  await waitFor(() => expect(upload2).toHaveBeenCalledWith(file));
+});

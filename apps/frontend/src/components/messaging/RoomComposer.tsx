@@ -84,6 +84,7 @@ function ComposerAttempt({
   const [dropping, setDropping] = useState(false);
   const dragDepthRef = useRef(0);
   const externalDragDepthRef = useRef(0);
+  const addImagesRef = useRef<(files: File[]) => void>(() => {});
 
   useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
 
@@ -192,6 +193,9 @@ function ComposerAttempt({
     setImages((current) => current.filter((image) => image.preview !== preview));
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  addImagesRef.current = addImages;
+
   const carriesFiles = (transfer: DataTransfer | null) => !!transfer && [...transfer.types].includes("Files");
 
   const handleFormDragEnter = (event: React.DragEvent<HTMLFormElement>) => {
@@ -218,7 +222,7 @@ function ComposerAttempt({
 
   useEffect(() => {
     const node = dropTargetRef?.current;
-    if (!node || !onUploadAttachment) return;
+    if (!node) return;
 
     const enter = (event: DragEvent) => {
       if (!carriesFiles(event.dataTransfer)) return;
@@ -237,7 +241,7 @@ function ComposerAttempt({
       externalDragDepthRef.current = 0;
       setDropping(false);
       const files = [...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
-      if (files.length) addImages(files);
+      if (files.length) addImagesRef.current(files);
     };
     const windowDragEnd = () => {
       dragDepthRef.current = 0;
@@ -263,10 +267,8 @@ function ComposerAttempt({
       window.removeEventListener("dragend", windowDragEnd);
       window.removeEventListener("drop", windowDrop);
     };
-    // addImages is not included because handlers are recreated on every render,
-    // capturing the current addImages closure from this effect invocation
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dropTargetRef, onUploadAttachment]);
+    // addImages is read through a ref so the listeners bind once and never see stale state
+  }, [dropTargetRef]);
 
   function syncTrigger(value: string, caret: number | null) {
     if (composing.current) return;

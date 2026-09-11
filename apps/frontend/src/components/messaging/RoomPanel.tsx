@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, SmilePlus, Users } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
+import type { CreateMessageRequest, ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,6 +18,7 @@ import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomMessageContent } from "./RoomMessageContent";
+import { RoomTimeline } from "./RoomTimeline";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -37,6 +38,8 @@ export interface RoomPanelProps {
   currentUserId: string;
   roomId: string;
   room?: RoomSummary;
+  readSeqAtOpen?: number | null;
+  targetMessageId?: string | null;
   state: RoomState;
   httpReady: boolean;
   liveConnected: boolean;
@@ -122,12 +125,13 @@ function RoomBoundary(props: RoomPanelProps) {
       setAttempts((current) => new Map(current).set(key, { observed: composer.sendState, state: "sending", revision }));
       try {
         await callback(request);
-      } catch {
+      } catch (error) {
         setAttempts((current) => {
           const latest = current.get(key);
           if (!latest || latest.revision !== revision || latest.state === "persisted" || latest.state === "rejected") return current;
           return new Map(current).set(key, { ...latest, state: "uncertain" });
         });
+        throw error;
       }
     }
     return {
@@ -158,6 +162,8 @@ function RoomContent({
   roomId,
   currentUserId,
   room,
+  readSeqAtOpen,
+  targetMessageId,
   state,
   httpReady,
   liveConnected,
@@ -192,6 +198,13 @@ function RoomContent({
 }: RoomPanelProps) {
   const id = useId();
   const [searchTarget, setSearchTarget] = useState<Pick<RoomMessage, "messageId" | "threadRootMessageId"> | null>(null);
+  // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
+  const [sentSinceOpen, setSentSinceOpen] = useState(false);
+  // Only suppress the "New" line once a send actually succeeds -- a rejected send must leave sentSinceOpen false.
+  const markSent = (callback: RoomComposerProps["onSubmit"]) => async (request: CreateMessageRequest) => {
+    await callback(request);
+    setSentSinceOpen(true);
+  };
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -221,6 +234,9 @@ function RoomContent({
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
+  const newLineSeq = readSeqAtOpen ?? null;
+  const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
+  const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const selectedContext = selection?.kind === "context" ? contexts.find((context) => context.id === selection.id) : undefined;
   const showDetail = !!(parentMessage || selectedContext);
@@ -279,10 +295,9 @@ function RoomContent({
   }, [selection]);
 
   useEffect(() => {
-    if (!searchTarget) return;
-    const root = searchTarget.threadRootMessageId;
-    if (root ? selection?.kind !== "thread" || selection.id !== root : selection !== null) return;
-    const target = document.getElementById(`${id}-${root ? "thread" : "main"}-${searchTarget.messageId}`);
+    if (!searchTarget?.threadRootMessageId) return;
+    if (selection?.kind !== "thread" || selection.id !== searchTarget.threadRootMessageId) return;
+    const target = document.getElementById(`${id}-thread-${searchTarget.messageId}`);
     target?.scrollIntoView({ block: "center" });
     target?.focus({ preventScroll: true });
   }, [id, searchTarget, selection]);
@@ -316,7 +331,8 @@ function RoomContent({
     setSelection({ kind, id: targetId });
   }
 
-  function renderMessage(message: RoomMessage, inThread = false) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Task 4 wires collapsed rendering through this parameter
+  function renderMessage(message: RoomMessage, inThread = false, _collapsed = false) {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
@@ -421,6 +437,10 @@ function RoomContent({
             loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
             onSelect={(message) => {
               const root = message.threadRootMessageId;
+              // Otherwise the [selection] effect's else-branch focuses this stale trigger
+              // (e.g. a "Reply in thread" button) once selection clears below, racing
+              // RoomTimeline's own focus of the newly targeted main message.
+              trigger.current = null;
               onSelectThread?.(root);
               setSelection(root ? { kind: "thread", id: root } : null);
               setContextCollapsed(true);
@@ -449,17 +469,20 @@ function RoomContent({
       </section>}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
-      <div role="region" aria-label="Messages" className="room-history" tabIndex={0}>
-        {mainMessages.length === 0 && pendingMessages.length === 0
-          ? <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>
-          : <>{mainMessages.map((message) => renderMessage(message))}
-            {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
-              <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
-            </article>)}</>}
+      <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+        targetMessageId={searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget.messageId : targetMessageId ?? null}
+        renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
+        empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+        {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
+          <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
+        </article>)}
         {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
-      </div>
+      </RoomTimeline>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
-      <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
+      <RoomComposer {...composer}
+        onSubmit={markSent(composer.onSubmit)}
+        onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
+        disabled={!actionable || composer.disabled} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>

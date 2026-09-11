@@ -281,6 +281,9 @@ export function MessagingWorkspaceProvider({
     });
   }
 
+  const readSeqAtOpen = useRef<{ roomId: string; seq: number | null } | null>(null);
+  if (rooms.activeRoom && readSeqAtOpen.current?.roomId !== rooms.activeRoom.roomId) readSeqAtOpen.current = { roomId: rooms.activeRoom.roomId, seq: rooms.activeRoom.lastReadSeq ?? null };
+
   const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
   const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
@@ -304,6 +307,7 @@ export function MessagingWorkspaceProvider({
     currentUserId: userId ?? "",
     roomId: rooms.activeRoomId,
     room: rooms.activeRoom,
+    readSeqAtOpen: readSeqAtOpen.current?.roomId === rooms.activeRoomId ? readSeqAtOpen.current.seq : null,
     state: roomState,
     httpReady: rooms.httpReady,
     liveConnected: rooms.liveConnected,

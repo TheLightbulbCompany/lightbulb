@@ -18,7 +18,16 @@
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .room-facepile { display: flex; align-items: center; gap: 4px; }
-.room-history { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
+.room-history { position: relative; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
+.room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.room-timeline-item { outline: none; border-radius: 6px; }
+.room-timeline-item[data-highlight="true"] { background: var(--accent); }
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); }
+.room-date-divider::before, .room-date-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.room-date-divider span { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); }
+.room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: .75rem; font-weight: 600; color: var(--info); }
+.room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }
+.room-new-pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; gap: 6px; border-radius: 999px; }
 .room-message { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; }
 .room-message-actions { position: absolute; top: 0; right: 0; z-index: 1; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground) 10%, transparent); opacity: 0; pointer-events: none; }
 .room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }

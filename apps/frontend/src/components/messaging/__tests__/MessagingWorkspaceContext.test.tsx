@@ -138,6 +138,10 @@ it("offers channel admins only non-members and projects explicit member wire fie
   expect(state.upsertMember).toHaveBeenCalledWith({
     kind: "agent", id: "agent-atlas", role: "member", listenMode: "mentions",
   });
+  await act(async () => panel.onAddMember?.({ kind: "human", id: "colleague" }));
+  expect(state.upsertMember).toHaveBeenLastCalledWith({
+    kind: "human", id: "colleague", role: "member", listenMode: null,
+  });
 });
 
 it.each(["dm", "group-dm"] as const)("does not expose member adds for a %s", (kind) => {

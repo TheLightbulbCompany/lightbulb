@@ -163,6 +163,28 @@ it("shows member-add progress and a useful retryable error", async () => {
   await act(async () => reject(new Error("You do not have permission to add members.")));
   expect(screen.getByRole("alert")).toHaveTextContent("You do not have permission to add members.");
   expect(screen.getByRole("button", { name: "Add selected" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(screen.getByRole("button", { name: "Add members" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("resets member selection and picker state when the room changes", async () => {
+  const user = userEvent.setup();
+  const candidates = [{ kind: "agent" as const, id: "atlas", displayName: "Atlas", mentionHandle: null }];
+  const view = render(<RoomPanel {...props} messages={[]} roomId="channel-a" room={{ ...props.room!, roomId: "channel-a", kind: "channel", name: "A" }}
+    addMemberCandidates={candidates} onAddMember={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
+  expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeChecked();
+
+  view.rerender(<RoomPanel {...props} messages={[]} roomId="channel-b" room={{ ...props.room!, roomId: "channel-b", kind: "channel", name: "B" }}
+    addMemberCandidates={candidates} onAddMember={vi.fn()} />);
+
+  expect(screen.queryByRole("button", { name: "Add selected" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: "Add members" }));
+  expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
 
 it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async (kind) => {

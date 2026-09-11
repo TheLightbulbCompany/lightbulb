@@ -343,7 +343,10 @@ function RoomContent({
       <div className="room-context-body">
         <section aria-labelledby={`${id}-context-members`}>
           <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
-            {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => setMemberPickerOpen(!memberPickerOpen)}>Add members</Button>}
+            {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
+              if (!memberPickerOpen) setMemberError(undefined);
+              setMemberPickerOpen(!memberPickerOpen);
+            }}>Add members</Button>}
           </div>
           <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
             <ParticipantAvatar participant={participant} size="sm" />

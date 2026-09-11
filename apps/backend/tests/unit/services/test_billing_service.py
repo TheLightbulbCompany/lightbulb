@@ -367,7 +367,7 @@ class TestLegacyFlatCheckoutIdempotencyKey:
     NOW = 1_800_000_000.0
 
     @classmethod
-    async def _key_for(cls, *, winner: bool) -> str:
+    async def _key_for(cls) -> str:
         created = MagicMock(return_value=MagicMock(id="cs_1"))
         with (
             patch("core.services.billing_service.time.time", return_value=cls.NOW),
@@ -390,11 +390,9 @@ class TestLegacyFlatCheckoutIdempotencyKey:
         return created.call_args.kwargs["idempotency_key"]
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_a_non_winner_key_is_untouched(self):
-        """No suffix on the ordinary path: every non-winner key stays exactly
-        what it has always been, so this fix costs no wasted buckets."""
-        key = await self._key_for(winner=False)
+    async def test_flat_checkout_key_is_untouched(self):
+        """The current flat-checkout key stays stable within its time bucket."""
+        key = await self._key_for()
         with patch("core.services.billing_service.time.time", return_value=self.NOW):
             unchanged = billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_")
         assert key == unchanged

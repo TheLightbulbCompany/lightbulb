@@ -13,6 +13,7 @@ from core.auth import AuthContext, get_current_user  # noqa: E402
 
 
 CALLER_ID = "human_caller"
+OWNER_ID = "org_caller"
 
 
 @pytest.fixture
@@ -22,7 +23,7 @@ def client_with_auth():
 
     app.dependency_overrides.clear()
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="human_caller", org_id=CALLER_ID, org_role="org:admin"
+        user_id=CALLER_ID, org_id=OWNER_ID, org_role="org:admin"
     )
     try:
         yield TestClient(app)

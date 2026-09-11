@@ -28,28 +28,11 @@ def configured(launch_schedule):
 # --- POST /join -------------------------------------------------------------
 
 
-@patch("routers.launch.launch_service.join_sheet", AsyncMock(return_value={"joined": True, "position": 7}))
-async def test_join_rejects_active_workspace(configured, async_client):
+@patch("routers.launch.launch_service.join_sheet", new_callable=AsyncMock)
+async def test_join_rejects_active_workspace(mock_join, configured, async_client):
     r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
     assert r.status_code == 409 and r.json()["detail"] == {"reason": "org_not_supported"}
-
-
-@patch("routers.launch.launch_service.join_sheet", AsyncMock(side_effect=launch_service.LaunchRefused("not_onboarded")))
-async def test_join_not_onboarded_is_409_with_a_reason(configured, async_client):
-    r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 409 and r.json()["detail"] == {"reason": "org_not_supported"}
-
-
-@patch("routers.launch.launch_service.join_sheet", AsyncMock(side_effect=launch_service.LaunchRefused("closed")))
-async def test_join_closed_is_409_with_a_reason(configured, async_client):
-    r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 409 and r.json()["detail"] == {"reason": "org_not_supported"}
-
-
-@patch("routers.launch.launch_service.join_sheet", AsyncMock(side_effect=launch_service.LaunchRefused("no_email")))
-async def test_other_refusals_stay_400(configured, async_client):
-    r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 409 and r.json()["detail"] == {"reason": "org_not_supported"}
+    mock_join.assert_not_awaited()
 
 
 async def test_join_404s_when_the_feature_is_off(launch_schedule, async_client):

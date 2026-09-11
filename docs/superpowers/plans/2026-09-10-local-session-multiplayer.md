@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Tasks 1–3 (native feasibility, room-scoped registry/authorization, dedicated machine transport) completed locally and reviewed through September 11, 2026. Task 3 verification: 150 covering backend/admission tests, 17 projector tests, 32 shared tests and typechecking passed; command-contention regression fixed and re-reviewed. Fresh focused controller check: 91 backend/admission tests passed. Desktop/UI integration remains unimplemented; no account sharing, push or deployment is implied.
+**Status:** Tasks 1–4 (native feasibility, room-scoped registry/authorization, dedicated machine transport, desktop adapters) implemented locally and reviewed through September 11, 2026. Latest controller verification: 83 Rust library tests and 8 probe tests passed; 3 explicit-live tests ignored. Covering backend (94), frontend (18), shared (32) tests and both TypeScript checks passed before the final Rust-only fix. Room UI is next. Packaged-app/deployed/two-person validation remains a release gate; no account sharing, push or deployment is implied.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -371,17 +371,20 @@ pnpm --filter @lightbulb/shared typecheck
 
 **Modify:** `apps/desktop/src-tauri/src/lib.rs`; `bootstrap.rs`/`pair_state.rs` only where lifecycle/enrollment requires; `apps/desktop/src-tauri/src/main.rs` if the bundled executable also handles the tiny hook-registration subcommand. Reuse `device_token.rs` and existing dependencies unchanged where possible.
 
-- [ ] Add failing tests for discovery deduplication, already-running discovery, PID reuse, process restart, partial transcript records, truncation/rotation, profile roots, and logout/re-enrollment scope changes.
-- [ ] Implement a concrete two-provider supervisor with version/capability checks, local transcript cursors and bounded upload/retry. Reuse the provider probe code; remove the temporary example if it no longer serves a rerunnable diagnostic purpose.
-- [ ] Implement one-time enrollment explaining the complete sharing audience. Install only the required global Claude hook entries and any proven Codex launch configuration, preserving originals with a recoverable backup and an uninstall path. Do not edit provider authentication or permission settings.
-- [ ] Use a private local registration channel restricted to the OS user. Keep provider inbox credentials local; represent teammate authorship honestly. Validate session endpoints rather than accepting arbitrary paths from hooks or the backend.
-- [ ] Wire lifecycle registration/reconciliation, output normalization and supported native input. Native approval waiting is a state, not a prompt to inject Enter or `yes`.
-- [ ] Add command receipt persistence and conservative unknown-outcome handling. Uninstalling/disabling sharing stops uploads/control without killing native sessions or deleting provider history.
-- [ ] Verify background tray behavior, lost network, app restart, revoked device and provider upgrade. Show stale/offline state rather than synthetic “running.”
+- [x] Add failing tests for discovery deduplication, already-running discovery, PID reuse, process restart, partial transcript records, truncation/rotation, profile roots, and logout/re-enrollment scope changes.
+- [x] Implement a concrete two-provider supervisor with version/capability checks, local transcript cursors and bounded upload/retry. The probe remains a rerunnable diagnostic and reuses the production normalizer.
+- [x] Implement one-time enrollment explaining the complete sharing audience, requiring an existing paired Mac. Reversible Claude hook installation is tested in temporary settings; no Codex launch change is required. No real enrollment or permanent provider setting change was performed.
+- [x] Use a private local registration channel restricted to the OS user. Keep provider inbox credentials local; represent teammate authorship honestly. Validate session endpoints rather than accepting arbitrary paths from hooks or the backend.
+- [x] Wire lifecycle registration/reconciliation, output normalization and supported native input. Native approval waiting is a state, not a prompt to inject Enter or `yes`.
+- [x] Add command receipt persistence and conservative unknown-outcome handling, including durable generation transitions and failed-write recovery. Local disable stops immediately; optional remote revocation is revision-fenced. Native sessions/history are preserved.
+- [x] Exercise outage/reconnect, persisted restart, identity/version rejection, logout and immediate disable through hermetic tests; report unknown/offline state honestly.
+- [ ] Release validation: real enrollment/Keychain, signed background tray, deployed outage/revocation, sleep/wake and on-disk provider upgrade. These remain Task 8 gates, not claims established by fixtures.
 
 **Checks:** `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml local_sessions`; run the approved Task 1 live cases against the integrated host. Verify observation causes no extra model calls and requires no shared provider login.
 
 **Exit:** Normal supported terminal launches automatically register and mirror; commands reach the same session through the authenticated transport.
+
+**Local checkpoint:** Implementation and two scoped fix rounds reviewed clean through `8dc9e7d86`. Production adapters with a hermetic WebSocket service admitted input and mirrored replies from owned disposable ordinary Claude/Codex sessions; both processes were exited. Completed-public-message updates and queue/admission receipts are verified, not token streaming, immediate interruption, authenticated native teammate authorship or completed-work success. Integrated busy/approval parity, two-account/two-desktop handoff and many-session supervisor performance/capacity remain release gates.
 
 ### Task 5 — Conversation-scoped UI
 

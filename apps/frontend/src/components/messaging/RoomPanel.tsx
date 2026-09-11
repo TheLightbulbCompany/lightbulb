@@ -512,7 +512,6 @@ function RoomContent({
     <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} actionable={actionable} pinnedCount={pinnedMessageIds.length}
-        detailsOpen={!contextCollapsed}
         search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
           loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
           onSelect={(message) => {

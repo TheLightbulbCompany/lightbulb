@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomDetailsPanel, extractLinks } from "../RoomDetailsPanel";
@@ -86,6 +86,12 @@ it("exposes the five tabs as a tablist and moves between them with the arrow key
   expect(onSelectTab).toHaveBeenLastCalledWith("pins");
   await userEvent.keyboard("{ArrowLeft}");
   expect(onSelectTab).toHaveBeenLastCalledWith("about");
+  onSelectTab.mockClear();
+  await userEvent.keyboard("{End}");
+  expect(onSelectTab).toHaveBeenCalledExactlyOnceWith("about");
+  onSelectTab.mockClear();
+  await userEvent.keyboard("{Home}");
+  expect(onSelectTab).toHaveBeenCalledExactlyOnceWith("members");
   await userEvent.click(within(tabs).getByRole("tab", { name: "Files" }));
   expect(onSelectTab).toHaveBeenLastCalledWith("files");
 });
@@ -105,7 +111,42 @@ it("confirms before leaving the room from About", async () => {
   render(<RoomDetailsPanel {...props} tab="about" onLeaveRoom={onLeaveRoom} />);
   await userEvent.click(screen.getByRole("button", { name: "Leave channel" }));
   expect(onLeaveRoom).not.toHaveBeenCalled();
-  expect(screen.getByText("Leave Roadmap? You will lose access to this conversation and its messages.")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Leave Roadmap? You will lose access to this conversation and its messages.");
+  expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
   await userEvent.click(screen.getByRole("button", { name: "Leave channel" }));
   expect(onLeaveRoom).toHaveBeenCalled();
+});
+
+it("keeps a deleted pinned message unpinnable without showing its text", async () => {
+  const onUnpin = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDetailsPanel {...props} onUnpin={onUnpin} pinnedMessageIds={["m1"]}
+    messages={[message("m1", { deletedAt: new Date(2026, 8, 11, 11, 0).toISOString() })]} />);
+  expect(screen.getByText("Message deleted")).toBeInTheDocument();
+  expect(screen.queryByText(/body m1/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Unpin this message" }));
+  expect(onUnpin).toHaveBeenCalledWith("m1");
+});
+
+it("names each jump for its own row and marks only the row being unpinned busy", async () => {
+  let finish!: () => void;
+  const onUnpin = vi.fn(() => new Promise<void>((done) => { finish = done; }));
+  render(<RoomDetailsPanel {...props} messages={[message("m1"), message("m2")]} pinnedMessageIds={["m1", "m2"]} onUnpin={onUnpin} />);
+  const jumps = screen.getAllByRole("button", { name: /^Jump to message from Friday at / });
+  expect(jumps).toHaveLength(2);
+  await userEvent.click(screen.getAllByRole("button", { name: "Unpin this message" })[0]);
+  expect(onUnpin).toHaveBeenCalledWith("m2");
+  expect(screen.getByRole("button", { name: "Unpinning…" })).toHaveAttribute("aria-busy", "true");
+  const other = screen.getByRole("button", { name: "Unpin this message" });
+  expect(other).not.toHaveAttribute("aria-busy", "true");
+  expect(other).toBeDisabled();
+  await act(async () => finish());
+  expect(screen.getAllByRole("button", { name: "Unpin this message" })).toHaveLength(2);
+});
+
+it("reports a failed unpin and leaves the row usable", async () => {
+  const onUnpin = vi.fn().mockRejectedValue(new Error("A room can pin at most 50 messages."));
+  render(<RoomDetailsPanel {...props} messages={[message("m1")]} pinnedMessageIds={["m1"]} onUnpin={onUnpin} />);
+  await userEvent.click(screen.getByRole("button", { name: "Unpin this message" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("A room can pin at most 50 messages.");
+  expect(screen.getByRole("button", { name: "Unpin this message" })).toBeEnabled();
 });

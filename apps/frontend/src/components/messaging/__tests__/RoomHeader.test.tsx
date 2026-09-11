@@ -15,7 +15,7 @@ const people: RoomParticipant[] = ["Aden", "Bo", "Cy", "Dee", "Eve"].map((name, 
 }));
 const props = {
   room, roomName: "Roadmap", counterparts: people, participantCount: 6, canEditRoom: true,
-  canLeave: true, actionable: true, pinnedCount: 2, detailsOpen: false, search: <span />,
+  canLeave: true, actionable: true, pinnedCount: 2, search: <span />,
   onOpenDetails: vi.fn(),
 };
 
@@ -107,9 +107,11 @@ it("does not leak a failed star's error into a freshly opened rename dialog", as
 
 it("opens the pins tab of the details panel from the pinned count", async () => {
   const onOpenDetails = vi.fn();
-  render(<RoomHeader {...props} onOpenDetails={onOpenDetails} detailsOpen />);
+  render(<RoomHeader {...props} onOpenDetails={onOpenDetails} />);
   const pins = screen.getByRole("button", { name: "2 pinned messages" });
-  expect(pins).toHaveAttribute("aria-expanded", "true");
+  // No aria-expanded: this only ever opens the panel (and may open it on a
+  // different tab than the one already showing), so it is not a disclosure toggle.
+  expect(pins).not.toHaveAttribute("aria-expanded");
   await userEvent.click(pins);
   expect(onOpenDetails).toHaveBeenCalledWith("pins");
 });

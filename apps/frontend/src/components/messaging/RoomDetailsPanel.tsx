@@ -72,12 +72,23 @@ export function RoomDetailsPanel({
 }: RoomDetailsPanelProps) {
   const id = useId();
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const [unpinning, setUnpinning] = useState<string | null>(null);
   const { pending, error, run, reset } = useAsyncAction();
   const authorName = (message: RoomMessage) =>
     participants.find((participant) => participant.kind === message.author.kind && participant.id === message.author.id)?.displayName
       ?? message.author.displayName;
-  const jump = (messageId: string) => <Button type="button" variant="ghost" size="sm" aria-label="Jump to message"
+  // A list of identically named "Jump to message" buttons tells a screen-reader
+  // user nothing about which row they are on, so a resolved row names its own.
+  const jump = (messageId: string, from?: RoomMessage) => <Button type="button" variant="ghost" size="sm"
+    aria-label={from ? `Jump to message from ${authorName(from)} at ${messageTime(from.createdAt)}` : "Jump to message"}
     onClick={() => onOpenMessage(messageId)}>Jump</Button>;
+
+  async function unpin(messageId: string) {
+    if (!onUnpin) return;
+    setUnpinning(messageId);
+    await run(() => onUnpin(messageId), "The pin could not be removed.");
+    setUnpinning(null);
+  }
 
   function selectTab(next: DetailsTab) {
     // The pending/error pair is shared across tabs (see useAsyncAction's doc
@@ -89,10 +100,12 @@ export function RoomDetailsPanel({
   }
 
   function onTabKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
+    const current = TABS.findIndex((entry) => entry.id === tab);
+    const next = event.key === "ArrowRight" ? (current + 1) % TABS.length
+      : event.key === "ArrowLeft" ? (current - 1 + TABS.length) % TABS.length
+        : event.key === "Home" ? 0 : event.key === "End" ? TABS.length - 1 : -1;
+    if (next < 0) return;
     event.preventDefault();
-    const next = (TABS.findIndex((entry) => entry.id === tab) + step + TABS.length) % TABS.length;
     selectTab(TABS[next].id);
     (event.currentTarget.children[next] as HTMLElement | undefined)?.focus();
   }
@@ -118,7 +131,12 @@ export function RoomDetailsPanel({
       {tab === "pins" && (pinnedMessageIds.length === 0
         ? <p className="text-sm text-muted-foreground">No pinned messages yet.</p>
         : <ul aria-label="Pinned messages">{[...pinnedMessageIds].reverse().map((messageId) => {
-          const message = messages.find((candidate) => candidate.messageId === messageId);
+          const found = messages.find((candidate) => candidate.messageId === messageId);
+          // A deleted message keeps its pin row -- the row is the only way to
+          // unpin it -- but never its text, the same way the conversation
+          // renders "Message deleted" in place of the body.
+          const message = found?.deletedAt ? undefined : found;
+          const busy = unpinning === messageId;
           return <li key={messageId} className="room-details-row">
             {message
               ? <div className="flex-1 min-w-0">
@@ -127,11 +145,11 @@ export function RoomDetailsPanel({
               </div>
               // A pin older than the loaded window still has to be reachable --
               // Jump hands it to the shipped scroll/highlight path.
-              : <p className="flex-1 text-sm text-muted-foreground">Message not loaded yet</p>}
-            {jump(messageId)}
-            {onUnpin && <Button type="button" variant="ghost" size="icon-sm" aria-label="Unpin this message"
-              disabled={!actionable || pending} aria-busy={pending}
-              onClick={() => void run(() => onUnpin(messageId), "The pin could not be removed.")}><PinOff aria-hidden="true" /></Button>}
+              : <p className="flex-1 text-sm text-muted-foreground">{found ? "Message deleted" : "Message not loaded yet"}</p>}
+            {jump(messageId, message)}
+            {onUnpin && <Button type="button" variant="ghost" size="icon-sm" aria-label={busy ? "Unpinning…" : "Unpin this message"}
+              disabled={!actionable || pending} aria-busy={busy}
+              onClick={() => void unpin(messageId)}><PinOff aria-hidden="true" /></Button>}
           </li>;
         })}</ul>)}
 
@@ -143,7 +161,7 @@ export function RoomDetailsPanel({
             <p className="room-wrap">{(message.attachments ?? []).map((attachment) => attachment.fileName).join(", ")}</p>
             <p className="text-sm text-muted-foreground">{authorName(message)} · {messageTime(message.createdAt)}</p>
           </div>
-          {jump(message.messageId)}
+          {jump(message.messageId, message)}
         </li>)}</ul>)}
 
       {tab === "links" && (links.length === 0
@@ -151,7 +169,7 @@ export function RoomDetailsPanel({
         : <ul aria-label="Shared links">{links.map((link) => <li key={link.href} className="room-details-row">
           <p className="room-wrap flex-1"><a href={link.href} target="_blank" rel="noopener noreferrer"
             className="text-info underline underline-offset-4">{link.label}</a></p>
-          {jump(link.messageId)}
+          {jump(link.messageId, messages.find((candidate) => candidate.messageId === link.messageId))}
         </li>)}</ul>)}
 
       {tab === "about" && <>
@@ -164,9 +182,12 @@ export function RoomDetailsPanel({
         {/* Leaving is irreversible for a private channel, so it confirms here the way
             the header's Leave dialog does -- inline rather than in a second dialog. */}
         {onLeaveRoom && (confirmLeave
-          ? <div className="room-details-row">
+          ? <div className="room-details-row" role="alert">
             <p className="flex-1">Leave {roomName}? You will lose access to this conversation and its messages.</p>
-            <Button type="button" variant="outline" disabled={pending} onClick={() => setConfirmLeave(false)}>Cancel</Button>
+            {/* Focus moves to Cancel as the row appears -- the trigger it replaced is gone,
+                so focus would otherwise fall to <body> and the warning go unread. */}
+            <Button ref={(node) => { node?.focus(); }} type="button" variant="outline" disabled={pending}
+              onClick={() => setConfirmLeave(false)}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={!actionable || pending}
               onClick={() => void run(onLeaveRoom, "The channel could not be left.")}>{pending ? "Leaving…" : "Leave channel"}</Button>
           </div>

@@ -742,7 +742,7 @@ it("jumps from a pinned message back to it in the conversation", async () => {
   HTMLElement.prototype.scrollIntoView = vi.fn();
   render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} />);
   await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
-  await userEvent.click(screen.getByRole("button", { name: "Jump to message" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Jump to message from Friday at / }));
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });

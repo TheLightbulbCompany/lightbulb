@@ -24,6 +24,10 @@ describe("adjacentRoomId", () => {
   it("is a no-op with no rooms", () => {
     expect(adjacentRoomId([], null, 1)).toBeNull();
   });
+  it("treats an unknown current room as unselected, starting from before index 0", () => {
+    expect(adjacentRoomId(rooms, "not-a-room", 1)).toBe("a");
+    expect(adjacentRoomId(rooms, "not-a-room", -1)).toBe("b");
+  });
 });
 
 describe("nextUnreadRoomId", () => {

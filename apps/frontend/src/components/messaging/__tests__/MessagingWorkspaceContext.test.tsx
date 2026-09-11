@@ -380,3 +380,11 @@ it("opens the shortcut sheet on Cmd+/", () => {
   fireEvent.keyDown(window, { key: "/", metaKey: true });
   expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
 });
+
+it("closes the shortcut sheet on a second Cmd+/, even though it is itself an open dialog", () => {
+  compose();
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+});

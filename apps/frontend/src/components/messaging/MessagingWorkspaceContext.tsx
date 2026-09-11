@@ -101,11 +101,14 @@ export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null 
  * RoomDirectory's "next unread" button uses) and the shortcut sheet (⌘/,
  * toggled via `onShowShortcuts`).
  *
- * Ignored while a Radix dialog/menu is open or an IME composition is in
- * progress; the ⌥ combos are additionally skipped when the event target is a
- * text field, since the OS may otherwise turn Option+key into an inserted
- * character there. `defaultPrevented` covers everything the composer or a
- * typeahead already handled (e.g. its own plain-ArrowUp "edit last message").
+ * The room-navigation (⌥) branches are ignored while a Radix dialog/menu is
+ * open or an IME composition is in progress; the ⌥ combos are additionally
+ * skipped when the event target is a text field, since the OS may otherwise
+ * turn Option+key into an inserted character there. `defaultPrevented`
+ * covers everything the composer or a typeahead already handled (e.g. its
+ * own plain-ArrowUp "edit last message"). `⌘/` is evaluated BEFORE the
+ * dialog guard — it must still toggle the shortcut sheet closed while that
+ * very dialog (its own `role="dialog"`) is open.
  */
 export function useMessagingShortcuts(
   rooms: readonly RoomSummary[],
@@ -116,12 +119,12 @@ export function useMessagingShortcuts(
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
-      if (hasBlockingShortcutDialog() || document.querySelector("[role='menu']")) return;
       if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === "/") {
         event.preventDefault();
         onShowShortcuts();
         return;
       }
+      if (hasBlockingShortcutDialog() || document.querySelector("[role='menu']")) return;
       if (!event.altKey || event.metaKey || event.ctrlKey) return;
       if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
       if (isKeyboardShortcutTextInputTarget(event.target)) return;
@@ -180,7 +183,8 @@ export function MessagingWorkspaceProvider({
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationError, setCreationError] = useState<string>();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, () => setShortcutsOpen((open) => !open));
+  const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
+  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts);
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
   const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);

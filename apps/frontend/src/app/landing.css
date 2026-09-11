@@ -751,10 +751,9 @@
 /* ================================================================ */
 /* The funnel hero — "Quiet Room" (Brand Identity Manual v1.0).       */
 /*                                                                    */
-/* The lamp hangs over the page from the top of the viewport and the  */
-/* fan sits behind the headline; both are painted by HangingLamp and  */
-/* .ld-funnel-glow. Restraint is the direction: brass hairlines, a    */
-/* lot of cream, and the lamp as the only theatre.                    */
+/* The hero lamp (three.js/SVG) that used to hang over this section   */
+/* has been removed as unreachable — nothing rendered it. Restraint   */
+/* is the direction: brass hairlines, a lot of cream.                 */
 /* ================================================================ */
 
 .ld-funnel {
@@ -789,9 +788,8 @@
    same rule from the other side: the product mark is the lamp with the
    ceremony removed, and the ray fan is the ceremony.
 
-   The light now belongs to .ld-lamp (below) instead of to this section: the
-   lamp is position:fixed and a section-absolute glow slides out from under it
-   the moment the page scrolls. */
+   The hero lamp this light used to belong to has been removed (unreachable
+   — nothing rendered it); this section carries no light effect today. */
 
 .ld-funnel-eyebrow {
   margin: 0 0 22px;
@@ -801,33 +799,6 @@
      brass (2.94:1). 60% as written measures 4.40:1 — under the 4.5:1 AA
      floor — so this uses 66% (5.34:1), the nearest value that clears it. */
   color: color-mix(in srgb, var(--midnight) 66%, transparent);
-}
-
-/* Quiet mono chip pointing at the open launch competition, mounted by
-   LaunchHeroPill.tsx under the eyebrow. Renders nothing until its fetch
-   resolves, so there is no layout to reserve for it. Colours read the same
-   --midnight-muted/--midnight tokens `.ld-funnel-eyebrow` and `.ld-mono` use
-   — the dark-room swap ([data-lb-theme="dark"] .ld-page above) repoints them
-   automatically, so this needs no dark-mode override of its own. */
-.ld-launch-pill {
-  display: inline-flex;
-  align-items: center;
-  margin: 0 0 22px;
-  padding: 6px 14px;
-  border: 1px solid color-mix(in srgb, var(--midnight) 22%, transparent);
-  border-radius: 999px;
-  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--midnight-muted);
-  text-decoration: none;
-  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-}
-
-.ld-launch-pill:hover {
-  border-color: color-mix(in srgb, var(--midnight) 45%, transparent);
-  color: var(--midnight);
-  text-decoration: underline;
 }
 
 .ld-funnel-mark {
@@ -1268,109 +1239,6 @@
   }
 }
 
-/* ================================================================ */
-/* THE HANGING LAMP + the dark room                                  */
-/*                                                                    */
-/* Scoped to `.ld-page` on purpose. `data-lb-theme` is written on     */
-/* <html> so the lamp can be mounted anywhere on the page, but only   */
-/* the landing surface reads it — /chat has its own surface contract  */
-/* and must not be repainted by a marketing control.                  */
-/* ================================================================ */
-
-.ld-lamp {
-  position: fixed;
-  top: 0;
-  left: 50%;
-  margin-left: -145px;
-  width: 290px;
-  z-index: 90;
-  pointer-events: none;
-  transform-origin: 50% 0;
-  will-change: transform;
-}
-.ld-lamp-svg { display: block; width: 100%; height: auto; overflow: visible; }
-
-/* The lamp's own light. Centred on the glass (x=145 of a 290 viewBox = 50%,
-   y≈126 where the envelope sits), so it tracks the lamp instead of the
-   section. §06: yellow is the light source — it is a gradient falling to
-   transparent, it fills nothing and it sets no type. Quiet in a lit room;
-   a real light in a dark one, which is the honest behaviour and what makes
-   the pull-chain worth pulling. */
-.ld-lamp-glow {
-  position: absolute;
-  left: 50%;
-  top: 42%;
-  translate: -50% -50%;
-  width: 780px;
-  height: 780px;
-  max-width: 190vw;
-  border-radius: 50%;
-  pointer-events: none;
-  z-index: -1;
-  background: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--bulb) 26%, transparent) 0%,
-    color-mix(in srgb, var(--bulb) 13%, transparent) 24%,
-    color-mix(in srgb, var(--bulb) 6%, transparent) 42%,
-    color-mix(in srgb, var(--bulb) 2%, transparent) 60%,
-    transparent 78%
-  );
-  transition: opacity var(--dur-strike) var(--ease-out),
-    filter var(--dur-strike) var(--ease-out);
-}
-
-.ld-lamp-glass {
-  pointer-events: auto;
-  cursor: pointer;
-  fill: var(--bulb);
-  stroke: var(--midnight);
-  stroke-width: 4;
-  transition: fill var(--dur-strike) var(--ease-out), stroke var(--dur-strike) var(--ease-out);
-}
-.ld-lamp-fil {
-  fill: var(--midnight);
-  stroke: var(--midnight);
-  stroke-width: 3.4;
-  stroke-linejoin: round;
-  transition: fill var(--dur-strike) var(--ease-out), stroke var(--dur-strike) var(--ease-out);
-}
-.ld-lamp-collar { fill: var(--midnight); transition: fill var(--dur-strike) var(--ease-out); }
-.ld-lamp-cord {
-  fill: none;
-  stroke: var(--midnight);
-  stroke-width: 2.4;
-  opacity: 0.55;
-  transition: stroke var(--dur-strike) var(--ease-out);
-}
-.ld-lamp-pull { pointer-events: auto; cursor: pointer; fill: var(--brass); }
-
-.ld-lamp-glass:focus-visible {
-  outline: 2px solid var(--brass);
-  outline-offset: 4px;
-  /* Safari does not reliably paint `outline` on a focused SVG path, so the
-     ring cannot be the only affordance — thicken and brighten the glass too,
-     which every engine renders. */
-  stroke: var(--brass);
-  stroke-width: 7;
-}
-
-
-[data-lb-theme="dark"] .ld-lamp-glass {
-  fill: color-mix(in srgb, var(--midnight) 6%, transparent);
-  stroke: color-mix(in srgb, var(--midnight) 75%, transparent);
-}
-[data-lb-theme="dark"] .ld-lamp-fil {
-  fill: color-mix(in srgb, var(--midnight) 70%, transparent);
-  stroke: color-mix(in srgb, var(--midnight) 70%, transparent);
-}
-[data-lb-theme="dark"] .ld-lamp-collar { fill: color-mix(in srgb, var(--midnight) 80%, transparent); }
-[data-lb-theme="dark"] .ld-lamp-cord { stroke: color-mix(in srgb, var(--midnight) 50%, transparent); }
-
-/* The fan is embers while the lamp is off, and blooms when it is lit. */
-/* Dark IS the lamp switched off — the glass renders unlit and the control
-   reads "Turn on the light" — so its light goes with it. A lit glow over an
-   unlit bulb is the one state that makes the toggle look broken. */
-[data-lb-theme="dark"] .ld-lamp-glow { opacity: 0.08; }
 [data-lb-theme="dark"] .ld-funnel-eyebrow { color: var(--brass); }
 /* The closing copy sits over the neon wordmark, and brass letters on an amber
    glow is the same yellow twice. Cream here ONLY — --midnight-muted stays
@@ -1445,20 +1313,8 @@
   animation: ld-strike-text 400ms var(--ease-out) both;
 }
 
-/* Never the WebGL element: its wall already tweens in-scene. The canvas's own
-   first-frame fade (below) is the one exception — it must still transition. */
-[data-lb-theming] .ld-hero-canvas {
-  transition: opacity 400ms var(--ease-out) !important;
-}
-[data-lb-theming] .ld-hero-canvas * { transition: none !important; }
-
-/* The pendulum writes `transform: rotate(...)` inline on every frame, so
-   nothing else may use `transform` on .ld-lamp — an inline write replaces
-   the whole property. Size is expressed with the standalone `scale`, which
-   composes with it instead of being clobbered by it. */
 @media (prefers-reduced-motion: reduce) {
-  .ld-lamp { transform: none !important; }
-  .ld-page, .ld-lamp-glow { transition: none; }
+  .ld-page { transition: none; }
   [data-lb-theming] .ld-page,
   [data-lb-theming] .ld-demo,
   [data-lb-theming] :is(.landing-nav, .ld-funnel),
@@ -1466,71 +1322,6 @@
   /* The strike still flips; a reduce user just gets it without the dip. */
   [data-lb-theming] :is(.landing-nav, .ld-funnel) *,
   [data-lb-theming] .ld-demo-window { animation: none; }
-}
-
-@media (max-width: 720px) {
-  .ld-lamp { scale: 0.7; }
-}
-
-/* ── The hero lamp (three.js) ──────────────────────────────────── */
-/* The canvas fills the hero and fades into the page over its last 140px so
-   the wall (whose emissive IS the page colour) and the page read as one
-   surface. pointer-events none: the canvas is scenery; the control is the
-   button below. */
-.ld-hero-canvas {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  /* The scene is `ssr:false` and draws nothing until it has a size, so the
-     first frame landed 50–1500ms after the headline with a hard cut. Scene.tsx
-     sets data-ready from inside the first rendered frame. */
-  opacity: 0;
-  transition: opacity 400ms var(--ease-out);
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 140px), transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 140px), transparent 100%);
-}
-.ld-hero-canvas[data-ready] {
-  opacity: 1;
-}
-
-/* !important: R3F writes the drawing-buffer size inline in px on the canvas. */
-.ld-hero-canvas canvas { display: block; width: 100% !important; height: 100% !important; }
-
-/* The accessible switch over the glass. Transparent, but real: keyboard focus
-   draws the ring where the bulb is. The lamp follows the cursor, so the scene
-   writes `transform: translate(px, py)` here every frame it moves — the glass
-   centre projected into canvas pixels. Origin at 0,0 with half-size negative
-   margins so that point is the button's centre; the translate below is only
-   the guess that holds until the first frame lands.
-
-   z-index 0, under .ld-funnel-in's 1: the button rides the cursor now, so at
-   2 this 84×140 transparent rectangle would sit over the headline and the
-   idea input and swallow their clicks. Below the copy it is still above the
-   canvas (which takes no pointer events at all), so clicking the lamp over
-   bare room still strikes it, and keyboard focus is untouched either way. */
-.ld-lamp-switch {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 84px;
-  height: 140px;
-  margin: -70px 0 0 -42px;
-  transform: translate(50vw, 160px);
-  z-index: 0;
-  background: transparent;
-  border: 0;
-  border-radius: 42px;
-  cursor: pointer;
-  padding: 0;
-}
-.ld-lamp-switch:focus-visible {
-  outline: 2px solid var(--bulb);
-  outline-offset: 4px;
-  /* Over .ld-funnel-in's 1 only while the ring is drawn — WCAG 2.4.11 wants
-     the focus indicator unobscured, and the lamp drifts over the copy. Click
-     behaviour is unchanged: unfocused, the rectangle is still at 0. */
-  z-index: 2;
 }
 
 /* DOM side of the two states. Dark = waiting (still ≥4.5:1); lit = reading. */

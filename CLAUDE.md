@@ -747,10 +747,11 @@ React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 **Colours/fonts are the Brand Identity Manual's tokens**, defined once in
 `src/app/globals.css` (`--midnight --cream --bulb --brass`, cream/midnight steps,
 four state pairs; `.dark` reverses the ground and re-points the state tokens). No
-colour literal anywhere else except the five deliberate exemptions the scanner
-skips — `landing.css` and `components/landing/**` (marketing, its own palette),
-`lib/clerkAppearance.ts` (Clerk takes hex, not `var()`), `*Brand.ts` vendor
-marks, and tests (`__tests__/`, `*.test.*`, which hold literals as fixtures) —
+colour literal anywhere else except the six deliberate exemptions the scanner
+skips — `landing.css`, `landing-v2.css`, and `components/landing/**` (marketing,
+its own palette), `lib/clerkAppearance.ts` (Clerk takes hex, not `var()`),
+`*Brand.ts` vendor marks, and tests (`__tests__/`, `*.test.*`, which hold
+literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,
 `node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Source Sans 3 (UI) /
 Lora (prose) / mono for code only.

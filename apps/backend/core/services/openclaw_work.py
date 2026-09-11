@@ -378,7 +378,7 @@ class OpenClawWorkWorker:
             # The plugin dedupes ingress by eventId (effect-once), so a timed-out
             # or dropped POST is safe to retry soon; holding the full 300s
             # visibility stalls the whole FIFO group (prod, 2026-09-10 18:15Z).
-            pool.clear_active_run(owner_id, session_key)
+            pool.clear_active_run(owner_id, session_key, preserve_room_context=True)
             raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
         except Exception:
             pool.clear_active_run(owner_id, session_key)

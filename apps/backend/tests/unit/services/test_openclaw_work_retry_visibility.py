@@ -62,8 +62,8 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
         def mark_run_active(self, *args, **kwargs):
             marked.append((args, kwargs))
 
-        def clear_active_run(self, owner_id, session_key):
-            cleared.append((owner_id, session_key))
+        def clear_active_run(self, owner_id, session_key, **kwargs):
+            cleared.append((owner_id, session_key, kwargs))
 
     class FakeManager:
         async def resolve_running_container(self, _owner):
@@ -101,7 +101,7 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     with pytest.raises(WorkRetry, match="plugin ingress ReadTimeout"):
         await worker._dispatch_message(meta, member, message, "user_request")
     session_key = "agent:a1:lightbulb:channel:11111111-1111-4111-8111-111111111111"
-    assert cleared == [("owner-1", session_key)]
+    assert cleared == [("owner-1", session_key, {"preserve_room_context": True})]
     # Channel-initiated runs are hidden from the Control UI upstream, so the
     # gateway streams their agent/chat events only to a session-message
     # subscriber. Dispatching without this leaves the room with zero run frames.

@@ -192,6 +192,8 @@
   .room-message-gutter { opacity: 1; }
 }
 
+.room-format { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }
   .room-panel *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }

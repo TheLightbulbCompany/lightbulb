@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { AtSign, ImagePlus, Send, X } from "lucide-react";
+import { AtSign, Bold, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
 import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
-import { activeTrigger, applyCompletion, type CompletionTrigger } from "./composerText";
+import { activeTrigger, applyCompletion, wrapSelection, type CompletionTrigger, type MarkdownStyle } from "./composerText";
 import { searchEmoji } from "./emojiData";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
 import { resolveTypedMentions } from "./mentions";
@@ -254,8 +254,34 @@ function ComposerAttempt({
     }
   }
 
+  const FORMAT_CONTROLS: { style: MarkdownStyle; label: string; Icon: typeof Bold }[] = [
+    { style: "bold", label: "Bold", Icon: Bold },
+    { style: "italic", label: "Italic", Icon: Italic },
+    { style: "strike", label: "Strikethrough", Icon: Strikethrough },
+    { style: "ul", label: "Bulleted list", Icon: List },
+    { style: "ol", label: "Numbered list", Icon: ListOrdered },
+    { style: "code", label: "Inline code", Icon: Code },
+    { style: "codeblock", label: "Code block", Icon: SquareCode },
+    { style: "link", label: "Link", Icon: Link2 },
+  ];
+
+  function format(style: MarkdownStyle) {
+    const start = field.current?.selectionStart ?? text.length;
+    const end = field.current?.selectionEnd ?? start;
+    const next = wrapSelection(text, start, end, style);
+    onTextChange(next.text);
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(next.selectionStart, next.selectionEnd);
+    });
+  }
+
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     onSubmit={(event) => { event.preventDefault(); submit(); }}>
+    <div className="room-format" role="toolbar" aria-label="Formatting">
+      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon }) => <Button key={style} type="button" variant="ghost" size="icon-sm"
+        aria-label={controlLabel} title={controlLabel} disabled={!editable} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
+    </div>
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     {mentionOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Mention a room member">
       {options.map((member, index) => <button key={`${member.kind}:${member.id}`} id={`${fieldId}-option-${index}`} type="button" role="option" tabIndex={-1}
@@ -310,6 +336,13 @@ function ComposerAttempt({
             setTrigger(null);
             return;
           }
+        }
+        if (!listOpen && (event.metaKey || event.ctrlKey)) {
+          const key = event.key.toLowerCase();
+          const style: MarkdownStyle | null = event.shiftKey
+            ? key === "x" ? "strike" : key === "c" ? "codeblock" : null
+            : key === "b" ? "bold" : key === "i" ? "italic" : null;
+          if (style) { event.preventDefault(); format(style); return; }
         }
         if (event.key === "Enter" && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
           event.preventDefault();

@@ -251,6 +251,8 @@ export interface LocalSessionCommandReceipt {
   createdAt: number;
   /** Unix seconds; a delivery deadline, never a history TTL. */
   deliverBy: number;
+  held: boolean;
+  providerMessageId: string | null;
 }
 
 export interface LocalSessionEnrollmentRequest {

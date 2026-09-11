@@ -56,9 +56,9 @@ def handler(event, context):
     if not user_id:
         return {"statusCode": 403}
     if auth_kind == "device":
-        if client_id not in ("node-host", "openclaw-macos") or not device_id:
+        if client_id not in ("node-host", "openclaw-macos", "lightbulb-local-sessions") or not device_id:
             return {"statusCode": 403}
-        connection_type = "node"
+        connection_type = "local-session" if client_id == "lightbulb-local-sessions" else "node"
     elif auth_kind == "paperclip_service":
         if client_id != "paperclip-operator" or device_id:
             return {"statusCode": 403}
@@ -105,6 +105,11 @@ def handler(event, context):
         )
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
+        if connection_type == "local-session":
+            # Unlike node/operator startup, canonical mac enrollment is admission.
+            # A failed handshake must not leave a usable local-session connection.
+            table.delete_item(Key={"connectionId": connection_id})
+            return {"statusCode": 403 if getattr(e, "code", None) == 403 else 503}
         logger.warning("Failed to notify backend of connect: %s", e)
 
     return {"statusCode": 200}

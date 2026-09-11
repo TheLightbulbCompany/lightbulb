@@ -1,0 +1,582 @@
+"""Transport integration: real Moto transactions/connections, stub only outbound HTTP."""
+
+import asyncio
+import importlib
+import json
+import time
+from unittest.mock import patch
+
+import boto3
+import pytest
+from botocore.exceptions import ClientError
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from httpx import ASGITransport, AsyncClient
+
+from core.repositories import local_sessions_repo as repo, messaging_repo
+from core.services import local_sessions as service
+from core.services.connection_service import ConnectionService
+from core.services.management_api_client import ManagementApiClient
+from core.services.messaging import ApiProblem
+from tests.unit.services import test_local_sessions as registry_tests
+from tests.unit.services.test_local_sessions import ALICE, BOB, CLI, MAC, OTHER_ROOM, OWNER, ROOM, command
+
+db = registry_tests.db
+
+
+@pytest.fixture
+def transport(db):
+    resource = boto3.resource("dynamodb", region_name="us-east-1")
+    connections = resource.create_table(
+        TableName="relay-connections",
+        KeySchema=[{"AttributeName": "connectionId", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "connectionId", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    table = db[0]
+    table.update(
+        AttributeDefinitions=[{"AttributeName": "memberKey", "AttributeType": "S"}],
+        GlobalSecondaryIndexUpdates=[
+            {
+                "Create": {
+                    "IndexName": "by-member",
+                    "KeySchema": [{"AttributeName": "memberKey", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            }
+        ],
+    )
+    for room in (ROOM, OTHER_ROOM):
+        table.update_item(
+            Key={"pk": f"ROOM#{room}", "sk": "META"},
+            UpdateExpression="SET deliveryKey = :key",
+            ExpressionAttributeValues={":key": room},
+        )
+        table.update_item(
+            Key={"pk": f"ROOM#{room}", "sk": f"MEMBER#human#{ALICE.user_id}"},
+            UpdateExpression="SET memberKey = :member, roomId = :room",
+            ExpressionAttributeValues={
+                ":member": messaging_repo.member_key(OWNER, "human", ALICE.user_id),
+                ":room": room,
+            },
+        )
+    sent, hints = [], []
+    management = ManagementApiClient(endpoint_url="https://management.invalid", region_name="us-east-1")
+
+    def post(**kwargs):
+        sent.append((kwargs["ConnectionId"], json.loads(kwargs["Data"])))
+
+    async def publish_http(_self, endpoint, body, headers):
+        hints.append(json.loads(body))
+        return __import__("httpx").Response(200, json={"successful": [{"identifier": "ok"}], "failed": []})
+
+    with (
+        patch.object(management._client, "post_to_connection", side_effect=post),
+        patch("core.services.live_events.LiveEventPublisher._post", publish_http),
+        patch.object(messaging_repo.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.invalid/event"),
+    ):
+        yield connections, ConnectionService(table_name=connections.name), management, sent, hints
+
+
+def relay(transport):
+    module = importlib.import_module("core.services.local_session_relay")
+    return module.LocalSessionRelay(transport[1], transport[2])
+
+
+def connect(transport, cid="conn-1", stamp="1000", **changes):
+    row = dict(
+        connectionId=cid,
+        connectedAt=stamp,
+        userId=ALICE.user_id,
+        orgId=OWNER,
+        ownerId=OWNER,
+        connectionType="local-session",
+        authKind="device",
+        clientId="lightbulb-local-sessions",
+        deviceId=MAC,
+    )
+    row.update(changes)
+    transport[0].put_item(Item=row)
+
+
+def registration(**changes):
+    session = dict(
+        provider="codex",
+        profileFingerprint="f" * 64,
+        nativeConversationId="thread-1",
+        generation="generation-1",
+        providerVersion="0.149.0",
+        status="busy",
+        activeTurnId="turn-1",
+    )
+    session.update(changes)
+    return {"type": "local.session.register", "session": session}
+
+
+async def start(transport):
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    response = await relay(transport).handle_message("conn-1", registration())
+    return response["sessionId"]
+
+
+@pytest.mark.asyncio
+async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gateway(transport):
+    # Fails if the router routes dedicated traffic through node/operator admission.
+    from routers.websocket_chat import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/ws")
+    app.add_exception_handler(
+        ApiProblem, lambda _, exc: JSONResponse(status_code=exc.status_code, content={"error": exc.error.code})
+    )
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    connect(transport)
+    headers = {
+        "x-connection-id": "conn-1",
+        "x-user-id": ALICE.user_id,
+        "x-org-id": OWNER,
+        "x-auth-kind": "device",
+        "x-verified-device-id": MAC,
+        "x-client-id": "lightbulb-local-sessions",
+    }
+    with (
+        patch.object(messaging_repo.settings, "WS_ENFORCE_INTERNAL_SECRET", False),
+        patch("routers.websocket_chat.get_connection_service", return_value=transport[1]),
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=relay(transport)),
+        patch("routers.websocket_chat.get_gateway_pool", side_effect=AssertionError("gateway must not open")),
+        patch("routers.websocket_chat._kick_off_node_connect", side_effect=AssertionError("node must not open")),
+        patch(
+            "routers.websocket_chat._kick_off_operator_connect", side_effect=AssertionError("operator must not open")
+        ),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.post("/ws/connect", headers=headers)).status_code == 200
+    for changes in (
+        {"deviceId": CLI},
+        {"deviceId": "c" * 64},
+        {"authKind": "paperclip_service"},
+        {"clientId": "node-host"},
+        {"userId": BOB.user_id},
+        {"orgId": "org_other"},
+    ):
+        connect(transport, **changes)
+        with pytest.raises(ApiProblem):
+            await relay(transport).connect("conn-1")
+
+
+@pytest.mark.asyncio
+async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hints(transport, db):
+    sid = await start(transport)
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "batch-1",
+        "afterSeq": 0,
+        "events": [{"kind": "text", "role": "assistant", "text": "private transcript 😀", "truncated": False}],
+    }
+    first = await relay(transport).handle_message("conn-1", body)
+    assert first["afterSeq"] == 1
+    assert await relay(transport).handle_message("conn-1", body) == first
+    assert [(e.seq, e.text) for e in (await service.list_events(BOB, ROOM, sid)).events] == [
+        (1, "private transcript 😀")
+    ]
+    for bad in (
+        {**body, "ownerId": "org_other"},
+        {**body, "type": "shell.exec"},
+        {**body, "events": [{"kind": "reasoning", "role": "assistant", "text": "secret"}]},
+        {**body, "events": [{"kind": "text", "role": "assistant", "text": "x" * 16384}]},
+        {**body, "generation": "old"},
+        {**body, "batchId": "batch-new", "afterSeq": 0},
+    ):
+        with pytest.raises(ApiProblem):
+            await relay(transport).handle_message("conn-1", bad)
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message(
+            "conn-1", {**body, "events": [{"kind": "text", "role": "assistant", "text": "changed"}]}
+        )
+    assert transport[4]
+    for hint in transport[4]:
+        event = json.loads(hint["events"][0])
+        assert hint["channel"].startswith("/rooms/")
+        assert event["type"] == "room.resources.changed"
+        assert event["payload"] == {"roomId": event["roomId"]}
+        assert "private transcript" not in json.dumps(hint)
+    # Removing owner membership removes this room from eligible hint channels.
+    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{ALICE.user_id}"})
+    transport[4].clear()
+    await relay(transport).handle_message(
+        "conn-1", {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-1", "status": "idle"}
+    )
+    assert all(ROOM not in hint["channel"] for hint in transport[4])
+
+
+@pytest.mark.asyncio
+async def test_registration_server_bounds_compatibility_liveness_and_reconnect(transport, db):
+    sid = await start(transport)
+    row = await repo.get_session(OWNER, sid)
+    assert row["capabilities"] == {"sendMode": "queue", "steer": False, "interrupt": False}
+    assert 0 < row["onlineUntil"] - int(time.time()) <= 30
+    for changes in ({"onlineUntil": 9999999999}, {"capabilitiesVerified": True}, {"capabilities": {"interrupt": True}}):
+        with pytest.raises(ApiProblem):
+            await relay(transport).handle_message("conn-1", registration(**changes))
+    connect(transport, "conn-2", "2000")
+    assert (await relay(transport).handle_message("conn-2", registration()))["sessionId"] == sid
+    for cid, payload in (
+        ("conn-1", registration()),
+        (
+            "conn-1",
+            {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-1", "status": "idle"},
+        ),
+    ):
+        with pytest.raises(ApiProblem):
+            await relay(transport).handle_message(cid, payload)
+    # Deleted older connection cannot affect the replacement.
+    transport[0].delete_item(Key={"connectionId": "conn-1"})
+    assert (await repo.get_session(OWNER, sid))["connectionId"] == "conn-2"
+    await relay(transport).handle_message(
+        "conn-2",
+        {**registration(generation="generation-2", providerVersion="unproven"), "previousGeneration": "generation-1"},
+    )
+    row = await repo.get_session(OWNER, sid)
+    assert row["generation"] == "generation-2" and not row["capabilitiesVerified"]
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-2", registration())
+    db[1].update_item(
+        Key={"owner_id": OWNER}, UpdateExpression="REMOVE paired_devices.#mac", ExpressionAttributeNames={"#mac": MAC}
+    )
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message(
+            "conn-2",
+            {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-2", "status": "idle"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_two_workers_deliver_in_command_order_and_receipts_are_durable(transport):
+    sid = await start(transport)
+    first = await service.submit_command(BOB, ROOM, sid, command(service))
+    second = await service.submit_command(BOB, ROOM, sid, command(service, requestId="request-2"))
+    transport[3].clear()
+    # Fresh objects share only DynamoDB and the external Management API.
+    await asyncio.gather(relay(transport).dispatch_session(OWNER, sid), relay(transport).dispatch_session(OWNER, sid))
+    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert len(commands) == 1 and commands[0]["command"]["requestId"] == first.request_id
+    assert commands[0]["command"]["actorUserId"] == BOB.user_id
+    assert commands[0]["command"]["roomId"] == ROOM
+    assert (await repo.get_command(OWNER, sid, first.request_id))["state"] == "dispatched"
+    outcome = {
+        "type": "local.session.receipt",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "requestId": first.request_id,
+        "outcome": "applied",
+        "providerMessageId": "native-1",
+        "held": True,
+    }
+    await relay(transport).handle_message("conn-1", outcome)
+    await relay(transport).handle_message("conn-1", outcome)
+    receipt = await service.get_command(BOB, ROOM, sid, first.request_id)
+    assert receipt.state == "applied" and receipt.held is True and receipt.provider_message_id == "native-1"
+    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert [c["command"]["requestId"] for c in commands] == [first.request_id, second.request_id]
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", {**outcome, "outcome": "rejected"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("network_result", ["gone", "timeout", "delivered"])
+async def test_uncertain_delivery_never_replays_on_reconnect(transport, network_result):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    calls = []
+
+    def network(**kwargs):
+        calls.append(kwargs)
+        if network_result == "gone":
+            raise ClientError({"Error": {"Code": "GoneException", "Message": ""}}, "PostToConnection")
+        if network_result == "timeout":
+            raise TimeoutError("ambiguous")
+
+    with patch.object(transport[2]._client, "post_to_connection", side_effect=network):
+        await relay(transport).dispatch_session(OWNER, sid)
+        assert len(calls) == 1
+        connect(transport, "conn-2", "2000")
+        await relay(transport).handle_message("conn-2", registration())
+        await relay(transport).dispatch_session(OWNER, sid)
+        # registration responses are returned to router; only commands use direct push here.
+        assert len(calls) == 1
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "unknown"
+    await relay(transport).handle_message(
+        "conn-2",
+        {
+            "type": "local.session.receipt",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "requestId": "request-1",
+            "outcome": "applied",
+            "providerMessageId": "native-1",
+        },
+    )
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_pre_network_disconnect_is_retryable_but_expired_pending_is_rejected(transport):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    transport[0].delete_item(Key={"connectionId": "conn-1"})
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "pending"
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message("conn-2", registration())
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "dispatched"
+    await service.submit_command(BOB, ROOM, sid, command(service, requestId="expired"))
+    with patch("time.time", return_value=time.time() + 31):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "expired"))["state"] == "rejected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["member", "enrollment", "pairing", "connection"])
+async def test_pre_dispatch_transaction_rechecks_authorization_after_claim(transport, db, mutation):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    real_transact = messaging_repo._transact
+    fired = False
+
+    async def race(items):
+        nonlocal fired
+        # Inject revocation immediately before the durable dispatch boundary.
+        if not fired and any(op.get("Put", {}).get("Item", {}).get("state") == "dispatched" for op in items):
+            fired = True
+            if mutation == "member":
+                db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{BOB.user_id}"})
+            elif mutation == "enrollment":
+                await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=False))
+            elif mutation == "pairing":
+                db[1].update_item(
+                    Key={"owner_id": OWNER},
+                    UpdateExpression="REMOVE paired_devices.#mac",
+                    ExpressionAttributeNames={"#mac": MAC},
+                )
+            else:
+                transport[0].delete_item(Key={"connectionId": "conn-1"})
+        await real_transact(items)
+
+    transport[3].clear()
+    with patch.object(messaging_repo, "_transact", race):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert fired and transport[3] == []
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] != "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_full_management_encoding_is_bounded_before_dispatch(transport):
+    sid = await start(transport)
+    # Valid public UTF-8 request expands to >16 KiB under Management API ensure_ascii=True.
+    await service.submit_command(BOB, ROOM, sid, command(service, text="😀" * 1900))
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert transport[3] == []
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_text_rate_is_shared_and_lifecycle_flush_is_not_delayed(transport):
+    sid = await start(transport)
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "batch-1",
+        "afterSeq": 0,
+        "events": [{"kind": "text", "role": "assistant", "text": "one"}],
+    }
+    with patch("time.time", return_value=2000000000):
+        await relay(transport).handle_message("conn-1", body)
+        with pytest.raises(ApiProblem) as exc:
+            await relay(transport).handle_message("conn-1", {**body, "batchId": "batch-2", "afterSeq": 1})
+        assert exc.value.error.code == "RATE_LIMITED"
+        result = await relay(transport).handle_message(
+            "conn-1",
+            {
+                **body,
+                "batchId": "boundary",
+                "afterSeq": 1,
+                "events": [{"kind": "lifecycle", "role": "system", "text": "idle"}],
+            },
+        )
+        assert result["afterSeq"] == 2
+
+
+@pytest.mark.asyncio
+async def test_router_dispatches_post_but_receipt_get_is_read_only(transport):
+    from core.auth import get_current_user
+    from routers.messaging import router
+
+    sid = await start(transport)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    with patch("core.services.local_session_relay.get_local_session_relay", return_value=relay(transport)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            path = f"/messaging/rooms/{ROOM}/local-sessions/{sid}/commands"
+            result = await client.post(path, json=command(service).model_dump(by_alias=True))
+            assert result.status_code == 202
+            assert result.json()["state"] == "dispatched"
+            before = await repo.list_commands(OWNER, sid)
+            transport[3].clear()
+            with patch("time.time", return_value=time.time() + 60):
+                result = await client.get(path + "/request-1")
+            assert result.status_code == 200 and transport[3] == []
+            assert await repo.list_commands(OWNER, sid) == before
+
+
+@pytest.mark.asyncio
+async def test_late_network_failure_cannot_regress_native_receipt(transport):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+
+    async def network(_cid, _body):
+        await relay(transport).handle_message(
+            "conn-1",
+            {
+                "type": "local.session.receipt",
+                "sessionId": sid,
+                "generation": "generation-1",
+                "requestId": "request-1",
+                "outcome": "applied",
+                "providerMessageId": "native-1",
+            },
+        )
+        raise TimeoutError("late network result")
+
+    with patch.object(transport[2], "send_message_async", side_effect=network):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_receipt_can_reconcile_old_generation_journal_on_new_connection(transport):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    await relay(transport).dispatch_session(OWNER, sid)
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message(
+        "conn-2", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    await relay(transport).handle_message(
+        "conn-2",
+        {
+            "type": "local.session.receipt",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "requestId": "request-1",
+            "outcome": "applied",
+            "providerMessageId": "native-1",
+        },
+    )
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_expired_dispatch_claim_never_posts_after_deadline(transport):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    real_transact, now = messaging_repo._transact, time.time()
+
+    async def delayed_commit(items):
+        await real_transact(items)
+        if any(op.get("Put", {}).get("Item", {}).get("state") == "dispatched" for op in items):
+            clock.return_value = now + 31
+
+    transport[3].clear()
+    with patch("time.time", return_value=now) as clock, patch.object(messaging_repo, "_transact", delayed_commit):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert transport[3] == []
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_crashed_pre_dispatch_claim_can_be_reclaimed_after_five_seconds(transport):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    real_transact, now = messaging_repo._transact, time.time()
+
+    async def crash_after_claim(items):
+        await real_transact(items)
+        if any(
+            op.get("Put", {}).get("Item", {}).get("state") == "pending" and op["Put"]["Item"].get("claimUntil")
+            for op in items
+        ):
+            raise RuntimeError("worker died before dispatch")
+
+    transport[3].clear()
+    with patch.object(messaging_repo, "_transact", crash_after_claim):
+        with pytest.raises(RuntimeError):
+            await relay(transport).dispatch_session(OWNER, sid)
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert transport[3] == []
+    with patch("time.time", return_value=now + 6):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert len(transport[3]) == 1
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_exposes_only_blocking_request_for_journal_reconciliation(transport):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    await relay(transport).dispatch_session(OWNER, sid)
+    connect(transport, "conn-2", "2000")
+    response = await relay(transport).handle_message("conn-2", registration())
+    assert response["reconcile"] == {"requestId": "request-1", "generation": "generation-1", "state": "unknown"}
+    assert "continue" not in json.dumps(response)
+
+
+@pytest.mark.asyncio
+async def test_http_dispatch_failure_returns_durable_receipt_without_logging_text(transport, caplog):
+    from core.auth import get_current_user
+    from routers.messaging import router
+
+    sid = await start(transport)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    with patch("core.services.local_session_relay.get_local_session_relay", side_effect=RuntimeError("secret-token")):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            result = await client.post(
+                f"/messaging/rooms/{ROOM}/local-sessions/{sid}/commands",
+                json=command(service).model_dump(by_alias=True),
+            )
+    assert result.status_code == 202 and result.json()["state"] == "pending"
+    assert "secret-token" not in caplog.text and "continue" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_repaired_device_cannot_reassign_existing_humans_session(transport, db):
+    sid = await start(transport)
+    db[1].update_item(
+        Key={"owner_id": OWNER},
+        UpdateExpression="SET paired_devices.#mac.userId = :bob",
+        ExpressionAttributeNames={"#mac": MAC},
+        ExpressionAttributeValues={":bob": BOB.user_id},
+    )
+    await service.set_enrollment(BOB, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    connect(transport, "conn-bob", "3000", userId=BOB.user_id)
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-bob", registration())
+    assert (await repo.get_session(OWNER, sid))["humanUserId"] == ALICE.user_id
+
+
+@pytest.mark.asyncio
+async def test_deleted_connection_liveness_expires_without_touching_native_history(transport):
+    sid = await start(transport)
+    transport[0].delete_item(Key={"connectionId": "conn-1"})
+    with patch("time.time", return_value=time.time() + 31):
+        resources = await service.list_resources(BOB, ROOM)
+    assert resources.sessions[0].status == "offline"
+    assert await repo.get_session(OWNER, sid) is not None

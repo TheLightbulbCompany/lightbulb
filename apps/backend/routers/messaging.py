@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import math
 import time
 import uuid
@@ -47,6 +48,7 @@ from core.services.messaging import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/messaging/rooms/{room_id}/resources", response_model=local_sessions.RoomResources)
@@ -78,7 +80,15 @@ async def submit_local_session_command(
     body: local_sessions.LocalSessionCommand,
     auth: AuthContext = Depends(get_current_user),
 ):
-    return await local_sessions.submit_command(auth, room_id, session_id, body)
+    from core.services.local_session_relay import get_local_session_relay
+
+    receipt = await local_sessions.submit_command(auth, room_id, session_id, body)
+    try:
+        await get_local_session_relay().dispatch_session(resolve_owner_id(auth), receipt.session_id)
+    except Exception:
+        # Admission is durable. Desktop heartbeat retries only proven-undelivered work.
+        logger.warning("Local session dispatch deferred")
+    return await local_sessions.get_command(auth, room_id, receipt.session_id, body.request_id)
 
 
 @router.get(

@@ -8,6 +8,7 @@ No TTL: command delivery deadlines do not delete handoff history or receipts.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from core.repositories import container_repo, messaging_repo as store
 
@@ -105,7 +106,7 @@ async def put_enrollment(owner_id: str, user_id: str, device_id: str, cli_device
     return row
 
 
-async def put_session(row: dict, previous: dict | None, enrollment: dict) -> None:
+async def put_session(row: dict, previous: dict | None, enrollment: dict, *, extra: Sequence[dict] = ()) -> None:
     """CAS preserves concurrent command ordering; canonical and directory land together."""
     put = {"TableName": store._table().name, "Item": row, "ConditionExpression": "attribute_not_exists(sk)"}
     if previous:
@@ -121,14 +122,13 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict) -> Non
             {"Put": put},
             {"Put": {"TableName": store._table().name, "Item": projection}},
         ]
+        + list(extra)
     )
 
 
-async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
-    owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
-    room = receipt["roomId"]
-    table = store._table().name
-    checks = [
+def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
+    table, room = store._table().name, receipt["roomId"]
+    return [
         {
             "ConditionCheck": {
                 "TableName": table,
@@ -137,20 +137,42 @@ async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
                 "ExpressionAttributeValues": {":owner": owner},
             }
         }
-    ]
-    # DynamoDB disallows two actions on one row when the actor owns the session.
-    for user in sorted({human, receipt["actorUserId"]}):
-        checks.append(
-            {
-                "ConditionCheck": {
-                    "TableName": table,
-                    "Key": {"pk": store.room_pk(room), "sk": store.member_sk("human", user)},
-                    "ConditionExpression": "attribute_exists(sk)",
-                }
+    ] + [
+        {
+            "ConditionCheck": {
+                "TableName": table,
+                "Key": {"pk": store.room_pk(room), "sk": store.member_sk("human", user)},
+                "ConditionExpression": "attribute_exists(sk)",
             }
-        )
+        }
+        for user in sorted({human, receipt["actorUserId"]})
+    ]
+
+
+async def list_commands(owner: str, sid: str) -> list[dict]:
+    # ponytail: per-session receipt history scan; add an ordered pending index if measured volume warrants it.
+    return sorted(await store._query(session_pk(owner, sid), begins_with="COMMAND#"), key=lambda row: row["commandSeq"])
+
+
+async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dict] = ()) -> None:
+    put = {
+        "TableName": store._table().name,
+        "Item": updated,
+        "ConditionExpression": "attribute_not_exists(revision) AND #state = :state",
+        "ExpressionAttributeNames": {"#state": "state"},
+        "ExpressionAttributeValues": {":state": previous["state"]},
+    }
+    if previous.get("revision"):
+        put["ConditionExpression"] = "#state = :state AND revision = :revision"
+        put["ExpressionAttributeValues"][":revision"] = previous["revision"]
+    await store._transact([*checks, {"Put": put}])
+
+
+async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
+    owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
+    table = store._table().name
     await store._transact(
-        checks
+        room_conditions(owner, human, receipt)
         + [
             pairing_condition(owner, human, device, enrollment.get("cliDeviceId")),
             enrollment_condition(enrollment),

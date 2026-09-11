@@ -102,12 +102,24 @@ def test_signed_paperclip_service_admits_only_operator_client():
     assert "x-verified-device-id" not in captured["headers"]
 
 
+def test_local_session_device_has_dedicated_type_and_preserves_verified_identity():
+    index, result, captured = _run(_make_event(client_id="lightbulb-local-sessions"))
+    assert result == {"statusCode": 200}
+    item = index.table.put_item.call_args.kwargs["Item"]
+    assert item["connectionType"] == "local-session"
+    assert captured["headers"]["x-verified-device-id"] == item["deviceId"] == "device-verified"
+    assert captured["headers"]["x-client-id"] == item["clientId"] == "lightbulb-local-sessions"
+
+
 @pytest.mark.parametrize(
     ("auth_kind", "client_id", "device_id"),
     [
         ("clerk_user", None, None),
         ("clerk_user", "lightbulb-company-room", None),
         ("clerk_user", "some-browser", None),
+        ("clerk_user", "lightbulb-local-sessions", "forged"),
+        ("paperclip_service", "lightbulb-local-sessions", None),
+        ("device", "lightbulb-local-sessions", None),
         ("device", "paperclip-operator", "device-verified"),
         ("paperclip_service", "node-host", None),
         ("paperclip_service", "openclaw-macos", None),
@@ -186,3 +198,14 @@ def test_machine_row_remains_for_disconnect_cleanup_if_backend_notification_fail
         assert index.handler(_make_event(), None) == {"statusCode": 200}
     assert index.table.put_item.called
     index.table.delete_item.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_local_session_handshake_fails_closed_when_backend_does_not_admit_mac(status):
+    import index
+    from urllib.error import HTTPError
+
+    with patch("index.urllib.request.urlopen", side_effect=HTTPError("http://backend", status, "denied", {}, None)):
+        result = index.handler(_make_event(client_id="lightbulb-local-sessions"), None)
+    assert result == {"statusCode": status}
+    index.table.delete_item.assert_called_once_with(Key={"connectionId": "abc123"})

@@ -125,6 +125,8 @@ class CommandReceipt(LocalSessionCommand):
     state: Literal["pending", "dispatched", "applied", "rejected", "unknown"]
     created_at: int
     deliver_by: int
+    held: bool = False
+    provider_message_id: str | None = None
 
 
 def _public(model, row: dict):

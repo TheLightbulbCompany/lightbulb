@@ -18,7 +18,7 @@ type Result<T> = std::result::Result<T, String>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Identity {
     provider: String,
-    version: String,
+    installed_version: String,
     session: String,
     pid: u32,
     generation: String,
@@ -29,7 +29,7 @@ struct Identity {
 }
 
 fn validate(expected: &Identity, actual: &Identity) -> Result<()> {
-    match (actual.provider.as_str(), actual.version.as_str()) {
+    match (actual.provider.as_str(), actual.installed_version.as_str()) {
         ("claude", "2.1.268") | ("codex", "0.149.0") => (),
         _ => {
             return Err("unsupported installed provider version; rerun feasibility research".into())
@@ -62,7 +62,17 @@ impl JsonLines {
 }
 
 fn message(provider: &str, session: &str, row: &Value) -> Result<Option<Value>> {
+    if row.get("channel").is_some() || row.get("phase").is_some() {
+        return Ok(None);
+    }
     let body = if provider == "claude" {
+        if !matches!(row["type"].as_str(), Some("assistant" | "user"))
+            || row["message"]["role"] != row["type"]
+            || row["message"].get("channel").is_some()
+            || row["message"].get("phase").is_some()
+        {
+            return Ok(None);
+        }
         if matches!(row["type"].as_str(), Some("assistant" | "user"))
             && (row["sessionId"] != session || row["version"] != "2.1.268")
         {
@@ -81,7 +91,18 @@ fn message(provider: &str, session: &str, row: &Value) -> Result<Option<Value>> 
         {
             return Err("Codex transcript identity/version mismatch".into());
         }
-        if row["type"] != "response_item" {
+        if row["type"] != "response_item"
+            || row["payload"]["type"] != "message"
+            || row["payload"].get("channel").is_some()
+            || match row["payload"]["role"].as_str() {
+                Some("assistant") => !matches!(
+                    row["payload"]["phase"].as_str(),
+                    Some("commentary" | "final_answer")
+                ),
+                Some("user") => row["payload"].get("phase").is_some(),
+                _ => true,
+            }
+        {
             return Ok(None);
         }
         &row["payload"]
@@ -90,7 +111,10 @@ fn message(provider: &str, session: &str, row: &Value) -> Result<Option<Value>> 
     if body["role"] != "assistant" && body["role"] != "user" {
         return Ok(None);
     }
-    let text = if let Some(s) = body["content"].as_str() {
+    let text = if let Some(s) = body["content"]
+        .as_str()
+        .filter(|_| provider == "claude" && body["role"] == "user")
+    {
         s.to_owned()
     } else {
         body["content"]
@@ -98,10 +122,14 @@ fn message(provider: &str, session: &str, row: &Value) -> Result<Option<Value>> 
             .into_iter()
             .flatten()
             .filter(|b| {
-                matches!(
-                    b["type"].as_str(),
-                    Some("text" | "input_text" | "output_text")
-                )
+                b["type"]
+                    == if provider == "claude" {
+                        "text"
+                    } else if body["role"] == "user" {
+                        "input_text"
+                    } else {
+                        "output_text"
+                    }
             })
             .filter_map(|b| b["text"].as_str())
             .collect::<Vec<_>>()
@@ -221,7 +249,7 @@ fn capture(provider: &str, pid: u32, transcript: Option<&str>) -> Result<Identit
         .transpose()?;
     let identity = Identity {
         provider: provider.into(),
-        version,
+        installed_version: version,
         session,
         pid,
         generation: before,
@@ -245,7 +273,102 @@ fn load(path: &str) -> Result<Identity> {
         &identity,
         &capture(&identity.provider, identity.pid, Some(&identity.transcript))?,
     )?;
+    if identity.provider == "claude" {
+        let since = claude_generation_cutoff(&identity)?;
+        verify_running_claude(
+            &identity,
+            &since,
+            File::open(&identity.transcript).map_err(|e| e.to_string())?,
+        )?;
+        if generation(identity.pid)? != identity.generation {
+            return Err("process changed during version verification".into());
+        }
+    }
     Ok(identity)
+}
+
+fn claude_generation_cutoff(identity: &Identity) -> Result<String> {
+    let row = claude_rows()?
+        .into_iter()
+        .find(|r| r["pid"] == identity.pid && r["sessionId"] == identity.session)
+        .ok_or("native Claude execution missing")?;
+    let registered_ms = row["startedAt"]
+        .as_u64()
+        .ok_or("missing native execution start")?;
+    process_generation_cutoff(identity.pid, registered_ms)
+}
+
+fn process_generation_cutoff(pid: u32, registered_ms: u64) -> Result<String> {
+    // OS start also bounds resumed history if native startedAt ever refers to the conversation.
+    let start = command(
+        "env",
+        &["TZ=UTC", "ps", "-p", &pid.to_string(), "-o", "lstart="],
+    )?;
+    let seconds: u64 = command(
+        "date",
+        &["-u", "-j", "-f", "%a %b %e %T %Y", start.trim(), "+%s"],
+    )?
+    .trim()
+    .parse()
+    .map_err(|_| "cannot verify OS process start")?;
+    // ps has second precision: exclude its entire ambiguous birth second, failing closed.
+    let cutoff = registered_ms.max((seconds + 1) * 1000);
+    let prefix = command(
+        "date",
+        &[
+            "-u",
+            "-r",
+            &(cutoff / 1000).to_string(),
+            "+%Y-%m-%dT%H:%M:%S",
+        ],
+    )?;
+    Ok(format!("{}.{:03}Z", prefix.trim(), cutoff % 1000))
+}
+
+fn verify_running_claude(identity: &Identity, since: &str, mut reader: impl Read) -> Result<()> {
+    let mut decoder = JsonLines::default();
+    let mut verified = false;
+    loop {
+        let mut bytes = [0u8; 65536];
+        let n = reader.read(&mut bytes).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        for row in decoder.push(&bytes[..n])? {
+            if !matches!(row["type"].as_str(), Some("user" | "assistant")) {
+                continue;
+            }
+            let Some(timestamp) = row["timestamp"].as_str() else {
+                continue;
+            };
+            // This probe only recognizes the observed fixed-width UTC millisecond format.
+            let canonical =
+                timestamp
+                    .bytes()
+                    .zip(b"0000-00-00T00:00:00.000Z")
+                    .all(|(actual, expected)| {
+                        if *expected == b'0' {
+                            actual.is_ascii_digit()
+                        } else {
+                            actual == *expected
+                        }
+                    });
+            if timestamp.len() != 24 || !canonical || timestamp < since {
+                continue;
+            }
+            if row["sessionId"] != identity.session || row["version"] != "2.1.268" {
+                return Err("current Claude execution has mismatched session or unsupported runtime version".into());
+            }
+            verified = true;
+        }
+    }
+    if !verified {
+        return Err(
+            "no current-generation Claude version evidence; submit a native terminal prompt first"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn save(path: &str, identity: &Identity) -> Result<()> {
@@ -353,7 +476,7 @@ mod tests {
     fn identity() -> Identity {
         Identity {
             provider: "claude".into(),
-            version: "2.1.268".into(),
+            installed_version: "2.1.268".into(),
             session: "synthetic-session".into(),
             pid: 42,
             generation: "start-1".into(),
@@ -392,7 +515,7 @@ mod tests {
             "socket_inode",
             "cwd",
             "transcript",
-            "version",
+            "installed_version",
             "provider",
         ] {
             let mut wrong = serde_json::to_value(&good).unwrap();
@@ -407,7 +530,7 @@ mod tests {
             );
         }
         let mut unsupported = good;
-        unsupported.version = "999.0.0".into();
+        unsupported.installed_version = "999.0.0".into();
         assert!(validate(&unsupported, &unsupported).is_err());
     }
 
@@ -446,7 +569,7 @@ mod tests {
         assert!(message("codex", "s", &meta).unwrap().is_none());
         assert!(message("codex", "other", &meta).is_err());
         let row = json!({"type":"response_item","timestamp":"2026-09-11T00:00:00Z","payload":{
-            "type":"message","role":"assistant","id":"m","content":[{"type":"output_text","text":"done"}]}});
+            "type":"message","role":"assistant","phase":"final_answer","id":"m","content":[{"type":"output_text","text":"done"}]}});
         assert_eq!(
             message("codex", "s", &row).unwrap().unwrap()["text"],
             "done"
@@ -463,6 +586,93 @@ mod tests {
                 .collect();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0]["text"], "done");
+        }
+    }
+
+    #[test]
+    fn installed_claude_version_cannot_approve_an_older_running_generation() {
+        let id = identity();
+        assert!(validate(&id, &id).is_ok()); // Supported PATH binary, not proof of runtime version.
+        let since = "2026-09-11T03:00:00.500Z";
+        let history = "{\"type\":\"assistant\",\"sessionId\":\"synthetic-session\",\"timestamp\":\"2026-09-10T03:00:00.000Z\",\"version\":\"2.1.268\"}\n";
+        let running = "{\"type\":\"user\",\"sessionId\":\"synthetic-session\",\"timestamp\":\"2026-09-11T03:00:01.000Z\",\"version\":\"2.1.200\"}\n";
+        assert!(
+            verify_running_claude(&id, since, format!("{history}{running}").as_bytes()).is_err()
+        );
+        assert!(verify_running_claude(&id, since, history.as_bytes()).is_err());
+        assert!(verify_running_claude(&id, since, b"".as_slice()).is_err());
+        let supported = running.replace("2.1.200", "2.1.268");
+        assert!(verify_running_claude(&id, since, supported.as_bytes()).is_ok());
+        let wrong_session = supported.replace("synthetic-session", "other");
+        assert!(verify_running_claude(&id, since, wrong_session.as_bytes()).is_err());
+        let unknown_timestamp = supported.replace("03:00:01.000Z", "03:00:01.BADZ");
+        assert!(verify_running_claude(&id, since, unknown_timestamp.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn os_birth_cutoff_uses_the_actual_test_process() {
+        let cutoff = process_generation_cutoff(std::process::id(), 0).unwrap();
+        assert_eq!(cutoff.len(), 24);
+        assert!(cutoff.ends_with(".000Z")); // OS birth's ambiguous second is excluded.
+        let seconds: u64 = command(
+            "date",
+            &["-u", "-j", "-f", "%Y-%m-%dT%H:%M:%S", &cutoff[..19], "+%s"],
+        )
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(seconds <= now + 1 && seconds + 60 >= now);
+        assert_eq!(
+            process_generation_cutoff(std::process::id(), 4102444800123).unwrap(),
+            "2100-01-01T00:00:00.123Z"
+        );
+    }
+
+    #[test]
+    fn unknown_or_nonpublic_message_shapes_never_emit_text() {
+        let claude = json!({"type":"assistant","sessionId":"s","version":"2.1.268",
+            "message":{"role":"assistant","content":[{"type":"text","text":"public"}]}});
+        let codex = json!({"type":"response_item","payload":{"type":"message","role":"assistant",
+            "phase":"final_answer","content":[{"type":"output_text","text":"public"}]}});
+        for phase in ["commentary", "final_answer"] {
+            let mut row = codex.clone();
+            row["payload"]["phase"] = json!(phase);
+            assert_eq!(
+                message("codex", "s", &row).unwrap().unwrap()["text"],
+                "public"
+            );
+        }
+        for (provider, base, path, value) in [
+            ("claude", &claude, "/type", json!("unknown")),
+            ("claude", &claude, "/message/role", json!("user")),
+            ("claude", &claude, "/message/channel", json!("analysis")),
+            ("claude", &claude, "/message/phase", json!("unknown")),
+            ("claude", &claude, "/channel", json!("analysis")),
+            ("codex", &codex, "/type", json!("unknown")),
+            ("codex", &codex, "/payload/type", json!("unknown")),
+            ("codex", &codex, "/payload/phase", json!("analysis")),
+            ("codex", &codex, "/payload/phase", json!("unknown")),
+            ("codex", &codex, "/payload/phase", Value::Null),
+            ("codex", &codex, "/payload/channel", json!("analysis")),
+            ("codex", &codex, "/payload/channel", json!("unknown")),
+            ("codex", &codex, "/phase", json!("unknown")),
+        ] {
+            let mut row = base.clone();
+            let (parent, key) = path.rsplit_once('/').unwrap();
+            row.pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(key.into(), value);
+            assert!(
+                message(provider, "s", &row).unwrap().is_none(),
+                "{provider} {path}"
+            );
         }
     }
 }

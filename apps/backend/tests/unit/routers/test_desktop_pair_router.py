@@ -8,6 +8,7 @@ patches the service-layer calls so the test stays at the router layer.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core.auth import AuthContext, get_current_user
@@ -15,18 +16,21 @@ from core.auth import AuthContext, get_current_user
 
 @pytest.fixture
 def desktop_auth_ctx() -> AuthContext:
-    return AuthContext(user_id="user_alice", org_id=None, email="alice@example.com")
+    return AuthContext(user_id="user_alice", org_id="org_test", email="alice@example.com")
 
 
 @pytest.fixture
 def desktop_client(desktop_auth_ctx):
-    from main import app
+    from routers.desktop_pair import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
 
     async def _override():
         return desktop_auth_ctx
 
     app.dependency_overrides[get_current_user] = _override
-    with TestClient(app) as c:
+    with patch("routers.desktop_pair._workspace_adapter", return_value=MagicMock()), TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -69,8 +73,7 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     assert response.json() == {
         "gatewayUrl": "wss://ws-dev.isol8.co",
         "gatewayToken": "tok_xyz",
-        # Personal owner (org_id=None) → ownerId == user_id.
-        "ownerId": "user_alice",
+        "ownerId": "org_test",
         "deviceIdMac": "dev_mac_hash",
         "deviceIdCli": "dev_cli_hash",
         "commandsMac": ["system.notify", "device.info"],
@@ -84,7 +87,7 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     # The live push into the running container's trust store fires after a
     # successful pair, with both freshly derived device ids.
     push.assert_awaited_once_with(
-        owner_id="user_alice",
+        owner_id="org_test",
         device_ids={"dev_mac_hash", "dev_cli_hash"},
     )
 
@@ -167,7 +170,7 @@ def test_delete_device_204(desktop_client):
     assert kwargs["device_id"] == "dev_abc"
     # The live trust-store eviction fires too — the boot import is add-only,
     # so the JSON removal alone never evicts the device from the gateway.
-    evict.assert_awaited_once_with(owner_id="user_alice", device_id="dev_abc")
+    evict.assert_awaited_once_with(owner_id="org_test", device_id="dev_abc")
 
 
 def test_delete_device_204_when_live_eviction_fails(desktop_client):

@@ -1,8 +1,11 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import ts from "typescript";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once";
+import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
+import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
 import { applyBasicWebhookRequestGuards, registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -55,6 +58,103 @@ const ENV = {
   ISOL8_OWNER_ID: "owner_123",
   OPENCLAW_HOOK_TOKEN: "hook-token",
 };
+
+it("keeps the actual pre-adapter strict parser compatible with new backend canonical JSON", async () => {
+  const previous = await readFile(new URL("./fixtures/legacy-ingress-a45e6de.ts.fixture", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(previous, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const old: Record<string, any> = {};
+  new Function("exports", compiled)(old);
+  const canonical = ingress();
+  expect(old.parseIngress(canonical).ok).toBe(true);
+  expect(old.parseIngress({ ...canonical, invocation: { grant: "unsupported" } }).ok).toBe(false);
+  expect(parseIngress(canonical)).toEqual(old.parseIngress(canonical));
+});
+
+it("carries invocation sentinel only in the actual SDK runtime binding, never prompt fields or another ingress", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const token = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ kind: "lightbulb_local_session_invocation", aud: "lightbulb:local-sessions",
+    ownerId: ENV.ISOL8_OWNER_ID, agentId: FRIDAY, roomId: ROOM, eventId: MESSAGE, sessionKey: sessionKeyFor(FRIDAY, ROOM),
+    iat: now, exp: now + 300, jti: MESSAGE })).toString("base64url")}.runtime-only-sentinel`;
+  const event = ingress();
+  expect(parseIngress(event).ok).toBe(true);
+  expect(parseIngress({ ...event, invocation: { grant: token } }).ok).toBe(false);
+  const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+  const deps = { sdk: inboundSdk({ buildChannelInboundEventContext }), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV };
+  await dispatchRoomEvent(deps, event, token);
+  const first = dispatch.mock.calls[0][0].ctxPayload;
+  expect(first.GatewayRunToolBindings.lightbulbLocalSessions.grant).toBe(token);
+  expect(first.NativeChannelId).toBe(ROOM);
+  const { GatewayRunToolBindings: _private, ...publicContext } = first;
+  expect(JSON.stringify(publicContext)).not.toContain(token);
+  await dispatchRoomEvent(deps, ingress());
+  expect(dispatch.mock.calls[1][0].ctxPayload.GatewayRunToolBindings).toBeUndefined();
+  expect(redactSensitiveText(`X-Lightbulb-Local-Session-Token: ${token}`)).not.toContain(token);
+
+  const sdk = inboundSdk({ buildChannelInboundEventContext });
+  const handler = createInboundHandler({ ...deps, sdk });
+  const response = () => ({ setHeader: vi.fn(), end: vi.fn(), statusCode: 0 }) as any;
+  for (const [headerValue, rawHeaders, expected] of [
+    [token, ["X-Lightbulb-Local-Session-Token", token], true],
+    [undefined, [], false], ["invalid", [], false], [token.repeat(20), [], false],
+    [[token, token], [], false], [token, ["X-Lightbulb-Local-Session-Token", token, "x-lightbulb-local-session-token", token], false],
+  ] as const) {
+    const res = response();
+    await handler({ headers: { "x-lightbulb-local-session-token": headerValue }, rawHeaders } as any, res);
+    expect(res.statusCode).toBe(202);
+    // Effect-once test mock replays repeated IDs; use a fresh handler below for isolation.
+    expect(JSON.stringify(res.end.mock.calls)).not.toContain(token);
+    const fresh = createInboundHandler({ ...deps, sdk });
+    await fresh({ headers: { "x-lightbulb-local-session-token": headerValue }, rawHeaders } as any, response());
+    expect(Boolean(dispatch.mock.calls.at(-1)?.[0].ctxPayload.GatewayRunToolBindings)).toBe(expected);
+  }
+  const failing = createInboundHandler({ ...deps, sdk, channelRuntime: runtime(vi.fn(async () => { throw new Error(token); })) });
+  const failed = response();
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await failing({ headers: { "x-lightbulb-local-session-token": token }, rawHeaders: [] } as any, failed);
+    expect(failed.statusCode).toBe(500);
+    expect(JSON.stringify([failed.end.mock.calls, errors.mock.calls, warnings.mock.calls])).not.toContain(token);
+    expect(errors).not.toHaveBeenCalled();
+    expect(warnings).not.toHaveBeenCalled();
+  } finally { errors.mockRestore(); warnings.mockRestore(); }
+});
+
+it.each([["DISPATCH", "dispatched"], ["IGNORE", "ignored"], ["uncertain", "gate_error"]])(
+  "keeps the invocation header private across ambient %s admission and replay", async (decision, status) => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ kind: "lightbulb_local_session_invocation", aud: "lightbulb:local-sessions",
+      ownerId: ENV.ISOL8_OWNER_ID, agentId: FRIDAY, roomId: ROOM, eventId: MESSAGE, sessionKey: sessionKeyFor(FRIDAY, ROOM),
+      iat: now, exp: now + 300, jti: MESSAGE })).toString("base64url")}.ambient-private-sentinel`;
+    const event = ingress({ eventKind: "room_event", mentions: [], message: canonicalMessage({ mentions: [] }) });
+    const complete = vi.fn(async () => ({ stopReason: "stop", content: [{ type: "text", text: decision }] }));
+    const sdk = inboundSdk({ buildChannelInboundEventContext,
+      readJsonWebhookBodyOrReject: vi.fn(async () => ({ ok: true, value: event })) as any,
+      completeWithPreparedSimpleCompletionModel: complete,
+    });
+    const state = handlerDeps({ sdk });
+    const handler = createInboundHandler(state.deps);
+    const req = { ...request(), headers: { "x-lightbulb-local-session-token": token }, rawHeaders: ["X-Lightbulb-Local-Session-Token", token] } as IncomingMessage;
+    const first = responseRecorder();
+    await handler(req, first);
+    expect(first.statusCode).toBe(202);
+    expect(JSON.parse(first.body).status).toBe(status);
+    expect(JSON.stringify(complete.mock.calls)).not.toContain(token);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ options: expect.objectContaining({ maxTokens: 16, reasoning: "off" }) }));
+    if (status === "dispatched") {
+      const context = state.dispatch.mock.calls[0][0].ctxPayload;
+      expect(context.GatewayRunToolBindings?.lightbulbLocalSessions.grant).toBe(token);
+      const { GatewayRunToolBindings: _private, ...publicContext } = context;
+      expect(JSON.stringify(publicContext)).not.toContain(token);
+    } else expect(state.dispatch).not.toHaveBeenCalled();
+    const replay = responseRecorder();
+    await handler(req, replay);
+    expect(JSON.parse(replay.body).status).toBe("replayed");
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(state.dispatch).toHaveBeenCalledTimes(status === "dispatched" ? 1 : 0);
+    expect(first.body + replay.body).not.toContain(token);
+  },
+);
 
 function canonicalMessage(overrides: Record<string, unknown> = {}) {
   return {
@@ -289,6 +389,17 @@ function unknownContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("strict package and channel configuration", () => {
+  it("registers the optional adapter through the real full/tool-discovery SDK entry only", () => {
+    for (const mode of ["full", "tool-discovery", "discovery", "cli-metadata"]) {
+      const registerTool = vi.fn();
+      entry.register({ registrationMode: mode, registerChannel: vi.fn(), registerTool, runtime: { nodes: { list: vi.fn() } } } as any);
+      expect(registerTool.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 1 : 0);
+      if (registerTool.mock.calls.length) {
+        expect(registerTool.mock.calls[0][1]).toEqual({ names: ["lightbulb_local_sessions"] });
+        expect(registerTool.mock.calls[0][0]({})).toBeNull();
+      }
+    }
+  });
   it("keeps manifest and runtime channel schemas identical", async () => {
     const manifest = JSON.parse(
       await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),

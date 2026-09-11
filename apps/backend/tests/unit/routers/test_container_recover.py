@@ -68,7 +68,7 @@ class TestContainerRecover:
         data = response.json()
         assert data["action"] == "reprovision"
         assert data["state"] == "CONTAINER_DOWN"
-        mock_dispatch_provision.assert_called_once_with("user_test_123")
+        mock_dispatch_provision.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
     async def test_recover_error_container_reprovisions(
@@ -90,7 +90,7 @@ class TestContainerRecover:
         data = response.json()
         assert data["action"] == "reprovision"
         assert data["state"] == "CONTAINER_DOWN"
-        mock_dispatch_provision.assert_called_once_with("user_test_123")
+        mock_dispatch_provision.assert_called_once_with("org_test_456")
 
     # --- GATEWAY_DOWN: restart gateway ---
 
@@ -140,8 +140,8 @@ class TestContainerRecover:
         # dispatch's claim admits only missing/error/stopped/stale rows, so
         # dispatching against the still-"running" row would silently lose
         # the claim and start nothing.
-        mock_container_repo.update_status.assert_called_once_with("user_test_123", "error")
-        mock_dispatch_provision.assert_called_once_with("user_test_123")
+        mock_container_repo.update_status.assert_called_once_with("org_test_456", "error")
+        mock_dispatch_provision.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
     async def test_recover_running_but_no_ip_flips_to_error_then_reprovisions(
@@ -162,8 +162,8 @@ class TestContainerRecover:
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "reprovision"
-        mock_container_repo.update_status.assert_called_once_with("user_test_123", "error")
-        mock_dispatch_provision.assert_called_once_with("user_test_123")
+        mock_container_repo.update_status.assert_called_once_with("org_test_456", "error")
+        mock_dispatch_provision.assert_called_once_with("org_test_456")
 
     # --- HEALTHY: no-op ---
 

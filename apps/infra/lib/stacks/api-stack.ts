@@ -654,6 +654,7 @@ export class ApiStack extends cdk.Stack {
       memorySize: 512,
       environment: {
         MESSAGING_TABLE: messagingTable.tableName,
+        USERS_TABLE: `${tablePrefix(env)}users`,
         APPSYNC_EVENTS_HTTP_ENDPOINT: this.appsyncEventsHttpEndpoint,
         APPSYNC_EVENTS_REGION: this.appsyncEventsRegion,
       },
@@ -664,6 +665,14 @@ export class ApiStack extends cdk.Stack {
       }),
     });
     messagingTable.grantReadData(projectorFn);
+    // Expo push tokens live on the users table, owned by DatabaseStack. Imported
+    // by name so the projector needs no cross-stack prop (read-only: token
+    // pruning would need a writer).
+    dynamodb.Table.fromTableName(
+      this,
+      "UsersTableForProjector",
+      `${tablePrefix(env)}users`,
+    ).grantReadData(projectorFn);
     roomsNamespace.grantPublish(projectorFn);
     usersNamespace.grantPublish(projectorFn);
     const projectorEventSource = new lambdaEventSources.DynamoEventSource(

@@ -51,6 +51,7 @@ import {
   openPanel,
   openChatPanel,
   openMessagePanel,
+  openSessionPanel,
   closeSubjectDeleted,
   isShellOperationInProgress,
   useWorkspaceState,
@@ -209,7 +210,11 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
       // agentId — openChatPanel no-ops on an undefined agentId, so route
       // those through openMessagePanel instead.
       if (command.descriptor.params.roomId) {
-        openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
+        if (command.descriptor.params.sessionId) {
+          openSessionPanel(command.descriptor.params.roomId, command.descriptor.params.sessionId);
+        } else {
+          openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
+        }
       } else {
         openChatPanel(command.descriptor.params.agentId);
       }

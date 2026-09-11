@@ -15,12 +15,14 @@ import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSecti
 import { teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
+import { useRoomCommandResults } from "@/components/messaging/roomCommands";
 
 type FlatItem = {
-  kind: "nav" | "agent" | "issue" | "project";
+  kind: "conversation" | "nav" | "agent" | "issue" | "project";
   id: string;
   label: string;
   path: string;
+  run?: () => void;
 };
 
 export interface CommandPaletteProps {
@@ -76,21 +78,24 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
     [query, provisioningEnabled],
   );
   const { agents, issues, projects } = useFilteredCommandResults(query, open);
+  const conversations = useRoomCommandResults(query, open);
 
   const flatItems = useMemo<FlatItem[]>(() => {
     const items: FlatItem[] = [];
+    conversations.forEach((c) => items.push({ kind: "conversation", id: c.id, label: c.label, path: "", run: c.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
     issues.forEach((i) => items.push({ kind: "issue", id: i.id, label: i.title, path: teamsDetailUrl("issue", i.id) }));
     projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: teamsDetailUrl("project", p.id) }));
     return items;
-  }, [navResults, agents, issues, projects]);
+  }, [conversations, navResults, agents, issues, projects]);
 
   // Derive a clamped index from raw state — no setState-in-effect needed.
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
 
   const select = (item: FlatItem) => {
     onOpenChange(false);
+    if (item.run) { item.run(); return; }
     // Palette targets are all in-shell `/chat?...` URLs — commit them through
     // the History API (same mechanism as handleShellLinkClick) so a jump
     // costs no RSC round-trip on the force-dynamic /chat route.
@@ -145,6 +150,23 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
             </div>
           ) : (
             <>
+              {conversations.length > 0 && (
+                <Group label="Conversations">
+                  {conversations.map((c) => {
+                    const idx = flatItems.findIndex((it) => it.kind === "conversation" && it.id === c.id);
+                    return (
+                      <Row
+                        key={c.id}
+                        label={c.label}
+                        sublabel={c.sublabel}
+                        selected={selectedIndex === idx}
+                        onMouseEnter={() => setSelectedIndex(idx)}
+                        onClick={() => select(flatItems[idx])}
+                      />
+                    );
+                  })}
+                </Group>
+              )}
               {navResults.length > 0 && (
                 <Group label="Navigate">
                   {navResults.map((a) => {

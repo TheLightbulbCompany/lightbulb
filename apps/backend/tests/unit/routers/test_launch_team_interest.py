@@ -97,7 +97,7 @@ async def test_team_interest_is_rate_limited_per_ip(configured, async_client):
 
 # --- the service ------------------------------------------------------------
 
-AUTH = AuthContext(user_id="user_t", email="founder@tuple.com")
+AUTH = AuthContext(user_id="human_t", org_id="user_t", org_role="org:admin", email="founder@tuple.com")
 
 
 class _Store:

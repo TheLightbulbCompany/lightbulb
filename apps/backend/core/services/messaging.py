@@ -45,6 +45,11 @@ DEFAULT_ROOM_WELCOME = (
 _STARTER_KEYS = ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
 
 API_ERROR_STATUS = {
+    "LOCAL_SESSION_FORBIDDEN": 403,
+    "LOCAL_SESSION_NOT_FOUND": 404,
+    "LOCAL_SESSION_CONFLICT": 409,
+    "LOCAL_SESSION_UNSUPPORTED": 409,
+    "LOCAL_SESSION_OFFLINE": 409,
     "INVALID_REQUEST": 400,
     "ROOM_FORBIDDEN": 403,
     "ROOM_NOT_FOUND": 404,
@@ -70,6 +75,7 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
         "room.typing.changed",
         "room.run.frame",
         "room.metadata.changed",
+        "room.resources.changed",
     }
 )
 USER_LIVE_EVENT_TYPES = frozenset(

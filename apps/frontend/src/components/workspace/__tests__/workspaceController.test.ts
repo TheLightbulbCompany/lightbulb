@@ -6,6 +6,7 @@ import {
   openChatPanel,
   openChatPanelWithDraft,
   openMessagePanel,
+  openSessionPanel,
   closeSubjectDeleted,
   activateMessagesPanel,
   syncMessagesPanelAgent,
@@ -108,6 +109,20 @@ beforeEach(() => {
 });
 
 describe("workspaceController", () => {
+  it("routes session URL intents into one Messages pane and refreshes repeated intent identity", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    const command = parseCommand("?panel=chat&room=r1&session=s1");
+    expect(command?.descriptor.params).toEqual({ roomId: "r1", sessionId: "s1" });
+    openSessionPanel(command!.descriptor.params.roomId, command!.descriptor.params.sessionId);
+    const first = api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionIntent;
+    openSessionPanel("r1", "s1");
+    expect(api.addPanel).toHaveBeenCalledTimes(1);
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionIntent).not.toBe(first);
+    openMessagePanel("r1", "m1");
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionId).toBeUndefined();
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionIntent).toBeUndefined();
+  });
   it("openPanel adds when missing, focuses when present, never duplicates", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "friday-id");

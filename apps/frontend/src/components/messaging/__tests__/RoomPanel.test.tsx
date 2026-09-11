@@ -640,3 +640,10 @@ it("lets a second ArrowUp reopen the edit form for the same message after Cancel
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
   expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
 });
+
+it("opens exactly one edit form when the ArrowUp target is also the open thread's root", () => {
+  const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[message, own]} selectedThreadId={own.messageId} onUpdateMessage={vi.fn()} />);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getAllByRole("textbox", { name: "Edit message" })).toHaveLength(1);
+});

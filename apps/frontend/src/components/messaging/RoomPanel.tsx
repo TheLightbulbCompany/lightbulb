@@ -353,7 +353,7 @@ function RoomContent({
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
       message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
-      startEditing={editTarget === message.messageId}
+      startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}

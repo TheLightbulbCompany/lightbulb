@@ -50,6 +50,7 @@ const room: RoomDetail = {
   roomId: "room-1", kind: "dm", name: null, roomRevision: 1,
   deliveryKey: "delivery", lastMessageSeq: 0, lastMessageAt: null,
   unreadCount: 0, lastReadSeq: 0, createdAt: "2026-09-10T00:00:00Z", updatedAt: "2026-09-10T00:00:00Z",
+  topic: null, starred: false, muted: false, sectionId: null, pinnedMessageIds: [],
   members: [
     { kind: "human", id: "owner", displayName: "Owner", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },
     { kind: "agent", id: "agent-friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },

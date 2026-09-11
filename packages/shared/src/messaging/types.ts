@@ -56,6 +56,10 @@ export interface RoomSummary {
   lastMessageAt: string | null;
   unreadCount: number;
   updatedAt: string;
+  topic: string | null;
+  starred: boolean;
+  muted: boolean;
+  sectionId: string | null;
 }
 
 export interface RoomDetail extends RoomSummary {
@@ -63,10 +67,27 @@ export interface RoomDetail extends RoomSummary {
   members: RoomMember[];
   lastReadSeq: number;
   createdAt: string;
+  pinnedMessageIds: string[];
+}
+
+export interface RoomSection {
+  id: string;
+  name: string;
 }
 
 export interface RoomListResponse {
   rooms: RoomSummary[];
+  sections: RoomSection[];
+}
+
+export interface MemberPrefsRequest {
+  starred?: boolean;
+  muted?: boolean;
+  sectionId?: string | null;
+}
+
+export interface SectionsRequest {
+  sections: RoomSection[];
 }
 
 export interface CreateRoomRequest {
@@ -82,7 +103,8 @@ export interface CreateRoomRequest {
 }
 
 export interface PatchRoomRequest {
-  name: string | null;
+  name?: string | null;
+  topic?: string | null;
 }
 
 export interface UpsertRoomMemberRequest {

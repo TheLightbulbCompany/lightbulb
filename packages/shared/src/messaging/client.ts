@@ -8,6 +8,7 @@ import type {
   CreateRoomRequest,
   LiveConfig,
   MemberKind,
+  MemberPrefsRequest,
   MessagePage,
   PatchRoomRequest,
   ReadCursorRequest,
@@ -15,6 +16,7 @@ import type {
   RoomDetail,
   RoomListResponse,
   RunStatusResponse,
+  SectionsRequest,
   SteerRunRequest,
   SteerRunResponse,
   TypingRequest,
@@ -50,7 +52,11 @@ export interface MessagingClient {
   uploadAttachment(roomId: string, image: File): Promise<ImageAttachment>;
   downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
-  markUnread(roomId: string): Promise<ReadCursorResponse>;
+  markUnread(roomId: string, fromSeq?: number): Promise<ReadCursorResponse>;
+  setMemberPrefs(roomId: string, request: MemberPrefsRequest): Promise<RoomDetail>;
+  putSections(request: SectionsRequest): Promise<RoomListResponse>;
+  leaveRoom(roomId: string): Promise<void>;
+  setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
@@ -88,7 +94,17 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),
     markRead: (roomId, request) => api.put(`${roomPath(roomId)}/read`, request) as Promise<ReadCursorResponse>,
-    markUnread: (roomId) => api.post(`${roomPath(roomId)}/unread`, {}) as Promise<ReadCursorResponse>,
+    markUnread: (roomId, fromSeq) => api.post(
+      `${roomPath(roomId)}/unread`, fromSeq === undefined ? {} : { fromSeq },
+    ) as Promise<ReadCursorResponse>,
+    setMemberPrefs: (roomId, request) => api.patch(`${roomPath(roomId)}/me`, request) as Promise<RoomDetail>,
+    putSections: (request) => api.put("/messaging/me/sections", request) as Promise<RoomListResponse>,
+    async leaveRoom(roomId) {
+      await api.post(`${roomPath(roomId)}/leave`, {});
+    },
+    setPin: (roomId, messageId, pinned) => (pinned
+      ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})
+      : api.del(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`)) as Promise<RoomDetail>,
     async setTyping(request) {
       await api.post("/messaging/typing", request);
     },

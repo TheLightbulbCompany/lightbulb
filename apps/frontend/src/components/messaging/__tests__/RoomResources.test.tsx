@@ -43,7 +43,7 @@ function setup(roomId = "room") {
   const source = { client, connectionRevision: 1, onEvent: (handler: (event: LiveEvent) => void) => { handlers.add(handler); return () => { handlers.delete(handler); }; } };
   const people = ["alice", "bob", "outsider"].map((id) => ({ kind: "human" as const, id, displayName: id[0].toUpperCase() + id.slice(1), mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "now", joinedSeq: 0 }));
   const props: RoomPanelProps = {
-    ownerScopeId: "org", currentUserId: "bob", roomId, room: { roomId, kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "now" },
+    ownerScopeId: "org", currentUserId: "bob", roomId, room: { roomId, kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "now", topic: null, starred: false, muted: false, sectionId: null },
     state: "ready", httpReady: true, liveConnected: true, participants: people, messages: [], resourceSource: source,
     composer: { text: "Room draft stays here", onTextChange: vi.fn(), members: people, clientMessageId: "room-draft", sendState: "idle", onSubmit: vi.fn() },
   };

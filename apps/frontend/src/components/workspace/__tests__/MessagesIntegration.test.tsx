@@ -36,6 +36,7 @@ function dm(roomId: string, agentId: string, name: string): RoomDetail {
     roomId, name, kind: "dm", roomRevision: 1, deliveryKey: `key-${roomId}`,
     lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, lastReadSeq: 0,
     updatedAt: joined.joinedAt, createdAt: joined.joinedAt,
+    topic: null, starred: false, muted: false, sectionId: null, pinnedMessageIds: [],
     members: [
       { ...joined, kind: "human", id: "user-a", displayName: "Alice", role: "owner", listenMode: null },
       { ...joined, kind: "agent", id: agentId, displayName: agentId, role: "member", listenMode: "active" },

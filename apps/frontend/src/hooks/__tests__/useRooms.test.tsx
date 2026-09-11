@@ -71,7 +71,7 @@ vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "use
 import { mergeCanonicalMessages, useRooms } from "../useRooms";
 
 it("keeps newer reactions when message snapshots arrive out of order", () => {
-  const latest = { messageId: "m", messageSeq: 1, reactionRevision: 2, reactions: { "👍": ["user-a"] } } as CanonicalRoomMessage;
+  const latest = { ...firstMessage, reactionRevision: 2, reactions: { "👍": ["user-a"] } };
   const stale = { ...latest, reactionRevision: 1, reactions: {} };
   expect(mergeCanonicalMessages([latest], [stale])).toEqual([latest]);
   expect(mergeCanonicalMessages([stale], [latest])).toEqual([latest]);

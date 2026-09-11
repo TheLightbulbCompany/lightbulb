@@ -1,5 +1,6 @@
 """Canonical messaging table — transaction shapes and ordering guarantees."""
 
+import asyncio
 import time
 from unittest.mock import patch
 
@@ -113,6 +114,11 @@ async def test_reactions_persist_idempotently_and_enforce_membership_and_owner(t
     updated = await repo.set_reaction(OWNER, room_id, seq, USER_B, "👍", False)
     assert updated["reactions"] == {}
     assert updated["messageSeq"] == seq
+    await asyncio.gather(
+        repo.set_reaction(OWNER, room_id, seq, USER_A, "❤️", True),
+        repo.set_reaction(OWNER, room_id, seq, USER_B, "❤️", True),
+    )
+    assert (await repo.get_message(room_id, seq))["reactions"] == {"❤️": [USER_A, USER_B]}
 
 
 @pytest.mark.asyncio

@@ -32,7 +32,7 @@ export function buildTimeline(messages: readonly RoomMessage[], { readSeq, now =
       items.push({ kind: "date", key: `date:${lastDay}`, label: dateDividerLabel(created, now), date: created });
       boundary = true;
     }
-    if (!newLineDone && message.messageSeq > (readSeq as number)) {
+    if (!newLineDone && readSeq !== null && message.messageSeq > readSeq) {
       items.push({ kind: "new", key: "new" });
       newLineDone = true;
       boundary = true;

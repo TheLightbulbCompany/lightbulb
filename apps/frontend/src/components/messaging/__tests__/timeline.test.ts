@@ -43,6 +43,18 @@ describe("buildTimeline", () => {
     const items = buildTimeline([at(1, "2026-09-11T10:00:00Z"), at(2, "2026-09-11T10:01:00Z")], { readSeq: 1, now });
     expect(new Set(items.map((item) => item.key)).size).toBe(items.length);
   });
+  it("returns no items for an empty message list", () => {
+    expect(buildTimeline([], { readSeq: 1, now })).toEqual([]);
+  });
+  it("treats an invalid createdAt as unmergeable but self-contained", () => {
+    const items = buildTimeline([at(1, "2026-09-11T10:00:00Z"), at(2, "not-a-date"), at(3, "2026-09-11T10:01:00Z")], { readSeq: null, now });
+    expect(items.map((item) => item.kind)).toEqual(["date", "message", "message", "message"]);
+    expect(items.filter((item) => item.kind === "message").map((item) => item.kind === "message" && item.collapsed)).toEqual([false, false, false]);
+  });
+  it("treats readSeq 0 as a real read position, distinct from null", () => {
+    const items = buildTimeline([at(1, "2026-09-11T10:00:00Z")], { readSeq: 0, now });
+    expect(items.map((item) => item.kind)).toEqual(["date", "new", "message"]);
+  });
 });
 
 describe("dateDividerLabel", () => {

@@ -1451,7 +1451,7 @@ export class ServiceStack extends cdk.Stack {
       // verifier. Missing one loses renewal, expiry, refund, and billing-retry
       // reconciliation. These IDs are public; the trust anchor is the pinned
       // certificate directory below.
-      APPLE_IAP_BUNDLE_ID: "company.thelightbulb.mobile",
+      APPLE_IAP_BUNDLE_ID: "co.isol8.mobile",
       // Retained as the allowlist for historical server notifications until
       // App Store Connect proves no subscription can still be live. A
       // transaction naming anything else is refused rather than granted.

@@ -73,6 +73,17 @@ every one of these:**
 - **The Expo project slug `isol8-mobile`** — Expo slugs cannot be renamed
   (dashboard and eas-cli have no rename; only display name changes).
   `apps/mobile/app.json` must keep `slug: "isol8-mobile"` to match the server.
+- **The mobile bundle id `co.isol8.mobile`** — DECIDED 2026-09-07, after a rename
+  to `company.thelightbulb.mobile` shipped in code (#2098) and stranded the app:
+  ASC has exactly ONE record, **6788944100 on `co.isol8.mobile`**, and no App ID
+  was ever registered for the new identifier, so nothing could be signed or
+  uploaded. Keeping the old id preserves the record, build history through build
+  18, the open Resolution Center thread on submission 05d24a7d, the App ID's Push
+  capability + APNs key `W22KL7HTVW`, and the `co.isol8.signin` service id. A
+  bundle id is invisible to users; a new record restarts review from zero.
+  `APPLE_IAP_BUNDLE_ID` and the `apple-app-site-association` appID must match it.
+  The IAP **product** id deliberately stays `company.thelightbulb.mobile.plan.monthly`
+  — no product exists in ASC yet, so that one is free to carry the new brand.
 - **`-isol8.N` image tags** and the `isol8/*` fork branches in
   `openclaw-version.json` / `paperclip-version.json` — they are rollback refs.
 - **Historical issue/PR references** (`Isol8AI/isol8#2053`, `isol8 #2016`) — quote
@@ -158,9 +169,7 @@ CloudWatch `service` dimension, the identical string in a different role.
 **Still open (human-gated):** the `isol8.co` Google Workspace retirement + human
 mailbox move to `thelightbulb.company` (including the AWS root-account email,
 SNS/Budgets subscribers, and the three `google#…@isol8.co` integration rows);
-the mobile native identifiers (`co.isol8.mobile` bundle id + IAP product id — they
-change with the next App Store record); the legal-entity paperwork and the
-Termly/Meta follow-ups.
+the legal-entity paperwork and the Termly follow-ups.
 
 ---
 
@@ -1247,7 +1256,7 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 
 ## Mobile App
 
-Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is still `co.isol8.mobile`** — it changes with the next App Store record (the app never shipped, so the record is recreated rather than migrated). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
+Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is `co.isol8.mobile` and is staying** (decided 2026-09-07 — see the Rebrand section; it is bound to App Store record 6788944100 and a rename strands the app). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
 
 - **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.flickmeon.ai).
 - Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]` (a room conversation over the messaging client, NOT a gateway socket), `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).

@@ -103,6 +103,21 @@ it("navigates search results into controlled threads and focuses main results", 
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
 
+it("does not leave focus on a stale thread trigger when a search result targets a main message", async () => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Reply text", threadRootMessageId: message.messageId };
+  render(<RoomPanel {...props} messages={[message, reply]} />);
+  const replyTrigger = screen.getByRole("button", { name: "Reply in thread" });
+  await userEvent.click(replyTrigger);
+  expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  await userEvent.type(screen.getByRole("searchbox"), "hello");
+  await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
+  await waitFor(() => expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument());
+  expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
+  expect(replyTrigger).not.toHaveFocus();
+});
+
 it("names a DM for its counterpart and uses canonical author and member activity", () => {
   render(<RoomPanel {...props} />);
   expect(screen.getByRole("region", { name: "Friday" })).toBeInTheDocument();

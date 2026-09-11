@@ -27,6 +27,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   const region = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
+  const handled = useRef<string | null>(null);
   const [unseen, setUnseen] = useState(0);
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const items = buildTimeline(messages, { readSeq });
@@ -40,7 +41,12 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   }
 
   // Room change: newest message on open.
-  useLayoutEffect(() => { scrollToBottom(); lastSeq.current = messages.at(-1)?.messageSeq ?? 0; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [roomId]);
+  useLayoutEffect(() => {
+    scrollToBottom();
+    lastSeq.current = messages.at(-1)?.messageSeq ?? 0;
+    handled.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
 
   // Growth: stick to the bottom, or count unseen and show the pill.
   useLayoutEffect(() => {
@@ -52,12 +58,17 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     else setUnseen((current) => current + added);
   }, [messages, ownLastSentSeq]);
 
+  // Target message: scroll/focus/highlight once per target, so an unrelated
+  // message arriving later doesn't re-trigger the same target. Kept in the
+  // deps only so a target that isn't rendered yet (history still loading) is
+  // retried as more messages come in.
   useEffect(() => {
-    if (!targetMessageId) return;
+    if (!targetMessageId || handled.current === targetMessageId) return;
     const node = region.current?.querySelector<HTMLElement>(`[data-message-id="${escapeSelector(targetMessageId)}"]`);
     if (!node) return;
     node.scrollIntoView({ block: "center" });
     node.focus({ preventScroll: true });
+    handled.current = targetMessageId;
     setHighlighted(targetMessageId);
     const timer = setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
     return () => clearTimeout(timer);

@@ -197,6 +197,8 @@ function RoomContent({
 }: RoomPanelProps) {
   const id = useId();
   const [searchTarget, setSearchTarget] = useState<Pick<RoomMessage, "messageId" | "threadRootMessageId"> | null>(null);
+  // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
+  const [sentSinceOpen, setSentSinceOpen] = useState(false);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -227,9 +229,8 @@ function RoomContent({
   const actionable = httpReady && !!visibleRoom;
   const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
   const newLineSeq = readSeqAtOpen ?? null;
-  const ownSeqs = messages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
+  const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
-  const sentSinceOpen = ownLastSentSeq !== null && newLineSeq !== null && ownLastSentSeq > newLineSeq;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const selectedContext = selection?.kind === "context" ? contexts.find((context) => context.id === selection.id) : undefined;
   const showDetail = !!(parentMessage || selectedContext);
@@ -324,7 +325,8 @@ function RoomContent({
     setSelection({ kind, id: targetId });
   }
 
-  function renderMessage(message: RoomMessage, inThread = false, collapsed = false) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Task 4 wires collapsed rendering through this parameter
+  function renderMessage(message: RoomMessage, inThread = false, _collapsed = false) {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
@@ -429,6 +431,10 @@ function RoomContent({
             loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
             onSelect={(message) => {
               const root = message.threadRootMessageId;
+              // Otherwise the [selection] effect's else-branch focuses this stale trigger
+              // (e.g. a "Reply in thread" button) once selection clears below, racing
+              // RoomTimeline's own focus of the newly targeted main message.
+              trigger.current = null;
               onSelectThread?.(root);
               setSelection(root ? { kind: "thread", id: root } : null);
               setContextCollapsed(true);
@@ -460,14 +466,17 @@ function RoomContent({
       <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
         targetMessageId={searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget.messageId : targetMessageId ?? null}
         renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
-        empty={<div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+        empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
         {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
           <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
         </article>)}
         {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
       </RoomTimeline>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
-      <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
+      <RoomComposer {...composer}
+        onSubmit={(request) => { setSentSinceOpen(true); return composer.onSubmit(request); }}
+        onRetry={composer.onRetry ? (request) => { setSentSinceOpen(true); return composer.onRetry!(request); } : undefined}
+        disabled={!actionable || composer.disabled} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>

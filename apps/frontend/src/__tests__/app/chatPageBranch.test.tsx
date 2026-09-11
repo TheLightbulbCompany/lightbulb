@@ -23,8 +23,8 @@ vi.mock("@/components/workspace/WorkspaceShell", () => ({
   WorkspaceShell: () => <div data-testid="workspace-shell" />,
 }));
 vi.mock("@/components/chat/ChatLayout", () => ({
-  // Ignore children so the mobile shell's AgentChatWindow / ControlPanelRouter
-  // subtree never mounts (no gateway, no RPC), but keep the header status slot.
+  // Ignore children so the mobile shell's MessagingWorkspace / ControlPanelRouter
+  // subtree never mounts (no live events, no RPC), but keep the header status slot.
   ChatLayout: ({ statusIndicator }: { statusIndicator?: React.ReactNode }) => (
     <div data-testid="chat-layout">{statusIndicator}</div>
   ),

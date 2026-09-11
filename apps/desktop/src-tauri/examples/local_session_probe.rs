@@ -1,4 +1,5 @@
 //! Disposable-session feasibility probe. See the native-probe results document for reruns.
+use lightbulb_desktop::local_sessions::{supported_claude_version, verify_claude_runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -30,7 +31,8 @@ struct Identity {
 
 fn validate(expected: &Identity, actual: &Identity) -> Result<()> {
     match (actual.provider.as_str(), actual.installed_version.as_str()) {
-        ("claude", "2.1.268") | ("codex", "0.149.0") => (),
+        ("claude", version) if supported_claude_version(version) => (),
+        ("codex", "0.149.0") => (),
         _ => {
             return Err("unsupported installed provider version; rerun feasibility research".into())
         }
@@ -201,14 +203,15 @@ fn load(path: &str) -> Result<Identity> {
     )?;
     if identity.provider == "claude" {
         let since = claude_generation_cutoff(&identity)?;
-        verify_running_claude(
-            &identity,
-            &since,
-            File::open(&identity.transcript).map_err(|e| e.to_string())?,
-        )?;
+        let runtime =
+            verify_claude_runtime(Path::new(&identity.transcript), &identity.session, &since)?;
         if generation(identity.pid)? != identity.generation {
             return Err("process changed during version verification".into());
         }
+        eprintln!(
+            "runtime_version={runtime} installed_version={}",
+            identity.installed_version
+        );
     }
     Ok(identity)
 }
@@ -249,52 +252,6 @@ fn process_generation_cutoff(pid: u32, registered_ms: u64) -> Result<String> {
         ],
     )?;
     Ok(format!("{}.{:03}Z", prefix.trim(), cutoff % 1000))
-}
-
-fn verify_running_claude(identity: &Identity, since: &str, mut reader: impl Read) -> Result<()> {
-    let mut decoder = JsonLines::default();
-    let mut verified = false;
-    loop {
-        let mut bytes = [0u8; 65536];
-        let n = reader.read(&mut bytes).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        for row in decoder.push(&bytes[..n])? {
-            if !matches!(row["type"].as_str(), Some("user" | "assistant")) {
-                continue;
-            }
-            let Some(timestamp) = row["timestamp"].as_str() else {
-                continue;
-            };
-            // This probe only recognizes the observed fixed-width UTC millisecond format.
-            let canonical =
-                timestamp
-                    .bytes()
-                    .zip(b"0000-00-00T00:00:00.000Z")
-                    .all(|(actual, expected)| {
-                        if *expected == b'0' {
-                            actual.is_ascii_digit()
-                        } else {
-                            actual == *expected
-                        }
-                    });
-            if timestamp.len() != 24 || !canonical || timestamp < since {
-                continue;
-            }
-            if row["sessionId"] != identity.session || row["version"] != "2.1.268" {
-                return Err("current Claude execution has mismatched session or unsupported runtime version".into());
-            }
-            verified = true;
-        }
-    }
-    if !verified {
-        return Err(
-            "no current-generation Claude version evidence; submit a native terminal prompt first"
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 fn save(path: &str, identity: &Identity) -> Result<()> {
@@ -352,7 +309,7 @@ fn run() -> Result<()> {
             } else {
                 let mut socket = UnixStream::connect(identity.socket.as_ref().ok_or("missing socket")?).map_err(|e| e.to_string())?;
                 socket.set_write_timeout(Some(Duration::from_secs(3))).map_err(|e| e.to_string())?;
-                // Installed 2.1.268 diagnostic envelope, not a stable published API. No auth/own-child token.
+                // Verified 2.1.268/269 peer envelope, not a stable published API. No auth/own-child token.
                 let wire = json!({"type":"user","from":"lightbulb-native-probe","message":{"role":"user","content":args[3]}});
                 writeln!(socket, "{wire}").map_err(|e| e.to_string())?;
                 println!("{}", json!({"admission":"socket_written_delivery_unknown","elapsed_ms":start.elapsed().as_millis()}));
@@ -399,6 +356,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn verify_running_claude(
+        identity: &Identity,
+        since: &str,
+        mut reader: impl Read,
+    ) -> Result<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        std::io::copy(&mut reader, &mut File::create(&path).unwrap()).unwrap();
+        verify_claude_runtime(&path, &identity.session, since)
+    }
     fn identity() -> Identity {
         Identity {
             provider: "claude".into(),
@@ -512,6 +479,21 @@ mod tests {
                 .collect();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0]["text"], "done");
+        }
+    }
+
+    #[test]
+    fn claude_269_install_does_not_relabel_the_running_version() {
+        let mut id = identity();
+        id.installed_version = "2.1.269".into();
+        assert!(validate(&id, &id).is_ok());
+        let since = "2026-09-11T19:20:16.000Z";
+        for runtime in ["2.1.268", "2.1.269"] {
+            let row = json!({"type":"user","sessionId":"synthetic-session","timestamp":since,"version":runtime});
+            assert_eq!(
+                verify_running_claude(&id, since, format!("{row}\n").as_bytes()).map(|v| json!(v)),
+                Ok(json!(runtime))
+            );
         }
     }
 

@@ -4,6 +4,10 @@ mod codex;
 pub mod enrollment;
 mod transport;
 mod workspace;
+pub use claude::{
+    supported_version as supported_claude_version,
+    verify_current_generation as verify_claude_runtime,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

@@ -236,6 +236,29 @@ it("groups only authorized resources, targets session input separately, and rest
   expect(trigger).toHaveFocus();
 });
 
+it.each([403, 404])("revokes a stale session tab after a denied follow-up (%s)", async status => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  expect(await screen.findByText("Native event 250")).toBeInTheDocument();
+  const input = screen.getByRole("textbox", { name: /Send to Codex/ });
+  await userEvent.type(input, "Stale tab follow-up");
+  expect(input).toHaveValue("Stale tab follow-up");
+  f.client.submitLocalSessionCommand.mockRejectedValueOnce(new ApiError(status, {}, "access removed"));
+
+  await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
+  expect(await screen.findByText(/Access to these resources was removed/)).toBeInTheDocument();
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledTimes(1);
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledWith("room", session.sessionId,
+    expect.objectContaining({ kind: "send", text: "Stale tab follow-up", expectedGeneration: "g1" }));
+  expect(f.client.getLocalSessionCommand).not.toHaveBeenCalled();
+  expect(f.client.listLocalSessionEvents).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("region", { name: "Native session history" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /Send to Codex/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Open Codex/ })).not.toBeInTheDocument();
+  expect(screen.getByDisplayValue("Room draft stays here")).toBeInTheDocument();
+});
+
 it("opens recent work, bounds retained history, and makes older and newer regions recoverable", async () => {
   const f = setup();
   render(<RoomPanel {...f.props} />);

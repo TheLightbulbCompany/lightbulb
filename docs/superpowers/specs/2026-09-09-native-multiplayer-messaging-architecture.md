@@ -901,10 +901,17 @@ cadence and never publish one AppSync event per model token.
   answer Gauge without inventing a second peer transcript. For every agent sender,
   the plugin supplies OpenClaw's native pair-loop facts—one workspace scope shared
   by all local accounts, room ID, sender agent, receiving agent, and canonical
-  message ID—so upstream's
-  retry-deduplicated cooldown stops pathological ping-pong. Do not add a second
-  Lightbulb turn-budget state machine unless production measurements show the
-  upstream pair guard is insufficient.
+  message ID—so upstream's retry-deduplicated cooldown stops pathological
+  ping-pong. A plugin `409 not_admitted` is a terminal refusal: the backend advances
+  the delivery cursor instead of retrying the message after the cooldown. Before a
+  native `room_event` reaches the full agent turn, the plugin asks the explicitly
+  configured utility model for a tool-free `IGNORE`/`DISPATCH` relevance decision
+  over bounded recent context and the agent's Paperclip role. A missing utility
+  model, malformed output, or a failed decision drops the optional ambient turn
+  instead of falling through to the primary model. Explicit DMs and mentions bypass
+  this gate. This is a cost optimization, while the Bedrock/Metronome admission
+  ledger remains the spend fence; do not add a second Lightbulb turn-budget state
+  machine without production evidence that both controls are insufficient.
 - Explicitly set `tools.sessions.visibility: "agent"` and
   `tools.agentToAgent.enabled: false`; pinned 9.3 otherwise defaults to global
   cross-agent session visibility.

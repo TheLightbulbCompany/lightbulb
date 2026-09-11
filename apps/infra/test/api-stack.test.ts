@@ -295,7 +295,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
         VisibilityTimeout: 300,
         ReceiveMessageWaitTimeSeconds: 20,
         KmsMasterKeyId: expect.anything(),
-        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 8 }),
+        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 360 }),
       }),
     );
     expect(byName["lightbulb-dev-openclaw-work-dlq.fifo"]).toEqual(

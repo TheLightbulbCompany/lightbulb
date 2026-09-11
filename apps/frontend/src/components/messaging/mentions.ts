@@ -14,12 +14,14 @@ interface TokenEntry {
 // ONE grammar for both readers: what renders as a chip is exactly what
 // resolves to a structured mention on send. Split them and a typed token can
 // look mentioned and notify nobody.
+// A human answers to their handle AND their display name: rows that predate
+// server-side human handles carry mentionHandle: null and are still addressed
+// by name.
 function tokenEntries(participants: readonly Target[]): TokenEntry[] {
   return participants
-    .map((participant) => ({
-      participant,
-      token: participant.kind === "agent" ? participant.mentionHandle : participant.displayName,
-    }))
+    .flatMap((participant) =>
+      [participant.mentionHandle, participant.kind === "human" ? participant.displayName : null]
+        .map((token) => ({ participant, token })))
     .filter((entry): entry is TokenEntry => !!entry.token)
     .sort((left, right) => right.token.length - left.token.length);
 }

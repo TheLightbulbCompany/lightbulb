@@ -19,6 +19,12 @@ describe("linkifyMentions", () => {
   it("does not link partial words or unknown handles", () => {
     expect(linkifyMentions("email@friday.ai @nobody @fridays", [], participants)).toBe("email@friday.ai @nobody @fridays");
   });
+  it("links a human by their handle and still by their display name", () => {
+    const withHandle = [{ kind: "human" as const, id: "u1", displayName: "Aden Kim", mentionHandle: "aden-kim" }];
+    expect(linkifyMentions("@aden-kim and @Aden Kim", [], withHandle))
+      .toBe("[@aden-kim](mention:human:u1) and [@Aden Kim](mention:human:u1)");
+    expect(resolveTypedMentions("@aden-kim", withHandle)).toEqual([{ kind: "human", id: "u1" }]);
+  });
   it("links a structured mention even when the text token differs in case", () => {
     expect(linkifyMentions("@FRIDAY?", [{ kind: "agent", id: "a1" }], participants)).toBe("[@FRIDAY](mention:agent:a1)?");
   });

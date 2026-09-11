@@ -31,3 +31,27 @@ describe("parseMentionHref", () => {
     expect(parseMentionHref("mention:robot:a1")).toBeNull();
   });
 });
+
+import { resolveTypedMentions } from "../mentions";
+
+describe("resolveTypedMentions", () => {
+  const participants = [
+    { kind: "agent" as const, id: "agent-friday", displayName: "Friday", mentionHandle: "friday" },
+    { kind: "human" as const, id: "user-aden", displayName: "Aden Kim", mentionHandle: null },
+  ];
+  it("resolves a typed agent handle and a typed human display name", () => {
+    expect(resolveTypedMentions("@friday can you ping @Aden Kim", participants)).toEqual([
+      { kind: "agent", id: "agent-friday" },
+      { kind: "human", id: "user-aden" },
+    ]);
+  });
+  it("is case-insensitive and de-duplicates", () => {
+    expect(resolveTypedMentions("@Friday @friday", participants)).toEqual([{ kind: "agent", id: "agent-friday" }]);
+  });
+  it("ignores tokens inside code spans and fences, and unknown tokens", () => {
+    expect(resolveTypedMentions("`@friday` and ```\n@friday\n``` and @nobody", participants)).toEqual([]);
+  });
+  it("returns an empty list when the room has no mentionable members", () => {
+    expect(resolveTypedMentions("@friday", [])).toEqual([]);
+  });
+});

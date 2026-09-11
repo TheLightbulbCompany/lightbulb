@@ -192,14 +192,29 @@ export function describePanel(
 
   if (key === "chat") {
     const agentId = params.agent ?? params.agentId;
-    if (!agentId) return null;
-    return {
-      panelId: MESSAGES_PANEL_ID,
-      component: "chat",
-      title: "Messages",
-      params: { agentId },
-      renderer: "always",
-    };
+    if (agentId) {
+      return {
+        panelId: MESSAGES_PANEL_ID,
+        component: "chat",
+        title: "Messages",
+        params: { agentId },
+        renderer: "always",
+      };
+    }
+    // Room permalinks (?panel=chat&room=…&message=…): `message` is a durable
+    // param here, not a one-shot — the reconciler delivers chat params
+    // straight from descriptor.params (never via oneShots), see Ruling 3 in
+    // task-7a's report.
+    if (params.room) {
+      return {
+        panelId: MESSAGES_PANEL_ID,
+        component: "chat",
+        title: "Messages",
+        params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
+        renderer: "always",
+      };
+    }
+    return null;
   }
 
   if (key === "file-viewer") {
@@ -305,7 +320,7 @@ export function durableParamsFor(panelId: string): string[] {
   // param or a refresh resurrects the panel the user just closed. "panel" +
   // "agentId" cover the explicit ?panel=chat grammar (describePanel accepts
   // agent OR agentId) so an externally-authored chat link clears fully.
-  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId"];
+  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];

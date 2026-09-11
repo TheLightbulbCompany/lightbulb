@@ -159,3 +159,22 @@ it("inserts a picked emoji at the caret, not at the end", () => {
   fireEvent.click(screen.getByRole("button", { name: "party popper" }));
   expect(field()).toHaveValue("a🎉b");
 });
+
+it("clears a stale completion trigger when a non-typing edit (the emoji picker) rewrites the text", () => {
+  render(<Harness />);
+  type("nice :tad");
+  expect(screen.getByRole("listbox", { name: "Insert an emoji" })).toBeInTheDocument();
+  // The emoji-picker button opens the full picker (a different UI from the
+  // composer's own `:tad` typeahead) and inserts via insertAtCaret, which
+  // must clear the still-open `:tad` trigger.
+  fireEvent.click(screen.getByRole("button", { name: "Insert emoji" }));
+  fireEvent.click(screen.getByRole("button", { name: "party popper" }));
+  expect(field()).toHaveValue("nice :tad🎉");
+  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  fireEvent.keyDown(field(), { key: "Enter" });
+  // Without the fix, Enter re-applies the stale `:tad` trigger's byte
+  // offsets and eats the "tad" text; with the fix, no list is open so
+  // Enter just submits and the text is untouched.
+  expect(field()).toHaveValue("nice :tad🎉");
+  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+});

@@ -276,6 +276,22 @@ function ComposerAttempt({
     setActiveIndex(0);
   }
 
+  function focusRange(start: number, end: number) {
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(start, end);
+    });
+  }
+
+  // The one place that both commits a text rewrite and clears a completion
+  // trigger, so a caller can never rewrite the text and forget the trigger is
+  // now pointing at stale byte offsets.
+  function replaceText(next: string, start: number, end: number) {
+    setTrigger(null);
+    onTextChange(next);
+    focusRange(start, end);
+  }
+
   function choose(member: RoomParticipant) {
     if (!trigger) return;
     const token = member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`;
@@ -284,35 +300,21 @@ function ComposerAttempt({
     if (!selectedMentions.some((mention) => sameMember(mention, ref)) && selectedMentions.length < 32) {
       onMentionsChange([...selectedMentions, ref]);
     }
-    onTextChange(next.text);
-    setTrigger(null);
-    requestAnimationFrame(() => {
-      field.current?.focus();
-      field.current?.setSelectionRange(next.caret, next.caret);
-    });
+    replaceText(next.text, next.caret, next.caret);
   }
 
   function insertAtCaret(value: string) {
     const start = field.current?.selectionStart ?? text.length;
     const end = field.current?.selectionEnd ?? start;
     const next = `${text.slice(0, start)}${value}${text.slice(end)}`;
-    onTextChange(next);
-    requestAnimationFrame(() => {
-      field.current?.focus();
-      field.current?.setSelectionRange(start + value.length, start + value.length);
-    });
+    replaceText(next, start + value.length, start + value.length);
   }
 
   function chooseEmoji(emoji: string) {
     if (!trigger) return;
     const next = applyCompletion(text, trigger, emoji);
     recordRecentEmoji(emoji);
-    onTextChange(next.text);
-    setTrigger(null);
-    requestAnimationFrame(() => {
-      field.current?.focus();
-      field.current?.setSelectionRange(next.caret, next.caret);
-    });
+    replaceText(next.text, next.caret, next.caret);
   }
 
   function submit(retry = false) {
@@ -354,11 +356,7 @@ function ComposerAttempt({
     const start = field.current?.selectionStart ?? text.length;
     const end = field.current?.selectionEnd ?? start;
     const next = wrapSelection(text, start, end, style);
-    onTextChange(next.text);
-    requestAnimationFrame(() => {
-      field.current?.focus();
-      field.current?.setSelectionRange(next.selectionStart, next.selectionEnd);
-    });
+    replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}

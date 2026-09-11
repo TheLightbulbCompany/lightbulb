@@ -25,6 +25,7 @@ from core.services.messaging import (
     ApiProblem,
     CanonicalMessage,
     SetReactionRequest,
+    UpdateMessageRequest,
     CreateMessageRequest,
     CreateRoomRequest,
     LiveConfig,
@@ -151,6 +152,13 @@ async def set_message_reaction(
     room_id: str, message_id: str, request: SetReactionRequest, auth: AuthContext = Depends(get_current_user)
 ):
     return await service.set_reaction(auth, room_id, message_id, request)
+
+
+@router.patch("/messaging/rooms/{room_id}/messages/{message_id}", response_model=CanonicalMessage)
+async def update_room_message(
+    room_id: str, message_id: str, request: UpdateMessageRequest, auth: AuthContext = Depends(get_current_user)
+):
+    return await service.update_message(auth, room_id, message_id, request)
 
 
 @router.post("/messaging/rooms/{room_id}/attachments", response_model=ImageAttachment, status_code=201)

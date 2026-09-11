@@ -169,6 +169,7 @@ export type QuestionResolvedEvent =
 export type LiveEventType =
   | "room.message.reactions.changed"
   | "room.message.created"
+  | "room.message.updated"
   | "room.message.available"
   | "room.typing.changed"
   | "room.run.frame"
@@ -187,6 +188,7 @@ export type LiveEventType =
 export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.message.reactions.changed",
   "room.message.created",
+  "room.message.updated",
   "room.message.available",
   "room.typing.changed",
   "room.run.frame",
@@ -242,6 +244,7 @@ export type PaperclipEvent = { eventName: PaperclipEventName; payload: unknown }
 
 export type LiveEvent =
   | LiveEventEnvelope<"room.message.created", CanonicalRoomMessage>
+  | LiveEventEnvelope<"room.message.updated", { roomId: string; messageId: string; messageSeq: number }>
   | LiveEventEnvelope<"room.message.available", { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; notify: boolean }>
   | LiveEventEnvelope<"room.message.reactions.changed", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
@@ -319,6 +322,8 @@ function chatFrameValid(value: unknown): value is ChatIncomingMessage {
 }
 
 function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
+  if (isObj(value) && value.messageRevision !== undefined && (!Number.isInteger(value.messageRevision) || (value.messageRevision as number) < 0)) return false;
+  if (isObj(value) && ((value.editedAt !== undefined && !nullableString(value.editedAt)) || (value.deletedAt !== undefined && !nullableString(value.deletedAt)))) return false;
   if (isObj(value) && value.reactions !== undefined && (!isObj(value.reactions) || Object.entries(value.reactions).some(([emoji, users]) =>
     !["👍", "❤️", "😂", "🎉", "👀", "✅"].includes(emoji) || !Array.isArray(users) || users.length > 256 || !users.every(str)))) return false;
   if (isObj(value) && value.reactionRevision !== undefined && (!Number.isInteger(value.reactionRevision) || (value.reactionRevision as number) < 0)) return false;
@@ -337,6 +342,8 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
 function payloadValid(type: LiveEventType, payload: unknown): boolean {
   if (!isObj(payload)) return false;
   switch (type) {
+    case "room.message.updated":
+      return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;
     case "room.message.created":
     case "room.message.reactions.changed":
       return canonicalMessageValid(payload);

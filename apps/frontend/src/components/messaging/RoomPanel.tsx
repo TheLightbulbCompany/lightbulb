@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { ListenMode, MemberRef } from "@lightbulb/shared";
+import type { ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -16,6 +16,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomMessageSearch } from "./RoomMessageSearch";
+import { RoomMessageContent } from "./RoomMessageContent";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -56,6 +57,7 @@ export interface RoomPanelProps {
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
   onSetReaction?: (messageId: string, emoji: string, active: boolean) => Promise<void>;
+  onUpdateMessage?: (messageId: string, request: UpdateMessageRequest) => Promise<void>;
   addMemberCandidates?: readonly DirectoryParticipant[];
   onAddMember?: (member: MemberRef) => Promise<void>;
   onRenameRoom?: (name: string) => Promise<void>;
@@ -174,6 +176,7 @@ function RoomContent({
   onRetry,
   onListenModeChange,
   onSetReaction,
+  onUpdateMessage,
   addMemberCandidates = [],
   onAddMember,
   onRenameRoom,
@@ -325,8 +328,10 @@ function RoomContent({
           {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
           {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
         </div>
-        <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
-        {onSetReaction && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
+        <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage}>
+          <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
+        </RoomMessageContent>
+        {!message.deletedAt && onSetReaction && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
           {(["👍", "❤️", "😂", "🎉", "👀", "✅"] as const).map((emoji) => {
             const users = message.reactions?.[emoji] ?? [];
             const selected = users.includes(currentUserId);
@@ -343,7 +348,7 @@ function RoomContent({
           })}
           {reactionError === message.messageId && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
         </div>}
-        {!!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
+        {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
         {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
           {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
         </div>}

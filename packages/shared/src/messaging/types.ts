@@ -17,6 +17,7 @@ export type ApiErrorCode =
   | "RUN_NOT_FOUND"
   | "OPERATION_NOT_FOUND"
   | "IDEMPOTENCY_CONFLICT"
+  | "MESSAGE_CONFLICT"
   | "MEMBER_LIMIT"
   | "RUN_NOT_ACTIVE"
   | "RATE_LIMITED"
@@ -87,6 +88,9 @@ export interface UpsertRoomMemberRequest {
 }
 
 export interface CanonicalRoomMessage {
+  messageRevision?: number;
+  editedAt?: string | null;
+  deletedAt?: string | null;
   reactions?: Record<string, string[]>;
   reactionRevision?: number;
   messageId: string;
@@ -121,6 +125,13 @@ export interface CreateMessageRequest {
   replyToMessageId: string | null;
   threadRootMessageId: string | null;
   attachmentIds?: string[];
+}
+
+export interface UpdateMessageRequest {
+  operationId: string;
+  expectedRevision: number;
+  /** null deletes the public message; existing agent work is unchanged. */
+  text: string | null;
 }
 
 export interface MessagePage {

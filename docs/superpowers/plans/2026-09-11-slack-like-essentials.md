@@ -5,9 +5,9 @@ Familiar Slack flows, Lightbulb identity, and real agents. This is the full dire
 - [x] Images and membership foundation: PRs #2462, #2463, #2464, #2465, #2467 deployed to production; user functional acceptance pending.
 - [x] Threads and reactions: #2466 and #2468 deployed to production in successful promotion run 34546951308.
 - [ ] Notifications and centered channel/message creation: #2469 and #2470 merged; promotion run 34548271444 in progress.
-- [ ] Current batch: channel rename and member removal, #2471 in review.
-- [ ] Next: in-room search.
-- [ ] Later: own-message edit/delete, mark unread and unread navigation, profiles, pins/shared content, notification preferences, leave/archive. Add backend authorization and persistence wherever required before exposing controls.
+- [ ] Channel rename/member removal and in-room search: #2471 and #2472 merged; promotion run 34548685719 queued at handoff.
+- [ ] Current batch: own-message edit/delete, #2473 in review. Public tombstones preserve thread links; original agent requests and attachment files are retained, not erased.
+- [ ] Later: mark unread and unread navigation, profiles, pins/shared content, notification preferences, leave/archive. Add backend authorization and persistence wherever required before exposing controls.
 
 Remove this disposable plan when the overall direction ships; PR descriptions remain the durable record.
 

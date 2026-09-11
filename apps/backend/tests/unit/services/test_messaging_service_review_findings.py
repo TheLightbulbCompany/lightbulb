@@ -33,6 +33,50 @@ async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_update_rejects_missing_message_and_invalid_text(monkeypatch):
+    auth = AuthContext(user_id="author", org_id="org_1")
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({}, {})))
+    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
+    request = messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=0, text="edit")
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.update_message(auth, str(uuid.uuid4()), str(uuid.uuid4()), request)
+    assert exc.value.error.code == "MESSAGE_NOT_FOUND"
+    with pytest.raises(ValueError):
+        messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=-1, text="edit")
+    with pytest.raises(ValueError):
+        messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=0, text="é" * 50_001)
+
+
+def test_public_tombstone_hides_original_attachment_and_preserves_thread_links():
+    from core.services.openclaw_work import _public_message
+
+    room_id, message_id, parent_id, attachment_id = [str(uuid.uuid4()) for _ in range(4)]
+    item = {
+        "roomId": room_id,
+        "messageId": message_id,
+        "messageSeq": 2,
+        "roomRevision": 1,
+        "author": {"kind": "human", "id": "author", "displayName": "Author"},
+        "text": "private original",
+        "mentions": [{"kind": "agent", "id": "agent"}],
+        "replyToMessageId": parent_id,
+        "threadRootMessageId": parent_id,
+        "createdAt": "2026-09-10T00:00:00Z",
+        "runId": None,
+        "editedAt": "2026-09-10T00:01:00Z",
+        "deletedAt": "2026-09-10T00:01:00Z",
+        "editedText": None,
+        "messageRevision": 1,
+        "attachments": [{"id": attachment_id, "fileName": "photo.png", "contentType": "image/png", "size": 8}],
+    }
+    public = messaging.canonical_message(item).model_dump_json(by_alias=True)
+    assert "private original" not in public and attachment_id not in public and "photo.png" not in public
+    assert messaging.canonical_message(item).thread_root_message_id == uuid.UUID(parent_id)
+    assert _public_message(item)["text"] == "private original"
+    assert _public_message(item)["attachments"][0]["id"] == attachment_id
+
+
+@pytest.mark.asyncio
 async def test_get_agent_receipt_maps_malformed_event_id_to_400_not_500():
     with pytest.raises(ApiProblem) as exc_info:
         await get_agent_receipt("user_owner", "bad/event/id")
@@ -43,7 +87,7 @@ async def test_get_agent_receipt_maps_malformed_event_id_to_400_not_500():
 
 @pytest.mark.asyncio
 async def test_create_room_over_member_limit_returns_409_not_a_pydantic_400():
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
     members = [CreateRoomMember(kind="human", id=f"user_{i}", role="member", listen_mode=None) for i in range(32)]
     request = CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind="group-dm", members=members)
 

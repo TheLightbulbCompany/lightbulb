@@ -47,6 +47,7 @@ API_ERROR_STATUS = {
     "RUN_NOT_FOUND": 404,
     "OPERATION_NOT_FOUND": 404,
     "IDEMPOTENCY_CONFLICT": 409,
+    "MESSAGE_CONFLICT": 409,
     "MEMBER_LIMIT": 409,
     "RUN_NOT_ACTIVE": 409,
     "RATE_LIMITED": 429,
@@ -57,6 +58,7 @@ API_ERROR_STATUS = {
 ROOM_LIVE_EVENT_TYPES = frozenset(
     {
         "room.message.created",
+        "room.message.updated",
         "room.message.reactions.changed",
         "room.typing.changed",
         "room.run.frame",
@@ -185,6 +187,19 @@ class SetReactionRequest(ContractModel):
     active: bool
 
 
+class UpdateMessageRequest(ContractModel):
+    operation_id: uuid.UUID
+    expected_revision: int = Field(ge=0)
+    text: str | None
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str | None) -> str | None:
+        if value is not None and len(value.encode("utf-8")) > MESSAGE_TEXT_MAX_BYTES:
+            raise ValueError(f"text exceeds {MESSAGE_TEXT_MAX_BYTES} UTF-8 bytes")
+        return value
+
+
 class CanonicalMessage(ContractModel):
     message_id: uuid.UUID
     room_id: uuid.UUID
@@ -200,6 +215,9 @@ class CanonicalMessage(ContractModel):
     attachments: list["ImageAttachment"] = Field(default_factory=list, max_length=IMAGE_MAX_COUNT)
     reactions: dict[str, list[str]] = Field(default_factory=dict)
     reaction_revision: int = Field(default=0, ge=0)
+    message_revision: int = Field(default=0, ge=0)
+    edited_at: datetime | None = None
+    deleted_at: datetime | None = None
 
 
 class ImageAttachment(ContractModel):
@@ -533,22 +551,29 @@ def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
     return handles
 
 
-def canonical_message(item: dict[str, Any]) -> CanonicalMessage:
+def canonical_message(item: dict[str, Any], *, original_request: bool = False) -> CanonicalMessage:
+    # Runtime ingress alone retains the dispatched request. Public projections
+    # never serialize the original text/attachments of a tombstone.
+    deleted = bool(item.get("deletedAt")) and not original_request
+    edited = "editedText" in item and not original_request
     return CanonicalMessage(
         message_id=item["messageId"],
         room_id=item["roomId"],
         message_seq=int(item["messageSeq"]),
         room_revision=int(item["roomRevision"]),
         author=item["author"],
-        text=item["text"],
-        mentions=item.get("mentions") or [],
+        text="" if deleted else item["editedText"] if edited else item["text"],
+        mentions=[] if deleted or edited else item.get("mentions") or [],
         reply_to_message_id=item.get("replyToMessageId"),
         thread_root_message_id=item.get("threadRootMessageId"),
         created_at=item["createdAt"],
         run_id=item.get("runId"),
-        attachments=item.get("attachments") or [],
-        reactions=item.get("reactions") or {},
+        attachments=[] if deleted else item.get("attachments") or [],
+        reactions={} if deleted else item.get("reactions") or {},
         reaction_revision=int(item.get("reactionRevision", 0)),
+        message_revision=0 if original_request else int(item.get("messageRevision", 0)),
+        edited_at=None if original_request else item.get("editedAt"),
+        deleted_at=None if original_request else item.get("deletedAt"),
     )
 
 
@@ -973,6 +998,35 @@ async def list_messages(auth: AuthContext, room_id: str, after_seq: int, limit: 
     except ValueError as exc:
         raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
     return MessagePage(messages=[canonical_message(row) for row in rows], next_after_seq=next_after)
+
+
+async def update_message(
+    auth: AuthContext, room_id: str, message_id: str, request: UpdateMessageRequest
+) -> CanonicalMessage:
+    owner_id = resolve_owner_id(auth)
+    await require_room_member(owner_id, auth.user_id, room_id)
+    item = await messaging_repo.get_message_by_id(room_id, validate_uuid(message_id, label="message ID"))
+    if item is None:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
+    if request.text is not None and not request.text.strip() and not item.get("attachments"):
+        raise ApiProblem("INVALID_REQUEST", "A message needs text or an attachment.")
+    try:
+        updated = await messaging_repo.update_message(
+            owner_id,
+            room_id,
+            item["messageSeq"],
+            auth.user_id,
+            str(request.operation_id),
+            request.expected_revision,
+            request.text,
+        )
+    except messaging_repo.MessageForbidden as exc:
+        raise ApiProblem("ROOM_FORBIDDEN", str(exc)) from exc
+    except messaging_repo.MessageConflict as exc:
+        raise ApiProblem("MESSAGE_CONFLICT", str(exc)) from exc
+    except messaging_repo.IdempotencyConflict as exc:
+        raise ApiProblem("IDEMPOTENCY_CONFLICT", str(exc)) from exc
+    return canonical_message(updated)
 
 
 async def set_reaction(

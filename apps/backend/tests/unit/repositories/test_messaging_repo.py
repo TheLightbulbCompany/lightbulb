@@ -97,6 +97,74 @@ async def _post(room_id, text="hi", targets=None, client_id="m-1", author=None):
 
 
 @pytest.mark.asyncio
+async def test_message_edits_keep_identity_work_and_receipts_and_delete_to_tombstone(table):
+    from core.services.messaging import canonical_message
+    from core.services.openclaw_work import _public_message
+
+    room_id, _ = await _room()
+    original = await _post(room_id)
+    before = table.scan()["Items"]
+    edited = await repo.update_message(OWNER, room_id, 1, USER_A, "edit-1", 0, "corrected")
+    assert canonical_message(edited).text == "corrected"
+    assert edited["text"] == original["text"]
+    assert edited["messageId"] == original["messageId"] and edited["messageSeq"] == 1
+    assert (await repo.get_room(room_id))["lastSeq"] == 1
+    assert await repo.update_message(OWNER, room_id, 1, USER_A, "edit-1", 0, "corrected") == edited
+    with pytest.raises(repo.IdempotencyConflict):
+        await repo.update_message(OWNER, room_id, 1, USER_A, "edit-1", 0, "different")
+    with pytest.raises(repo.MessageConflict):
+        await repo.update_message(OWNER, room_id, 1, USER_A, "stale", 0, "stale overwrite")
+    deleted = await repo.update_message(OWNER, room_id, 1, USER_A, "delete", 1, None)
+    public = canonical_message(deleted).model_dump(by_alias=True)
+    assert (
+        public["text"] == "" and public["attachments"] == [] and public["mentions"] == [] and public["reactions"] == {}
+    )
+    assert public["messageRevision"] == 2 and public["deletedAt"]
+    assert _public_message(deleted)["text"] == original["text"]
+    assert set(_public_message(deleted)) == {
+        "messageId",
+        "roomId",
+        "messageSeq",
+        "roomRevision",
+        "author",
+        "text",
+        "mentions",
+        "replyToMessageId",
+        "threadRootMessageId",
+        "createdAt",
+        "runId",
+    }
+    with pytest.raises(repo.MessageConflict):
+        await repo.update_message(OWNER, room_id, 1, USER_A, "undelete", 2, "bring back")
+    with pytest.raises(repo.MessagingRepoError):
+        await repo.set_reaction(OWNER, room_id, 1, USER_A, "👍", True)
+    assert [row for row in table.scan()["Items"] if row["sk"].startswith("WORK#")] == [
+        row for row in before if row["sk"].startswith("WORK#")
+    ]
+    # Old operation retries return the current tombstone, never old content.
+    assert (await repo.update_message(OWNER, room_id, 1, USER_A, "edit-1", 0, "corrected"))["deletedAt"]
+
+
+@pytest.mark.asyncio
+async def test_message_edit_author_tenant_membership_and_concurrent_revision_fences(table):
+    room_id, _ = await _room([_member("human", USER_A, "owner"), _member("human", USER_B, "admin")])
+    await _post(room_id)
+    for tenant, user in [("org_other", USER_A), (OWNER, USER_B), (OWNER, "removed")]:
+        with pytest.raises(repo.MessageForbidden):
+            await repo.update_message(tenant, room_id, 1, user, "edit", 0, "denied")
+    results = await asyncio.gather(
+        repo.update_message(OWNER, room_id, 1, USER_A, "one", 0, "one"),
+        repo.update_message(OWNER, room_id, 1, USER_A, "two", 0, "two"),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert sum(isinstance(result, repo.MessageConflict) for result in results) == 1
+    table.delete_item(Key={"pk": repo.room_pk(room_id), "sk": repo.member_sk("human", USER_A)})
+    with pytest.raises(repo.MessageForbidden):
+        await repo.update_message(OWNER, room_id, 1, USER_A, "retry", 1, None)
+
+
+@pytest.mark.asyncio
 async def test_reactions_persist_idempotently_and_enforce_membership_and_owner(table):
     room_id, _ = await _room([_member("human", USER_A, "owner"), _member("human", USER_B)])
     message = await _post(room_id)

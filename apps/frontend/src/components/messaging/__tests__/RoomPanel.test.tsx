@@ -219,6 +219,30 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
 });
 
+it("keeps a thread open when Escape dismisses its delete dialog or deletion is pending", async () => {
+  const user = userEvent.setup();
+  const onSelectThread = vi.fn();
+  let reject!: (error: Error) => void;
+  const onUpdateMessage = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+  render(<RoomPanel {...props} selectedThreadId={message.messageId} onSelectThread={onSelectThread} onUpdateMessage={onUpdateMessage}
+    messages={[{ ...message, author: { kind: "human", id: "owner", displayName: "Owner" } }]} />);
+  const thread = screen.getByRole("complementary", { name: "Thread" });
+  await user.click(within(thread).getByRole("button", { name: "Message actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete message" }));
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(onSelectThread).not.toHaveBeenCalled();
+  expect(thread).toBeInTheDocument();
+  await user.click(within(thread).getByRole("button", { name: "Message actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete message" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete message" }));
+  await user.keyboard("{Escape}");
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  expect(onSelectThread).not.toHaveBeenCalled();
+  expect(thread).toBeInTheDocument();
+  await act(async () => reject(new Error("Retry deletion")));
+});
+
 it("keeps a live thread reply out of main chat and renders it inside the thread", async () => {
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "thread-run", threadRootMessageId: message.messageId,
     state: "running", text: "Thread answer", thinking: "", tools: [] };

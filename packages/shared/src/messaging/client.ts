@@ -3,6 +3,7 @@ import type {
   AbortRunResponse,
   CanonicalRoomMessage,
   CreateMessageRequest,
+  UpdateMessageRequest,
   ImageAttachment,
   CreateRoomRequest,
   LiveConfig,
@@ -23,6 +24,7 @@ import type {
 const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
 
 export interface MessagingClient {
+  updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
   listRooms(): Promise<RoomListResponse>;
@@ -44,6 +46,7 @@ export interface MessagingClient {
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
+    updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,
     listRooms: () => api.get("/messaging/rooms") as Promise<RoomListResponse>,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkifyMentions, parseMentionHref } from "../mentions";
+import { linkifyMentions, parseMentionHref, resolveTypedMentions } from "../mentions";
 
 const participants = [
   { kind: "agent" as const, id: "a1", displayName: "Friday", mentionHandle: "friday" },
@@ -31,8 +31,6 @@ describe("parseMentionHref", () => {
     expect(parseMentionHref("mention:robot:a1")).toBeNull();
   });
 });
-
-import { resolveTypedMentions } from "../mentions";
 
 describe("resolveTypedMentions", () => {
   const participants = [

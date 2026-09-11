@@ -44,6 +44,24 @@ it("renames a channel in a centered dialog with pending, retry, and focus restor
   expect(trigger).toHaveFocus();
 });
 
+it("lets a group chat admin rename the chat without exposing channel membership controls", async () => {
+  const user = userEvent.setup();
+  const onRenameRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "Launch crew" }}
+    onRenameRoom={onRenameRoom} onAddMember={vi.fn()} onRemoveMember={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Rename group chat" }));
+  const dialog = screen.getByRole("dialog", { name: "Rename group chat" });
+  const input = within(dialog).getByRole("textbox", { name: "Group chat name" });
+  expect(input).toHaveValue("Launch crew");
+  await user.clear(input);
+  await user.type(input, "Release room");
+  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
+  expect(onRenameRoom).toHaveBeenCalledWith("Release room");
+});
+
 it("confirms removal of a non-owner with Cancel focused and restores focus", async () => {
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
@@ -63,12 +81,18 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   expect(onRemoveMember).toHaveBeenCalledWith({ kind: "agent", id: "friday" });
 });
 
-it.each(["dm", "group-dm", "channel"] as const)("does not expose management without channel admin permission (%s)", async (kind) => {
+it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: "Rename channel" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+});
+
+it("never offers renaming for a direct message", async () => {
+  render(<RoomPanel {...props} onRenameRoom={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: /Rename/ })).not.toBeInTheDocument();
 });
 
 it("closes channel management if the viewer loses admin permission", async () => {
@@ -154,7 +178,7 @@ it("keeps empty reaction and reply rows out of the message and groups its action
   expect(within(article).queryByLabelText("Message reactions")).not.toBeInTheDocument();
   expect(article.querySelector(".room-reply")).toBeNull();
   expect(within(article).queryByText("Reply in thread")).not.toBeInTheDocument();
-  expect(within(article).queryByText("👍")).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Choose an emoji" })).not.toBeInTheDocument();
 });
 
 it("opens the reaction picker with the keyboard and leaves failures outside the toolbar", async () => {
@@ -166,8 +190,9 @@ it("opens the reaction picker with the keyboard and leaves failures outside the 
   act(() => add.focus());
   expect(add).toHaveFocus();
   await user.keyboard("{Enter}");
-  expect(screen.getAllByRole("menuitem")).toHaveLength(6);
-  await user.click(screen.getByRole("menuitem", { name: "Add 👍 reaction" }));
+  const dialog = screen.getByRole("dialog", { name: "Choose an emoji" });
+  await user.type(within(dialog).getByRole("searchbox", { name: "Search emoji" }), "thumbs up");
+  await user.keyboard("{ArrowDown}{Enter}");
   expect(onSetReaction).toHaveBeenCalledWith("message", "👍", true);
   expect(add).toBeDisabled();
   await act(async () => reject(new Error("Unavailable")));
@@ -191,6 +216,18 @@ it("shows only applied reaction chips and a nonzero reply count below the messag
   expect(within(reactions).getByRole("button", { name: "Remove 👍 reaction, 2" })).toHaveAttribute("aria-pressed", "true");
   expect(within(reactions).getByRole("button", { name: "Add ✅ reaction, 1" })).toBeInTheDocument();
   expect(article.querySelector(".room-reply")).toHaveTextContent("1 reply");
+});
+
+it("shows quick reactions and a picker in the toolbar and renders any applied emoji as a chip", async () => {
+  const user = userEvent.setup();
+  const onSetReaction = vi.fn(async () => {});
+  render(<RoomPanel {...props} messages={[{ ...message, reactions: { "🚀": ["owner"], "🙏": ["someone"] } }]} onSetReaction={onSetReaction} />);
+  expect(screen.getByRole("button", { name: "Remove 🚀 reaction, 1" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Add 🙏 reaction, 1" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "React 👍" }));
+  expect(onSetReaction).toHaveBeenCalledWith("message", "👍", true);
+  await user.click(screen.getByRole("button", { name: "Add reaction" }));
+  expect(screen.getByRole("dialog", { name: "Choose an emoji" })).toBeInTheDocument();
 });
 
 it("shows persisted reactions and removes the viewer's reaction from a thread", async () => {
@@ -321,6 +358,20 @@ it("keeps a live thread reply out of main chat and renders it inside the thread"
   expect(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("article", { name: "Live run from Friday" })).toHaveTextContent("Thread answer");
 });
 
+it("collapses a finished run with no reply into a muted status line", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "completed", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} />);
+  expect(screen.getByText("Friday finished · no reply")).toBeInTheDocument();
+  expect(screen.queryByRole("article", { name: "Live run from Friday" })).not.toBeInTheDocument();
+});
+
+it("keeps rendering a finished run's text instead of collapsing it", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "Partial answer", thinking: "", state: "completed", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} />);
+  expect(within(screen.getByRole("article", { name: "Live run from Friday" })).getByText("Partial answer")).toBeInTheDocument();
+  expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
+});
+
 it("lets wide room details change agent listen mode without giving humans a control", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
@@ -407,21 +458,18 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 
-it.each(["thread", "context"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
+it("replaces the narrow conversation only while a thread is open", async () => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();
-  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork}
-    messages={[{ ...message, contextIds: ["approval"] }]}
-    contexts={[{ id: "approval", roomId: "room", kind: "approval", title: "Review proposal", content: "Proposal details" }]} />);
+  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork} />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Link to work" }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
-  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Review proposal" });
+  const trigger = screen.getByRole("button", { name: "Reply in thread" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
-  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Review proposal" })).toHaveFocus();
-  if (kind === "context") expect(screen.getByText("Proposal details")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
   expect(trigger).toHaveFocus();
@@ -474,6 +522,37 @@ it("dismisses a medium overlay on Escape from outside the room and restores its 
   expect(onSelectThread).not.toHaveBeenCalled();
 });
 
+it("collapses consecutive messages from the same author and reveals the time in the gutter", () => {
+  const second: RoomMessage = { ...message, messageId: "message-2", messageSeq: 2, createdAt: "2026-09-10T00:01:00Z", text: "Again" };
+  render(<RoomPanel {...props} messages={[message, second]} />);
+  const articles = screen.getAllByRole("article", { name: "Message from Friday" });
+  expect(articles).toHaveLength(2);
+  expect(within(articles[0]).getByText("Friday")).toBeInTheDocument();
+  expect(within(articles[1]).queryByText("Friday")).not.toBeInTheDocument();
+  const time = new Date(second.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  expect(within(articles[1]).getByText(time, { selector: ".room-message-gutter" })).toBeInTheDocument();
+  expect(within(articles[1]).getByText(time, { selector: "time.sr-only" })).toBeInTheDocument();
+});
+
+it("keeps every action reachable on a collapsed message", async () => {
+  const user = userEvent.setup();
+  const second: RoomMessage = { ...message, messageId: "message-2", messageSeq: 2, createdAt: "2026-09-10T00:01:00Z", text: "Again" };
+  render(<RoomPanel {...props} messages={[message, second]} onSetReaction={vi.fn(async () => {})} onSelectThread={vi.fn()} />);
+  const collapsed = screen.getAllByRole("article", { name: "Message from Friday" })[1];
+  await user.click(within(collapsed).getByRole("button", { name: "Reply in thread" }));
+  expect(within(collapsed).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
+});
+
+it("renders @mentions as chips", () => {
+  render(<RoomPanel {...props} participants={[owner, { ...friday, mentionHandle: "friday" }]} messages={[{ ...message, text: "ping @friday" }]} />);
+  expect(screen.getByText("@friday")).toHaveClass("room-mention");
+});
+
+it("marks a message that mentions the viewer for highlighting", () => {
+  render(<RoomPanel {...props} messages={[{ ...message, mentions: [{ kind: "human", id: "owner" }] }]} />);
+  expect(screen.getByRole("article", { name: "Message from Friday" })).toHaveClass("room-message-mentions-me");
+});
+
 it("keeps the New line when a send fails and clears it after a successful send", async () => {
   const onSubmit = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Hi", author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
@@ -517,4 +596,28 @@ it("keeps the New line when a send fails and clears it after a successful send",
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
   await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByRole("separator", { name: "New messages" })).not.toBeInTheDocument());
+});
+
+it("copies a message permalink from the toolbar", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.fn(async () => {});
+  // userEvent.setup() installs its own clipboard stub (getter-only); override
+  // it after setup so the handler writes through our spy (see
+  // IssueDetailPage.description.test.tsx for the same pattern).
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  render(<RoomPanel {...props} />);
+  await user.click(screen.getByRole("button", { name: "Copy link" }));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("panel=chat&room=room&message=message"));
+  expect(await screen.findByRole("status", { name: "Link copied" })).toBeInTheDocument();
+});
+
+it("shows an alert when copying the link fails, and clears it on the next successful copy", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  render(<RoomPanel {...props} />);
+  await user.click(screen.getByRole("button", { name: "Copy link" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not copy the link.");
+  await user.click(screen.getByRole("button", { name: "Copy link" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
 });

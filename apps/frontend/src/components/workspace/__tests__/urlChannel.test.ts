@@ -51,6 +51,19 @@ describe("parseCommand", () => {
     expect(parseCommand("?panel=definitely-not-a-panel")).toBeNull();
     expect(parseCommand("?panel=teams-issue-detail")).toBeNull(); // detail without id
   });
+
+  // Ruling 3 (task-7a): the reconciler delivers chat params straight from
+  // descriptor.params (WorkspaceShell.tsx's `openChatPanel(command.descriptor
+  // .params.agentId)`), never via oneShots — a chat command never reaches the
+  // oneShots-carrying openPanel() branch (workspaceShellReconciler.ts's
+  // `panelKey = component === "chat" ? null : …`). So `message` is a durable
+  // chat param, not a one-shot: nothing is stripped from the URL.
+  it("treats ?panel=chat&room=…&message=… as a durable chat command", () => {
+    const command = parseCommand("?panel=chat&room=r1&message=m1");
+    expect(command?.descriptor.params).toMatchObject({ roomId: "r1", messageId: "m1" });
+    expect(command?.oneShots).toEqual({});
+    expect(stripOneShots("?panel=chat&room=r1&message=m1")).toBeNull();
+  });
 });
 
 describe("stripOneShots", () => {

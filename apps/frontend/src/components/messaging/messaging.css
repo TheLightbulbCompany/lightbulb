@@ -22,7 +22,7 @@
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
 .room-timeline-item[data-highlight="true"] { background: var(--accent); }
-.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); }
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 0; padding: 12px 0 4px; background: var(--background); font-size: .75rem; font-weight: 600; color: var(--muted-foreground); }
 .room-date-divider::before, .room-date-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 .room-date-divider span { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); }
 .room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: .75rem; font-weight: 600; color: var(--info); }
@@ -32,10 +32,8 @@
 .room-message-actions { position: absolute; top: 0; right: 0; z-index: 1; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground) 10%, transparent); opacity: 0; pointer-events: none; }
 .room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
 .room-message-actions button { border-radius: 4px; }
-@media (hover: none), (pointer: coarse) {
-  .room-message-actions { opacity: 1; pointer-events: auto; }
-  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 112px; flex-wrap: wrap; }
-}
+.room-quick-reactions { display: inline-flex; gap: 2px; }
+.room-quick-reactions button { min-width: 28px; }
 .room-message-content { flex: 1; min-width: 0; line-height: 1.5; }
 .room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: 1rem; line-height: 1.5; }
 .room-message-content p { margin-top: 2px; margin-bottom: 4px; font-size: 1rem; line-height: 1.5; }
@@ -46,6 +44,8 @@
 .room-message-byline time { white-space: nowrap; }
 .room-message-byline > span:first-child { min-width: 0; }
 .room-message-content pre { max-width: 100%; }
+.room-mention { display: inline-block; padding: 0 4px; border-radius: 4px; font-weight: 600; color: var(--info); background: color-mix(in srgb, var(--info) 12%, transparent); }
+.room-message-mentions-me { background: color-mix(in srgb, var(--info) 8%, transparent); border-radius: 6px; }
 .room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; height: 28px; }
 .room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
 .room-run { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding-top: 8px; }
@@ -133,6 +133,9 @@
 
 .room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: .875rem; }
 .room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
+/* left padding aligns with the avatar column (32px .room-message-gutter + 12px .room-message gap = 44px, not the 52px an avatar+gap of a different size would need) */
+.room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 44px; font-size: .875rem; }
+.room-run-line details { flex-basis: 100%; }
 .room-run-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .room-run-controls .room-input { flex: 1; }
 .messaging-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100%; min-height: 0; }
@@ -170,6 +173,21 @@
   .room-composer textarea, .room-input { font-size: 1rem; }
   .room-message { gap: 8px; }
   .room-message-byline { flex-wrap: wrap; gap: 4px 8px; }
+}
+
+.room-message-collapsed { padding-top: 2px; padding-bottom: 2px; min-height: 40px; }
+.room-message-gutter { flex: none; width: 32px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
+.room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
+
+/* Positioned after the .room-message-gutter/.room-message-actions base rules above
+ * (same specificity, so the touch override must come later in source order to win). */
+@media (hover: none), (pointer: coarse) {
+  .room-message-actions { opacity: 1; pointer-events: auto; }
+  /* The picker covers every emoji already; the quick row is a hover-affordance shortcut that doesn't earn its width on touch. */
+  .room-quick-reactions { display: none; }
+  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 140px; flex-wrap: wrap; }
+  .room-message-collapsed .room-message-content { padding-right: 140px; }
+  .room-message-gutter { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

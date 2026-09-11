@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Components } from "react-markdown";
+import type { Components, UrlTransform } from "react-markdown";
 import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { handleShellLinkClick, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
@@ -165,6 +165,11 @@ export interface MarkdownViewProps {
    *  unless told to skip (lib/index.js:360-366), so memory-wiki's managed-block
    *  markers (`<!-- openclaw:wiki:index:start -->`) would print verbatim. */
   skipHtml?: boolean;
+  /** Override react-markdown's default href/src sanitizer (which blanks any
+   *  non-http(s)/mailto/relative scheme). A caller that encodes structured data
+   *  in a link href — e.g. messaging's `mention:` scheme — needs this, or the
+   *  href never reaches its `a` override at all. Omit to keep the default. */
+  urlTransform?: UrlTransform;
 }
 
 /** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed).
@@ -175,14 +180,14 @@ export interface MarkdownViewProps {
  * overflows its column — in the Teams task view it bled off the right edge into the
  * metadata panel. `min-w-0` lets this shrink below its content's intrinsic width inside
  * a flex/grid parent; `overflow-wrap:anywhere` forces a break inside the long token. */
-export function MarkdownView({ children, components, skipHtml }: MarkdownViewProps) {
+export function MarkdownView({ children, components, skipHtml, urlTransform }: MarkdownViewProps) {
   const merged = useMemo(
     () => (components ? { ...markdownComponents, ...components } : markdownComponents),
     [components],
   );
   return (
     <div className="min-w-0 [overflow-wrap:anywhere]">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={merged} skipHtml={skipHtml}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={merged} skipHtml={skipHtml} urlTransform={urlTransform}>
         {children}
       </ReactMarkdown>
     </div>

@@ -73,6 +73,7 @@ export interface MessagingWorkspaceValue {
   directoryProps: RoomDirectoryProps;
   roomProps: RoomPanelProps | null;
   selectAgentDm: (agentId: string) => Promise<string | null>;
+  openMessage: (roomId: string, messageId: string | null) => void;
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -281,6 +282,21 @@ export function MessagingWorkspaceProvider({
     });
   }
 
+  // Permalink target: opened via openMessage (a room permalink), cleared 3s
+  // after opening rather than persisting indefinitely once the highlight has
+  // had time to land.
+  const [target, setTarget] = useState<{ roomId: string; messageId: string | null } | null>(null);
+  const selectRoom = rooms.selectRoom;
+  const openMessage = useCallback((roomId: string, messageId: string | null) => {
+    selectRoom(roomId);
+    setTarget({ roomId, messageId });
+  }, [selectRoom]);
+  useEffect(() => {
+    if (!target?.messageId) return;
+    const timer = setTimeout(() => setTarget(null), 3_000);
+    return () => clearTimeout(timer);
+  }, [target]);
+
   const readSeqAtOpen = useRef<{ roomId: string; seq: number | null } | null>(null);
   if (rooms.activeRoom && readSeqAtOpen.current?.roomId !== rooms.activeRoom.roomId) readSeqAtOpen.current = { roomId: rooms.activeRoom.roomId, seq: rooms.activeRoom.lastReadSeq ?? null };
 
@@ -308,6 +324,7 @@ export function MessagingWorkspaceProvider({
     roomId: rooms.activeRoomId,
     room: rooms.activeRoom,
     readSeqAtOpen: readSeqAtOpen.current?.roomId === rooms.activeRoomId ? readSeqAtOpen.current.seq : null,
+    targetMessageId: target?.roomId === rooms.activeRoomId ? target.messageId : null,
     state: roomState,
     httpReady: rooms.httpReady,
     liveConnected: rooms.liveConnected,
@@ -329,15 +346,17 @@ export function MessagingWorkspaceProvider({
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
-    ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(
+    ...(!!rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(
       rooms.activeRoom.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
     ) ? {
-      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
-        (member) => member.kind === candidate.kind && member.id === candidate.id,
-      )),
-      onAddMember: addMember,
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
-      onRemoveMember: rooms.removeMember,
+      ...(rooms.activeRoom!.kind === "channel" ? {
+        addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
+          (member) => member.kind === candidate.kind && member.id === candidate.id,
+        )),
+        onAddMember: addMember,
+        onRemoveMember: rooms.removeMember,
+      } : {}),
     } : {}),
     onAbortRun: (runId) => void rooms.abortRun(runId),
     onSteerRun: (runId, text) => void rooms.steerRun(runId, text),
@@ -350,6 +369,7 @@ export function MessagingWorkspaceProvider({
     directoryProps,
     roomProps,
     selectAgentDm: rooms.selectAgentDm,
+    openMessage,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
     onOpen={(roomId, targetThreadId) => {
       rooms.selectRoom(roomId);

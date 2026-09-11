@@ -78,3 +78,16 @@ it("scrolls to and highlights a target message", () => {
   expect(article).not.toHaveAttribute("data-highlight");
   vi.useRealTimers();
 });
+
+it("re-scrolls to the same target message when its token bumps", () => {
+  const scrollIntoView = vi.fn();
+  Element.prototype.scrollIntoView = scrollIntoView;
+  const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={null} targetMessageId="m1" targetToken={1} renderMessage={renderMessage} empty={null} />);
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  // Same targetMessageId, same token: re-selecting is a no-op (already handled).
+  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={null} targetMessageId="m1" targetToken={1} renderMessage={renderMessage} empty={null} />);
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  // Same targetMessageId, new token (re-selecting the same search result): scrolls again.
+  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={null} targetMessageId="m1" targetToken={2} renderMessage={renderMessage} empty={null} />);
+  expect(scrollIntoView).toHaveBeenCalledTimes(2);
+});

@@ -1,27 +1,10 @@
-"""First-run brief staging — the onboarding aha's OpenClaw-primitive layer.
+"""First-message onboarding intake and fulfilment.
 
-Writes ``BRIEF.md`` into Friday's agent workspace on EFS BEFORE her
-container boots (same pre-boot window friday_identity.py uses; OpenClaw's
-writeFileIfMissing honors pre-written files): the user's funnel input,
-verbatim + identity context. Written unconditionally. The one-shot marker
-for the whole flow is the generation-fenced ``funnel_state`` on the
-paperclip-companies owner row (see
-``paperclip_repo.claim_funnel_submission``), not BRIEF.md's existence.
-
-There used to also be a first-run ``BOOTSTRAP.md`` variant staged here,
-telling Friday to read BRIEF.md and go to work. It was deleted (spec PR-6,
-BOOTSTRAP) once verified inert: OpenClaw's boot-time reconcile
-(``reconcileWorkspaceBootstrapCompletionState``) never surfaces a seeded
-BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is pre-marked
-(see ``core/services/friday_identity.py``, and research §5 of
-``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
-companion) — the file was written but never read. The kickoff is now a
-server-dispatched ``chat.send`` (``core/services/bootstrap_dispatcher.py``),
-an observed operation instead of a file with no code path to Friday's
-context.
-
-The spec is docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md
-(§4.B). BRIEF.md's content contract is unchanged by PR-6.
+The first human message in a fresh workspace's canonical room remains a
+normal room dispatch. A post-send capture persists its text, then this module
+creates the initial goal/project and stages ``BRIEF.md`` in the starter CEO's
+workspace exactly once. The generation-fenced ``funnel_state`` is the durable
+claim; there is no synthetic bootstrap message or bootstrap dispatcher.
 """
 
 from __future__ import annotations
@@ -154,27 +137,9 @@ def project_name_for(first_name: str) -> str:
     return f"{first_name}'s Company"
 
 
-# ---------------------------------------------------------------------------
-# First-run kickoff message — the user's OWN words as their visible first
-# message in Friday's chat.
-#
-# Two functions, one source of truth for the wording:
-#
-#   * ``build_onboarding_brief_text`` — runs at ``/onboarding/brief`` submit
-#     time (where the funnel ``path`` is known) and produces the natural-
-#     language brief phrase persisted on the paperclip-companies owner row
-#     (``onboarding_brief_text``, written in ``claim_funnel_submission``'s CAS).
-#   * ``build_first_run_message`` — runs in ``bootstrap_dispatcher`` and wraps
-#     that persisted phrase into the chat.send the server dispatches as
-#     Friday's first-run kickoff. The dispatcher only sees the row (no funnel
-#     ``path``), so the phrase must already read correctly after "I'm starting
-#     " on BOTH funnel paths — which is why the phrase, not the wrapper, is
-#     where the new-vs-grow verb lives.
-#
-# This replaces the old generic ``FIRST_RUN_PROMPT`` ("Friday — I just set up
-# my company. Read BRIEF.md…"), which showed a canned instruction (or nothing)
-# instead of the user's own ask.
-# ---------------------------------------------------------------------------
+# Legacy first-run message helpers remain for compatibility coverage. Fresh
+# workspaces no longer synthesize a kickoff chat message; their own first room
+# message is the onboarding input and normal dispatch.
 
 # The naming ask sits IN the kickoff body, BEFORE the board ask — not in the
 # closing steps where it used to live. Two things freeze from the company's
@@ -218,16 +183,10 @@ FIRST_RUN_NO_BRIEF_MESSAGE = (
 
 
 def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: str | None) -> str | None:
-    """The natural-language brief phrase persisted on the owner row and later
-    woven into Friday's first-run kickoff message (``build_first_run_message``).
+    """Legacy brief phrase formatter retained for compatibility coverage.
 
-    Returns ``None`` on the "you pick" path (``user_input`` absent/blank) — the
-    row simply carries no brief text and the dispatcher falls back to
-    ``FIRST_RUN_NO_BRIEF_MESSAGE``.
-
-    The phrase is written to slot after "I'm starting " and read correctly on
-    both funnel paths, since the dispatcher has only the persisted text (not the
-    ``path``) to work from:
+    Fresh-workspace onboarding captures the entire first room message directly.
+    This helper still normalizes the former funnel paths:
 
       * ``new`` — the user's verbatim idea, with the optional "who's it for"
         audience (``detail``) woven in naturally when present. Their words are
@@ -320,16 +279,10 @@ _CLOSING_STEPS = (
 
 
 def build_first_run_message(brief_text: str | None) -> str:
-    """Friday's first-run kickoff chat.send message — the VISIBLE first user
-    message in her chat.
+    """Legacy first-run kickoff message formatter.
 
-    ``brief_text`` is the persisted ``onboarding_brief_text``
-    (``build_onboarding_brief_text``'s output). When present, the message leads
-    with the user's own ask and carries the research → write-up → three-next-
-    moves instruction in that same message (deterministic, not a hoped-for
-    system-prompt behavior). When absent/blank (the "you pick" path, or a legacy
-    row with no persisted brief), it falls back to ``FIRST_RUN_NO_BRIEF_MESSAGE``
-    — so a missing field degrades to a sensible default, never an empty send.
+    It is not wired into fresh-workspace onboarding: that flow dispatches the
+    user's first room message normally and stages the text in ``BRIEF.md``.
     """
     brief = (brief_text or "").strip()
     if not brief:
@@ -548,21 +501,13 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
 
 
 async def reconcile_pending_brief(owner_id: str) -> None:
-    """Fulfil a submitted funnel answer, if there is one and the workspace can
-    now receive it. Retries itself until it succeeds or gives up.
+    """Fulfil a captured first-room message when its workspace is ready.
 
-    This is the FULFILMENT half of ``POST /onboarding/brief``. The endpoint
-    itself does intake only (record what the user said, return); everything
-    that needs Paperclip up and Friday seeded happens here, on the same
-    server-owned, idempotent, claim-fenced pattern as
-    ``bootstrap_dispatcher.maybe_dispatch_bootstrap``. Call sites:
-
-      - ``routers/onboarding.py:submit_brief`` -- on every accepted POST,
-        including a duplicate one, since a resubmit is often the user trying
-        to unstick exactly this.
-      - ``routers/container.py:container_status`` -- ahead of that endpoint's
-        early returns, so a parked trial / gated / org-member poll still
-        drains.
+    ``capture_first_workspace_message`` is intake; it persists the message
+    and invokes this function after normal room dispatch. Everything that
+    needs an active Paperclip workspace happens here under one idempotent,
+    claim-fenced path. ``routers/container.py`` retries pending intake on
+    status polls, including early-return states.
 
     **Why it retries itself rather than leaning on the poll.** The poll looks
     like a free retry engine and isn't: dismissing the funnel opens the chat
@@ -727,7 +672,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     ceo_id = (owner_row.starter_agent_ids or {}).get("ceo")
     friday = next((a for a in agents if a.get("id") == ceo_id), None)
     if friday is None:
-        # Paperclip seed hasn't landed Friday yet -- still provisioning.
+        # The starter CEO has not landed yet — still provisioning.
         return DrainOutcome.NOT_READY
     friday_id = friday["id"]
 
@@ -749,8 +694,8 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     project_id: str | None = None
     try:
         first_name = first_name_from_email(email)
-        # Seeded BEFORE the kickoff dispatches, or Friday wakes into a company
-        # with no project to work against.
+        # Seed before staging BRIEF.md, so the starter CEO has a project to
+        # work against when it next reads its workspace.
         goal_id, project_id = await seed_goal_and_project(
             admin=admin,
             session_cookie=session_cookie,
@@ -841,9 +786,8 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
 
     Three cases, and the distinction is load-bearing:
 
-    * **Fulfilment completed** (``funnel_state == "complete"`` -- set only by
-      ``mark_bootstrap_delivered``, i.e. Friday's kickoff was OBSERVED to
-      deliver). The brief is done; retire the item.
+    * **Fulfilment completed** (``funnel_state == "complete"`` after the
+      initial goal/project and BRIEF.md stage). The brief is done; retire it.
     * **A peer is mid-flight.** Leave the item alone and stop. It is NOT
       enough that the row carries ``onboarding_goal_id``: those ids are
       written by ``record_onboarding_ids`` BEFORE the last fallible step
@@ -854,9 +798,8 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
       seeding (a rolling deploy, a cancelled task) leaves the row at
       "submitted" with nothing behind it, and the generation fence has no
       stale-steal of its own -- so the row would sit unclaimable forever
-      while the funnel stays dismissed. Revert the claim so the next pass can
-      win it, the same recovery ``rearm_bootstrap_dispatch`` gives the
-      bootstrap claim.
+      while onboarding stays incomplete. Revert the claim so the next pass can
+      win it.
     """
     fresh = await repo.resolve_owner_row(owner_id, consistent_read=True)
     if fresh is None:

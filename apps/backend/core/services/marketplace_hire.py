@@ -6,11 +6,11 @@ which surfaces in the Teams Inbox "Needs Attention" band
 (``InboxPage`` -> ``NeedsAttentionBand`` -> ``ApprovalRow``, which already
 labels ``hire_agent`` as "Hire Agent"). The roster changes only on approve.
 
-**This does not touch the direct-create flow.** Seeding Friday/Atlas,
-marketplace deploys, and Atlas builds keep using ``POST /companies/{id}/agents``
+**This does not touch the direct-create flow.** Fresh starter-roster seeding,
+legacy Friday/Atlas provisioning, marketplace deploys, and Atlas builds keep using ``POST /companies/{id}/agents``
 unchanged. In particular it needs no ``require_board_approval_for_new_agents``
 flip — that flag turns the direct-create route into a fleet-wide 409, which
-would break signup seeding, where no human is awake to approve Friday and Atlas.
+would break signup seeding, where no human is awake to approve the starter roster.
 
 The shape, and why each step is there:
 

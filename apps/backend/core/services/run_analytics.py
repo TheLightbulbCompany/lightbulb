@@ -73,7 +73,7 @@ _seen_run_ids: dict[str, None] = {}
 # owner:runId -> actor stamped at DISPATCH ("human" for a client WS chat.send,
 # "system" for a backend kickoff / first-contact nudge). Threaded through this
 # module-owned map rather than the gateway's ``_active_runs`` because the
-# dispatch sites (routers/websocket_chat, core/services/bootstrap_dispatcher)
+# dispatch site (routers/websocket_chat)
 # and the terminal reader both key on the runId (== chat.send idempotencyKey ==
 # the runId OpenClaw echoes on every event), so the carry needs no change in
 # connection_pool. Runs NOT dispatched by those two sites (cron/channel/

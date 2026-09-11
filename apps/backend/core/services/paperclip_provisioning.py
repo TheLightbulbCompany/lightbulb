@@ -1074,7 +1074,7 @@ class PaperclipProvisioning:
                 created_at=now,
                 updated_at=now,
                 # Replicate the seeded-agent marker onto every member row so
-                # the company's Friday/Atlas stay protected even if the
+                # the company's legacy Friday/Atlas stay protected even if the
                 # original provisioner's row is later purged (the company
                 # survives as long as ANY active member remains, and
                 # get_seeded_agent_ids resolves from any row carrying it).

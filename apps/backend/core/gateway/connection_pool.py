@@ -116,8 +116,8 @@ class GatewayAuthBackoff(RuntimeError):
     Callers must NOT treat this as retryable.
 
     These are distinct types precisely so ``except RuntimeError`` can never
-    catch both — that conflation latched bootstrap dispatch at ``failed`` on a
-    5-second cooldown.
+    catch both — a cooldown must never be treated as a terminal onboarding
+    failure.
     """
 
 

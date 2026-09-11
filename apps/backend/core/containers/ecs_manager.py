@@ -579,7 +579,8 @@ class EcsManager:
         back to the standard size — worst case an Ultra owner's reprovision lands
         standard-sized and the next reprovision restores it, which beats a failed
         provision. An agent count of 0 means UNDETERMINABLE (every provisioned
-        owner has Friday + Atlas, so a reachable roster is >= 2), so it is
+        fresh workspaces start with six agents and legacy workspaces have a
+        persisted roster), so it is
         treated as no signal and leaves the plan-derived size alone.
         """
         try:

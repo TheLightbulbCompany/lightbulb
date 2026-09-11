@@ -183,11 +183,9 @@ async def _assert_provision_allowed(
 def _maybe_drain_pending_brief(owner_id: str, onboarding: dict) -> None:
     """Fire the onboarding-brief drain if this owner has an answer waiting.
 
-    The funnel renders DURING provisioning, so a first-time user's brief
-    almost always lands before there is an owner row to claim it against;
-    ``POST /onboarding/brief`` records it and returns, and THIS poll is what
-    fulfils it (see routers/onboarding.py and
-    core.services.onboarding_brief.reconcile_pending_brief).
+    The first canonical-room message is persisted before its workspace may be
+    ready to fulfil it. This poll retries the durable intake through
+    ``core.services.onboarding_brief.reconcile_pending_brief``.
 
     ``pending_brief`` rides the SAME onboarding dict compute_status consumes --
     one read for both -- and is False for every owner whose funnel has
@@ -632,9 +630,8 @@ async def _pool_self_heal_connect(pool, owner_id: str, ip: str, token: str) -> N
     except (OSError, GatewayReconnectThrottled) as exc:
         # Transient connection-phase failures, all effectively instant with
         # no lock time consumed: the kernel-level connect errors (refused
-        # while the gateway is booting, reset mid-restart, unreachable —
-        # the same OSError family bootstrap_dispatcher classifies as
-        # transient) and the pool's own 5s reconnect floor, which raises
+        # while the gateway is booting, reset mid-restart, unreachable) and
+        # the pool's own 5s reconnect floor, which raises
         # before any I/O and clears long before a backoff would. No stamp:
         # the next ~5s poll's dial is the one that heals.
         logger.info("status-poll pool self-heal dial transient owner=%s: %s", owner_id, exc)

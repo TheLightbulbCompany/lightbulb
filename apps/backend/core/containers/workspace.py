@@ -806,7 +806,8 @@ def _list_agent_dir_names(efs_root: str, user_id: str) -> list[str]:
 
     Empty when the dir doesn't exist yet (e.g. first provision, before the
     container has booted and created agent dirs). Used to fan auth-profile
-    staging *and* cleanup across the owner's real agents (Friday/Atlas/custom)
+    staging *and* cleanup across the owner's real agents (starter, legacy,
+    and custom)
     discovered on disk — not only the implicit ``main`` — so callers that
     don't thread an explicit agent list (provider hot-swap, running redeploy,
     disconnect) still cover every agent.

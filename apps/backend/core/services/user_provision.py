@@ -535,7 +535,7 @@ async def _ensure_paperclip_for_org(
         double-create. A member returns gracefully and waits — an admin
         will bootstrap the company (and the container it rides) on their
         poll, and the member joins on a subsequent poll. Letting a member
-        create here would seed Friday/Atlas pointing at a container members
+        create here would seed a starter roster pointing at a container members
         can't provision, leaving a company-without-container window.
 
     The underlying helpers treat a concurrent-create 409 as idempotent

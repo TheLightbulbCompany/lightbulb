@@ -222,21 +222,24 @@ class PaperclipCompany:
     last_error: Optional[str] = None
     scheduled_purge_at: Optional[datetime] = None
     seeded_agent_ids: Optional[list[str]] = None
-    """Paperclip agent IDs of the Isol8-seeded agents (Friday + Atlas)
-    captured at provision time. The stable marker for "this agent is part
-    of the provisioning contract and must not be deleted" — used by
+    """Legacy Paperclip agent IDs from the Friday/Atlas founder seed.
+
+    This marker is retained only for those pre-starter-roster companies. It
+    marks agents protected by that historical provisioning contract and is used by
     ``paperclip_openclaw_pairing.is_seeded_agent`` and the Teams BFF
     ``seeded`` flag. Only the provisioner's row carries this (it's the
     row whose ``provision_org`` actually seeded the agents); members'
     rows leave it None. Matching on persisted IDs (rather than role/name)
     means a user-created agent that happens to use role ``ceo`` or the
-    name ``Atlas`` is never mistaken for a seeded one, and renaming a
+    name ``Atlas`` is never mistaken for a legacy-seeded one, and renaming a
     seeded agent never drops its protection."""
 
     starter_agent_ids: Optional[dict[str, str]] = None
     """Starter role key -> Paperclip agent UUID for fresh workspaces.
 
-    Only the authoritative owner row carries this map. Unlike
+    The keys are ``ceo``, ``engineering``, ``finance``, ``growth``,
+    ``analytics``, and ``customer_operations``. Only the authoritative owner
+    row carries this map. Unlike
     ``seeded_agent_ids``, it records provenance and reconciliation identity;
     it does not make an agent undeletable.
     """
@@ -258,10 +261,10 @@ class PaperclipCompany:
     write against a superseded generation is a silent no-op (INV-4)."""
 
     funnel_state: Optional[FunnelState] = None
-    """``not_started`` (set at G2) -> ``submitted`` (``POST
-    /onboarding/brief`` claims this, fenced on ``onboarding_generation``) ->
-    ``complete`` (set once the bootstrap dispatcher observes Friday's
-    kickoff ``chat.final`` — a later PR; NOT set by this one)."""
+    """``not_started`` -> ``submitted`` -> ``complete`` for first-message
+    onboarding. The first human message in the canonical room claims the
+    state, and fulfilment completes it only after the initial goal/project
+    and ``BRIEF.md`` are staged."""
 
     funnel_submitted_at: Optional[datetime] = None
     funnel_completed_at: Optional[datetime] = None
@@ -269,33 +272,16 @@ class PaperclipCompany:
     onboarding_project_id: Optional[str] = None
 
     onboarding_brief_text: Optional[str] = None
-    """The user's own words for what they want built — the natural-language
-    brief phrase (idea + optional "who's it for" audience for the ``new`` path,
-    or "work on {domain}" for the ``grow`` path) that ``build_first_run_message``
-    weaves into Friday's first-run kickoff chat.send, so the visible first
-    message is the USER'S ask rather than a canned prompt. Written by
-    ``claim_funnel_submission`` on the SAME CAS write as the claim (see
-    ``build_onboarding_brief_text`` in ``core.services.onboarding_brief``).
-    Absent on the "I don't know yet — you pick" path (``user_input`` blank) and
-    on legacy rows that predate this field — both of which fall back to
-    ``FIRST_RUN_NO_BRIEF_MESSAGE``. Additive/backward-compatible: an absent
-    field reads back as ``None`` and is simply not carried into the
-    StatusContract (``compute_status`` selects onboarding keys explicitly, so a
-    new key is inert there). Cleared by ``revert_funnel_submission`` alongside
-    the other claim-scoped fields."""
+    """The captured first human message, written with the same CAS claim as
+    its onboarding state. Fulfilment turns it into ``BRIEF.md`` for the
+    starter CEO. It is additive/backward-compatible: absent legacy values read
+    as ``None`` and are cleared with the other claim-scoped fields on retry."""
 
     onboarding_submitted_by: Optional[str] = None
-    """The Clerk MEMBER ID of whoever actually POSTed ``/onboarding/brief``
-    -- written by ``claim_funnel_submission`` on the SAME write as the
-    claim, alongside ``funnel_submitted_at``. Distinct from ``user_id``
-    (this row's PK, the ORG CREATOR for an org owner — see
-    ``resolve_owner_row``): ``/onboarding/brief`` is open to any org
-    member, so a non-creator can win the claim. The bootstrap dispatcher
-    (``core.services.bootstrap_dispatcher``) addresses Friday's kickoff
-    session at THIS id, not ``user_id``, so the actual submitter — not the
-    creator — sees the live kickoff and its ``chat.history``. For a
-    personal owner this always equals ``user_id`` (there is only one
-    member). Cleared by ``revert_funnel_submission`` alongside the other
+    """The Clerk member who sent the captured first message, written on the
+    same claim as ``funnel_submitted_at``. It may differ from ``user_id`` for
+    an org, whose owner row is keyed by the creator. For a personal owner they
+    are the same. Cleared by ``revert_funnel_submission`` with the other
     claim-scoped fields."""
 
     first_contact_state: Optional[str] = None
@@ -346,7 +332,7 @@ class PaperclipRepo:
         requirement", §2): this is a raw ``PutItem`` — any onboarding field
         NOT set on ``company`` is simply ABSENT from the new item, which
         silently WIPES a previously-written value (``onboarding_generation``,
-        ``funnel_state``, ``bootstrap_state``, ...). Every caller of ``put``
+        ``funnel_state``, onboarding ids, ...). Every caller of ``put``
         MUST carry forward the row's existing onboarding fields (read-merge)
         unless it is deliberately establishing them fresh (the G2 mint site
         in ``paperclip_provisioning.provision_org``). Prefer the
@@ -476,22 +462,12 @@ class PaperclipRepo:
         """RECONCILE-WITH-ONBOARD: read-only accessor for the
         COMPOSER/ONBOARD interface contract.
 
-        Returns the spec-fixed onboarding keys (see the dataclass note
-        above, including ``onboarding_submitted_by`` and
-        ``onboarding_brief_text`` -- the latter read by
-        ``core.services.bootstrap_dispatcher`` to build Friday's kickoff
-        message) PLUS four additive keys -- ``teams_state`` (this row's raw
+        Returns the onboarding keys plus ``teams_state`` (the row's raw
         ``status``), ``company_id``, ``paperclip_user_id``, and ``user_id``
-        (this ROW's PK -- the org
-        CREATOR for an org owner, NOT necessarily ``owner_id``; callers that
-        need to address a write at this specific row, e.g. the bootstrap
-        dispatcher's ``claim_bootstrap_dispatch``, need this since
-        ``owner_id`` alone is the wrong key for an org) -- so
-        ``core.services.readiness_state.compute_status`` (and, by threading
-        this same dict through, ``core.services.bootstrap_dispatcher``) gets
-        everything needed from the paperclip-companies row in exactly ONE
-        physical read rather than a second `get_item` just for onboarding
-        fields. See
+        (this row's PK — the org creator for an org owner, not necessarily
+        ``owner_id``). This lets ``core.services.readiness_state.compute_status``
+        and the pending-brief reconciler share one physical Paperclip read
+        where possible. See
         docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
         §2 ("one read, not two").
 
@@ -504,10 +480,10 @@ class PaperclipRepo:
         org_id itself, so this falls back to the ``by-org-id`` GSI (also
         ONE physical read -- ``ProjectionType=ALL``, no base-table chain
         read needed) and returns the PROVISIONER's row -- the one row
-        ``seeded_agent_ids`` was stamped on at provision time -- since
-        onboarding facts (funnel/bootstrap) are company-wide, not
-        per-member. Falls back to the first row if none carries
-        ``seeded_agent_ids`` (defensive; shouldn't happen for an
+        ``starter_agent_ids`` was stamped on at provision time — since
+        onboarding facts are company-wide, not per-member. Falls back to the
+        first row if none carries a starter or legacy seeded marker (defensive;
+        shouldn't happen for an
         actively-provisioned org).
 
         Owner-row resolution is delegated to ``resolve_owner_row`` -- the
@@ -541,7 +517,7 @@ class PaperclipRepo:
         # return value -- getattr keeps this method correct against both
         # without forcing every such test double to be rewritten into a
         # full PaperclipCompany just to add a status field.
-        # ONBOARD's dataclass carries funnel/bootstrap timestamps as
+        # The onboarding dataclass carries funnel timestamps as
         # ``datetime`` and defaults the state literals to ``None`` (not the
         # "not_started" string). This accessor is the COMPOSER/ONBOARD bridge:
         # it normalizes those to the contract's string-typed shape -- ISO
@@ -562,12 +538,9 @@ class PaperclipRepo:
             # leaves the row at "submitted" forever, and gating on
             # "not_started" made the still-undrained brief invisible to the
             # drain from that moment on -- permanently, with no recovery
-            # path, while maybe_dispatch_bootstrap (which guards on
-            # "submitted") happily woke Friday into a company with no goal.
-            # "complete" is the one state that proves fulfilment finished
-            # (mark_bootstrap_delivered sets it once Friday's kickoff is
-            # OBSERVED to deliver), so it is the only safe place to stop
-            # looking.
+            # path. "complete" is the one state that proves fulfilment
+            # finished (the initial goal/project and BRIEF.md are staged), so
+            # it is the only safe place to stop looking.
             #
             # Cost: one small GetItem per poll for owners below "complete" --
             # the pre-onboarding window, plus legacy rows that onboarded via
@@ -1019,7 +992,7 @@ class PaperclipRepo:
         Why this exists: ``provision_org``'s idempotency used to be
         check-then-act on this row — two concurrent calls on DIFFERENT
         backend instances could both read "no row" and both run the full
-        Paperclip seed (Better-Auth sign-up, company create, Friday+Atlas),
+        Paperclip seed (Better-Auth sign-up, company create, starter roster),
         minting duplicate same-email users + duplicate companies (observed
         live on dev 2026-07-24, twice, 102ms and 358ms apart). Like
         ``try_acquire_org_create_claim`` this is a PK conditional write, so
@@ -1238,7 +1211,7 @@ class PaperclipRepo:
         so it must be found via ``find_owner_row``'s by-org-id GSI lookup.
 
         This is the single resolution path every onboarding reader/writer
-        (``routers/onboarding.py``, ``routers/container.py``'s ``onboarded``
+        (first-message capture and ``routers/container.py``'s ``onboarded``
         computation) should use, so "which row is THE owner row" has one
         answer.
 
@@ -1248,8 +1221,8 @@ class PaperclipRepo:
         stale ``False`` is harmless -- a strong read there would double the
         ``paperclip-companies`` RCU cost fleet-wide for a field that flips
         once. The one caller that needs strong consistency is
-        ``POST /onboarding/brief`` (the funnel claim reads then writes the
-        SAME row); it passes ``consistent_read=True``. NOTE: the org path
+        first-message fulfilment (the onboarding claim reads then writes the
+        same row); it passes ``consistent_read=True``. NOTE: the org path
         goes through the ``by-org-id`` GSI, which is eventually consistent by
         construction -- ``consistent_read`` only strengthens the personal
         (base-table ``get``) path.
@@ -1297,10 +1270,9 @@ class PaperclipRepo:
         would risk a double-send.
 
         A stuck ``sending`` — the process died between claim and settle — is
-        deliberately NOT recovered here: recovery belongs to an observer that
-        can date the claim, the way the bootstrap dispatcher's staleness rule
-        dates ``bootstrap_dispatched_at``, not to a second escape hatch inside
-        the claim itself.
+        deliberately not recovered here. Recovery belongs to an observer that
+        can date the claim, not to a second escape hatch inside the claim
+        itself.
 
         Never raises.
         """
@@ -1423,27 +1395,16 @@ class PaperclipRepo:
         two ways to lose (superseded generation vs. already submitted) are
         distinguished by one strongly-consistent re-read on failure.
 
-        ``submitted_by`` is the CLERK MEMBER ID of whoever is actually
-        POSTing ``/onboarding/brief`` -- NOT necessarily ``user_id`` (this
-        row's PK, which for an org is the ORG CREATOR who provisioned it —
-        see ``resolve_owner_row``). ``/onboarding/brief`` is open to any org
-        member, so a non-creator member can win this claim. Stamped onto
-        ``onboarding_submitted_by`` on the SAME write so the bootstrap
-        dispatcher (``core.services.bootstrap_dispatcher``) can address
-        Friday's kickoff session at the ACTUAL submitter, not the creator —
-        otherwise a non-creator submitter's live kickoff (and its
-        `chat.history`) lands in the creator's session instead of the
-        submitter's, who never sees the "I'm watching" prompt answered. For
-        a personal owner ``submitted_by == user_id`` always (there is only
-        one member), so this is a no-op change in that case.
+        ``submitted_by`` is the Clerk member who sent the first canonical-room
+        message — not necessarily ``user_id`` (the owner row's PK, which is
+        the org creator for an org). Any room member can supply that first
+        message. For a personal owner ``submitted_by == user_id``.
 
         ``brief_text`` is the user's own words for what they want built
-        (``build_onboarding_brief_text``), stamped onto
-        ``onboarding_brief_text`` on the SAME CAS write so the bootstrap
-        dispatcher can lead Friday's visible first message with the user's
-        ask rather than a canned prompt. ``None`` (the "you pick" path, or a
-        caller that supplies no brief) simply leaves the attribute unset — the
-        SET clause omits it entirely; the ConditionExpression fence
+        (normally the captured first message), stamped onto
+        ``onboarding_brief_text`` on the same CAS write so the staged
+        ``BRIEF.md`` has the user's own words. ``None`` simply leaves the
+        attribute unset — the SET clause omits it entirely; the condition fence
         (generation + ``not_started``) is UNCHANGED either way, so the added
         field can never weaken the claim's atomicity.
 
@@ -1532,10 +1493,8 @@ class PaperclipRepo:
     ) -> None:
         """Record the seeded goal/project ids on the row. Written LAST (same
         ordering rationale as the old sentinel's ``record_onboarding_ids``):
-        the server-dispatched kickoff (``core.services.bootstrap_dispatcher``)
-        tells Friday to go to work, so both Paperclip rows must exist and be
-        linked here before it dispatches, or she wakes into a company with
-        no project.
+        the initial goal and project must be linked before fulfilment stages
+        the starter CEO's ``BRIEF.md``.
 
         Guarded on ``onboarding_generation = :gen AND funnel_state =
         :submitted`` -- this can only ever land against the SAME claim this
@@ -1543,9 +1502,7 @@ class PaperclipRepo:
         since been reprovisioned (new generation) or whose funnel somehow
         moved on cannot be clobbered by a stale caller. Raises
         ``ConditionalCheckFailedException`` on a guard failure, propagating
-        through a generic handler to a raw 500 -- same contract as the old
-        sentinel's ``record_onboarding_ids``, so the router's except block
-        is unchanged.
+        through the fulfiller's recovery path.
         """
         await run_in_thread(
             self._table().update_item,
@@ -1641,17 +1598,15 @@ class PaperclipRepo:
 
     # --- Pending brief (funnel intake before the workspace can receive it) ---
     #
-    # ``POST /onboarding/brief`` is INTAKE ONLY: it records what the user said
-    # and returns. Everything that needs Paperclip to be up (the funnel claim,
-    # the goal/project seed, staging BRIEF.md) happens later, in
-    # ``onboarding_brief.reconcile_pending_brief``. These methods are that
-    # hand-off's storage.
+    # The first canonical-room human message is intake: it records what the
+    # user said, then normal dispatch continues. Everything that needs
+    # Paperclip to be up (the claim, goal/project seed, and BRIEF.md staging)
+    # happens in ``onboarding_brief.reconcile_pending_brief``. These methods
+    # are that hand-off's storage.
     #
-    # Why this exists at all: the funnel renders DURING provisioning (it fills
-    # the dead time on purpose), so the answer routinely arrives ~30s before
-    # there is an owner row to claim against. It used to be the browser's job
-    # to keep retrying until there was -- which meant a closed tab, or a user
-    # who ran out of patience, silently lost their brief.
+    # The message can arrive while a just-created workspace is still settling,
+    # so the durable item lets fulfilment retry without relying on a browser
+    # tab remaining open.
     #
     # ``brief_state`` is the item's own lifecycle, deliberately separate from
     # the row's ``funnel_state``:
@@ -1757,12 +1712,11 @@ class PaperclipRepo:
         DELIBERATELY additive rather than folded into ``funnel_state``. The
         same dict is consumed by ``compute_status`` (which SHOULD treat a
         pending answer as "funnel submitted" -- the user answered, so stop
-        showing them the funnel) and by ``bootstrap_dispatcher`` (which MUST
-        NOT -- dispatching Friday's kickoff off an undrained brief would wake
-        her before the goal and project she is being told to work on exist).
+        reporting a submitted onboarding state) and by the fulfiller (which
+        must not mark onboarding complete before the goal/project exist).
         Reporting a synthetic ``funnel_state: "submitted"`` here would serve
-        the first and break the second; the composer is where the two facts
-        get combined into a verdict, so that is where the mapping lives.
+        the first and break the second; the composer is where those facts are
+        combined into a verdict.
 
         A ``failed`` item reports False on purpose: fulfilment gave up, so the
         funnel must come BACK and let the user submit again. Suppressing it
@@ -1870,8 +1824,8 @@ class PaperclipRepo:
         Callers must be sure fulfilment actually happened -- see
         ``reconcile_pending_brief``, where only the drain that WON the claim
         deletes on its own success, and a drain that lost deletes only on the
-        one unambiguous end-state (``funnel_state == "complete"``, i.e.
-        Friday's kickoff was observed to deliver). Deleting on weaker evidence
+        one unambiguous end-state (``funnel_state == "complete"``, after the
+        initial goal/project and BRIEF.md stage). Deleting on weaker evidence
         loses the brief in exactly the case this mechanism exists to survive:
         the winner can still fail and roll everything back.
 

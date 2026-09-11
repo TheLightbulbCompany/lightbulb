@@ -504,7 +504,6 @@ function RoomContent({
       <nav className="room-tabs" aria-label="Conversation views">
         <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
         <button ref={contextTrigger} type="button" className="room-tab"
-          aria-label={pinnedMessageIds.length > 0 ? `Details, ${pinnedMessageIds.length} pinned` : (contextCollapsed ? "Show room details" : "Hide room details")}
           aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}

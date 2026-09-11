@@ -21,8 +21,8 @@ export interface RoomHeaderProps {
   canEditRoom: boolean; // owner/admin AND kind !== "dm"
   canLeave: boolean; // kind === "channel" AND role !== "owner"
   actionable: boolean;
-  pinnedCount: number;
-  detailsOpen: boolean;
+  pinnedCount: number; // reserved for Tasks 10/11's Pins surface; unused here
+  detailsOpen: boolean; // reserved for Tasks 10/11's tab-aware Details panel; unused here
   search: ReactNode; // the shipped <RoomMessageSearch />
   onOpenDetails: (tab?: "members" | "pins" | "files" | "links" | "about") => void;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
@@ -52,7 +52,7 @@ export function RoomHeader({
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(room?.name ?? "");
   const [leaving, setLeaving] = useState(false);
-  const { pending, error, run } = useAsyncAction();
+  const { pending, error, run, reset } = useAsyncAction();
   const topicTrigger = useRef<HTMLButtonElement>(null);
   const optionsTrigger = useRef<HTMLButtonElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
@@ -85,15 +85,15 @@ export function RoomHeader({
         <input id={`${id}-topic`} className="room-input" autoFocus maxLength={250} value={topicDraft} disabled={pending}
           onChange={(event) => setTopicDraft(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditingTopic(false); setTopicDraft(room?.topic ?? ""); topicTrigger.current?.focus(); } }} />
-      </form> : <>
+      </form> : ((onSetTopic && canEditRoom) || room?.topic) ? <>
         <span aria-hidden="true" className="room-topic-dot">·</span>
         {onSetTopic && canEditRoom
           ? <Button ref={topicTrigger} type="button" variant="ghost" className="room-topic" disabled={!actionable}
-              aria-label={room?.topic ? "Edit topic" : "Add a topic"} onClick={() => setEditingTopic(true)}>
+              aria-label={room?.topic ? "Edit topic" : "Add a topic"} onClick={() => { reset(); setEditingTopic(true); }}>
               {room?.topic ? <span className="truncate">{room.topic}</span> : <><Pencil size={12} aria-hidden="true" />Add a topic</>}
             </Button>
-          : room?.topic ? <span className="room-topic truncate" title={room.topic}>{room.topic}</span> : null}
-      </>}
+          : <span className="room-topic truncate" title={room?.topic ?? undefined}>{room?.topic}</span>}
+      </> : null}
     </div>
     <div className="room-audience">
       {search}
@@ -114,15 +114,15 @@ export function RoomHeader({
         <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Conversation options"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
-          {onRenameRoom && canEditRoom && <DropdownMenuItem onSelect={() => { setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
+          {onRenameRoom && canEditRoom && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>
           {onLeaveRoom && canLeave && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => setLeaving(true)}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
     {error && !renaming && !leaving && <p role="alert" className="room-header-error text-sm text-err">{error}</p>}
-    <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) setRenaming(false); }}>
+    <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); renameInput.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
@@ -140,13 +140,13 @@ export function RoomHeader({
           </div>
           {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
           <DialogFooter className="gap-2">
-            <Button type="button" variant="outline" disabled={pending} onClick={() => setRenaming(false)}>Cancel</Button>
+            <Button type="button" variant="outline" disabled={pending} onClick={() => { setRenaming(false); reset(); }}>Cancel</Button>
             <Button type="submit" disabled={!actionable || pending || !nameDraft.trim()}>{pending ? "Saving…" : "Save name"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
-    <Dialog open={leaving} onOpenChange={(open) => { if (!open && !pending) setLeaving(false); }}>
+    <Dialog open={leaving} onOpenChange={(open) => { if (!open && !pending) { setLeaving(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); leaveCancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
@@ -155,7 +155,7 @@ export function RoomHeader({
         </DialogHeader>
         {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
         <DialogFooter className="gap-2">
-          <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => setLeaving(false)}>Cancel</Button>
+          <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => { setLeaving(false); reset(); }}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={!actionable || pending}
             onClick={() => void run(async () => { await onLeaveRoom!(); }, "The channel could not be left.", () => setLeaving(false))}>
             {pending ? "Leaving…" : "Leave channel"}

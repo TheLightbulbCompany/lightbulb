@@ -92,3 +92,15 @@ it("copies the room link and opens details from the overflow menu", async () => 
   await userEvent.click(await screen.findByRole("menuitem", { name: "Details" }));
   expect(onOpenDetails).toHaveBeenCalledWith();
 });
+
+it("does not leak a failed star's error into a freshly opened rename dialog", async () => {
+  const onSetPrefs = vi.fn().mockRejectedValueOnce(new Error("Could not star."));
+  const onRenameRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomHeader {...props} onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} />);
+  await userEvent.click(screen.getByRole("button", { name: "Star this conversation" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not star.");
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+  const dialog = await screen.findByRole("dialog", { name: "Rename conversation" });
+  expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+});

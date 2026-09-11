@@ -19,7 +19,7 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRemoveMember={onRemoveMember} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: "Remove Owner" })).not.toBeInTheDocument();
   const trigger = screen.getByRole("button", { name: "Remove Friday" });
   await user.click(trigger);
@@ -37,7 +37,7 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
 it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "View members, 2 in this conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
   expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
@@ -230,13 +230,13 @@ it("opens profiles before the real DM action for human and agent authors and dis
 it("opens and closes the real room context on a narrow viewport", async () => {
   render(<RoomPanel {...props} narrow />);
   const history = screen.getByRole("region", { name: "Messages" });
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(history).not.toBeVisible();
   expect(screen.getByRole("complementary", { name: "Room details" })).toBeVisible();
   expect(screen.getByRole("heading", { name: "Room details" })).toHaveFocus();
   await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
-  expect(screen.getByRole("button", { name: "Show room details" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
 });
 
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
@@ -251,7 +251,7 @@ it("shows canonical members and only running work in collapsible room details", 
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "active", state: "running", text: "", thinking: "", tools: [] };
   const { rerender } = render(<RoomPanel {...props} runs={[run, ...(["completed", "failed", "aborted"] as const).map((state) => ({ ...run, runId: state, state }))]} />);
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  const toggle = screen.getByRole("button", { name: "Show room details" });
+  const toggle = screen.getByRole("button", { name: /^Details/ });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
   const details = screen.getByRole("complementary", { name: "Room details" });
@@ -263,7 +263,7 @@ it("shows canonical members and only running work in collapsible room details", 
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   await user.click(toggle);
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Show room details" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
   expect(toggle).toHaveFocus();
@@ -287,7 +287,7 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(onSelectThread).toHaveBeenLastCalledWith(null);
   expect(reply).toHaveFocus();
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("keeps a thread open when Escape dismisses its delete dialog or deletion is pending", async () => {
@@ -344,7 +344,7 @@ it("lets wide room details change agent response without giving humans a control
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
@@ -358,7 +358,7 @@ it("lets wide room details change agent response without giving humans a control
 it("shows an agent response as read-only text to ordinary members", async () => {
   const user = userEvent.setup();
   render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   expect(details.getByText("Response: Mentions only")).toBeInTheDocument();
   expect(details.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
@@ -375,7 +375,7 @@ it("adds only eligible non-members to an existing channel", async () => {
     ]}
     onAddMember={onAddMember} />);
 
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   expect(screen.getByRole("checkbox", { name: "Colleague" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeInTheDocument();
@@ -395,7 +395,7 @@ it("shows member-add progress and a useful retryable error", async () => {
     room={{ ...props.room!, kind: "channel", name: "Launch" }}
     addMemberCandidates={[{ kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null }]}
     onAddMember={onAddMember} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   await user.click(screen.getByRole("checkbox", { name: "Colleague" }));
   await user.click(screen.getByRole("button", { name: "Add selected" }));
@@ -413,7 +413,7 @@ it("resets member selection and picker state when the room changes", async () =>
   const candidates = [{ kind: "agent" as const, id: "atlas", displayName: "Atlas", mentionHandle: null }];
   const view = render(<RoomPanel {...props} messages={[]} roomId="channel-a" room={{ ...props.room!, roomId: "channel-a", kind: "channel", name: "A" }}
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeChecked();
@@ -422,7 +422,7 @@ it("resets member selection and picker state when the room changes", async () =>
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
 
   expect(screen.queryByRole("button", { name: "Add selected" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
@@ -431,7 +431,7 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
     onAddMember={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 

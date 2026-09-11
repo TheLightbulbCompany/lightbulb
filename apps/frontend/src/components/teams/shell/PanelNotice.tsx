@@ -62,7 +62,7 @@ export interface PanelNoticeProps {
   /** Renders the exit as a link instead (top-up flows, provider dashboards).
    *  `action.onClick` still fires, so an in-shell caller can preventDefault +
    *  pushState while `href` stays the native new-tab / middle-click fallback —
-   *  the same contract MetricCard's `to` + `onClick` pair uses. */
+   *  the same `to` + `onClick` pair pattern used elsewhere for panel-card links. */
   href?: string;
   /**
    * A sentence the owner can hand to their agent, shown in italics above the

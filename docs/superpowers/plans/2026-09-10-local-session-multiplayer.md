@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Tasks 1–5 (native feasibility, room-scoped registry/authorization, dedicated machine transport, desktop adapters, conversation UI) implemented locally and reviewed through September 11, 2026. Latest controller UI verification: 105 frontend tests and TypeScript passed; backend (96), shared (32) and shared TypeScript passed before the final UI-only fix. Task 4 verification remains 83 Rust library + 8 probe tests, with 3 explicit-live tests ignored. Friday/workspace awareness is next. Packaged-app/deployed/two-person validation remains a release gate; no account sharing, push or deployment is implied.
+**Status:** Tasks 1–6 implemented locally and independently reviewed through September 11, 2026. Latest controller verification: 77 backend service/ingress + 33 machine-admission tests, 106 frontend tests and TypeScript, 32 shared tests and TypeScript, 60 plugin tests/build, and 87 Rust library + 8 probe tests passed; 3 explicit-live tests remain ignored. Reviewed integration with current `main`, then Paperclip links, are next. Packaged-app/deployed/two-person validation remains a release gate. The user separately authorized dev-first testing followed by prod/founder rollout; no feature push or deployment has occurred yet.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -412,15 +412,20 @@ pnpm --filter @lightbulb/frontend test -- src/components/messaging/__tests__/Roo
 
 **Modify:** `apps/infra/openclaw/plugins/lightbulb-channel/src/index.ts`, `src/channel.ts`, `src/index.test.ts`; `apps/backend/core/services/local_sessions.py` and the existing messaging/channel delivery path; desktop local-session modules.
 
-- [ ] Test room-bound execution provenance before implementing Friday's session actions. Issue and validate an expiring invocation grant from trusted backend context, not a room ID supplied by model text. Check the agent is still a room member at use time.
-- [ ] Give Friday room-scoped resource discovery and explicit-session read/send capabilities via the backend. Keep its execution-node preference list separate from the enforceable local-session API checks. Test expired/cross-room grants and missing node availability.
-- [ ] Add workspace revision/change notices before remote input and UI stale-state indicators. Test that a file changed through a node outside Claude's own tool loop is noticed and refreshed before subsequent requested editing.
-- [ ] Make unknown provenance and concurrent writers visible; do not claim automatic memory synchronization or prevent ordinary native local use with a global lock.
-- [ ] Update the bundled `lightbulb` skill's relevant reference and `MAINTENANCE.md` anchors to describe the shipped capabilities and advisory node scope. Read its routing instructions before editing; keep new detail out of its thin `SKILL.md` unless needed for routing.
+- [x] Test room-bound execution provenance before implementing Friday's session actions. Issue and validate an expiring invocation grant from trusted backend context, not a room ID supplied by model text. Check the agent is still a room member at use time.
+- [x] Give Friday room-scoped resource discovery and explicit-session read/send capabilities via the backend. Keep its execution-node preference list separate from the enforceable local-session API checks. Test expired/cross-room grants and missing node availability.
+- [x] Add workspace revision/change notices before remote input and UI stale-state indicators. Hermetic external edits exercise detection and a journaled reread advisory; this does not establish that a native harness reread the files.
+- [ ] Release gate: demonstrate a real Friday node edit followed by local-session input and an observed native reread before subsequent requested editing.
+- [x] Make unknown provenance and concurrent writers visible; do not claim automatic memory synchronization or prevent ordinary native local use with a global lock.
+- [x] Update the bundled `lightbulb` skill's relevant reference and `MAINTENANCE.md` anchors to describe implemented capabilities and advisory node scope. Read its routing instructions before editing; keep new detail out of its thin `SKILL.md` unless needed for routing.
 
 **Checks:** existing channel plugin `pnpm test`, backend session authorization tests, Rust local-session tests, and one live Friday-node edit followed by a local-session follow-up. If fork changes are required, they belong in the maintained fork with their own tests/image promotion, not a copied source tree here.
 
 **Exit:** Friday can intentionally collaborate with a selected local session without becoming its owner or claiming knowledge of unseen machine changes.
+
+**Local checkpoint:** Reviewed through `4b3661403`, including fixes for blocking FIFO opens and a test dependency on Git history absent in shallow CI. A distinct-purpose grant lasts at most 300 seconds and travels only in `X-Lightbulb-Local-Session-Token`; canonical ingress JSON and existing gateway authentication remain unchanged for mixed-version rollout. Actual SDK tests cover per-run bindings and secret redaction; full gateway/queue/log behavior remains a live gate. Agent authorship stays typed, not a forged human identity.
+
+Workspace evidence is private and bounded: 512 paths, 4 MiB total, 1 MiB/file; background scanning permits one checkout per 30 seconds across the host, with an immediate target scan before remote commands. Many roots can make background evidence old (512 roots imply roughly 256 minutes per sweep). Coverage is explicitly bounded/unknown, and a notice requests a reread without claiming it happened. No filesystem lock or personal-memory synchronization was added.
 
 ### Task 7 — Paperclip links and a real handoff
 
@@ -440,7 +445,7 @@ pnpm --filter @lightbulb/frontend test -- src/components/messaging/__tests__/Roo
 - [ ] Verify enrollment/uninstall preserves existing hooks/configuration and never uploads provider credentials, full personal memory roots or unrelated historical sessions. Use synthetic transcript fixtures containing sentinel secrets to check the normalization boundary; do not promise perfect secret redaction of user-authored text.
 - [ ] Measure discovery delay, provider-output delay, transport delay, command acknowledgment delay, CPU, reconnect gaps and database writes. Expose provider/config limitations explicitly; do not market completed-message observation as token streaming.
 - [ ] Ship backend admission/contracts first, then the signed desktop, then expose enrollment/UI. Old desktops remain valid node clients. Roll back by disabling session enrollment/commands, not by breaking existing node admission or deleting native sessions.
-- [ ] Use normal version-controlled CI/CD. Watch pushed runs. A merge deploys dev, not prod; promote only through the existing authorized release flow.
+- [ ] Use normal version-controlled CI/CD and watch pushed runs. Backend/frontend deploys are dev-on-merge/prod-on-dispatch, but the current standalone desktop workflow auto-publishes both; add and verify a deliberate desktop production-promotion gate before merging this feature so dev testing precedes production publication.
 
 **Definition of done:** In a supported configuration, you type `claude` or `codex` normally, Aden discovers that session automatically from your conversation, sees its ongoing work, and can contribute to that very same native session. Membership governs every Lightbulb view/control path. No new agent identity, provider account sharing, per-session manual publish, or transcript fork is needed.
 

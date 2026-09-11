@@ -858,12 +858,16 @@ def handler(event, context):
     pageAlarm("OpenClawWorkOldestAgeAlarm", {
       alarmName: `${resourcePrefix(env)}openclaw-work-oldest-age`,
       alarmDescription:
-        "PAGE: durable OpenClaw work has waited longer than five minutes.",
+        "PAGE: durable OpenClaw work has waited longer than an hour.",
       metric: workQueue.metricApproximateAgeOfOldestMessage({
         period: cdk.Duration.minutes(1),
         statistic: "Maximum",
       }),
-      threshold: 5 * 60,
+      // A pointer legitimately waits for the whole agent turn (see
+      // maxReceiveCount above), and turns of 30 minutes are routine, so five
+      // minutes paged on healthy work. Stuck work still surfaces through the
+      // DLQ alarm; this one now catches only a turn that has run an hour.
+      threshold: 60 * 60,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,

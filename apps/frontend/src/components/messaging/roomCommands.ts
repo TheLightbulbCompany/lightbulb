@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { activateMessagesPanel } from "@/components/workspace/workspaceController";
 import { useMessagingWorkspaceOptional } from "./MessagingWorkspaceContext";
-import { roomDisplayName } from "./types";
+import { roomDisplayName, roomKindLabel } from "./types";
 
 export interface RoomCommandItem {
   id: string;
@@ -14,8 +14,6 @@ export interface RoomCommandItem {
 
 const LIMIT = 8;
 const matches = (query: string, value: string) => !query || value.toLowerCase().includes(query.toLowerCase());
-
-const KIND_LABEL = { channel: "Channel", dm: "Direct message", "group-dm": "Group message" } as const;
 
 export function useRoomCommandResults(query: string, enabled: boolean): RoomCommandItem[] {
   const workspace = useMessagingWorkspaceOptional();
@@ -30,7 +28,7 @@ export function useRoomCommandResults(query: string, enabled: boolean): RoomComm
       .map(({ room, label }) => ({
         id: `room:${room.roomId}`,
         label,
-        sublabel: KIND_LABEL[room.kind],
+        sublabel: roomKindLabel[room.kind],
         run: () => {
           openMessage(room.roomId, null);
           activateMessagesPanel();

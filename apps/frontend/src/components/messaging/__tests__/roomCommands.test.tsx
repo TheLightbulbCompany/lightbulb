@@ -1,11 +1,18 @@
 import { renderHook } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { useRoomCommandResults } from "../roomCommands";
 import { activateMessagesPanel } from "@/components/workspace/workspaceController";
 import { useMessagingWorkspaceOptional } from "../MessagingWorkspaceContext";
 
 vi.mock("@/components/workspace/workspaceController", () => ({ activateMessagesPanel: vi.fn() }));
 vi.mock("../MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: vi.fn() }));
+
+// Explicit per-test setup, not the mock factory's implicit `undefined`
+// default — a test-3-sets-it-late file-order dependency once made tests 1-2
+// pass only by accident of running before test 3.
+beforeEach(() => {
+  vi.mocked(useMessagingWorkspaceOptional).mockReturnValue(undefined as never);
+});
 
 it("returns nothing when no messaging provider is mounted", () => {
   const { result } = renderHook(() => useRoomCommandResults("", true));

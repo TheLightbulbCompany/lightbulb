@@ -665,6 +665,24 @@ it("pins and unpins a message from its menu", async () => {
   expect(await screen.findByRole("menuitem", { name: "Unpin from conversation" })).toBeInTheDocument();
 });
 
+it("disables the pin and mark-unread menu items while a pin request is in flight", async () => {
+  let resolvePin!: () => void;
+  const onSetPin = vi.fn(() => new Promise<void>((done) => { resolvePin = done; }));
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} messages={[message]} pinnedMessageIds={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  // The menu closes on select (Radix default); reopen it while the request is still
+  // unresolved to observe the disabled/pending state.
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  const pinItem = await screen.findByRole("menuitem", { name: "Pinning…" });
+  expect(pinItem).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("menuitem", { name: "Marking unread…" })).toHaveAttribute("aria-disabled", "true");
+  await act(async () => resolvePin());
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).not.toHaveAttribute("aria-disabled");
+  expect(screen.getByRole("menuitem", { name: "Mark unread from here" })).not.toHaveAttribute("aria-disabled");
+});
+
 it("marks unread from a message using that message's sequence", async () => {
   const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} onMarkUnreadFrom={onMarkUnreadFrom} messages={[{ ...message, messageSeq: 7 }]} />);
@@ -680,4 +698,29 @@ it("reports a failed pin without losing the message", async () => {
   await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("A room can pin at most 50 messages.");
   expect(screen.getByText(message.text)).toBeInTheDocument();
+});
+
+it("omits mark-unread-from-here for the thread pane's root message", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} selectedThreadId={message.messageId} onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} />);
+  const thread = within(screen.getByRole("complementary", { name: "Thread" }));
+  // The trigger button lives inside the thread pane, but DropdownMenuContent is portalled
+  // to the document body, so the opened menu's items are queried unscoped.
+  await userEvent.click(thread.getByRole("button", { name: "Message actions" }));
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
+});
+
+it("omits mark-unread-from-here for a thread reply", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Reply text", threadRootMessageId: message.messageId };
+  render(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={message.messageId}
+    onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} />);
+  const thread = within(screen.getByRole("complementary", { name: "Thread" }));
+  const [, replyTrigger] = thread.getAllByRole("button", { name: "Message actions" });
+  await userEvent.click(replyTrigger);
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
 });

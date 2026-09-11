@@ -259,7 +259,7 @@ function RoomContent({
   const [reactionError, setReactionError] = useState<string | null>(null);
   // Shared pending/error pair for the per-message menu actions (pin, mark unread) --
   // only one such action is ever in flight from a given message's menu at a time.
-  const { error: messageActionError, run: runMessageAction } = useAsyncAction();
+  const { pending: messageActionPending, error: messageActionError, run: runMessageAction } = useAsyncAction();
   // Computed once per mount/reaction-change (not per message render) -- reading
   // localStorage in every RoomMessageItem render was wasted work on a long list.
   const [quickReactions, setQuickReactions] = useState<readonly string[]>(() => {
@@ -430,14 +430,20 @@ function RoomContent({
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
-        {onSetPin && <DropdownMenuItem onSelect={() => void runMessageAction(
+        {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
+            menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
+            The menu itself still closes on select (Radix default); reopening it while a
+            request is in flight is what surfaces the disabled/pending state, so the request's
+            eventual error stays visible (never trapped behind an aria-hidden open menu). */}
+        {onSetPin && <DropdownMenuItem disabled={messageActionPending} aria-busy={messageActionPending} onSelect={() => void runMessageAction(
           () => onSetPin(message.messageId, !pinnedMessageIds.includes(message.messageId)),
           "The pin could not be saved.",
-        )}>{pinnedMessageIds.includes(message.messageId) ? "Unpin from conversation" : "Pin to conversation"}</DropdownMenuItem>}
-        {onMarkUnreadFrom && !inThread && <DropdownMenuItem onSelect={() => void runMessageAction(
+        )}>{messageActionPending ? (pinnedMessageIds.includes(message.messageId) ? "Unpinning…" : "Pinning…")
+          : (pinnedMessageIds.includes(message.messageId) ? "Unpin from conversation" : "Pin to conversation")}</DropdownMenuItem>}
+        {onMarkUnreadFrom && !inThread && <DropdownMenuItem disabled={messageActionPending} aria-busy={messageActionPending} onSelect={() => void runMessageAction(
           () => onMarkUnreadFrom(message.messageSeq),
           "The conversation could not be marked unread.",
-        )}>Mark unread from here</DropdownMenuItem>}
+        )}>{messageActionPending ? "Marking unread…" : "Mark unread from here"}</DropdownMenuItem>}
       </> : undefined}
       toolbarExtras={!message.deletedAt ? <>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Copy link"

@@ -214,7 +214,7 @@ describe("Messages room/controller boundary", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New conversation" }));
     fireEvent.change(screen.getByLabelText("Conversation type"), { target: { value: "dm" } });
     fireEvent.click(screen.getByLabelText("Select Beta"));
-    fireEvent.click(screen.getByRole("button", { name: "Start message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start direct message" }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("b-new"));
     await act(async () => { hydrate(created); });
     await waitFor(() => expect(getWorkspaceSnapshot()).toMatchObject({

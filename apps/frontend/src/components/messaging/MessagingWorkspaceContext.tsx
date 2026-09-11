@@ -10,6 +10,8 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
+import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
+import { resolveTypedMentions } from "./mentions";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
@@ -94,6 +96,7 @@ export function MessagingWorkspaceProvider({
   subscribeToRoom?: boolean;
 }) {
   const { userId, orgId } = useAuth();
+  const scope = orgId ?? userId ?? "signed-out";
   const rooms = useRooms(initialAgentId, subscribeToRoom);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
@@ -121,16 +124,27 @@ export function MessagingWorkspaceProvider({
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationError, setCreationError] = useState<string>();
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
+  const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reset before the new room's composer consumes a pending draft/focus handoff.
+  // Reset before the new room's composer consumes a pending draft/focus
+  // handoff — restoring, not clearing, so a half-typed message survives a
+  // room switch (spec: per-room drafts). There is no separate `mentions`
+  // state to restore: the composer derives mentions purely from the typed
+  // text (resolveTypedMentions), so restoring `text` is enough — the
+  // structured mentions come back on their own once the text re-renders.
   if (draftRoomId !== rooms.activeRoomId) {
     setDraftRoomId(rooms.activeRoomId);
-    setDraft("");
+    setDraft(rooms.activeRoomId ? readDraft(draftKey(scope, rooms.activeRoomId, null)).text : "");
     setClientMessageId(crypto.randomUUID());
     setThreadId(null);
+    setDraftThreadId(null);
     setThreadDraft("");
+    setThreadClientMessageId(crypto.randomUUID());
+  } else if (draftThreadId !== threadId) {
+    setDraftThreadId(threadId);
+    setThreadDraft(rooms.activeRoomId && threadId ? readDraft(draftKey(scope, rooms.activeRoomId, threadId)).text : "");
     setThreadClientMessageId(crypto.randomUUID());
   }
 
@@ -183,20 +197,42 @@ export function MessagingWorkspaceProvider({
     }, 3_000);
   }, [setRoomTyping]);
 
+  // Persist as the owner types — recomputed structured mentions come from
+  // the same resolveTypedMentions the send path uses, so a restored draft's
+  // mentions are exactly what would be dispatched if sent as-is.
+  useEffect(() => {
+    if (!rooms.activeRoomId) return;
+    writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) });
+  }, [scope, rooms.activeRoomId, draft, participants]);
+
+  useEffect(() => {
+    if (!rooms.activeRoomId || !threadId) return;
+    writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) });
+  }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
+
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
     await sendRoomMessage(request);
+    const roomId = rooms.activeRoomId;
     if (thread) {
       if (threadClientMessageIdRef.current !== request.clientMessageId) return;
+      if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
       setThreadDraft("");
       setThreadClientMessageId(crypto.randomUUID());
     } else {
       if (clientMessageIdRef.current !== request.clientMessageId) return;
+      if (roomId) clearDraft(draftKey(scope, roomId, null));
       setDraft("");
       setClientMessageId(crypto.randomUUID());
     }
-  }, [sendRoomMessage]);
+  }, [sendRoomMessage, rooms.activeRoomId, scope]);
+
+  // draft/threadDraft aren't read in the body — they're the signal to
+  // recompute, since listDraftRoomIds reads localStorage, not props.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const draftRoomIds = useMemo(() => listDraftRoomIds(scope), [scope, draft, threadDraft]);
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
+  const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
   const composer: RoomComposerProps = {
     focusAgentId: rooms.activeRoom?.kind === "dm" && agentCounterparts.length === 1 ? agentCounterparts[0].id : undefined,
     text: draft,
@@ -210,6 +246,8 @@ export function MessagingWorkspaceProvider({
     disabled: !rooms.httpReady,
     onTypingChange: handleTyping,
     onUploadAttachment: rooms.uploadAttachment,
+    roomKind: rooms.activeRoom?.kind,
+    runningAgentIds,
   };
 
   const threadComposer: { parentMessageId: string; composer: RoomComposerProps } | undefined = threadId ? {
@@ -228,6 +266,8 @@ export function MessagingWorkspaceProvider({
       disabled: !rooms.httpReady,
       onTypingChange: handleTyping,
       onUploadAttachment: rooms.uploadAttachment,
+      roomKind: rooms.activeRoom?.kind,
+      runningAgentIds,
     },
   } : undefined;
 
@@ -298,7 +338,7 @@ export function MessagingWorkspaceProvider({
   );
 
   const directoryProps: RoomDirectoryProps = {
-    ownerScopeId: orgId ?? userId ?? "signed-out",
+    ownerScopeId: scope,
     rooms: directoryRooms,
     participants: directoryParticipants,
     state: directoryState,
@@ -310,9 +350,10 @@ export function MessagingWorkspaceProvider({
     creationBusy,
     creationError,
     onRetry: () => void rooms.refreshRooms(),
+    draftRoomIds,
   };
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
-    ownerScopeId: orgId ?? userId ?? "signed-out",
+    ownerScopeId: scope,
     currentUserId: userId ?? "",
     roomId: rooms.activeRoomId,
     room: rooms.activeRoom,

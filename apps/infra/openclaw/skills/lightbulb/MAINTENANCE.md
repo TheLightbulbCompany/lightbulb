@@ -22,6 +22,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  reply-in-thread, edit/delete); messageLinks.ts (copy-link permalink format);
                                  RoomPanel.tsx renderRun (muted "<Agent> finished · no reply" / "stopped" / "run failed"
                                  status line for a silent agent turn)
+  - Composer ................ references/surfaces.md
+                              <- apps/frontend/src/components/messaging/RoomComposer.tsx (typeaheads, formatting toolbar,
+                                 drag-and-drop, up-arrow edit); composerText.ts (caret grammar); mentions.ts
+                                 resolveTypedMentions (typed tokens resolve on send); respondHint.ts (must mirror
+                                 core/services/messaging.py select_dispatch_targets); drafts.ts (lightbulb.messaging.draft| keys)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)

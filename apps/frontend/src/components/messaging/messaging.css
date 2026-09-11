@@ -60,6 +60,7 @@
 .room-composer textarea { min-height: 64px; max-height: 200px; resize: vertical; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; caret-color: var(--foreground); }
 .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: .75rem; padding: 0 4px; }
+.room-respond-hint { padding: 0 4px; font-size: .75rem; }
 .room-send { width: 36px; height: 36px; border-radius: 8px; }
 .room-composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .room-image-previews, .room-message-images { display: flex; flex-wrap: wrap; gap: 8px; }

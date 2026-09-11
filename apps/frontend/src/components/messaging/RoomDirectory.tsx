@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import { ChevronDown, Hash, MailOpen, MessageCircle, MoreHorizontal, Plus, Users } from "lucide-react";
+import { ChevronDown, Hash, MailOpen, MessageCircle, MoreHorizontal, Pencil, Plus, Users } from "lucide-react";
 import type { ListenMode, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -30,6 +30,7 @@ export interface RoomDirectoryProps {
   creationBusy?: boolean;
   creationError?: string;
   onRetry?: () => void;
+  draftRoomIds?: readonly string[];
 }
 
 export function RoomDirectory(props: RoomDirectoryProps) {
@@ -48,6 +49,7 @@ function DirectoryContent({
   creationBusy = false,
   creationError,
   onRetry,
+  draftRoomIds = [],
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
@@ -150,6 +152,7 @@ function DirectoryContent({
               : <Icon size={16} aria-hidden="true" />}
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
             {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
+            {draftRoomIds.includes(room.roomId) && <Pencil size={14} aria-label="Unsent draft" className="text-muted-foreground" />}
           </button>{onMarkUnread && <DropdownMenu><DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={markingUnread === room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
           </DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={markingUnread !== null} onSelect={() => void markRoomUnread(room.roomId, label)}>
@@ -158,6 +161,19 @@ function DirectoryContent({
         })}</ul>
       </section>;
     })}
+    {draftRoomIds.length > 0 && <section aria-label="Drafts">
+      <h3 className="room-directory-group">Drafts</h3>
+      <ul>{rooms.filter((room) => draftRoomIds.includes(room.roomId)).map((room) => {
+        const label = roomDisplayName(room, room.participants);
+        return <li key={`draft:${room.roomId}`} className="room-directory-row">
+          <button type="button" className="room-directory-entry" aria-current={room.roomId === currentRoomId ? "page" : undefined}
+            onClick={() => onSelectRoom(room.roomId)}>
+            <Pencil size={16} aria-label="Unsent draft" />
+            <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
+          </button>
+        </li>;
+      })}</ul>
+    </section>}
     <section aria-label="People and agents">
       <Button variant="ghost" className="w-full justify-start" aria-expanded={directoryOpen}
         aria-controls={`${id}-people`} onClick={() => setDirectoryOpen(!directoryOpen)}><Users aria-hidden="true" />People and agents</Button>

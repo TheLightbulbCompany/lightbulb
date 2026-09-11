@@ -80,7 +80,7 @@ beforeEach(() => {
   mocks.agents.mockReturnValue({ agents: [{ id: "agent-friday", name: "Friday" }] });
   mocks.roster.mockReturnValue([{ agent: { id: "agent-friday" }, state: "running" }]);
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); localStorage.clear(); });
 
 function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void) {
   return render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
@@ -340,4 +340,23 @@ it("does not clear the new room's draft when the old room's send finishes", asyn
   });
 
   expect(panel.composer.text).toBe("Keep this draft in B");
+});
+
+it("restores a per-room draft when the owner returns to the room", () => {
+  const view = compose();
+  act(() => { panel.composer.onTextChange("Draft in A"); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  expect(panel.composer.text).toBe("");
+
+  state.activeRoomId = room.roomId;
+  state.activeRoom = room;
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  expect(panel.composer.text).toBe("Draft in A");
 });

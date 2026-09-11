@@ -139,3 +139,17 @@ it("keeps an empty directory error blocking", () => {
   expect(screen.queryByRole("button", { name: /Launch/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
 });
+
+const directory = { ownerScopeId: "org", state: "ready" as const, rooms: [base], participants: [atlas], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn() };
+
+it("lists rooms with a saved draft under Drafts and marks the row", () => {
+  render(<RoomDirectory {...directory} draftRoomIds={["channel"]} />);
+  const drafts = screen.getByRole("region", { name: "Drafts" });
+  expect(within(drafts).getByRole("button", { name: /Launch/ })).toBeInTheDocument();
+  expect(screen.getAllByLabelText("Unsent draft").length).toBeGreaterThan(0);
+});
+
+it("renders no Drafts section when nothing is drafted", () => {
+  render(<RoomDirectory {...directory} draftRoomIds={[]} />);
+  expect(screen.queryByRole("region", { name: "Drafts" })).not.toBeInTheDocument();
+});

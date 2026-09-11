@@ -5,6 +5,7 @@ import type { RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
+import { draftKey } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@/hooks/useRooms";
 
@@ -341,6 +342,35 @@ it("does not clear the new room's draft when the old room's send finishes", asyn
   });
 
   expect(panel.composer.text).toBe("Keep this draft in B");
+});
+
+it("clears the sending room's stored draft when the owner switches rooms mid-send", async () => {
+  let resolveSend!: () => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+  const view = compose();
+  act(() => panel.composer.onTextChange("Send from A"));
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).not.toBeNull();
+  const request = {
+    clientMessageId: panel.composer.clientMessageId,
+    text: "Send from A",
+    mentions: [],
+    replyToMessageId: null,
+    threadRootMessageId: null,
+  };
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  await act(async () => {
+    resolveSend();
+    await sending;
+  });
+
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
 });
 
 it("restores a per-room draft when the owner returns to the room", () => {

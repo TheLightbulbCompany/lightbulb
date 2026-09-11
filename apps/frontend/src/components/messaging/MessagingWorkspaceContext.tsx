@@ -273,16 +273,22 @@ export function MessagingWorkspaceProvider({
   }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
 
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
-    await sendRoomMessage(request);
+    // Read before the await: this is the room the message was sent FROM, even
+    // if the owner switches rooms while it is in flight.
     const roomId = rooms.activeRoomId;
+    await sendRoomMessage(request);
+    // Clearing the SENDING room's stored row is always correct once the send
+    // succeeded — so it happens before the attempt-id guards, which a room
+    // switch mid-send trips and which only protect the NEW room's in-memory
+    // draft state below.
     if (thread) {
-      if (threadClientMessageIdRef.current !== request.clientMessageId) return;
       if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
+      if (threadClientMessageIdRef.current !== request.clientMessageId) return;
       setThreadDraft("");
       setThreadClientMessageId(crypto.randomUUID());
     } else {
-      if (clientMessageIdRef.current !== request.clientMessageId) return;
       if (roomId) clearDraft(draftKey(scope, roomId, null));
+      if (clientMessageIdRef.current !== request.clientMessageId) return;
       setDraft("");
       setClientMessageId(crypto.randomUUID());
     }

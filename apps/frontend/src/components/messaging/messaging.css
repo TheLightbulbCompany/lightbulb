@@ -59,7 +59,7 @@
 .room-input { display: block; border: 1px solid var(--input); border-radius: 4px; padding: 8px 12px; background: var(--background); color: var(--foreground); width: 100%; min-width: 0; font: inherit; caret-color: var(--foreground); }
 .room-input::placeholder { color: var(--muted-foreground); }
 .room-picker { border-top: 1px solid var(--border); padding-top: 12px; min-width: 0; }
-.room-mention-picker { position: absolute; z-index: 30; right: 12px; bottom: calc(100% + 8px); left: 12px; max-height: min(360px, 50dvh); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 12px 32px rgb(0 0 0 / .2); }
+.room-mention-picker { position: absolute; z-index: 30; right: 12px; bottom: calc(100% + 8px); left: 12px; max-height: min(360px, 50dvh); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: var(--shadow-lift); }
 .room-picker-list { max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
 .room-choice { display: flex; align-items: center; gap: 8px; padding: 8px 4px; min-height: 44px; cursor: pointer; }
 .room-choice-button { width: 100%; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; }

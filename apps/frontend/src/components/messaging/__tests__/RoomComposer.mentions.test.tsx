@@ -41,16 +41,16 @@ it("selects the active suggestion with Enter instead of sending", () => {
   expect(onSubmit).not.toHaveBeenCalled();
 });
 
-it("inserts a clicked human at the caret and submits the structured mention", () => {
+it("removes a human's typed query and submits the structured mention", () => {
   const onSubmit = vi.fn();
   render(<Harness onSubmit={onSubmit} />);
   const composer = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(composer, { target: { value: "Hi @", selectionStart: 4 } });
   fireEvent.click(screen.getByRole("option", { name: /Leo Gordon/ }));
-  expect(composer).toHaveValue("Hi @Leo Gordon ");
+  expect(composer).toHaveValue("Hi ");
   fireEvent.keyDown(composer, { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-    text: "Hi @Leo Gordon ",
+    text: "Hi ",
     mentions: [{ kind: "human", id: "leo" }],
   }));
 });

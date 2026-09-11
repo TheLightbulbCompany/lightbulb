@@ -226,14 +226,14 @@ function ComposerAttempt({
   function chooseTypedMention(member: RoomParticipant) {
     if (!mentionTrigger) return;
     const ref: MemberRef = { kind: member.kind, id: member.id };
-    const alreadySelected = selectedMentions.some((mention) => sameMember(mention, ref));
+    const alreadySelected = mentions.some((mention) => sameMember(mention, ref));
     if (!alreadySelected && mentions.length >= 32) return;
     if (!alreadySelected) {
       onMentionsChange([...selectedMentions, ref]);
     }
-    const token = `@${member.mentionHandle ?? member.displayName}`;
+    const token = member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "";
     const suffix = text.slice(mentionTrigger.end);
-    const separator = suffix.startsWith(" ") ? "" : " ";
+    const separator = token && !suffix.startsWith(" ") ? " " : "";
     const nextText = `${text.slice(0, mentionTrigger.start)}${token}${separator}${suffix}`;
     const nextCaret = mentionTrigger.start + token.length + separator.length;
     onTextChange(nextText);
@@ -334,7 +334,7 @@ function ComposerAttempt({
             onMouseDown={(event) => event.preventDefault()} onClick={() => chooseTypedMention(member)}>
             <ParticipantAvatar participant={member} />
             <span className="min-w-0"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
-              <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
+              <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}{checked ? " · Included" : ""}</span></span>
           </button>;
           return <label key={`${member.kind}:${member.id}`} className="room-choice">
             <input type="checkbox" checked={checked} disabled={member.id === defaultAgentId || (!checked && mentions.length >= 32)}

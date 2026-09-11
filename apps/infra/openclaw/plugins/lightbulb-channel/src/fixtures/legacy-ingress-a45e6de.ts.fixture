@@ -1,0 +1,236 @@
+// Frozen test-only historical parser and required helpers/constants.
+// Source: a45e6de37b27736c968b66521a79c42b371dbc22
+// apps/infra/openclaw/plugins/lightbulb-channel/src/channel.ts
+// Parser/helper implementation is verbatim, not imported from the current plugin.
+// Unrelated channel/dispatch code and type-only DTO declarations are omitted.
+// Tests transpile this TypeScript fixture (type names erase); production build excludes it.
+
+export const MAX_TEXT_BYTES = 100_000;
+export const MAX_HISTORY = 50;
+export const MAX_PARTICIPANTS = 128;
+const AGENT_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,63}$";
+const AGENT_ID_RE = new RegExp(AGENT_ID_PATTERN);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UTC_RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/;
+
+class Invalid extends Error {}
+
+type Rec = Record<string, unknown>;
+
+function obj(v: unknown, path: string, keys: string[]): Rec {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Invalid(`${path}: expected object`);
+  for (const key of Object.keys(v)) {
+    if (!keys.includes(key)) throw new Invalid(`${path}.${key}: unknown field`);
+  }
+  return v as Rec;
+}
+function str(v: unknown, path: string): string {
+  if (typeof v !== "string") throw new Invalid(`${path}: expected string`);
+  return v;
+}
+function nonEmpty(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (!s.trim()) throw new Invalid(`${path}: expected non-empty string`);
+  return s;
+}
+function uuid(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (!UUID_RE.test(s)) throw new Invalid(`${path}: expected lowercase RFC-4122 uuid`);
+  return s;
+}
+function nullableUuid(v: unknown, path: string): string | null {
+  return v === null ? null : uuid(v, path);
+}
+function int(v: unknown, path: string): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Invalid(`${path}: expected non-negative integer`);
+  return v;
+}
+function oneOf<T extends string>(v: unknown, path: string, allowed: readonly T[]): T {
+  if (typeof v !== "string" || !allowed.includes(v as T)) throw new Invalid(`${path}: expected one of ${allowed.join("|")}`);
+  return v as T;
+}
+function list(v: unknown, path: string, max: number): unknown[] {
+  if (!Array.isArray(v)) throw new Invalid(`${path}: expected array`);
+  if (v.length > max) throw new Invalid(`${path}: more than ${max} entries`);
+  return v;
+}
+function memberRef(v: unknown, path: string) {
+  const row = obj(v, path, ["kind", "id"]);
+  const kind = oneOf(row.kind, `${path}.kind`, ["human", "agent"]);
+  const id = nonEmpty(row.id, `${path}.id`);
+  if (kind === "agent" && !AGENT_ID_RE.test(id)) {
+    throw new Invalid(`${path}.id: expected lowercase agent id`);
+  }
+  return { kind, id };
+}
+function text(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (Buffer.byteLength(s, "utf8") > MAX_TEXT_BYTES) throw new Invalid(`${path}: exceeds ${MAX_TEXT_BYTES} bytes`);
+  return s;
+}
+function rfc3339(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (!UTC_RFC3339_RE.test(s) || !Number.isFinite(Date.parse(s))) {
+    throw new Invalid(`${path}: expected UTC RFC-3339 timestamp`);
+  }
+  return s;
+}
+
+const ATTACHMENT_EXTENSIONS: Record<CanonicalAttachment["contentType"], string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+
+function attachment(v: unknown, path: string): CanonicalAttachment {
+  const r = obj(v, path, ["id", "fileName", "contentType", "size"]);
+  const fileName = nonEmpty(r.fileName, `${path}.fileName`);
+  if (Buffer.byteLength(fileName, "utf8") > 255 || /[\\/\x00-\x1f\x7f]/u.test(fileName)) {
+    throw new Invalid(`${path}.fileName: expected safe filename metadata`);
+  }
+  const size = int(r.size, `${path}.size`);
+  if (size > 5 * 1024 * 1024) throw new Invalid(`${path}.size: exceeds 5242880 bytes`);
+  return {
+    id: uuid(r.id, `${path}.id`),
+    fileName,
+    contentType: oneOf(r.contentType, `${path}.contentType`, Object.keys(ATTACHMENT_EXTENSIONS) as CanonicalAttachment["contentType"][]),
+    size,
+  };
+}
+
+function canonicalMessage(v: unknown, path: string): CanonicalRoomMessage {
+  const r = obj(v, path, [
+    "messageId", "roomId", "messageSeq", "roomRevision", "author", "text", "mentions",
+    "replyToMessageId", "threadRootMessageId", "createdAt", "runId", "attachments",
+  ]);
+  const authorRaw = obj(r.author, `${path}.author`, ["kind", "id", "displayName"]);
+  const author = {
+    kind: oneOf(authorRaw.kind, `${path}.author.kind`, ["human", "agent", "system"]),
+    id: nonEmpty(authorRaw.id, `${path}.author.id`),
+    displayName: nonEmpty(authorRaw.displayName, `${path}.author.displayName`),
+  } as const;
+  if (author.kind === "agent" && !AGENT_ID_RE.test(author.id)) {
+    throw new Invalid(`${path}.author.id: expected lowercase agent id`);
+  }
+  return {
+    messageId: uuid(r.messageId, `${path}.messageId`),
+    roomId: uuid(r.roomId, `${path}.roomId`),
+    messageSeq: int(r.messageSeq, `${path}.messageSeq`),
+    roomRevision: int(r.roomRevision, `${path}.roomRevision`),
+    author,
+    text: text(r.text, `${path}.text`),
+    mentions: list(r.mentions, `${path}.mentions`, MAX_PARTICIPANTS).map((m, i) => memberRef(m, `${path}.mentions[${i}]`)),
+    replyToMessageId: nullableUuid(r.replyToMessageId, `${path}.replyToMessageId`),
+    threadRootMessageId: nullableUuid(r.threadRootMessageId, `${path}.threadRootMessageId`),
+    createdAt: rfc3339(r.createdAt, `${path}.createdAt`),
+    runId: r.runId === null ? null : nonEmpty(r.runId, `${path}.runId`),
+    attachments: list(r.attachments ?? [], `${path}.attachments`, 4).map((a, i) => attachment(a, `${path}.attachments[${i}]`)),
+  };
+}
+
+export function parseIngress(
+  value: unknown,
+): { ok: true; value: LightbulbRoomIngress } | { ok: false; error: string } {
+  try {
+    const r = obj(value, "body", [
+      "version", "eventId", "targetAgentId", "eventKind", "room", "sender", "message",
+      "mentions", "participants", "recentHistory",
+    ]);
+    if (r.version !== 1) throw new Invalid("body.version: expected 1");
+    const roomRaw = obj(r.room, "body.room", ["id", "name", "kind", "revision"]);
+    const senderRaw = obj(r.sender, "body.sender", ["kind", "id", "displayName"]);
+    const targetAgentId = str(r.targetAgentId, "body.targetAgentId");
+    if (!AGENT_ID_RE.test(targetAgentId)) throw new Invalid("body.targetAgentId: expected lowercase agent id");
+
+    const room = {
+      id: uuid(roomRaw.id, "body.room.id"),
+      name: roomRaw.name === null ? null : str(roomRaw.name, "body.room.name"),
+      kind: oneOf(roomRaw.kind, "body.room.kind", ["channel", "dm", "group-dm"]),
+      revision: int(roomRaw.revision, "body.room.revision"),
+    } as const;
+    const sender = {
+      kind: oneOf(senderRaw.kind, "body.sender.kind", ["human", "agent", "system"]),
+      id: nonEmpty(senderRaw.id, "body.sender.id"),
+      displayName: nonEmpty(senderRaw.displayName, "body.sender.displayName"),
+    } as const;
+    if (sender.kind === "agent" && !AGENT_ID_RE.test(sender.id)) {
+      throw new Invalid("body.sender.id: expected lowercase agent id");
+    }
+
+    const message = canonicalMessage(r.message, "body.message");
+    const eventId = uuid(r.eventId, "body.eventId");
+    if (eventId !== message.messageId) throw new Invalid("body.eventId: must equal message.messageId");
+    if (message.roomId !== room.id) throw new Invalid("body.message.roomId: must equal room.id");
+    if (
+      message.author.kind !== sender.kind ||
+      message.author.id !== sender.id ||
+      message.author.displayName !== sender.displayName
+    ) {
+      throw new Invalid("body.sender: must equal message.author");
+    }
+
+    const mentions = list(r.mentions, "body.mentions", MAX_PARTICIPANTS).map((m, i) =>
+      memberRef(m, `body.mentions[${i}]`),
+    );
+    if (JSON.stringify(mentions) !== JSON.stringify(message.mentions)) {
+      throw new Invalid("body.mentions: must equal message.mentions");
+    }
+    const participants = list(r.participants, "body.participants", MAX_PARTICIPANTS).map((p, i) => {
+      const path = `body.participants[${i}]`;
+      const pr = obj(p, path, ["kind", "id", "displayName", "mentionHandle", "listenMode"]);
+      const participant = memberRef({ kind: pr.kind, id: pr.id }, path);
+      const mentionHandle =
+        pr.mentionHandle === undefined ? undefined : nonEmpty(pr.mentionHandle, `${path}.mentionHandle`);
+      if (mentionHandle !== undefined && !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(mentionHandle)) {
+        throw new Invalid(`${path}.mentionHandle: expected lowercase mention handle`);
+      }
+      return {
+        ...participant,
+        displayName: nonEmpty(pr.displayName, `${path}.displayName`),
+        ...(mentionHandle !== undefined ? { mentionHandle } : {}),
+        ...(pr.listenMode !== undefined
+          ? { listenMode: oneOf(pr.listenMode, `${path}.listenMode`, ["active", "mentions", "observe"]) }
+          : {}),
+      };
+    });
+    if (!participants.some((participant) => participant.kind === "agent" && participant.id === targetAgentId)) {
+      throw new Invalid("body.participants: target agent is absent");
+    }
+
+    const recentHistory = list(r.recentHistory, "body.recentHistory", MAX_HISTORY).map((entry, i) =>
+      canonicalMessage(entry, `body.recentHistory[${i}]`),
+    );
+    let previousSeq = -1;
+    for (const [index, history] of recentHistory.entries()) {
+      if (history.roomId !== room.id) {
+        throw new Invalid(`body.recentHistory[${index}].roomId: must equal room.id`);
+      }
+      if (history.messageSeq >= message.messageSeq || history.messageSeq <= previousSeq) {
+        throw new Invalid("body.recentHistory: expected prior messages in oldest-to-newest order");
+      }
+      previousSeq = history.messageSeq;
+    }
+
+    return {
+      ok: true,
+      value: {
+        version: 1,
+        eventId,
+        targetAgentId,
+        eventKind: oneOf(r.eventKind, "body.eventKind", ["user_request", "room_event"]),
+        room,
+        sender,
+        message,
+        mentions,
+        participants,
+        recentHistory,
+      },
+    };
+  } catch (error) {
+    if (error instanceof Invalid) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+

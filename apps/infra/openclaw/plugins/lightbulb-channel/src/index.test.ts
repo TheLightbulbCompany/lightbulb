@@ -1,5 +1,4 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
 import ts from "typescript";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -60,8 +59,8 @@ const ENV = {
   OPENCLAW_HOOK_TOKEN: "hook-token",
 };
 
-it("keeps the actual pre-adapter strict parser compatible with new backend canonical JSON", () => {
-  const previous = execFileSync("git", ["show", "a45e6de37b27736c968b66521a79c42b371dbc22:apps/infra/openclaw/plugins/lightbulb-channel/src/channel.ts"], { encoding: "utf8" });
+it("keeps the actual pre-adapter strict parser compatible with new backend canonical JSON", async () => {
+  const previous = await readFile(new URL("./fixtures/legacy-ingress-a45e6de.ts.fixture", import.meta.url), "utf8");
   const compiled = ts.transpileModule(previous, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const old: Record<string, any> = {};
   new Function("exports", compiled)(old);

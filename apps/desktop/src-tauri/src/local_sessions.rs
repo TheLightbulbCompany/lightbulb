@@ -392,7 +392,9 @@ fn secure_file(path: &Path) -> Result<fs::File> {
         libc::openat(
             dir.as_raw_fd(),
             name.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            // A replaced FIFO must not block before fstat rejects the descriptor.
+            // O_NONBLOCK does not change regular-file reads used by every caller.
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
         )
     };
     if fd < 0 {

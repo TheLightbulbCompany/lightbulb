@@ -255,6 +255,68 @@ mod tests {
         super::scan(root, Path::new("/nonexistent")).await
     }
     #[tokio::test]
+    async fn local_sessions_workspace_rejects_tracked_fifo_without_blocking() {
+        const CHILD_ROOT: &str = "LIGHTBULB_TEST_FIFO_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            assert!(scan(Path::new(&root)).await.is_err());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]).await.unwrap();
+        let path = root.join("tracked.txt");
+        fs::write(&path, "ordinary file").unwrap();
+        git(&root, &["add", "tracked.txt"]).await.unwrap();
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(scan(&root).await.is_ok());
+        let mut text = String::new();
+        secure_file(&path)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "ordinary file");
+        fs::remove_file(&path).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            git(&root, &["ls-files", "--cached", "-z"]).await.unwrap(),
+            b"tracked.txt\0"
+        );
+        // A blocking open defeats an async timer in the same runtime. Isolate the
+        // real scan in a child test process, then kill AND reap it on RED timeout.
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "local_sessions::workspace::tests::local_sessions_workspace_rejects_tracked_fifo_without_blocking"])
+            .env(CHILD_ROOT, &root).stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .kill_on_drop(true).spawn().unwrap();
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        let status = match completed {
+            Ok(status) => Some(status.unwrap()),
+            Err(_) => {
+                child.kill().await.unwrap();
+                child.wait().await.unwrap();
+                None
+            }
+        };
+        assert!(
+            status.is_some_and(|s| s.success()),
+            "tracked FIFO scan did not reject promptly; timed-out child was killed and reaped"
+        );
+    }
+    #[tokio::test]
     async fn local_sessions_workspace_process_cwd_and_subprocess_output_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(dir.path()).unwrap();

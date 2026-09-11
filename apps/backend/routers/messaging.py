@@ -7,9 +7,10 @@ import hmac
 import math
 import time
 import uuid
+from urllib.parse import quote
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -32,6 +33,7 @@ from core.services.messaging import (
     ReadCursorResponse,
     RoomDetail,
     RoomListResponse,
+    ImageAttachment,
     RunStatusResponse,
     SteerRunRequest,
     SteerRunResponse,
@@ -141,6 +143,43 @@ async def create_room_message(
     auth: AuthContext = Depends(get_current_user),
 ):
     return await service.create_human_message(auth, room_id, request)
+
+
+@router.post("/messaging/rooms/{room_id}/attachments", response_model=ImageAttachment, status_code=201)
+async def upload_room_attachment(
+    room_id: str,
+    image: UploadFile = File(...),
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+    await service.require_room_member(owner_id, auth.user_id, room_id)
+    data = await image.read(service.IMAGE_MAX_BYTES + 1)
+    try:
+        return service.store_image_attachment(
+            owner_id, room_id, image.filename or "image", image.content_type or "", data
+        )
+    except ValueError as exc:
+        raise service.ApiProblem("INVALID_REQUEST", str(exc)) from exc
+
+
+@router.get("/messaging/rooms/{room_id}/attachments/{attachment_id}")
+async def get_room_attachment(
+    room_id: str,
+    attachment_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+    await service.require_room_member(owner_id, auth.user_id, room_id)
+    attachment, data = service.load_image_attachment(owner_id, room_id, attachment_id)
+    return Response(
+        content=data,
+        media_type=attachment.content_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(attachment.file_name)}",
+        },
+    )
 
 
 @router.put("/messaging/rooms/{room_id}/read", response_model=ReadCursorResponse)

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Product decisions consolidated; implementation not started. CLI capabilities and relevant repository paths inspected on September 10, 2026. End-to-end attachment/control is the first acceptance gate, not an already-proven feature.
+**Status:** Task 1 feasibility and Task 2 room-scoped registry/authorization completed locally and reviewed through September 11, 2026. Task 2 verification: 61 focused backend tests, 136 shared tests and typechecking passed; UUID spelling/idempotency regression fixed and re-reviewed. Dedicated transport and desktop/UI integration remain unimplemented; no account sharing, push or deployment is implied.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -325,12 +325,12 @@ Each task should land with its smallest meaningful automated check, using existi
 
 **Modify:** `apps/backend/routers/messaging.py`; `apps/backend/routers/desktop_pair.py` and its existing router test for enrollment; `apps/backend/core/services/messaging.py` for any added contract/error variants; `packages/shared/src/messaging/types.ts`, `client.ts`, `client.test.ts`, and `packages/shared/src/index.ts` as needed for exports.
 
-- [ ] First add failing tests for two humans sharing a room, an unrelated org member, cross-org IDs, session owner leaving, requester leaving, and access through a different room still being valid.
-- [ ] Implement the canonical records and deterministic identity described in §5 using the existing table/resource helpers. Enforce request limits, ownership and consistent identity projection.
-- [ ] Add human-authorized enrollment and disable behavior, with tests rejecting another member's device and a machine-only attempt to enable sharing. Keep enrollment distinct from permission to use the existing OpenClaw node.
-- [ ] Implement one session-authorization helper reused by all protected operations. Add transaction conditions for membership at command admission; directory access alone never authorizes a send.
-- [ ] Add room resources, paginated events, submit-command and command-status endpoints. Test forged actor/device fields, duplicate request ID with changed input, stale generations, unsupported operations and offline devices.
-- [ ] Add typed shared client methods without adding local sessions to `MemberKind` or the company roster. Keep optional Paperclip links absent until Task 7.
+- [x] First add failing tests for two humans sharing a room, an unrelated org member, cross-org IDs, session owner leaving, requester leaving, and access through a different room still being valid.
+- [x] Implement the canonical records and deterministic identity described in §5 using the existing table/resource helpers. Enforce request limits, ownership and consistent identity projection.
+- [x] Add human-authorized enrollment and disable behavior, with tests rejecting another member's device and a machine-only attempt to enable sharing. Keep enrollment distinct from permission to use the existing OpenClaw node.
+- [x] Implement one session-authorization helper reused by all protected operations. Add transaction conditions for membership at command admission; directory access alone never authorizes a send.
+- [x] Add room resources, paginated events, submit-command and command-status endpoints. Test forged actor/device fields, duplicate request ID with changed input, stale generations, unsupported operations and offline devices.
+- [x] Add typed shared client methods without adding local sessions to `MemberKind` or the company roster. Keep optional Paperclip links absent until Task 7.
 
 **Checks:**
 

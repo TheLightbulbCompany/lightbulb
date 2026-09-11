@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-10T00:00:00Z",
+  "title": "Design System: Lightbulb",
+  "extensions": {
+    "provenance": {
+      "surface": "apps/frontend/src/components/messaging/ + components/workspace/ (WorkspaceSidebar, WorkspaceHeader, workspace.css)",
+      "tokenAuthority": "apps/frontend/src/app/globals.css",
+      "proseAuthority": "apps/frontend/.interface-design/system.md",
+      "ground": "Frontmatter colours are the `.workspace-shell` override values (white ground). The `:root` brand values are recorded per token under colorMeta.brandRoot.",
+      "conflictsResolvedForCode": [
+        "system.md says 'Borders only, no shadows'. globals.css defines --shadow-hair/--shadow-pop/--shadow-lift and the shadcn dropdown/popover/dialog primitives use shadow-md/shadow-lg; messaging.css adds a toolbar lift on .room-message-actions and an overlay edge on .room-context at 860-1179px. Recorded as a flat system with an exhaustive three-shadow exception list, not as 'no shadows'.",
+        "system.md says the product ground is cream (#F5EFE2 / #0F1A2B). The messaging surface runs inside .workspace-shell, which re-points --cream to #ffffff and --midnight to #242428 (globals.css:134-163, comment: 'Messaging uses neutral surfaces'). Frontmatter records the rendered white-ground values.",
+        "system.md says Lora is the prose face. messaging.css forces .prose inside .room-message-content back to var(--font-sans) at 1rem/1.5, so message bodies are Source Sans 3. Recorded as The Sans-Transcript Rule.",
+        "globals.css declares a four-step radius scale (4/8/12/16) and calls 7/10/14/18/20px 'a bug'. messaging.css uses 6px (.room-message-actions, .room-directory-entry, .workspace-search) and 10px (.room-composer); workspace.css uses 7px (.workspace-rail buttons). Recorded as observed drift in Shapes, not canonized as scale steps.",
+        "globals.css type scale is 10/11/12/13/14/16/22. The room title uses text-lg (18px) and rail labels use 9px. 18px is recorded in the hierarchy as observed; 9px is left out of the ramp.",
+        "globals.css's reduced-motion rule is 'gentler, not zero' (keep fades). messaging.css sets transition:none !important; animation:none !important on the whole surface. Recorded as the surface's observed behaviour.",
+        "workspace.css focus outlines use var(--midnight) directly instead of var(--ring). Same computed value on both grounds inside .workspace-shell; recorded as the one global recipe with the observed deviation noted here only."
+      ],
+      "observedNotDecided": [
+        "6px / 7px / 10px radii",
+        "5px 10px directory-entry padding, 6px and 10px gaps, 2px toolbar padding",
+        "18px room title (text-lg), 9px rail label",
+        "--edge-soft and label-caps defined but unused on this surface",
+        "--z-index 3 on the details overlay (local, not --z-overlay)"
+      ],
+      "notCanonized": "No craft-floor violations were found on the surface (no kickers/eyebrows, no glyph icons, no system display faces, no hard offset shadows). The off-scale radii and the 9px rail label are recorded as drift, not as rules."
+    },
+    "colorMeta": {
+      "ground": { "role": "neutral", "displayName": "Ground", "canonical": "#ffffff", "token": "--cream / --background", "brandRoot": "#F5EFE2", "tonalRamp": ["#242428", "#45454b", "#66666e", "#85858d", "#b0b0ba", "#e4e4e7", "#fafafa", "#ffffff"] },
+      "ground-deep": { "role": "neutral", "displayName": "Ground Deep", "canonical": "#fafafa", "token": "--cream-deep / --muted / --accent / --secondary", "brandRoot": "#EFE8D9", "tonalRamp": ["#242428", "#45454b", "#66666e", "#85858d", "#b0b0ba", "#e4e4e7", "#ededed", "#fafafa"] },
+      "ground-deeper": { "role": "neutral", "displayName": "Ground Deeper", "canonical": "#ededed", "token": "--cream-deeper", "brandRoot": "#E7DECB", "tonalRamp": ["#242428", "#45454b", "#66666e", "#85858d", "#b0b0ba", "#d4d4d8", "#e4e4e7", "#ededed"] },
+      "edge": { "role": "neutral", "displayName": "Edge", "canonical": "#e4e4e7", "token": "--edge / --border / --input", "brandRoot": "#DED5C2", "tonalRamp": ["#242428", "#3d3d45", "#66666e", "#85858d", "#b0b0ba", "#d4d4d8", "#e4e4e7", "#f0f0f2"] },
+      "edge-soft": { "role": "neutral", "displayName": "Edge Soft", "canonical": "#f0f0f2", "token": "--edge-soft", "brandRoot": "#E8E0D0", "tonalRamp": ["#242428", "#3d3d45", "#66666e", "#85858d", "#b0b0ba", "#d4d4d8", "#e4e4e7", "#f0f0f2"] },
+      "ink": { "role": "primary", "displayName": "Ink", "canonical": "#242428", "token": "--midnight / --foreground / --primary / --ring", "brandRoot": "#0F1A2B", "tonalRamp": ["#1c1c20", "#242428", "#33333a", "#45454b", "#66666e", "#85858d", "#b0b0ba", "#f4f4f5"] },
+      "ink-soft": { "role": "neutral", "displayName": "Ink Soft", "canonical": "#45454b", "token": "--midnight-soft", "brandRoot": "color-mix(in srgb, #0F1A2B 80%, #F5EFE2)", "tonalRamp": ["#242428", "#33333a", "#45454b", "#66666e", "#85858d", "#b0b0ba", "#d4d4d8", "#f4f4f5"] },
+      "ink-muted": { "role": "neutral", "displayName": "Ink Muted", "canonical": "#66666e", "token": "--midnight-muted / --muted-foreground", "brandRoot": "color-mix(in srgb, #0F1A2B 68%, #F5EFE2)", "tonalRamp": ["#242428", "#45454b", "#66666e", "#85858d", "#92929d", "#b0b0ba", "#d4d4d8", "#f4f4f5"] },
+      "ink-faint": { "role": "neutral", "displayName": "Ink Faint", "canonical": "#85858d", "token": "--midnight-faint", "brandRoot": "color-mix(in srgb, #0F1A2B 54%, #F5EFE2)", "tonalRamp": ["#242428", "#45454b", "#66666e", "#85858d", "#92929d", "#b0b0ba", "#d4d4d8", "#f4f4f5"] },
+      "brass": { "role": "secondary", "displayName": "Brass", "canonical": "#B68235", "token": "--brass", "brandRoot": "#B68235", "tonalRamp": ["#2e2010", "#5b4019", "#896127", "#B68235", "#c99b5c", "#dbb585", "#ebd1b0", "#f7ecdc"] },
+      "ok": { "role": "state", "displayName": "Ok", "canonical": "#3A6B45", "token": "--ok", "reversed": "#7FB58D", "tonalRamp": ["#0f1c12", "#1f3a25", "#2e5536", "#3A6B45", "#5a8c66", "#7FB58D", "#b3d3bb", "#e3efe6"] },
+      "info": { "role": "state", "displayName": "Info", "canonical": "#35566F", "token": "--info", "reversed": "#93B4C9", "tonalRamp": ["#0e171e", "#1c2e3c", "#2a4459", "#35566F", "#5d7f97", "#93B4C9", "#c0d3e0", "#e6eef4"] },
+      "warn": { "role": "state", "displayName": "Warn", "canonical": "#96501A", "token": "--warn", "reversed": "#E09A55", "tonalRamp": ["#281507", "#502b0e", "#783f14", "#96501A", "#bd7233", "#E09A55", "#edc39a", "#f9ebdc"] },
+      "err": { "role": "state", "displayName": "Err", "canonical": "#96382B", "token": "--err / --destructive", "reversed": "#DB8C7C", "tonalRamp": ["#280f0b", "#501e17", "#782d22", "#96382B", "#bb5d4f", "#DB8C7C", "#ecbcb2", "#f9e8e4"] }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Title", "purpose": "Room name in the header (text-lg, 18px, observed), empty-state heading; section headings use 16px at 600." },
+      "body": { "displayName": "Body", "purpose": "Message prose (forced sans), directory entries, composer text." },
+      "meta": { "displayName": "Meta", "purpose": "Timestamps, helper/error lines, group headings (600 ink-muted), unread counts (tabular-nums)." },
+      "ui": { "displayName": "UI", "purpose": "Sidebar More-nav rows and the dock tab strip (--text-ui)." },
+      "caption": { "displayName": "Caption", "purpose": "Agent label chip, composer help, header search trigger." },
+      "label-caps": { "displayName": "Label Caps", "purpose": "Global section-label recipe (label-caps utility); defined, unused on the messaging surface." },
+      "code": { "displayName": "Code", "purpose": "Fenced code in messages and run-detail output. Geist Mono only here." }
+    },
+    "shadows": [
+      { "name": "toolbar-lift", "value": "0 2px 6px color-mix(in srgb, var(--foreground) 10%, transparent)", "purpose": ".room-message-actions hover toolbar, which overlaps message text. The one resting shadow authored by the messaging surface." },
+      { "name": "pop", "value": "0 4px 12px color-mix(in srgb, var(--midnight) 8%, transparent), 0 12px 32px color-mix(in srgb, var(--midnight) 10%, transparent)", "purpose": "Radix dropdown / popover / dialog content via shadow-md and shadow-lg. Owned by components/ui, inherited." },
+      { "name": "overlay-edge", "value": "-16px 0 32px color-mix(in srgb, var(--midnight) 12%, transparent)", "purpose": "The 344px .room-context details overlay at 860-1179px only." },
+      { "name": "hair", "value": "0 1px 0 color-mix(in srgb, var(--midnight) 4%, transparent)", "purpose": "Global --shadow-hair; not used on the messaging surface." },
+      { "name": "lift", "value": "0 16px 40px color-mix(in srgb, var(--midnight) 10%, transparent)", "purpose": "Global --shadow-lift for hovered editorial cards; not used on the messaging surface." }
+    ],
+    "rings": [
+      { "name": "halo-running", "value": "0 0 0 2px color-mix(in srgb, var(--brass) 68%, transparent)", "animation": "agent-activity-halo 1.8s var(--ease-out) infinite; 50% -> 0 0 0 4px brass 20%", "reducedMotion": "animation: none (static 2px ring)", "trigger": "[data-agent-state=running], set only from live run state" },
+      { "name": "halo-attention", "value": "0 0 0 2px var(--err)", "trigger": "[data-agent-state=attention]" },
+      { "name": "halo-paused", "value": "0 0 0 2px var(--warn)", "trigger": "[data-agent-state=paused]" },
+      { "name": "focus", "value": "outline: 2px solid var(--ring); outline-offset: 2px", "trigger": ":focus-visible only; rail uses offset 1px" }
+    ],
+    "motion": [
+      { "name": "dur-fast", "value": "120ms", "purpose": "Press feedback, hover colour, tooltip." },
+      { "name": "dur-base", "value": "180ms", "purpose": "Popovers, dropdowns, list enter." },
+      { "name": "dur-slow", "value": "280ms", "purpose": "Dialogs, drawers, panel swaps." },
+      { "name": "ease-out", "value": "cubic-bezier(0.23, 1, 0.32, 1)", "purpose": "Entering/exiting; the halo's curve." },
+      { "name": "ease-in-out", "value": "cubic-bezier(0.77, 0, 0.175, 1)", "purpose": "Moving on screen." },
+      { "name": "ease-drawer", "value": "cubic-bezier(0.32, 0.72, 0, 1)", "purpose": "Sheets and drawers." },
+      { "name": "agent-activity-halo", "value": "1.8s var(--ease-out) infinite", "purpose": "Running-agent avatar ring breathes 2px@68% -> 4px@20% brass. Static under reduced motion." },
+      { "name": "reduced-motion-surface", "value": "transition: none !important; animation: none !important", "purpose": "Observed: messaging.css zeroes all motion in .room-panel, .room-directory, .room-creation-dialog (stricter than globals' keep-the-fade floor)." }
+    ],
+    "breakpoints": [
+      { "name": "narrow", "value": "max-width: 859px", "purpose": "Directory stacks above the panel; 12px gutters; 44px targets; 16px inputs; toolbar always visible." },
+      { "name": "overlay", "value": "860px to 1179px", "purpose": "Room details renders as a 344px overlay with overlay-edge shadow." },
+      { "name": "wide", "value": "min-width: 1180px", "purpose": "Room details is a real 344px grid column." },
+      { "name": "shell-compact", "value": "max-width: 1000px", "purpose": "Sidebar narrows 264px -> 220px." },
+      { "name": "touch", "value": "(hover: none), (pointer: coarse)", "purpose": "Hover-revealed toolbars and row actions become always visible." }
+    ],
+    "layout": {
+      "shell": "56px rail | 264px sidebar (220px <=1000px) | 1fr main; 56px header bar with edge bottom rule",
+      "messaging": "264px directory | 1fr panel; +344px context column at >=1180px",
+      "rhythm": ["4px", "8px", "12px", "16px", "20px", "24px"],
+      "rows": { "nav": "36px", "directory-entry": "36px", "tab": "42px", "touch": "44px", "chrome": "56px" },
+      "z": { "chrome": 20, "overlay": 50, "toast": 60, "details-overlay-local": 3 }
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Pill, ink fill, semibold. Create channel, Save changes.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Create channel</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 999px; border: 1px solid transparent; font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: color 120ms, background-color 120ms, border-color 120ms, transform 120ms; } .ds-btn:active { transform: scale(0.97); } .ds-btn:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; } .ds-btn:disabled { opacity: 0.5; pointer-events: none; } .ds-btn-primary { background: var(--primary, #242428); color: var(--primary-foreground, #ffffff); } .ds-btn-primary:hover { background: color-mix(in srgb, var(--primary, #242428) 88%, var(--background, #ffffff)); }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Pill, ground fill, edge border. Try again, Cancel, work links.",
+      "html": "<button class=\"ds-btn ds-btn-outline\">Try again</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 999px; border: 1px solid transparent; font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: color 120ms, background-color 120ms, border-color 120ms, transform 120ms; } .ds-btn:active { transform: scale(0.97); } .ds-btn:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; } .ds-btn-outline { background: var(--background, #ffffff); color: var(--foreground, #242428); border-color: var(--border, #e4e4e7); } .ds-btn-outline:hover { background: var(--accent, #fafafa); }"
+    },
+    {
+      "name": "Ghost Icon Button",
+      "kind": "button",
+      "refersTo": "button-icon",
+      "description": "36px transparent circle; hover washes ground-deep. Directory and composer actions.",
+      "html": "<button class=\"ds-btn-icon\" aria-label=\"New conversation\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 12h14\"/><path d=\"M12 5v14\"/></svg></button>",
+      "css": ".ds-btn-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: var(--foreground, #242428); cursor: pointer; transition: background-color 120ms, transform 120ms; } .ds-btn-icon:hover { background: var(--accent, #fafafa); } .ds-btn-icon:active { transform: scale(0.95); } .ds-btn-icon:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; }"
+    },
+    {
+      "name": "Reaction Chip",
+      "kind": "chip",
+      "refersTo": "reaction-chip",
+      "description": "Emoji + count pill under a message; selected fills ground-deep.",
+      "html": "<div class=\"ds-reactions\"><button class=\"ds-chip\" aria-pressed=\"false\">👍<span>2</span></button><button class=\"ds-chip ds-chip-selected\" aria-pressed=\"true\">✅<span>1</span></button></div>",
+      "css": ".ds-reactions { display: flex; flex-wrap: wrap; gap: 4px; } .ds-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: var(--foreground, #242428); font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background-color 120ms; } .ds-chip:hover { background: var(--accent, #fafafa); } .ds-chip-selected { background: var(--secondary, #fafafa); } .ds-chip:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; }"
+    },
+    {
+      "name": "Directory Entry",
+      "kind": "nav",
+      "refersTo": "directory-entry",
+      "description": "36px conversation row on the ground-deep sidebar; current/hover fills ground-deeper; unread goes 600 with a count box.",
+      "html": "<nav class=\"ds-directory\"><h3 class=\"ds-directory-group\">Channels</h3><button class=\"ds-entry\" aria-current=\"page\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"4\" x2=\"20\" y1=\"9\" y2=\"9\"/><line x1=\"4\" x2=\"20\" y1=\"15\" y2=\"15\"/><line x1=\"10\" x2=\"8\" y1=\"3\" y2=\"21\"/><line x1=\"16\" x2=\"14\" y1=\"3\" y2=\"21\"/></svg><span class=\"ds-entry-label\">general</span></button><button class=\"ds-entry ds-entry-unread\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"4\" x2=\"20\" y1=\"9\" y2=\"9\"/><line x1=\"4\" x2=\"20\" y1=\"15\" y2=\"15\"/><line x1=\"10\" x2=\"8\" y1=\"3\" y2=\"21\"/><line x1=\"16\" x2=\"14\" y1=\"3\" y2=\"21\"/></svg><span class=\"ds-entry-label\">launch</span><span class=\"ds-count\">3</span></button></nav>",
+      "css": ".ds-directory { display: flex; flex-direction: column; gap: 8px; width: 264px; padding: 16px 10px; background: var(--muted, #fafafa); border-right: 1px solid var(--border, #e4e4e7); font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); color: var(--foreground, #242428); } .ds-directory-group { margin: 0 8px 0; font-size: 0.875rem; font-weight: 600; color: var(--muted-foreground, #66666e); } .ds-entry { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 5px 10px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 1rem; text-align: left; cursor: pointer; } .ds-entry:hover, .ds-entry[aria-current=\"page\"] { background: var(--cream-deeper, #ededed); } .ds-entry:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; } .ds-entry-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-entry-unread { font-weight: 600; } .ds-count { border: 1px solid var(--border, #e4e4e7); border-radius: 4px; padding: 0 4px; font-size: 0.875rem; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Room Tabs",
+      "kind": "nav",
+      "refersTo": "directory-entry",
+      "description": "Underline tabs: 42px, ink-muted, 2px transparent bottom border that becomes ink + 600 text when current.",
+      "html": "<nav class=\"ds-tabs\"><button class=\"ds-tab\" aria-current=\"page\">Channel</button><button class=\"ds-tab\">Details</button><button class=\"ds-tab\">Tasks</button></nav>",
+      "css": ".ds-tabs { display: flex; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--border, #e4e4e7); font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); } .ds-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; padding: 0; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted-foreground, #66666e); font: inherit; font-size: 1rem; cursor: pointer; } .ds-tab[aria-current=\"page\"] { color: var(--foreground, #242428); border-bottom-color: currentColor; font-weight: 600; } .ds-tab:hover { color: var(--foreground, #242428); } .ds-tab:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; }"
+    },
+    {
+      "name": "Message Article",
+      "kind": "card",
+      "refersTo": "message-toolbar",
+      "description": "Avatar + byline + sans prose; the hover toolbar is the one element with a resting shadow. Includes the Agent label chip and a work status line.",
+      "html": "<article class=\"ds-msg\"><span class=\"ds-avatar\" data-agent-state=\"running\">F</span><div class=\"ds-msg-content\"><div class=\"ds-byline\"><span class=\"ds-author\">Friday</span><span class=\"ds-agent-label\">Agent</span><time>09:41</time></div><p>Filed the first three moves and set up hello@ for the launch.</p><span class=\"ds-status ds-status-info\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"10\"/></svg>Working</span><div class=\"ds-toolbar\" role=\"group\" aria-label=\"Message actions\"><button class=\"ds-tool\" aria-label=\"Reply in thread\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M7.9 20A9 9 0 1 0 4 16.1L2 22Z\"/></svg></button><button class=\"ds-tool\" aria-label=\"Message actions\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"1\"/><circle cx=\"19\" cy=\"12\" r=\"1\"/><circle cx=\"5\" cy=\"12\" r=\"1\"/></svg></button></div></div></article>",
+      "css": ".ds-msg { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); font-size: 1rem; line-height: 1.5; color: var(--foreground, #242428); background: var(--background, #ffffff); } .ds-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border-radius: 999px; background: var(--muted, #fafafa); border: 1px solid var(--border, #e4e4e7); font-size: 0.875rem; font-weight: 600; } .ds-avatar[data-agent-state=\"running\"] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--brass, #B68235) 68%, transparent); animation: ds-halo 1.8s cubic-bezier(0.23, 1, 0.32, 1) infinite; } .ds-avatar[data-agent-state=\"attention\"] { box-shadow: 0 0 0 2px var(--err, #96382B); } .ds-avatar[data-agent-state=\"paused\"] { box-shadow: 0 0 0 2px var(--warn, #96501A); } @keyframes ds-halo { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--brass, #B68235) 20%, transparent); } } @media (prefers-reduced-motion: reduce) { .ds-avatar[data-agent-state=\"running\"] { animation: none; } } .ds-msg-content { flex: 1; min-width: 0; } .ds-byline { display: flex; align-items: baseline; gap: 8px; } .ds-author { font-weight: 600; cursor: pointer; } .ds-author:hover { text-decoration: underline; } .ds-agent-label { font-size: 0.75rem; color: var(--muted-foreground, #66666e); background: var(--muted, #fafafa); border: 1px solid var(--border, #e4e4e7); border-radius: 4px; padding: 0 5px; } .ds-byline time { font-size: 0.875rem; color: var(--muted-foreground, #66666e); white-space: nowrap; } .ds-msg p { margin: 2px 0 4px; } .ds-status { display: inline-flex; align-items: center; gap: 4px; font-size: 0.875rem; } .ds-status-info { color: var(--info, #35566F); } .ds-toolbar { position: absolute; top: 0; right: 0; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border, #e4e4e7); border-radius: 6px; background: var(--background, #ffffff); box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground, #242428) 10%, transparent); opacity: 0; pointer-events: none; transition: opacity 120ms; } .ds-msg:hover .ds-toolbar, .ds-msg:focus-within .ds-toolbar { opacity: 1; pointer-events: auto; } @media (hover: none) { .ds-toolbar { opacity: 1; pointer-events: auto; } } .ds-tool { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 4px; background: transparent; color: var(--foreground, #242428); cursor: pointer; } .ds-tool:hover { background: var(--accent, #fafafa); } .ds-tool:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; }"
+    },
+    {
+      "name": "Composer",
+      "kind": "input",
+      "refersTo": "composer",
+      "description": "Bordered ground card whose border becomes the focus ring; borderless textarea inside; ghost tools left, primary send right; help line below.",
+      "html": "<form class=\"ds-composer\"><textarea rows=\"3\" placeholder=\"Message the conversation · @ to mention\"></textarea><div class=\"ds-composer-actions\"><span><button type=\"button\" class=\"ds-btn-icon\" aria-label=\"Add images\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M16 5h6\"/><path d=\"M19 2v6\"/><path d=\"M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5\"/><path d=\"m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21\"/><circle cx=\"9\" cy=\"9\" r=\"2\"/></svg></button><button type=\"button\" class=\"ds-btn-icon\" aria-label=\"Choose mentions\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8\"/></svg></button></span><button type=\"submit\" class=\"ds-send\" aria-label=\"Send message\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M14.5 9.5 22 2\"/><path d=\"M3.3 12.5 20.5 2.3a1 1 0 0 1 1.3 1.3L11.6 20.8a1 1 0 0 1-1.9-.1l-2-6.2-6.2-2a1 1 0 0 1-.1-1.9Z\"/></svg></button></div><p class=\"ds-composer-help\">Enter to send · Shift+Enter for a new line.</p></form>",
+      "css": ".ds-composer { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--input, #e4e4e7); border-radius: 10px; background: var(--background, #ffffff); font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); color: var(--foreground, #242428); } .ds-composer:focus-within { border-color: var(--ring, #242428); } .ds-composer textarea { min-height: 64px; max-height: 200px; resize: vertical; border: 0; padding: 2px 4px; background: transparent; font: inherit; font-size: 1rem; line-height: 1.5; color: inherit; caret-color: var(--foreground, #242428); outline: none; } .ds-composer textarea::placeholder { color: var(--muted-foreground, #66666e); } .ds-composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; } .ds-btn-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: var(--foreground, #242428); cursor: pointer; transition: background-color 120ms; } .ds-btn-icon:hover { background: var(--accent, #fafafa); } .ds-btn-icon:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; } .ds-send { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 8px; background: var(--primary, #242428); color: var(--primary-foreground, #ffffff); cursor: pointer; transition: transform 120ms; } .ds-send:active { transform: scale(0.97); } .ds-send:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; } .ds-composer-help { margin: 0; padding: 0 4px; font-size: 0.75rem; color: var(--muted-foreground, #66666e); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "1px edge stroke, ground fill, 4px radius, inherits font; placeholder ink-muted.",
+      "html": "<input class=\"ds-input\" type=\"search\" placeholder=\"Find a person or agent…\" />",
+      "css": ".ds-input { display: block; width: 100%; padding: 8px 12px; border: 1px solid var(--input, #e4e4e7); border-radius: 4px; background: var(--background, #ffffff); color: var(--foreground, #242428); font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); font-size: 1rem; caret-color: var(--foreground, #242428); } .ds-input::placeholder { color: var(--muted-foreground, #66666e); } .ds-input:focus-visible { outline: 2px solid var(--ring, #242428); outline-offset: 2px; }"
+    },
+    {
+      "name": "Workspace Rail",
+      "kind": "nav",
+      "refersTo": "rail-item",
+      "description": "56px ground-deep rail of 44x40 icon+label buttons; current fills ground-deeper.",
+      "html": "<nav class=\"ds-rail\"><button aria-current=\"page\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z\"/></svg><span>Messages</span></button><button><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/><polyline points=\"9 22 9 12 15 12 15 22\"/></svg><span>Home</span></button><button><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9\"/><path d=\"M10.3 21a1.94 1.94 0 0 0 3.4 0\"/></svg><span>Activity</span></button></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 56px; padding: 12px 4px; background: var(--cream-deep, #fafafa); border-right: 1px solid var(--border, #e4e4e7); font-family: var(--font-sans, 'Source Sans 3', system-ui, sans-serif); } .ds-rail button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 44px; min-height: 40px; border: 0; border-radius: 7px; background: transparent; color: var(--midnight-muted, #66666e); cursor: pointer; } .ds-rail button span { font-size: 9px; font-weight: 600; } .ds-rail button:hover, .ds-rail button[aria-current=\"page\"] { color: var(--midnight, #242428); background: var(--cream-deeper, #ededed); } .ds-rail button:focus-visible { outline: 2px solid var(--midnight, #242428); outline-offset: 1px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Office",
+    "overview": "Lightbulb is the operating surface of a company staffed by AI agents, and the messaging workspace is where the owner watches that staff work. The system is built to be calm when healthy and loud only on incidents: one neutral ground, hairline rules instead of shadows, one weight of emphasis (600), and colour reserved for state. Nothing competes with the conversation; the only things that move are an agent actually running and the owner's own cursor.\n\nDensity is working-tool density, not marketing density. Rows sit on a 36px rhythm inside a 56px chrome bar, panels are delineated by 1px `edge` rules, and the hover toolbar is the single element allowed to lift off the page. On touch and narrow viewports the same grammar tightens to 12px gutters and grows every control to a 44px hit area; nothing is redesigned, only re-spaced.\n\nThis surface runs the white ground: inside `.workspace-shell` the brand's cream/midnight tokens are re-pointed to white and graphite (`--cream: #ffffff`, `--midnight: #242428`), with the same token names, so every component reads `var(--background)`, `var(--foreground)`, `var(--border)` and never a literal. The brand root (`:root`) still defines cream `#F5EFE2` / midnight `#0F1A2B` for the rest of the product; this document records the values the messaging surface actually renders.",
+    "keyCharacteristics": [
+      "One neutral ground with two darker steps (`ground-deep`, `ground-deeper`) that carry hover, selection and the sidebar; no coloured fills.",
+      "Borders only. Depth is a 1px `edge` rule; the three exceptions (hover toolbar, Radix popover/dialog, the 860–1179px details overlay) are catalogued, not general.",
+      "State colour marks text, an icon, a 2px rule or a 2px ring, never a fill, and never without its word or icon.",
+      "One typeface (Source Sans 3) at 400/600; message prose is deliberately sans, not Lora.",
+      "Brass appears exactly once: the animated halo on a running agent's avatar.",
+      "Focus is one recipe everywhere: `2px solid var(--ring)` outset 2px, keyboard-only."
+    ],
+    "rules": [
+      { "name": "The Never-Fill Rule", "body": "A state colour marks text, an icon, a 2px rule or a 2px ring. It is never a background. (Badge = border + text; live run = `border-left: 2px solid var(--info)`; halo = `0 0 0 2px`.)", "section": "colors" },
+      { "name": "The Never-Alone Rule", "body": "Every status keeps its word or icon: `WorkStatus` renders icon + label, the halo carries an `sr-only` label, the unread dot sits beside a bold row. Unknown state renders neutral (`ink-muted`), never ok.", "section": "colors" },
+      { "name": "The One-Brass Rule", "body": "Brass is the detail colour, spent on the running-agent halo. It is never body copy on the light ground and never a page fill.", "section": "colors" },
+      { "name": "The No-Literal Rule", "body": "Components read tokens only (`var(--foreground)`, `text-muted-foreground`); `node scripts/brand-tokens-scan.mjs src` must print 0.", "section": "colors" },
+      { "name": "The Two-Weight Rule", "body": "Text is 400 or 600. Bold marks \"unread\" (directory row), \"current\" (active tab), and headings; nothing else.", "section": "typography" },
+      { "name": "The Sans-Transcript Rule", "body": "Message prose is Source Sans 3 at 16px/1.5, overriding the site-wide serif prose. Lora is for editorial pages, not conversation.", "section": "typography" },
+      { "name": "The Borders-Only Rule", "body": "Surfaces are flat at rest and separated by `edge`. A shadow appears only on something that genuinely overlaps content (toolbar, popover, dialog, the tablet overlay), and it is drawn in ink, never black.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do read every colour through a token (`var(--foreground)`, `text-muted-foreground`, `text-err`); the scanner must print 0.",
+      "Do separate surfaces with a 1px `edge` rule or one ground step (`ground-deep`, `ground-deeper`); never with a shadow at rest.",
+      "Do mark state with text, an icon, a 2px rule or a 2px ring, and always pair the colour with its word or icon.",
+      "Do keep emphasis at 600 and hierarchy at 18 / 16 / 14 / 13 / 12px on the 1.4–1.5 line-height band; message prose stays Source Sans 3 at 16px/1.5.",
+      "Do use the one focus recipe: `outline: 2px solid var(--ring); outline-offset: 2px` on `:focus-visible` only.",
+      "Do give every control a 44px hit area at ≤859px and on coarse pointers, pin inputs to 16px there, and make hover-revealed toolbars always visible on touch.",
+      "Do animate only under real state (the running halo) with `--dur-fast/base/slow` and `--ease-out`, and hold a static ring under reduced motion.",
+      "Do mark \"you are here\" with `ground-deeper` + `ink` text on rows, and a 2px `currentColor` underline + 600 text on tabs."
+    ],
+    "donts": [
+      "Don't fill anything with a state colour or with brass; brass is the halo ring only and is never type on the light ground.",
+      "Don't use the `bulb` yellow on this surface: it is 1.45:1 on the ground and cannot be a ring, type or fill.",
+      "Don't add a resting shadow to a card, panel, input or the composer; the toolbar, popover/dialog and the 860–1179px overlay are the complete list.",
+      "Don't switch message bodies or headings into Lora, or drop below 400 / above 600 weight.",
+      "Don't hand-type radii off the 4 / 8 / 12 / 16 / full scale; the 6, 7 and 10px values on this surface are observed drift, not a second scale.",
+      "Don't add a second tab strip inside a panel; views inside a page are a `select`.",
+      "Don't trigger the activity halo from anything but a live agent run, and don't render a status without its label.",
+      "Don't use `:focus` for focus styling or carry a component-local ring; the global `:focus-visible` outline is the only recipe."
+    ]
+  }
+}

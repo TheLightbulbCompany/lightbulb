@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbulb/shared";
+import type { CreateMessageRequest, ImageAttachment, MemberRef, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -11,6 +11,7 @@ import { searchEmoji } from "./emojiData";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
 import { resolveTypedMentions } from "./mentions";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { respondHint } from "./respondHint";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
@@ -33,6 +34,8 @@ export interface RoomComposerProps {
   onUploadAttachment?: (image: File) => Promise<ImageAttachment>;
   onEditLast?: () => void;
   dropTargetRef?: RefObject<HTMLElement | null>;
+  roomKind?: RoomKind;
+  runningAgentIds?: readonly string[];
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
@@ -92,6 +95,8 @@ function ComposerAttempt({
   onUploadAttachment,
   onEditLast,
   dropTargetRef,
+  roomKind,
+  runningAgentIds = [],
 }: RoomComposerProps) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
@@ -380,6 +385,8 @@ function ComposerAttempt({
     replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds);
+
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     data-dropping={dropping || undefined}
     onSubmit={(event) => { event.preventDefault(); submit(); }}
@@ -418,7 +425,7 @@ function ComposerAttempt({
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
       renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
-      aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
+      aria-describedby={`${fieldId}-help ${fieldId}-status${hint ? ` ${fieldId}-respond` : ""}`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
       aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
       aria-activedescendant={listOpen ? `${fieldId}-option-${activeIndex}` : undefined}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}
@@ -456,7 +463,9 @@ function ComposerAttempt({
             return;
           }
         }
-        if (event.key === "ArrowUp" && !text && onEditLast) {
+        // Plain ArrowUp only — ⌥↑ is the window-level previous-room shortcut,
+        // and swallowing it here would make it dead from the composer.
+        if (event.key === "ArrowUp" && !event.altKey && !text && onEditLast) {
           event.preventDefault();
           onEditLast();
           return;
@@ -500,6 +509,7 @@ function ComposerAttempt({
         }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
       <Button type="submit" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
     </div>
+    {hint && <p id={`${fieldId}-respond`} className="room-respond-hint text-sm text-muted-foreground">{hint}</p>}
     <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "room-composer-help text-sm text-muted-foreground"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}

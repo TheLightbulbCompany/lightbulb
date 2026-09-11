@@ -10,10 +10,15 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
+import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
+import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
+import { resolveTypedMentions } from "./mentions";
+import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
+import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
-import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomRunView } from "./types";
+import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomRunView, RoomSummary } from "./types";
 
 function frameText(blocks: unknown): string | undefined {
   return extractResultText({ content: blocks }) || undefined;
@@ -84,6 +89,65 @@ export function useMessagingWorkspace(): MessagingWorkspaceValue {
   return value;
 }
 
+/** Null outside a MessagingWorkspaceProvider — the Teams command palette is
+ *  also mounted in InlineTeamsPanel, where no messaging provider exists. */
+export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null {
+  return useContext(MessagingWorkspaceContext);
+}
+
+/**
+ * Window-level shortcuts for room navigation (⌥↑/⌥↓ adjacent room, ⌥⇧↑/⌥⇧↓
+ * next/previous unread — both wrapping via roomNavigation.ts, the same rule
+ * RoomDirectory's "next unread" button uses) and the shortcut sheet (⌘/,
+ * toggled via `onShowShortcuts`).
+ *
+ * The room-navigation (⌥) branches are ignored while a Radix dialog/menu is
+ * open or an IME composition is in progress. They deliberately still fire
+ * from inside the composer — that is where the owner's hands are, and the
+ * combos are modified, so they are not what anyone types into a message.
+ * `defaultPrevented` covers everything the composer or a typeahead already
+ * handled (e.g. its own plain-ArrowUp "edit last message"). `⌘/` carries its
+ * own dialog guard rather than the shared one below: it must still toggle
+ * the shortcut sheet closed while that very sheet (its own `role="dialog"`)
+ * is open, but must not stack a sheet over someone else's dialog — the ⌘K
+ * palette.
+ */
+export function useMessagingShortcuts(
+  rooms: readonly RoomSummary[],
+  activeRoomId: string | null,
+  selectRoom: (roomId: string) => void,
+  onShowShortcuts: () => void,
+  shortcutsOpen: boolean,
+): void {
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === "/") {
+        if (!shortcutsOpen && hasBlockingShortcutDialog()) return;
+        event.preventDefault();
+        onShowShortcuts();
+        return;
+      }
+      if (hasBlockingShortcutDialog() || document.querySelector("[role='menu']")) return;
+      if (!event.altKey || event.metaKey || event.ctrlKey) return;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const next = event.shiftKey
+        ? nextUnreadRoomId(rooms, activeRoomId, direction)
+        : adjacentRoomId(rooms, activeRoomId, direction);
+      // Also a no-op when the only unread room is the one already open —
+      // adjacentRoomId already excludes this case itself, but
+      // nextUnreadRoomId (unlike RoomDirectory's own "next unread" button)
+      // must not reselect the active room from this window-level shortcut.
+      if (!next || next === activeRoomId) return;
+      event.preventDefault();
+      selectRoom(next);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [rooms, activeRoomId, selectRoom, onShowShortcuts, shortcutsOpen]);
+}
+
 export function MessagingWorkspaceProvider({
   children,
   initialAgentId,
@@ -94,6 +158,7 @@ export function MessagingWorkspaceProvider({
   subscribeToRoom?: boolean;
 }) {
   const { userId, orgId } = useAuth();
+  const scope = orgId ?? userId ?? "signed-out";
   const rooms = useRooms(initialAgentId, subscribeToRoom);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
@@ -120,17 +185,31 @@ export function MessagingWorkspaceProvider({
   threadClientMessageIdRef.current = threadClientMessageId;
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationError, setCreationError] = useState<string>();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
+  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts, shortcutsOpen);
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
+  const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reset before the new room's composer consumes a pending draft/focus handoff.
+  // Reset before the new room's composer consumes a pending draft/focus
+  // handoff — restoring, not clearing, so a half-typed message survives a
+  // room switch (spec: per-room drafts). There is no separate `mentions`
+  // state to restore: the composer derives mentions purely from the typed
+  // text (resolveTypedMentions), so restoring `text` is enough — the
+  // structured mentions come back on their own once the text re-renders.
   if (draftRoomId !== rooms.activeRoomId) {
     setDraftRoomId(rooms.activeRoomId);
-    setDraft("");
+    setDraft(rooms.activeRoomId ? readDraft(draftKey(scope, rooms.activeRoomId, null)).text : "");
     setClientMessageId(crypto.randomUUID());
     setThreadId(null);
+    setDraftThreadId(null);
     setThreadDraft("");
+    setThreadClientMessageId(crypto.randomUUID());
+  } else if (draftThreadId !== threadId) {
+    setDraftThreadId(threadId);
+    setThreadDraft(rooms.activeRoomId && threadId ? readDraft(draftKey(scope, rooms.activeRoomId, threadId)).text : "");
     setThreadClientMessageId(crypto.randomUUID());
   }
 
@@ -183,20 +262,47 @@ export function MessagingWorkspaceProvider({
     }, 3_000);
   }, [setRoomTyping]);
 
+  // Persist as the owner types — recomputed structured mentions come from
+  // the same resolveTypedMentions the send path uses, so a restored draft's
+  // mentions are exactly what would be dispatched if sent as-is.
+  useEffect(() => {
+    if (!rooms.activeRoomId) return;
+    writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) });
+  }, [scope, rooms.activeRoomId, draft, participants]);
+
+  useEffect(() => {
+    if (!rooms.activeRoomId || !threadId) return;
+    writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) });
+  }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
+
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
+    // Read before the await: this is the room the message was sent FROM, even
+    // if the owner switches rooms while it is in flight.
+    const roomId = rooms.activeRoomId;
     await sendRoomMessage(request);
+    // Clearing the SENDING room's stored row is always correct once the send
+    // succeeded — so it happens before the attempt-id guards, which a room
+    // switch mid-send trips and which only protect the NEW room's in-memory
+    // draft state below.
     if (thread) {
+      if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
       if (threadClientMessageIdRef.current !== request.clientMessageId) return;
       setThreadDraft("");
       setThreadClientMessageId(crypto.randomUUID());
     } else {
+      if (roomId) clearDraft(draftKey(scope, roomId, null));
       if (clientMessageIdRef.current !== request.clientMessageId) return;
       setDraft("");
       setClientMessageId(crypto.randomUUID());
     }
-  }, [sendRoomMessage]);
+  }, [sendRoomMessage, rooms.activeRoomId, scope]);
+
+  // Read every render: localStorage is the source, so no prop dependency
+  // could describe when this changes.
+  const draftRoomIds = listDraftRoomIds(scope);
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
+  const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
   const composer: RoomComposerProps = {
     focusAgentId: rooms.activeRoom?.kind === "dm" && agentCounterparts.length === 1 ? agentCounterparts[0].id : undefined,
     text: draft,
@@ -210,6 +316,8 @@ export function MessagingWorkspaceProvider({
     disabled: !rooms.httpReady,
     onTypingChange: handleTyping,
     onUploadAttachment: rooms.uploadAttachment,
+    roomKind: rooms.activeRoom?.kind,
+    runningAgentIds,
   };
 
   const threadComposer: { parentMessageId: string; composer: RoomComposerProps } | undefined = threadId ? {
@@ -228,6 +336,8 @@ export function MessagingWorkspaceProvider({
       disabled: !rooms.httpReady,
       onTypingChange: handleTyping,
       onUploadAttachment: rooms.uploadAttachment,
+      roomKind: rooms.activeRoom?.kind,
+      runningAgentIds,
     },
   } : undefined;
 
@@ -298,7 +408,7 @@ export function MessagingWorkspaceProvider({
   );
 
   const directoryProps: RoomDirectoryProps = {
-    ownerScopeId: orgId ?? userId ?? "signed-out",
+    ownerScopeId: scope,
     rooms: directoryRooms,
     participants: directoryParticipants,
     state: directoryState,
@@ -310,9 +420,10 @@ export function MessagingWorkspaceProvider({
     creationBusy,
     creationError,
     onRetry: () => void rooms.refreshRooms(),
+    draftRoomIds,
   };
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
-    ownerScopeId: orgId ?? userId ?? "signed-out",
+    ownerScopeId: scope,
     currentUserId: userId ?? "",
     roomId: rooms.activeRoomId,
     room: rooms.activeRoom,
@@ -368,5 +479,5 @@ export function MessagingWorkspaceProvider({
       rooms.selectRoom(roomId);
       setNotificationTarget({ roomId, threadId: targetThreadId });
       activateMessagesPanel();
-    }} />{children}</MessagingWorkspaceContext.Provider>;
+    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />{children}</MessagingWorkspaceContext.Provider>;
 }

@@ -13,6 +13,17 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it("describes the message field with the respond hint", () => {
+  render(<RoomComposer {...baseProps} roomKind="dm" members={[{
+    kind: "agent", id: "agent-friday", displayName: "Friday", mentionHandle: "friday",
+    role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0,
+  }]} />);
+  const hint = screen.getByText("Friday will reply");
+
+  expect(hint.id).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("aria-describedby")).toContain(hint.id);
+});
+
 it("consumes an agent focus request and seeds an empty draft", () => {
   const onTextChange = vi.fn();
   requestFocusComposer("agent-friday", "File the inbox");

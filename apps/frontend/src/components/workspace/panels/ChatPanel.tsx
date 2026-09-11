@@ -13,6 +13,8 @@ import { cancelFocusComposerRequest, releaseFocusComposerRequest } from "@/lib/f
 interface ChatPanelParams {
   agentId?: string;
   agentSelection?: "resolved";
+  roomId?: string;
+  messageId?: string;
 }
 
 /**
@@ -22,14 +24,17 @@ interface ChatPanelParams {
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const params = useDockPanelParams(props);
   const { defaultId } = useAgents();
-  const { selectAgentDm, roomProps } = useMessagingWorkspace();
+  const { selectAgentDm, roomProps, openMessage } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
   const navigationRequest = useRef(0);
   const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
   const deliveredDestination = useRef<typeof focusDestination>(null);
-  const requested = params.agentSelection === "resolved" ? null : params.agentId === DEFAULT_AGENT_SENTINEL
-    ? defaultId ?? null
-    : params.agentId ?? null;
+  // A room permalink wins over any agent-selection request riding along with
+  // it (durable params can transiently coexist during a param merge).
+  const requested = params.roomId || params.agentSelection === "resolved" ? null
+    : params.agentId === DEFAULT_AGENT_SENTINEL
+      ? defaultId ?? null
+      : params.agentId ?? null;
 
   useEffect(() => {
     if (!requested) {
@@ -50,6 +55,18 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
       }
     });
   }, [requested, selectAgentDm]);
+
+  const lastOpenedRoom = useRef<string | null>(null);
+  useEffect(() => {
+    if (!params.roomId) {
+      lastOpenedRoom.current = null;
+      return;
+    }
+    const key = `${params.roomId}:${params.messageId ?? ""}`;
+    if (lastOpenedRoom.current === key) return;
+    lastOpenedRoom.current = key;
+    openMessage(params.roomId, params.messageId ?? null);
+  }, [params.roomId, params.messageId, openMessage]);
 
   const roomId = roomProps?.roomId;
   const roomAgentId = roomProps?.composer.focusAgentId;

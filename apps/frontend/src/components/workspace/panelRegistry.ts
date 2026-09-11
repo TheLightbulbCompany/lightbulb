@@ -340,7 +340,10 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
-  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection"];
+  // roomId/messageId included alongside agentId/agentSelection: an agent open
+  // must clear a stale room target and vice versa, or the two grammars fight
+  // (see openMessagePanel / openChatPanel in workspaceController.ts).
+  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId"];
   if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];

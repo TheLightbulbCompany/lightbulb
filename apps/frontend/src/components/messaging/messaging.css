@@ -134,6 +134,9 @@
 
 .room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: .875rem; }
 .room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
+/* left padding aligns with the avatar column (32px .room-message-gutter + 12px .room-message gap = 44px, not the 52px an avatar+gap of a different size would need) */
+.room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 44px; font-size: .875rem; }
+.room-run-line details { flex-basis: 100%; }
 .room-run-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .room-run-controls .room-input { flex: 1; }
 .messaging-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100%; min-height: 0; }

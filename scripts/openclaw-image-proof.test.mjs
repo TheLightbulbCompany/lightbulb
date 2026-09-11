@@ -8,13 +8,33 @@ import {
   verifyImmutableRepository,
   verifyPublishedImage,
 } from "./openclaw-image-proof.mjs";
-import { assertLobsterRuntimeContract } from "./openclaw-image-proof-runtime.mjs";
+import { assertConfig, assertLobsterRuntimeContract } from "./openclaw-image-proof-runtime.mjs";
 
 const REGISTRY_ID = "877352799272";
 const REPOSITORY = "lightbulb/openclaw-extended";
 const TAG = "2026.9.3-isol8.7-abc1234";
 const BASE_DIGEST = `sha256:${"a".repeat(64)}`;
 const TARGET_DIGEST = `sha256:${"b".repeat(64)}`;
+
+test("runtime qualification requires native Lightbulb and rejects unconfigured external channels", () => {
+  const config = {
+    meta: { lastTouchedVersion: "2026.9.3" },
+    channels: { lightbulb: { enabled: true, accounts: {} } },
+    acp: { enabled: true, allowedAgents: ["codex"] },
+    plugins: { entries: Object.fromEntries([
+      "lobster", "llm-task", "tokenjuice", "firecrawl", "memory-core", "memory-wiki",
+      "parallel", "acpx", "sage-openclaw", "lightbulb-marketplace", "aws-exec-profile",
+      "paperclip-exec-creds",
+    ].map((id) => [id, { enabled: true }])) },
+  };
+  const fixture = { file: "byo-openai.json", acpAgent: "codex" };
+  assert.doesNotThrow(() => assertConfig(config, fixture));
+  for (const channels of [undefined, {}, { lightbulb: { enabled: false } }, {
+    ...config.channels, slack: { enabled: true },
+  }]) {
+    assert.throws(() => assertConfig({ ...config, channels }, fixture), /only the enabled native Lightbulb channel/);
+  }
+});
 
 const target = (overrides = {}) => ({
   registryId: REGISTRY_ID,

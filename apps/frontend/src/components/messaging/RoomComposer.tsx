@@ -6,6 +6,7 @@ import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbul
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
+import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
@@ -31,6 +32,19 @@ export interface RoomComposerProps {
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
+
+interface MentionTrigger {
+  start: number;
+  end: number;
+  query: string;
+}
+
+function activeMentionTrigger(value: string, caret: number | null): MentionTrigger | null {
+  if (caret === null) return null;
+  const match = /(^|\s)@([a-z0-9_-]*)$/i.exec(value.slice(0, caret));
+  if (!match) return null;
+  return { start: caret - match[0].length + match[1].length, end: caret, query: match[2] };
+}
 
 export function RoomComposer(props: RoomComposerProps) {
   return <ComposerAttempt key={props.clientMessageId} {...props} />;
@@ -60,6 +74,8 @@ function ComposerAttempt({
   const field = useRef<HTMLTextAreaElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
+  const [activeMemberIndex, setActiveMemberIndex] = useState(0);
   const [submitted, setSubmitted] = useState(sendState !== "idle");
   const [callbackUncertain, setCallbackUncertain] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
@@ -195,9 +211,44 @@ function ComposerAttempt({
     if (!exists) onTextChange(`${text}${text && !/\s$/.test(text) ? " " : ""}${token} `);
   }
 
+  function syncMentionPicker(value: string, caret: number | null) {
+    const trigger = activeMentionTrigger(value, caret);
+    setMentionTrigger(trigger);
+    if (!trigger) {
+      if (mentionTrigger) setPickerOpen(false);
+      return;
+    }
+    setQuery(trigger.query);
+    setActiveMemberIndex(0);
+    setPickerOpen(true);
+  }
+
+  function chooseTypedMention(member: RoomParticipant) {
+    if (!mentionTrigger) return;
+    const ref: MemberRef = { kind: member.kind, id: member.id };
+    const alreadySelected = selectedMentions.some((mention) => sameMember(mention, ref));
+    if (!alreadySelected && mentions.length >= 32) return;
+    if (!alreadySelected) {
+      onMentionsChange([...selectedMentions, ref]);
+    }
+    const token = `@${member.mentionHandle ?? member.displayName}`;
+    const suffix = text.slice(mentionTrigger.end);
+    const separator = suffix.startsWith(" ") ? "" : " ";
+    const nextText = `${text.slice(0, mentionTrigger.start)}${token}${separator}${suffix}`;
+    const nextCaret = mentionTrigger.start + token.length + separator.length;
+    onTextChange(nextText);
+    setMentionTrigger(null);
+    setPickerOpen(false);
+    setQuery("");
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  }
+
   const visibleMembers = members.filter((member) => {
     const needle = query.toLocaleLowerCase();
-    return member.displayName.toLocaleLowerCase().includes(needle) || member.mentionHandle?.includes(needle);
+    return member.displayName.toLocaleLowerCase().includes(needle) || member.mentionHandle?.toLocaleLowerCase().includes(needle);
   });
 
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
@@ -205,14 +256,44 @@ function ComposerAttempt({
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
-      onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); }}
+      aria-autocomplete="list" aria-expanded={pickerOpen} aria-controls={pickerOpen ? `${fieldId}-targets` : undefined}
+      aria-activedescendant={mentionTrigger && visibleMembers.length ? `${fieldId}-mention-${activeMemberIndex}` : undefined}
+      onChange={(event) => {
+        onTextChange(event.target.value);
+        onTypingChange?.(!!event.target.value.trim());
+        if (!composing.current) syncMentionPicker(event.target.value, event.target.selectionStart);
+      }}
+      onClick={(event) => { if (!composing.current) syncMentionPicker(event.currentTarget.value, event.currentTarget.selectionStart); }}
       onPaste={(event) => {
         const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
         if (files.length) { event.preventDefault(); addImages(files); }
       }}
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={() => { composing.current = false; }}
+      onCompositionEnd={(event) => { composing.current = false; syncMentionPicker(event.currentTarget.value, event.currentTarget.selectionStart); }}
       onKeyDown={(event) => {
+        if (mentionTrigger && pickerOpen) {
+          if (event.key === "ArrowDown" && visibleMembers.length) {
+            event.preventDefault();
+            setActiveMemberIndex((index) => (index + 1) % visibleMembers.length);
+            return;
+          }
+          if (event.key === "ArrowUp" && visibleMembers.length) {
+            event.preventDefault();
+            setActiveMemberIndex((index) => (index - 1 + visibleMembers.length) % visibleMembers.length);
+            return;
+          }
+          if ((event.key === "Enter" || event.key === "Tab") && visibleMembers.length && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+            event.preventDefault();
+            chooseTypedMention(visibleMembers[activeMemberIndex] ?? visibleMembers[0]);
+            return;
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setMentionTrigger(null);
+            setPickerOpen(false);
+            return;
+          }
+        }
         if (event.key === "Enter" && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
           event.preventDefault();
           submit();
@@ -232,19 +313,33 @@ function ComposerAttempt({
         onChange={(event) => { addImages([...event.target.files ?? []]); event.target.value = ""; }} />
         <Button type="button" variant="ghost" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
       <Button type="button" variant="ghost" aria-label="Choose mentions" aria-expanded={pickerOpen}
-        aria-controls={`${fieldId}-targets`} disabled={!editable} onClick={() => setPickerOpen(!pickerOpen)}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
+        aria-controls={`${fieldId}-targets`} disabled={!editable} onClick={() => {
+          setMentionTrigger(null);
+          setQuery("");
+          setActiveMemberIndex(0);
+          setPickerOpen(!pickerOpen || !!mentionTrigger);
+        }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
       <Button type="submit" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
     </div>
-    {pickerOpen && <fieldset id={`${fieldId}-targets`} className="room-picker" disabled={!editable}>
-      <legend className="font-semibold">Room members</legend>
-      <label htmlFor={`${fieldId}-search`} className="sr-only">Find room members</label>
-      <input id={`${fieldId}-search`} type="search" className="room-input" value={query} onChange={(event) => setQuery(event.target.value)} />
-      <div className="room-picker-list">
-        {visibleMembers.map((member) => {
+    {pickerOpen && <fieldset id={`${fieldId}-targets`} className="room-picker room-mention-picker" disabled={!editable}>
+      <legend className="sr-only">Room members</legend>
+      {!mentionTrigger && <><label htmlFor={`${fieldId}-search`} className="sr-only">Find room members</label>
+        <input id={`${fieldId}-search`} type="search" className="room-input" value={query} autoFocus placeholder="Find room members"
+          onChange={(event) => { setQuery(event.target.value); setActiveMemberIndex(0); }} /></>}
+      <div className="room-picker-list" role={mentionTrigger ? "listbox" : undefined} aria-label={mentionTrigger ? "Mention a room member" : undefined}>
+        {visibleMembers.map((member, index) => {
           const checked = mentions.some((mention) => sameMember(mention, member));
+          if (mentionTrigger) return <button id={`${fieldId}-mention-${index}`} key={`${member.kind}:${member.id}`} type="button" role="option"
+            aria-selected={index === activeMemberIndex} className="room-choice room-choice-button" disabled={!checked && mentions.length >= 32}
+            onMouseDown={(event) => event.preventDefault()} onClick={() => chooseTypedMention(member)}>
+            <ParticipantAvatar participant={member} />
+            <span className="min-w-0"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
+              <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
+          </button>;
           return <label key={`${member.kind}:${member.id}`} className="room-choice">
             <input type="checkbox" checked={checked} disabled={member.id === defaultAgentId || (!checked && mentions.length >= 32)}
               onChange={(event) => toggleMention(member, event.target.checked)} />
+            <ParticipantAvatar participant={member} />
             <span className="min-w-0"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
               <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
           </label>;

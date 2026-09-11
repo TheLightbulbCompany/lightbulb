@@ -11,13 +11,20 @@
  * design's `.ld-*` rules in landing.css while both files exist.
  */
 
+/* LIGHT is the default — no attribute, no script needed. `data-lb-theme="dark"`
+   is opt-in via the nav toggle (Navbar.tsx → lampStore), persisted under the
+   `lightbulb-theme` localStorage key the old lamp used, and applied before the
+   first paint by the inline script in layout.tsx. Only `.ld-page` reads the
+   attribute, so it cannot reach /chat or admin. */
 .ld-page {
+  color-scheme: light;
   /* Owner call 2026-09-11: marketing runs on white, not cream. This overrides
      the brand manual's "never pure white" for these routes only. */
   --cream: #ffffff;
   --cream-deep: #f7f7f6;
   --cream-deeper: #ececea;
   --rule: #e4e4e1;
+  --midnight: #0f1a2b;
 
   --lb-ink: var(--midnight);
   --lb-ink-soft: #3a4252;
@@ -25,13 +32,30 @@
   --lb-ink-faint: #8a8e99;
   --lb-edge: clamp(20px, 2.2vw, 40px);
   --lb-maxw: 1240px;
-  /* The nav (globals.css .landing-nav) is position:fixed, so the page must
-     clear it itself. ONE variable drives both the hero's offset and its
-     min-height so the two can never drift apart. */
-  --lb-navh: 70px;   /* measured: 16px padding + 38px content in the compiled nav */
+  /* The fixed nav's measured height: drives the hero's offset AND its min-height.
+     Dropped in a rewrite once — the hero collapsed and slid under the nav. */
+  --lb-navh: 70px;
 
   background: var(--cream);
   color: var(--lb-ink);
+}
+
+/* The dark theme: swap the two ground/type tokens and re-point the ink steps.
+   Every fill below that must NOT invert (the footer, agent avatars, image
+   fallbacks) uses a literal instead of a token, on purpose. */
+[data-lb-theme="dark"] .ld-page {
+  color-scheme: dark;
+  --cream: #0f1a2b;
+  --cream-deep: #16223a;
+  --cream-deeper: #1d2b45;
+  --rule: rgba(245, 239, 226, 0.14);
+  --midnight: #f5efe2;
+
+  --lb-ink: #f5efe2;
+  --lb-ink-soft: rgba(245, 239, 226, 0.82);
+  --lb-ink-mute: rgba(245, 239, 226, 0.68);
+  /* §06: small labels on a midnight ground are brass, not dimmed cream. */
+  --lb-ink-faint: #b68235;
 }
 
 .ld-page .lb-wrap { max-width: var(--lb-maxw); margin: 0 auto; padding: 0 var(--lb-edge); }
@@ -55,10 +79,10 @@
   font-size: 0.93rem; font-weight: 600; padding: 0.56rem 1.05rem; border-radius: 7px;
   border: 1px solid transparent; cursor: pointer; white-space: nowrap; text-decoration: none;
 }
-.ld-page .lb-btn-p { background: var(--midnight); color: #fff; }
-.ld-page .lb-btn-p:hover { background: #1b2942; }
+.ld-page .lb-btn-p { background: var(--midnight); color: var(--cream); }
+.ld-page .lb-btn-p:hover { background: color-mix(in srgb, var(--midnight) 90%, var(--cream)); }
 .ld-page .lb-btn-s { background: var(--cream-deeper); color: var(--lb-ink); }
-.ld-page .lb-btn-s:hover { background: #e2e2df; }
+.ld-page .lb-btn-s:hover { background: color-mix(in srgb, var(--cream-deeper) 88%, var(--midnight)); }
 .ld-page .lb-btn-xl { font-size: 1.05rem; padding: 0.95rem 1.75rem; border-radius: 10px; gap: 0.66rem; }
 .ld-page .lb-arw { display: block; flex: 0 0 auto; transition: transform 0.18s ease; }
 .ld-page .lb-btn:hover .lb-arw { transform: translateX(3px); }
@@ -67,6 +91,17 @@
 .ld-page .landing-nav { background: rgba(255, 255, 255, 0.94); }
 .ld-page .landing-nav .nav-badge { display: none; }
 @media (max-width: 768px) { .ld-page { --lb-navh: 62px; } }  /* 12px padding on mobile */
+
+/* ---------- theme toggle (nav) ---------- */
+.ld-page .landing-nav .nav-theme {
+  display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 999px;
+  border: 1px solid var(--rule); background: transparent; color: var(--lb-ink-mute); cursor: pointer;
+  margin-right: 0.35rem; transition: background 0.16s ease, color 0.16s ease;
+}
+.ld-page .landing-nav .nav-theme:hover { background: var(--cream-deeper); color: var(--lb-ink); }
+.ld-page .landing-nav .nav-theme:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-theme { color: rgba(245, 239, 226, 0.72); }
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-theme:hover { color: #f5efe2; }
 
 /* ---------- hero ---------- */
 .ld-page .lb-hero {
@@ -122,7 +157,7 @@
 /* ---------- the fake workspace used inside hero + band ---------- */
 .ld-page .lb-ui { font-size: 0.86rem; }
 .ld-page .lb-wbar { display: flex; align-items: center; gap: 0.34rem; padding: 0.4rem 0.55rem; background: var(--cream-deep); border-bottom: 1px solid var(--rule); }
-.ld-page .lb-wbar i { width: 7px; height: 7px; border-radius: 50%; background: #dcdcd8; display: block; }
+.ld-page .lb-wbar i { width: 7px; height: 7px; border-radius: 50%; background: var(--cream-deeper); display: block; }
 .ld-page .lb-cols { display: grid; grid-template-columns: 84px 1fr; }
 .ld-page .lb-sb { background: var(--cream-deep); border-right: 1px solid var(--rule); padding: 0.36rem 0.26rem; }
 .ld-page .lb-sb div { display: flex; align-items: center; gap: 0.28rem; font-size: 0.64rem; color: var(--lb-ink-mute); padding: 0.16rem 0.24rem; border-radius: 4px; }
@@ -135,11 +170,11 @@
 .ld-page .lb-lamp { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
 .ld-page .lb-lamp.on { background: var(--bulb); }
 .ld-page .lb-lamp.dim { background: var(--brass); }
-.ld-page .lb-lamp.out { background: transparent; border: 1.4px solid #c7c7c3; }
+.ld-page .lb-lamp.out { background: transparent; border: 1.4px solid color-mix(in srgb, var(--midnight) 32%, transparent); }
 .ld-page .lb-m { display: flex; gap: 0.6rem; padding: 0.34rem 0; }
 .ld-page .lb-av { width: 28px; height: 28px; border-radius: 7px; flex: 0 0 auto; display: grid; place-items: center; font-size: 0.68rem; font-weight: 700; }
 .ld-page .lb-av.hu { background: var(--cream-deeper); color: var(--lb-ink-soft); }
-.ld-page .lb-av.ag { background: var(--midnight); color: var(--bulb); }
+.ld-page .lb-av.ag { background: #0f1a2b; color: #f0c34e; border: 1px solid color-mix(in srgb, #b68235 55%, transparent); }
 .ld-page .lb-mh { display: flex; align-items: center; gap: 0.4rem; line-height: 1.2; }
 .ld-page .lb-mh b { font-size: 0.855rem; }
 .ld-page .lb-mh time { font-size: 0.7rem; color: var(--lb-ink-faint); }
@@ -156,10 +191,10 @@
 .ld-page .lb-ask p { font-size: 0.8rem; color: var(--lb-ink-soft); line-height: 1.45; margin: 0; }
 .ld-page .lb-ask-r { display: flex; gap: 0.4rem; margin-top: 0.45rem; }
 .ld-page .lb-ask-r span { display: inline-flex; align-items: center; font-size: 0.76rem; font-weight: 600; padding: 0.26rem 0.7rem; border-radius: 6px; border: 1px solid var(--rule); background: var(--cream); color: var(--lb-ink); }
-.ld-page .lb-ask-r span.y { background: var(--midnight); color: #fff; border-color: var(--midnight); }
+.ld-page .lb-ask-r span.y { background: var(--midnight); color: var(--cream); border-color: var(--midnight); }
 .ld-page .lb-faces { display: flex; }
 .ld-page .lb-face { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--cream); margin-left: -6px; display: grid; place-items: center; font-size: 0.6rem; font-weight: 700; background: var(--cream-deeper); color: var(--lb-ink-soft); }
-.ld-page .lb-face.ag { background: var(--midnight); color: var(--bulb); }
+.ld-page .lb-face.ag { background: #0f1a2b; color: #f0c34e; border-color: color-mix(in srgb, #b68235 55%, transparent); }
 
 /* ---------- how it works ---------- */
 .ld-page .lb-steps { background: var(--cream-deep); border-top: 1px solid var(--rule); padding: clamp(64px,7vw,108px) 0 clamp(70px,8vw,116px); }
@@ -188,7 +223,7 @@
 .ld-page .lb-compose-in { border: 1px solid var(--rule); border-radius: 8px; background: var(--cream-deep); padding: 0.42rem 0.5rem; font-size: 0.76rem; line-height: 1.4; color: var(--lb-ink-soft); }
 .ld-page .lb-compose-f { display: flex; align-items: center; gap: 0.45rem; padding-top: 0.5rem; }
 .ld-page .lb-compose-f i { width: 15px; height: 15px; border-radius: 3px; background: var(--cream-deeper); display: block; }
-.ld-page .lb-send { margin-left: auto; font-size: 0.74rem; font-weight: 700; background: var(--midnight); color: #fff; border-radius: 6px; padding: 0.26rem 0.7rem; }
+.ld-page .lb-send { margin-left: auto; font-size: 0.74rem; font-weight: 700; background: var(--midnight); color: var(--cream); border-radius: 6px; padding: 0.26rem 0.7rem; }
 
 /* ---------- workspace band ---------- */
 .ld-page .lb-platform { background: var(--cream); padding: clamp(60px,7vw,104px) 0 clamp(64px,7vw,108px); position: relative; }
@@ -204,11 +239,11 @@
 @media (max-width: 900px) { .ld-page .lb-mock { grid-template-columns: 1fr; } .ld-page .lb-mock .lb-mrail, .ld-page .lb-mock .lb-mside { display: none; } }
 .ld-page .lb-mrail { background: var(--cream-deep); border-right: 1px solid var(--rule); padding: 0.7rem 0.5rem; overflow: hidden; }
 .ld-page .lb-mws { display: flex; align-items: center; gap: 0.45rem; padding: 0.3rem 0.4rem 0.7rem; }
-.ld-page .lb-mws i { width: 20px; height: 20px; border-radius: 6px; background: var(--midnight); color: var(--bulb); display: grid; place-items: center; font-size: 0.6rem; font-weight: 700; }
+.ld-page .lb-mws i { width: 20px; height: 20px; border-radius: 6px; background: #0f1a2b; color: #f0c34e; display: grid; place-items: center; font-size: 0.6rem; font-weight: 700; }
 .ld-page .lb-mh2 { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--lb-ink-faint); padding: 0.6rem 0.4rem 0.25rem; margin: 0; }
 .ld-page .lb-mi { display: flex; align-items: center; gap: 0.42rem; padding: 0.24rem 0.4rem; border-radius: 5px; color: var(--lb-ink-mute); font-size: 0.79rem; }
 .ld-page .lb-mi.on { background: var(--cream-deeper); color: var(--lb-ink); font-weight: 600; }
-.ld-page .lb-mi .n { margin-left: auto; font-size: 0.64rem; font-weight: 700; background: var(--midnight); color: #fff; border-radius: 999px; padding: 0 0.3rem; }
+.ld-page .lb-mi .n { margin-left: auto; font-size: 0.64rem; font-weight: 700; background: var(--midnight); color: var(--cream); border-radius: 999px; padding: 0 0.3rem; }
 .ld-page .lb-mmain { display: flex; flex-direction: column; background: var(--cream); min-width: 0; min-height: 0; }
 .ld-page .lb-mtop { display: flex; align-items: center; gap: 0.45rem; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); }
 .ld-page .lb-mtop b { font-family: var(--font-lora-serif), Georgia, serif; font-size: 0.92rem; font-weight: 600; }
@@ -267,7 +302,7 @@
 @media (max-width: 880px) { .ld-page .lb-foot-top { grid-template-columns: 1fr; } }
 .ld-page .lb-foot-cta h2 { font-family: var(--font-lora-serif), Georgia, serif; font-weight: 400; color: #fff; font-size: clamp(1.8rem,2.6vw,2.7rem); line-height: 1.14; letter-spacing: -0.004em; margin: 0; max-width: 14ch; }
 .ld-page .lb-foot-cta h2 em { font-style: italic; }
-.ld-page .lb-foot-cta .lb-btn { margin-top: 1.6rem; background: #fff; color: var(--midnight); border-radius: 999px; padding: 0.78rem 1.5rem; font-size: 0.95rem; }
+.ld-page .lb-foot-cta .lb-btn { margin-top: 1.6rem; background: #fff; color: #0f1a2b; border-radius: 999px; padding: 0.78rem 1.5rem; font-size: 0.95rem; }
 .ld-page .lb-foot-cols { display: grid; grid-template-columns: repeat(3,minmax(120px,auto)); gap: clamp(28px,4vw,72px); }
 @media (max-width: 560px) { .ld-page .lb-foot-cols { grid-template-columns: 1fr 1fr; gap: 24px; } }
 .ld-page .lb-foot-col h4 { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255,255,255,0.5); margin: 0 0 0.95rem; }

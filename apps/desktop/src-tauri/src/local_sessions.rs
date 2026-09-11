@@ -685,6 +685,9 @@ struct Mirror {
     pending: Option<Value>,
     #[serde(default)]
     registration: RegistrationState,
+    // RAM changes remain dirty across failed writes; this is never restored from disk.
+    #[serde(skip)]
+    dirty: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -698,6 +701,12 @@ struct RegistrationState {
 }
 
 impl Mirror {
+    fn persist(&mut self, path: &Path) -> Result<()> {
+        self.dirty = true;
+        private_write(path, self)?;
+        self.dirty = false;
+        Ok(())
+    }
     fn registered(&mut self) {
         self.registration.acknowledged = Some(self.generation.clone());
         self.registration.pending = false;
@@ -1053,6 +1062,7 @@ mod tests {
         let transcript = dir.path().join("transcript.jsonl");
         fs::write(&transcript, "{\"type\":\"assistant\",\"sessionId\":\"s\",\"version\":\"2.1.268\",\"uuid\":\"m\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n").unwrap();
         let mut mirror = Mirror {
+            dirty: false,
             registration: RegistrationState::default(),
             native: NativeSession {
                 provider: "claude".into(),

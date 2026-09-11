@@ -43,11 +43,11 @@ pub(super) struct Host {
 impl Host {
     fn begin_registration(&mut self, key: &str) -> Result<Value> {
         let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
-        if !mirror.registration.pending {
+        if !mirror.registration.pending || mirror.dirty {
             mirror.registration.pending = true;
             // Durable before the first send: retry this exact generation/CAS
             // predecessor until ACK, even when discovery has already found C.
-            private_write(&self.dir.join(format!("{key}.json")), mirror)?;
+            mirror.persist(&self.dir.join(format!("{key}.json")))?;
         }
         Ok(registration(mirror))
     }
@@ -109,6 +109,7 @@ impl Host {
                 self.mirrors.insert(
                     key.clone(),
                     Mirror {
+                        dirty: false,
                         native,
                         generation,
                         previous_generation: None,
@@ -124,13 +125,13 @@ impl Host {
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
             let _ = capture_batch(mirror);
             let after = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
-            if before.as_ref() != Some(&after) {
+            if before.as_ref() != Some(&after) || mirror.dirty {
                 if before.as_ref().is_none_or(|b| {
                     b["native"] != after["native"] || b["generation"] != after["generation"]
                 }) {
                     invalidated.push(key.clone());
                 }
-                private_write(&self.dir.join(format!("{key}.json")), mirror)?;
+                mirror.persist(&self.dir.join(format!("{key}.json")))?;
             }
         }
         Ok(invalidated)
@@ -176,6 +177,8 @@ impl Host {
                     successor.restriction = Some("runtime-unverified".into());
                 }
             }
+            // The offline downgrade above is new RAM state, not yet a durable replay.
+            mirror.dirty = true;
             if mirrors.len() >= 512 {
                 return Err("local session capacity reached".into());
             }
@@ -448,7 +451,7 @@ impl Host {
                             let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
                             mirror.acknowledge(body["batchId"].as_str().ok_or("missing batch ID")?,body["afterSeq"].as_u64().ok_or("missing cursor")?)?;
                             if mirror.advance() {registered.remove(key);}
-                            private_write(&self.dir.join(format!("{key}.json")),mirror)?;
+                            mirror.persist(&self.dir.join(format!("{key}.json")))?;
                             sent_batches.remove(key);
                         },
                         Some("local.session.error") => return Err("local session relay rejected the frame".into()),
@@ -621,9 +624,9 @@ fn capture_batch(mirror: &mut Mirror) -> Result<Option<Value>> {
         );
     })
 }
-fn persist_changed(dir: &Path, key: &str, mirror: &Mirror, before: &Value) -> Result<()> {
-    if &serde_json::to_value(mirror).map_err(|e| e.to_string())? != before {
-        private_write(&dir.join(format!("{key}.json")), mirror)?;
+fn persist_changed(dir: &Path, key: &str, mirror: &mut Mirror, before: &Value) -> Result<()> {
+    if mirror.dirty || &serde_json::to_value(&*mirror).map_err(|e| e.to_string())? != before {
+        mirror.persist(&dir.join(format!("{key}.json")))?;
     }
     Ok(())
 }
@@ -654,6 +657,151 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_sessions_failed_registration_write_retries_before_send_and_survives_lost_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        let mut a = observed_fixture(dir.path());
+        a.transcript = None;
+        a.status = "offline".into();
+        let key = native_key(&a);
+        let mut host = Host::restore(
+            scope.clone(),
+            dir.path().into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        host.observe(vec![a.clone()]).unwrap();
+        host.begin_registration(&key).unwrap();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
+        mirror.registered();
+        private_write(&scope.join(format!("{key}.json")), mirror).unwrap();
+        let mut b = a;
+        b.process.birth_micros += 1;
+        host.observe(vec![b.clone()]).unwrap();
+
+        // The real write fails before an envelope can leave begin_registration.
+        host.dir = dir.path().join("unavailable");
+        assert!(host.begin_registration(&key).is_err());
+        host.dir = scope.clone();
+        let retry = host.begin_registration(&key).unwrap();
+        let stored: Mirror = private_read(&scope.join(format!("{key}.json"))).unwrap();
+        assert!(
+            stored.registration.pending,
+            "retry returned an envelope without a durable outbox"
+        );
+
+        // Server accepts this B attempt, but its ACK is lost before restart.
+        let server_generation = retry["session"]["generation"].clone();
+        drop(host);
+        let mut restarted =
+            Host::restore(scope, dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
+        let mut c = b;
+        c.process.birth_micros += 1;
+        restarted.observe(vec![c]).unwrap();
+        let replay = restarted.begin_registration(&key).unwrap();
+        assert_eq!(
+            replay["session"]["generation"], server_generation,
+            "discovery C must not skip accepted B"
+        );
+        assert_eq!(replay["session"]["status"], "offline");
+        assert_eq!(
+            replay["session"]["controlUnavailableReason"],
+            "runtime-unverified"
+        );
+        let mirror = restarted.mirrors.get_mut(&key).unwrap();
+        mirror.registered();
+        assert!(mirror.advance());
+        let next = restarted.begin_registration(&key).unwrap();
+        assert_ne!(next["session"]["generation"], server_generation);
+        assert_eq!(next["previousGeneration"], server_generation);
+    }
+    #[test]
+    fn local_sessions_failed_observation_write_retries_identical_snapshot() {
+        for completed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let scope = dir.path().join("scope");
+            let native = observed_fixture(dir.path());
+            let key = native_key(&native);
+            let mut host = Host::restore(
+                scope.clone(),
+                dir.path().into(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            if completed {
+                host.observe(vec![native.clone()]).unwrap();
+            }
+            let update = if completed { vec![] } else { vec![native] };
+            host.dir = dir.path().join("unavailable");
+            assert!(host.observe(update.clone()).is_err());
+            host.dir = scope.clone();
+            host.observe(update).unwrap();
+            let stored: Mirror = private_read(&scope.join(format!("{key}.json")))
+                .expect("identical observation must retry the failed write");
+            assert_eq!(
+                stored.native.status,
+                if completed { "offline" } else { "unknown" }
+            );
+            assert_eq!(stored.queue[0]["text"], "short-lived public output");
+        }
+    }
+    #[test]
+    fn local_sessions_failed_batch_and_ack_writes_retry_without_new_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let path = scope.join(format!("{key}.json"));
+        let unavailable = dir.path().join("unavailable");
+        let mut host = Host::restore(
+            scope.clone(),
+            dir.path().into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        host.observe(vec![native]).unwrap();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
+        mirror.registered();
+        mirror.persist(&path).unwrap();
+
+        let before = serde_json::to_value(&*mirror).unwrap();
+        let batch = capture_batch(mirror).unwrap().unwrap();
+        assert!(persist_changed(&unavailable, &key, mirror, &before).is_err());
+        let unchanged = serde_json::to_value(&*mirror).unwrap();
+        persist_changed(&scope, &key, mirror, &unchanged).unwrap();
+        let stored: Mirror = private_read(&path).unwrap();
+        assert_eq!(
+            stored.pending,
+            Some(batch.clone()),
+            "retry must durably retain the exact upload envelope"
+        );
+
+        mirror
+            .acknowledge(batch["batchId"].as_str().unwrap(), 1)
+            .unwrap();
+        assert!(mirror
+            .persist(&unavailable.join(format!("{key}.json")))
+            .is_err());
+        let unchanged = serde_json::to_value(&*mirror).unwrap();
+        persist_changed(&scope, &key, mirror, &unchanged).unwrap();
+        let stored: Mirror = private_read(&path).unwrap();
+        assert_eq!(stored.after_seq, 1);
+        assert!(stored.pending.is_none() && stored.queue.is_empty());
+        let inode = fs::metadata(&path).unwrap().ino();
+        persist_changed(&scope, &key, mirror, &unchanged).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().ino(),
+            inode,
+            "successful retry must clear the write obligation"
+        );
+        assert!(serde_json::to_value(&*mirror)
+            .unwrap()
+            .get("dirty")
+            .is_none());
+    }
     #[test]
     fn local_sessions_generation_outbox_retries_ambiguous_b_before_c_after_restart() {
         for committed in [false, true] {
@@ -929,6 +1077,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let mirror = Mirror {
+            dirty: false,
             registration: RegistrationState::default(),
             native,
             generation,
@@ -971,6 +1120,7 @@ mod tests {
         };
         let key = native_key(&native);
         let mirror = Mirror {
+            dirty: false,
             registration: RegistrationState::default(),
             native,
             generation: "g1".into(),
@@ -1073,6 +1223,7 @@ mod tests {
             status: "unknown".into(),
         };
         let mirror = Mirror {
+            dirty: false,
             registration: RegistrationState::default(),
             native,
             generation: "g1".into(),

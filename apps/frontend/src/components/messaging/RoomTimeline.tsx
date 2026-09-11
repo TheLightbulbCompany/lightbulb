@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildTimeline } from "./timeline";
@@ -30,7 +30,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   const handled = useRef<string | null>(null);
   const [unseen, setUnseen] = useState(0);
   const [highlighted, setHighlighted] = useState<string | null>(null);
-  const items = buildTimeline(messages, { readSeq });
+  const items = useMemo(() => buildTimeline(messages, { readSeq }), [messages, readSeq]);
 
   function scrollToBottom() {
     const node = region.current;

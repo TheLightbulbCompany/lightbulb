@@ -142,12 +142,14 @@ it("excludes only the signed-in human when naming a group DM", () => {
   expect(screen.getByRole("region", { name: "Alice and Atlas" })).toBeInTheDocument();
 });
 
-it("opens the same DM action for human and agent authors and displays local time", async () => {
+it("opens profiles before the real DM action for human and agent authors and displays local time", async () => {
   const onSelectParticipant = vi.fn();
   const colleague = { ...owner, id: "colleague", displayName: "Aden" };
   render(<RoomPanel {...props} onSelectParticipant={onSelectParticipant} participants={[owner, friday, colleague]} messages={[message, { ...message, messageId: "human", author: { kind: "human", id: "colleague", displayName: "Aden" } }]} />);
   for (const participant of [friday, colleague]) {
     await userEvent.click(within(screen.getByRole("article", { name: `Message from ${participant.displayName}` })).getByRole("button", { name: participant.displayName }));
+    const profile = screen.getByRole("dialog", { name: participant.displayName });
+    await userEvent.click(within(profile).getByRole("button", { name: "Message" }));
     expect(onSelectParticipant).toHaveBeenLastCalledWith(participant);
   }
   const timestamp = within(screen.getByRole("article", { name: "Message from Friday" })).getByText(new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));

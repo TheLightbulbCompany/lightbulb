@@ -13,6 +13,7 @@ import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { roomDisplayName } from "./types";
@@ -318,8 +319,8 @@ function RoomContent({
       className={cn("room-message", searchTarget?.messageId === message.messageId && "bg-accent")} aria-label={`Message from ${name}`}>
       {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
       <div className="room-message-content">
-        <div className="room-message-byline">{participant && onSelectParticipant && !(participant.kind === "human" && participant.id === currentUserId)
-          ? <button type="button" className="room-author font-semibold truncate" title={name} disabled={!actionable} onClick={() => onSelectParticipant(participant)}>{name}</button>
+        <div className="room-message-byline">{participant
+          ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
           : <span className="font-semibold truncate" title={name}>{name}</span>}
           {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
           {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
@@ -415,7 +416,7 @@ function RoomContent({
       {membersOpen && <section id={`${id}-members`} aria-label="Room members" className="room-members"
         onKeyDown={(event) => { if (event.key === "Escape") { setMembersOpen(false); memberTrigger.current?.focus(); } }}>
         <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
-          <ParticipantAvatar participant={participant} size="sm" /><span className="truncate flex-1" title={participant.displayName}>{participant.displayName}</span>
+          <ParticipantAvatar participant={participant} size="sm" /><ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1" />
           {participant.kind === "agent" ? <><span className="text-sm text-muted-foreground">{participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent"}</span>
             {onListenModeChange && <label className="sr-only" htmlFor={`${id}-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>}
             {onListenModeChange && <select id={`${id}-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
@@ -454,7 +455,7 @@ function RoomContent({
           </div>
           <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
             <ParticipantAvatar participant={participant} size="sm" />
-            <span className="truncate flex-1 min-w-24" title={participant.displayName}>{participant.displayName}</span>
+            <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1 min-w-24" />
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManage && onRemoveMember && participant.role !== "owner" && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}

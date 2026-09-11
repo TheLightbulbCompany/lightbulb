@@ -38,6 +38,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  drag-and-drop, up-arrow edit); composerText.ts (caret grammar); mentions.ts
                                  resolveTypedMentions (typed tokens resolve on send); respondHint.ts (must mirror
                                  core/services/messaging.py select_dispatch_targets); drafts.ts (lightbulb.messaging.draft| keys)
+  - Room header ............. references/surfaces.md
+                              <- apps/frontend/src/components/messaging/RoomHeader.tsx (topic edit, member facepile,
+                                 star/mute, the ⋯ overflow's Copy link/Rename/Details/Leave); messageLinks.ts (roomPermalink
+                                 copy-link format); RoomPanel.tsx (Details tab pinned count)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)

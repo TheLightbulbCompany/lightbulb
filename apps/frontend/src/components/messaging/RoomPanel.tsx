@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link, Link2, MessageCircle, Users } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, Link, Link2 } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { CreateMessageRequest, ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
+import type { CreateMessageRequest, ListenMode, MemberPrefsRequest, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -19,6 +19,7 @@ import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
 import { openSessionPanel } from "@/components/workspace/workspaceController";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
+import { RoomHeader } from "./RoomHeader";
 import { linkifyMentions, parseMentionHref } from "./mentions";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
@@ -73,6 +74,10 @@ export interface RoomPanelProps {
   onAddMember?: (member: MemberRef) => Promise<void>;
   onRenameRoom?: (name: string) => Promise<void>;
   onRemoveMember?: (member: MemberRef) => Promise<void>;
+  pinnedMessageIds?: readonly string[];
+  onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
+  onSetTopic?: (topic: string | null) => Promise<void>;
+  onLeaveRoom?: () => Promise<void>;
   onAbortRun?: (runId: string) => void;
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
@@ -219,6 +224,10 @@ function RoomContent({
   onAddMember,
   onRenameRoom,
   onRemoveMember,
+  pinnedMessageIds = [],
+  onSetPrefs,
+  onSetTopic,
+  onLeaveRoom,
   onAbortRun,
   onSteerRun,
   onLinkToWork,
@@ -248,13 +257,11 @@ function RoomContent({
     const recent = readRecentEmoji();
     return recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS;
   });
-  const [membersOpen, setMembersOpen] = useState(false);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [memberError, setMemberError] = useState<string>();
-  const [management, setManagement] = useState<"rename" | MemberRef | null>(null);
-  const [roomNameDraft, setRoomNameDraft] = useState("");
+  const [management, setManagement] = useState<MemberRef | null>(null);
   const [managementPending, setManagementPending] = useState(false);
   const [managementError, setManagementError] = useState<string>();
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
@@ -280,7 +287,6 @@ function RoomContent({
   const contextHeading = useRef<HTMLHeadingElement>(null);
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
-  const memberTrigger = useRef<HTMLButtonElement>(null);
   const [previousMessageTarget, setPreviousMessageTarget] = useState(targetMessageId);
   if (targetMessageId !== previousMessageTarget) {
     setPreviousMessageTarget(targetMessageId);
@@ -313,28 +319,26 @@ function RoomContent({
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
   const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
-  const canRename = visibleRoom?.kind !== "dm" && isRoomAdmin;
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
-  const removalTarget = management && management !== "rename"
+  const canEditRoom = visibleRoom?.kind !== "dm" && isRoomAdmin;
+  const canLeaveRoom = visibleRoom?.kind === "channel" && viewer?.role !== "owner";
+  const removalTarget = management
     ? participants.find((member) => member.kind === management.kind && member.id === management.id && member.role !== "owner")
     : undefined;
 
-  function openManagement(action: "rename" | MemberRef, button: HTMLButtonElement) {
+  function openManagement(action: MemberRef, button: HTMLButtonElement) {
     managementTrigger.current = button;
-    setRoomNameDraft(visibleRoom?.name ?? "");
     setManagementError(undefined);
     setManagement(action);
   }
 
   async function saveManagement() {
     if (!actionable || managementPending) return;
-    if (management === "rename" ? !canRename || !onRenameRoom || !roomNameDraft.trim()
-      : !canManageMembers || !onRemoveMember || !removalTarget) return;
+    if (!canManageMembers || !onRemoveMember || !removalTarget) return;
     setManagementPending(true);
     setManagementError(undefined);
     try {
-      if (management === "rename") await onRenameRoom!(roomNameDraft.trim());
-      else await onRemoveMember!({ kind: removalTarget!.kind, id: removalTarget!.id });
+      await onRemoveMember({ kind: removalTarget.kind, id: removalTarget.id });
       setManagement(null);
     } catch (error) {
       setManagementError(error instanceof Error ? error.message : "The channel could not be updated. Try again.");
@@ -475,50 +479,38 @@ function RoomContent({
     </article>;
   }
 
-  const RoomIcon = visibleRoom?.kind === "channel" ? Hash : visibleRoom?.kind === "group-dm" ? Users : MessageCircle;
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
   return <section className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
-      <header className="room-header">
-        <div className="room-title">{visibleRoom?.kind === "dm" && counterparts.length === 1
-          ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
-          : <RoomIcon size={20} aria-hidden="true" />}<h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2></div>
-        <div className="room-audience">
-          <RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
-            loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
-            onSelect={(message) => {
-              const root = message.threadRootMessageId;
-              // Otherwise the [selection] effect's else-branch focuses this stale trigger
-              // (e.g. a "Reply in thread" button) once selection clears below, racing
-              // RoomTimeline's own focus of the newly targeted main message.
-              trigger.current = null;
-              onSelectThread?.(root);
-              setSelection(root ? { kind: "thread", id: root } : null);
-              setContextCollapsed(true);
-              setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
-            }} />
-          <Button ref={memberTrigger} type="button" variant="ghost" className="room-members-trigger" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
-            onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />{participants.length}</Button>
-        </div>
-      </header>
+      <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
+        canEditRoom={canEditRoom} canLeave={canLeaveRoom} actionable={actionable} pinnedCount={pinnedMessageIds.length}
+        detailsOpen={!contextCollapsed}
+        search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
+          loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
+          onSelect={(message) => {
+            const root = message.threadRootMessageId;
+            // Otherwise the [selection] effect's else-branch focuses this stale trigger
+            // (e.g. a "Reply in thread" button) once selection clears below, racing
+            // RoomTimeline's own focus of the newly targeted main message.
+            trigger.current = null;
+            onSelectThread?.(root);
+            setSelection(root ? { kind: "thread", id: root } : null);
+            setContextCollapsed(true);
+            setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
+          }} />}
+        onOpenDetails={() => { closeDetail(); setContextCollapsed(false); }}
+        onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom} />
       <nav className="room-tabs" aria-label="Conversation views">
         <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
-        <button ref={contextTrigger} type="button" className="room-tab" aria-label={contextCollapsed ? "Show room details" : "Hide room details"} aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
-          onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Context</button>
+        <button ref={contextTrigger} type="button" className="room-tab"
+          aria-label={pinnedMessageIds.length > 0 ? `Details, ${pinnedMessageIds.length} pinned` : (contextCollapsed ? "Show room details" : "Hide room details")}
+          aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
+          onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}
         {resourceSource && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
           onClick={event => openDetail("resources", "resources", event.currentTarget)}>Devices & sessions</button>}
       </nav>
-      {membersOpen && <section id={`${id}-members`} aria-label="Room members" className="room-members"
-        onKeyDown={(event) => { if (event.key === "Escape") { setMembersOpen(false); memberTrigger.current?.focus(); } }}>
-        <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
-          <ParticipantAvatar participant={participant} size="sm" /><ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1" />
-          {participant.kind === "agent" ? <><span className="text-sm text-muted-foreground">{participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent"}</span>
-            <AgentResponse participant={participant} selectId={`${id}-${participant.id}-mode`} onChange={isRoomAdmin ? onListenModeChange : undefined} />
-            </> : <span className="text-sm text-muted-foreground">Person</span>}
-        </li>)}</ul>
-      </section>}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
@@ -548,11 +540,6 @@ function RoomContent({
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <div className="room-context-body">
-        {canRename && onRenameRoom && <section aria-labelledby={`${id}-room-name`}>
-          <div className="room-members-heading"><h4 id={`${id}-room-name`} className="font-semibold">{visibleRoom?.kind === "channel" ? "Channel" : "Group chat"} name</h4>
-            <Button type="button" variant="outline" disabled={!actionable} onClick={(event) => openManagement("rename", event.currentTarget)}>Rename {visibleRoom?.kind === "channel" ? "channel" : "group chat"}</Button>
-          </div><p className="room-wrap text-sm text-muted-foreground">{roomName}</p>
-        </section>}
         <section aria-labelledby={`${id}-context-members`}>
           <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
             {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
@@ -604,23 +591,18 @@ function RoomContent({
       </> : null}</div>
       {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread" disabled={!actionable || threadComposer.composer.disabled} />}
     </aside>}
-    <Dialog open={management !== null && (management === "rename" ? canRename : canManageMembers)} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>
+    <Dialog open={management !== null && canManageMembers} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
-        onOpenAutoFocus={(event) => { if (management !== "rename") { event.preventDefault(); managementCancel.current?.focus(); } }}
+        onOpenAutoFocus={(event) => { event.preventDefault(); managementCancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); (managementTrigger.current?.isConnected ? managementTrigger.current : contextHeading.current)?.focus(); }}>
-        <DialogHeader><DialogTitle>{management === "rename" ? `Rename ${visibleRoom?.kind === "channel" ? "channel" : "group chat"}` : "Remove member"}</DialogTitle>
-          <DialogDescription className="break-words">{management === "rename" ? `Choose a name that helps your team find this ${visibleRoom?.kind === "channel" ? "channel" : "group chat"}.`
-            : `Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this channel and its messages.`}</DialogDescription>
+        <DialogHeader><DialogTitle>Remove member</DialogTitle>
+          <DialogDescription className="break-words">{`Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this channel and its messages.`}</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void saveManagement(); }}>
-          {management === "rename" && <div className="grid gap-2"><label htmlFor={`${id}-rename`} className="text-sm font-medium">{visibleRoom?.kind === "channel" ? "Channel" : "Group chat"} name</label>
-            <input id={`${id}-rename`} className="room-input" value={roomNameDraft} maxLength={200} required disabled={managementPending}
-              onChange={(event) => setRoomNameDraft(event.target.value)} /></div>}
           {managementError && <p role="alert" className="text-sm text-err break-words">{managementError}</p>}
           <DialogFooter className="gap-2"><Button ref={managementCancel} type="button" variant="outline" disabled={managementPending} onClick={() => setManagement(null)}>Cancel</Button>
-            <Button type="submit" variant={management === "rename" ? "default" : "destructive"}
-              disabled={!actionable || managementPending || (management === "rename" ? !roomNameDraft.trim() : !removalTarget)}>
-              {managementPending ? (management === "rename" ? "Saving…" : "Removing…") : management === "rename" ? "Save name" : "Remove member"}
+            <Button type="submit" variant="destructive" disabled={!actionable || managementPending || !removalTarget}>
+              {managementPending ? "Removing…" : "Remove member"}
             </Button></DialogFooter>
         </form>
       </DialogContent>

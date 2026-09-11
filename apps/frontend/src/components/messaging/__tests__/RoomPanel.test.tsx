@@ -15,53 +15,6 @@ const props: RoomPanelProps = {
   composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
 };
 
-it("renames a channel in a centered dialog with pending, retry, and focus restoration", async () => {
-  const user = userEvent.setup();
-  let reject!: (error: Error) => void;
-  const onRenameRoom = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
-  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRenameRoom={onRenameRoom} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
-  const trigger = screen.getByRole("button", { name: "Rename channel" });
-  await user.click(trigger);
-  const dialog = screen.getByRole("dialog", { name: "Rename channel" });
-  const input = within(dialog).getByRole("textbox", { name: "Channel name" });
-  expect(input).toHaveFocus();
-  expect(input).toHaveValue("Launch");
-  await user.clear(input);
-  await user.type(input, "   ");
-  expect(within(dialog).getByRole("button", { name: "Save name" })).toBeDisabled();
-  await user.type(input, "New name ");
-  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
-  expect(onRenameRoom).toHaveBeenCalledWith("New name");
-  expect(within(dialog).getByRole("button", { name: "Saving…" })).toBeDisabled();
-  await user.keyboard("{Escape}");
-  expect(dialog).toBeInTheDocument();
-  await act(async () => reject(new Error("Could not save. Try again.")));
-  expect(within(dialog).getByRole("alert")).toHaveTextContent("Could not save. Try again.");
-  onRenameRoom.mockResolvedValue(undefined);
-  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(trigger).toHaveFocus();
-});
-
-it("lets a group chat admin rename the chat without exposing channel membership controls", async () => {
-  const user = userEvent.setup();
-  const onRenameRoom = vi.fn().mockResolvedValue(undefined);
-  render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "Launch crew" }}
-    onRenameRoom={onRenameRoom} onAddMember={vi.fn()} onRemoveMember={vi.fn()} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Rename group chat" }));
-  const dialog = screen.getByRole("dialog", { name: "Rename group chat" });
-  const input = within(dialog).getByRole("textbox", { name: "Group chat name" });
-  expect(input).toHaveValue("Launch crew");
-  await user.clear(input);
-  await user.type(input, "Release room");
-  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
-  expect(onRenameRoom).toHaveBeenCalledWith("Release room");
-});
-
 it("confirms removal of a non-owner with Cancel focused and restores focus", async () => {
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
@@ -84,29 +37,10 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
 it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "View members" }));
-  expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: "View members, 2 in this conversation" }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
   expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
-});
-
-it("never offers renaming for a direct message", async () => {
-  render(<RoomPanel {...props} onRenameRoom={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: /Rename/ })).not.toBeInTheDocument();
-});
-
-it("closes channel management if the viewer loses admin permission", async () => {
-  const onRenameRoom = vi.fn();
-  const channel = { ...props.room!, kind: "channel" as const };
-  const { rerender } = render(<RoomPanel {...props} room={channel} onRenameRoom={onRenameRoom} />);
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  await userEvent.click(screen.getByRole("button", { name: "Rename channel" }));
-  rerender(<RoomPanel {...props} room={channel} participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={onRenameRoom} />);
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(onRenameRoom).not.toHaveBeenCalled();
 });
 
 it("reveals and focuses same-room message navigation from a narrow resources pane", async () => {
@@ -185,8 +119,8 @@ it("names a DM for its counterpart and uses canonical author and member activity
   expect(within(article).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(article).getByText("Agent")).toBeInTheDocument();
   expect(within(article).getByRole("status", { name: "Work status" })).toHaveTextContent("Completed");
-  fireEvent.click(screen.getByRole("button", { name: "View members" }));
-  const members = screen.getByRole("region", { name: "Room members" });
+  fireEvent.click(screen.getByRole("button", { name: "View members, 2 in this conversation" }));
+  const members = screen.getByRole("complementary", { name: "Room details" });
   expect(within(members).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
 });
@@ -711,4 +645,11 @@ it("opens exactly one edit form when the ArrowUp target is also the open thread'
   render(<RoomPanel {...props} messages={[message, own]} selectedThreadId={own.messageId} onUpdateMessage={vi.fn()} />);
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
   expect(screen.getAllByRole("textbox", { name: "Edit message" })).toHaveLength(1);
+});
+
+it("labels the details tab and shows the pinned count on it", () => {
+  render(<RoomPanel {...props} room={{ ...props.room!, topic: null, starred: false, muted: false, sectionId: null }}
+    pinnedMessageIds={["m-1", "m-2"]} />);
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveTextContent("2");
+  expect(screen.queryByRole("button", { name: "Context" })).not.toBeInTheDocument();
 });

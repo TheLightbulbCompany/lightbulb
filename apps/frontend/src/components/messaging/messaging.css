@@ -11,14 +11,19 @@
 .room-panel { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; overflow: hidden; }
 .room-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .room-conversation[hidden] { display: none; }
-.room-header { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
+.room-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
 .room-tabs { display: flex; flex-shrink: 0; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--border); overflow-x: auto; }
-.room-tab { white-space: nowrap; }
-.room-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; }
+.room-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; white-space: nowrap; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; }
 .room-tab[aria-current="page"] { color: var(--foreground); border-bottom-color: var(--foreground); font-weight: 600; }
+.room-tab .room-count { margin-left: 6px; }
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
+.room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: .875rem; font-weight: 400; }
+.room-topic-dot { color: var(--muted-foreground); }
+.room-topic-form { flex: 1 1 200px; min-width: 0; }
+.room-header-error { flex-basis: 100%; }
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-.room-facepile { display: flex; align-items: center; gap: 4px; }
+.room-facepile { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 6px; }
+.room-facepile > :not(:first-child) { margin-left: -8px; }
 .room-history { position: relative; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }

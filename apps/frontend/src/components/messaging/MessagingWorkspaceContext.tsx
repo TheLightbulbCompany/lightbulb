@@ -419,9 +419,8 @@ export function MessagingWorkspaceProvider({
   const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
   const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
-  const canManageResponses = ["owner", "admin"].includes(
-    rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
-  );
+  const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
+  const canManageResponses = ["owner", "admin"].includes(viewerRole);
 
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: scope,
@@ -468,11 +467,14 @@ export function MessagingWorkspaceProvider({
     ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
-    ...(!!rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(
-      rooms.activeRoom.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
-    ) ? {
+    pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds ?? [],
+    onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
+    onLeaveRoom: rooms.activeRoom?.kind === "channel" && viewerRole !== "owner"
+      ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,
+    ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
-      ...(rooms.activeRoom!.kind === "channel" ? {
+      onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
+      ...(rooms.activeRoom.kind === "channel" ? {
         addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
           (member) => member.kind === candidate.kind && member.id === candidate.id,
         )),

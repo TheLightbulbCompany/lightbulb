@@ -56,6 +56,8 @@ function DirectoryContent({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [markingUnread, setMarkingUnread] = useState<string | null>(null);
+  const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
   const validName = kind !== "channel" || (name.trim().length >= 1 && name.trim().length <= 80);
   const validCount = kind === "dm" ? selected.size === 1 : kind === "group-dm" ? selected.size >= 2 : true;
   const canCreate = !!onCreate && validName && validCount && selected.size <= 31;
@@ -72,6 +74,19 @@ function DirectoryContent({
     const next = [...rooms.slice(currentIndex + 1), ...rooms.slice(0, currentIndex + 1)]
       .find((room) => room.unreadCount > 0);
     if (next) onSelectRoom(next.roomId);
+  }
+
+  async function markRoomUnread(roomId: string, label: string) {
+    if (!onMarkUnread || markingUnread) return;
+    setMarkingUnread(roomId);
+    setUnreadError(null);
+    try {
+      await onMarkUnread(roomId);
+    } catch {
+      setUnreadError({ roomId, label });
+    } finally {
+      setMarkingUnread(null);
+    }
   }
 
   if (state !== "ready" && !partialError) return <nav className="room-directory" aria-label="Conversations">
@@ -112,6 +127,8 @@ function DirectoryContent({
         {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
       </div>
     </div>
+    {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
+      onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
     {(["Channels", "Direct messages"] as const).map((group) => {
       const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : room.kind !== "channel");
@@ -129,9 +146,9 @@ function DirectoryContent({
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
             {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
           </button>{onMarkUnread && <DropdownMenu><DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`}><MoreHorizontal aria-hidden="true" /></Button>
-          </DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => void onMarkUnread(room.roomId)}>
-            <MailOpen aria-hidden="true" />Mark unread
+            <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={markingUnread === room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
+          </DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={markingUnread !== null} onSelect={() => void markRoomUnread(room.roomId, label)}>
+            <MailOpen aria-hidden="true" />{markingUnread === room.roomId ? "Marking unread…" : "Mark unread"}
           </DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</li>;
         })}</ul>
       </section>;

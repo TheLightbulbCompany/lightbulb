@@ -125,6 +125,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const directoryError = directoryDetailsResponse.error as Error | undefined;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const manuallyUnreadRoom = useRef<string | null>(null);
+  const pendingRead = useRef<Promise<void> | null>(null);
   const dmRequests = useRef(new Map<string, string>());
   const handledInitialAgent = useRef<string | null>(null);
   const selectionRequest = useRef(0);
@@ -365,17 +366,25 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     return () => clearInterval(timer);
   }, [typing.size]);
 
-  useEffect(() => {
-    const markVisibleRead = () => {
-      const sequence = lastSequence(messages);
-      if (!subscribeToRoom || document.visibilityState !== "visible" || !document.hasFocus() ||
-          !activeRoom || manuallyUnreadRoom.current === activeRoom.roomId ||
-          sequence <= activeRoom.lastReadSeq || accessRemoved) return;
-      void messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
+  const markVisibleRead = useCallback(() => {
+    const sequence = lastSequence(messages);
+    if (!subscribeToRoom || document.visibilityState !== "visible" || !document.hasFocus() ||
+        !activeRoom || manuallyUnreadRoom.current === activeRoom.roomId ||
+        sequence <= activeRoom.lastReadSeq || accessRemoved) return;
+    const request = messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
         void mutateRoom();
         void mutateRooms();
       }).catch(() => {});
-    };
+    const operation = pendingRead.current
+      ? Promise.all([pendingRead.current, request]).then(() => {})
+      : request;
+    pendingRead.current = operation;
+    void operation.finally(() => {
+      if (pendingRead.current === operation) pendingRead.current = null;
+    });
+  }, [messages, activeRoom, accessRemoved, subscribeToRoom, messaging, mutateRoom, mutateRooms]);
+
+  useEffect(() => {
     markVisibleRead();
     window.addEventListener("focus", markVisibleRead);
     document.addEventListener("visibilitychange", markVisibleRead);
@@ -383,7 +392,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       window.removeEventListener("focus", markVisibleRead);
       document.removeEventListener("visibilitychange", markVisibleRead);
     };
-  }, [messages, activeRoom, accessRemoved, subscribeToRoom, messaging, mutateRoom, mutateRooms]);
+  }, [markVisibleRead]);
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
@@ -455,12 +464,17 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
 
   const selectRoom = useCallback((roomId: string) => {
     selectionRequest.current += 1;
+    if (manuallyUnreadRoom.current === roomId) {
+      manuallyUnreadRoom.current = null;
+      markVisibleRead();
+    }
     setActiveRoomId(roomId);
-  }, []);
+  }, [markVisibleRead]);
 
   const markUnread = useCallback(async (roomId: string) => {
     if (activeRoomId === roomId) manuallyUnreadRoom.current = roomId;
     try {
+      await pendingRead.current;
       await messaging.markUnread(roomId);
       await Promise.all([mutateRooms(), activeRoomId === roomId ? mutateRoom() : Promise.resolve()]);
     } catch (error) {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { RoomDirectory } from "../RoomDirectory";
@@ -76,6 +76,25 @@ it("marks a conversation unread and navigates to the next unread conversation", 
   await user.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
   await user.click(await screen.findByRole("menuitem", { name: "Mark unread" }));
   await waitFor(() => expect(onMarkUnread).toHaveBeenCalledWith("channel"));
+});
+
+it("shows mark-unread progress and lets the user retry a failure", async () => {
+  const user = userEvent.setup();
+  let reject!: (error: Error) => void;
+  const onMarkUnread = vi.fn()
+    .mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }))
+    .mockResolvedValueOnce(undefined);
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} rooms={[base]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onMarkUnread={onMarkUnread} />);
+
+  await user.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
+  await user.click(screen.getByRole("menuitem", { name: "Mark unread" }));
+  expect(screen.getByRole("button", { name: "Conversation actions for Launch" })).toBeDisabled();
+  await act(async () => reject(new Error("offline")));
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not mark Launch unread");
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(onMarkUnread).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
 });
 
 it("identifies agents without handles in People and agents", () => {

@@ -1215,8 +1215,8 @@ async def _hot_swap_provider(
     # fail and the session overflow), so the swap CLEARS those slots there.
     cheap_model = cheap_model_ref(new_provider, None)
     # The heartbeat/utility lane is different in kind: both are ordinary
-    # completions the OAuth token CAN serve on the mini tier, so they re-pin
-    # via heartbeat_model_ref (mini on chatgpt_oauth) instead of being cleared
+    # completions the OAuth token CAN serve on the Luna tier, so they re-pin
+    # via heartbeat_model_ref (Luna on chatgpt_oauth) instead of being cleared
     # with the compaction slots. Subagent spawns re-pin to the new standard
     # tier so children never inherit a stale ref (or Friday's premium pin);
     # llm-task follows cheap_model (enable-only when None). All four mirror

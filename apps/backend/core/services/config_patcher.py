@@ -334,8 +334,8 @@ async def replace_provider_block(
 
     ``heartbeat_model`` governs ``heartbeat.model`` SEPARATELY from
     ``cheap_model``: the heartbeat is an ordinary agent turn the Codex OAuth
-    token CAN serve on the mini tier (unlike compaction), so on the Bedrock →
-    ChatGPT swap it re-pins to ``openai/gpt-5.4-mini`` while the compaction
+    token CAN serve on the Luna tier (unlike compaction), so on the Bedrock →
+    ChatGPT swap it re-pins to ``openai/gpt-5.6-luna`` while the compaction
     slots clear. Folding it into ``cheap_model`` (the old behavior) silently
     dropped the heartbeat's cheap-tier routing on that swap. Sibling keys
     (``every``, ``isolatedSession``, ``lightContext``) are preserved.

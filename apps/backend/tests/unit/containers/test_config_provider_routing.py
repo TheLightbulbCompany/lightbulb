@@ -420,8 +420,8 @@ async def test_midturn_precheck_enabled_across_auth_paths(tmp_path, provider_cho
     [
         # The maintenance heartbeat runs on the cheap tier for EVERY provider,
         # including chatgpt_oauth — unlike compaction, the heartbeat is an
-        # ordinary turn the Codex OAuth token can serve on the mini tier.
-        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        # ordinary turn the Codex OAuth token can serve on the Luna tier.
+        ("chatgpt_oauth", None, "openai/gpt-5.6-luna"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
@@ -431,7 +431,7 @@ def test_heartbeat_model_ref_matrix(provider_choice, byo_provider, expected):
     """heartbeat_model_ref resolves a cheap tier for every provider.
 
     It diverges from cheap_model_ref only on chatgpt_oauth, where the
-    heartbeat (a normal turn) can use gpt-5.4-mini even though compaction
+    heartbeat (a normal turn) can use gpt-5.6-luna even though compaction
     cannot override the Codex backend's native summarizer.
     """
     assert heartbeat_model_ref(provider_choice, byo_provider, aip_arns=_AIPS) == expected
@@ -441,7 +441,7 @@ def test_heartbeat_model_ref_matrix(provider_choice, byo_provider, expected):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected_model",
     [
-        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        ("chatgpt_oauth", None, "openai/gpt-5.6-luna"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
@@ -578,10 +578,10 @@ async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
     (gpt-5.4-mini), so pinning it made compaction fail silently (compactionCount
     stayed 0), context grew to the 272k budget, and the turn died with "Context
     overflow: prompt too large". They inherit the OAuth-invocable primary
-    (gpt-5.5) so compaction runs.
+    (gpt-5.6-sol) so compaction runs.
 
     The heartbeat is the exception: it's an ordinary turn (not compaction), so it
-    CAN run on the cheap tier and IS demoted to gpt-5.4-mini — keeping the 30-min
+    CAN run on the cheap tier and IS demoted to gpt-5.6-luna — keeping the 30-min
     per-agent maintenance poll off the premium model. midTurnPrecheck stays on
     (it's model-free)."""
     await write_openclaw_config(
@@ -596,7 +596,7 @@ async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
     assert "model" not in defaults["compaction"]
     assert "model" not in defaults["compaction"].get("memoryFlush", {})
     # Heartbeat is demoted to the cheap tier (ordinary turn, not compaction).
-    assert defaults["heartbeat"]["model"] == "openai/gpt-5.4-mini"
+    assert defaults["heartbeat"]["model"] == "openai/gpt-5.6-luna"
     # The context-pressure precheck stays enabled (provider-agnostic, model-free).
     assert defaults["compaction"]["midTurnPrecheck"]["enabled"] is True
     # Heartbeat cadence still present.

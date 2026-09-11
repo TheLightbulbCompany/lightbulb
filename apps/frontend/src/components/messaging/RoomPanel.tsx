@@ -184,7 +184,7 @@ function RoomContent({
   narrow,
 }: RoomPanelProps) {
   const id = useId();
-  const [searchTarget, setSearchTarget] = useState<RoomMessage | null>(null);
+  const [searchTarget, setSearchTarget] = useState<Pick<RoomMessage, "messageId" | "threadRootMessageId"> | null>(null);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -400,7 +400,7 @@ function RoomContent({
               onSelectThread?.(root);
               setSelection(root ? { kind: "thread", id: root } : null);
               setContextCollapsed(true);
-              setSearchTarget(message);
+              setSearchTarget({ messageId: message.messageId, threadRootMessageId: root });
             }} />
           <Button ref={memberTrigger} type="button" variant="ghost" className="room-members-trigger" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
             onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />{participants.length}</Button>

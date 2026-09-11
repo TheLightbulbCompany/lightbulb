@@ -1,6 +1,6 @@
 # Native same-session probe — 2026-09-10
 
-Both installed harnesses accepted follow-up input into their original, ordinary interactive session while a second process observed its native transcript. No SDK worker, relay model, provider fork, second rollout writer, or app-server resume was used. This establishes a useful feasibility path, **not completed V1**: output is completed text, attribution is limited, and Codex input while a permission dialog waits is unproven.
+Both installed harnesses accepted follow-up input into their original, ordinary interactive session while a second process observed its native transcript. No SDK worker, relay model, provider fork, second rollout writer, or app-server resume was used. This establishes a useful feasibility path, **not completed V1**: output is completed text, attribution is limited, and native cancellation can hold queued work until local continuation (see the September 11 approval follow-up).
 
 Original scope: disposable sessions on macOS, Claude Code **2.1.268**, Codex CLI **0.149.0**. Observations ran approximately 03:26–03:35 UTC on September 11 (September 10 in America/New_York). The follow-up below qualifies exactly Claude **2.1.269** as well; all other Claude versions remain unavailable. No dependency, production configuration, supervisor, UI, or sharing integration was added in the original probe.
 
@@ -14,7 +14,15 @@ The adapter and probe share one exact-version predicate and one bounded runtime 
 
 The final library/probe command (`cargo test --lib --example local_session_probe --offline` with the existing test-only `TAURI_CONFIG` bundle override) passed **101 library tests**, with **3 live tests ignored**, and **9 probe tests**. The owned capture test passed again after the final evidence guard change. Changed Rust files pass formatting and `git diff --check`; whole-crate `cargo fmt --check` still reports pre-existing formatting differences in unrelated files.
 
-The capture test now also requires `LIGHTBULB_TEST_CLAUDE_VERSION=2.1.269`; use the actual expected version explicitly. Native proof is local loopback only: no signed build, authenticated dev/prod relay, pending approval dialog on 269, or two-Mac acceptance is implied. Output remains completed public text, not token streaming.
+The capture test now also requires `LIGHTBULB_TEST_CLAUDE_VERSION=2.1.269`; use the actual expected version explicitly. Native proof is local loopback only: no signed build, authenticated dev/prod relay or two-Mac acceptance is implied. Output remains completed public text, not token streaming.
+
+## September 11 — actual approval dialogs and cancellation
+
+On candidate `4529afb04`, a new owned Claude269 session with session-only `permissions.ask: ["Bash"]` displayed its native dialog for a harmless `printf`. The existing production-transport loopback test sent a follow-up into that same session: the contribution appeared while the dialog remained open, without approving the command. Local **No** denied it; native admission and the public answer were then mirrored. The test passed in **37.90s**. No global settings or real sharing enrollment changed.
+
+The earlier Codex attempts lacked a dialog because the native turn context had `approvals_reviewer: auto_review`, independently of `approval_policy: on-request`. The installed schema documents reviewer `user`; a new disposable `codex --sandbox read-only --ask-for-approval on-request -c 'approvals_reviewer="user"' --no-alt-screen` session displayed the actual dialog for creating one empty marker in its owned directory. Queued remote input did not approve that tool. Native **Esc/No** left the file absent and the conversation interrupted. The production loopback test proved admission but **failed** its public-response condition after **60.73s**: cancellation did not automatically drain the queue.
+
+One subsequent ordinary local message kept the tool denied and answered at **21:14:09.301 UTC**. The original queued production marker answered at **21:14:13.493**, followed by a second explicitly queued probe marker at **21:14:15.865**, all in the same native thread with no replay or fork. The denied file remained absent. Thus queued admission is not completion, and a cancelled Codex conversation can require local continuation. Do not force-resume it or describe this as a passing automatic post-denial mirroring case. Deployed UI/transport must present this limit honestly. Both owned sessions exited normally; upgrades/new hook trust were declined and no global permissions changed.
 
 ## Evidence matrix
 

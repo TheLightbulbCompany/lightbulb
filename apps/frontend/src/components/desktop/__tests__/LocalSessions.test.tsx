@@ -14,7 +14,23 @@ it("explains the full audience and requires an already connected Mac", async () 
   render(<LocalSessions />);
   await waitFor(()=>expect(screen.getByText(/Connect this Mac first/)).toBeTruthy());
   expect(screen.getByText(/Contributions can be visible across conversations/)).toBeTruthy();
+  expect(screen.getByText(/Coverage:/)).toHaveTextContent("Claude Code 2.1.268/2.1.269 and Codex 0.149.0");
   expect(screen.getByRole("button",{name:"Enable local-session sharing"}).hasAttribute("disabled")).toBe(true);
+});
+it("shows checking status until the native status resolves", async()=>{
+  let resolveStatus!: (state: { enrollment: null; pairedWorkspaceId: string; status: string }) => void;
+  invoke.mockImplementationOnce(()=>new Promise(resolve=>{resolveStatus=resolve;}));
+  render(<LocalSessions />);
+  expect(await screen.findByRole("status")).toHaveTextContent("Checking desktop status…");
+  expect(screen.getByRole("button",{name:"Enable local-session sharing"})).toBeDisabled();
+  await act(async()=>resolveStatus({enrollment:null,pairedWorkspaceId:"org",status:""}));
+  await waitFor(()=>expect(screen.queryByRole("status")).toBeNull());
+});
+it("shows the status error instead of indefinite loading when native status rejects", async()=>{
+  invoke.mockRejectedValueOnce(new Error("Bridge unavailable"));
+  render(<LocalSessions />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Bridge unavailable");
+  expect(screen.queryByRole("status")).toBeNull();
 });
 it("stops locally even when token refresh never resolves", async()=>{
   auth.getToken.mockReturnValue(new Promise(()=>{}));

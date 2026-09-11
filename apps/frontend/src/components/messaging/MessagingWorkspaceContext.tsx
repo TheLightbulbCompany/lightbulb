@@ -10,6 +10,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
+import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { resolveTypedMentions } from "./mentions";
@@ -485,6 +486,8 @@ export function MessagingWorkspaceProvider({
     onDownloadAttachment: rooms.downloadAttachment,
   } : null;
 
+  const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + room.unreadCount, 0), [rooms.rooms]);
+
   return <MessagingWorkspaceContext.Provider value={{
     activeRoomId: rooms.activeRoomId,
     directoryProps,
@@ -497,5 +500,5 @@ export function MessagingWorkspaceProvider({
       rooms.selectRoom(roomId);
       setNotificationTarget({ roomId, threadId: targetThreadId });
       activateMessagesPanel();
-    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />{children}</MessagingWorkspaceContext.Provider>;
+    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}</MessagingWorkspaceContext.Provider>;
 }

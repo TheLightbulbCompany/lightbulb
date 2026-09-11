@@ -621,3 +621,22 @@ it("shows an alert when copying the link fails, and clears it on the next succes
   await user.click(screen.getByRole("button", { name: "Copy link" }));
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
 });
+
+it("opens the edit form for your last message when ArrowUp lands in an empty composer", () => {
+  const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[message, own]} onUpdateMessage={vi.fn()} />);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+});
+
+it("lets a second ArrowUp reopen the edit form for the same message after Cancel", async () => {
+  const user = userEvent.setup();
+  const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[message, own]} onUpdateMessage={vi.fn()} />);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Cancel edit" }));
+  expect(screen.queryByRole("textbox", { name: "Edit message" })).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+});

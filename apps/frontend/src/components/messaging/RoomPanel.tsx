@@ -231,6 +231,7 @@ function RoomContent({
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
+  const [editTarget, setEditTarget] = useState<string | null>(null);
   const [localSelection, setSelection] = useState<{ kind: "thread"; id: string } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
@@ -352,6 +353,8 @@ function RoomContent({
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
       message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+      startEditing={editTarget === message.messageId}
+      onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
@@ -478,6 +481,10 @@ function RoomContent({
       <RoomComposer {...composer}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
+        onEditLast={onUpdateMessage ? () => {
+          const own = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId && !message.deletedAt);
+          setEditTarget(own.length ? own[own.length - 1].messageId : null);
+        } : undefined}
         disabled={!actionable || composer.disabled} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">

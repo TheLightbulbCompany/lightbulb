@@ -7,11 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, actions, children }: {
+export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, startEditing = false, onEditingClosed, actions, children }: {
   message: CanonicalRoomMessage;
   currentUserId: string;
   actionable: boolean;
   onUpdate?: (messageId: string, request: UpdateMessageRequest) => Promise<void>;
+  startEditing?: boolean;
+  // Fires whenever the edit form started by startEditing closes (save/cancel/Escape), so a
+  // parent tracking "which message is the ArrowUp edit target" can drop it -- otherwise the
+  // target id never changes and a second ArrowUp on the same still-last message is a same-value
+  // setState the parent bails on, and the render-phase startEditing guard below never re-fires.
+  onEditingClosed?: () => void;
   children: ReactNode;
   actions?: ReactNode;
 }) {
@@ -23,6 +29,13 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
   const root = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const ownMessage = message.author.kind === "human" && message.author.id === currentUserId && !message.deletedAt;
+  const [editRequested, setEditRequested] = useState(startEditing);
+  if (editRequested !== startEditing) {
+    setEditRequested(startEditing);
+    if (startEditing && ownMessage && onUpdate && request === null) {
+      setRequest({ operationId: crypto.randomUUID(), expectedRevision: message.messageRevision ?? 0, text: message.text });
+    }
+  }
   const editing = ownMessage && request !== null && request.text !== null;
   const deleting = ownMessage && request?.text === null;
   function restoreFocus() { (trigger.current ?? root.current)?.focus(); }
@@ -38,6 +51,7 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       await onUpdate(message.messageId, request);
       setRequest(null);
       restoreFocus();
+      onEditingClosed?.();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Could not update message. Try again.");
     } finally {
@@ -49,10 +63,10 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       <label htmlFor={id} className="sr-only">Edit message</label>
       <textarea id={id} className="room-input min-h-24 w-full" autoFocus value={request!.text!} disabled={pending}
         onChange={(event) => setRequest({ ...request!, operationId: crypto.randomUUID(), text: event.target.value })}
-        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); if (!pending) { setRequest(null); restoreFocus(); } } }} />
+        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); if (!pending) { setRequest(null); restoreFocus(); onEditingClosed?.(); } } }} />
       <p className="text-sm text-muted-foreground">Edits do not change requests already sent to agents or undo their work.</p>
       {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
-      <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); }}>Cancel edit</Button>
+      <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); onEditingClosed?.(); }}>Cancel edit</Button>
         <Button type="submit" disabled={!actionable || pending || (!request!.text!.trim() && !message.attachments?.length)}>{pending ? "Saving…" : "Save changes"}</Button></div>
     </form> : <>{children}{message.editedAt && <span className="text-sm text-muted-foreground"> (edited)</span>}</>}
     {!editing && (actions || (ownMessage && onUpdate)) && <div className="room-message-actions" role="group" aria-label="Message actions">

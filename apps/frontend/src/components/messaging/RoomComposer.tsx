@@ -33,6 +33,7 @@ export interface RoomComposerProps {
   label?: string;
   onTypingChange?: (typing: boolean) => void;
   onUploadAttachment?: (image: File) => Promise<ImageAttachment>;
+  onEditLast?: () => void;
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
@@ -60,6 +61,7 @@ function ComposerAttempt({
   label = "Message",
   onTypingChange,
   onUploadAttachment,
+  onEditLast,
 }: RoomComposerProps) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
@@ -336,6 +338,11 @@ function ComposerAttempt({
             setTrigger(null);
             return;
           }
+        }
+        if (event.key === "ArrowUp" && !text && onEditLast) {
+          event.preventDefault();
+          onEditLast();
+          return;
         }
         if (!listOpen && (event.metaKey || event.ctrlKey)) {
           const key = event.key.toLowerCase();

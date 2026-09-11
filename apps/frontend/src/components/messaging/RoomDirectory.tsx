@@ -69,6 +69,10 @@ function DirectoryContent({
   });
   const partialError = state === "error" && rooms.length > 0;
   const unreadRooms = rooms.filter((room) => room.unreadCount > 0);
+  // A drafted room can be absent from `rooms` (left, or directory still
+  // loading) — gate the section on this filtered list, not on
+  // draftRoomIds.length, or the heading renders over an empty list.
+  const draftedRooms = rooms.filter((room) => draftRoomIds.includes(room.roomId));
 
   function selectNextUnread() {
     if (unreadRooms.length === 0) return;
@@ -161,9 +165,9 @@ function DirectoryContent({
         })}</ul>
       </section>;
     })}
-    {draftRoomIds.length > 0 && <section aria-label="Drafts">
+    {draftedRooms.length > 0 && <section aria-label="Drafts">
       <h3 className="room-directory-group">Drafts</h3>
-      <ul>{rooms.filter((room) => draftRoomIds.includes(room.roomId)).map((room) => {
+      <ul>{draftedRooms.map((room) => {
         const label = roomDisplayName(room, room.participants);
         return <li key={`draft:${room.roomId}`} className="room-directory-row">
           <button type="button" className="room-directory-entry" aria-current={room.roomId === currentRoomId ? "page" : undefined}

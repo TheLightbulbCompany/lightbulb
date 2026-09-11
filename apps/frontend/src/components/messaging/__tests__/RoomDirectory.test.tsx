@@ -153,3 +153,8 @@ it("renders no Drafts section when nothing is drafted", () => {
   render(<RoomDirectory {...directory} draftRoomIds={[]} />);
   expect(screen.queryByRole("region", { name: "Drafts" })).not.toBeInTheDocument();
 });
+
+it("renders no Drafts section when the drafted room isn't in the directory", () => {
+  render(<RoomDirectory {...directory} draftRoomIds={["gone"]} />);
+  expect(screen.queryByRole("region", { name: "Drafts" })).not.toBeInTheDocument();
+});

@@ -19,8 +19,9 @@
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .room-facepile { display: flex; align-items: center; gap: 4px; }
 .room-history { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
-.room-message { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; }
-.room-message-actions { position: absolute; top: 0; right: 0; z-index: 1; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground) 10%, transparent); opacity: 0; pointer-events: none; }
+.room-message { position: relative; display: flex; align-items: flex-start; gap: 12px; margin: 0 -12px; padding: 8px 12px; border-radius: 8px; transition: background-color 120ms ease; }
+.room-message:hover, .room-message:focus-within { background: color-mix(in srgb, var(--muted) 58%, transparent); }
+.room-message-actions { position: absolute; top: 0; right: 8px; z-index: 1; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground) 10%, transparent); opacity: 0; pointer-events: none; }
 .room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
 .room-message-actions button { border-radius: 4px; }
 @media (hover: none), (pointer: coarse) {

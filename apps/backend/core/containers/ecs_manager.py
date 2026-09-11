@@ -569,9 +569,10 @@ class EcsManager:
         loop. It converges on the owner's next task-def registration rather than
         bouncing the container the instant someone adds an agent.
 
-        This only ever sizes UP. Shrinking stays owned by
-        ``stripe_webhook_handlers._apply_ultra_resize``, which has the OOM-safe
-        deferral rules; a count-driven shrink here would fight it.
+        This helper only ever raises the plan-derived size to the reliability
+        floor. Explicit downsize decisions stay owned by
+        ``stripe_webhook_handlers._apply_ultra_resize``, which independently
+        checks the live count and refuses an unsafe shrink.
 
         Fail-safe: a provision must NEVER fail because billing or Paperclip is
         momentarily unreadable. A billing read error (or an absent row) falls

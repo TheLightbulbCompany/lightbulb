@@ -291,6 +291,17 @@ def test_confirm_allows_import_above_ten_agents_without_a_count_lookup(client):
         r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
     assert r.status_code == 200, r.text
     count_agents.assert_not_awaited()
+    reg.assert_awaited_once()
+    assert r.json()["agents"] == [
+        {
+            "source_agent_id": "main",
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "ok": True,
+            "error": None,
+            "warnings": [],
+        }
+    ]
 
 
 def _plugin_archive() -> bytes:

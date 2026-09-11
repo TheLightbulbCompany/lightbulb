@@ -100,7 +100,7 @@ async def test_workspace_downgrade_resizes_small_company_down():
 
 
 @pytest.mark.asyncio
-async def test_workspace_downgrade_with_large_roster_resizes_without_count_lookup():
+async def test_workspace_downgrade_with_large_roster_preserves_reliability_size():
     count_agents = AsyncMock(return_value=37)
     with patch(
         "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
@@ -111,8 +111,22 @@ async def test_workspace_downgrade_with_large_roster_resizes_without_count_looku
         )
 
     assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    manager.resize_user_container.assert_awaited_once_with("org_workspace", new_cpu="1024", new_memory="4096")
-    count_agents.assert_not_awaited()
+    manager.resize_user_container.assert_not_awaited()
+    count_agents.assert_awaited_once_with("org_workspace")
+
+
+@pytest.mark.asyncio
+async def test_workspace_downgrade_with_unknown_count_does_not_shrink():
+    count_agents = AsyncMock(return_value=0)
+    with patch(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    ):
+        repo, manager = await _drive(_event(), account=_account(plan="ultra_pro"))
+
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    manager.resize_user_container.assert_not_awaited()
+    count_agents.assert_awaited_once_with("org_workspace")
 
 
 @pytest.mark.asyncio

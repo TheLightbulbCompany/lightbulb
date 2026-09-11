@@ -812,9 +812,10 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
     payment-method change) must not bounce the container.
 
     - Upgrade (→ ultra_pro): grow to the Ultra box.
-    - Downgrade (ultra_pro → standard): shrink to the flat box. Agent identity
-      count is not a billing entitlement; provisioning retains its separate
-      reliability size floor for later task-definition registrations.
+    - Downgrade (ultra_pro → standard): shrink to the flat box only when the
+      live roster confirms that doing so is operationally safe. Agent identity
+      count is not a billing entitlement; it remains an independent reliability
+      sizing input. An unavailable count leaves the current task size alone.
 
     Best-effort: a resize failure must not 500 the webhook back to Stripe.
     """
@@ -829,12 +830,32 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
         PER_USER_MEMORY_MIB,
         ULTRA_CPU,
         ULTRA_MEMORY_MIB,
+        AGENT_RELIABILITY_RESIZE_THRESHOLD,
     )
+    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 
     try:
         if now_ultra:
             await get_ecs_manager().resize_user_container(owner_id, new_cpu=ULTRA_CPU, new_memory=ULTRA_MEMORY_MIB)
             put_metric("ultra.resize", dimensions={"direction": "up"})
+            return
+
+        agent_count = await count_paperclip_agents_for_owner(owner_id)
+        if agent_count == 0:
+            put_metric("container.reliability_downsize_skipped", dimensions={"reason": "unknown_count"})
+            logger.warning(
+                "Skipping down-resize for owner %s: live agent count is unavailable",
+                owner_id,
+            )
+            return
+        if agent_count > AGENT_RELIABILITY_RESIZE_THRESHOLD:
+            put_metric("container.reliability_downsize_skipped", dimensions={"reason": "live_agent_roster"})
+            logger.info(
+                "Skipping down-resize for owner %s: %d live agents exceed the reliability threshold of %d",
+                owner_id,
+                agent_count,
+                AGENT_RELIABILITY_RESIZE_THRESHOLD,
+            )
             return
 
         await get_ecs_manager().resize_user_container(owner_id, new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)

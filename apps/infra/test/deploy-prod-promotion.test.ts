@@ -113,3 +113,33 @@ describe("deploy.yml prod promotion gate", () => {
     expect(auth).toContain("- Build-Synth");
   });
 });
+
+describe("desktop-build.yml prod promotion gate", () => {
+  const yaml = readFileSync(join(__dirname, "../../../.github/workflows/desktop-build.yml"), "utf8");
+  const jobs = jobBlocks(yaml);
+
+  it("gates the entire production desktop job on manual dispatch", () => {
+    expect(jobs.has("build-desktop-prod")).toBe(true);
+    expect(jobLevelIf(jobs.get("build-desktop-prod")!)).toBe(PROMOTE_IF);
+  });
+
+  it("keeps development automatic on qualifying main pushes and available on dispatch", () => {
+    const triggers = yaml.slice(yaml.indexOf("\n'on':\n"), yaml.indexOf("\npermissions:\n"));
+    expect(triggers).toContain("push:");
+    expect(triggers).toContain("- main");
+    expect(triggers).toContain("workflow_dispatch:");
+    expect(jobs.has("build-desktop-dev")).toBe(true);
+    expect(jobLevelIf(jobs.get("build-desktop-dev")!)).toBeUndefined();
+  });
+
+  it("requires the development job to succeed before production", () => {
+    expect(jobs.get("build-desktop-prod")).toMatch(/^ {4}needs:\n {4}- build-desktop-dev$/m);
+  });
+
+  it("runs Infra CI for desktop-workflow-only pull requests", () => {
+    const ci = readFileSync(join(__dirname, "../../../.github/workflows/infra-ci.yml"), "utf8");
+    const triggers = ci.slice(ci.indexOf("\non:\n"), ci.indexOf("\nconcurrency:\n"));
+    expect(triggers).toContain("pull_request:");
+    expect(triggers).toContain("- '.github/workflows/desktop-build.yml'");
+  });
+});

@@ -130,6 +130,10 @@ async def resolve_teams_context(
     if company.status != "active":
         raise TeamsContextError(status_code=503, detail=f"team workspace status={company.status}")
 
+    owner_id = resolve_owner_id(auth)
+    if company.org_id != owner_id:
+        raise TeamsContextError(status_code=403, detail="team workspace unavailable in this workspace")
+
     try:
         cookie = await resolve_session_cookie(
             cookies=cookies,
@@ -152,7 +156,7 @@ async def resolve_teams_context(
     return TeamsContext(
         user_id=auth.user_id,
         org_id=auth.org_id,
-        owner_id=resolve_owner_id(auth),
+        owner_id=owner_id,
         company_id=company.company_id,
         paperclip_user_id=company.paperclip_user_id,
         session_cookie=cookie,

@@ -106,6 +106,17 @@ export type {
 export { createMessagingClient } from "./messaging/client";
 export type { MessagingClient } from "./messaging/client";
 export type {
+  LocalDevice,
+  LocalSession,
+  LocalSessionCapabilities,
+  LocalSessionCommand,
+  LocalSessionCommandReceipt,
+  LocalSessionEnrollment,
+  LocalSessionEnrollmentRequest,
+  LocalSessionEvent,
+  LocalSessionEventPage,
+  RoomResources,
+  PairedNode,
   AbortRunResponse,
   ApiErrorCode,
   CanonicalRoomMessage,

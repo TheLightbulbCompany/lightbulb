@@ -350,7 +350,7 @@ def test_http_proxy_drops_encoding_after_httpx_decodes_upstream_gzip(monkeypatch
 
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.test")
-    cookie = proxy_mod._mint_paperclip_session(user_id="user_proxy", email="user@example.com")
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_proxy", email="user@example.com", org_id="org_proxy")
 
     class _FakeRepo:
         def __init__(self, table_name: str) -> None:
@@ -359,7 +359,7 @@ def test_http_proxy_drops_encoding_after_httpx_decodes_upstream_gzip(monkeypatch
         async def get(self, _user_id: str):
             return SimpleNamespace(
                 status="active",
-                org_id="user_proxy",
+                org_id="org_proxy",
                 paperclip_password_encrypted="unused",
             )
 
@@ -637,14 +637,14 @@ def test_http_disabled_company_redirects_to_chat(monkeypatch):
 
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
-    cookie = proxy_mod._mint_paperclip_session(user_id="user_disabled", email="d@example.com")
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_disabled", email="d@example.com", org_id="org_disabled")
 
     class _DisabledCompany:
         status = "disabled"
-        # Personal rows carry org_id == user_id — a MATCHED terminal row,
+        # Workspace rows carry the active org_id — a MATCHED terminal row,
         # which is what the /chat redirect is for (a mismatched one gets
         # the repair stub instead; see the org-scope tests).
-        org_id = "user_disabled"
+        org_id = "org_disabled"
 
     class _FakeRepo:
         def __init__(self, table_name: str) -> None:
@@ -863,7 +863,7 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_decode(token: str):
-        return {"sub": "user_handshake", "email": "h@example.com"}
+        return {"sub": "user_handshake", "email": "h@example.com", "o": {"id": "org_handshake"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
@@ -890,8 +890,8 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
     assert claims["email"] == "h@example.com"
 
     # No row yet → the same canonical readiness dispatch the ?__t= handoff
-    # uses fired here too (personal context, paperclip-seed only).
-    assert calls == [("user_handshake", None)]
+    # uses fired here too under the active workspace context.
+    assert calls == [("user_handshake", "org_handshake")]
 
 
 def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch):
@@ -948,7 +948,7 @@ def test_handshake_no_container_skips_dispatch(monkeypatch):
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_decode(token: str):
-        return {"sub": "user_handshake", "email": "h@example.com"}
+        return {"sub": "user_handshake", "email": "h@example.com", "o": {"id": "org_handshake"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
@@ -978,13 +978,11 @@ def test_handshake_matched_active_row_skips_dispatch(monkeypatch):
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_decode(token: str):
-        return {"sub": "user_handshake", "email": "h@example.com"}
+        return {"sub": "user_handshake", "email": "h@example.com", "o": {"id": "org_handshake"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
-    calls = _stub_handshake_repo_and_dispatch(
-        monkeypatch, row=SimpleNamespace(status="active", org_id="user_handshake")
-    )
+    calls = _stub_handshake_repo_and_dispatch(monkeypatch, row=SimpleNamespace(status="active", org_id="org_handshake"))
 
     app = _build_http_app()
     client = TestClient(app)
@@ -1081,7 +1079,7 @@ def test_http_handoff_token_via_query_param(monkeypatch):
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
 
     async def _fake_decode(token: str):
-        return {"sub": "user_handoff", "email": "h@example.com"}
+        return {"sub": "user_handoff", "email": "h@example.com", "o": {"id": "org_handoff"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
 
@@ -1099,9 +1097,9 @@ def test_http_handoff_token_via_query_param(monkeypatch):
         async def get(self, _user_id: str):
             class _Co:
                 status = "active"
-                # Personal rows carry org_id == user_id — matching the
+                # Workspace rows carry the active org_id — matching the
                 # handoff's org-scoped readiness check.
-                org_id = "user_handoff"
+                org_id = "org_handoff"
 
             return _Co()
 
@@ -1138,7 +1136,7 @@ def test_http_handoff_redirects_to_chat_when_no_container(monkeypatch):
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
 
     async def _fake_decode(token: str):
-        return {"sub": "user_no_container", "email": "n@example.com"}
+        return {"sub": "user_no_container", "email": "n@example.com", "o": {"id": "org_no_container"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
 
@@ -1176,7 +1174,7 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
 
     async def _fake_decode(token: str):
-        return {"sub": "user_trigger_fold", "email": "t@example.com"}
+        return {"sub": "user_trigger_fold", "email": "t@example.com", "o": {"id": "org_trigger_fold"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
 
@@ -1222,8 +1220,8 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
     )
     assert resp.status_code == 302
 
-    # Dispatched through the canonical trigger, keyed on owner_id (personal
-    # context here: owner_id == user_id). No container flag: ensure_user_ready
+    # Dispatched through the canonical trigger for the active workspace. No
+    # container flag: ensure_user_ready
     # reads the row itself and resolves an already-running box to a seed-only
     # reconcile (see user_provision._provision_or_reconcile).
     assert calls == ["user_trigger_fold"]

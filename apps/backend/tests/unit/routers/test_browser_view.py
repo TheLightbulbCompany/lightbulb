@@ -67,11 +67,11 @@ def test_ws_unreachable_container_closes_4503(monkeypatch):
     import routers.browser_view as mod
 
     async def _fake_decode(token: str):
-        return {"sub": "user_test1", "email": "t@example.com"}
+        return {"sub": "user_test1", "email": "t@example.com", "o": {"id": "org_test1"}}
 
     class _FakeEcs:
         async def resolve_running_container(self, owner_id):
-            assert owner_id == "user_test1"
+            assert owner_id == "org_test1"
             return {"status": "running"}, None
 
     monkeypatch.setattr(mod, "_decode_token", _fake_decode)
@@ -130,7 +130,7 @@ def test_ws_viewer_disconnect_tears_down_upstream(monkeypatch):
             return False
 
     async def _fake_decode(token: str):
-        return {"sub": "user_test1", "email": "t@example.com"}
+        return {"sub": "user_test1", "email": "t@example.com", "o": {"id": "org_test1"}}
 
     class _FakeEcs:
         async def resolve_running_container(self, owner_id):
@@ -165,7 +165,7 @@ def test_ws_subprotocol_jwt_authenticates_and_binary_is_selected(monkeypatch):
 
     async def _fake_decode(token: str):
         if token == "the.clerk.jwt":
-            return {"sub": "user_test1", "email": "t@example.com"}
+            return {"sub": "user_test1", "email": "t@example.com", "o": {"id": "org_test1"}}
         raise ValueError("not a credential")
 
     upstream_subprotocols: dict[str, object] = {}

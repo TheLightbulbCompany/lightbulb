@@ -26,7 +26,7 @@ def mock_workspace():
 
 @pytest.fixture
 def auth_override():
-    auth = AuthContext(user_id="user_123")
+    auth = AuthContext(user_id="human_123", org_id="user_123", org_role="org:admin")
 
     async def _override():
         return auth

@@ -1,4 +1,5 @@
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
+import { localSessionTool } from "./local-sessions.js";
 import {
   buildChannelOutboundSessionRoute,
   createChatChannelPlugin,
@@ -150,4 +151,11 @@ export default defineChannelPluginEntry({
   description: "Native OpenClaw channel for canonical Lightbulb multiplayer rooms.",
   plugin: lightbulbChannelPlugin,
   configSchema: lightbulbChannelConfigSchema,
+  registerFull(api) {
+    api.registerTool((ctx) => localSessionTool(ctx, {
+      env: () => process.env,
+      fetch: (url, init) => fetch(url, init),
+      nodes: () => api.runtime.nodes.list({ connected: true }),
+    }), { names: ["lightbulb_local_sessions"] });
+  },
 });

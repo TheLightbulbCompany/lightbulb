@@ -39,8 +39,8 @@ class TestDebugEnvironmentAllowlist:
             ("post", "/api/v1/debug/provision", None),
             # Inline call-sites, one per endpoint metric label
             ("delete", "/api/v1/debug/user-data", None),
-            ("get", "/api/v1/debug/efs-exists", {"path": "/mnt/efs/users/user_test_123"}),
-            ("get", "/api/v1/debug/ddb-rows", {"owner_id": "user_test_123"}),
+            ("get", "/api/v1/debug/efs-exists", {"path": "/mnt/efs/users/org_test_456"}),
+            ("get", "/api/v1/debug/ddb-rows", {"owner_id": "org_test_456"}),
         ],
     )
     async def test_every_surface_refuses_staging(self, async_client, method, path, params):
@@ -56,13 +56,13 @@ class TestDebugEnvironmentAllowlist:
 
         ws = get_workspace()
         monkeypatch.setattr(ws, "_mount", tmp_path)
-        (tmp_path / "user_test_123").mkdir()
+        (tmp_path / "org_test_456").mkdir()
 
         with patch("routers.debug.settings") as mock_settings:
             mock_settings.ENVIRONMENT = "dev"
             res = await async_client.get(
                 "/api/v1/debug/efs-exists",
-                params={"path": str(tmp_path / "user_test_123")},
+                params={"path": str(tmp_path / "org_test_456")},
             )
         assert res.status_code == 200
         assert res.json() == {"exists": True}
@@ -174,11 +174,11 @@ class TestDeleteUserData:
         # brief.
         assert "paperclip-companies:pending-brief" in body["deleted"]["ddb"]
 
-        ecs_mgr.delete_user_service.assert_called_once_with("user_test_123")
-        ws.delete_user_dir.assert_called_once_with("user_test_123")
+        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456")
+        ws.delete_user_dir.assert_called_once_with("org_test_456")
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
-        mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("user_test_123")
+        mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.debug.PaperclipRepo")
@@ -247,7 +247,7 @@ class TestDeleteUserData:
         assert res.status_code == 200
         assert "integrations" in res.json()["deleted"]["ddb"]
         # SM delete only for the real provider, never for the `#`-namespaced rows.
-        mock_secret_store.delete.assert_awaited_once_with("user_test_123", "github")
+        mock_secret_store.delete.assert_awaited_once_with("org_test_456", "github")
         # Every row's DDB record is still removed.
         assert mock_integrations_repo.delete.await_count == 3
 
@@ -454,7 +454,7 @@ class TestDeleteUserData:
 
         assert res.status_code == 200
         # Critical: ECS teardown WAS attempted despite no container row.
-        ecs_mgr.delete_user_service.assert_called_once_with("user_test_123")
+        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456")
         assert res.json()["deleted"]["ecs"] is True
 
     @pytest.mark.asyncio
@@ -485,7 +485,7 @@ class TestEfsExists:
         # Point the workspace mount at a temp dir we control. Path layout:
         # `<mount>/<owner_id>/...` (matches workspace.user_path in prod).
         monkeypatch.setattr(ws, "_mount", tmp_path)
-        owner_dir = tmp_path / "user_test_123"
+        owner_dir = tmp_path / "org_test_456"
         owner_dir.mkdir()
         (owner_dir / "agents").mkdir()
 
@@ -503,10 +503,10 @@ class TestEfsExists:
         ws = get_workspace()
         monkeypatch.setattr(ws, "_mount", tmp_path)
         # owner_root must exist for path.resolve() to succeed.
-        (tmp_path / "user_test_123").mkdir()
+        (tmp_path / "org_test_456").mkdir()
         res = await async_client.get(
             "/api/v1/debug/efs-exists",
-            params={"path": str(tmp_path / "user_test_123" / "nope")},
+            params={"path": str(tmp_path / "org_test_456" / "nope")},
         )
         assert res.status_code == 200
         assert res.json() == {"exists": False}
@@ -595,7 +595,7 @@ class TestDdbRows:
 
         res = await async_client.get(
             "/api/v1/debug/ddb-rows",
-            params={"owner_id": "user_test_123"},
+            params={"owner_id": "org_test_456"},
         )
         assert res.status_code == 200
         body = res.json()
@@ -633,9 +633,9 @@ class TestDdbRows:
         async_client,
     ):
         """Single-row repos return 1 when present; multi-row repos return their counts."""
-        mock_user.get_by_user_id = AsyncMock(return_value={"user_id": "user_test_123"})
-        mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
-        mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
+        mock_user.get_by_user_id = AsyncMock(return_value={"user_id": "org_test_456"})
+        mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_test_456"})
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_test_456"})
         mock_usage.count_for_owner = AsyncMock(return_value=4)
         mock_update.count_for_owner = AsyncMock(return_value=1)
         mock_chan.count_for_owner = AsyncMock(return_value=3)
@@ -643,7 +643,7 @@ class TestDdbRows:
 
         res = await async_client.get(
             "/api/v1/debug/ddb-rows",
-            params={"owner_id": "user_test_123"},
+            params={"owner_id": "org_test_456"},
         )
         assert res.status_code == 200
         body = res.json()["tables"]

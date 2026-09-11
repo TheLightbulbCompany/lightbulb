@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, children }: {
+export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, actions, children }: {
   message: CanonicalRoomMessage;
   currentUserId: string;
   actionable: boolean;
   onUpdate?: (messageId: string, request: UpdateMessageRequest) => Promise<void>;
   children: ReactNode;
+  actions?: ReactNode;
 }) {
   const id = useId();
   const [request, setRequest] = useState<UpdateMessageRequest | null>(null);
@@ -54,13 +55,16 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); }}>Cancel edit</Button>
         <Button type="submit" disabled={!actionable || pending || (!request!.text!.trim() && !message.attachments?.length)}>{pending ? "Saving…" : "Save changes"}</Button></div>
     </form> : <>{children}{message.editedAt && <span className="text-sm text-muted-foreground"> (edited)</span>}</>}
-    {ownMessage && onUpdate && !editing && <DropdownMenu>
+    {!editing && (actions || (ownMessage && onUpdate)) && <div className="room-message-actions" role="group" aria-label="Message actions">
+      {actions}
+      {ownMessage && onUpdate && <DropdownMenu>
       <DropdownMenuTrigger asChild><Button ref={trigger} type="button" variant="ghost" size="icon-sm" disabled={!actionable || pending} aria-label="Message actions"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
-      <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (request) event.preventDefault(); }}>
+      <DropdownMenuContent align="end" onEscapeKeyDown={(event) => event.stopPropagation()} onCloseAutoFocus={(event) => { if (request) event.preventDefault(); }}>
         <DropdownMenuItem onSelect={() => begin(message.text)}>Edit message</DropdownMenuItem>
         <DropdownMenuItem variant="destructive" onSelect={() => begin(null)}>Delete message</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>}
+    </div>}
     <Dialog open={deleting} onOpenChange={(open) => { if (!open && !pending) setRequest(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onEscapeKeyDown={(event) => { event.stopPropagation(); if (pending) event.preventDefault(); }}

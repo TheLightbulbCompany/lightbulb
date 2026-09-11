@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, Users } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, SmilePlus, Users } from "lucide-react";
 import type { Components } from "react-markdown";
 import type { ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -89,6 +90,8 @@ const roomMarkdown: Partial<Components> = {
   img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
   blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
 };
+
+const reactionEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅"] as const;
 
 const narrowQuery = "(max-width: 859px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
@@ -318,6 +321,27 @@ function RoomContent({
     const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
     const replyCount = inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length;
+    const appliedReactions = reactionEmojis.filter((emoji) => (message.reactions?.[emoji]?.length ?? 0) > 0);
+    async function toggleReaction(emoji: string) {
+      if (!onSetReaction || !actionable || reactionPending !== null) return;
+      setReactionPending(message.messageId);
+      setReactionError(null);
+      try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
+      catch { setReactionError(message.messageId); }
+      finally { setReactionPending(null); }
+    }
+    const actions = ((!message.deletedAt && onSetReaction) || !inThread) ? <>
+      {!message.deletedAt && onSetReaction && <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Add reaction" title="Add reaction" disabled={!actionable || reactionPending !== null}><SmilePlus aria-hidden="true" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end" aria-label="Choose a reaction" onEscapeKeyDown={(event) => event.stopPropagation()}>
+          {reactionEmojis.map((emoji) => <DropdownMenuItem key={emoji} disabled={!actionable || reactionPending !== null}
+            aria-label={`${message.reactions?.[emoji]?.includes(currentUserId) ? "Remove" : "Add"} ${emoji} reaction`}
+            onSelect={() => void toggleReaction(emoji)}><span aria-hidden="true">{emoji}</span><span>{message.reactions?.[emoji]?.includes(currentUserId) ? "Remove" : "Add"} reaction</span></DropdownMenuItem>)}
+        </DropdownMenuContent>
+      </DropdownMenu>}
+      {!inThread && <Button type="button" variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" disabled={!actionable}
+        onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
+    </> : undefined;
     return <article key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`} tabIndex={-1}
       className={cn("room-message", searchTarget?.messageId === message.messageId && "bg-accent")} aria-label={`Message from ${name}`}>
       {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
@@ -328,26 +352,20 @@ function RoomContent({
           {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
           {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
         </div>
-        <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage}>
+        <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} actions={actions}>
           <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
         </RoomMessageContent>
-        {!message.deletedAt && onSetReaction && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
-          {(["👍", "❤️", "😂", "🎉", "👀", "✅"] as const).map((emoji) => {
+        {!message.deletedAt && onSetReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
+          {appliedReactions.map((emoji) => {
             const users = message.reactions?.[emoji] ?? [];
             const selected = users.includes(currentUserId);
             return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
               aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}
               disabled={!actionable || reactionPending !== null}
-              onClick={async () => {
-                setReactionPending(message.messageId);
-                setReactionError(null);
-                try { await onSetReaction(message.messageId, emoji, !selected); }
-                catch { setReactionError(message.messageId); }
-                finally { setReactionPending(null); }
-              }}>{emoji}{users.length > 0 && <span>{users.length}</span>}</Button>;
+              onClick={() => void toggleReaction(emoji)}>{emoji}<span>{users.length}</span></Button>;
           })}
-          {reactionError === message.messageId && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
         </div>}
+        {reactionError === message.messageId && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
         {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
         {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
           {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
@@ -357,9 +375,9 @@ function RoomContent({
           return context && <Button key={contextId} type="button" variant="outline" className="room-work-link" disabled={!actionable}
             onClick={(event) => openDetail("context", context.id, event.currentTarget, inThread)}><FileText size={16} aria-hidden="true" />{context.title}</Button>;
         })}
-        {!inThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
-          aria-label={`Reply in thread${replyCount > 0 ? `, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : ""}`}
-          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" />{replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"} · Open thread` : "Reply in thread"}</Button>}
+        {!inThread && replyCount > 0 && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
+          aria-label={`Reply in thread, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}
+          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}>{replyCount} {replyCount === 1 ? "reply" : "replies"}</Button>}
       </div>
     </article>;
   }

@@ -127,6 +127,56 @@ it("opens a notification-selected thread and closes it when selection is cleared
   expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument();
 });
 
+it("keeps empty reaction and reply rows out of the message and groups its actions", () => {
+  const ownMessage = { ...message, author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[ownMessage]} onSetReaction={vi.fn()} onUpdateMessage={vi.fn()} />);
+  const article = screen.getByRole("article", { name: "Message from Owner" });
+  const actions = within(article).getByRole("group", { name: "Message actions" });
+  expect(within(actions).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
+  expect(within(actions).getByRole("button", { name: "Reply in thread" })).toBeInTheDocument();
+  expect(within(actions).getByRole("button", { name: "Message actions" })).toBeInTheDocument();
+  expect(within(article).queryByLabelText("Message reactions")).not.toBeInTheDocument();
+  expect(article.querySelector(".room-reply")).toBeNull();
+  expect(within(article).queryByText("Reply in thread")).not.toBeInTheDocument();
+  expect(within(article).queryByText("👍")).not.toBeInTheDocument();
+});
+
+it("opens the reaction picker with the keyboard and leaves failures outside the toolbar", async () => {
+  const user = userEvent.setup();
+  let reject!: (error: Error) => void;
+  const onSetReaction = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+  render(<RoomPanel {...props} onSetReaction={onSetReaction} />);
+  const add = screen.getByRole("button", { name: "Add reaction" });
+  act(() => add.focus());
+  expect(add).toHaveFocus();
+  await user.keyboard("{Enter}");
+  expect(screen.getAllByRole("menuitem")).toHaveLength(6);
+  await user.click(screen.getByRole("menuitem", { name: "Add 👍 reaction" }));
+  expect(onSetReaction).toHaveBeenCalledWith("message", "👍", true);
+  expect(add).toBeDisabled();
+  await act(async () => reject(new Error("Unavailable")));
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not update reaction");
+  expect(screen.getByRole("alert").closest(".room-message-actions")).toBeNull();
+  expect(add).toBeEnabled();
+  const reply = screen.getByRole("button", { name: "Reply in thread" });
+  act(() => reply.focus());
+  await user.keyboard("{Enter}");
+  expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+});
+
+it("shows only applied reaction chips and a nonzero reply count below the message", () => {
+  render(<RoomPanel {...props} onSetReaction={vi.fn()} messages={[
+    { ...message, reactions: { "👍": ["owner", "other"], "❤️": [], "✅": ["other"] } },
+    { ...message, messageId: "reply", text: "Reply", threadRootMessageId: message.messageId },
+  ]} />);
+  const article = screen.getByRole("article", { name: "Message from Friday" });
+  const reactions = within(article).getByLabelText("Message reactions");
+  expect(within(reactions).getAllByRole("button")).toHaveLength(2);
+  expect(within(reactions).getByRole("button", { name: "Remove 👍 reaction, 2" })).toHaveAttribute("aria-pressed", "true");
+  expect(within(reactions).getByRole("button", { name: "Add ✅ reaction, 1" })).toBeInTheDocument();
+  expect(article.querySelector(".room-reply")).toHaveTextContent("1 reply");
+});
+
 it("shows persisted reactions and removes the viewer's reaction from a thread", async () => {
   const onSetReaction = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} onSetReaction={onSetReaction} messages={[{ ...message, reactions: { "👍": ["owner", "other"] } }]} />);

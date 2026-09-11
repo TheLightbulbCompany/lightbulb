@@ -18,7 +18,7 @@ function Harness({ onSubmit = vi.fn(), focusAgentId }: { onSubmit?: RoomComposer
     onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} focusAgentId={focusAgentId} />;
 }
 
-const field = () => screen.getByRole("textbox", { name: "Message" });
+const field = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
 const type = (value: string) => fireEvent.change(field(), { target: { value, selectionStart: value.length } });
 
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
@@ -126,4 +126,36 @@ it("still sends on Enter when no list is open", () => {
   type("Ship it");
   fireEvent.keyDown(field(), { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledOnce();
+});
+
+it("opens the emoji list after two characters and inserts the character", () => {
+  render(<Harness />);
+  // "tad" is the unique substring match for party popper's "tada" keyword in
+  // the curated set (verified: searchEmoji("ta") ranks it 19th, past the
+  // 8-item cap — "tad" is the only query that lands it at index 0, which
+  // Enter-with-no-arrow-keys relies on).
+  type("nice :tad");
+  expect(screen.getByRole("listbox", { name: "Insert an emoji" })).toBeInTheDocument();
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(field().value.startsWith("nice 🎉")).toBe(true);
+});
+
+it("does not open the emoji list after one character", () => {
+  render(<Harness />);
+  type("nice :t");
+  expect(screen.queryByRole("listbox", { name: "Insert an emoji" })).not.toBeInTheDocument();
+});
+
+it("inserts a picked emoji at the caret, not at the end", () => {
+  render(<Harness />);
+  type("ab");
+  // Collapse the caret to a single point between "a" and "b". Setting only
+  // selectionStart here would leave selectionEnd stuck at 2 (RTL's
+  // setNativeValue resets the selection to the end of the value before
+  // applying target overrides), which would make this a [1,2) replace
+  // instead of the caret placement the test name describes.
+  fireEvent.change(field(), { target: { value: "ab", selectionStart: 1, selectionEnd: 1 } });
+  fireEvent.click(screen.getByRole("button", { name: "Insert emoji" }));
+  fireEvent.click(screen.getByRole("button", { name: "party popper" }));
+  expect(field()).toHaveValue("a🎉b");
 });

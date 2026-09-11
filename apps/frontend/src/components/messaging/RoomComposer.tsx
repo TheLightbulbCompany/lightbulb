@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { activeTrigger, applyCompletion, type CompletionTrigger } from "./composerText";
+import { searchEmoji } from "./emojiData";
+import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
 import { resolveTypedMentions } from "./mentions";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
@@ -123,6 +125,9 @@ function ComposerAttempt({
       })
     : [];
   const mentionOpen = options.length > 0;
+  const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
+  const emojiOpen = emojiOptions.length > 0;
+  const listOpen = mentionOpen || emojiOpen;
   const mentions = [...selectedMentions];
   for (const ref of resolveTypedMentions(text, members)) {
     if (!mentions.some((mention) => sameMember(mention, ref))) mentions.push(ref);
@@ -202,6 +207,29 @@ function ComposerAttempt({
     });
   }
 
+  function insertAtCaret(value: string) {
+    const start = field.current?.selectionStart ?? text.length;
+    const end = field.current?.selectionEnd ?? start;
+    const next = `${text.slice(0, start)}${value}${text.slice(end)}`;
+    onTextChange(next);
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(start + value.length, start + value.length);
+    });
+  }
+
+  function chooseEmoji(emoji: string) {
+    if (!trigger) return;
+    const next = applyCompletion(text, trigger, emoji);
+    recordRecentEmoji(emoji);
+    onTextChange(next.text);
+    setTrigger(null);
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(next.caret, next.caret);
+    });
+  }
+
   function submit(retry = false) {
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
@@ -238,10 +266,17 @@ function ComposerAttempt({
           <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
       </button>)}
     </div>}
+    {emojiOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Insert an emoji">
+      {emojiOptions.map((entry, index) => <button key={entry.emoji} id={`${fieldId}-option-${index}`} type="button" role="option" tabIndex={-1}
+        aria-selected={index === activeIndex} className="room-choice room-choice-button" data-active={index === activeIndex || undefined}
+        onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => chooseEmoji(entry.emoji)}>
+        <span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span>
+      </button>)}
+    </div>}
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
-      aria-autocomplete="list" aria-expanded={mentionOpen} aria-controls={mentionOpen ? `${fieldId}-targets` : undefined}
-      aria-activedescendant={mentionOpen ? `${fieldId}-option-${activeIndex}` : undefined}
+      aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
+      aria-activedescendant={listOpen ? `${fieldId}-option-${activeIndex}` : undefined}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}
       onClick={(event) => syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart)}
       onKeyUp={(event) => { if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
@@ -252,16 +287,18 @@ function ComposerAttempt({
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={(event) => { composing.current = false; syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
       onKeyDown={(event) => {
-        if (mentionOpen) {
+        if (listOpen) {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : options.length - 1)) % options.length);
+            const count = mentionOpen ? options.length : emojiOptions.length;
+            setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
             return;
           }
           if (event.key === "Enter" || event.key === "Tab") {
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             event.preventDefault();
-            choose(options[activeIndex] ?? options[0]);
+            if (mentionOpen) choose(options[activeIndex] ?? options[0]);
+            else chooseEmoji((emojiOptions[activeIndex] ?? emojiOptions[0]).emoji);
             return;
           }
           if (event.key === "Escape") {
@@ -292,6 +329,7 @@ function ComposerAttempt({
       {onUploadAttachment && <><input ref={imageInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple
         onChange={(event) => { addImages([...event.target.files ?? []]); event.target.value = ""; }} />
         <Button type="button" variant="ghost" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
+      <EmojiPicker triggerLabel="Insert emoji" disabled={!editable} onPick={insertAtCaret} />
       <Button type="button" variant="ghost" aria-label="Mention someone" aria-expanded={mentionOpen}
         disabled={!editable} onClick={() => {
           const caret = field.current?.selectionStart ?? text.length;

@@ -127,11 +127,11 @@ describe("Messages room/controller boundary", () => {
     fireEvent.click(await screen.findByRole("button", { name: "General Channel" }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
     expect(getWorkspaceSnapshot()).toMatchObject({ focusedChatAgentId: null, visibleChatAgentIds: [] });
-    fireEvent.click(await screen.findByRole("button", { name: "Exact Alpha Direct message" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha.*Direct message/ }));
     await act(async () => {});
     expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
     expect(getWorkspaceSnapshot().focusedChatAgentId).toBe("agent-a");
-    fireEvent.click(screen.getByRole("button", { name: "Exact Alpha Direct message" }));
+    fireEvent.click(screen.getByRole("button", { name: /Exact Alpha.*Direct message/ }));
     await act(async () => {});
     expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
     act(() => openChatPanel("agent-a"));
@@ -142,7 +142,7 @@ describe("Messages room/controller boundary", () => {
   it("hands a draft to the selected same-agent DM after navigation settles", async () => {
     renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: "Exact Alpha Direct message" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha.*Direct message/ }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact"));
 
     act(() => expect(openChatPanelWithDraft("file the inbox")).toBe(true));

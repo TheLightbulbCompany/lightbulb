@@ -230,21 +230,18 @@ def derive(
         return company_name.get(owner_company.get(owner_id, ""), None) or owner_id
 
     container_by_owner = {c["owner_id"]: c for c in containers}
-    # Friday's kickoff outcome lives on the OWNER's paperclip-companies row.
-    # Org member rows also carry seeded_agent_ids but never bootstrap_state,
-    # so only a row that actually HAS bootstrap_state may set/override it —
-    # a member row can never clobber the owner row's real value.
-    bootstrap_by_owner: dict[str, str] = {}
+    # Chat-first onboarding completes on the authoritative owner row.
+    funnel_by_owner: dict[str, str] = {}
     for row in paperclip:
         uid = str(row.get("user_id") or "")
         if uid.startswith("__"):
             continue
         owner = row.get("org_id") or uid
-        state = row.get("bootstrap_state")
+        state = row.get("funnel_state")
         if state is not None:
-            bootstrap_by_owner[owner] = state
-        elif owner not in bootstrap_by_owner:
-            bootstrap_by_owner[owner] = "not_started"
+            funnel_by_owner[owner] = state
+        elif owner not in funnel_by_owner:
+            funnel_by_owner[owner] = "not_started"
     routines_by_company: dict[str, list[dict]] = defaultdict(list)
     for r in routines:
         routines_by_company[r["company_id"]].append(r)
@@ -284,7 +281,7 @@ def derive(
             "signed_up",
             "subscribed",
             "container_ready",
-            "friday_first_run_delivered",
+            "onboarding_complete",
             "automation_armed",
             "first_autonomous_success",
         ]
@@ -297,7 +294,7 @@ def derive(
                 True,
                 b.get("subscription_status") in _PAID,
                 container_by_owner.get(oid, {}).get("last_gateway_handshake_at") is not None,
-                bootstrap_by_owner.get(oid) == "delivered",
+                funnel_by_owner.get(oid) == "complete",
                 any(is_armed(r) for r in routines_by_company.get(cid, [])),
                 first_ok_by_company.get(cid) is not None,
             ]
@@ -323,7 +320,7 @@ def derive(
                     "stage": stage_names[reached],
                     "plan": b.get("plan"),
                     "status": b.get("subscription_status"),
-                    "bootstrap_state": bootstrap_by_owner.get(oid, "not_started"),
+                    "onboarding_state": funnel_by_owner.get(oid, "not_started"),
                     "first_autonomous_at": first_ok_by_company.get(cid),
                 }
             )

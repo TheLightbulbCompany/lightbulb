@@ -207,10 +207,10 @@ function DirectoryContent({
             <Identity name={participant.displayName} avatarOnly size="sm" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
               <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
-            {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Listen mode for {participant.displayName}</label>}
+            {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Response for {participant.displayName}</label>}
             {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
-              <option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option>
+              <option value="active">Automatic</option><option value="mentions">Mentions only</option><option value="observe">Observe</option>
             </select>}</>;
           return <div className="room-choice" key={key}>{content}</div>;
         })}</div>

@@ -745,7 +745,7 @@ async def test_provision_org_cross_org_row_does_not_reconcile(repo):
 
 async def test_provision_org_fresh_create_mints_onboarding_generation_at_g2(repo):
     """A genuinely-new company (Friday seed lands on the FIRST attempt) mints
-    a fresh onboarding_generation and initializes funnel/bootstrap state on
+    a fresh onboarding_generation and initializes funnel state on
     the SAME write that persists the active row (INV-3)."""
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
@@ -757,19 +757,17 @@ async def test_provision_org_fresh_create_mints_onboarding_generation_at_g2(repo
     assert row.status == "active"
     assert row.onboarding_generation is not None
     assert row.funnel_state == "not_started"
-    assert row.bootstrap_state == "not_started"
     # Repo round-trip — not just the in-memory return value.
     fetched = await repo.get("user_owner")
     assert fetched.onboarding_generation == row.onboarding_generation
     assert fetched.funnel_state == "not_started"
-    assert fetched.bootstrap_state == "not_started"
 
 
 async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(repo):
     """THE writer-safety proof (spec PR-4's hardest requirement): a
     reconcile-adopt retry (starter seed failed on attempt 1, succeeds on
     attempt 2, same company_id) must NOT reset onboarding_generation or
-    funnel_state/bootstrap_state -- even though the row's whole-item `put`
+    funnel_state -- even though the row's whole-item `put`
     is called again on the retry. If this test fails, co-location just
     reintroduced the exact clobber bug the dedicated-table alternative would
     have structurally avoided.

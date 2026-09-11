@@ -148,8 +148,7 @@ export function ByoKeyScreen({ onConnected }: Props) {
 
   return (
     // The secure keyboard can otherwise cover the Save button on smaller
-    // devices (the card is vertically centered). Same core-RN avoidance
-    // FirstRunFunnel uses — lifts the centered card above the keyboard.
+    // devices, so lift the vertically centered card above it.
     <KeyboardAvoidingView
       testID="byo-keyboard-avoider"
       style={[

@@ -6,10 +6,8 @@ const mockRefresh = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mockRefresh }) }));
 
 const mockRetryProvision = vi.fn();
-const mockResetBootstrap = vi.fn();
 vi.mock("@/app/admin/_actions/provisioning", () => ({
   retryProvision: (...args: unknown[]) => mockRetryProvision(...args),
-  resetBootstrap: (...args: unknown[]) => mockResetBootstrap(...args),
 }));
 
 import { ProvisioningActionsPanel } from "../ProvisioningActionsPanel";
@@ -19,25 +17,20 @@ const USER_ID = "user_test_123";
 beforeEach(() => {
   mockRefresh.mockReset();
   mockRetryProvision.mockReset();
-  mockResetBootstrap.mockReset();
   mockRetryProvision.mockResolvedValue({ ok: true, status: 200, data: { ok: true } });
-  mockResetBootstrap.mockResolvedValue({ ok: true, status: 200, data: { ok: true } });
 });
 
 describe("ProvisioningActionsPanel", () => {
-  it("renders both action blocks", () => {
+  it("renders the provisioning retry action", () => {
     render(
       <ProvisioningActionsPanel
         userId={USER_ID}
-        bootstrapState="failed"
         containerStatus="running"
       />,
     );
 
     expect(screen.getByRole("heading", { name: /retry provision/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /reset bootstrap/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^retry provision$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^reset bootstrap$/i })).toBeInTheDocument();
   });
 
   it("opens a typed-confirm dialog for retry and calls retryProvision on confirm", async () => {
@@ -45,7 +38,6 @@ describe("ProvisioningActionsPanel", () => {
     render(
       <ProvisioningActionsPanel
         userId={USER_ID}
-        bootstrapState="ready"
         containerStatus="running"
       />,
     );
@@ -68,7 +60,6 @@ describe("ProvisioningActionsPanel", () => {
     render(
       <ProvisioningActionsPanel
         userId={USER_ID}
-        bootstrapState="ready"
         containerStatus="running"
       />,
     );
@@ -83,69 +74,6 @@ describe("ProvisioningActionsPanel", () => {
     expect(mockRetryProvision).not.toHaveBeenCalled();
   });
 
-  it("enables reset bootstrap for a dispatched row — expiry is the server's call", () => {
-    // The stuck-claim case the lever now recovers. Whether the claim is
-    // actually EXPIRED needs the timestamp + threshold, which only the server
-    // has; a live one comes back 409 rather than being guessed at here.
-    render(
-      <ProvisioningActionsPanel
-        userId={USER_ID}
-        bootstrapState="dispatched"
-        containerStatus="running"
-      />,
-    );
-    expect(screen.getByRole("button", { name: /^reset bootstrap$/i })).toBeEnabled();
-  });
-
-  it("disables reset bootstrap unless bootstrapState is failed or dispatched", () => {
-    const { rerender } = render(
-      <ProvisioningActionsPanel
-        userId={USER_ID}
-        bootstrapState="ready"
-        containerStatus="running"
-      />,
-    );
-    expect(screen.getByRole("button", { name: /^reset bootstrap$/i })).toBeDisabled();
-
-    rerender(
-      <ProvisioningActionsPanel
-        userId={USER_ID}
-        bootstrapState={null}
-        containerStatus="running"
-      />,
-    );
-    expect(screen.getByRole("button", { name: /^reset bootstrap$/i })).toBeDisabled();
-
-    rerender(
-      <ProvisioningActionsPanel
-        userId={USER_ID}
-        bootstrapState="failed"
-        containerStatus="running"
-      />,
-    );
-    expect(screen.getByRole("button", { name: /^reset bootstrap$/i })).toBeEnabled();
-  });
-
-  it("calls resetBootstrap on confirm when enabled and renders the result banner", async () => {
-    const user = userEvent.setup();
-    render(
-      <ProvisioningActionsPanel
-        userId={USER_ID}
-        bootstrapState="failed"
-        containerStatus={null}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /^reset bootstrap$/i }));
-    const dialog = await screen.findByRole("alertdialog");
-    const input = within(dialog).getByLabelText(new RegExp(`Type ${USER_ID}`, "i"));
-    await user.type(input, USER_ID);
-    await user.click(within(dialog).getByRole("button", { name: /confirm reset bootstrap/i }));
-
-    expect(mockResetBootstrap).toHaveBeenCalledWith(USER_ID);
-    expect(await screen.findByText(/reset bootstrap succeeded/i)).toBeInTheDocument();
-  });
-
   it("renders an error banner when an action fails", async () => {
     mockRetryProvision.mockResolvedValue({
       ok: false,
@@ -156,7 +84,6 @@ describe("ProvisioningActionsPanel", () => {
     render(
       <ProvisioningActionsPanel
         userId={USER_ID}
-        bootstrapState="ready"
         containerStatus="provisioning"
       />,
     );

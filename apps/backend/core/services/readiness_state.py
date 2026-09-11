@@ -120,21 +120,13 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
     for a genuinely absent row.
 
     PUBLIC (not underscore-prefixed): callers that need the raw onboarding
-    dict for something OTHER than composing it into the StatusContract --
-    e.g. ``routers/container.py`` threading it into
-    ``core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap`` so the
-    dispatcher doesn't re-query the paperclip-companies row a second time on
-    every ~3s ready poll -- call this directly, then pass the SAME dict into
-    ``compute_status(..., onboarding=...)`` below so IT doesn't re-fetch
-    either. This does NOT weaken INV-1: the composer is still the only
-    place readiness+onboarding facts are COMBINED into a verdict: this
-    function returns one store's raw facts, untouched, and
-    ``routers/container.py`` is deliberately not composing anything itself
-    with the result the way this same file's INV-1 architecture test
-    forbids -- it only re-threads it to the two functions that already
-    accept a pre-fetched onboarding dict/row (compute_status,
-    maybe_dispatch_bootstrap), and only reads via this readiness_state
-    accessor, never ``paperclip_repo`` directly.
+    dict for something OTHER than composing it into the StatusContract —
+    for example, ``routers/container.py`` checks its ``pending_brief`` bit
+    before scheduling a retry. Pass that same dict into
+    ``compute_status(..., onboarding=...)`` to avoid a second read. This does
+    not weaken INV-1: the composer is still the only place readiness and
+    onboarding facts are combined into a verdict; this function returns one
+    store's raw facts untouched.
     """
     try:
         return await _paperclip_repo().get_onboarding_state(owner_id)
@@ -158,9 +150,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             wouldn't see yet. Omit it (the default) to have this function
             read the row itself.
         onboarding: an already-fetched ``resolve_onboarding_state(owner_id)``
-            dict. Pass this when the caller already read it (e.g.
-            ``routers/container.py`` threading it into
-            ``maybe_dispatch_bootstrap`` too) to skip a redundant
+            dict. Pass this when the caller already read it to skip a redundant
             paperclip-companies read. Omit it (the default) to have this
             function read it itself.
 
@@ -247,13 +237,11 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     # A brief the user has submitted but that the server hasn't been able to
     # fulfil yet (Paperclip still provisioning -- the common case, since the
     # funnel deliberately renders DURING provisioning) is "submitted" as far as
-    # the CLIENT is concerned: they answered, so they must not be shown the
-    # funnel again. It is emphatically NOT submitted as far as the row is
-    # concerned -- no claim, no goal, no project -- which is why this mapping
-    # lives here, in the composer, and not in the raw onboarding dict that
-    # `bootstrap_dispatcher` reads to decide whether to wake Friday (see
-    # `PaperclipRepo._has_pending_brief`). INV-1: combining facts into a
-    # verdict is this function's job.
+    # the CLIENT is concerned: their first message is safely captured. It is
+    # emphatically NOT submitted as far as the row is concerned — no claim,
+    # no goal, no project — which is why this mapping lives here in the
+    # composer rather than in the raw onboarding dict. INV-1: combining facts
+    # into a verdict is this function's job.
     if funnel_state == "not_started" and onboarding.get("pending_brief"):
         funnel_state = "submitted"
     # RECONCILE-WITH-ONBOARD: container.py:554's legacy "onboarded" fact
@@ -289,14 +277,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             "project_id": onboarding.get("onboarding_project_id"),
             "submitted_at": onboarding.get("funnel_submitted_at"),
             "completed_at": onboarding.get("funnel_completed_at"),
-        },
-        "bootstrap": {
-            "state": onboarding.get("bootstrap_state") or "not_started",
-            "dispatch_id": onboarding.get("bootstrap_dispatch_id"),
-            "dispatched_at": onboarding.get("bootstrap_dispatched_at"),
-            "delivered_at": onboarding.get("bootstrap_delivered_at"),
-            "attempts": onboarding.get("bootstrap_attempts") or 0,
-            "last_error": onboarding.get("bootstrap_last_error"),
         },
         "provider": {
             "choice": provider_choice,

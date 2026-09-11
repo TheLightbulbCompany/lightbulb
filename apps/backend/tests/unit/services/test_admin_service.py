@@ -244,7 +244,6 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
         created_at=now,
         updated_at=now,
         funnel_state="submitted",
-        bootstrap_state="failed",
         starter_agent_ids={"ceo": "agent-ceo"},
     )
 
@@ -278,7 +277,6 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
     assert result["container"]["last_error"] == "boom"
     assert result["container"]["claim_stale"] in (True, False)
     assert result["paperclip"]["funnel_state"] == "submitted"
-    assert result["paperclip"]["bootstrap_state"] == "failed"
     assert result["paperclip"]["starter_agent_ids"] == {"ceo": "agent-ceo"}
 
 

@@ -31,9 +31,9 @@
  * changes what renders AROUND `children` and React reconciles in place.
  * Returning a bare <View> for `ready` and this component for `starting` would
  * change the child's element TYPE and tear down the whole subtree on every
- * transition — `children` here is `<FirstRunGate><Tabs>…`, i.e. the entire tab
- * navigator, so that costs composer drafts, loaded message lists and scroll
- * position on every cold start and every wake.
+ * transition — `children` here contains the entire live app, so that costs
+ * composer drafts, loaded message lists and scroll position on every cold
+ * start and every wake.
  *
  * The elapsed clock measures ONLY the current contiguous run of one status
  * kind, so the promotion budget (and the elapsed readout / soft-timeout it
@@ -92,7 +92,6 @@ const SUPPORT_MAILTO = "mailto:support@thelightbulb.company";
 /** Replaces the step label once the kickoff is known to have failed. The step
  *  labels are all present-progressive ("Putting the finishing touches on your
  *  agent…"), i.e. claims that work is under way. */
-const FAILED_TITLE = "Setup didn’t finish";
 
 /**
  * The three visible steps. Labels match web's STEPS_PAID rows for the same
@@ -158,11 +157,8 @@ function StartingBanner({ label }: { label: string }) {
 /**
  * Spinner inside a soft forest ring, the ring breathing via usePulse.
  *
- * `animating={false}` stops both the spinner and the breath. A looping
- * animation is a claim about the present tense — that work is happening right
- * now — so once the first-run kickoff is known to have failed it is as much a
- * lie as the copy is. The ring itself stays: the card still needs a mark, and
- * a static one asserts nothing.
+ * `animating={false}` stops both the spinner and the breath when callers need
+ * a static status mark.
  */
 function ProvisionRing({ animating = true }: { animating?: boolean }) {
   const opacity = usePulse(animating, 0.5);
@@ -174,94 +170,6 @@ function ProvisionRing({ animating = true }: { animating?: boolean }) {
   );
 }
 
-/**
- * Friday's server-dispatched first-run kickoff FAILED (`bootstrap.state ===
- * "failed"`). ONE component, two renderings, because the two branches it
- * serves differ in what the owner can actually do:
- *
- *   • banner (default) — the container reached `ready`, so chat behind this is
- *     LIVE and messaging Friday directly is a real recovery. A thin
- *     non-blocking bar over the app, never an interstitial.
- *   • `inline` — the promoted cold-start stepper, which has REPLACED the tab
- *     shell. A bar over nothing is the wrong idiom, and "message her here"
- *     is advice the owner cannot take: there is no chat behind this screen.
- *     So it sits in the card, under the card's own honest title, and carries
- *     the support address, which is the only lever left.
- *
- * NO retry in either: the re-arm lever (`reset_bootstrap_for_retry`) is
- * platform-admin only, so a Retry would be a dead button. `error` is the
- * operator-written reason, expandable in place so support gets the WHOLE
- * string — mirroring web's `<details>`. It starts clamped (the banner sits
- * over live chat and the reasons run long), but a clamp with no way past it
- * would swallow exactly the detail support needs, which is the failure this
- * whole surface exists to stop.
- */
-export function FirstRunFailedNotice({
-  error,
-  inline = false,
-}: {
-  error?: string | null;
-  inline?: boolean;
-}) {
-  const insets = useSafeAreaInsets();
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <View
-      style={
-        inline
-          ? styles.firstRunInline
-          : [styles.firstRunBanner, { paddingTop: insets.top }]
-      }
-      testID="first-run-failed"
-    >
-      <View style={styles.firstRunRow}>
-        <View style={styles.firstRunCopy}>
-          <Text style={styles.firstRunText}>
-            {inline
-              ? "Your container came up, but the first-run kickoff failed and won’t retry on its own. Contact support and we’ll re-arm it — your brief is saved."
-              : "Friday couldn’t start her first run. Message her here to kick things off, or contact support if she doesn’t answer."}
-          </Text>
-          {error ? (
-            <Pressable
-              onPress={() => setExpanded((v) => !v)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityState={{ expanded }}
-              accessibilityLabel={
-                expanded ? "Hide technical details" : "Show technical details"
-              }
-              style={({ pressed }) => [pressed && styles.pressed]}
-            >
-              <Text style={styles.firstRunAction}>
-                {expanded ? "Hide technical details" : "Technical details"}
-              </Text>
-              {expanded ? (
-                <Text style={styles.firstRunDetail}>{error}</Text>
-              ) : null}
-            </Pressable>
-          ) : null}
-          {inline ? (
-            <Pressable
-              onPress={() => void Linking.openURL(SUPPORT_MAILTO)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Contact support"
-              style={({ pressed }) => [pressed && styles.pressed]}
-            >
-              <Text style={styles.firstRunAction}>Contact support</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-    </View>
-  );
-}
-
-/**
- * Rotating "while you wait" prompts. Crossfades on the shared rotation
- * cadence; under reduce-motion it still rotates but swaps instantly, same
- * bargain `usePulse` makes (keep the information, drop the animation).
- */
 function RotatingIdeas() {
   const [idx, setIdx] = useState(0);
   const opacity = useRef(new Animated.Value(1)).current;
@@ -382,7 +290,7 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   // status="provisioning" immediately, and the backend maps every non-running
   // status to phase="provisioning" (see routers/container.py +
   // _resolve_cold_start_phase), so ECS placement, ENI attach and the gateway
-  // handshake all read as `starting`. Behind that sits `<FirstRunGate><Tabs>…`
+  // handshake all read as `starting`. Behind that sits the live tab navigator
   // with a composer draft, a loaded message list, a scroll position and a
   // navigation stack. Same story for an idle scale-to-zero restart, and for
   // the documented case where /container/status reports `starting` over a
@@ -447,18 +355,6 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
       ? activeStepIndex(status.phase, status.substatus)
       : 0;
 
-  // The kickoff is KNOWN to have failed. `bootstrap.state` used to be read on
-  // the `ready` variant alone — and a container whose gateway never registers
-  // composes to `starting`, never `ready`, so the notice was unreachable in
-  // precisely the case it was written for. A dev owner sat on this screen for
-  // 21 hours while every poll carried "Gateway connect failed: gateway
-  // starting; retry shortly".
-  //
-  // `starting` only: `ready` keeps the gate's banner-over-live-chat rendering,
-  // which is the right idiom while there IS chat behind it.
-  const firstRunFailed =
-    status.kind === "starting" && status.bootstrapState === "failed";
-
   // iOS has no live regions (`accessibilityLiveRegion` is documented
   // "@platform android" in ViewAccessibility.d.ts) and iOS is the only
   // platform this app ships on, so announce phase changes explicitly. Scoped
@@ -467,9 +363,9 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   useEffect(() => {
     if (!promoted) return;
     AccessibilityInfo.announceForAccessibility(
-      firstRunFailed ? FAILED_TITLE : STEPS[activeStep].active,
+      STEPS[activeStep].active,
     );
-  }, [promoted, activeStep, firstRunFailed]);
+  }, [promoted, activeStep]);
 
   // The promoted stepper replaces the whole tab shell, so the gate's rule for
   // the Interstitial applies verbatim here: it is the only exit a wrong-account
@@ -514,31 +410,24 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
     <View style={[styles.page, { paddingTop: insets.top + spacing.xl }]}>
       <Wordmark />
 
-      <ProvisionRing animating={!firstRunFailed} />
+      <ProvisionRing />
 
       <Text style={styles.title} accessibilityRole="text" testID="provision-title">
-        {firstRunFailed ? FAILED_TITLE : STEPS[activeStep].active}
+        {STEPS[activeStep].active}
       </Text>
 
-      {/* "While you wait, try asking your agent to…" is an invitation to keep
-          waiting. Once the failure is known there is nothing to wait for. */}
-      {firstRunFailed ? null : <RotatingIdeas />}
+      {/* Keep chat-first prompts visible while the workspace starts. */}
+      <RotatingIdeas />
 
-      {/* The rail STAYS on a failure: it reports how far setup actually got,
-          which is still true and is the one thing support will ask for. */}
+      {/* The rail reports the current provisioning phase. */}
       <DotRail active={activeStep} />
 
       <Text style={styles.elapsed} testID="provision-elapsed">
         {formatProvisionElapsed(elapsedMs)}
       </Text>
 
-      {firstRunFailed ? <FirstRunFailedNotice error={status.bootstrapError} inline /> : null}
-
-      {/* Suppressed on a known failure: "taking longer than usual" is a claim
-          that it is still going, and the notice above already carries the one
-          action left. A Retry here would only re-poll a state the backend has
-          already settled. */}
-      {!firstRunFailed && timedOut ? (
+      {/* A slow start exposes a status refresh and support path. */}
+      {timedOut ? (
         <View style={styles.timeout} testID="provision-timeout">
           <Text style={styles.timeoutMsg}>
             {stuck

@@ -58,7 +58,6 @@ from routers import (
     meta_webhook,
     metronome_webhook,
     oauth,
-    onboarding,
     ops,
     orgs,
     paperclip_events,
@@ -805,9 +804,6 @@ app.include_router(metronome_webhook.router, prefix=settings.API_V1_STR, tags=["
 
 # Organization management (Gate A — invite-creation tenancy invariant)
 app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])
-
-# First-run onboarding brief (stages BRIEF.md/BOOTSTRAP.md + Set-up issue)
-app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
 
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])

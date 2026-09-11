@@ -1,7 +1,6 @@
-import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
-import { type ReactElement, useEffect, useRef, useState } from "react";
+import { type ReactElement, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -15,7 +14,6 @@ import { agentDisplayName, useAgents } from "@lightbulb/shared";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { usePulse } from "../../components/chat/usePulse";
-import { readFirstRun } from "../../lib/firstRun";
 import { useContainerStatusContext } from "../../lib/containerStatusContext";
 import { isContainerComingUp } from "../../lib/rosterPresentation";
 import { useLiveEvents } from "../../providers/live-events";
@@ -137,7 +135,7 @@ function ErrorCard({
 // neither of which the raw agents.list call this replaced had.
 export default function Chat() {
   const live = useLiveEvents();
-  const { agents, defaultId, error, isLoading, isSettled, refresh } =
+  const { agents, error, isLoading, isSettled, refresh } =
     useAgents(live);
   const containerStatus = useContainerStatusContext();
   // Is a missing/failed roster a wake or a failure? Ask the server, don't
@@ -152,36 +150,6 @@ export default function Chat() {
   // "No agents yet." beside it tells the user two contradictory things.
   const showEmpty = agents.length === 0 && !isLoading && isSettled && !hardError;
   const [pickerOpen, setPickerOpen] = useState(false);
-
-  // First-run aha: right after the funnel brief is submitted, walk the user
-  // straight into the default agent's (Friday's) chat so they land on the
-  // live kickoff the backend server-dispatches (spec PR-6, BOOTSTRAP) rather
-  // than the roster. Web needs no redirect (its main surface IS the
-  // default-agent chat); the roster is the mobile equivalent's front door.
-  //
-  // Gated on the DURABLE server-owned `onboarded` fact (funnel_state ==
-  // "complete", surfaced on every ready status body), NOT on `briefSubmitted`
-  // alone. `briefSubmitted` is a permanently-sticky Clerk flag that is never
-  // reset, and `redirectedRef` only survives a single mount -- so gating on
-  // those two would re-yank a user who onboarded weeks ago into Friday on
-  // every roster mount (cold start, relaunch, any remount). Once the backend
-  // reports `onboarded`, the first-run window is over and we stand down.
-  const { user } = useUser();
-  const onboarded =
-    containerStatus?.kind === "ready" && containerStatus.onboarded === true;
-  const redirectedRef = useRef(false);
-  useEffect(() => {
-    if (redirectedRef.current || !user || !defaultId) return;
-    const fr = readFirstRun(user);
-    if (!fr.briefSubmitted || onboarded) return;
-    const agent = agents.find((a) => a.id === defaultId);
-    if (!agent) return;
-    redirectedRef.current = true;
-    router.push({
-      pathname: "/(app)/agent/[agentId]",
-      params: { agentId: agent.id, name: agentDisplayName(agent) },
-    });
-  }, [user, agents, defaultId, onboarded]);
 
   let body: ReactElement;
   if (hardError && !isSettled) {

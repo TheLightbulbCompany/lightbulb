@@ -70,13 +70,9 @@ class GatewayConnectUnavailableError(RuntimeError):
     shortly", {retryable: true, retryAfterMs})`` while the container boots.
     Nothing about that rejection is permanent — the very next connect succeeds.
 
-    It used to arrive as a BARE ``RuntimeError`` (the catch-all below), which
-    put it in the same bucket as an auth rejection: not in
-    ``bootstrap_dispatcher._TRANSIENT_DISPATCH_ERRORS``, so the bootstrap
-    dispatcher skipped its ~3-minute connect-retry ladder entirely and wrote
-    ``bootstrap_state="failed"`` on the FIRST hit — permanently dead-ending
-    that owner's onboarding. Three prod owners were wedged on exactly this
-    rejection.
+    It used to arrive as a bare ``RuntimeError`` and could be mistaken for an
+    auth rejection, turning a short startup delay into a terminal onboarding
+    failure.
 
     Discriminated on the STRUCTURED signal the gateway sends (``retryable`` /
     the ``UNAVAILABLE`` code), never on the message text, which is free-form

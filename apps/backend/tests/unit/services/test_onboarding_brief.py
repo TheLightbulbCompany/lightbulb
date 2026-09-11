@@ -6,7 +6,8 @@ unconditional now (the company-scoped onboarding claim in
 paperclip_repo.py is the one-shot marker, not BRIEF.md's existence).
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,6 +15,7 @@ from core.services.onboarding_brief import (
     FIRST_RUN_NO_BRIEF_MESSAGE,
     build_first_run_message,
     build_onboarding_brief_text,
+    capture_first_workspace_message,
     derive_goal_title,
     project_name_for,
     render_brief_md,
@@ -23,6 +25,134 @@ from core.services.onboarding_brief import (
 
 FRIDAY_ID = "agent-uuid-123"
 OWNER = "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_first_canonical_human_message_captures_eligible_specialist():
+    starter_ids = {
+        "ceo": "10000000-0000-4000-8000-000000000001",
+        "engineering": "10000000-0000-4000-8000-000000000002",
+        "finance": "10000000-0000-4000-8000-000000000003",
+        "growth": "10000000-0000-4000-8000-000000000004",
+        "analytics": "10000000-0000-4000-8000-000000000005",
+        "customer_operations": "10000000-0000-4000-8000-000000000006",
+    }
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(status="active", starter_agent_ids=starter_ids, funnel_state="not_started")
+    )
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    reconcile = AsyncMock()
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        # A human can win the room-created/welcome-message race and become
+        # sequence 1. Durable author order, not a fixed sequence, identifies
+        # onboarding intake.
+        "messageSeq": 1,
+        "messageId": "msg_first",
+        "text": "Build a calmer way for clinics to schedule patients",
+        "author": {"kind": "human", "id": "user_member"},
+        # The CEO is observe; normal dispatch selected the mentioned specialist.
+        "dispatchTargets": [{"agentId": starter_ids["engineering"], "eventKind": "user_request"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", reconcile),
+        patch(
+            "core.repositories.messaging_repo.list_messages_between",
+            new=AsyncMock(
+                side_effect=lambda _room, _start, through: (
+                    [] if through == 0 else [message, {"messageSeq": 2, "author": {"kind": "agent"}}]
+                )
+            ),
+        ),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+        assert await capture_first_workspace_message(OWNER, {**message, "messageSeq": 3}) is False
+
+    repo.put_pending_brief.assert_awaited_once_with(
+        OWNER,
+        path="new",
+        user_input=message["text"],
+        detail=None,
+        brief_text=message["text"],
+        submitted_by="user_member",
+        source_message_id="msg_first",
+        target_agent_id=starter_ids["engineering"],
+    )
+    reconcile.assert_awaited_once_with(OWNER)
+
+
+@pytest.mark.asyncio
+async def test_deleted_specialist_does_not_block_capture_for_remaining_target():
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(
+            status="active",
+            starter_agent_ids={"ceo": FRIDAY_ID},
+            funnel_state="not_started",
+        )
+    )
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 2,
+        "messageId": "msg_after_delete",
+        "text": "Help me relaunch the product",
+        "author": {"kind": "human", "id": OWNER},
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "room_event"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch(
+            "core.repositories.messaging_repo.list_messages_between",
+            new=AsyncMock(return_value=[{"messageSeq": 1, "author": {"kind": "agent"}}]),
+        ),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+
+    assert repo.put_pending_brief.await_args.kwargs["target_agent_id"] == FRIDAY_ID
+
+
+@pytest.mark.asyncio
+async def test_first_human_message_without_dispatch_target_does_not_seed_onboarding():
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(
+            status="active",
+            starter_agent_ids={
+                "ceo": FRIDAY_ID,
+                "engineering": "engineering-id",
+                "finance": "finance-id",
+                "growth": "growth-id",
+                "analytics": "analytics-id",
+                "customer_operations": "customer-operations-id",
+            },
+            funnel_state="not_started",
+        )
+    )
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 2,
+        "messageId": "msg_observed_only",
+        "text": "Nobody should be assigned this",
+        "author": {"kind": "human", "id": OWNER},
+        "dispatchTargets": [],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch(
+            "core.repositories.messaging_repo.list_messages_between",
+            new=AsyncMock(return_value=[{"messageSeq": 1, "author": {"kind": "agent"}}]),
+        ),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is False
+
+    repo.resolve_owner_row.assert_not_awaited()
+    repo.put_pending_brief.assert_not_awaited()
 
 
 def test_render_brief_md_contains_all_fields():

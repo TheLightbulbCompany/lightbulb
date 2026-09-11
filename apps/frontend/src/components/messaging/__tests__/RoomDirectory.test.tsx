@@ -17,7 +17,7 @@ it("creates through a centered portal with member settings and closes on success
   expect(container.contains(dialog)).toBe(false);
   fireEvent.change(within(dialog).getByLabelText("Channel name"), { target: { value: "Launch" } });
   fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
-  fireEvent.change(within(dialog).getByLabelText("Listen mode for Atlas"), { target: { value: "active" } });
+  fireEvent.change(within(dialog).getByLabelText("Response for Atlas"), { target: { value: "active" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "Create channel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Launch", members: [{ kind: "agent", id: "atlas", role: "member", listenMode: "active" }] });
@@ -30,7 +30,7 @@ it("preserves a failed draft and disables member controls while creating", async
   fireEvent.change(screen.getByLabelText("Channel name"), { target: { value: "Launch" } });
   fireEvent.click(screen.getByLabelText("Select Atlas"));
   rerender(<RoomDirectory {...props} creationBusy />);
-  expect(screen.getByLabelText("Listen mode for Atlas")).toBeDisabled();
+  expect(screen.getByLabelText("Response for Atlas")).toBeDisabled();
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   rerender(<RoomDirectory {...props} creationError="Try again" />);

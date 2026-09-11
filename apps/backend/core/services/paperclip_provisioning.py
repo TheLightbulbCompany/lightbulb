@@ -114,14 +114,6 @@ _ONBOARDING_FIELD_NAMES = (
     "funnel_completed_at",
     "onboarding_goal_id",
     "onboarding_project_id",
-    "bootstrap_state",
-    "bootstrap_dispatch_id",
-    "bootstrap_dispatched_at",
-    "bootstrap_send_attempted_at",
-    "bootstrap_sent_at",
-    "bootstrap_delivered_at",
-    "bootstrap_attempts",
-    "bootstrap_last_error",
 )
 
 
@@ -762,16 +754,16 @@ class PaperclipProvisioning:
             # * ``reconciling_company`` (RECONCILE-ADOPT of an existing,
             #   non-active row's real company_id — see the docstring above):
             #   this is a RETRY of the SAME onboarding attempt, not a new one.
-            #   The generation (and whatever funnel/bootstrap progress exists)
+            #   The generation (and whatever funnel progress exists)
             #   was already established on ``existing`` by the ORIGINAL
             #   create — carry it forward untouched. This is the exact case
             #   the architecture spec's "load-bearing safety requirement"
             #   warns about: skipping this carry-forward would silently reset
-            #   a company's funnel/bootstrap state on every reconcile retry.
+            #   a company's funnel state on every reconcile retry.
             # * fresh create (``not reconciling_company``): a genuinely-new
             #   Paperclip company was just confirmed (``create_company`` ran
             #   above, unconditionally in this branch). Mint a fresh
-            #   onboarding_generation and reset funnel/bootstrap to their
+            #   onboarding_generation and reset the funnel to its
             #   initial states, atomically on this same write — never on
             #   ``provision_member`` (org seat), per INV-3.
             if reconciling_company:
@@ -780,7 +772,6 @@ class PaperclipProvisioning:
                 onboarding_fields = {
                     "onboarding_generation": str(ULID()),
                     "funnel_state": "not_started",
-                    "bootstrap_state": "not_started",
                 }
 
             row = PaperclipCompany(
@@ -1083,7 +1074,7 @@ class PaperclipProvisioning:
                 created_at=now,
                 updated_at=now,
                 # Replicate the seeded-agent marker onto every member row so
-                # the company's Friday/Atlas stay protected even if the
+                # the company's legacy Friday/Atlas stay protected even if the
                 # original provisioner's row is later purged (the company
                 # survives as long as ANY active member remains, and
                 # get_seeded_agent_ids resolves from any row carrying it).

@@ -259,35 +259,6 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
             value={<StatusChip status={paperclipRow?.funnel_state ?? "unknown"} />}
           />
           <DefRow
-            label="Bootstrap state"
-            value={<StatusChip status={paperclipRow?.bootstrap_state ?? "unknown"} />}
-          />
-          <DefRow
-            label="Bootstrap attempts"
-            value={paperclipRow?.bootstrap_attempts?.toString() ?? "—"}
-          />
-          <DefRow label="Bootstrap last error" value={paperclipRow?.bootstrap_last_error ?? "—"} />
-          <DefRow
-            label="Dispatched at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_dispatched_at} />}
-            mono
-          />
-          <DefRow
-            label="Send attempted at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_send_attempted_at} />}
-            mono
-          />
-          <DefRow
-            label="Sent at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_sent_at} />}
-            mono
-          />
-          <DefRow
-            label="Delivered at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_delivered_at} />}
-            mono
-          />
-          <DefRow
             label="Onboarding generation"
             value={paperclipRow?.onboarding_generation ?? "—"}
             mono
@@ -344,7 +315,6 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
       {/* 7. Levers */}
       <ProvisioningActionsPanel
         userId={id}
-        bootstrapState={paperclipRow?.bootstrap_state ?? null}
         containerStatus={containerRow?.status ?? null}
       />
     </div>

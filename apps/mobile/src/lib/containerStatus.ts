@@ -58,15 +58,9 @@
  * `getToken` behind a ref so the adapter config is built exactly once —
  * `useOnboardingStatus` itself never sees `getToken`'s churn.
  *
- * `ready` (and `starting`, when the body carries one) also surfaces the
- * per-CONTAINER `onboarded` fact straight from the body (mobile
- * onboarding-parity Slice 2) — see `containerStatusContext.ts` for how
- * FirstRunGate reads this SAME poll instead of running a second one.
- * `undefined` means "not known" (old backend / not-yet-ready) and callers
- * must treat that as onboarded-enough to skip the funnel, never as false.
- * FirstRunGate deliberately consumes only the `ready` one — the funnel must
- * not open behind a container that can still be taken over by the stepper's
- * cold-start promotion; see that file's docstring.
+ * `ready` (and `starting`, when the body carries one) also preserves the
+ * per-CONTAINER `onboarded` fact for status consumers and legacy responses.
+ * `undefined` means "not known" (old backend / not-yet-ready).
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useMemo, useRef } from "react";
@@ -89,20 +83,6 @@ export type ContainerStatus =
       kind: "ready";
       onboarded?: boolean;
       teamsStatus?: string;
-      /**
-       * `bootstrap.state` from the composed contract — Friday's server-
-       * dispatched first-run kickoff. `"failed"` is the ONLY value acted on
-       * (ProvisionGate's non-blocking first-run banner): `dispatched` (fresh
-       * or stale-but-re-arming) and `sent` are recovered by the dispatcher
-       * itself on the next poll, so they are not failures.
-       *
-       * Carried on `starting` too — see that variant. Surfacing it on `ready`
-       * ALONE is what let a dev owner sit on the cold-start screen for 21
-       * hours with the reason arriving on every poll and read by nothing.
-       */
-      bootstrapState?: string;
-      /** `bootstrap.last_error`, verbatim — operator-written, shown as detail. */
-      bootstrapError?: string | null;
     }
   | {
       kind: "starting";
@@ -117,21 +97,6 @@ export type ContainerStatus =
        * alarm).
        */
       teamsStatus?: string;
-      /**
-       * Same two `bootstrap` fields the `ready` variant carries, and they
-       * belong here for a structural reason rather than for completeness.
-       *
-       * `ready` means the container is up AND the backend holds a live gateway
-       * registration (readiness_state.py: running + gateway_connected). The
-       * kickoff only needs the first of those, so the failure whose whole
-       * cause is "the gateway never registered" — `last_error` literally reads
-       * "Gateway connect failed: gateway starting; retry shortly" — composes
-       * to `starting` and never to `ready`. Reading it on `ready` only meant
-       * the notice was unreachable in exactly the case it was written for.
-       */
-      bootstrapState?: string;
-      /** `bootstrap.last_error`, verbatim — operator-written, shown as detail. */
-      bootstrapError?: string | null;
     }
   | { kind: "parked" }
   /**
@@ -256,14 +221,10 @@ function fromClassified(
           // fired a wake in parallel (gateway provider), so this is transient.
           return { kind: "parked" };
         case "ready":
-          // `derived.bootstrap` already defaults an absent block (older
-          // backend) to `state: "not_started"` — no second null-check needed.
           return {
             kind: "ready",
             onboarded: info.onboarded,
             teamsStatus,
-            bootstrapState: derived.bootstrap.state,
-            bootstrapError: derived.bootstrap.last_error,
           };
         case "error":
           // Defensive: deriveUIPhase can only reach "error" via
@@ -284,8 +245,6 @@ function fromClassified(
             substatus: info.container_substatus ?? undefined,
             onboarded: info.onboarded,
             teamsStatus,
-            bootstrapState: derived.bootstrap.state,
-            bootstrapError: derived.bootstrap.last_error,
           };
       }
     }
@@ -324,10 +283,9 @@ export function useContainerStatus() {
   });
 
   // A LIVE failure outranks the sticky last-good body. `useOnboardingStatus`
-  // now keeps the last successfully classified status across a failed poll,
-  // so web's first-run funnel isn't unmounted (and its half-typed brief
-  // destroyed) by a single blip. That stickiness silently broke the old
-  // `classified ? … : networkError ? …` order here: once ANY good poll had
+  // keeps the last successfully classified status across a failed poll.
+  // That stickiness broke the old `classified ? … : networkError ? …`
+  // order here: once ANY good poll had
   // landed, `classified` stayed truthy for the rest of the session and the
   // `networkError` branch became unreachable, so a sustained outage rendered
   // a frozen cold-start screen with no way out.
@@ -337,10 +295,8 @@ export function useContainerStatus() {
   // so a failure always landed here). That is the right policy for MOBILE
   // specifically: `unreachable` is NON-BLOCKING here — ProvisionGate falls
   // through to `children` — so it degrades to the app rather than trapping
-  // the user, and mobile's own first-run funnel is protected by its
-  // `onboarded` latch (see FirstRunGate), not by this stickiness. Rendering
-  // policy belongs to each binding; web keeps the sticky read because its
-  // funnel gates on it directly.
+  // the user. Rendering policy belongs to each binding; web can retain the
+  // sticky last-good read while mobile surfaces current connectivity loss.
   const status: ContainerStatus = networkError
     ? { kind: "unreachable", message: networkError.message }
     : classified

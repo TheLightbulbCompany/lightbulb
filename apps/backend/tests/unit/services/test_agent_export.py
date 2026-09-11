@@ -725,6 +725,17 @@ async def test_is_reserved_friday_agent_true_when_id_matches_ceo():
 
 
 @pytest.mark.asyncio
+async def test_reserved_default_agent_stays_blocked_after_rename():
+    fetch = _StubFetch([{"id": "root-ceo-001", "role": "ceo", "name": "Nova"}])
+    result = await agent_export.is_reserved_friday_agent(
+        owner_id="user_abc",
+        agent_id="root-ceo-001",
+        fetch_paperclip_agents=fetch,
+    )
+    assert result is True
+
+
+@pytest.mark.asyncio
 async def test_is_reserved_friday_agent_false_for_non_ceo_agent():
     fetch = _StubFetch(
         [

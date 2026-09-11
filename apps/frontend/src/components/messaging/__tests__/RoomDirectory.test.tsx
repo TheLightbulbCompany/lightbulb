@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { RoomDirectory } from "../RoomDirectory";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
 
@@ -57,6 +58,24 @@ it("names canonical DMs from counterparts and preserves selection and unread cou
   expect(within(row).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   fireEvent.click(row);
   expect(onSelectRoom).toHaveBeenCalledWith("friday-dm");
+});
+
+it("marks a conversation unread and navigates to the next unread conversation", async () => {
+  const user = userEvent.setup();
+  const onSelectRoom = vi.fn();
+  const onMarkUnread = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory ownerScopeId="org" state="ready" currentRoomId="channel" participants={[]}
+    onSelectRoom={onSelectRoom} onSelectParticipant={vi.fn()} onMarkUnread={onMarkUnread} rooms={[
+      base,
+      { ...base, roomId: "first-unread", name: "First unread", unreadCount: 2 },
+      { ...base, roomId: "second-unread", name: "Second unread", unreadCount: 1 },
+    ]} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Next unread conversation" }));
+  expect(onSelectRoom).toHaveBeenCalledWith("first-unread");
+  await user.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Mark unread" }));
+  await waitFor(() => expect(onMarkUnread).toHaveBeenCalledWith("channel"));
 });
 
 it("identifies agents without handles in People and agents", () => {

@@ -207,6 +207,11 @@ async def set_room_read_cursor(
     return await service.set_read_cursor(auth, room_id, request)
 
 
+@router.post("/messaging/rooms/{room_id}/unread", response_model=ReadCursorResponse)
+async def mark_room_unread(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.mark_room_unread(auth, room_id)
+
+
 @router.post("/messaging/typing", status_code=204)
 async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)

@@ -15,6 +15,7 @@ from core.services.messaging import (
     validate_image_bytes,
     create_room,
     get_agent_receipt,
+    mark_room_unread,
 )
 
 
@@ -74,6 +75,24 @@ def test_public_tombstone_hides_original_attachment_and_preserves_thread_links()
     assert messaging.canonical_message(item).thread_root_message_id == uuid.UUID(parent_id)
     assert _public_message(item)["text"] == "private original"
     assert _public_message(item)["attachments"][0]["id"] == attachment_id
+
+
+@pytest.mark.asyncio
+async def test_mark_unread_requires_membership_and_uses_join_floor(monkeypatch):
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    room_id = str(uuid.uuid4())
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=({"roomId": room_id}, {"joinedSeq": 7})),
+    )
+    mark = AsyncMock(return_value=7)
+    monkeypatch.setattr(messaging.messaging_repo, "mark_unread", mark)
+
+    response = await mark_room_unread(auth, room_id)
+
+    mark.assert_awaited_once_with(room_id, "user_owner", joined_seq=7)
+    assert response.last_read_seq == 7
 
 
 @pytest.mark.asyncio

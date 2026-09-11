@@ -124,6 +124,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const directoryRoomDetails: ReadonlyMap<string, RoomDetail> = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
   const directoryError = directoryDetailsResponse.error as Error | undefined;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const manuallyUnreadRoom = useRef<string | null>(null);
   const dmRequests = useRef(new Map<string, string>());
   const handledInitialAgent = useRef<string | null>(null);
   const selectionRequest = useRef(0);
@@ -141,6 +142,11 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const activeRoom = detailResponse.data;
   const roomError = detailResponse.error;
   const mutateRoom = detailResponse.mutate;
+  useEffect(() => {
+    if (manuallyUnreadRoom.current && manuallyUnreadRoom.current !== activeRoomId) {
+      manuallyUnreadRoom.current = null;
+    }
+  }, [activeRoomId]);
   const [messages, setMessages] = useState<CanonicalRoomMessage[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyComplete, setHistoryComplete] = useState(false);
@@ -363,7 +369,8 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     const markVisibleRead = () => {
       const sequence = lastSequence(messages);
       if (!subscribeToRoom || document.visibilityState !== "visible" || !document.hasFocus() ||
-          !activeRoom || sequence <= activeRoom.lastReadSeq || accessRemoved) return;
+          !activeRoom || manuallyUnreadRoom.current === activeRoom.roomId ||
+          sequence <= activeRoom.lastReadSeq || accessRemoved) return;
       void messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
         void mutateRoom();
         void mutateRooms();
@@ -450,6 +457,17 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     selectionRequest.current += 1;
     setActiveRoomId(roomId);
   }, []);
+
+  const markUnread = useCallback(async (roomId: string) => {
+    if (activeRoomId === roomId) manuallyUnreadRoom.current = roomId;
+    try {
+      await messaging.markUnread(roomId);
+      await Promise.all([mutateRooms(), activeRoomId === roomId ? mutateRoom() : Promise.resolve()]);
+    } catch (error) {
+      if (manuallyUnreadRoom.current === roomId) manuallyUnreadRoom.current = null;
+      throw error;
+    }
+  }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
   const createRoom = useCallback(async (request: CreateRoomRequest, requestId = ++selectionRequest.current) => {
     const created = await messaging.createRoom(request);
@@ -586,6 +604,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     updateRoom,
     upsertMember,
     removeMember,
+    markUnread,
     sendMessage,
     setReaction,
     updateMessage,

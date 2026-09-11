@@ -48,6 +48,7 @@ const messaging = {
     mentions: request.mentions,
   })),
   markRead: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 1 })),
+  markUnread: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 0 })),
   setTyping: vi.fn(async () => undefined),
   createRoom: vi.fn(), updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), getLiveConfig: vi.fn(),
   getRunStatus: vi.fn(async (): Promise<RunStatusResponse> => ({ runId: "run-1", state: "running" })),
@@ -122,6 +123,17 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("does not immediately re-mark a visible room read after marking it unread", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    messaging.markRead.mockClear();
+
+    await act(async () => result.current.markUnread(room.roomId));
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    expect(messaging.markUnread).toHaveBeenCalledWith(room.roomId);
+    expect(messaging.markRead).not.toHaveBeenCalled();
+  });
   it("reports complete history only after all pages and exposes failed loads for retry", async () => {
     const { result } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));

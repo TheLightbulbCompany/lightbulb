@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { nextUnreadRoomId } from "./roomNavigation";
 import { roomDisplayName, roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -75,11 +76,8 @@ function DirectoryContent({
   const draftedRooms = rooms.filter((room) => draftRoomIds.includes(room.roomId));
 
   function selectNextUnread() {
-    if (unreadRooms.length === 0) return;
-    const currentIndex = rooms.findIndex((room) => room.roomId === currentRoomId);
-    const next = [...rooms.slice(currentIndex + 1), ...rooms.slice(0, currentIndex + 1)]
-      .find((room) => room.unreadCount > 0);
-    if (next) onSelectRoom(next.roomId);
+    const next = nextUnreadRoomId(rooms, currentRoomId ?? null, 1);
+    if (next) onSelectRoom(next);
   }
 
   async function markRoomUnread(roomId: string, label: string) {

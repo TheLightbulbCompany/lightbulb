@@ -10,12 +10,15 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
+import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { resolveTypedMentions } from "./mentions";
+import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
+import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
-import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomRunView } from "./types";
+import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomRunView, RoomSummary } from "./types";
 
 function frameText(blocks: unknown): string | undefined {
   return extractResultText({ content: blocks }) || undefined;
@@ -92,6 +95,53 @@ export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null 
   return useContext(MessagingWorkspaceContext);
 }
 
+/**
+ * Window-level shortcuts for room navigation (⌥↑/⌥↓ adjacent room, ⌥⇧↑/⌥⇧↓
+ * next/previous unread — both wrapping via roomNavigation.ts, the same rule
+ * RoomDirectory's "next unread" button uses) and the shortcut sheet (⌘/,
+ * toggled via `onShowShortcuts`).
+ *
+ * Ignored while a Radix dialog/menu is open or an IME composition is in
+ * progress; the ⌥ combos are additionally skipped when the event target is a
+ * text field, since the OS may otherwise turn Option+key into an inserted
+ * character there. `defaultPrevented` covers everything the composer or a
+ * typeahead already handled (e.g. its own plain-ArrowUp "edit last message").
+ */
+export function useMessagingShortcuts(
+  rooms: readonly RoomSummary[],
+  activeRoomId: string | null,
+  selectRoom: (roomId: string) => void,
+  onShowShortcuts: () => void,
+): void {
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (hasBlockingShortcutDialog() || document.querySelector("[role='menu']")) return;
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === "/") {
+        event.preventDefault();
+        onShowShortcuts();
+        return;
+      }
+      if (!event.altKey || event.metaKey || event.ctrlKey) return;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      if (isKeyboardShortcutTextInputTarget(event.target)) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const next = event.shiftKey
+        ? nextUnreadRoomId(rooms, activeRoomId, direction)
+        : adjacentRoomId(rooms, activeRoomId, direction);
+      // Also a no-op when the only unread room is the one already open —
+      // adjacentRoomId already excludes this case itself, but
+      // nextUnreadRoomId (unlike RoomDirectory's own "next unread" button)
+      // must not reselect the active room from this window-level shortcut.
+      if (!next || next === activeRoomId) return;
+      event.preventDefault();
+      selectRoom(next);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [rooms, activeRoomId, selectRoom, onShowShortcuts]);
+}
+
 export function MessagingWorkspaceProvider({
   children,
   initialAgentId,
@@ -129,6 +179,8 @@ export function MessagingWorkspaceProvider({
   threadClientMessageIdRef.current = threadClientMessageId;
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationError, setCreationError] = useState<string>();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, () => setShortcutsOpen((open) => !open));
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
   const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);
@@ -415,5 +467,5 @@ export function MessagingWorkspaceProvider({
       rooms.selectRoom(roomId);
       setNotificationTarget({ roomId, threadId: targetThreadId });
       activateMessagesPanel();
-    }} />{children}</MessagingWorkspaceContext.Provider>;
+    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />{children}</MessagingWorkspaceContext.Provider>;
 }

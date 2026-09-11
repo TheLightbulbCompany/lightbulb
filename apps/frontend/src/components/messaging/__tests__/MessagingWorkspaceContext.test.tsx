@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
@@ -67,6 +67,7 @@ const state = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  state.rooms = [room];
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
   state.directoryError = undefined;
@@ -359,4 +360,23 @@ it("restores a per-room draft when the owner returns to the room", () => {
     <MessagingDirectory /><MessagingConversation />
   </MessagingWorkspaceProvider>);
   expect(panel.composer.text).toBe("Draft in A");
+});
+
+it("moves to the next room on Alt+ArrowDown and the next unread on Alt+Shift+ArrowDown", () => {
+  const unreadRoom = { ...room, roomId: "room-2", unreadCount: 2 };
+  const thirdRoom = { ...room, roomId: "room-3" };
+  state.rooms = [room, unreadRoom, thirdRoom];
+  compose();
+
+  fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
+  expect(state.selectRoom).toHaveBeenCalledWith(unreadRoom.roomId);
+
+  fireEvent.keyDown(window, { key: "ArrowDown", altKey: true, shiftKey: true });
+  expect(state.selectRoom).toHaveBeenLastCalledWith(unreadRoom.roomId);
+});
+
+it("opens the shortcut sheet on Cmd+/", () => {
+  compose();
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
 });

@@ -17,9 +17,74 @@ fn retained_pair(
     Ok(pair)
 }
 
+// Enrollment ordering is kept separate from the OS/keychain boundary so disk,
+// hook and transport failures exercise the same path as the command.
+async fn complete_enable<T>(
+    path: &Path,
+    pending: Enrollment,
+    preflight: impl FnOnce() -> Result<()>,
+    remote: impl std::future::Future<Output = Result<Value>>,
+    prepare: impl FnOnce() -> Result<T>,
+    finish: impl FnOnce(T, Enrollment) -> Result<()>,
+) -> Result<()> {
+    preflight()?;
+    private_write(path, &pending)?;
+    let response = remote.await?;
+    validate_response(&pending, &response, true)?;
+    let prepared = prepare()?;
+    let mut active = pending;
+    active.enabled = true;
+    active.paused = false;
+    active.attempt = None;
+    finish(prepared, active)
+}
+
+fn validate_response(enrollment: &Enrollment, response: &Value, enabled: bool) -> Result<()> {
+    if response["ownerId"] != enrollment.owner_id
+        || response["humanUserId"] != enrollment.human_user_id
+        || response["deviceId"] != enrollment.device_id
+        || response["enabled"] != enabled
+        || response["revision"].as_str() != enrollment.server_revision.as_deref()
+    {
+        return Err(
+            "Enrollment response mismatch; remote history revocation remains unconfirmed".into(),
+        );
+    }
+    Ok(())
+}
+
+fn commit_consent(
+    enrollment: Enrollment,
+    save: impl FnOnce(&Enrollment) -> Result<()>,
+    start: impl FnOnce(Enrollment),
+) -> Result<()> {
+    save(&enrollment)?;
+    start(enrollment);
+    Ok(())
+}
+
+fn stop_enrollment(
+    path: &Path,
+    previous: &mut Option<Enrollment>,
+    cleanup: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    if let Some(enrollment) = previous {
+        enrollment.enabled = false;
+        private_write(path, enrollment)?;
+    }
+    Ok(cleanup().is_ok())
+}
+
 struct Running {
     stop: Arc<AtomicBool>,
     task: tauri::async_runtime::JoinHandle<()>,
+}
+
+struct PreparedRun {
+    stop: Arc<AtomicBool>,
+    host: transport::Host,
+    identity: crate::keychain::DeviceIdentity,
+    socket: tokio::net::UnixDatagram,
 }
 
 #[derive(Default)]
@@ -44,25 +109,7 @@ impl Controller {
         }
     }
 
-    fn start(&self, app: &tauri::AppHandle, enrollment: Enrollment) -> Result<()> {
-        if !enrollment.enabled || enrollment.paused {
-            return Ok(());
-        }
-        // Publish the handle under the same lock used by stop, so an auth
-        // invalidation cannot slip between spawn and handle publication.
-        let mut running = self
-            .running
-            .lock()
-            .map_err(|_| "sharing state unavailable")?;
-        if self
-            .human
-            .lock()
-            .map_err(|_| "sharing state unavailable")?
-            .as_ref()
-            .is_some_and(|h| h.as_deref() != Some(&enrollment.human_user_id))
-        {
-            return Ok(());
-        }
+    fn prepare(&self, app: &tauri::AppHandle, enrollment: &Enrollment) -> Result<PreparedRun> {
         let dir = state_dir(app)?;
         let identity = crate::keychain::load_or_generate(
             crate::keychain::KeychainSlot::Mac,
@@ -89,24 +136,68 @@ impl Controller {
         ));
         let stop = Arc::new(AtomicBool::new(false));
         let host = transport::Host::restore(scope, home()?, stop.clone())?;
-        let wake = Arc::new(tokio::sync::Notify::new());
         let socket = registration_socket()?;
-        let hook_wake = wake.clone();
-        let status = self.status.clone();
-        let task = tauri::async_runtime::spawn(async move {
-            let hooks = async move {
-                let mut bytes = [0; 1];
-                loop {
-                    if socket.recv(&mut bytes).await.is_err() {
-                        break;
-                    }
-                    hook_wake.notify_one();
+        Ok(PreparedRun {
+            stop,
+            host,
+            identity,
+            socket,
+        })
+    }
+
+    fn publish(
+        &self,
+        path: Option<&Path>,
+        enrollment: Enrollment,
+        prepared: PreparedRun,
+        revision: u64,
+    ) -> Result<()> {
+        // Invalidation takes the same human -> running lock order. No auth/set
+        // operation can interleave the final durable consent and publication.
+        let human = self.human.lock().map_err(|_| "sharing state unavailable")?;
+        let mut running = self
+            .running
+            .lock()
+            .map_err(|_| "sharing state unavailable")?;
+        require_current(
+            &human,
+            self.revision.load(Ordering::SeqCst),
+            revision,
+            &enrollment,
+        )?;
+        commit_consent(
+            enrollment,
+            |enrollment| {
+                if let Some(path) = path {
+                    private_write(path, enrollment)?;
                 }
-            };
-            tokio::select! {_ = hooks=>{},_ = host.supervise(enrollment,identity,wake,status)=>{}}
-        });
-        *running = Some(Running { stop, task });
-        Ok(())
+                Ok(())
+            },
+            |enrollment| {
+                let PreparedRun {
+                    stop,
+                    host,
+                    identity,
+                    socket,
+                } = prepared;
+                let wake = Arc::new(tokio::sync::Notify::new());
+                let hook_wake = wake.clone();
+                let status = self.status.clone();
+                let task = tauri::async_runtime::spawn(async move {
+                    let hooks = async move {
+                        let mut bytes = [0; 1];
+                        loop {
+                            if socket.recv(&mut bytes).await.is_err() {
+                                break;
+                            }
+                            hook_wake.notify_one();
+                        }
+                    };
+                    tokio::select! {_ = hooks=>{},_ = host.supervise(enrollment,identity,wake,status)=>{}}
+                });
+                *running = Some(Running { stop, task });
+            },
+        )
     }
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
@@ -116,12 +207,59 @@ impl Controller {
             return Ok(());
         }
         let mut enrollment: Enrollment = private_read(&path)?;
-        if let Some(human) = &*self.human.lock().map_err(|_| "sharing state unavailable")? {
-            enrollment.authenticate(human.as_deref());
-        }
+        enrollment.authenticate(
+            self.human
+                .lock()
+                .map_err(|_| "sharing state unavailable")?
+                .as_ref()
+                .and_then(|h| h.as_deref()),
+        );
         private_write(&path, &enrollment)?;
         self.stop();
-        self.start(app, enrollment)
+        if !enrollment.enabled || enrollment.paused || enrollment.attempt.is_some() {
+            return Ok(());
+        }
+        let revision = self.revision.load(Ordering::SeqCst);
+        let prepared = self.prepare(app, &enrollment)?;
+        self.publish(None, enrollment, prepared, revision)
+    }
+}
+
+fn require_current(
+    human: &Option<Option<String>>,
+    actual: u64,
+    expected: u64,
+    enrollment: &Enrollment,
+) -> Result<()> {
+    if actual != expected
+        || human.as_ref().and_then(|h| h.as_deref()) != Some(&enrollment.human_user_id)
+    {
+        return Err("Authentication changed; local sharing remains stopped".into());
+    }
+    Ok(())
+}
+
+fn predecessor(
+    previous: Option<&Enrollment>,
+    owner: &str,
+    human: &str,
+    device: &str,
+) -> Result<Option<String>> {
+    match previous {
+        Some(e) if e.remote_disabled && e.server_revision.is_some() => {
+            if e.owner_id == owner && e.human_user_id == human && e.device_id == device {
+                Ok(e.server_revision.clone())
+            } else {
+                // A deliberately re-paired scope can only attempt absent-CAS;
+                // never carry another scope's revision or overwrite its row.
+                Ok(None)
+            }
+        }
+        Some(_) => Err(
+            "Confirm remote history revocation in the enrolled workspace before enabling again"
+                .into(),
+        ),
+        None => Ok(None),
     }
 }
 
@@ -179,12 +317,15 @@ pub async fn local_sessions_auth(
     human_user_id: Option<String>,
 ) -> Result<()> {
     // Invalidate in-flight enrollment before waiting for its network request.
-    state.revision.fetch_add(1, Ordering::SeqCst);
-    *state
-        .human
-        .lock()
-        .map_err(|_| "sharing state unavailable")? = Some(human_user_id);
-    state.stop();
+    {
+        let mut human = state
+            .human
+            .lock()
+            .map_err(|_| "sharing state unavailable")?;
+        state.revision.fetch_add(1, Ordering::SeqCst);
+        *human = Some(human_user_id);
+        state.stop();
+    }
     state.restore(&app).await
 }
 
@@ -207,7 +348,7 @@ pub async fn local_sessions_status(
             .map_err(|_| "desktop storage unavailable")?,
     );
     Ok(
-        json!({"enrollment":enrollment.map(|e|json!({"ownerId":e.owner_id,"humanUserId":e.human_user_id,"enabled":e.enabled,"paused":e.paused})),
+        json!({"enrollment":enrollment.map(|e|json!({"ownerId":e.owner_id,"humanUserId":e.human_user_id,"enabled":e.enabled,"paused":e.paused,"remoteDisabled":e.remote_disabled,"recoveryPending":!e.enabled && !e.remote_disabled})),
         "pairedWorkspaceId":paired.map(|p|p.owner_id),"status":state.status.lock().map_err(|_|"sharing state unavailable")?.clone()}),
     )
 }
@@ -221,8 +362,15 @@ pub async fn local_sessions_set(
     human_user_id: Option<String>,
     workspace_id: Option<String>,
 ) -> Result<u64> {
-    let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
-    state.stop();
+    let revision = {
+        let _human = state
+            .human
+            .lock()
+            .map_err(|_| "sharing state unavailable")?;
+        let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        state.stop();
+        revision
+    };
     let _guard = state.mutation.lock().await;
     let dir = state_dir(&app)?;
     let path = dir.join("enrollment.json");
@@ -232,6 +380,30 @@ pub async fn local_sessions_set(
         } else {
             None
         };
+    if !enabled {
+        // Hook cleanup is advisory after durable local stop. Even an unreadable
+        // hook record must not hide the revision needed for remote cancellation.
+        let cleaned = stop_enrollment(&path, &mut previous, || -> Result<()> {
+            let settings = home()?.join(".claude/settings.json");
+            let record = dir.join("hook-executable.json");
+            let installed = if record.try_exists().map_err(|_| "hook state unavailable")? {
+                private_read(&record)?
+            } else {
+                std::env::current_exe().map_err(|_| "desktop executable unavailable")?
+            };
+            if settings
+                .try_exists()
+                .map_err(|_| "Claude settings unavailable")?
+            {
+                claude::configure_hooks(&settings, &installed, false)?;
+            }
+            Ok(())
+        })?;
+        if !cleaned {
+            *state.status.lock().map_err(|_| "sharing state unavailable")? = "Local sharing stopped; Claude wake-hook removal failed. Retry disable after repairing Claude settings.".into();
+        }
+        return Ok(revision);
+    }
     if let Some(enrollment) = &mut previous {
         enrollment.enabled = false;
         private_write(&path, enrollment)?;
@@ -247,14 +419,6 @@ pub async fn local_sessions_set(
     } else {
         executable.clone()
     };
-    if !enabled {
-        if settings.try_exists().unwrap_or(false) {
-            claude::configure_hooks(&settings, &installed, false)?;
-        }
-        // No auth/network wait is part of local disable. An optional, separately
-        // revision-checked remote cleanup can follow without extending authority.
-        return Ok(revision);
-    }
     let human = human_user_id.ok_or("Sign in before enabling sharing")?;
     if state
         .human
@@ -280,46 +444,59 @@ pub async fn local_sessions_set(
     if workspace_id.as_deref() != Some(&pair.owner_id) {
         return Err("Connect this Mac in the selected workspace first".into());
     }
-    let response = enroll_remote(
-        token.as_deref().ok_or("Sign in before enabling sharing")?,
+    let previous_revision = predecessor(
+        previous.as_ref(),
+        &pair.owner_id,
+        &human,
         &pair.device_id_mac,
-        true,
-        None,
-    )
-    .await?;
-    if response["humanUserId"] != human
-        || response["deviceId"] != pair.device_id_mac
-        || response["enabled"] != true
-    {
-        return Err("Enrollment identity mismatch".into());
-    }
-    if state.revision.load(Ordering::SeqCst) != revision {
-        return Err("Authentication changed; sharing remains paused".into());
-    }
-    let server_revision = response["revision"]
-        .as_str()
-        .filter(|r| uuid::Uuid::parse_str(r).is_ok())
-        .ok_or("Invalid enrollment revision")?
-        .to_owned();
-    // Ordinary Codex queue requires no launch configuration. Claude gets only a wake hook.
-    if settings.parent().is_some_and(|p| p.is_dir()) {
-        if installed != executable {
-            claude::configure_hooks(&settings, &installed, false)?;
-        }
-        claude::configure_hooks(&settings, &executable, true)?;
-        private_write(&hook_record, &executable)?;
-    }
+    )?;
     let enrollment = Enrollment {
-        server_revision: Some(server_revision),
+        server_revision: Some(uuid::Uuid::new_v4().to_string()),
         owner_id: pair.owner_id,
         human_user_id: human,
         device_id: pair.device_id_mac,
         gateway_url: pair.gateway_url,
-        enabled: true,
-        paused: false,
+        enabled: false,
+        paused: true,
+        remote_disabled: false,
+        attempt: Some(EnrollmentAttempt { previous_revision }),
     };
-    private_write(&path, &enrollment)?;
-    state.start(&app, enrollment)?;
+    let body = enable_body(&enrollment);
+    let token = token.as_deref().ok_or("Sign in before enabling sharing")?;
+    let hooks = settings.parent().is_some_and(|p| p.is_dir());
+    complete_enable(
+        &path,
+        enrollment.clone(),
+        || {
+            if hooks {
+                claude::preflight_hooks(&settings, &executable)
+            } else {
+                Ok(())
+            }
+        },
+        enroll_remote(token, body),
+        || {
+            require_current(
+                &*state
+                    .human
+                    .lock()
+                    .map_err(|_| "sharing state unavailable")?,
+                state.revision.load(Ordering::SeqCst),
+                revision,
+                &enrollment,
+            )?;
+            if hooks {
+                if installed != executable {
+                    claude::configure_hooks(&settings, &installed, false)?;
+                }
+                claude::configure_hooks(&settings, &executable, true)?;
+                private_write(&hook_record, &executable)?;
+            }
+            state.prepare(&app, &enrollment)
+        },
+        |prepared, active| state.publish(Some(&path), active, prepared, revision),
+    )
+    .await?;
     Ok(revision)
 }
 
@@ -338,7 +515,8 @@ pub async fn local_sessions_revoke(
     if state.revision.load(Ordering::SeqCst) != revision {
         return Ok(());
     }
-    let enrollment: Enrollment = private_read(&state_dir(&app)?.join("enrollment.json"))?;
+    let path = state_dir(&app)?.join("enrollment.json");
+    let mut enrollment: Enrollment = private_read(&path)?;
     if enrollment.enabled
         || enrollment.human_user_id != human_user_id
         || enrollment.owner_id != workspace_id
@@ -353,23 +531,34 @@ pub async fn local_sessions_revoke(
     }
     // Old consent may predate server revisions. Never fall back to an
     // unconditional background revoke, including after a timeout/conflict.
-    let Some(expected) = &enrollment.server_revision else {
+    if enrollment.remote_disabled {
         return Ok(());
-    };
-    enroll_remote(&token, &enrollment.device_id, false, Some(expected)).await?;
+    }
+    if enrollment.server_revision.is_none() {
+        return Err("Remote history revocation cannot be confirmed: saved enrollment revision is unavailable".into());
+    }
+    let response = enroll_remote(&token, disable_body(&enrollment)).await?;
+    validate_response(&enrollment, &response, false)?;
+    enrollment.remote_disabled = true;
+    enrollment.attempt = None;
+    private_write(&path, &enrollment)?;
     Ok(())
 }
 
-async fn enroll_remote(
-    token: &str,
-    device: &str,
-    enabled: bool,
-    expected_revision: Option<&str>,
-) -> Result<Value> {
-    let mut body = json!({"deviceId":device,"enabled":enabled});
-    if let Some(revision) = expected_revision {
-        body["expectedRevision"] = json!(revision);
+fn enable_body(enrollment: &Enrollment) -> Value {
+    json!({"deviceId":enrollment.device_id,"ownerId":enrollment.owner_id,"enabled":true,
+        "enableRevision":enrollment.server_revision,"previousRevision":enrollment.attempt.as_ref().and_then(|a|a.previous_revision.as_ref())})
+}
+
+fn disable_body(enrollment: &Enrollment) -> Value {
+    let mut body = json!({"deviceId":enrollment.device_id,"ownerId":enrollment.owner_id,"enabled":false,"expectedRevision":enrollment.server_revision});
+    if let Some(attempt) = &enrollment.attempt {
+        body["previousRevision"] = json!(attempt.previous_revision);
     }
+    body
+}
+
+async fn enroll_remote(token: &str, body: Value) -> Result<Value> {
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
@@ -398,6 +587,329 @@ async fn enroll_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn candidate() -> Enrollment {
+        Enrollment {
+            owner_id: "org".into(),
+            human_user_id: "alice".into(),
+            device_id: "mac".into(),
+            gateway_url: "wss://example.invalid".into(),
+            enabled: false,
+            paused: true,
+            server_revision: Some("aaaaaaaa-1111-4111-8111-111111111111".into()),
+            remote_disabled: false,
+            attempt: Some(EnrollmentAttempt {
+                previous_revision: Some("bbbbbbbb-2222-4222-8222-222222222222".into()),
+            }),
+        }
+    }
+    fn accepted() -> Value {
+        json!({"ownerId":"org","humanUserId":"alice","deviceId":"mac","enabled":true,"revision":"aaaaaaaa-1111-4111-8111-111111111111"})
+    }
+    #[tokio::test]
+    async fn local_sessions_managed_hook_refusal_precedes_remote_enable() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        private_write(&settings, &json!({"disableAllHooks":true})).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let result = complete_enable(
+            &dir.path().join("enrollment.json"),
+            candidate(),
+            || claude::preflight_hooks(&settings, Path::new("/app")),
+            async {
+                calls.set(calls.get() + 1);
+                Ok(accepted())
+            },
+            || Ok(()),
+            |_, _| panic!("must not start"),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            calls.get(),
+            0,
+            "managed refusal must not reauthorize retained history"
+        );
+    }
+    #[tokio::test]
+    async fn local_sessions_known_enable_then_hook_failure_retains_recovery_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("enrollment.json");
+        let settings = dir.path().join("settings.json");
+        private_write(&settings, &json!({})).unwrap();
+        let result = complete_enable(
+            &path,
+            candidate(),
+            || claude::preflight_hooks(&settings, Path::new("/app")),
+            async {
+                // Managed settings change while the remote request is in flight.
+                private_write(&settings, &json!({"disableAllHooks":true})).unwrap();
+                Ok(accepted())
+            },
+            || claude::configure_hooks(&settings, Path::new("/app"), true),
+            |_, _| panic!("must not start"),
+        )
+        .await;
+        assert!(result.is_err());
+        let restored: Enrollment =
+            private_read(&path).expect("successful enable authority must survive restart");
+        assert!(!restored.enabled);
+        assert_eq!(
+            restored.server_revision.as_deref(),
+            Some("aaaaaaaa-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            disable_body(&restored),
+            json!({"deviceId":"mac","ownerId":"org","enabled":false,"expectedRevision":"aaaaaaaa-1111-4111-8111-111111111111","previousRevision":"bbbbbbbb-2222-4222-8222-222222222222"})
+        );
+    }
+    #[tokio::test]
+    async fn local_sessions_pending_write_failure_never_sends_and_unknown_response_keeps_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = std::cell::Cell::new(0);
+        assert!(complete_enable(
+            dir.path(),
+            candidate(),
+            || Ok(()),
+            async {
+                calls.set(1);
+                Ok(accepted())
+            },
+            || Ok(()),
+            |_, _| panic!("must not publish")
+        )
+        .await
+        .is_err());
+        assert_eq!(calls.get(), 0);
+        let path = dir.path().join("enrollment.json");
+        assert!(complete_enable(
+            &path,
+            candidate(),
+            || Ok(()),
+            async {
+                let persisted: Enrollment = private_read(&path).unwrap();
+                assert_eq!(
+                    persisted,
+                    candidate(),
+                    "recovery must be durable before dispatch"
+                );
+                Err("timeout: outcome unknown".into())
+            },
+            || Ok(()),
+            |_, _| panic!("must not publish")
+        )
+        .await
+        .is_err());
+        assert_eq!(private_read::<Enrollment>(&path).unwrap(), candidate());
+    }
+    #[tokio::test]
+    async fn local_sessions_wrong_response_scope_never_admits_and_keeps_pinned_recovery() {
+        for field in ["ownerId", "humanUserId", "deviceId", "revision", "enabled"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("enrollment.json");
+            let mut response = accepted();
+            response[field] = json!("other");
+            assert!(complete_enable(
+                &path,
+                candidate(),
+                || Ok(()),
+                async { Ok(response) },
+                || -> Result<()> { panic!("invalid response must not prepare") },
+                |_, _| panic!("must not publish")
+            )
+            .await
+            .is_err());
+            assert_eq!(private_read::<Enrollment>(&path).unwrap(), candidate());
+        }
+    }
+    fn prepared(dir: &Path) -> PreparedRun {
+        let stop = Arc::new(AtomicBool::new(false));
+        PreparedRun {
+            host: transport::Host::restore(dir.join("host"), dir.join("profile"), stop.clone())
+                .unwrap(),
+            stop,
+            identity: crate::keychain::generate_keypair(),
+            socket: tokio::net::UnixDatagram::unbound().unwrap(),
+        }
+    }
+    #[tokio::test]
+    async fn local_sessions_auth_invalidation_at_publication_keeps_disk_stopped() {
+        for (human, revision) in [
+            (None, 0),
+            (Some(None), 0),
+            (Some(Some("bob".into())), 0),
+            (Some(Some("alice".into())), 1),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("enrollment.json");
+            let state = Controller::default();
+            *state.human.lock().unwrap() = human;
+            state.revision.store(revision, Ordering::SeqCst);
+            assert!(complete_enable(
+                &path,
+                candidate(),
+                || Ok(()),
+                async { Ok(accepted()) },
+                || Ok(prepared(dir.path())),
+                |ready, active| state.publish(Some(&path), active, ready, 0)
+            )
+            .await
+            .is_err());
+            let mut restored: Enrollment = private_read(&path).unwrap();
+            restored.authenticate(Some("alice"));
+            assert!(!restored.enabled && restored.attempt.is_some());
+            assert!(state.running.lock().unwrap().is_none());
+        }
+    }
+    #[tokio::test]
+    async fn local_sessions_final_consent_write_failure_does_not_publish() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("enrollment.json");
+        let state = Controller::default();
+        *state.human.lock().unwrap() = Some(Some("alice".into()));
+        let result = complete_enable(
+            &path,
+            candidate(),
+            || Ok(()),
+            async { Ok(accepted()) },
+            || {
+                let ready = prepared(dir.path());
+                fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+                Ok(ready)
+            },
+            |ready, active| state.publish(Some(&path), active, ready, 0),
+        )
+        .await;
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(private_read::<Enrollment>(&path).unwrap(), candidate());
+        assert!(state.running.lock().unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn local_sessions_post_rename_error_keeps_disable_authority_without_starting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("enrollment.json");
+        let started = std::cell::Cell::new(false);
+        let result = complete_enable(
+            &path,
+            candidate(),
+            || Ok(()),
+            async { Ok(accepted()) },
+            || Ok(()),
+            |_, active| {
+                commit_consent(
+                    active,
+                    |value| {
+                        // Model directory-fsync failure AFTER the atomic replacement:
+                        // the real private writer has put the active record on disk.
+                        private_write(&path, value)?;
+                        Err("directory sync failed after rename".into())
+                    },
+                    |_| started.set(true),
+                )
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!started.get());
+        let mut disk: Enrollment = private_read(&path).unwrap();
+        assert!(disk.enabled && !disk.remote_disabled);
+        disk.enabled = false; // the existing local-first Disable transition
+        assert_eq!(
+            disable_body(&disk)["expectedRevision"],
+            "aaaaaaaa-1111-4111-8111-111111111111"
+        );
+        assert!(disable_body(&disk).get("previousRevision").is_none());
+    }
+    #[tokio::test]
+    async fn local_sessions_hook_record_and_host_preparation_failures_keep_recovery() {
+        for hook_record_failure in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("enrollment.json");
+            let blocked = dir.path().join("blocked");
+            if hook_record_failure {
+                fs::create_dir(&blocked).unwrap();
+            } else {
+                private_write(&blocked, &json!({})).unwrap();
+            }
+            let result = complete_enable(
+                &path,
+                candidate(),
+                || Ok(()),
+                async { Ok(accepted()) },
+                || {
+                    if hook_record_failure {
+                        private_write(&blocked, &PathBuf::from("/app"))
+                    } else {
+                        transport::Host::restore(
+                            blocked.clone(),
+                            dir.path().join("profile"),
+                            Arc::new(AtomicBool::new(false)),
+                        )
+                        .map(|_| ())
+                    }
+                },
+                |_, _| panic!("must not start"),
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(private_read::<Enrollment>(&path).unwrap(), candidate());
+        }
+    }
+    #[test]
+    fn local_sessions_absent_predecessor_is_explicit_only_for_nominated_attempts() {
+        let mut first = candidate();
+        first.attempt.as_mut().unwrap().previous_revision = None;
+        assert_eq!(
+            enable_body(&first).get("previousRevision"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            disable_body(&first).get("previousRevision"),
+            Some(&Value::Null)
+        );
+        first.attempt = None;
+        assert!(disable_body(&first).get("previousRevision").is_none());
+    }
+    #[test]
+    fn local_sessions_hook_cleanup_failure_still_allows_revision_checked_revoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("enrollment.json");
+        let mut active = candidate();
+        active.enabled = true;
+        let mut previous = Some(active);
+        let cleaned = stop_enrollment(&path, &mut previous, || {
+            assert!(
+                !private_read::<Enrollment>(&path).unwrap().enabled,
+                "local stop precedes hook cleanup"
+            );
+            Err("hook record unreadable".into())
+        })
+        .expect("hook failure must not prevent returning the disable revision");
+        assert!(!cleaned);
+        let disk: Enrollment = private_read(&path).unwrap();
+        assert_eq!(
+            disable_body(&disk)["expectedRevision"],
+            "aaaaaaaa-1111-4111-8111-111111111111"
+        );
+    }
+    #[test]
+    fn local_sessions_explicit_new_scope_requires_old_scope_confirmed_disabled() {
+        let mut old = candidate();
+        assert!(predecessor(Some(&old), "new-org", "alice", "new-mac").is_err());
+        old.remote_disabled = true;
+        old.attempt = None;
+        assert_eq!(
+            predecessor(Some(&old), "new-org", "alice", "new-mac").unwrap(),
+            None
+        );
+        assert_eq!(
+            predecessor(Some(&old), "org", "alice", "mac").unwrap(),
+            Some("aaaaaaaa-1111-4111-8111-111111111111".into())
+        );
+        old.server_revision = None;
+        assert!(predecessor(Some(&old), "new-org", "alice", "new-mac").is_err());
+    }
     #[test]
     fn local_sessions_enrollment_requires_retained_mac_but_not_cli_or_node_binary() {
         let identity = crate::keychain::generate_keypair();

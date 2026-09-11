@@ -93,6 +93,10 @@ async def put_enrollment(
     cli_device_id: str | None,
     enabled: bool,
     expected_revision: str | None = None,
+    *,
+    enable_revision: str | None = None,
+    previous_revision: str | None = None,
+    has_predecessor: bool = False,
 ) -> dict:
     row = {
         "pk": user_pk(owner_id, user_id),
@@ -102,13 +106,28 @@ async def put_enrollment(
         "deviceId": device_id,
         "cliDeviceId": cli_device_id,
         "enabled": enabled,
-        "revision": str(uuid.uuid4()),
+        "revision": enable_revision or expected_revision or str(uuid.uuid4()),
     }
     put = {"TableName": store._table().name, "Item": row}
     if expected_revision is not None:
         put.update(
             ConditionExpression="revision = :expected", ExpressionAttributeValues={":expected": expected_revision}
         )
+    if has_predecessor:
+        # Cancellation may win before the first enable arrives. Writing the
+        # attempted revision disabled fences both that request and all replays.
+        values = {":no": False} if previous_revision is not None else {}
+        predecessor = "attribute_not_exists(pk)"
+        if previous_revision is not None:
+            predecessor = "(revision = :previous AND enabled = :no)"
+            values[":previous"] = previous_revision
+        condition = predecessor
+        if not enabled:
+            condition = f"(revision = :expected OR {predecessor})"
+            values[":expected"] = expected_revision
+        put["ConditionExpression"] = condition
+        if values:
+            put["ExpressionAttributeValues"] = values
     await store._transact(
         [
             pairing_condition(owner_id, user_id, device_id, cli_device_id),

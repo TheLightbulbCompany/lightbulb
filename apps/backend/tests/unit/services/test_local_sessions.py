@@ -205,6 +205,120 @@ async def test_late_conditional_disable_cannot_overwrite_new_enrollment(db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("predecessor_exists", [False, True])
+async def test_nominated_enrollment_cancellation_fences_first_and_duplicate_enable(db, predecessor_exists):
+    previous = None
+    if predecessor_exists:
+        first = await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+        previous = first.revision
+        await service.set_enrollment(
+            ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=False, expectedRevision=previous)
+        )
+    attempt = "aaaaaaaa-1111-4111-8111-111111111111"
+    enable = service.EnrollmentRequest(
+        deviceId=MAC, ownerId=OWNER, enabled=True, enableRevision=attempt, previousRevision=previous
+    )
+    cancel = service.EnrollmentRequest(
+        deviceId=MAC, ownerId=OWNER, enabled=False, expectedRevision=attempt, previousRevision=previous
+    )
+    # The HTTP enable has not reached DynamoDB yet. Cancellation must still fence it.
+    stopped = await service.set_enrollment(ALICE, cancel)
+    assert stopped.revision == attempt and not stopped.enabled
+    assert stopped.owner_id == OWNER
+    with pytest.raises(ApiProblem):
+        await service.set_enrollment(ALICE, enable)
+    assert not (await service.set_enrollment(ALICE, cancel)).enabled
+    newer = "bbbbbbbb-2222-4222-8222-222222222222"
+    await service.set_enrollment(
+        ALICE,
+        service.EnrollmentRequest(
+            deviceId=MAC, ownerId=OWNER, enabled=True, enableRevision=newer, previousRevision=attempt
+        ),
+    )
+    for obsolete in (enable, cancel):
+        with pytest.raises(ApiProblem):
+            await service.set_enrollment(ALICE, obsolete)
+    assert (await repo.get_enrollment(OWNER, ALICE.user_id, MAC))["revision"] == newer
+
+
+@pytest.mark.asyncio
+async def test_nominated_enrollment_lost_ack_recovery_revokes_retained_history(db):
+    sid = await registered()
+    previous = (await repo.get_enrollment(OWNER, ALICE.user_id, MAC))["revision"]
+    await service.set_enrollment(
+        ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=False, expectedRevision=previous)
+    )
+    attempt = "cccccccc-3333-4333-8333-333333333333"
+    enable = service.EnrollmentRequest(
+        deviceId=MAC, ownerId=OWNER, enabled=True, enableRevision=attempt, previousRevision=previous
+    )
+    await service.set_enrollment(ALICE, enable)  # response lost / subsequent local write fails
+    assert (await service.list_events(BOB, ROOM, sid)).events == []
+    cancel = service.EnrollmentRequest(
+        deviceId=MAC, ownerId=OWNER, enabled=False, expectedRevision=attempt, previousRevision=previous
+    )
+    for _ in range(2):
+        assert not (await service.set_enrollment(ALICE, cancel)).enabled
+    with pytest.raises(ApiProblem):
+        await service.list_events(BOB, ROOM, sid)
+    with pytest.raises(ApiProblem):
+        await service.set_enrollment(ALICE, enable)
+    assert await repo.get_session(OWNER, sid)  # retained, not deleted
+
+
+@pytest.mark.asyncio
+async def test_nominated_absent_scope_never_overwrites_an_existing_target_revision(db):
+    existing = await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    await service.set_enrollment(
+        ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=False, expectedRevision=existing.revision)
+    )
+    attempt = "dddddddd-4444-4444-8444-444444444444"
+    for request in (
+        service.EnrollmentRequest(
+            deviceId=MAC, ownerId=OWNER, enabled=True, enableRevision=attempt, previousRevision=None
+        ),
+        service.EnrollmentRequest(
+            deviceId=MAC, ownerId=OWNER, enabled=False, expectedRevision=attempt, previousRevision=None
+        ),
+    ):
+        with pytest.raises(ApiProblem):
+            await service.set_enrollment(ALICE, request)
+    row = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    assert row["revision"] == existing.revision and not row["enabled"]
+
+
+@pytest.mark.asyncio
+async def test_nominated_enrollment_rejects_wrong_owner_and_ambiguous_predecessor(db):
+    with pytest.raises(ApiProblem):
+        await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, ownerId="other", enabled=True))
+    assert await repo.get_enrollment(OWNER, ALICE.user_id, MAC) is None
+    for extra in (
+        {"enableRevision": "aaaaaaaa-1111-4111-8111-111111111111"},
+        {"previousRevision": None},
+        {"enableRevision": "bad", "previousRevision": None, "ownerId": OWNER},
+        {
+            "enableRevision": "aaaaaaaa-1111-4111-8111-111111111111",
+            "previousRevision": "aaaaaaaa-1111-4111-8111-111111111111",
+            "ownerId": OWNER,
+        },
+    ):
+        with pytest.raises(ValidationError):
+            service.EnrollmentRequest(deviceId=MAC, enabled=True, **extra)
+    with pytest.raises(ValidationError):
+        service.EnrollmentRequest(
+            deviceId=MAC,
+            enabled=False,
+            ownerId=OWNER,
+            expectedRevision="aaaaaaaa-1111-4111-8111-111111111111",
+            previousRevision="aaaaaaaa-1111-4111-8111-111111111111",
+        )
+    with pytest.raises(ValidationError):
+        service.EnrollmentRequest(
+            deviceId=MAC, enabled=False, ownerId=OWNER, expectedRevision="malformed", previousRevision=None
+        )
+
+
+@pytest.mark.asyncio
 async def test_equivalent_uuid_spellings_share_resources_events_and_one_command_receipt(db):
     sid = await registered()
     room = "aabbccdd-1111-4111-8111-aabbccddeeff"

@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
-type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean } | null; pairedWorkspaceId: string | null; status: string };
+type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean; recoveryPending?: boolean; remoteDisabled?: boolean } | null; pairedWorkspaceId: string | null; status: string };
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 function bridge(): Invoke | undefined {
   return (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
@@ -22,7 +22,7 @@ export function LocalSessions() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operation = useRef(0);
-  useEffect(() => { operation.current += 1; return () => { operation.current += 1; }; }, [userId, orgId]);
+  useEffect(() => { operation.current += 1; setBusy(false); return () => { operation.current += 1; }; }, [userId, orgId]);
   useEffect(() => {
     const invoke = bridge();
     setDesktop(Boolean(invoke));
@@ -32,7 +32,13 @@ export function LocalSessions() {
     return () => { active = false; };
   }, []);
   const enabled = state?.enrollment?.enabled ?? false;
+  const recoveryPending = state?.enrollment?.recoveryPending ?? false;
+  const canRecover = Boolean(userId && orgId && state?.enrollment?.humanUserId === userId && state.enrollment.ownerId === orgId);
   const sameWorkspace = Boolean(orgId && state?.pairedWorkspaceId === orgId);
+  async function refresh(invoke: Invoke, currentOperation: number) {
+    const latest = await invoke<State>("local_sessions_status");
+    if (operation.current === currentOperation) setState(latest);
+  }
   async function setEnabled(next: boolean) {
     const invoke = bridge();
     if (!invoke) return;
@@ -42,20 +48,23 @@ export function LocalSessions() {
       const token = next ? await getToken().catch(() => null) : null;
       if (operation.current !== currentOperation) return;
       const revision = await invoke<number>("local_sessions_set", { enabled: next, token, humanUserId: userId ?? null, workspaceId: orgId ?? null });
+      await refresh(invoke, currentOperation);
+      if (operation.current !== currentOperation) return;
       if (!next && userId && orgId) {
-        // Best effort only: a hung token refresh cannot keep local sharing alive.
-        void getToken().then(token => {
-          if (token && operation.current === currentOperation) {
-            return invoke("local_sessions_revoke", { revision, token, humanUserId:userId, workspaceId:orgId });
-          }
-        }).catch(() => {});
+        // The local stop is already complete. Token refresh and remote cleanup
+        // cannot delay it; pending state stays visible until confirmed.
+        void getToken().then(async token => {
+          if (operation.current !== currentOperation) return;
+          if (!token) throw new Error("Sign in to confirm remote-history revocation.");
+          await invoke("local_sessions_revoke", { revision, token, humanUserId:userId, workspaceId:orgId });
+          await refresh(invoke, currentOperation);
+        }).catch(e => { if (operation.current === currentOperation) setError(message(e)); });
       }
-      setState(await invoke<State>("local_sessions_status"));
       setConsent(false);
     } catch (e) {
-      setError(message(e));
-      void invoke<State>("local_sessions_status").then(setState).catch(() => {});
-    } finally { setBusy(false); }
+      if (operation.current === currentOperation) setError(message(e));
+      void refresh(invoke, currentOperation).catch(() => {});
+    } finally { if (operation.current === currentOperation) setBusy(false); }
   }
   return <section className="settings-panel space-y-4" aria-labelledby="local-sessions-heading">
     <h2 id="local-sessions-heading" className="text-lg font-medium">Native terminal sessions</h2>
@@ -66,12 +75,15 @@ export function LocalSessions() {
     {!desktop ? <p>Open the Lightbulb desktop app to set up local-session sharing.</p> : <>
       {state && !state.pairedWorkspaceId ? <p>Connect this Mac first using the existing desktop setup.</p> : null}
       {state?.pairedWorkspaceId && !sameWorkspace ? <p>Select the workspace connected to this Mac before enabling sharing.</p> : null}
-      {state?.enrollment ? <p>Enrolled workspace: {state.enrollment.ownerId}. Sharing {enabled ? (state.enrollment.paused ? "paused until the enrolled person signs in" : state.status || "connecting") : "disabled"}.</p> : null}
-      {!enabled ? <label className="flex gap-2"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I understand this sharing audience and want to enroll this workspace.</label> : null}
-      <Button disabled={busy || !state || (!enabled && (!consent || !sameWorkspace || !userId))} onClick={() => void setEnabled(!enabled)}>
-        {busy ? "Saving…" : enabled ? "Disable local-session sharing" : "Enable local-session sharing"}
+      {state?.enrollment ? <p>Enrolled workspace: {state.enrollment.ownerId}. Local sharing {enabled ? (state.enrollment.paused ? "paused until the enrolled person signs in" : state.status || "connecting") : "stopped"}.</p> : null}
+      {recoveryPending ? <p>Retained server history may still be shared. Remote-history revocation is unconfirmed. Sign in as the enrolled person in the enrolled workspace and retry disable before enabling again.</p> : null}
+      {state?.enrollment?.remoteDisabled ? <p>Remote-history sharing is confirmed disabled.</p> : null}
+      {!enabled && state?.status.startsWith("Local sharing stopped;") ? <p role="status">{state.status}</p> : null}
+      {!enabled && !recoveryPending ? <label className="flex gap-2"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I understand this sharing audience and want to enroll this workspace.</label> : null}
+      <Button disabled={busy || !state || (recoveryPending ? !canRecover : !enabled && (!consent || !sameWorkspace || !userId))} onClick={() => void setEnabled(!enabled && !recoveryPending)}>
+        {busy ? "Saving…" : enabled ? "Disable local-session sharing" : recoveryPending ? "Retry remote-history disable" : "Enable local-session sharing"}
       </Button>
-      <Button variant="ghost" disabled={busy} onClick={() => { void bridge()?.<State>("local_sessions_status").then(setState).catch(e=>setError(message(e))); }}>Refresh status</Button>
+      <Button variant="ghost" disabled={busy} onClick={() => { const invoke=bridge(); const current=operation.current; if(invoke) void refresh(invoke,current).catch(e=>{if(operation.current===current)setError(message(e));}); }}>Refresh status</Button>
     </>}
     {error ? <p role="alert">{error}</p> : null}
   </section>;

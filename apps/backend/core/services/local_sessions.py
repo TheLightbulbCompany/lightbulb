@@ -20,6 +20,9 @@ from core.services.local_session_grants import AgentInvocation
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")]
 DeviceId = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+EnrollmentRevision = Annotated[
+    str, Field(pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
+]
 MAX_ENVELOPE_BYTES = 16 * 1024
 # Leave room for server-authored provenance inside the transport envelope.
 MAX_COMMAND_BYTES = 8 * 1024
@@ -30,11 +33,30 @@ class EnrollmentRequest(ContractModel):
     cli_device_id: DeviceId | None = None
     enabled: bool
     expected_revision: OpaqueId | None = None
+    owner_id: OpaqueId | None = None
+    enable_revision: EnrollmentRevision | None = None
+    previous_revision: EnrollmentRevision | None = None
 
     @model_validator(mode="after")
     def conditional_disable_only(self):
         if self.enabled and self.expected_revision is not None:
             raise ValueError("expectedRevision is only valid for disable")
+        predecessor = "previous_revision" in self.model_fields_set
+        if self.enable_revision is not None and (not self.enabled or not predecessor):
+            raise ValueError("enableRevision requires enable and an explicit predecessor")
+        if predecessor:
+            if (
+                self.owner_id is None
+                or (self.enabled and self.enable_revision is None)
+                or (not self.enabled and self.expected_revision is None)
+            ):
+                raise ValueError("A nominated enrollment requires owner and revision")
+            revision = self.enable_revision if self.enabled else self.expected_revision
+            parsed = uuid.UUID(revision)
+            if str(parsed) != revision or parsed.version != 4:
+                raise ValueError("Enrollment revision must be a canonical UUIDv4")
+            if revision == self.previous_revision:
+                raise ValueError("Enrollment revision must be fresh")
         return self
 
 
@@ -45,6 +67,7 @@ class LocalDevice(ContractModel):
 
 
 class EnrollmentResponse(LocalDevice):
+    owner_id: str
     enabled: bool
     revision: str
 
@@ -241,15 +264,25 @@ async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: st
 
 async def set_enrollment(auth: AuthContext, request: EnrollmentRequest) -> EnrollmentResponse:
     owner = resolve_owner_id(auth)
+    if request.owner_id is not None and request.owner_id != owner:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Enrollment workspace mismatch.")
     await _paired(owner, auth.user_id, request.device_id, request.cli_device_id)
     try:
         row = await repo.put_enrollment(
-            owner, auth.user_id, request.device_id, request.cli_device_id, request.enabled, request.expected_revision
+            owner,
+            auth.user_id,
+            request.device_id,
+            request.cli_device_id,
+            request.enabled,
+            request.expected_revision,
+            enable_revision=request.enable_revision,
+            previous_revision=request.previous_revision,
+            has_predecessor="previous_revision" in request.model_fields_set,
         )
     except ClientError as exc:
         if not messaging_repo._is_cancelled(exc):
             raise
-        if request.expected_revision is not None:
+        if request.expected_revision is not None or request.enable_revision is not None:
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "Enrollment changed; cleanup is obsolete.") from exc
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Device pairing changed. Try again.") from exc
     return _public(EnrollmentResponse, row)

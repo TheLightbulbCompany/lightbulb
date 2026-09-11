@@ -298,8 +298,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Option<Value>> {
         .then(|| json!({"kind":"text","role":body["role"],"text":text,"truncated":false})))
 }
 
-pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> Result<()> {
-    let backup = path.with_extension("json.lightbulb-backup");
+fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value, Value)> {
     let mut settings: Value = if path.try_exists().map_err(|e| e.to_string())? {
         serde_json::from_reader(secure_file(path)?.take(1024 * 1024))
             .map_err(|_| "invalid Claude settings")?
@@ -312,6 +311,7 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
     if settings["disableAllHooks"] == true && enabled {
         return Err("Claude hooks are disabled".into());
     }
+    let original = settings.clone();
     let command = format!(
         "'{}' local-session-hook",
         executable
@@ -319,9 +319,6 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
             .ok_or("invalid executable")?
             .replace('\'', "'\\''")
     );
-    if enabled && !backup.try_exists().map_err(|e| e.to_string())? {
-        private_write(&backup, &settings)?;
-    }
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
     }
@@ -345,6 +342,19 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
     }
     if hooks.is_empty() {
         settings.as_object_mut().unwrap().remove("hooks");
+    }
+    Ok((original, settings))
+}
+
+pub(super) fn preflight_hooks(path: &Path, executable: &Path) -> Result<()> {
+    hook_settings(path, executable, true).map(|_| ())
+}
+
+pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> Result<()> {
+    let (original, settings) = hook_settings(path, executable, enabled)?;
+    let backup = path.with_extension("json.lightbulb-backup");
+    if enabled && !backup.try_exists().map_err(|e| e.to_string())? {
+        private_write(&backup, &original)?;
     }
     private_write(path, &settings)?;
     Ok(())

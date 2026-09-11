@@ -62,3 +62,50 @@ it("passes the native disable revision to optional remote cleanup",async()=>{
   await userEvent.click(await screen.findByRole("button",{name:"Disable local-session sharing"}));
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_revoke",{revision:19,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
 });
+
+it("keeps failed setup recoverable and reports remote cleanup failure without offering enable", async()=>{
+  invoke.mockImplementation(async(command)=>{
+    if(command==="local_sessions_set") return 21;
+    if(command==="local_sessions_revoke") throw new Error("Remote cleanup unavailable");
+    return {enrollment:{ownerId:"org",humanUserId:"alice",enabled:false,paused:true,recoveryPending:true,remoteDisabled:false},pairedWorkspaceId:"org",status:"paused"};
+  });
+  render(<LocalSessions />);
+  const retry = await screen.findByRole("button",{name:"Retry remote-history disable"});
+  expect(screen.getByText(/retained server history may still be shared/i)).toBeTruthy();
+  expect(screen.queryByRole("button",{name:"Enable local-session sharing"})).toBeNull();
+  await userEvent.click(retry);
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_revoke",{revision:21,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Remote cleanup unavailable");
+  expect(screen.getByRole("button",{name:"Retry remote-history disable"})).not.toBeDisabled();
+});
+
+it("only offers a new enable after confirmed remote disable and never cleans up another identity", async()=>{
+  let pending=true;
+  invoke.mockImplementation(async(command)=>{
+    if(command==="local_sessions_set") return 22;
+    if(command==="local_sessions_revoke") {pending=false;return;}
+    return {enrollment:{ownerId:"org",humanUserId:"alice",enabled:false,paused:true,recoveryPending:pending,remoteDisabled:!pending},pairedWorkspaceId:"org",status:"paused"};
+  });
+  auth.userId="bob";
+  const view=render(<LocalSessions />);
+  expect(await screen.findByRole("button",{name:"Retry remote-history disable"})).toBeDisabled();
+  auth.userId="alice";
+  view.rerender(<LocalSessions />);
+  await userEvent.click(await screen.findByRole("button",{name:"Retry remote-history disable"}));
+  expect(await screen.findByRole("button",{name:"Enable local-session sharing"})).toBeDisabled();
+  expect(screen.queryByText(/retained server history may still be shared/i)).toBeNull();
+});
+
+it("refreshes a failed enable into stopped recovery instead of losing its Disable action", async()=>{
+  let pending=false;
+  invoke.mockImplementation(async(command)=>{
+    if(command==="local_sessions_set") {pending=true;throw new Error("Claude hook setup failed");}
+    return {enrollment:pending ? {ownerId:"org",humanUserId:"alice",enabled:false,paused:true,recoveryPending:true,remoteDisabled:false} : null,pairedWorkspaceId:"org",status:"paused"};
+  });
+  render(<LocalSessions />);
+  await userEvent.click(await screen.findByRole("checkbox"));
+  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+  expect(await screen.findByRole("button",{name:"Retry remote-history disable"})).not.toBeDisabled();
+  expect(screen.getByRole("alert")).toHaveTextContent("Claude hook setup failed");
+  expect(screen.queryByRole("button",{name:"Enable local-session sharing"})).toBeNull();
+});

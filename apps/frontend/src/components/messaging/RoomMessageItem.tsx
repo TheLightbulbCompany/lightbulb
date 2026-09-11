@@ -62,6 +62,7 @@ export function RoomMessageItem({ id, message, participant, currentUserId, actio
       ? <span className="room-message-gutter" aria-hidden="true">{time}</span>
       : participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
     <div className="room-message-content">
+      {collapsed && timestamp && <time className="sr-only" dateTime={timestamp}>{time}</time>}
       {!collapsed && <div className="room-message-byline">{participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}

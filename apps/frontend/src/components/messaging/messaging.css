@@ -35,6 +35,7 @@
 @media (hover: none), (pointer: coarse) {
   .room-message-actions { opacity: 1; pointer-events: auto; }
   .room-message:has(.room-message-actions) .room-message-byline { padding-right: 112px; flex-wrap: wrap; }
+  .room-message-collapsed .room-message-content { padding-right: 112px; }
 }
 .room-message-content { flex: 1; min-width: 0; line-height: 1.5; }
 .room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: 1rem; line-height: 1.5; }
@@ -172,7 +173,7 @@
   .room-message-byline { flex-wrap: wrap; gap: 4px 8px; }
 }
 
-.room-message-collapsed { padding-top: 2px; padding-bottom: 2px; }
+.room-message-collapsed { padding-top: 2px; padding-bottom: 2px; min-height: 40px; }
 .room-message-gutter { flex: none; width: 32px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
 .room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
 @media (hover: none), (pointer: coarse) { .room-message-gutter { opacity: 1; } }

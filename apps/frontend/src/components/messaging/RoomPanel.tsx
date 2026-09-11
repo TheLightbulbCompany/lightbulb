@@ -22,7 +22,6 @@ import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
   DirectoryParticipant,
-  RoomContext,
   RoomMessage,
   RoomParticipant,
   RoomRunView,
@@ -51,7 +50,6 @@ export interface RoomPanelProps {
   pendingMessages?: readonly PendingRoomMessage[];
   typingMembers?: readonly { userId: string; displayName: string }[];
   runs?: readonly RoomRunView[];
-  contexts?: readonly RoomContext[];
   composer: RoomComposerProps;
   threadComposer?: { parentMessageId: string; composer: RoomComposerProps };
   onSelectThread?: (parentMessageId: string | null) => void;
@@ -145,8 +143,7 @@ function RoomBoundary(props: RoomPanelProps) {
   </section>;
   const matchingIdentity = !!props.ownerScopeId && !!props.roomId && props.room?.roomId === props.roomId &&
     props.messages.every((message) => message.roomId === props.roomId) &&
-    (props.pendingMessages ?? []).every((message) => message.roomId === props.roomId) &&
-    (props.contexts ?? []).every((context) => context.roomId === props.roomId);
+    (props.pendingMessages ?? []).every((message) => message.roomId === props.roomId);
   if (!matchingIdentity || props.state === "access-removed" || props.state === "unavailable") return <section className="room-panel room-blocked" aria-label="Conversation unavailable">
     <p role="status" aria-label="Room status">{props.state === "access-removed" ? "Access removed. You can no longer view this conversation." : "This conversation is unavailable."}</p>
     {matchingIdentity && props.state === "unavailable" && props.onRetry && <Button variant="outline" onClick={props.onRetry}>Try again</Button>}
@@ -172,7 +169,6 @@ function RoomContent({
   pendingMessages = [],
   typingMembers = [],
   runs = [],
-  contexts = [],
   composer,
   threadComposer,
   onSelectThread,
@@ -210,10 +206,10 @@ function RoomContent({
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread"; id: string } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
-      : localSelection?.kind === "context" ? localSelection : null, [selectedThreadId, localSelection]);
+      : null, [selectedThreadId, localSelection]);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
@@ -229,8 +225,7 @@ function RoomContent({
   const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
-  const selectedContext = selection?.kind === "context" ? contexts.find((context) => context.id === selection.id) : undefined;
-  const showDetail = !!(parentMessage || selectedContext);
+  const showDetail = !!parentMessage;
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
@@ -315,10 +310,9 @@ function RoomContent({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail]);
 
-  function openDetail(kind: "thread" | "context", targetId: string, button: HTMLButtonElement, fromThread = false) {
+  function openDetail(kind: "thread", targetId: string, button: HTMLButtonElement, fromThread = false) {
     if (!fromThread) trigger.current = button;
-    if (kind === "thread") onSelectThread?.(targetId);
-    else if (selection?.kind === "thread") onSelectThread?.(null);
+    onSelectThread?.(targetId);
     setSelection({ kind, id: targetId });
   }
 
@@ -476,17 +470,14 @@ function RoomContent({
         </section>
       </div>
     </aside>}
-    {showDetail && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {showDetail && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
-        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
+        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}
         <div className="room-thread-replies" aria-label="Thread replies">{buildTimeline(messages.filter((message) => message.threadRootMessageId === parentMessage.messageId), { readSeq: null }).map((item) => item.kind === "message" ? renderMessage(item.message, true, item.collapsed) : null)}
           {runs.filter((run) => run.threadRootMessageId === parentMessage.messageId).map(renderRun)}
         </div>
-      </> : <><p className="text-sm text-muted-foreground">{selectedContext!.kind.charAt(0).toUpperCase() + selectedContext!.kind.slice(1)}</p>
-        {selectedContext!.status && <WorkStatus state={selectedContext!.status} />}<div className="room-context-record">{selectedContext!.content}</div>
-        {selectedContext!.onAction && selectedContext!.actionLabel && <Button disabled={!actionable || selectedContext!.busy} aria-busy={selectedContext!.busy} onClick={selectedContext!.onAction}>{selectedContext!.actionLabel}</Button>}
-      </>}</div>
+      </> : null}</div>
       {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread" disabled={!actionable || threadComposer.composer.disabled} />}
     </aside>}
     <Dialog open={management !== null && canManage} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>

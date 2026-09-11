@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
@@ -484,10 +485,53 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
     for actor, room, changes in ((BOB, ROOM, {"text": "changed"}), (ALICE, ROOM, {}), (BOB, OTHER_ROOM, {})):
         with pytest.raises(ApiProblem, match="request"):
             await service.submit_command(actor, room, sid, command(service, **changes))
-    receipts = await asyncio.gather(
-        *[service.submit_command(BOB, ROOM, sid, command(service, requestId=f"parallel-{i}")) for i in range(2)]
-    )
+    original_admit = repo.admit_command
+    both_read = asyncio.Event()
+    transaction_lock = asyncio.Lock()
+    attempts = []
+    cancellations = []
+
+    async def competing_admit(row, enrollment, receipt):
+        attempts.append((row["commandSeq"], row["revision"], receipt["requestId"]))
+        # Force stale application snapshots, but serialize only Moto's transaction
+        # execution: Moto does not support concurrent writes from worker threads.
+        if len(attempts) == 2:
+            both_read.set()
+        await both_read.wait()
+        async with transaction_lock:
+            try:
+                await original_admit(row, enrollment, receipt)
+            except ClientError as exc:
+                cancellations.append((receipt["requestId"], exc.response))
+                raise
+
+    with patch.object(repo, "admit_command", competing_admit):
+        receipts = await asyncio.wait_for(
+            asyncio.gather(
+                *[service.submit_command(BOB, ROOM, sid, command(service, requestId=f"parallel-{i}")) for i in range(2)]
+            ),
+            timeout=10,
+        )
+    assert len(attempts) == 3
+    assert attempts[0][:2] == attempts[1][:2]
+    assert [attempt[0] for attempt in attempts] == [1, 1, 2]
+    assert attempts[2][1] != attempts[0][1]
+    assert len(cancellations) == 1
+    rejected_request, error = cancellations[0]
+    assert error["Error"]["Code"] == "TransactionCanceledException"
+    # The actual META update (penultimate action), not an invented exception,
+    # rejects the stale revision; all other authorization/receipt checks pass.
+    codes = [reason["Code"] for reason in error["CancellationReasons"]]
+    assert codes[-2:] == ["ConditionalCheckFailed", "None"]
+    assert all(code == "None" for code in codes[:-2])
+    assert attempts[2][2] == rejected_request
     assert sorted(r.command_seq for r in receipts) == [2, 3]
+    assert (await repo.get_session(OWNER, sid))["commandSeq"] == 3
+    for receipt in receipts:
+        assert receipt.actor_user_id == BOB.user_id and receipt.room_id == ROOM
+        assert await service.get_command(BOB, ROOM, sid, receipt.request_id) == receipt
+        assert await service.submit_command(BOB, ROOM, sid, command(service, requestId=receipt.request_id)) == receipt
+    assert (await repo.get_session(OWNER, sid))["commandSeq"] == 3
     assert 0 < first.deliver_by - int(time.time()) <= 30
     assert (await service.get_command(BOB, ROOM, sid, "request-1")) == first
     # A different eligible room must not reveal command provenance from this room.

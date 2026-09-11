@@ -544,10 +544,12 @@ def _uuid_hex_prefix(member_id: str) -> str:
         return uuid.uuid5(uuid.NAMESPACE_OID, member_id).hex[:8]
 
 
-def _handle_candidate(name: str, agent_id: str) -> str:
+def _handle_candidate(name: str, member_id: str, *, prefix: str = "agent") -> str:
     ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     candidate = re.sub(r"[^a-z0-9]+", "-", ascii_name).strip("-")[:32]
-    return candidate or f"agent-{_uuid_hex_prefix(agent_id)}"
+    # A name with no ASCII in it at all leaves nothing to derive from, so the
+    # fallback has to say what the member IS — a human is not an @agent-1f2e3d4c.
+    return candidate or f"{prefix}-{_uuid_hex_prefix(member_id)}"
 
 
 def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
@@ -573,19 +575,26 @@ def with_human_handles(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Room members with every human carrying a mention handle.
 
     Agent handles stay workspace-derived and never move to make room for a
-    human; humans take their candidate in user-ID order, falling back to the
-    same collision suffix agents use.
+    human; humans claim their candidate in join order, falling back to the same
+    collision suffix agents use. Join order is what keeps a sitting member's
+    handle: a later "Aden" is the one that gets suffixed, so a stored ``@aden``
+    never silently re-points at a newcomer.
 
-    ponytail: handles are unique per room only, so one person can read as
-    ``@aden`` here and ``@aden-1f2e3d4c`` next door. Upgrade path: a
-    workspace-wide human handle table stamped at membership time.
+    ponytail: derived per room, per read. One person can read as ``@aden`` here
+    and ``@aden-1f2e3d4c`` next door, and a Clerk rename or a departure still
+    moves handles under already-stored text. Upgrade path: persist the human's
+    handle on the member row and re-stamp it exactly as agents do through
+    ``messaging_repo.upsert_member(handle_updates=...)``.
     """
     taken = {str(row["mentionHandle"]) for row in members if row.get("kind") == "agent" and row.get("mentionHandle")}
     handles: dict[str, str] = {}
-    humans = sorted((row for row in members if row.get("kind") == "human"), key=lambda row: str(row["id"]))
+    humans = sorted(
+        (row for row in members if row.get("kind") == "human"),
+        key=lambda row: (int(row.get("joinedSeq") or 0), str(row["id"])),
+    )
     for row in humans:
         user_id = str(row["id"])
-        candidate = _handle_candidate(str(row.get("displayName") or user_id), user_id)
+        candidate = _handle_candidate(str(row.get("displayName") or user_id), user_id, prefix="user")
         if candidate in taken:
             candidate = f"{candidate[:23]}-{_uuid_hex_prefix(user_id)}"
         taken.add(candidate)

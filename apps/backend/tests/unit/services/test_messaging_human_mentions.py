@@ -1,5 +1,6 @@
 """Humans are mentionable: every human room member carries a handle."""
 
+import re
 import uuid
 from unittest.mock import AsyncMock
 
@@ -24,7 +25,7 @@ def agent(agent_id: str, name: str, handle: str) -> dict:
     }
 
 
-def human(user_id: str, name: str) -> dict:
+def human(user_id: str, name: str, joined_seq: int = 1) -> dict:
     return {
         "kind": "human",
         "id": user_id,
@@ -33,7 +34,7 @@ def human(user_id: str, name: str) -> dict:
         "role": "member",
         "listenMode": None,
         "joinedAt": "2026-09-10T00:00:00Z",
-        "joinedSeq": 1,
+        "joinedSeq": joined_seq,
     }
 
 
@@ -59,6 +60,23 @@ def test_two_humans_with_the_same_name_get_deterministic_distinct_handles():
     assert first["user_a"] == "aden"  # lowest user id wins the bare handle
     assert first["user_b"].startswith("aden-")
     assert first == handles(list(reversed(members)))
+
+
+def test_a_later_joiner_never_displaces_an_existing_members_handle():
+    # The newcomer sorts FIRST by user id, so only the join order keeps the
+    # sitting member's handle stable — a reassigned handle silently re-points
+    # every stored "@aden" in the room's history at the new person.
+    sitting = human("user_zz", "Aden", joined_seq=2)
+    newcomer = human("user_aa", "Aden", joined_seq=7)
+    resolved = handles([sitting, newcomer])
+    assert resolved["user_zz"] == "aden"
+    assert resolved["user_aa"].startswith("aden-")
+
+
+def test_a_human_with_no_ascii_in_their_name_falls_back_to_a_user_handle():
+    resolved = handles([human("user_a", "日本語")])
+    assert resolved["user_a"].startswith("user-")
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", resolved["user_a"])
 
 
 def test_parse_agent_mentions_resolves_a_human_handle():

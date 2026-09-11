@@ -9,6 +9,7 @@ const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\
 interface TokenEntry {
   participant: Target;
   token: string;
+  isHandle: boolean;
 }
 
 // ONE grammar for both readers: what renders as a chip is exactly what
@@ -21,9 +22,13 @@ function tokenEntries(participants: readonly Target[]): TokenEntry[] {
   return participants
     .flatMap((participant) =>
       [participant.mentionHandle, participant.kind === "human" ? participant.displayName : null]
-        .map((token) => ({ participant, token })))
+        .map((token, index) => ({ participant, token, isHandle: index === 0 })))
     .filter((entry): entry is TokenEntry => !!entry.token)
-    .sort((left, right) => right.token.length - left.token.length);
+    // Longest token first so @Aden Kim beats @Aden; on a tie the handle wins,
+    // because one person's handle can be another's display name and the owner
+    // of the handle is who the sender meant.
+    .sort((left, right) => right.token.length - left.token.length
+      || Number(right.isHandle) - Number(left.isHandle));
 }
 
 const tokenPattern = (entries: readonly TokenEntry[]) =>

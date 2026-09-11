@@ -58,6 +58,7 @@ apps/frontend/package-lock.json
 # Tool scratch directories
 .claude/
 .superpowers/
+.impeccable/
 .hypothesis/
 .tmp-*/
 apps/desktop/src-tauri/.sidecar-tmp/

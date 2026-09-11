@@ -457,6 +457,7 @@ mod tests {
             status: "unknown".into(),
         };
         let ingress = Ingress {
+            workspace_revision: None,
             native,
             cursor: Cursor {
                 offset: meta.len(),

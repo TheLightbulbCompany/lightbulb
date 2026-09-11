@@ -373,9 +373,18 @@ class OpenClawWorkWorker:
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             pool.clear_active_run(owner_id, session_key)
             return
+        from core.services import local_session_grants
+        from core.services.messaging import ApiProblem
+
+        invocation = None
+        try:
+            invocation = local_session_grants.mint(owner_id, meta["roomId"], member["id"], message["messageId"])
+        except (RuntimeError, ApiProblem):
+            # Optional local-session adapter must not break ordinary room delivery.
+            logger.warning("Local session invocation unavailable")
         url = f"http://{ip}:18789/plugins/lightbulb-channel/inbound/{member['id']}"
         try:
-            response = await self._post(url, body, token)
+            response = await self._post(url, body, token, invocation)
             if response.status_code != 202:
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
         except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -388,8 +397,10 @@ class OpenClawWorkWorker:
             pool.clear_active_run(owner_id, session_key)
             raise
 
-    async def _post(self, url: str, body: dict[str, Any], token: str):
+    async def _post(self, url: str, body: dict[str, Any], token: str, invocation: str | None = None):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        if invocation is not None:
+            headers["X-Lightbulb-Local-Session-Token"] = invocation
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(content) > _INGRESS_MAX_BYTES:
             raise ValueError("Lightbulb ingress exceeds 1 MiB")

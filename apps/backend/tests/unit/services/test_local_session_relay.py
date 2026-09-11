@@ -121,6 +121,43 @@ async def start(transport):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["none", "member", "expiry"])
+async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(transport, db, monkeypatch, change):
+    from core.services import local_session_grants as grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday", "kind": "agent", "id": "friday"})
+    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM))
+    sid = await start(transport)
+    await service.submit_command(caller, ROOM, sid, command(service))
+    transport[3].clear()
+    real = messaging_repo._transact
+    fired = False
+
+    async def race(items):
+        nonlocal fired
+        if not fired and any(op.get("Put", {}).get("Item", {}).get("state") == "dispatched" for op in items):
+            fired = True
+            if change == "member":
+                db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday"})
+            elif change == "expiry":
+                monkeypatch.setattr(time, "time", lambda: caller.expires_at)
+        await real(items)
+
+    with patch.object(messaging_repo, "_transact", race):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert fired
+    if change == "none":
+        wire = transport[3][0][1]["command"]
+        assert wire["actor"] == {"kind": "agent", "id": "friday"}
+        assert "actorUserId" not in wire and "invocationId" not in wire
+        assert wire["invocationExpiresAt"] == caller.expires_at
+    else:
+        assert transport[3] == []
+        assert (await repo.get_command(OWNER, sid, "request-1"))["state"] != "dispatched"
+
+
+@pytest.mark.asyncio
 async def test_optional_cli_revocation_does_not_revoke_native_mac_sharing(transport, db):
     sid = await start(transport)
     db[1].update_item(

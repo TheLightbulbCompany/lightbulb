@@ -90,6 +90,99 @@ def command(service, **changes):
 
 
 @pytest.mark.asyncio
+async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatch):
+    from core.services import local_session_grants as grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    agent = "33333333-3333-4333-8333-333333333333"
+    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}", "kind": "agent", "id": agent})
+    token = grants.mint(OWNER, ROOM, agent, "44444444-4444-4444-8444-444444444444")
+    caller = grants.verify(token)
+    sid = await registered()
+    assert (await service.list_resources(caller, ROOM)).sessions[0].session_id == sid
+    with pytest.raises(ApiProblem):
+        await service.list_resources(caller, OTHER_ROOM)
+    receipt = await service.submit_command(caller, ROOM, sid, command(service))
+    public = receipt.model_dump(by_alias=True)
+    assert public["actor"] == {"kind": "agent", "id": agent}
+    assert "actorUserId" not in public and "grant" not in str(public)
+    assert public["invocationExpiresAt"] == caller.expires_at
+    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}"})
+    with pytest.raises(ApiProblem):
+        await service.get_command(caller, ROOM, sid, receipt.request_id)
+    # The real transaction must independently fence removal after authorization.
+    checks = repo.room_conditions(OWNER, ALICE.user_id, public)
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError):
+        await messaging_repo._transact(checks)
+
+    # Dispatch reconstructs a typed agent, never a human lookalike.
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    assert isinstance(service.command_caller(OWNER, stored), grants.AgentInvocation)
+    from dataclasses import replace
+
+    with pytest.raises(ApiProblem):
+        await service.list_resources(replace(caller, expires_at=int(time.time())), ROOM)
+
+
+def test_invocation_grant_rejects_wrong_purpose_types_scope_and_lifetime(monkeypatch):
+    import jwt
+    from core.services import local_session_grants as grants
+
+    key = "hermetic-signing-key"
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", key)
+    token = grants.mint(OWNER, ROOM, "33333333-3333-4333-8333-333333333333", OTHER_ROOM)
+    original = jwt.decode(token, options={"verify_signature": False})
+    from core.services import service_token
+
+    with pytest.raises(jwt.InvalidTokenError):
+        service_token.verify(token)
+    with pytest.raises(ApiProblem):
+        grants.verify(service_token.mint(OWNER))
+    for changes in (
+        {"aud": "paperclip"},
+        {"kind": "paperclip_service"},
+        {"exp": int(time.time()) - 1},
+        {"exp": original["iat"] + 301},
+        {"iat": True},
+        {"ownerId": 2},
+        {"roomId": OTHER_ROOM},
+        {"sessionKey": "agent:other:room"},
+    ):
+        bad = jwt.encode({**original, **changes}, key, algorithm="HS256")
+        with pytest.raises(ApiProblem) as rejected:
+            grants.verify(bad)
+        assert bad not in str(rejected.value)
+
+
+@pytest.mark.asyncio
+async def test_agent_router_derives_room_only_from_verified_bearer(db, monkeypatch):
+    from core.services import local_session_grants as grants
+    from routers import messaging as routes
+    from starlette.requests import Request
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    agent = "33333333-3333-4333-8333-333333333333"
+    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}", "kind": "agent", "id": agent})
+    token = grants.mint(OWNER, ROOM, agent, OTHER_ROOM)
+    request = Request({"type": "http", "headers": [(b"authorization", f"Bearer {token}".encode())]})
+    caller = await routes.local_session_invocation(request)
+    assert caller.room_id == ROOM
+    assert await routes.agent_local_session_resources(caller) == await service.list_resources(caller, ROOM)
+    request = Request({"type": "http", "headers": [(b"authorization", b"Bearer owner-hook-token")]})
+    with pytest.raises(ApiProblem):
+        await routes.local_session_invocation(request)
+
+
+def test_workspace_public_summary_is_bounded_and_never_accepts_local_paths():
+    summary = service.WorkspaceSummary(revision=2, coverage="bounded", changed=True, overlap=True)
+    assert summary.model_dump(by_alias=True) == {"revision": 2, "coverage": "bounded", "changed": True, "overlap": True}
+    with pytest.raises(ValidationError):
+        service.WorkspaceSummary(revision=2, coverage="bounded", changed=True, overlap=True, root="/private/path")
+
+
+@pytest.mark.asyncio
 async def test_late_conditional_disable_cannot_overwrite_new_enrollment(db):
     with pytest.raises(ValidationError):
         service.EnrollmentRequest(deviceId=MAC, enabled=True, expectedRevision="old")

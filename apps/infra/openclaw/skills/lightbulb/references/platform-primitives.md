@@ -22,3 +22,30 @@ that one dashboard step (the Automations panel walks them through it).
 When a design needs more than this, say so plainly instead of implying it
 exists.
 
+## Human-shared local sessions (optional native adapter)
+
+In a canonical Lightbulb room run, `lightbulb_local_sessions` can discover current
+members' shared Claude/Codex sessions, read an explicitly selected session, send
+an attributed follow-up, or check its receipt. Local sessions are resources, not
+agents or employees. Never invent ownership or inject room history automatically.
+Native provider credentials, approvals and ordinary terminal workflows stay on
+the human's machine. A receipt means admission/queueing, not completed work;
+unknown delivery must not be resent under a new request ID.
+
+This optional tool is bound to the current trusted room invocation and expires
+after at most 300 seconds. After expiry it needs a new canonical room ingress;
+there is no autonomous refresh or owner-wide hook fallback. Missing support on
+an older container means the tool is unavailable, not a reason to bypass it.
+Agent and resource-owner membership are checked again by the backend.
+
+`resources.nodePreference` is only an advisory intersection of this room's
+eligible human-paired endpoints and currently connected native nodes with the
+same device/client identity. Unknown availability produces no recommendation.
+Use ordinary native node tools separately: this preference is not a node ACL,
+and local-session control never substitutes for node invocation.
+
+Before remote session input, the desktop samples its locally verified checkout
+and adds a request to re-read relevant files. Changes have external/unknown
+provenance unless independently evidenced; do not attribute them to Friday.
+The notice cannot prove a refresh, synchronize harness memory, intercept every
+local turn or prevent concurrent edits. Coordinate overlapping sessions yourself.

@@ -73,3 +73,22 @@ anything. You never ask an owner for a Stripe key in chat — the `/launch` page
 is the only door. Point standings questions at `/launch`; you cannot read the
 board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
+# Shared local-session workspace notices
+
+Rooms' **Devices & sessions** panel shows human-shared Claude/Codex history and
+explicit follow-up controls, separately from the room composer and paired node
+directory. Desktop sharing is opt-in; disabling it stops local sharing. Native
+credentials and approvals remain on the owner's machine. Agent contributions
+carry an agent identity, never a human impersonation.
+
+The selected-session panel can show detected checkout changes, overlapping
+sessions and unknown/bounded coverage. These are advisories, not proof of fresh
+context. Sampling is capped at 512 paths, 4 MiB total and 1 MiB per file; ignored,
+dot/sensitive files, harness memory, oversized and unsampled files are excluded.
+One checkout is refreshed per 30 seconds across the connected desktop host,
+with shared-root observations reused; many sessions can make background evidence
+old. Reconnects do not reset that budget. An explicit remote input also triggers
+an on-demand sample. Non-Git/unavailable workspaces report unknown coverage.
+Changed state remains until the matching notice is proven admitted (held or
+unknown delivery does not establish refresh). The notice requests a reread,
+does not prove it happened, and applies no filesystem lock or memory sync.

@@ -140,6 +140,7 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
 
 def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
     table, room = store._table().name, receipt["roomId"]
+    actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
     return [
         {
             "ConditionCheck": {
@@ -153,11 +154,11 @@ def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
         {
             "ConditionCheck": {
                 "TableName": table,
-                "Key": {"pk": store.room_pk(room), "sk": store.member_sk("human", user)},
+                "Key": {"pk": store.room_pk(room), "sk": store.member_sk(kind, user)},
                 "ConditionExpression": "attribute_exists(sk)",
             }
         }
-        for user in sorted({human, receipt["actorUserId"]})
+        for kind, user in sorted({("human", human), actor})
     ]
 
 

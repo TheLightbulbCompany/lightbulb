@@ -57,6 +57,17 @@ async function openSession() {
 }
 afterEach(() => vi.useRealTimers());
 
+it("shows advisory workspace changes, incomplete coverage and overlapping sessions without claiming refresh", async () => {
+  const f = setup();
+  f.client.listResources.mockResolvedValue({ ...resources, sessions: [{ ...session,
+    workspace: { revision: 3, coverage: "bounded", changed: true, overlap: true } }] });
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  expect(screen.getByText(/Checkout changes detected/)).toBeTruthy();
+  expect(screen.getByText(/Multiple sessions may overlap/)).toBeTruthy();
+  expect(screen.getByText(/Ignored, sensitive, oversized/)).toBeTruthy();
+});
+
 it("applies continuing directory snapshots under frequent hints with bounded request concurrency", async () => {
   const f = setup();
   const pending: Array<(value: RoomResources) => void> = [];

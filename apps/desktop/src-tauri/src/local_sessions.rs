@@ -3,6 +3,7 @@ mod claude;
 mod codex;
 pub mod enrollment;
 mod transport;
+mod workspace;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -53,6 +54,13 @@ impl Enrollment {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentActor {
+    kind: String,
+    id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Command {
     request_id: String,
     expected_generation: String,
@@ -61,13 +69,40 @@ pub struct Command {
     expected_turn_id: Option<String>,
     session_id: String,
     room_id: String,
-    actor_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actor_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actor: Option<AgentActor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    invocation_expires_at: Option<u64>,
     command_seq: u64,
     state: String,
     created_at: u64,
     deliver_by: u64,
     held: bool,
     provider_message_id: Option<String>,
+}
+
+impl Command {
+    fn authorized_at(&self, now: u64) -> bool {
+        now < self.deliver_by
+            && match (&self.actor_user_id, &self.actor, self.invocation_expires_at) {
+                (Some(human), None, None) => !human.is_empty(),
+                (None, Some(actor), Some(expiry)) => {
+                    actor.kind == "agent" && !actor.id.is_empty() && now < expiry
+                }
+                _ => false,
+            }
+    }
+    fn provenance(&self) -> Value {
+        let mut value = json!({"roomId":self.room_id,"requestId":self.request_id});
+        if let Some(actor) = &self.actor {
+            value["actor"] = json!(actor);
+        } else {
+            value["actorUserId"] = json!(self.actor_user_id);
+        }
+        value
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,6 +121,8 @@ struct Ingress {
     native: NativeSession,
     cursor: Cursor,
     text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_revision: Option<u64>,
 }
 
 struct Journal {
@@ -121,7 +158,7 @@ impl Journal {
         };
         let admit = ordered
             && cmd.expected_generation == generation
-            && now < cmd.deliver_by
+            && cmd.authorized_at(now)
             && cmd.created_at <= now
             && cmd.deliver_by.saturating_sub(cmd.created_at) <= 30
             && cmd.state == "dispatched"
@@ -173,7 +210,13 @@ impl Journal {
         private_write(&path, &receipt)?;
         Ok(receipt)
     }
-    fn anchor(&self, command: &Command, native: &NativeSession, text: String) -> Result<()> {
+    fn anchor(
+        &self,
+        command: &Command,
+        native: &NativeSession,
+        text: String,
+        workspace_revision: Option<u64>,
+    ) -> Result<()> {
         let path = self.path(&command.session_id, &command.request_id);
         let mut receipt: Receipt = private_read(&path)?;
         if receipt.outcome != "unknown" || receipt.ingress.is_some() {
@@ -192,6 +235,7 @@ impl Journal {
             }
         }
         receipt.ingress = Some(Ingress {
+            workspace_revision,
             native: native.clone(),
             cursor: Cursor {
                 offset: meta.len(),
@@ -675,6 +719,8 @@ fn split_text(event: &Value) -> Vec<Value> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Mirror {
+    #[serde(default)]
+    workspace: workspace::State,
     native: NativeSession,
     generation: String,
     previous_generation: Option<String>,
@@ -817,6 +863,40 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_agent_wire_expiry_and_legacy_human_hash() {
+        let human = command();
+        let wire = serde_json::to_string(&human).unwrap();
+        assert_eq!(
+            wire,
+            r#"{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello","expectedTurnId":null,"sessionId":"s1","roomId":"room","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}"#
+        );
+        let mut agent = serde_json::to_value(&human).unwrap();
+        agent.as_object_mut().unwrap().remove("actorUserId");
+        agent["actor"] = json!({"kind":"agent","id":"friday"});
+        agent["invocationExpiresAt"] = json!(115);
+        let cmd: Command = serde_json::from_value(agent.clone()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal {
+            dir: dir.path().into(),
+        };
+        assert!(journal.admit(&cmd, "g1", 110).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Journal {
+            dir: dir.path().into()
+        }
+        .admit(&cmd, "g1", 115)
+        .unwrap());
+        agent["actorUserId"] = json!("alice");
+        let invalid: Command = serde_json::from_value(agent).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Journal {
+            dir: dir.path().into()
+        }
+        .admit(&invalid, "g1", 110)
+        .unwrap());
+    }
+
+    #[test]
     fn local_sessions_journal_anchors_only_future_ingress_and_preserves_terminal_receipt() {
         let dir = tempfile::tempdir().unwrap();
         let transcript = dir.path().join("history.jsonl");
@@ -838,10 +918,24 @@ mod tests {
             restriction: None,
             status: "unknown".into(),
         };
+        let mut workspace = workspace::State::default();
+        workspace.observe(Ok((dir.path().into(), "before".into())), false);
+        workspace.observe(Ok((dir.path().into(), "external-edit".into())), true);
+        let exact = format!(
+            "[Lightbulb teammate contribution {}]\n{}{}",
+            cmd.provenance(),
+            workspace.notice(),
+            cmd.text.as_deref().unwrap()
+        );
         journal
-            .anchor(&cmd, &native, "unique attributed request".into())
+            .anchor(&cmd, &native, exact.clone(), Some(workspace.revision()))
             .unwrap();
         let receipt = journal.reconcile("s1", "r1", "g1").unwrap();
+        assert_eq!(receipt.ingress.as_ref().unwrap().text, exact);
+        assert_eq!(
+            receipt.ingress.as_ref().unwrap().workspace_revision,
+            Some(workspace.revision())
+        );
         assert_eq!(
             receipt.ingress.unwrap().cursor.offset,
             fs::metadata(transcript).unwrap().len()
@@ -1062,6 +1156,7 @@ mod tests {
         let transcript = dir.path().join("transcript.jsonl");
         fs::write(&transcript, "{\"type\":\"assistant\",\"sessionId\":\"s\",\"version\":\"2.1.268\",\"uuid\":\"m\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n").unwrap();
         let mut mirror = Mirror {
+            workspace: workspace::State::default(),
             dirty: false,
             registration: RegistrationState::default(),
             native: NativeSession {

@@ -34,6 +34,8 @@ impl ClockAnchor {
 }
 
 pub(super) struct Host {
+    workspace_at: Instant,
+    workspace_key: Option<String>,
     dir: PathBuf,
     home: PathBuf,
     mirrors: BTreeMap<String, Mirror>,
@@ -41,6 +43,39 @@ pub(super) struct Host {
 }
 
 impl Host {
+    async fn observe_workspace(&mut self, key: &str) -> Result<()> {
+        let execution = self
+            .mirrors
+            .get(key)
+            .ok_or("missing local session")?
+            .native
+            .process
+            .clone();
+        let observed = match workspace::process_root(&execution, &self.home).await {
+            Ok(cwd) => workspace::scan(&cwd, &self.home).await,
+            Err(error) => Err(error),
+        };
+        let root = observed.as_ref().ok().map(|(root, _)| root.clone());
+        let keys: Vec<_> = self
+            .mirrors
+            .iter()
+            .filter(|(k, m)| {
+                *k == key
+                    || (root.is_some()
+                        && m.workspace.root() == root.as_deref()
+                        && m.native.status != "offline")
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        let overlap = keys.len() > 1;
+        for key in keys {
+            let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+            let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+            mirror.workspace.observe(observed.clone(), overlap);
+            persist_changed(&self.dir, &key, mirror, &before)?;
+        }
+        Ok(())
+    }
     fn begin_registration(&mut self, key: &str) -> Result<Value> {
         let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
         if !mirror.registration.pending || mirror.dirty {
@@ -109,6 +144,7 @@ impl Host {
                 self.mirrors.insert(
                     key.clone(),
                     Mirror {
+                        workspace: workspace::State::default(),
                         dirty: false,
                         native,
                         generation,
@@ -168,6 +204,10 @@ impl Host {
                 return Err("local history identity conflict".into());
             }
             mirror.native.status = "offline".into();
+            mirror.workspace.observe(
+                Err("workspace not yet observed after restart".into()),
+                false,
+            );
             if mirror.native.restriction.as_deref() != Some("history-gap") {
                 mirror.native.restriction = Some("runtime-unverified".into());
             }
@@ -185,6 +225,8 @@ impl Host {
             mirrors.insert(key.into(), mirror);
         }
         Ok(Self {
+            workspace_at: Instant::now() - Duration::from_secs(30),
+            workspace_key: None,
             dir,
             home,
             mirrors,
@@ -300,6 +342,24 @@ impl Host {
             if self.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
+            // One bounded checkout scan per 30s across the entire host, not per session/tick.
+            if self.workspace_at.elapsed() >= Duration::from_secs(30) {
+                self.workspace_at = Instant::now();
+                let keys: Vec<_> = self
+                    .mirrors
+                    .iter()
+                    .filter(|(_, m)| m.native.status != "offline")
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                if let Some(key) = keys
+                    .iter()
+                    .find(|k| self.workspace_key.as_ref().is_none_or(|last| *k > last))
+                    .or(keys.first())
+                {
+                    self.observe_workspace(key).await?;
+                    self.workspace_key = Some(key.clone());
+                }
+            }
             if pending_rpc
                 .as_ref()
                 .is_some_and(|(_, _, at, _, _)| at.elapsed() > Duration::from_secs(10))
@@ -347,7 +407,8 @@ impl Host {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
                     send(socket, &json!({"type":"local.session.heartbeat", "sessionId":mirror.session_id,"generation":mirror.generation,
-                        "status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction})).await?;
+                        "status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction,
+                        "workspace":mirror.workspace.summary()})).await?;
                     pending_rpc = Some((
                         key.clone(),
                         false,
@@ -500,27 +561,43 @@ impl Host {
         Ok(current)
     }
 
-    async fn reconcile(&self, session: &str, request: &str, generation: &str) -> Result<Receipt> {
+    async fn reconcile(
+        &mut self,
+        session: &str,
+        request: &str,
+        generation: &str,
+    ) -> Result<Receipt> {
         let journal = Journal {
             dir: self.dir.join("receipts"),
         };
         private_dir(&journal.dir)?;
-        let receipt = journal.reconcile(session, request, generation)?;
+        let mut receipt = journal.reconcile(session, request, generation)?;
         if receipt.outcome == "unknown" {
             if let Some(ingress) = &receipt.ingress {
                 if ingress.native.provider == "claude"
                     && self.verified(&ingress.native).await.is_ok()
                 {
                     if let Ok(Some(id)) = claude::admission(ingress) {
-                        return journal.finish(session, request, Some(id), false);
+                        receipt = journal.finish(session, request, Some(id), false)?;
                     }
+                }
+            }
+        }
+        if receipt.outcome == "applied" && !receipt.held {
+            if let Some(revision) = receipt.ingress.as_ref().and_then(|i| i.workspace_revision) {
+                if let Some((key, mirror)) = self.mirrors.iter_mut().find(|(_, m)| {
+                    m.session_id.as_deref() == Some(session) && m.generation == generation
+                }) {
+                    let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                    mirror.workspace.acknowledge(revision);
+                    persist_changed(&self.dir, key, mirror, &before)?;
                 }
             }
         }
         Ok(receipt)
     }
 
-    async fn command(&self, cmd: &Command, anchor: Option<&ClockAnchor>) -> Result<Receipt> {
+    async fn command(&mut self, cmd: &Command, anchor: Option<&ClockAnchor>) -> Result<Receipt> {
         let journal = Journal {
             dir: self.dir.join("receipts"),
         };
@@ -535,6 +612,15 @@ impl Host {
                 .reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)
                 .await;
         }
+        let Some(key) = self
+            .mirrors
+            .iter()
+            .find(|(_, m)| m.session_id.as_deref() == Some(&cmd.session_id))
+            .map(|(k, _)| k.clone())
+        else {
+            return Err("unknown command session".into());
+        };
+        self.observe_workspace(&key).await?;
         let Some(mirror) = self
             .mirrors
             .values()
@@ -547,7 +633,7 @@ impl Host {
             && !self.stop.load(Ordering::SeqCst)
             && anchor
                 .and_then(ClockAnchor::now)
-                .is_some_and(|now| now < cmd.deliver_by);
+                .is_some_and(|now| cmd.authorized_at(now));
         let native = if eligible {
             self.verified(&mirror.native).await.ok()
         } else {
@@ -576,15 +662,22 @@ impl Host {
         }
         // Provenance is server-owned. JSON escaping keeps IDs from spoofing this boundary.
         let text = format!(
-            "[Lightbulb teammate contribution {}]\n{}",
-            json!({"actorUserId":cmd.actor_user_id,"roomId":cmd.room_id,"requestId":cmd.request_id}),
+            "[Lightbulb teammate contribution {}]\n{}{}",
+            cmd.provenance(),
+            mirror.workspace.notice(),
             cmd.text.as_deref().unwrap_or("")
         );
-        if journal.anchor(cmd, &native, text.clone()).is_err()
+        let anchored = journal.anchor(
+            cmd,
+            &native,
+            text.clone(),
+            Some(mirror.workspace.revision()),
+        );
+        if anchored.is_err()
             || self.stop.load(Ordering::SeqCst)
             || !anchor
                 .and_then(ClockAnchor::now)
-                .is_some_and(|now| now < cmd.deliver_by)
+                .is_some_and(|now| cmd.authorized_at(now))
             || !process(native.process.pid).is_ok_and(|current| current == native.process)
         {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
@@ -634,7 +727,8 @@ fn persist_changed(dir: &Path, key: &str, mirror: &mut Mirror, before: &Value) -
 fn registration(mirror: &Mirror) -> Value {
     let mut body = json!({"type":"local.session.register", "session":{"provider":mirror.native.provider,
         "profileFingerprint":mirror.native.profile,"nativeConversationId":mirror.native.conversation,"generation":mirror.generation,
-        "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction}});
+        "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction,
+        "workspace":mirror.workspace.summary()}});
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
@@ -1077,6 +1171,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let mirror = Mirror {
+            workspace: workspace::State::default(),
             dirty: false,
             registration: RegistrationState::default(),
             native,
@@ -1089,6 +1184,8 @@ mod tests {
             pending: None,
         };
         let mut host = Host {
+            workspace_at: Instant::now(),
+            workspace_key: None,
             dir: dir.path().into(),
             home,
             mirrors: BTreeMap::from([("owned".into(), mirror)]),
@@ -1120,6 +1217,7 @@ mod tests {
         };
         let key = native_key(&native);
         let mirror = Mirror {
+            workspace: workspace::State::default(),
             dirty: false,
             registration: RegistrationState::default(),
             native,
@@ -1223,6 +1321,7 @@ mod tests {
             status: "unknown".into(),
         };
         let mirror = Mirror {
+            workspace: workspace::State::default(),
             dirty: false,
             registration: RegistrationState::default(),
             native,
@@ -1237,6 +1336,8 @@ mod tests {
             pending: None,
         };
         let mut host = Host {
+            workspace_at: Instant::now(),
+            workspace_key: None,
             dir: dir.path().into(),
             home: dir.path().into(),
             mirrors: BTreeMap::from([("local".into(), mirror)]),

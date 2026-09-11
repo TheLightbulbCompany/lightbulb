@@ -84,6 +84,11 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
     <div className="local-session-summary">
       <p className="font-semibold">{ownerName} · Mac · {session.deviceId.slice(0, 8)}</p>
       <p className="text-sm text-muted-foreground">{session.providerVersion} · {sessionStatus[session.status]}</p>
+      {session.workspace?.changed && <p role="status" className="text-sm text-warn">Checkout changes detected. The next remote contribution asks the session to re-read relevant files; refresh is not proven.</p>}
+      {session.workspace?.overlap && <p className="text-sm text-warn">Multiple sessions may overlap this checkout. Coordinate edits to avoid conflicts.</p>}
+      <p className="text-sm text-muted-foreground">{session.workspace?.coverage === "bounded"
+        ? "Ignored, sensitive, oversized and unsampled files are not covered. Changes have external/unknown provenance."
+        : "Workspace change coverage is unknown. Re-read relevant files before continuing."}</p>
       <p className="text-sm text-muted-foreground">{session.capabilities.sendMode === "queue" ? "Follow-ups are queued. No immediate interruption or steering." : "Only verified native controls are available."} Output updates arrive as completed messages.</p>
       {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailable[session.controlUnavailableReason]}</p>}
       <details className="text-sm text-muted-foreground"><summary>Who can see this session?</summary><p>Current members of the owner&apos;s other eligible conversations can see this shared transcript too. Contributions use the owner&apos;s native permissions and provider usage. Approval stays on their machine; room history is never sent automatically.</p></details>
@@ -118,7 +123,7 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
       <Button type="submit" disabled={!canSend || locked || !text.trim()}>Send follow-up</Button>
       {attempt?.state === "sending" && <p role="status">Sending follow-up…</p>}
       {attempt?.error && <p role="alert" className="text-sm text-warn">{attempt.error}</p>}
-      {receiptText && <p role="status" className="text-sm">{receiptText}</p>}
+      {receiptText && <p role="status" className="text-sm">{receipt?.actor ? `Agent ${receipt.actor.id}: ` : ""}{receiptText}</p>}
       {receipt?.held && <p className="text-sm text-muted-foreground">Admission is not completed work.</p>}
       {(attempt?.state === "uncertain" || (receipt && ["pending", "dispatched", "unknown"].includes(receipt.state))) && <Button type="button" variant="outline" disabled={checking} onClick={() => void checkDelivery()}>Check delivery</Button>}
       {attempt?.state === "uncertain" && <Button type="button" variant="outline" disabled={!canSend || checking} onClick={() => void submit(attempt.request)}>Retry same request</Button>}

@@ -200,6 +200,8 @@ export interface LocalSessionCapabilities {
 }
 
 export interface LocalSession {
+  /** Advisory bounded local evidence, not proof that a harness refreshed files. */
+  workspace?: { revision: number; coverage: "bounded" | "unknown"; changed: boolean; overlap: boolean };
   sessionId: string;
   deviceId: string;
   humanUserId: string;
@@ -249,7 +251,7 @@ export type LocalSessionCommand = {
   expectedTurnId?: string | null;
 } & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never });
 
-export interface LocalSessionCommandReceipt {
+export type LocalSessionCommandReceipt = {
   requestId: string;
   expectedGeneration: string;
   kind: "send" | "interrupt";
@@ -257,7 +259,6 @@ export interface LocalSessionCommandReceipt {
   expectedTurnId: string | null;
   sessionId: string;
   roomId: string;
-  actorUserId: string;
   commandSeq: number;
   /** applied acknowledges admission to the harness, not successful work. */
   state: "pending" | "dispatched" | "applied" | "rejected" | "unknown";
@@ -266,7 +267,8 @@ export interface LocalSessionCommandReceipt {
   deliverBy: number;
   held: boolean;
   providerMessageId: string | null;
-}
+} & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
+  | { actorUserId?: never; actor: { kind: "agent"; id: string }; invocationExpiresAt: number });
 
 export interface LocalSessionEnrollmentRequest {
   deviceId: string;

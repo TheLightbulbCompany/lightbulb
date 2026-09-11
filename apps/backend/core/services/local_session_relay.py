@@ -17,7 +17,6 @@ from typing import Literal
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
-from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions
 from core.services.connection_service import ConnectionService
@@ -32,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class Descriptor(ContractModel):
+    workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     provider: Literal["claude", "codex"]
     profile_fingerprint: sessions.DeviceId
     native_conversation_id: sessions.OpaqueId
@@ -49,6 +49,7 @@ class Register(ContractModel):
 
 
 class Heartbeat(ContractModel):
+    workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     type: Literal["local.session.heartbeat"]
     session_id: uuid.UUID
     generation: sessions.OpaqueId
@@ -256,6 +257,7 @@ class LocalSessionRelay:
                             status=message.status,
                             activeTurnId=message.active_turn_id,
                             onlineUntil=int(time.time()) + LIVENESS_SECONDS,
+                            workspace=message.workspace.model_dump(by_alias=True),
                         )
                         # Heartbeats may withdraw authority. A fresh registration
                         # is required to restore it after runtime revalidation.
@@ -385,7 +387,7 @@ class LocalSessionRelay:
 
     async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
-        auth = AuthContext(user_id=command["actorUserId"], org_id=owner if owner != command["actorUserId"] else None)
+        auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid)
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         connection, _ = await self.connect(current["connectionId"])

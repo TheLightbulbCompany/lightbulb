@@ -19,6 +19,7 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.repositories import container_repo, messaging_repo
 from core.services import messaging as service
 from core.services import local_sessions
+from core.services import local_session_grants
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
     AbortRunResponse,
@@ -49,6 +50,62 @@ from core.services.messaging import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:
+    authorization = request.headers.get("Authorization", "")
+    return local_session_grants.verify(
+        authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+    )
+
+
+@router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)
+async def agent_local_session_resources(auth: local_session_grants.AgentInvocation = Depends(local_session_invocation)):
+    return await local_sessions.list_resources(auth, auth.room_id)
+
+
+@router.get(
+    "/messaging/local-session-agent/sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage
+)
+async def agent_local_session_events(
+    session_id: str,
+    after_seq: Annotated[int, Query(alias="afterSeq", ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+):
+    return await local_sessions.list_events(auth, auth.room_id, session_id, after_seq, limit)
+
+
+@router.post(
+    "/messaging/local-session-agent/sessions/{session_id}/commands",
+    response_model=local_sessions.CommandReceipt,
+    status_code=202,
+)
+async def agent_local_session_command(
+    session_id: str,
+    body: local_sessions.LocalSessionCommand,
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+):
+    from core.services.local_session_relay import get_local_session_relay
+
+    receipt = await local_sessions.submit_command(auth, auth.room_id, session_id, body)
+    try:
+        await get_local_session_relay().dispatch_session(auth.owner_id, receipt.session_id)
+    except Exception:
+        logger.warning("Local session dispatch deferred")
+    return await local_sessions.get_command(auth, auth.room_id, receipt.session_id, body.request_id)
+
+
+@router.get(
+    "/messaging/local-session-agent/sessions/{session_id}/commands/{request_id}",
+    response_model=local_sessions.CommandReceipt,
+)
+async def agent_local_session_receipt(
+    session_id: str,
+    request_id: str,
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+):
+    return await local_sessions.get_command(auth, auth.room_id, session_id, request_id)
 
 
 @router.get("/messaging/rooms/{room_id}/resources", response_model=local_sessions.RoomResources)

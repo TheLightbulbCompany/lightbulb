@@ -1,4 +1,4 @@
-"""Human-authorized local harness directory and durable command admission.
+"""Room-authorized local harness directory and durable command admission.
 
 No native transport lives here. register_session is for a future verified machine
 connection; its identity arguments must come from that connection, never its payload.
@@ -11,11 +11,12 @@ import uuid
 from typing import Annotated, Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
 from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
+from core.services.local_session_grants import AgentInvocation
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")]
 DeviceId = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -57,7 +58,15 @@ class Capabilities(ContractModel):
 ControlUnavailableReason = Literal["runtime-unverified", "endpoint-unavailable", "unsupported-version", "history-gap"]
 
 
+class WorkspaceSummary(ContractModel):
+    revision: int = Field(default=0, ge=0)
+    coverage: Literal["bounded", "unknown"] = "unknown"
+    changed: bool = False
+    overlap: bool = False
+
+
 class SessionRegistration(ContractModel):
+    workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
     provider: Literal["claude", "codex"]
     profile_fingerprint: DeviceId
     native_conversation_id: OpaqueId
@@ -73,6 +82,7 @@ class SessionRegistration(ContractModel):
 
 
 class LocalSession(ContractModel):
+    workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
     session_id: str
     device_id: str
     human_user_id: str
@@ -140,16 +150,74 @@ class LocalSessionCommand(ContractModel):
         return self
 
 
+class AgentActor(ContractModel):
+    kind: Literal["agent"]
+    id: str
+
+
 class CommandReceipt(LocalSessionCommand):
     session_id: str
     room_id: str
-    actor_user_id: str
+    actor_user_id: str | None = None
+    actor: AgentActor | None = None
+    invocation_expires_at: int | None = None
     command_seq: int
     state: Literal["pending", "dispatched", "applied", "rejected", "unknown"]
     created_at: int
     deliver_by: int
     held: bool = False
     provider_message_id: str | None = None
+
+    @model_validator(mode="after")
+    def author(self):
+        if self.actor is None:
+            if not self.actor_user_id or self.invocation_expires_at is not None:
+                raise ValueError("Invalid command author")
+        elif self.actor_user_id is not None or self.invocation_expires_at is None:
+            raise ValueError("Invalid command author")
+        return self
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        result = handler(self)
+        # Human wire stays byte-compatible with existing deny_unknown_fields clients.
+        for name in ("actor_user_id", "actor", "invocation_expires_at"):
+            if getattr(self, name) is None:
+                result.pop(self.model_fields[name].alias if info.by_alias else name, None)
+        return result
+
+
+Caller = AuthContext | AgentInvocation
+
+
+def caller_owner(auth: Caller) -> str:
+    return auth.owner_id if isinstance(auth, AgentInvocation) else resolve_owner_id(auth)
+
+
+async def require_caller(auth: Caller, room: str) -> None:
+    owner = caller_owner(auth)
+    if not isinstance(auth, AgentInvocation):
+        await require_room_member(owner, auth.user_id, room)
+        return
+    meta = await messaging_repo.get_room(room)
+    if (
+        auth.room_id != room
+        or auth.expires_at <= int(time.time())
+        or not meta
+        or meta.get("ownerId") != owner
+        or await messaging_repo.get_member(room, "agent", auth.agent_id) is None
+    ):
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
+
+
+def command_caller(owner: str, command: dict) -> Caller:
+    if "actor" in command:
+        actor = AgentActor.model_validate(command["actor"])
+        return AgentInvocation(
+            owner, command["roomId"], actor.id, int(command["invocationExpiresAt"]), command["invocationId"]
+        )
+    user = command["actorUserId"]
+    return AuthContext(user_id=user, org_id=owner if owner != user else None)
 
 
 def _public(model, row: dict):
@@ -233,11 +301,11 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
-async def authorize_session(auth: AuthContext, room_id: str, session_id: str) -> tuple[dict, dict]:
+async def authorize_session(auth: Caller, room_id: str, session_id: str) -> tuple[dict, dict]:
     """One authorization path for directory hydration, events, commands and receipts."""
-    owner = resolve_owner_id(auth)
+    owner = caller_owner(auth)
     room_id = validate_uuid(room_id, label="room ID")
-    await require_room_member(owner, auth.user_id, room_id)
+    await require_caller(auth, room_id)
     session_id = validate_uuid(session_id, label="local session ID")
     row = await repo.get_session(owner, session_id)
     if row is None or row.get("ownerId") != owner:
@@ -247,10 +315,10 @@ async def authorize_session(auth: AuthContext, room_id: str, session_id: str) ->
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
 
-async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
-    owner = resolve_owner_id(auth)
+async def list_resources(auth: Caller, room_id: str) -> RoomResources:
+    owner = caller_owner(auth)
     room_id = validate_uuid(room_id, label="room ID")
-    await require_room_member(owner, auth.user_id, room_id)
+    await require_caller(auth, room_id)
     devices, sessions, paired_nodes = [], [], []
     # ponytail: bounded room membership, per-human directory reads; batch only if measured slow.
     for member in await messaging_repo.list_members(room_id):
@@ -270,7 +338,7 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
                 and owned.get(cli, {}).get("clientId") == "node-host"
             ):
                 associations.setdefault(cli, set()).add(mac)
-        await require_room_member(owner, auth.user_id, room_id)
+        await require_caller(auth, room_id)
         if await messaging_repo.get_member(room_id, "human", human) is None:
             continue
         for key, pair in sorted(owned.items()):
@@ -292,7 +360,7 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
             )
         for enrollment in enrollments:
             try:
-                await require_room_member(owner, auth.user_id, room_id)
+                await require_caller(auth, room_id)
                 if await messaging_repo.get_member(room_id, "human", human) is None:
                     continue
                 current = await _enrolled(owner, human, enrollment["deviceId"])
@@ -313,16 +381,18 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
+    await require_caller(auth, room_id)
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
 
 
 async def list_events(
-    auth: AuthContext, room_id: str, session_id: str, after_seq: int = 0, limit: int = 50
+    auth: Caller, room_id: str, session_id: str, after_seq: int = 0, limit: int = 50
 ) -> LocalSessionEventPage:
     session, _ = await authorize_session(auth, room_id, session_id)
     if after_seq < 0 or after_seq >= 10**20 - 1 or not 1 <= limit <= 100:
         raise ApiProblem("INVALID_REQUEST", "Invalid event pagination.")
     rows, next_seq = await repo.list_events(session["ownerId"], session["sessionId"], after_seq, limit)
+    await require_caller(auth, room_id)
     return LocalSessionEventPage(events=[_public(LocalSessionEvent, row) for row in rows], next_after_seq=next_seq)
 
 
@@ -349,14 +419,27 @@ def _require_control(row: dict, request: LocalSessionCommand) -> None:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "An active turn ID is required.")
 
 
-async def submit_command(
-    auth: AuthContext, room_id: str, session_id: str, request: LocalSessionCommand
-) -> CommandReceipt:
-    owner = resolve_owner_id(auth)
+async def submit_command(auth: Caller, room_id: str, session_id: str, request: LocalSessionCommand) -> CommandReceipt:
+    owner = caller_owner(auth)
     room_id = validate_uuid(room_id, label="room ID")
     session_id = validate_uuid(session_id, label="local session ID")
     payload = request.model_dump(by_alias=True)
-    req_hash = messaging_repo.request_hash(owner, session_id, room_id, auth.user_id, payload)
+    author = (
+        {
+            "actor": {"kind": "agent", "id": auth.agent_id},
+            "invocationExpiresAt": auth.expires_at,
+            "invocationId": auth.invocation_id,
+        }
+        if isinstance(auth, AgentInvocation)
+        else {"actorUserId": auth.user_id}
+    )
+    req_hash = messaging_repo.request_hash(
+        owner,
+        session_id,
+        room_id,
+        {"kind": "agent", "id": auth.agent_id} if isinstance(auth, AgentInvocation) else auth.user_id,
+        payload,
+    )
     for _ in range(6):
         row, enrollment = await authorize_session(auth, room_id, session_id)
         existing = await repo.get_command(owner, session_id, request.request_id)
@@ -366,17 +449,19 @@ async def submit_command(
             return _public(CommandReceipt, existing)
         _require_control(row, request)
         now = int(time.time())
+        if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
         receipt = {
             **payload,
             "pk": repo.session_pk(owner, session_id),
             "sk": f"COMMAND#{request.request_id}",
             "sessionId": session_id,
             "roomId": room_id,
-            "actorUserId": auth.user_id,
+            **author,
             "commandSeq": row["commandSeq"] + 1,
             "state": "pending",
             "createdAt": now,
-            "deliverBy": now + 30,
+            "deliverBy": min(now + 30, auth.expires_at) if isinstance(auth, AgentInvocation) else now + 30,
             "requestHash": req_hash,
         }
         try:
@@ -388,7 +473,7 @@ async def submit_command(
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
 
 
-async def get_command(auth: AuthContext, room_id: str, session_id: str, request_id: str) -> CommandReceipt:
+async def get_command(auth: Caller, room_id: str, session_id: str, request_id: str) -> CommandReceipt:
     room_id = validate_uuid(room_id, label="room ID")
     session, _ = await authorize_session(auth, room_id, session_id)
     # Reuse the command identifier contract without accepting payload-owned identity.
@@ -401,4 +486,5 @@ async def get_command(auth: AuthContext, room_id: str, session_id: str, request_
     row = await repo.get_command(session["ownerId"], session["sessionId"], request_id)
     if row is None or row["roomId"] != room_id:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found in this room.")
+    await require_caller(auth, room_id)
     return _public(CommandReceipt, row)

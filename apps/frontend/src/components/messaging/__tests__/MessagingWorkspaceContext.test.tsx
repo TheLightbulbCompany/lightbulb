@@ -96,6 +96,12 @@ it("routes message authors through the existing participant DM action", async ()
   expect(state.selectDm).toHaveBeenCalledWith(panel.participants[1]);
 });
 
+it("returns DM failures to the profile so it can offer retry", async () => {
+  state.selectDm.mockRejectedValueOnce(new Error("Conversation unavailable"));
+  compose();
+  await expect(panel.onSelectParticipant?.(panel.participants[1])).rejects.toThrow("Conversation unavailable");
+});
+
 it("renders OpenClaw string tool progress without crashing", () => {
   state.runs = [{
     roomId: room.roomId,

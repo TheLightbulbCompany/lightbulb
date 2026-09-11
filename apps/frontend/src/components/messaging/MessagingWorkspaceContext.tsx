@@ -319,7 +319,7 @@ export function MessagingWorkspaceProvider({
     threadComposer,
     onSelectThread: setThreadId,
     selectedThreadId: threadId,
-    onSelectParticipant: selectParticipant,
+    onSelectParticipant: async (participant) => { await rooms.selectDm(participant); },
     onRetry: () => void rooms.refreshRoom(),
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
     onSetReaction: rooms.setReaction,

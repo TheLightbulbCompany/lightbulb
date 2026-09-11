@@ -51,6 +51,54 @@ def _make_async_httpx_client_mock() -> MagicMock:
 
 
 @pytest.mark.asyncio
+async def test_swallows_role_contract_seeder_failure_and_continues(monkeypatch, tmp_path, manager):
+    """pre_stage_starter_roster raises -> write_user_configs still reaches
+    ensure_device_identities.
+
+    The seeder reads six tracked AGENTS.md files off disk, so a missing or
+    unreadable file raises rather than returning. Its try/except in
+    write_user_configs is what keeps that from failing the whole provision;
+    without the guard an owner would get no container at all instead of a
+    container missing one role contract.
+    """
+    monkeypatch.setattr(settings, "EFS_MOUNT_PATH", str(tmp_path))
+
+    # Non-empty starter ids: the branch under test is gated on them.
+    repo = MagicMock(resolve_owner_row=AsyncMock(return_value=MagicMock(starter_agent_ids={"ceo": "agent-ceo"})))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+
+    roster_mock = AsyncMock(side_effect=RuntimeError("EFS hiccup"))
+    ensure_devices_mock = AsyncMock()
+
+    with (
+        patch(
+            "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+            AsyncMock(return_value=[{"id": "agent-ceo", "role": "ceo"}]),
+        ),
+        patch("core.containers.ecs_manager.write_openclaw_config", AsyncMock()),
+        patch("core.services.starter_roster.pre_stage_starter_roster", roster_mock),
+        patch("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None)),
+        patch(
+            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(manager, "ensure_device_identities", ensure_devices_mock),
+        patch("httpx.AsyncClient", _make_async_httpx_client_mock()),
+    ):
+        # Should not raise even though the seeder raised.
+        await manager.write_user_configs(
+            user_id="user_abc",
+            gateway_token="t" * 32,
+            provider_choice="bedrock_claude",
+            byo_provider=None,
+            aip_arns=_AIPS,
+        )
+
+    roster_mock.assert_awaited_once()
+    ensure_devices_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mints_a_key_for_every_agent_and_stages_per_agent_identities(monkeypatch, tmp_path, manager):
     """write_user_configs mints a Paperclip key for EVERY agent (not just the
     CEO) and threads the {agent_id: key} map + company_id into the per-agent

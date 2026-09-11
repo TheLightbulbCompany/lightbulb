@@ -1,11 +1,15 @@
-"""The seeded playbook rule must forbid printing the Paperclip key.
+"""The credential rule must forbid printing the Paperclip key.
 
 Paperclip wakes an agent with fork-side text that still says to load the key
 from a file (``claimed_api_key_path``). A playbook that omits the prohibition
 produces an agent that follows that instruction and prints a live key into its
 visible reasoning, which is the 2026-08-14 leak. The company-agent materializer
-is the seed path that writes a model-authored body, so the rule cannot be left
-to the planner -- it appends it.
+writes a model-authored body, so the rule cannot be left to the planner -- it
+appends it.
+
+The starter-roster role contracts do NOT carry this rule and nothing appends to
+them, so there is no seeded playbook left to assert against here; see
+``core/services/paperclip_credential_rule``'s module docstring.
 """
 
 from unittest.mock import MagicMock
@@ -25,6 +29,11 @@ def test_the_rule_itself_names_the_vars_but_forbids_printing_the_key():
     assert "PAPERCLIP_API_KEY" in PAPERCLIP_CREDENTIAL_RULE
     assert "$PAPERCLIP_API_URL" in PAPERCLIP_CREDENTIAL_RULE
     assert "Authorization: Bearer $" not in PAPERCLIP_CREDENTIAL_RULE
+    # A written-out `Authorization: Bearer $...` is the exact substring that
+    # triggers OpenClaw's transcript redaction (masked to `Bearer ***`, var name
+    # truncated), which the next turn copies verbatim and 401s forever. The rule
+    # must route through the helper script instead of ever spelling it out.
+    assert "paperclip-api.sh" in PAPERCLIP_CREDENTIAL_RULE
     # And must be told to ignore the stale fork-side wake instruction.
     assert "ignore" in PAPERCLIP_CREDENTIAL_RULE
     # It must never itself demonstrate reading the file.

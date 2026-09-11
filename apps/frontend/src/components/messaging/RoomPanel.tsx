@@ -125,12 +125,13 @@ function RoomBoundary(props: RoomPanelProps) {
       setAttempts((current) => new Map(current).set(key, { observed: composer.sendState, state: "sending", revision }));
       try {
         await callback(request);
-      } catch {
+      } catch (error) {
         setAttempts((current) => {
           const latest = current.get(key);
           if (!latest || latest.revision !== revision || latest.state === "persisted" || latest.state === "rejected") return current;
           return new Map(current).set(key, { ...latest, state: "uncertain" });
         });
+        throw error;
       }
     }
     return {

@@ -509,6 +509,9 @@ it("keeps the New line when a send fails and clears it after a successful send",
 
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).not.toBeDisabled());
   expect(onSubmit).toHaveBeenCalledTimes(1);
+  // The failed send has now fully settled (composer re-enabled): the New line must
+  // still be here, not just synchronously right after the keydown.
+  expect(screen.getByRole("separator", { name: "New messages" })).toBeInTheDocument();
 
   await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "Second try");
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });

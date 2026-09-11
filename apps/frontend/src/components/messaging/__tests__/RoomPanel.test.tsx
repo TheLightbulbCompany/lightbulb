@@ -564,6 +564,26 @@ it("dismisses a medium overlay on Escape from outside the room and restores its 
   expect(onSelectThread).not.toHaveBeenCalled();
 });
 
+it("leaves a medium overlay open when Escape is dismissing an open dialog", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(min-width: 860px) and (max-width: 1179px)",
+    media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList));
+  const user = userEvent.setup();
+  const onSelectThread = vi.fn();
+  render(<><button>Outside room</button><RoomPanel {...props} onSelectThread={onSelectThread} /></>);
+  await user.click(screen.getByRole("button", { name: "Reply in thread" }));
+  await user.click(screen.getByRole("button", { name: "Outside room" }));
+  const sheet = document.body.appendChild(document.createElement("div"));
+  sheet.setAttribute("role", "dialog");
+
+  await user.keyboard("{Escape}");
+  sheet.remove();
+
+  expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+  expect(onSelectThread).not.toHaveBeenCalledWith(null);
+});
+
 it("collapses consecutive messages from the same author and reveals the time in the gutter", () => {
   const second: RoomMessage = { ...message, messageId: "message-2", messageSeq: 2, createdAt: "2026-09-10T00:01:00Z", text: "Again" };
   render(<RoomPanel {...props} messages={[message, second]} />);

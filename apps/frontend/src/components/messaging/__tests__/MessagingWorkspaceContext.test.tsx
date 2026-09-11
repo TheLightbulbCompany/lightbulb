@@ -1,10 +1,11 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
+import { draftKey } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@/hooks/useRooms";
 
@@ -27,9 +28,10 @@ vi.mock("../RoomDirectory", () => ({ RoomDirectory: (props: RoomDirectoryProps) 
   directory = props;
   return <nav aria-label="Conversations" />;
 } }));
+const editLast = vi.fn();
 vi.mock("../RoomPanel", () => ({ RoomPanel: (props: RoomPanelProps) => {
   panel = props;
-  return <section aria-label="Messages">{renderComposer && <RoomComposer {...props.composer} />}</section>;
+  return <section aria-label="Messages">{renderComposer && <RoomComposer {...props.composer} onEditLast={editLast} />}</section>;
 } }));
 
 import { MessagingWorkspaceProvider, useMessagingWorkspace, type MessagingWorkspaceValue } from "../MessagingWorkspaceContext";
@@ -68,6 +70,7 @@ const state = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  state.rooms = [room];
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
   state.directoryError = undefined;
@@ -81,7 +84,7 @@ beforeEach(() => {
   mocks.agents.mockReturnValue({ agents: [{ id: "agent-friday", name: "Friday" }] });
   mocks.roster.mockReturnValue([{ agent: { id: "agent-friday" }, state: "running" }]);
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); localStorage.clear(); });
 
 function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void) {
   return render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
@@ -362,4 +365,103 @@ it("does not clear the new room's draft when the old room's send finishes", asyn
   });
 
   expect(panel.composer.text).toBe("Keep this draft in B");
+});
+
+it("clears the sending room's stored draft when the owner switches rooms mid-send", async () => {
+  let resolveSend!: () => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+  const view = compose();
+  act(() => panel.composer.onTextChange("Send from A"));
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).not.toBeNull();
+  const request = {
+    clientMessageId: panel.composer.clientMessageId,
+    text: "Send from A",
+    mentions: [],
+    replyToMessageId: null,
+    threadRootMessageId: null,
+  };
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  await act(async () => {
+    resolveSend();
+    await sending;
+  });
+
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+});
+
+it("restores a per-room draft when the owner returns to the room", () => {
+  const view = compose();
+  act(() => { panel.composer.onTextChange("Draft in A"); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  expect(panel.composer.text).toBe("");
+
+  state.activeRoomId = room.roomId;
+  state.activeRoom = room;
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  expect(panel.composer.text).toBe("Draft in A");
+});
+
+it("moves to the next room on Alt+ArrowDown and the next unread on Alt+Shift+ArrowDown", () => {
+  const unreadRoom = { ...room, roomId: "room-2", unreadCount: 2 };
+  const thirdRoom = { ...room, roomId: "room-3" };
+  // The adjacent room is deliberately NOT the unread one, so the two
+  // shortcuts cannot pass by landing on the same room.
+  state.rooms = [room, thirdRoom, unreadRoom];
+  compose();
+
+  fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
+  expect(state.selectRoom).toHaveBeenCalledWith(thirdRoom.roomId);
+
+  fireEvent.keyDown(window, { key: "ArrowDown", altKey: true, shiftKey: true });
+  expect(state.selectRoom).toHaveBeenLastCalledWith(unreadRoom.roomId);
+});
+
+it("moves rooms on Alt+ArrowUp from inside the composer instead of editing the last message", () => {
+  renderComposer = true;
+  state.rooms = [room, { ...room, roomId: "room-3" }];
+  compose();
+
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp", altKey: true });
+
+  expect(state.selectRoom).toHaveBeenCalledWith("room-3");
+  expect(editLast).not.toHaveBeenCalled();
+});
+
+it("opens the shortcut sheet on Cmd+/", () => {
+  compose();
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+});
+
+it("does not stack the shortcut sheet over another open dialog", () => {
+  compose();
+  const palette = document.body.appendChild(document.createElement("div"));
+  palette.setAttribute("role", "dialog");
+
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  palette.remove();
+
+  expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+});
+
+it("closes the shortcut sheet on a second Cmd+/, even though it is itself an open dialog", () => {
+  compose();
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
 });

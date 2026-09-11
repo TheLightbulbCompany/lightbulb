@@ -23,12 +23,21 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/LocalSessionPanel.tsx.
                                  Optional adapter/tool availability requires the new container image; docs are not deployment evidence.
   - Workspace search ........ references/surfaces.md
-                              <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label)
+                              <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);
+                                 apps/frontend/src/components/teams/command-palette/CommandPalette.tsx (the Conversations group,
+                                 rendered first); components/messaging/roomCommands.ts (useRoomCommandResults — rooms then
+                                 people, degrades to [] via useMessagingWorkspaceOptional when no messaging provider is mounted,
+                                 e.g. InlineTeamsPanel.tsx)
   - Message actions ......... references/surfaces.md
                               <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
                                  reply-in-thread, edit/delete); messageLinks.ts (copy-link permalink format);
                                  RoomPanel.tsx renderRun (muted "<Agent> finished · no reply" / "stopped" / "run failed"
                                  status line for a silent agent turn)
+  - Composer ................ references/surfaces.md
+                              <- apps/frontend/src/components/messaging/RoomComposer.tsx (typeaheads, formatting toolbar,
+                                 drag-and-drop, up-arrow edit); composerText.ts (caret grammar); mentions.ts
+                                 resolveTypedMentions (typed tokens resolve on send); respondHint.ts (must mirror
+                                 core/services/messaging.py select_dispatch_targets); drafts.ts (lightbulb.messaging.draft| keys)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)

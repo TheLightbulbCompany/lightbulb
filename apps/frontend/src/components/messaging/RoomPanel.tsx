@@ -12,6 +12,7 @@ import { MarkdownView } from "@/components/teams/shared/components/MarkdownView"
 import type { RoomResourceSource } from "@/hooks/useRoomResources";
 import { RoomResources } from "./RoomResources";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
+import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
@@ -389,7 +390,9 @@ function RoomContent({
 
   useEffect(() => {
     if (!showDetail || showResources) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") closeOverlay(); };
+    // An open dialog owns Escape — dismissing the overlay underneath it as
+    // well would close two things on one keypress.
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !hasBlockingShortcutDialog()) closeOverlay(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail, showResources]);

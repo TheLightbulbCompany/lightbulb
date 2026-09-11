@@ -205,4 +205,4 @@
 .room-shortcuts { display: grid; gap: 4px; margin: 8px 0 16px; }
 .room-shortcuts > div { display: flex; align-items: baseline; gap: 12px; }
 .room-shortcuts dt { flex: none; min-width: 88px; }
-.room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono); font-size: .75rem; color: var(--foreground); }
+.room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--foreground); }

@@ -9,7 +9,7 @@ import urllib.request
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import boto3
 import botocore.session
@@ -28,6 +28,7 @@ MAX_MESSAGE_BYTES = 100_000
 LIVE_EVENT_TYPES = frozenset(
     {
         "room.message.created",
+        "room.message.available",
         "room.typing.changed",
         "room.run.frame",
         "room.metadata.changed",
@@ -120,7 +121,7 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
     except KeyError as exc:
         raise ValueError(f"missing canonical message field {exc.args[0]}") from exc
 
-    message_id = _require_uuid(message["messageId"], "messageId")
+    _require_uuid(message["messageId"], "messageId")
     room_id = _require_uuid(message["roomId"], "roomId")
     message_seq = _require_int(message["messageSeq"], "messageSeq", minimum=1)
     _require_int(message["roomRevision"], "roomRevision", minimum=1)
@@ -220,6 +221,67 @@ def _event_json(event: dict[str, Any]) -> str:
     return encoded
 
 
+def _query_rows(pk: str, prefix: str) -> list[dict[str, Any]]:
+    rows = []
+    cursor = {}
+    while True:
+        response = _ddb().query(
+            TableName=MESSAGING_TABLE,
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": {"S": pk}, ":prefix": {"S": prefix}},
+            ConsistentRead=True,
+            **cursor,
+        )
+        rows.extend(_deserialize_map(row) for row in response.get("Items", []))
+        if not response.get("LastEvaluatedKey"):
+            return rows
+        cursor = {"ExclusiveStartKey": response["LastEvaluatedKey"]}
+
+
+def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
+    room_id, seq = message["roomId"], message["messageSeq"]
+    owner_id = meta["ownerId"]
+    root = message["threadRootMessageId"]
+    participants = set()
+    if root:
+        # ponytail: thread replies scan founder-sized rooms; add a thread index
+        # when measured room history makes this query expensive.
+        participants = {
+            row["author"]["id"] for row in _query_rows(f"ROOM#{room_id}", "MSG#")
+            if row.get("author", {}).get("kind") == "human"
+            and (row.get("messageId") == root or row.get("threadRootMessageId") == root)
+        }
+    mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
+    for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
+        user_id = candidate["id"]
+        # Recheck membership after discovery, including remove/rejoin history floor.
+        member = _get_item(f"ROOM#{room_id}", f"MEMBER#human#{user_id}")
+        if not member or member.get("ownerId") != owner_id or seq <= member.get("joinedSeq", 0):
+            continue
+        mapping = _get_item(f"OWNER#{owner_id}", f"USERSTREAM#{user_id}")
+        if not mapping or mapping.get("active") is not True:
+            continue
+        key = _require_uuid(mapping.get("channelKey"), "channelKey")
+        reverse = _get_item(f"STREAM#{key}", "META")
+        if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != owner_id or reverse.get("userId") != user_id:
+            continue
+        read = _get_item(f"ROOM#{room_id}", f"READ#human#{user_id}") or {}
+        notify = (
+            not (message["author"]["kind"] == "human" and message["author"]["id"] == user_id)
+            and seq > read.get("lastReadSeq", 0)
+            and (meta.get("kind") in {"dm", "group-dm"} or user_id in mentioned or user_id in participants)
+        )
+        # Content stays behind an authenticated HTTP read, even if access is
+        # removed between this membership check and the user's delivery.
+        _publish(f"/users/{key}", {
+            "schemaVersion": 1, "eventId": str(uuid5(UUID(message["messageId"]), f"notify:{user_id}")),
+            "type": "room.message.available", "occurredAt": message["createdAt"],
+            "roomId": room_id, "messageSeq": seq,
+            "payload": {"roomId": room_id, "messageId": message["messageId"],
+                        "messageSeq": seq, "threadRootMessageId": root, "notify": notify},
+        })
+
+
 def _current_credentials():
     credentials = botocore.session.get_session().get_credentials()
     if credentials is None:
@@ -288,6 +350,7 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
+    _notify_members(message, meta)
     _publish(f"/rooms/{message['roomId']}/{delivery_key}", event)
 
 

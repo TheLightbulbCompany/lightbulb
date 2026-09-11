@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
 import type { ListenMode, MemberRef } from "@lightbulb/shared";
@@ -44,6 +44,7 @@ export interface RoomPanelProps {
   composer: RoomComposerProps;
   threadComposer?: { parentMessageId: string; composer: RoomComposerProps };
   onSelectThread?: (parentMessageId: string | null) => void;
+  selectedThreadId?: string | null;
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
@@ -155,6 +156,7 @@ function RoomContent({
   composer,
   threadComposer,
   onSelectThread,
+  selectedThreadId,
   onSelectParticipant,
   onRetry,
   onListenModeChange,
@@ -176,7 +178,10 @@ function RoomContent({
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [memberError, setMemberError] = useState<string>();
   const [contextCollapsed, setContextCollapsed] = useState(true);
-  const [selection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
+  const selection = useMemo(() => selectedThreadId === undefined ? localSelection
+    : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
+      : localSelection?.kind === "context" ? localSelection : null, [selectedThreadId, localSelection]);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);

@@ -65,6 +65,7 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
 )
 USER_LIVE_EVENT_TYPES = frozenset(
     {
+        "room.message.available",
         "room.subscription.rotated",
         "room.access.removed",
         "runtime.operation.changed",

@@ -5,7 +5,9 @@ import type { RoomMessage } from "../types";
 const base: RoomMessage = { messageId: "m", roomId: "r", messageSeq: 0, roomRevision: 1, author: { kind: "agent", id: "friday", displayName: "Friday" }, text: "x", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-11T10:00:00Z", runId: null };
 const at = (seq: number, iso: string, author = base.author, extra: Partial<RoomMessage> = {}): RoomMessage => ({ ...base, messageId: `m${seq}`, messageSeq: seq, createdAt: iso, author, ...extra });
 const owner = { kind: "human" as const, id: "owner", displayName: "Owner" };
-const now = new Date("2026-09-11T12:00:00Z");
+// Built from local-time components (not a UTC ISO string) so this instant is
+// pinned to the same local calendar day on every host timezone.
+const now = new Date(2026, 8, 11, 12, 0);
 
 describe("buildTimeline", () => {
   it("collapses consecutive same-author messages within five minutes", () => {
@@ -18,7 +20,11 @@ describe("buildTimeline", () => {
     expect(items.filter((item) => item.kind === "message").map((item) => item.kind === "message" && item.collapsed)).toEqual([false, false, false, false, false]);
   });
   it("emits one date divider per local day and never collapses across it", () => {
-    const items = buildTimeline([at(1, "2026-09-10T23:59:00Z"), at(2, "2026-09-11T00:01:00Z")], { readSeq: null, now });
+    // Local-time constructors, not UTC ISO literals: these two instants must
+    // straddle a local calendar-day boundary on every host timezone.
+    const lateYesterday = new Date(2026, 8, 10, 23, 59).toISOString();
+    const earlyToday = new Date(2026, 8, 11, 0, 1).toISOString();
+    const items = buildTimeline([at(1, lateYesterday), at(2, earlyToday)], { readSeq: null, now });
     expect(items.map((item) => item.kind)).toEqual(["date", "message", "date", "message"]);
     expect(items[3]).toMatchObject({ kind: "message", collapsed: false });
   });
@@ -41,9 +47,15 @@ describe("buildTimeline", () => {
 
 describe("dateDividerLabel", () => {
   it("labels today, yesterday, weekday within a week, otherwise a full date", () => {
-    expect(dateDividerLabel(new Date("2026-09-11T09:00:00Z"), now)).toBe("Today");
-    expect(dateDividerLabel(new Date("2026-09-10T09:00:00Z"), now)).toBe("Yesterday");
-    expect(dateDividerLabel(new Date("2026-09-08T09:00:00Z"), now)).toBe(new Date("2026-09-08T09:00:00Z").toLocaleDateString(undefined, { weekday: "long" }));
-    expect(dateDividerLabel(new Date("2026-08-01T09:00:00Z"), now)).toBe(new Date("2026-08-01T09:00:00Z").toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }));
+    // Local-time constructors so "today"/"yesterday" are pinned to `now`'s
+    // local calendar day on every host timezone, not just hosts near UTC.
+    const today = new Date(2026, 8, 11, 9);
+    const yesterday = new Date(2026, 8, 10, 9);
+    const withinWeek = new Date(2026, 8, 8, 9);
+    const overWeek = new Date(2026, 7, 1, 9);
+    expect(dateDividerLabel(today, now)).toBe("Today");
+    expect(dateDividerLabel(yesterday, now)).toBe("Yesterday");
+    expect(dateDividerLabel(withinWeek, now)).toBe(withinWeek.toLocaleDateString(undefined, { weekday: "long" }));
+    expect(dateDividerLabel(overWeek, now)).toBe(overWeek.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }));
   });
 });

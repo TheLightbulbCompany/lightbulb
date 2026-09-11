@@ -154,7 +154,7 @@ function DirectoryContent({
               : <Icon size={16} aria-hidden="true" />}
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
             {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
-            {draftRoomIds.includes(room.roomId) && <Pencil size={14} aria-label="Unsent draft" className="text-muted-foreground" />}
+            {draftRoomIds.includes(room.roomId) && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
           </button>{onMarkUnread && <DropdownMenu><DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={markingUnread === room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
           </DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={markingUnread !== null} onSelect={() => void markRoomUnread(room.roomId, label)}>
@@ -170,7 +170,8 @@ function DirectoryContent({
         return <li key={`draft:${room.roomId}`} className="room-directory-row">
           <button type="button" className="room-directory-entry" aria-current={room.roomId === currentRoomId ? "page" : undefined}
             onClick={() => onSelectRoom(room.roomId)}>
-            <Pencil size={16} aria-label="Unsent draft" />
+            {/* The "Drafts" heading already says it — an "Unsent draft" label on every row is noise. */}
+            <Pencil size={16} aria-hidden="true" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
           </button>
         </li>;

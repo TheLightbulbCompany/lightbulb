@@ -146,7 +146,9 @@ it("lists rooms with a saved draft under Drafts and marks the row", () => {
   render(<RoomDirectory {...directory} draftRoomIds={["channel"]} />);
   const drafts = screen.getByRole("region", { name: "Drafts" });
   expect(within(drafts).getByRole("button", { name: /Launch/ })).toBeInTheDocument();
-  expect(screen.getAllByLabelText("Unsent draft").length).toBeGreaterThan(0);
+  // Only the room-list row is labelled; the Drafts row's pencil is decorative,
+  // since its own section heading already says Drafts.
+  expect(screen.getAllByLabelText("Unsent draft")).toHaveLength(1);
 });
 
 it("renders no Drafts section when nothing is drafted", () => {

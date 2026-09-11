@@ -9,8 +9,8 @@ from core.services.connection_service import ConnectionService
 def ddb_table_with_owner_gsi():
     """Stand up an in-memory ws-connections table with the by-owner-id GSI.
 
-    Mirrors the by-user-id GSI fixture in test_connection_service_query.py but
-    uses an INCLUDE projection (userId + connectionType) so fan-out can demux
+    Mirrors the real index (``apps/infra/lib/stacks/api-stack.ts:499``): an
+    INCLUDE projection carrying userId + connectionType, so fan-out can demux
     per member and filter by connection type.
     """
     with mock_aws():

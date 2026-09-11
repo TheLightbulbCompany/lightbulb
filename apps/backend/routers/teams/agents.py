@@ -8,8 +8,8 @@ at the FastAPI boundary.
 
 This module also defines the shared ``_ctx`` Depends helper (and the
 indirection helpers it leans on — ``_admin``, ``_repo``,
-``_gateway_url_for_env``, ``_decrypt_service_token``) that the rest of
-the Teams BFF (Tasks 7-12) imports.
+``_gateway_url_for_env``) that the rest of the Teams BFF (Tasks 7-12)
+imports.
 """
 
 from __future__ import annotations
@@ -160,19 +160,6 @@ def _gateway_url_for_env() -> str:
     Pure function — reads ``settings.ENVIRONMENT`` only. Mocked in tests.
     """
     return _ws_gateway_url(settings.ENVIRONMENT or "")
-
-
-async def _decrypt_service_token(user_id: str) -> str:
-    """Look up the user's paperclip-companies row and decrypt the
-    Fernet-encrypted OpenClaw service token.
-
-    Async because the DDB read goes through ``run_in_thread`` under the
-    hood. Tests monkeypatch with an ``AsyncMock``.
-    """
-    company = await _repo().get(user_id)
-    if company is None:
-        raise RuntimeError(f"no paperclip company row for user {user_id}")
-    return decrypt(company.service_token_encrypted)
 
 
 def _creator_user_id(ctx) -> str:

@@ -153,9 +153,24 @@ class RoomSection(ContractModel):
     id: uuid.UUID
     name: str = Field(min_length=1, max_length=SECTION_NAME_MAX_CHARS)
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("name must not be blank")
+        return cleaned
+
 
 class SectionsRequest(ContractModel):
     sections: list[RoomSection] = Field(max_length=MAX_SECTIONS)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "SectionsRequest":
+        ids = [section.id for section in self.sections]
+        if len(ids) != len(set(ids)):
+            raise ValueError("section ids must be unique")
+        return self
 
 
 class RoomListResponse(ContractModel):

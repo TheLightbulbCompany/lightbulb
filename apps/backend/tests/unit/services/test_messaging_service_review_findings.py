@@ -370,4 +370,17 @@ def test_sections_request_rejects_too_many_sections_and_blank_names():
     with pytest.raises(ValueError):
         messaging.RoomSection(id=section_id, name="")
     with pytest.raises(ValueError):
+        messaging.RoomSection(id=section_id, name="   ")
+    with pytest.raises(ValueError):
         messaging.RoomSection(id=section_id, name="x" * (messaging.SECTION_NAME_MAX_CHARS + 1))
+
+
+def test_sections_request_rejects_duplicate_section_ids():
+    section_id = "33333333-3333-4333-8333-333333333333"
+    with pytest.raises(ValueError):
+        messaging.SectionsRequest(
+            sections=[
+                messaging.RoomSection(id=section_id, name="Ship"),
+                messaging.RoomSection(id=section_id, name="Admin"),
+            ]
+        )

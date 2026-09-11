@@ -672,3 +672,22 @@ async def test_user_sections_are_per_user_and_survive_stream_deactivation(table)
     await repo.ensure_user_stream(OWNER, USER_A)
     await repo.deactivate_user_stream(OWNER, USER_A)
     assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == [{"id": "s-1", "name": "Admin"}]
+
+
+@pytest.mark.asyncio
+async def test_put_user_sections_does_not_clobber_other_pref_row_attributes(table):
+    repo._table().put_item(
+        Item={
+            "pk": repo.owner_pk(OWNER),
+            "sk": repo.pref_sk(USER_A),
+            "ownerId": OWNER,
+            "userId": USER_A,
+            "theme": "dark",
+        }
+    )
+
+    await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
+
+    prefs = await repo.get_user_prefs(OWNER, USER_A)
+    assert prefs["sections"] == [{"id": "s-1", "name": "Admin"}]
+    assert prefs["theme"] == "dark"

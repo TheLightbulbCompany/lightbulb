@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Tasks 1–6 implemented locally and independently reviewed through September 11, 2026. Latest controller verification: 77 backend service/ingress + 33 machine-admission tests, 106 frontend tests and TypeScript, 32 shared tests and TypeScript, 60 plugin tests/build, and 87 Rust library + 8 probe tests passed; 3 explicit-live tests remain ignored. Reviewed integration with current `main`, then Paperclip links, are next. Packaged-app/deployed/two-person validation remains a release gate. The user separately authorized dev-first testing followed by prod/founder rollout; no feature push or deployment has occurred yet.
+**Status:** Tasks 1–6 and integration with `main` at `68c52c359` are implemented locally and independently reviewed through September 11, 2026. Integration checks passed: 117 backend, 69 plugin/build, 272 frontend, 137 shared, and 87 Rust library + 8 probe tests, with 3 explicit-live tests ignored. The final UI-only integration fix passed a fresh 164-test covering run and TypeScript. Paperclip links are next. Packaged-app/deployed/two-person validation remains a release gate. The user separately authorized dev-first testing followed by prod/founder rollout; no feature push or deployment has occurred yet.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -426,6 +426,8 @@ pnpm --filter @lightbulb/frontend test -- src/components/messaging/__tests__/Roo
 **Local checkpoint:** Reviewed through `4b3661403`, including fixes for blocking FIFO opens and a test dependency on Git history absent in shallow CI. A distinct-purpose grant lasts at most 300 seconds and travels only in `X-Lightbulb-Local-Session-Token`; canonical ingress JSON and existing gateway authentication remain unchanged for mixed-version rollout. Actual SDK tests cover per-run bindings and secret redaction; full gateway/queue/log behavior remains a live gate. Agent authorship stays typed, not a forged human identity.
 
 Workspace evidence is private and bounded: 512 paths, 4 MiB total, 1 MiB/file; background scanning permits one checkout per 30 seconds across the host, with an immediate target scan before remote commands. Many roots can make background evidence old (512 roots imply roughly 256 minutes per sweep). Coverage is explicitly bounded/unknown, and a notice requests a reread without claiming it happened. No filesystem lock or personal-memory synchronization was added.
+
+**Integration checkpoint:** `af5ee04d6` merges exact `68c52c359`, preserving its ambient-agent admission, Slack-parity messaging, canonical message permalinks and run-status surfaces. Reviewed fix `49f5f5a3e` makes same-room message navigation leave the resources pane before targeting hidden content on narrow screens. Combined regressions also cover private invocation forwarding through the ambient gate, controlled thread/resources selection and native Markdown isolation. Task 7 extends this existing singleton Messages navigation; it must not introduce a second session-room router.
 
 ### Task 7 — Paperclip links and a real handoff
 

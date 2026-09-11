@@ -56,6 +56,16 @@
   --lb-ink-mute: rgba(245, 239, 226, 0.68);
   /* §06: small labels on a midnight ground are brass, not dimmed cream. */
   --lb-ink-faint: #b68235;
+
+  /* The legacy ink steps /docs and /blog still read. They are computed at
+     :root from cream and inherit as fixed dark greys, so they must be
+     re-pointed here or body copy stays dark on the navy ground. */
+  --midnight-soft: rgba(245, 239, 226, 0.84);
+  --midnight-muted: rgba(245, 239, 226, 0.72);
+  --midnight-label: rgba(245, 239, 226, 0.66);
+  --midnight-faint: rgba(245, 239, 226, 0.5);
+  --edge: rgba(245, 239, 226, 0.14);
+  --edge-soft: rgba(245, 239, 226, 0.09);
 }
 
 .ld-page .lb-wrap { max-width: var(--lb-maxw); margin: 0 auto; padding: 0 var(--lb-edge); }

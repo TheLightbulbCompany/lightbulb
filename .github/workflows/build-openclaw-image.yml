@@ -16,6 +16,7 @@ on:
     paths:
       - ".github/workflows/build-openclaw-image.yml"
       - "apps/infra/openclaw/Dockerfile"
+      - "apps/infra/openclaw/.dockerignore"
       # The Dockerfile bakes apps/infra/openclaw/skills/** into the image, so a
       # change to the bundled skill (e.g. SKILL.md, a reference, or a helper
       # script) must rebuild + republish — otherwise promoted tags keep shipping
@@ -48,6 +49,7 @@ on:
     paths:
       - ".github/workflows/build-openclaw-image.yml"
       - "apps/infra/openclaw/Dockerfile"
+      - "apps/infra/openclaw/.dockerignore"
       - "apps/infra/openclaw/local-sqlite/**"
       - "apps/infra/openclaw/plugins/**"
       - "apps/backend/core/containers/config.py"

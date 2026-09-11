@@ -9,3 +9,31 @@
 # Scoped to plugins/ rather than a bare **/node_modules so this cannot quietly
 # change what any other COPY in the Dockerfile picks up.
 plugins/*/node_modules/
+
+# Same story for the rest of each plugin's dev-only footprint: the runtime
+# loader needs only dist/, openclaw.plugin.json, and package.json (its
+# `openclaw.extensions`/`runtimeExtensions` fields point at dist/). src/,
+# tests, lockfiles, and build/test config are committed for CI (which builds
+# and tests from the git checkout, never the image) and otherwise just ride
+# along dead weight — the lightbulb-channel/lightbulb-marketplace
+# package-lock.json alone is ~220KB apiece.
+#
+# NOT excluding plugins/*/fixtures/: the build workflow's own qualify step
+# runs the built image and reads
+# /app/dist/extensions/lightbulb-channel/fixtures/production.json out of it
+# (.github/workflows/build-openclaw-image.yml), so that fixture is a runtime
+# dependency of image qualification, not a test-only artifact.
+#
+# NOT excluding a bare plugins/**/*.test.*: aws-exec-profile and
+# paperclip-exec-creds keep their root-level index.test.mjs as a RUNTIME
+# qualification asset too — the same build workflow's qualify step
+# docker-runs
+# `node --test /app/dist/extensions/{aws-exec-profile,paperclip-exec-creds}/index.test.mjs`
+# straight from the built image, so those two files must ship. The
+# plugins/*/src/ rule below already drops every *.test.ts nested under
+# lightbulb-channel's/lightbulb-marketplace's src/ (their only tests,
+# checkout-only), so no separate test-file pattern is needed.
+plugins/*/src/
+plugins/*/package-lock.json
+plugins/*/tsconfig.json
+plugins/*/vitest.config.ts

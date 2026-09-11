@@ -211,11 +211,22 @@ export interface LocalSession {
   activeTurnId: string | null;
   capabilities: LocalSessionCapabilities;
   capabilitiesVerified: boolean;
+  /** Canonical last ingested event; opens recent history without loading every page. */
+  latestEventSeq: number;
+}
+
+export interface PairedNode {
+  deviceId: string;
+  humanUserId: string;
+  clientId: "openclaw-macos" | "node-host";
+  /** Explicit validated association only; not physical co-location or readiness. */
+  macDeviceId: string | null;
 }
 
 export interface RoomResources {
   devices: LocalDevice[];
   sessions: LocalSession[];
+  pairedNodes: PairedNode[];
 }
 
 export interface LocalSessionEvent {

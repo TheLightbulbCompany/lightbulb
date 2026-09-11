@@ -84,11 +84,20 @@ class LocalSession(ContractModel):
     active_turn_id: str | None
     capabilities: Capabilities
     capabilities_verified: bool
+    latest_event_seq: int = Field(default=0, ge=0)
+
+
+class PairedNode(ContractModel):
+    device_id: str
+    human_user_id: str
+    client_id: Literal["openclaw-macos", "node-host"]
+    mac_device_id: str | None
 
 
 class RoomResources(ContractModel):
     devices: list[LocalDevice]
     sessions: list[LocalSession]
+    paired_nodes: list[PairedNode]
 
 
 class LocalSessionEvent(ContractModel):
@@ -242,13 +251,46 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
     owner = resolve_owner_id(auth)
     room_id = validate_uuid(room_id, label="room ID")
     await require_room_member(owner, auth.user_id, room_id)
-    devices, sessions = [], []
+    devices, sessions, paired_nodes = [], [], []
     # ponytail: bounded room membership, per-human directory reads; batch only if measured slow.
     for member in await messaging_repo.list_members(room_id):
         if member.get("kind") != "human":
             continue
         human = member["id"]
-        for enrollment in await repo.list_enrollments(owner, human):
+        enrollments = await repo.list_enrollments(owner, human)
+        # Pairing is independent of sharing. Directory rows promise no liveness
+        # or physical co-location; only explicit, unambiguous associations group.
+        pairs = (await container_repo.get_by_owner_id(owner, consistent=True) or {}).get("paired_devices", {})
+        owned = {key: pair for key, pair in pairs.items() if pair.get("userId") == human}
+        associations: dict[str, set[str]] = {}
+        for enrollment in enrollments:
+            mac, cli = enrollment["deviceId"], enrollment.get("cliDeviceId")
+            if (
+                owned.get(mac, {}).get("clientId") == "openclaw-macos"
+                and owned.get(cli, {}).get("clientId") == "node-host"
+            ):
+                associations.setdefault(cli, set()).add(mac)
+        await require_room_member(owner, auth.user_id, room_id)
+        if await messaging_repo.get_member(room_id, "human", human) is None:
+            continue
+        for key, pair in sorted(owned.items()):
+            client = pair.get("clientId")
+            if client not in {"openclaw-macos", "node-host"}:
+                continue
+            matches = associations.get(key, set())
+            paired_nodes.append(
+                PairedNode(
+                    device_id=key,
+                    human_user_id=human,
+                    client_id=client,
+                    mac_device_id=key
+                    if client == "openclaw-macos"
+                    else next(iter(matches))
+                    if len(matches) == 1
+                    else None,
+                )
+            )
+        for enrollment in enrollments:
             try:
                 await require_room_member(owner, auth.user_id, room_id)
                 if await messaging_repo.get_member(room_id, "human", human) is None:
@@ -262,6 +304,7 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
             try:
                 row, _ = await authorize_session(auth, room_id, projection["sessionId"])
                 public = dict(row)
+                public["latestEventSeq"] = row.get("eventSeq", 0)
                 if row["onlineUntil"] <= int(time.time()):
                     public["status"] = "offline"
                 if not row["capabilitiesVerified"]:
@@ -270,7 +313,7 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
-    return RoomResources(devices=devices, sessions=sessions)
+    return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
 
 
 async def list_events(

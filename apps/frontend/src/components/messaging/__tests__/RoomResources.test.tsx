@@ -1,0 +1,264 @@
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
+import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources } from "@lightbulb/shared";
+import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+
+const session: LocalSession = {
+  sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "codex",
+  providerVersion: "0.149.0", generation: "g1", status: "unknown", activeTurnId: null,
+  capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
+  controlUnavailableReason: null, latestEventSeq: 250,
+};
+const resources: RoomResources = {
+  devices: [{ deviceId: "mac", humanUserId: "alice", cliDeviceId: "cli" }], sessions: [session],
+  pairedNodes: [
+    { deviceId: "mac", humanUserId: "alice", clientId: "openclaw-macos", macDeviceId: "mac" },
+    { deviceId: "cli", humanUserId: "alice", clientId: "node-host", macDeviceId: "mac" },
+    { deviceId: "unassociated", humanUserId: "bob", clientId: "node-host", macDeviceId: null },
+  ],
+};
+function page(after: number, limit: number, last = 250): LocalSessionEventPage {
+  const end = Math.min(last, after + limit);
+  return {
+    events: Array.from({ length: Math.max(0, end - after) }, (_, i) => ({ seq: after + i + 1, kind: "text", role: "assistant", text: `Native event ${after + i + 1}`, truncated: false })),
+    nextAfterSeq: end < last ? end : null,
+  };
+}
+function setup(roomId = "room") {
+  const handlers = new Set<(event: LiveEvent) => void>();
+  const receipt = (request: LocalSessionCommand): LocalSessionCommandReceipt => ({
+    ...request, text: request.text ?? null, expectedTurnId: request.expectedTurnId ?? null,
+    sessionId: session.sessionId, roomId, actorUserId: "bob", commandSeq: 1, state: "pending",
+    createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
+  });
+  const client = {
+    listResources: vi.fn(async () => resources),
+    listLocalSessionEvents: vi.fn(async (_room: string, _session: string, after: number, limit = 50) => page(after, limit)),
+    submitLocalSessionCommand: vi.fn(async (_room: string, _session: string, request: LocalSessionCommand) => receipt(request)),
+    getLocalSessionCommand: vi.fn<(_room: string, _session: string, _id: string) => Promise<LocalSessionCommandReceipt>>(),
+  };
+  const source = { client, connectionRevision: 1, onEvent: (handler: (event: LiveEvent) => void) => { handlers.add(handler); return () => { handlers.delete(handler); }; } };
+  const people = ["alice", "bob", "outsider"].map((id) => ({ kind: "human" as const, id, displayName: id[0].toUpperCase() + id.slice(1), mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "now", joinedSeq: 0 }));
+  const props: RoomPanelProps = {
+    ownerScopeId: "org", currentUserId: "bob", roomId, room: { roomId, kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "now" },
+    state: "ready", httpReady: true, liveConnected: true, participants: people, messages: [], resourceSource: source,
+    composer: { text: "Room draft stays here", onTextChange: vi.fn(), members: people, selectedMentions: [], onMentionsChange: vi.fn(), clientMessageId: "room-draft", sendState: "idle", onSubmit: vi.fn() },
+  };
+  const emit = (type: "room.resources.changed" | "room.metadata.changed" | "room.access.removed") => {
+    for (const h of handlers) h({ type, payload: { roomId }, roomId, schemaVersion: 1, eventId: type, occurredAt: "now" } as LiveEvent);
+  };
+  return { props, source, client, receipt, emit };
+}
+async function openSession() {
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  await userEvent.click(await screen.findByRole("button", { name: /Open Codex/ }));
+}
+afterEach(() => vi.useRealTimers());
+
+it("groups only authorized resources, targets session input separately, and restores keyboard focus", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  const trigger = screen.getByRole("button", { name: "Devices & sessions" });
+  await userEvent.click(trigger);
+  const pane = screen.getByRole("complementary", { name: "Devices & sessions" });
+  await within(pane).findByRole("button", { name: /Open Codex/ });
+  expect(within(pane).getAllByText("Mac · mac")).toHaveLength(1);
+  expect(within(pane).getByText(/Paired CLI endpoint/)).toBeInTheDocument();
+  expect(within(pane).queryByText("Outsider")).not.toBeInTheDocument();
+  const target = within(pane).getByRole("button", { name: /Open Codex/ });
+  act(() => target.focus());
+  await userEvent.keyboard("{Enter}");
+  expect(await screen.findByText("Native event 250")).toBeInTheDocument();
+  expect(within(pane).getByText(/Activity unknown/)).toBeInTheDocument();
+  expect(within(pane).getByText(/other eligible conversations/)).toBeInTheDocument();
+  await userEvent.type(within(pane).getByRole("textbox", { name: /Send to Codex/ }), "Check concurrency 50");
+  await userEvent.click(within(pane).getByRole("button", { name: "Send follow-up" }));
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledWith("room", "session-123456", expect.objectContaining({ expectedGeneration: "g1", text: "Check concurrency 50", kind: "send" }));
+  expect(f.props.composer.onSubmit).not.toHaveBeenCalled();
+  expect(screen.getByDisplayValue("Room draft stays here")).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  expect(await screen.findByRole("button", { name: /Open Codex/ })).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  expect(trigger).toHaveFocus();
+});
+
+it("opens recent work, bounds retained history, and makes older and newer regions recoverable", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  expect(await screen.findByText("Native event 250")).toBeInTheDocument();
+  expect(f.client.listLocalSessionEvents).toHaveBeenCalledWith("room", session.sessionId, 200, 50);
+  expect(screen.queryByText("Native event 1")).not.toBeInTheDocument();
+  for (const oldest of [151, 101, 51, 1]) {
+    await userEvent.click(screen.getByRole("button", { name: "Load older" }));
+    expect(await screen.findByText(`Native event ${oldest}`)).toBeInTheDocument();
+  }
+  expect(screen.getAllByRole("article", { name: /Native event/ })).toHaveLength(200);
+  expect(screen.queryByText("Native event 250")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Jump to latest" }));
+  expect(await screen.findByText("Native event 250")).toBeInTheDocument();
+  expect(screen.getAllByRole("article", { name: /Native event/ })).toHaveLength(50);
+});
+
+it("drops a previous room's delayed transcript on room switch", async () => {
+  const f = setup();
+  let finish!: (p: LocalSessionEventPage) => void;
+  f.client.listLocalSessionEvents.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const view = render(<RoomPanel {...f.props} />);
+  await openSession();
+  const next = setup("other-room");
+  next.client.listResources.mockResolvedValue({ devices: [], sessions: [], pairedNodes: [] });
+  view.rerender(<RoomPanel {...next.props} />);
+  await act(async () => finish(page(249, 1)));
+  expect(screen.queryByText("Native event 250")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  expect(await screen.findByText(/No paired devices or shared sessions/)).toBeInTheDocument();
+});
+
+it("clears a removed owner's selection, pending input and late history before revalidation", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await screen.findByText("Native event 250");
+  await userEvent.type(screen.getByRole("textbox", { name: /Send to Codex/ }), "Do not retain this draft");
+  let finish!: (p: RoomResources) => void;
+  f.client.listResources.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  act(() => f.emit("room.metadata.changed"));
+  expect(screen.queryByText("Native event 250")).not.toBeInTheDocument();
+  expect(screen.queryByDisplayValue("Do not retain this draft")).not.toBeInTheDocument();
+  await act(async () => finish({ devices: [], sessions: [], pairedNodes: resources.pairedNodes.filter(n => n.humanUserId === "bob") }));
+  expect(screen.queryByRole("button", { name: /Open Codex/ })).not.toBeInTheDocument();
+  expect(within(screen.getByRole("complementary")).queryByText("Alice")).not.toBeInTheDocument();
+});
+
+it("retains immutable command identity for uncertain retries and distinguishes admission from completion", async () => {
+  const f = setup();
+  f.client.submitLocalSessionCommand.mockRejectedValueOnce(new Error("network"));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  const input = screen.getByRole("textbox", { name: /Send to Codex/ });
+  await userEvent.type(input, "Original follow-up");
+  await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
+  expect(await screen.findByText(/Delivery unknown/)).toBeInTheDocument();
+  expect(input).toBeDisabled();
+  const original = f.client.submitLocalSessionCommand.mock.calls[0][2];
+  f.client.getLocalSessionCommand.mockResolvedValue({ ...f.receipt(original), state: "applied", held: true });
+  await userEvent.click(screen.getByRole("button", { name: "Check delivery" }));
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledTimes(1);
+  expect(await screen.findByText(/Held by the native session/)).toBeInTheDocument();
+  expect(screen.getByText(/not completed work/)).toBeInTheDocument();
+});
+
+it("retries an uncertain submission with the original request ID and payload", async () => {
+  const f = setup();
+  f.client.submitLocalSessionCommand.mockRejectedValueOnce(new Error("network"));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await userEvent.type(screen.getByRole("textbox", { name: /Send to Codex/ }), "Repeat safely");
+  await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Retry same request" }));
+  expect(f.client.submitLocalSessionCommand.mock.calls[1]).toEqual(f.client.submitLocalSessionCommand.mock.calls[0]);
+});
+
+it("renders only safe public text and labels native approval and capability limits", async () => {
+  const f = setup();
+  f.client.listResources.mockResolvedValue({ ...resources, sessions: [{ ...session, status: "waiting-approval", controlUnavailableReason: "unsupported-version", capabilitiesVerified: false }] });
+  f.client.listLocalSessionEvents.mockResolvedValue({ events: [{ seq: 250, kind: "tool", role: "tool", text: '<script>alert(1)</script> ![private](https://example.com/private.png) [bad](javascript:alert(1))', truncated: true }], nextAfterSeq: null });
+  const { container } = render(<RoomPanel {...f.props} />);
+  await openSession();
+  expect(await screen.findByText(/Output truncated/)).toBeInTheDocument();
+  expect(screen.getByText(/Waiting for approval on/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+  expect(container.querySelector("script")).toBeNull();
+  expect(container.querySelector('img[src="https://example.com/private.png"]')).toBeNull();
+  expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+});
+
+it("repairs missed hints by polling only while open and ignores repeated events", async () => {
+  vi.useFakeTimers();
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(f.client.listResources).not.toHaveBeenCalled();
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Devices & sessions" })));
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: /Open Codex/ })));
+  f.client.listLocalSessionEvents.mockResolvedValue({ events: page(249, 1).events, nextAfterSeq: null });
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(f.client.listResources).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByText("Native event 250")).toHaveLength(1);
+  await act(async () => { f.emit("room.access.removed"); });
+  expect(screen.queryByText("Native event 250")).not.toBeInTheDocument();
+  const count = f.client.listResources.mock.calls.length;
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(f.client.listResources).toHaveBeenCalledTimes(count);
+});
+
+it("fences late selected-session history and command receipts after access removal", async () => {
+  const f = setup();
+  let finishHistory!: (p: LocalSessionEventPage) => void;
+  let finishSend!: (r: LocalSessionCommandReceipt) => void;
+  f.client.listLocalSessionEvents.mockImplementationOnce(() => new Promise(resolve => { finishHistory = resolve; }));
+  f.client.submitLocalSessionCommand.mockImplementationOnce(() => new Promise(resolve => { finishSend = resolve; }));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await userEvent.type(screen.getByRole("textbox", { name: /Send to Codex/ }), "Pending instruction");
+  await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
+  const request = f.client.submitLocalSessionCommand.mock.calls[0][2];
+  act(() => f.emit("room.access.removed"));
+  await act(async () => { finishHistory(page(249, 1)); finishSend({ ...f.receipt(request), state: "applied" }); });
+  expect(screen.queryByText("Native event 250")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Admitted to the native session/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /Send to Codex/ })).not.toBeInTheDocument();
+});
+
+it("fails closed on a history permission error and clears selection across removal and re-addition", async () => {
+  const f = setup();
+  f.client.listLocalSessionEvents.mockRejectedValueOnce(new ApiError(403, {}, "Revoked"));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  expect(await screen.findByText(/Access to these resources was removed/)).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /Send to Codex/ })).not.toBeInTheDocument();
+});
+
+it("does not reopen a removed session automatically when later hints restore it", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await screen.findByText("Native event 250");
+  f.client.listResources.mockResolvedValueOnce({ ...resources, sessions: [] });
+  act(() => f.emit("room.resources.changed"));
+  await waitFor(() => expect(screen.queryByText("Native event 250")).not.toBeInTheDocument());
+  act(() => f.emit("room.resources.changed"));
+  expect(await screen.findByRole("button", { name: /Open Codex/ })).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /Send to Codex/ })).not.toBeInTheDocument();
+});
+
+it("retries the failed older page rather than silently refreshing a different region", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await screen.findByText("Native event 250");
+  f.client.listLocalSessionEvents.mockRejectedValueOnce(new Error("network"));
+  await userEvent.click(screen.getByRole("button", { name: "Load older" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Retry history" }));
+  expect(await screen.findByText("Native event 151")).toBeInTheDocument();
+});
+
+it("cannot race a new send with a receipt check or erase the next draft", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  const input = screen.getByRole("textbox", { name: /Send to Codex/ });
+  await userEvent.type(input, "First follow-up");
+  await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
+  await userEvent.type(input, "Next follow-up");
+  let finish!: (r: LocalSessionCommandReceipt) => void;
+  f.client.getLocalSessionCommand.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await userEvent.click(screen.getByRole("button", { name: "Check delivery" }));
+  expect(input).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+  await act(async () => finish({ ...f.receipt(f.client.submitLocalSessionCommand.mock.calls[0][2]), state: "applied" }));
+  expect(input).toHaveValue("Next follow-up");
+  expect(input).toBeEnabled();
+});

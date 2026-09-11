@@ -391,20 +391,21 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 
-it.each(["thread", "context"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
+it.each(["thread", "context", "resources"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();
   render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork}
+    resourceSource={{ client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 }}
     messages={[{ ...message, contextIds: ["approval"] }]}
     contexts={[{ id: "approval", roomId: "room", kind: "approval", title: "Review proposal", content: "Proposal details" }]} />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Link to work" }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
-  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Review proposal" });
+  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : kind === "resources" ? "Devices & sessions" : "Review proposal" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
-  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Review proposal" })).toHaveFocus();
+  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : kind === "resources" ? "Devices & sessions" : "Review proposal" })).toHaveFocus();
   if (kind === "context") expect(screen.getByText("Proposal details")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();

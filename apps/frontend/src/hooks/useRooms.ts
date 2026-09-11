@@ -609,6 +609,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     liveConnected,
     httpReady,
     selectRoom,
+    resourceSource: { client: messaging, onEvent, connectionRevision },
     selectDm,
     selectAgentDm,
     directoryRoomDetails,

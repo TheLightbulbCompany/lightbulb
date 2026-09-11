@@ -44,6 +44,7 @@ const room: RoomDetail = {
   ],
 };
 const state = {
+  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -88,6 +89,13 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Messages" })).toBeInTheDocument();
   view.unmount();
+});
+
+it("disables the resource pane transport while its workspace is hidden", () => {
+  const view = render(<MessagingWorkspaceProvider subscribeToRoom><MessagingConversation /></MessagingWorkspaceProvider>);
+  expect(panel.resourceSource).toBe(state.resourceSource);
+  view.rerender(<MessagingWorkspaceProvider subscribeToRoom={false}><MessagingConversation /></MessagingWorkspaceProvider>);
+  expect(panel.resourceSource).toBeUndefined();
 });
 
 it("routes message authors through the existing participant DM action", async () => {

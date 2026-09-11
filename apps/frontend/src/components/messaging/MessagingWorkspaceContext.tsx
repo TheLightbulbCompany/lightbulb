@@ -307,6 +307,7 @@ export function MessagingWorkspaceProvider({
     state: roomState,
     httpReady: rooms.httpReady,
     liveConnected: rooms.liveConnected,
+    resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
     participants,
     messages: rooms.messages,
     historyLoading: rooms.historyLoading,

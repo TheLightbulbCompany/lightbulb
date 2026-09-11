@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, SmilePlus, Users } from "lucide-react";
-import type { Components } from "react-markdown";
 import type { ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
@@ -10,7 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import type { RoomResourceSource } from "@/hooks/useRoomResources";
+import { RoomResources } from "./RoomResources";
+import { roomMarkdown } from "./roomMarkdown";
 import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
@@ -68,6 +69,7 @@ export interface RoomPanelProps {
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   narrow?: boolean;
+  resourceSource?: RoomResourceSource;
 }
 
 const workLabel: Record<WorkState, string> = {
@@ -82,15 +84,6 @@ function WorkStatus({ state }: { state: WorkState }) {
   return <span role="status" aria-label="Work status" className={`inline-flex items-center gap-1 text-sm ${tone}`}><Icon size={14} aria-hidden="true" />{workLabel[state]}</span>;
 }
 
-const roomMarkdown: Partial<Components> = {
-  a: ({ href, children }) => {
-    const safe = safeHref(href);
-    return safe ? <a href={safe} target="_blank" rel="noopener noreferrer" className="text-info underline underline-offset-4">{children}</a> : <span>{children}</span>;
-  },
-  img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
-  blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
-};
-
 const reactionEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅"] as const;
 
 const narrowQuery = "(max-width: 859px)";
@@ -104,7 +97,7 @@ const getNarrow = () => window.matchMedia(narrowQuery).matches;
 const getServerNarrow = () => false;
 
 export function RoomPanel(props: RoomPanelProps) {
-  return <RoomBoundary key={JSON.stringify([props.ownerScopeId, props.roomId])} {...props} />;
+  return <RoomBoundary key={JSON.stringify([props.ownerScopeId, props.currentUserId, props.roomId])} {...props} />;
 }
 
 type Attempt = { observed: RoomComposerProps["sendState"]; state: RoomComposerProps["sendState"]; revision: number };
@@ -155,6 +148,7 @@ function RoomBoundary(props: RoomPanelProps) {
 }
 
 function RoomContent({
+  ownerScopeId,
   roomId,
   currentUserId,
   room,
@@ -189,6 +183,7 @@ function RoomContent({
   onLinkToWork,
   onDownloadAttachment,
   narrow,
+  resourceSource,
 }: RoomPanelProps) {
   const id = useId();
   const [searchTarget, setSearchTarget] = useState<Pick<RoomMessage, "messageId" | "threadRootMessageId"> | null>(null);
@@ -206,10 +201,10 @@ function RoomContent({
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "context" | "resources"; id: string } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
-      : localSelection?.kind === "context" ? localSelection : null, [selectedThreadId, localSelection]);
+      : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
@@ -223,7 +218,8 @@ function RoomContent({
   const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const selectedContext = selection?.kind === "context" ? contexts.find((context) => context.id === selection.id) : undefined;
-  const showDetail = !!(parentMessage || selectedContext);
+  const showResources = selection?.kind === "resources" && !!resourceSource;
+  const showDetail = !!(parentMessage || selectedContext || showResources);
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
@@ -303,13 +299,13 @@ function RoomContent({
   }, [closeDetail, isNarrow, showDetail]);
 
   useEffect(() => {
-    if (!showDetail) return;
+    if (!showDetail || showResources) return;
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") closeOverlay(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeOverlay, showDetail]);
+  }, [closeOverlay, showDetail, showResources]);
 
-  function openDetail(kind: "thread" | "context", targetId: string, button: HTMLButtonElement, fromThread = false) {
+  function openDetail(kind: "thread" | "context" | "resources", targetId: string, button: HTMLButtonElement, fromThread = false) {
     if (!fromThread) trigger.current = button;
     if (kind === "thread") onSelectThread?.(targetId);
     else if (selection?.kind === "thread") onSelectThread?.(null);
@@ -435,6 +431,8 @@ function RoomContent({
         <button ref={contextTrigger} type="button" className="room-tab" aria-label={contextCollapsed ? "Show room details" : "Hide room details"} aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Context</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}
+        {resourceSource && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
+          onClick={event => openDetail("resources", "resources", event.currentTarget)}>Devices & sessions</button>}
       </nav>
       {membersOpen && <section id={`${id}-members`} aria-label="Room members" className="room-members"
         onKeyDown={(event) => { if (event.key === "Escape") { setMembersOpen(false); memberTrigger.current?.focus(); } }}>
@@ -509,7 +507,9 @@ function RoomContent({
         </section>
       </div>
     </aside>}
-    {showDetail && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {showResources && <RoomResources key={JSON.stringify([ownerScopeId, currentUserId, roomId, participants.filter(p => p.kind === "human").map(p => p.id).sort()])}
+      roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail} />}
+    {showDetail && !showResources && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}

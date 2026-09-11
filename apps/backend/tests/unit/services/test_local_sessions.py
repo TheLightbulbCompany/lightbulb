@@ -204,10 +204,54 @@ async def test_enrollment_ownership_disable_and_no_machine_self_enable(db):
         )
     sid = await registered()
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=False))
-    assert (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True) == {"devices": [], "sessions": []}
+    disabled = await service.list_resources(BOB, ROOM)
+    assert disabled.devices == [] and disabled.sessions == []
     with pytest.raises(ApiProblem):
         await service.list_events(BOB, ROOM, sid, 0, 10)
     assert db[0].get_item(Key={"pk": f"LOCALSESSION#{OWNER}#{sid}", "sk": "META"}).get("Item")
+
+
+@pytest.mark.asyncio
+async def test_paired_directory_is_independent_of_sharing_and_only_groups_explicit_associations(db):
+    resources = (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)
+    assert resources["devices"] == [] and resources["sessions"] == []
+    assert resources["pairedNodes"] == [
+        {"deviceId": MAC, "humanUserId": ALICE.user_id, "clientId": "openclaw-macos", "macDeviceId": MAC},
+        {"deviceId": CLI, "humanUserId": ALICE.user_id, "clientId": "node-host", "macDeviceId": None},
+        {"deviceId": "c" * 64, "humanUserId": BOB.user_id, "clientId": "node-host", "macDeviceId": None},
+    ]
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=False))
+    grouped = (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)
+    assert grouped["pairedNodes"][1]["macDeviceId"] == MAC
+    assert "publicKey" not in str(grouped) and "online" not in str(grouped)
+    second_mac = "d" * 64
+    db[1].update_item(
+        Key={"owner_id": OWNER},
+        UpdateExpression="SET paired_devices.#d = :pair",
+        ExpressionAttributeNames={"#d": second_mac},
+        ExpressionAttributeValues={":pair": {"userId": ALICE.user_id, "clientId": "openclaw-macos"}},
+    )
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=second_mac, cliDeviceId=CLI, enabled=False))
+    ambiguous = (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)
+    assert next(n for n in ambiguous["pairedNodes"] if n["deviceId"] == CLI)["macDeviceId"] is None
+    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{ALICE.user_id}"})
+    remaining = (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)
+    assert [n["deviceId"] for n in remaining["pairedNodes"]] == ["c" * 64]
+    for auth in (OUTSIDER, AuthContext(user_id=BOB.user_id, org_id="org_other")):
+        with pytest.raises(ApiProblem):
+            await service.list_resources(auth, ROOM)
+
+
+@pytest.mark.asyncio
+async def test_latest_event_cursor_uses_canonical_metadata_not_directory_projection(db):
+    sid = await registered()
+    assert (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)["sessions"][0]["latestEventSeq"] == 0
+    db[0].update_item(
+        Key={"pk": f"LOCALSESSION#{OWNER}#{sid}", "sk": "META"},
+        UpdateExpression="SET eventSeq = :seq",
+        ExpressionAttributeValues={":seq": 123},
+    )
+    assert (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)["sessions"][0]["latestEventSeq"] == 123
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,7 @@ export type {
   LocalSessionEvent,
   LocalSessionEventPage,
   RoomResources,
+  PairedNode,
   AbortRunResponse,
   ApiErrorCode,
   CanonicalRoomMessage,

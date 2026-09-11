@@ -1003,15 +1003,6 @@ async def test_sent_first_contact_is_not_reclaimable(repo):
     assert await repo.claim_first_contact("u1", onboarding_generation="01G") is False
 
 
-async def test_first_contact_attempts_are_bounded(repo):
-    """The counter is the SOLE bound on the nudge loop -- nudge runs
-    re-register the completion callback, so without it this is infinite."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
-    for _ in range(3):
-        assert await repo.bump_first_contact_attempts("u1", onboarding_generation="01G", limit=3) is True
-    assert await repo.bump_first_contact_attempts("u1", onboarding_generation="01G", limit=3) is False
-
-
 async def test_onboarding_state_projects_first_contact_and_friday(repo):
     """send_to_owner reads these from the SAME single read compute_status does."""
     await repo.put(

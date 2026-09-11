@@ -225,16 +225,6 @@ async def _user_session(ctx) -> str:
     return ctx.session_cookie
 
 
-async def _service_token_for(ctx) -> str:
-    """Return the user's decrypted OpenClaw service token.
-
-    Wrapper around ``_decrypt_service_token`` keyed by the creator's
-    user_id. Pairing tests monkeypatch this helper directly so they can
-    skip the DDB read entirely.
-    """
-    return await _decrypt_service_token(_creator_user_id(ctx))
-
-
 async def _container_is_reachable(
     owner_id: str,
 ) -> tuple[bool, str | None, str | None]:

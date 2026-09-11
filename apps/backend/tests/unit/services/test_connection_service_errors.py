@@ -4,16 +4,12 @@ The service wraps DynamoDB calls and translates every boto `ClientError`
 into a `ConnectionServiceError` so callers (websocket lifecycle code,
 TeamsEventBroker fanout) get a consistent exception type to catch.
 
-`store_connection` and `get_connection` are the synchronous hot path on
-$connect / per-message lookup. `delete_connection` is the $disconnect
-hook. A regression that lets a raw boto error escape any of these would
-crash the websocket handler instead of surfacing as
-ConnectionServiceError — Codex P2 on PR #716 flagged the loss of this
-coverage when the broader test_connection_service.py was deleted as
+`get_connection` is the synchronous per-message lookup and
+`delete_connection` is the $disconnect hook. A regression that lets a raw
+boto error escape either would crash the websocket handler instead of
+surfacing as ConnectionServiceError — Codex P2 on PR #716 flagged the loss
+of this coverage when the broader test_connection_service.py was deleted as
 mostly-mock-the-mock.
-
-The kept moto-backed sibling (test_connection_service_query.py) only
-exercises query_by_user_id happy paths.
 """
 
 from unittest.mock import MagicMock, patch
@@ -41,18 +37,6 @@ def _ddb_error(op: str) -> ClientError:
         {"Error": {"Code": "InternalServerError", "Message": "DynamoDB error"}},
         op,
     )
-
-
-def test_store_connection_translates_ddb_error(service_with_mock):
-    service, mock_ddb = service_with_mock
-    mock_ddb.put_item.side_effect = _ddb_error("PutItem")
-
-    with pytest.raises(ConnectionServiceError, match="Failed to store connection"):
-        service.store_connection(
-            connection_id="conn_abc",
-            user_id="user_1",
-            org_id=None,
-        )
 
 
 def test_get_connection_translates_ddb_error(service_with_mock):

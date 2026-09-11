@@ -4,33 +4,9 @@ from pathlib import Path
 import pytest
 
 from core.services.catalog_package import (
-    build_manifest,
     tar_directory,
     untar_to_directory,
 )
-
-
-def test_build_manifest_populates_required_fields():
-    manifest = build_manifest(
-        slug="pitch",
-        version=3,
-        name="Pitch",
-        emoji="🎯",
-        vibe="Direct, data-driven",
-        description="Runs outbound sales sequences",
-        suggested_model="qwen/qwen3-vl-235b",
-        suggested_channels=["telegram"],
-        required_skills=["web-search"],
-        required_plugins=["memory"],
-        required_tools=["web-search"],
-        published_by="user_admin_123",
-    )
-    assert manifest["slug"] == "pitch"
-    assert manifest["version"] == 3
-    assert manifest["name"] == "Pitch"
-    assert manifest["suggested_model"] == "qwen/qwen3-vl-235b"
-    assert manifest["published_by"] == "user_admin_123"
-    assert "published_at" in manifest
 
 
 def test_tar_and_untar_roundtrip(tmp_path: Path):

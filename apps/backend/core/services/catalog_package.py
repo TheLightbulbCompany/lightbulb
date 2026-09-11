@@ -7,7 +7,6 @@ import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
-from core.dynamodb import utc_now_iso
 
 
 @dataclass
@@ -35,38 +34,6 @@ class CatalogPackage:
     tarball_bytes: bytes
     tarball_contents: list[str] = field(default_factory=list)
     pruned_paths: list[str] = field(default_factory=list)
-
-
-def build_manifest(
-    *,
-    slug: str,
-    version: int,
-    name: str,
-    emoji: str,
-    vibe: str,
-    description: str,
-    suggested_model: str,
-    suggested_channels: list[str],
-    required_skills: list[str],
-    required_plugins: list[str],
-    required_tools: list[str],
-    published_by: str,
-) -> dict[str, Any]:
-    return {
-        "slug": slug,
-        "version": version,
-        "name": name,
-        "emoji": emoji,
-        "vibe": vibe,
-        "description": description,
-        "suggested_model": suggested_model,
-        "suggested_channels": suggested_channels,
-        "required_skills": required_skills,
-        "required_plugins": required_plugins,
-        "required_tools": required_tools,
-        "published_at": utc_now_iso(),
-        "published_by": published_by,
-    }
 
 
 def tar_directory(src: Path) -> bytes:

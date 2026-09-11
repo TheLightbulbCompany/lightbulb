@@ -459,22 +459,6 @@ async def create_payment_method_request(
     )
 
 
-async def update_payment_limit(
-    account_id: str,
-    *,
-    max_amount: int,
-    currency: str,
-    recurring_interval: str,
-    provider: str | None = None,
-) -> dict:
-    """Omit `provider` for the account-wide default; set it to move only that
-    Provider's override (spec.txt 4.6)."""
-    body: dict = {"usage_limits": _usage_limits(max_amount, currency, recurring_interval)}
-    if provider:
-        body["provider"] = provider
-    return await request(account_id, "post", f"{BASE}/payment_profile/update_limit", body=body)
-
-
 # --- 4.7 Deep links + usage -------------------------------------------------
 
 

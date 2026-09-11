@@ -21,12 +21,9 @@ Note: Table creation is handled by Terraform, not this service.
 """
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
@@ -69,10 +66,6 @@ def _gateway_liveness_key(owner_id: str) -> str:
     return f"{_GATEWAY_LIVENESS_PREFIX}{owner_id}"
 
 
-def _revocation_key(owner_id: str, user_id: str) -> str:
-    return "revocation#" + hashlib.sha256(json.dumps([owner_id, user_id]).encode()).hexdigest()
-
-
 class ConnectionServiceError(Exception):
     """Base exception for connection service errors."""
 
@@ -100,63 +93,6 @@ class ConnectionService:
         # Explicitly set region to avoid NoRegionError in containerized environments
         region = region_name or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._client = boto3.client("dynamodb", region_name=region)
-
-    def store_connection(
-        self,
-        connection_id: str,
-        user_id: str,
-        org_id: Optional[str],
-        connection_type: str = "chat",
-    ) -> None:
-        """
-        Store a new WebSocket connection mapping.
-
-        Called on $connect when a user establishes a WebSocket connection.
-
-        Args:
-            connection_id: API Gateway WebSocket connection ID
-            user_id: Authenticated user's ID from Clerk JWT
-            org_id: Organization ID from Clerk JWT (None for personal context)
-            connection_type: "chat" (default) or "node" for desktop node-host connections
-
-        Raises:
-            ConnectionServiceError: If DynamoDB operation fails
-        """
-        now = datetime.now(timezone.utc)
-        connected_at = now.isoformat()
-        now_epoch = int(now.timestamp())
-
-        item = {
-            "connectionId": {"S": connection_id},
-            "userId": {"S": user_id},
-            "orgId": {"S": org_id or ""},  # Empty string for None
-            "ownerId": {"S": (org_id or user_id)},  # owner = org for org members, else the user
-            "connectedAt": {"S": connected_at},
-            "connectionType": {"S": connection_type},
-            "lastPingAt": {"N": str(now_epoch)},
-            "ttl": {"N": str(now_epoch + _TTL_WINDOW_SECONDS)},
-        }
-
-        try:
-            self._client.put_item(
-                TableName=self.table_name,
-                Item=item,
-            )
-            logger.info(
-                "Stored connection %s for user %s (org: %s)",
-                connection_id,
-                user_id,
-                org_id or "personal",
-            )
-        except ClientError as e:
-            logger.error(
-                "Failed to store connection %s: %s",
-                connection_id,
-                e.response["Error"]["Message"],
-            )
-            raise ConnectionServiceError(
-                f"Failed to store connection {connection_id}: {e.response['Error']['Message']}"
-            ) from e
 
     def get_connection(self, connection_id: str) -> Optional[dict]:
         """
@@ -212,58 +148,6 @@ class ConnectionService:
             },
         }
 
-    async def pending_member_revocations(self, owner_id: str, user_id: str) -> set[str]:
-        """Strong retry discovery independent of a deleted admission/GSI row."""
-        response = await asyncio.to_thread(
-            self._client.get_item,
-            TableName=self.table_name,
-            Key={"connectionId": {"S": _revocation_key(owner_id, user_id)}},
-            ConsistentRead=True,
-        )
-        return set(response.get("Item", {}).get("connectionIds", {}).get("SS", []))
-
-    async def begin_member_revocation(self, owner_id: str, user_id: str, connection_id: str) -> None:
-        """Atomically deny admission and retain its edge ID until teardown succeeds.
-
-        The retry marker has no userId/ownerId/type, so it is neither an
-        authorizing connection nor a user/owner fanout recipient. No TTL:
-        an outage must not silently expire an unfinished security cleanup.
-        """
-        await asyncio.to_thread(
-            self._client.transact_write_items,
-            TransactItems=[
-                {
-                    "Update": {
-                        "TableName": self.table_name,
-                        "Key": {"connectionId": {"S": _revocation_key(owner_id, user_id)}},
-                        "UpdateExpression": "ADD connectionIds :ids",
-                        "ExpressionAttributeValues": {":ids": {"SS": [connection_id]}},
-                    }
-                },
-                {"Delete": {"TableName": self.table_name, "Key": {"connectionId": {"S": connection_id}}}},
-            ],
-        )
-
-    async def finish_member_revocation(self, owner_id: str, user_id: str, connection_id: str) -> None:
-        key = {"connectionId": {"S": _revocation_key(owner_id, user_id)}}
-        await asyncio.to_thread(
-            self._client.update_item,
-            TableName=self.table_name,
-            Key=key,
-            UpdateExpression="DELETE connectionIds :ids",
-            ExpressionAttributeValues={":ids": {"SS": [connection_id]}},
-        )
-        try:
-            await asyncio.to_thread(
-                self._client.delete_item,
-                TableName=self.table_name,
-                Key=key,
-                ConditionExpression="attribute_not_exists(connectionIds)",
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-
     async def count_for_user(self, user_id: str) -> int:
         """Count WS connection rows owned by ``user_id``.
 
@@ -299,53 +183,14 @@ class ConnectionService:
                 f"Failed to count connections for user {user_id}: {e.response['Error']['Message']}"
             ) from e
 
-    async def query_by_user_id(self, user_id: str) -> list[str]:
-        """Return every active connection ID owned by ``user_id``.
-
-        Uses the ``by-user-id`` GSI added in
-        ``apps/infra/lib/stacks/api-stack.ts``. KEYS_ONLY projection means
-        only ``connectionId`` is returned per row — sufficient for the
-        TeamsEventBroker fanout. Paginates ``LastEvaluatedKey`` because a
-        single Query page caps at ~1MB; in practice one page suffices
-        (a typical user has 1-3 live tabs) but pagination keeps the
-        contract correct under load.
-
-        Returns an empty list if the user has no live connections.
-        """
-
-        def _query() -> list[str]:
-            paginator = self._client.get_paginator("query")
-            pages = paginator.paginate(
-                TableName=self.table_name,
-                IndexName="by-user-id",
-                KeyConditionExpression="userId = :u",
-                ExpressionAttributeValues={":u": {"S": user_id}},
-                ProjectionExpression="connectionId",
-            )
-            ids: list[str] = []
-            for page in pages:
-                for item in page.get("Items", []):
-                    ids.append(item["connectionId"]["S"])
-            return ids
-
-        try:
-            return await asyncio.to_thread(_query)
-        except ClientError as e:
-            logger.error(
-                "Failed to query connections for user %s: %s",
-                user_id,
-                e.response["Error"]["Message"],
-            )
-            raise ConnectionServiceError(
-                f"Failed to query connections for user {user_id}: {e.response['Error']['Message']}"
-            ) from e
-
     async def query_by_owner(self, owner_id: str) -> list[tuple[str, str, str]]:
         """Return ``(connectionId, member_userId, connectionType)`` for every
         active connection owned by ``owner_id``.
 
         ``owner_id`` is the org id for org members and the user id for personal
-        accounts (written by ``store_connection`` as ``ownerId``). Uses the
+        accounts (written by the ``ws-connect`` Lambda as ``ownerId`` —
+        ``apps/infra/lambda/ws-connect/index.py``, the only writer of this
+        table's admission rows). Uses the
         ``by-owner-id`` GSI added in ``apps/infra/lib/stacks/api-stack.ts``,
         whose INCLUDE projection carries ``userId`` + ``connectionType`` so the
         gateway fan-out can demux per member and filter by connection type.

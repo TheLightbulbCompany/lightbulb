@@ -583,17 +583,3 @@ def manifest_without_snippets(manifest):
     if not isinstance(flags, list) or not any(isinstance(f, dict) and "snippet" in f for f in flags):
         return manifest
     return {**manifest, "safety_flags": flags_without_snippets(flags)}
-
-
-def to_rejection_notes(flags: Iterable[SafetyFlag]) -> str:
-    """Format high-severity flags as rejection-note pre-fill copy."""
-    high = [f for f in flags if f.severity == "high"]
-    if not high:
-        return ""
-    lines = ["Auto-flagged by safety scan:"]
-    for f in high[:10]:  # cap to keep textarea manageable
-        loc = f"{f.file}:{f.line}" if f.line else f.file
-        lines.append(f"- {f.pattern} at {loc}: {f.snippet}")
-    if len(high) > 10:
-        lines.append(f"… and {len(high) - 10} more high-severity findings")
-    return "\n".join(lines)

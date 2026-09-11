@@ -43,11 +43,6 @@ def lifecycle_io(monkeypatch):
     monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
     monkeypatch.setattr(_webhook_dedup, "renew_membership_lifecycle", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "complete_membership_lifecycle", AsyncMock())
-    monkeypatch.setattr(
-        _webhook_dedup,
-        "get_membership_lifecycle",
-        AsyncMock(side_effect=lambda owner_id, alias: lifecycle.get((owner_id, alias))),
-    )
     return revoke
 
 

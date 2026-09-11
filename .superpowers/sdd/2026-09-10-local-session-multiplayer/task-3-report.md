@@ -152,3 +152,35 @@ Commands arrive as `{"type":"local.session.command","command":<LocalSessionComma
 Task 4 MUST journal/deduplicate stable request IDs and payload identity, arbitrate by command sequence alongside native keyboard input, recheck `deliverBy` and generation at native admission, and reconcile an uncertain result instead of automatically sending it again. Management API/SDK retries can deliver duplicate frames or deliver a frame after the backend's initial time check. A missing local journal entry alone is insufficient to reject unknown while an older delivery might still be in flight: use the native journal/deadline/tombstone protocol to keep late frames from executing. Keep the request unknown when actual native admission cannot be proven. The transport does not manufacture exactly-once guarantees.
 
 The register/heartbeat `reconcile` field exposes only one blocking request ID/generation/state, with no transcript or room text. A native receipt unblocks subsequent authorized pending commands. Human callers poll the existing receipt GET; it deliberately performs no dispatch or durable mutation.
+
+## Review fix round 1 — retry session revision contention
+
+Base: `6f920f55a9daca404db88a9c8ab229a660205b24`.
+
+Independent review reproduced valid input becoming permanently rejected when a lifecycle upload changed the session revision between the dispatch snapshot and authorization. `_dispatch_checks` had combined this harmless contention with substantive identity/control failures under the same `ApiProblem`; both pre-claim and post-claim callers rejected it.
+
+The helper now returns a distinct retry result for a revision-only mismatch after checking current authorization, capability, generation, connection identity and deadlines. The pre-claim path immediately retries its bounded loop with a fresh snapshot. The post-claim path first releases only its own revision-fenced claim, then retries. No network attempt has happened at either point. A concurrent worker's newer claim/outcome cannot be cleared by that release. Command sequence and delivery deadline are unchanged; repeated contention can leave the command pending for the existing drivers rather than terminally reject it. Substantive failures retain their existing rejection behavior.
+
+Added a parameterized real-Moto regression covering both phases. It injects an actual normalized lifecycle upload immediately before the real authorization read. Each case verifies the upload persisted, the first command dispatched exactly once, and the next command remained pending in order.
+
+Exact RED/GREEN command, from `apps/backend`:
+
+```sh
+AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_SESSION_TOKEN=testing AWS_DEFAULT_REGION=us-east-1 uv run --offline pytest tests/unit/services/test_local_session_relay.py -k revision_contention --no-cov -q --tb=short
+```
+
+RED: **2 failed, 23 deselected in 3.40s**. Both phases reported `rejected` instead of `dispatched`.
+GREEN: **2 passed, 23 deselected in 1.11s**.
+
+Covering check:
+
+```sh
+AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_SESSION_TOKEN=testing AWS_DEFAULT_REGION=us-east-1 uv run --offline pytest tests/unit/services/test_local_sessions.py tests/unit/services/test_local_session_relay.py tests/unit/routers/test_websocket_chat.py tests/unit/services/test_connection_service_owner.py tests/unit/services/test_connection_service_errors.py tests/unit/services/test_connection_service_liveness.py tests/unit/services/test_connection_service_query.py tests/unit/services/test_management_api_client_errors.py tests/unit/services/test_messaging_service_review_findings.py tests/unit/repositories/test_messaging_repo.py ../infra/lambda/ws-connect/test_index.py --no-cov -q --tb=short
+uv run --offline ruff format core/services/local_session_relay.py tests/unit/services/test_local_session_relay.py
+uv run --offline ruff check core/services/local_session_relay.py tests/unit/services/test_local_session_relay.py
+git diff --check
+```
+
+Results: **150 passed in 17.10s**, scoped Ruff passed, diff check passed. Existing lease, ordering, expiry, revoked membership/enrollment/pairing, reconnect and uncertain-outcome checks still pass.
+
+Self-review checked both helper consumers, bounded retries, post-claim release CAS, preserved original deadlines/order, and the existing substantive rejection branches. Only the relay, its focused test file, and this report changed. No protocol/Task 4 interface change and no additional concerns beyond the native/deployment limitations already documented. No external actions or provider changes.

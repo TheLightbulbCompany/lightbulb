@@ -580,3 +580,39 @@ async def test_deleted_connection_liveness_expires_without_touching_native_histo
         resources = await service.list_resources(BOB, ROOM)
     assert resources.sessions[0].status == "offline"
     assert await repo.get_session(OWNER, sid) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["before-claim", "after-claim"])
+async def test_session_revision_contention_retries_without_rejecting_authorized_input(transport, phase):
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    await service.submit_command(BOB, ROOM, sid, command(service, requestId="request-2"))
+    authorize, calls = service.authorize_session, 0
+
+    async def ingest_before_authorization(*args):
+        nonlocal calls
+        calls += 1
+        if calls == (1 if phase == "before-claim" else 2):
+            await relay(transport).handle_message(
+                "conn-1",
+                {
+                    "type": "local.session.events",
+                    "sessionId": sid,
+                    "generation": "generation-1",
+                    "batchId": "concurrent-lifecycle",
+                    "afterSeq": 0,
+                    "events": [{"kind": "lifecycle", "role": "system", "text": "busy"}],
+                },
+            )
+        return await authorize(*args)
+
+    transport[3].clear()
+    with patch.object(service, "authorize_session", side_effect=ingest_before_authorization):
+        await relay(transport).dispatch_session(OWNER, sid)
+    first = await repo.get_command(OWNER, sid, "request-1")
+    second = await repo.get_command(OWNER, sid, "request-2")
+    assert first["state"] == "dispatched"
+    assert second["state"] == "pending"
+    assert [body["command"]["requestId"] for _, body in transport[3]] == ["request-1"]
+    assert (await repo.get_session(OWNER, sid))["eventSeq"] == 1

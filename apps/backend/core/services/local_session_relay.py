@@ -370,21 +370,21 @@ class LocalSessionRelay:
             "state": message.outcome,
         }
 
-    async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict]:
+    async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
         auth = AuthContext(user_id=command["actorUserId"], org_id=owner if owner != command["actorUserId"] else None)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid)
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         connection, _ = await self.connect(current["connectionId"])
-        if (
-            current["revision"] != row["revision"]
-            or connection["device_id"] != current["deviceId"]
-            or connection["user_id"] != current["humanUserId"]
-        ):
+        if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:
             raise _conflict()
         now = int(time.time())
         if command["deliverBy"] <= now or (not claim and command.get("claimUntil", 0) <= now):
             raise _conflict()
+        if current["revision"] != row["revision"]:
+            # Transcript/liveness/admission writes also change META. Retry the
+            # snapshot; only substantive authorization/control failures reject.
+            return None
         return [
             *repo.room_conditions(owner, row["humanUserId"], command),
             repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], enrollment.get("cliDeviceId")),
@@ -427,6 +427,8 @@ class LocalSessionRelay:
                     return
                 try:
                     checks = await self._dispatch_checks(row, command, True)
+                    if checks is None:
+                        continue
                 except ApiProblem:
                     await repo.replace_command(command, _revised(command, state="rejected", updatedAt=int(time.time())))
                     continue
@@ -435,6 +437,11 @@ class LocalSessionRelay:
                 row = await repo.get_session(owner, sid)
                 try:
                     checks = await self._dispatch_checks(row, claim, False)
+                    if checks is None:
+                        # No network attempt occurred. Release only our CAS-fenced
+                        # claim so a fresh snapshot can retry without lease delay.
+                        await repo.replace_command(claim, _revised(claim, claimUntil=0))
+                        continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
                     envelope = {"type": "local.session.command", "command": public}

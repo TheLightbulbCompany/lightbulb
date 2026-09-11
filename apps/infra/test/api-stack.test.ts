@@ -693,7 +693,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
     const stopped = alarms.find(
       (alarm) => alarm.Properties.AlarmName === "lightbulb-dev-openclaw-work-pipe-stopped",
     );
-    expect(oldest.Properties.Threshold).toBe(300);
+    expect(oldest.Properties.Threshold).toBe(3600);
     expect(iterator.Properties.Threshold).toBe(300000);
     expect(stopped.Properties).toEqual(
       expect.objectContaining({

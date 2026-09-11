@@ -621,19 +621,6 @@ class GatewayConnection:
             if run_id:
                 run["run_id"] = run_id
 
-    def reset_run_state_dedup(self) -> None:
-        """Forget the last-forwarded ``run_active`` per session so the next
-        ``sessions.changed`` re-forwards it as a fresh transition.
-
-        Called when a frontend (re)connects: the dedup in the ``sessions.changed``
-        handler suppresses repeat ``hasActiveRun:true`` frames, but a tab that
-        opens/reconnects mid-run has no local busy state (the frontend clears it
-        on disconnect), so it needs the ongoing run re-announced. Clearing the
-        map makes the next event a transition again. Separate from
-        ``_active_runs`` (untouched — that is the parked-vs-dead signal).
-        """
-        self._run_state.clear()
-
     def _clear_active_run(
         self,
         session_key: str,

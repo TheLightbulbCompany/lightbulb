@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Task 1 feasibility and Task 2 room-scoped registry/authorization completed locally and reviewed through September 11, 2026. Task 2 verification: 61 focused backend tests, 136 shared tests and typechecking passed; UUID spelling/idempotency regression fixed and re-reviewed. Dedicated transport and desktop/UI integration remain unimplemented; no account sharing, push or deployment is implied.
+**Status:** Tasks 1–3 (native feasibility, room-scoped registry/authorization, dedicated machine transport) completed locally and reviewed through September 11, 2026. Task 3 verification: 150 covering backend/admission tests, 17 projector tests, 32 shared tests and typechecking passed; command-contention regression fixed and re-reviewed. Fresh focused controller check: 91 backend/admission tests passed. Desktop/UI integration remains unimplemented; no account sharing, push or deployment is implied.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -352,16 +352,18 @@ pnpm --filter @lightbulb/shared typecheck
 
 **Modify:** `apps/infra/lambda/ws-connect/index.py` and `test_index.py`; `apps/backend/routers/websocket_chat.py`; `apps/backend/core/services/connection_service.py`; existing `ws-message`/`ws-disconnect` routing where required; `apps/backend/tests/unit/routers/test_websocket_chat.py`.
 
-- [ ] Add failing admission tests: device token + new client ID succeeds; browser token, Paperclip token, forged device ID and cross-kind pairing fail. Existing node/operator cases retain their behavior.
-- [ ] Admit the dedicated connection type and route local-session envelopes without opening a gateway/node connection. Preserve trusted identity headers through every forwarding hop.
-- [ ] Check device revocation for ongoing ingestion/control, bind uploads to that device/human/scope, and reject unknown message types or oversized frames. Never log transcript content or tokens.
-- [ ] Route commands using shared connection records and Management API. Demonstrate submit on one backend worker and delivery on another worker's connection; no sticky-worker assumption.
-- [ ] Add a short-lived pre-dispatch claim/revalidation and durable outcomes. Exercise disconnect before delivery, after delivery but before acknowledgment, duplicate delivery, and revoked membership before dispatch.
-- [ ] Publish a content-free `room.resources.changed` hint through the existing publisher and registered live-event union. Do not use an org-wide payload fanout or add session text to opaque private-user notifications.
+- [x] Add failing admission tests: device token + new client ID succeeds; browser token, Paperclip token, forged device ID and cross-kind pairing fail. Existing node/operator cases retain their behavior.
+- [x] Admit the dedicated connection type and route local-session envelopes without opening a gateway/node connection. Preserve trusted identity headers through every forwarding hop.
+- [x] Check device revocation for ongoing ingestion/control, bind uploads to that device/human/scope, and reject unknown message types or oversized frames. Never log transcript content or tokens.
+- [x] Route commands using shared connection records and Management API. Demonstrate submit on one backend worker and delivery on another worker's connection; no sticky-worker assumption. Verified hermetically with shared Moto records and a stubbed external Management API, not deployed workers.
+- [x] Add a short-lived pre-dispatch claim/revalidation and durable outcomes. Exercise disconnect before delivery, after delivery but before acknowledgment, duplicate delivery, and revoked membership before dispatch.
+- [x] Publish a content-free `room.resources.changed` hint through the existing publisher and registered live-event union. Do not use an org-wide payload fanout or add session text to opaque private-user notifications.
 
 **Checks:** existing WebSocket router tests plus `ws-connect/test_index.py` under the backend's Python test environment; shared live-event contract tests. Verify the messaging projector ignores `LOCALUSER#`/`LOCALSESSION#` data rows.
 
 **Exit:** Sharing/control transport operates independently of OpenClaw container availability and survives reconnects without silent double execution.
+
+**Local checkpoint:** Dedicated transport is implemented and reviewed; ambiguous dispatch remains `unknown` and is never blindly replayed. Actual native admission, receipt-journal reconciliation and integrated desktop demonstrations remain Task 4/release obligations, not properties established by transport tests alone.
 
 ### Task 4 — Desktop enrollment, discovery, mirroring and commands
 

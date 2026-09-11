@@ -1,15 +1,13 @@
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { MemberRef } from "@lightbulb/shared";
 import { RoomComposer } from "../RoomComposer";
 import type { RoomParticipant } from "../types";
 
 function Harness({ members = [] }: { members?: readonly RoomParticipant[] }) {
   const [text, setText] = useState("ship it");
-  const [mentions, setMentions] = useState<MemberRef[]>([]);
-  return <RoomComposer text={text} onTextChange={setText} members={members} selectedMentions={mentions}
-    onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />;
+  return <RoomComposer text={text} onTextChange={setText} members={members}
+    clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />;
 }
 
 const field = () => screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;

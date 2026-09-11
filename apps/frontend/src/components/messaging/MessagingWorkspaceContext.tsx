@@ -104,7 +104,6 @@ export function MessagingWorkspaceProvider({
   const { data: agentRoster } = teams.read<{ agents?: CompanyAgent[] }>("/agents");
   const { data: humanRoster } = teams.read<{ members?: CompanyMember[] }>("/members");
   const [draft, setDraft] = useState("");
-  const [mentions, setMentions] = useState<MemberRef[]>([]);
   const [clientMessageId, setClientMessageId] = useState(() => crypto.randomUUID());
   const [threadId, setThreadId] = useState<string | null>(null);
   const [notificationTarget, setNotificationTarget] = useState<{ roomId: string; threadId: string | null } | null>(null);
@@ -114,7 +113,6 @@ export function MessagingWorkspaceProvider({
     setNotificationTarget(null);
   }, [notificationTarget, rooms.activeRoomId]);
   const [threadDraft, setThreadDraft] = useState("");
-  const [threadMentions, setThreadMentions] = useState<MemberRef[]>([]);
   const [threadClientMessageId, setThreadClientMessageId] = useState(() => crypto.randomUUID());
   const clientMessageIdRef = useRef(clientMessageId);
   const threadClientMessageIdRef = useRef(threadClientMessageId);
@@ -130,11 +128,9 @@ export function MessagingWorkspaceProvider({
   if (draftRoomId !== rooms.activeRoomId) {
     setDraftRoomId(rooms.activeRoomId);
     setDraft("");
-    setMentions([]);
     setClientMessageId(crypto.randomUUID());
     setThreadId(null);
     setThreadDraft("");
-    setThreadMentions([]);
     setThreadClientMessageId(crypto.randomUUID());
   }
 
@@ -192,12 +188,10 @@ export function MessagingWorkspaceProvider({
     if (thread) {
       if (threadClientMessageIdRef.current !== request.clientMessageId) return;
       setThreadDraft("");
-      setThreadMentions([]);
       setThreadClientMessageId(crypto.randomUUID());
     } else {
       if (clientMessageIdRef.current !== request.clientMessageId) return;
       setDraft("");
-      setMentions([]);
       setClientMessageId(crypto.randomUUID());
     }
   }, [sendRoomMessage]);
@@ -208,8 +202,6 @@ export function MessagingWorkspaceProvider({
     text: draft,
     onTextChange: setDraft,
     members: participants,
-    selectedMentions: mentions,
-    onMentionsChange: setMentions,
     clientMessageId,
     sendState: rooms.sendState(clientMessageId),
     onSubmit: (request) => send(request),
@@ -226,8 +218,6 @@ export function MessagingWorkspaceProvider({
       text: threadDraft,
       onTextChange: setThreadDraft,
       members: participants,
-      selectedMentions: threadMentions,
-      onMentionsChange: setThreadMentions,
       clientMessageId: threadClientMessageId,
       sendState: rooms.sendState(threadClientMessageId),
       onSubmit: (request: CreateMessageRequest) => send(request, true),

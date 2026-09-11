@@ -1,16 +1,15 @@
 import { useRef, useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ImageAttachment, MemberRef } from "@lightbulb/shared";
+import type { ImageAttachment } from "@lightbulb/shared";
 import { RoomComposer } from "../RoomComposer";
 
 const attachment: ImageAttachment = { id: "att-1", fileName: "shot.png", contentType: "image/png", size: 8 };
 
 function Harness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<ImageAttachment> }) {
   const [text, setText] = useState("");
-  const [mentions, setMentions] = useState<MemberRef[]>([]);
-  return <RoomComposer text={text} onTextChange={setText} members={[]} selectedMentions={mentions}
-    onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
+  return <RoomComposer text={text} onTextChange={setText} members={[]}
+    clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
     onSubmit={vi.fn()} onUploadAttachment={onUploadAttachment} />;
 }
 
@@ -18,12 +17,11 @@ function Harness({ onUploadAttachment }: { onUploadAttachment: (file: File) => P
 // history container as dropTargetRef) — a sibling node outside the <form>.
 function ExternalHarness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<ImageAttachment> }) {
   const [text, setText] = useState("");
-  const [mentions, setMentions] = useState<MemberRef[]>([]);
   const historyRef = useRef<HTMLDivElement>(null);
   return <>
     <div data-testid="history" ref={historyRef}><div data-testid="history-child">messages</div></div>
-    <RoomComposer text={text} onTextChange={setText} members={[]} selectedMentions={mentions}
-      onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
+    <RoomComposer text={text} onTextChange={setText} members={[]}
+      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
       onSubmit={vi.fn()} onUploadAttachment={onUploadAttachment} dropTargetRef={historyRef} />
   </>;
 }

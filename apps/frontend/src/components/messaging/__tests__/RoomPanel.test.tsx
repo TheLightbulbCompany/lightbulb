@@ -12,7 +12,7 @@ const props: RoomPanelProps = {
   ownerScopeId: "org", currentUserId: "owner", roomId: "room", state: "ready", httpReady: true, liveConnected: true,
   room: { roomId: "room", kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 1, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z" },
   participants: [owner, friday], messages: [message],
-  composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], selectedMentions: [], onMentionsChange: vi.fn(), clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
+  composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
 };
 
 it("renames a channel in a centered dialog with pending, retry, and focus restoration", async () => {

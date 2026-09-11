@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { MemberRef } from "@lightbulb/shared";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 import type { RoomParticipant } from "../types";
 
@@ -13,9 +12,8 @@ const members: RoomParticipant[] = [
 
 function Harness({ onSubmit = vi.fn(), focusAgentId }: { onSubmit?: RoomComposerProps["onSubmit"]; focusAgentId?: string }) {
   const [text, setText] = useState("");
-  const [mentions, setMentions] = useState<MemberRef[]>([]);
-  return <RoomComposer text={text} onTextChange={setText} members={members} selectedMentions={mentions}
-    onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} focusAgentId={focusAgentId} />;
+  return <RoomComposer text={text} onTextChange={setText} members={members}
+    clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} focusAgentId={focusAgentId} />;
 }
 
 const field = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });

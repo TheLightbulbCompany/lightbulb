@@ -18,8 +18,6 @@ export interface RoomComposerProps {
   text: string;
   onTextChange: (text: string) => void;
   members: readonly RoomParticipant[];
-  selectedMentions: readonly MemberRef[];
-  onMentionsChange: (mentions: MemberRef[]) => void;
   defaultAgentId?: string;
   focusAgentId?: string;
   clientMessageId: string;
@@ -47,8 +45,6 @@ function ComposerAttempt({
   text,
   onTextChange,
   members,
-  selectedMentions,
-  onMentionsChange,
   defaultAgentId,
   focusAgentId,
   clientMessageId,
@@ -136,10 +132,11 @@ function ComposerAttempt({
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
   const emojiOpen = emojiOptions.length > 0;
   const listOpen = mentionOpen || emojiOpen;
-  const mentions = [...selectedMentions];
-  for (const ref of resolveTypedMentions(text, members)) {
-    if (!mentions.some((mention) => sameMember(mention, ref))) mentions.push(ref);
-  }
+  // Mentions are derived purely from the typed text — what renders as a
+  // structured mention on send is exactly what the composer's own typeahead
+  // inserted (or what the sender typed by hand). There is no separate
+  // "picked mentions" side-state to drift from the text.
+  const mentions = resolveTypedMentions(text, members);
   if (defaultMention && !mentions.some((mention) => sameMember(mention, defaultMention))) mentions.push(defaultMention);
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
@@ -296,10 +293,6 @@ function ComposerAttempt({
     if (!trigger) return;
     const token = member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`;
     const next = applyCompletion(text, trigger, token);
-    const ref: MemberRef = { kind: member.kind, id: member.id };
-    if (!selectedMentions.some((mention) => sameMember(mention, ref)) && selectedMentions.length < 32) {
-      onMentionsChange([...selectedMentions, ref]);
-    }
     replaceText(next.text, next.caret, next.caret);
   }
 

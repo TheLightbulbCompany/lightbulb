@@ -31,6 +31,7 @@ def test_the_rule_itself_names_the_vars_but_forbids_printing_the_key():
     assert "jq -r .token" not in PAPERCLIP_CREDENTIAL_RULE
     assert "paperclip-claimed-api-key.json" not in PAPERCLIP_CREDENTIAL_RULE
 
+
 async def test_company_agent_body_gets_the_prohibition_appended():
     """A specialist's body is model-authored, so the rule cannot be left to
     the planner — the materializer appends it. Exercises the real call rather

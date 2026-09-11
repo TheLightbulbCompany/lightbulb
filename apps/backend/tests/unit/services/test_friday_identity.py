@@ -25,13 +25,11 @@ def _assert_js_canonical_roundtrip(ts: str) -> None:
     assert reformatted == ts
 
 
-
 def test_js_iso_now_is_js_canonical_and_roundtrips():
     """The shared helper emits ``YYYY-MM-DDTHH:MM:SS.mmmZ`` — byte-identical to
     JS ``Date.prototype.toISOString`` — so OpenClaw 7.2's workspace-state
     migration (``new Date(v).toISOString() === v``) accepts it."""
     _assert_js_canonical_roundtrip(friday_identity.js_iso_now())
-
 
 
 # ---------------------------------------------------------------------------

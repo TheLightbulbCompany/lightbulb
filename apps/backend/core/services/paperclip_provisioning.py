@@ -726,6 +726,12 @@ class PaperclipProvisioning:
                             owner_user_id,
                             e,
                         )
+                    except httpx.RequestError:
+                        logger.warning(
+                            "paperclip_provisioning.provision_org: starter %s seed transport failed for %s",
+                            starter_key,
+                            owner_user_id,
+                        )
                 missing_starter_keys = [
                     starter_key for starter_key, *_ in STARTER_ROSTER if not starter_agent_ids.get(starter_key)
                 ]

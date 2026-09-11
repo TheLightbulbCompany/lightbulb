@@ -34,7 +34,7 @@ export function MessageNotifications(props: {
       // membership again before we display anything from the conversation.
       void Promise.all([messaging.getRoom(roomId), messaging.listMessages(roomId, messageSeq - 1, 1)])
         .then(([room, page]) => {
-          if (stopped || watched()) return;
+          if (stopped || watched() || messageSeq <= room.lastReadSeq) return;
           const message = page.messages.find((item) => item.messageId === messageId);
           if (!message || (message.author.kind === "human" && message.author.id === userId)) return;
           const title = room.kind === "channel"

@@ -23,7 +23,7 @@ beforeEach(() => {
   mocks.handlers.clear();
   vi.clearAllMocks();
   vi.spyOn(document, "hasFocus").mockReturnValue(false);
-  mocks.getRoom.mockResolvedValue({ kind: "dm" });
+  mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 0 });
   mocks.listMessages.mockResolvedValue({ messages: [{ messageId: "message", text: "Hello", author: { kind: "human", id: "other", displayName: "Alice" } }] });
 });
 
@@ -57,5 +57,13 @@ it("does not show content after access is denied or for self messages", async ()
   mocks.listMessages.mockResolvedValue({ messages: [{ messageId: "message", text: "Mine", author: { kind: "human", id: "me", displayName: "Me" } }] });
   render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
   await act(async () => { emit(); });
+  expect(mocks.nativeNotify).not.toHaveBeenCalled();
+});
+
+it("suppresses delayed hints for a message already read on another client", async () => {
+  mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 2 });
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+  await act(async () => { emit(); });
+  expect(mocks.notifySuccess).not.toHaveBeenCalled();
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
 });

@@ -312,6 +312,7 @@ export function MessagingWorkspaceProvider({
     composer,
     threadComposer,
     onSelectThread: setThreadId,
+    selectedThreadId: threadId,
     onSelectParticipant: selectParticipant,
     onRetry: () => void rooms.refreshRoom(),
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),

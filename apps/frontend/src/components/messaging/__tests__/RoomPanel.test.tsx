@@ -28,6 +28,16 @@ it("names a DM for its counterpart and uses canonical author and member activity
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
 });
 
+it("opens a notification-selected thread and closes it when selection is cleared", () => {
+  const messages = [message, { ...message, messageId: "reply", messageSeq: 2, text: "Notification thread reply", threadRootMessageId: message.messageId }];
+  const view = render(<RoomPanel {...props} messages={messages} selectedThreadId={null} />);
+  expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} messages={messages} selectedThreadId={message.messageId} />);
+  expect(within(screen.getByRole("complementary", { name: "Thread" })).getByText("Notification thread reply")).toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} messages={messages} selectedThreadId={null} />);
+  expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument();
+});
+
 it("shows persisted reactions and removes the viewer's reaction from a thread", async () => {
   const onSetReaction = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} onSetReaction={onSetReaction} messages={[{ ...message, reactions: { "👍": ["owner", "other"] } }]} />);

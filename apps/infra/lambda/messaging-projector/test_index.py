@@ -18,6 +18,11 @@ CHANNEL_KEY = "55555555-5555-4555-8555-555555555555"
 EVENT_ID = "66666666-6666-4666-8666-666666666666"
 OWNER_ID = "org_owner"
 USER_ID = "user_alice"
+BOB_ID = "user_bob"
+CAROL_ID = "user_carol"
+BOB_KEY = "88888888-8888-4888-8888-888888888888"
+CAROL_KEY = "99999999-9999-4999-8999-999999999999"
+USERS_TABLE = "lightbulb-test-users"
 CREATED_AT = "2026-09-10T00:00:00Z"
 
 _serializer = TypeSerializer()
@@ -97,9 +102,12 @@ class FakeDdb:
 
     def get_item(self, **kwargs):
         self.calls.append(kwargs)
-        pk = kwargs["Key"]["pk"]["S"]
-        sk = kwargs["Key"]["sk"]["S"]
-        item = self.items.get((pk, sk))
+        key = kwargs["Key"]
+        lookup = (
+            (key["user_id"]["S"], "USER") if "user_id" in key
+            else (key["pk"]["S"], key["sk"]["S"])
+        )
+        item = self.items.get(lookup)
         return {"Item": av_map(item)} if item else {}
 
     def query(self, **kwargs):
@@ -327,6 +335,151 @@ class ProjectorTests(unittest.TestCase):
             index.handler({"Records": [record]}, object()),
             {"batchItemFailures": [{"itemIdentifier": "900"}]},
         )
+
+
+def push_world(kind: str = "channel", muted: tuple[str, ...] = (), tokens: dict | None = None) -> dict:
+    """Room of Alice (author) + Bob + Carol, each an active stream with one device."""
+    keys = {USER_ID: CHANNEL_KEY, BOB_ID: BOB_KEY, CAROL_ID: CAROL_KEY}
+    if tokens is None:
+        tokens = {USER_ID: ["tok-alice"], BOB_ID: ["tok-bob"], CAROL_ID: ["tok-carol"]}
+    items = {
+        (f"ROOM#{ROOM_ID}", "META"): {
+            "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": kind, "name": "general",
+        },
+    }
+    for user, key in keys.items():
+        member = {"id": user, "ownerId": OWNER_ID, "joinedSeq": 0}
+        if user in muted:
+            member["muted"] = True
+        items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{user}")] = member
+        items[(f"OWNER#{OWNER_ID}", f"USERSTREAM#{user}")] = {"active": True, "channelKey": key}
+        items[(f"STREAM#{key}", "META")] = {"active": True, "ownerId": OWNER_ID, "userId": user}
+        devices = tokens.get(user) or []
+        if devices:
+            items[(user, "USER")] = {
+                "user_id": user,
+                "push_tokens": {
+                    f"device-{n}": {"token": token, "platform": "ios", "updatedAt": CREATED_AT}
+                    for n, token in enumerate(devices)
+                },
+            }
+    return items
+
+
+def push_message(text: str = "hello") -> dict:
+    message = message_item(sequence=2)
+    message["text"] = text
+    message["mentions"] = [{"kind": "human", "id": BOB_ID}, {"kind": "human", "id": CAROL_ID}]
+    return message
+
+
+class PushTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index.USERS_TABLE, index._ddb_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+        index.USERS_TABLE = USERS_TABLE
+        index._ddb_client = FakeDdb()
+
+    def tearDown(self):
+        index.MESSAGING_TABLE, index.USERS_TABLE, index._ddb_client = self.saved
+
+    def project(self, items: dict, message: dict | None = None):
+        index._ddb_client = FakeDdb(items)
+        with (
+            patch.object(index, "_publish") as publish,
+            patch("index.urllib.request.urlopen") as urlopen,
+        ):
+            index._project_message(message or push_message())
+        return publish, urlopen
+
+    def test_notified_members_get_one_expo_post_with_every_token(self):
+        publish, urlopen = self.project(push_world())
+        self.assertEqual(urlopen.call_count, 1)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, index.EXPO_PUSH_URL)
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 5)
+        messages = json.loads(request.data)
+        self.assertEqual(sorted(m["to"] for m in messages), ["tok-bob", "tok-carol"])
+        self.assertTrue(all(m["title"] == "Alice in #general" for m in messages))
+        self.assertTrue(all(m["sound"] == "default" for m in messages))
+        self.assertEqual(messages[0]["body"], "hello")
+        self.assertEqual(messages[0]["data"], {
+            "roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 2, "threadRootMessageId": None,
+        })
+        self.assertEqual(publish.call_count, 4)
+        users_reads = [c for c in index._ddb_client.calls if c.get("TableName") == USERS_TABLE]
+        self.assertEqual(len(users_reads), 2)
+        self.assertTrue(all(read["ConsistentRead"] for read in users_reads))
+
+    def test_muted_member_collects_no_token_and_dm_title_is_the_author(self):
+        _, urlopen = self.project(push_world(kind="dm", muted=(BOB_ID,)))
+        messages = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual([m["to"] for m in messages], ["tok-carol"])
+        self.assertEqual(messages[0]["title"], "Alice")
+
+    def test_author_token_is_never_collected(self):
+        # A DM notifies every non-author member, so the author clause is the
+        # only thing that can keep Alice's token out.
+        _, urlopen = self.project(push_world(kind="dm"))
+        self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
+
+    def test_empty_text_bodies_as_an_image_and_long_text_is_truncated(self):
+        for blank in ("", "   "):
+            _, urlopen = self.project(push_world(), push_message(blank))
+            self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["body"], "Sent an image")
+        _, urlopen = self.project(push_world(), push_message("x" * 500))
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["body"], "x" * 180)
+
+    def test_members_without_push_tokens_are_skipped(self):
+        _, urlopen = self.project(push_world(tokens={BOB_ID: ["tok-bob"]}))
+        self.assertEqual([m["to"] for m in json.loads(urlopen.call_args.args[0].data)], ["tok-bob"])
+        publish, urlopen = self.project(push_world(tokens={}))
+        urlopen.assert_not_called()
+        self.assertEqual(publish.call_count, 4)
+
+    def test_expo_failure_leaves_the_record_successful_and_publishes_intact(self):
+        index._ddb_client = FakeDdb(push_world())
+        with (
+            patch.object(index, "_publish") as publish,
+            patch("index.urllib.request.urlopen", side_effect=OSError("boom")),
+            self.assertLogs(level="WARNING") as logs,
+        ):
+            result = index.handler({"Records": [stream_record(push_message(), "500")]}, object())
+        self.assertEqual(result, {"batchItemFailures": []})
+        self.assertEqual(publish.call_count, 4)
+        self.assertNotIn("tok-bob", "".join(logs.output))
+        self.assertNotIn("hello", "".join(logs.output))
+
+    def test_failed_room_publish_sends_no_push(self):
+        # The record replays on failure and Expo has no eventId dedupe, so a
+        # push before the room publish would banner everyone twice.
+        index._ddb_client = FakeDdb(push_world())
+        with (
+            patch.object(index, "_publish", side_effect=[None, None, None, RuntimeError("throttled")]),
+            patch("index.urllib.request.urlopen") as urlopen,
+        ):
+            result = index.handler({"Records": [stream_record(push_message(), "501")]}, object())
+        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "501"}]})
+        urlopen.assert_not_called()
+
+    def test_nameless_channel_titles_with_the_author_alone(self):
+        world = push_world()
+        world[(f"ROOM#{ROOM_ID}", "META")]["name"] = None
+        _, urlopen = self.project(world)
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["title"], "Alice")
+
+    def test_more_than_one_hundred_tokens_sends_one_hundred_and_warns(self):
+        world = push_world(tokens={BOB_ID: [f"tok-{n}" for n in range(101)]})
+        index._ddb_client = FakeDdb(world)
+        with (
+            patch.object(index, "_publish"),
+            patch("index.urllib.request.urlopen") as urlopen,
+            self.assertLogs(level="WARNING") as logs,
+        ):
+            index._project_message(push_message())
+        self.assertEqual(len(json.loads(urlopen.call_args.args[0].data)), 100)
+        self.assertTrue(any("101" in line for line in logs.output))
 
 
 class ReplayTests(unittest.TestCase):

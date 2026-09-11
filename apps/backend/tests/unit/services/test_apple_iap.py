@@ -328,7 +328,7 @@ def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
     blank" is reachable — and in that window any validly-signed transaction for
     our bundle would be granted a plan. Configuration must fail instead.
     """
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "company.thelightbulb.mobile")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "co.isol8.mobile")
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", "/tmp/certs")
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "")
     apple_iap._verifier.cache_clear()

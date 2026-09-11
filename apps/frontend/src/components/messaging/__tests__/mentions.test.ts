@@ -19,6 +19,22 @@ describe("linkifyMentions", () => {
   it("does not link partial words or unknown handles", () => {
     expect(linkifyMentions("email@friday.ai @nobody @fridays", [], participants)).toBe("email@friday.ai @nobody @fridays");
   });
+  it("links a human by their handle and still by their display name", () => {
+    const withHandle = [{ kind: "human" as const, id: "u1", displayName: "Aden Kim", mentionHandle: "aden-kim" }];
+    expect(linkifyMentions("@aden-kim and @Aden Kim", [], withHandle))
+      .toBe("[@aden-kim](mention:human:u1) and [@Aden Kim](mention:human:u1)");
+    expect(resolveTypedMentions("@aden-kim", withHandle)).toEqual([{ kind: "human", id: "u1" }]);
+  });
+  it("prefers the handle owner when another member's display name is the same token", () => {
+    // The display-name holder is listed first, so only a handle-wins tie-break
+    // keeps @aden pointing at the person whose handle it actually is.
+    const ambiguous = [
+      { kind: "human" as const, id: "u-name", displayName: "Aden", mentionHandle: "zed" },
+      { kind: "human" as const, id: "u-handle", displayName: "Aden Kim", mentionHandle: "aden" },
+    ];
+    expect(linkifyMentions("@aden", [], ambiguous)).toBe("[@aden](mention:human:u-handle)");
+    expect(resolveTypedMentions("@aden", ambiguous)).toEqual([{ kind: "human", id: "u-handle" }]);
+  });
   it("links a structured mention even when the text token differs in case", () => {
     expect(linkifyMentions("@FRIDAY?", [{ kind: "agent", id: "a1" }], participants)).toBe("[@FRIDAY](mention:agent:a1)?");
   });

@@ -17,6 +17,24 @@ export function MessageNotifications(props: {
   const current = useRef(props);
   useEffect(() => { current.current = props; });
 
+  // Browser notification permission can only be requested from a user
+  // gesture, not from the event-handling path below. Prime it on the first
+  // click/keypress anywhere in the app, once.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window) || window.Notification.permission !== "default") return;
+    const requestOnce = () => {
+      document.removeEventListener("pointerdown", requestOnce);
+      document.removeEventListener("keydown", requestOnce);
+      void window.Notification.requestPermission();
+    };
+    document.addEventListener("pointerdown", requestOnce);
+    document.addEventListener("keydown", requestOnce);
+    return () => {
+      document.removeEventListener("pointerdown", requestOnce);
+      document.removeEventListener("keydown", requestOnce);
+    };
+  }, []);
+
   useEffect(() => {
     const seen = new Set<string>();
     let stopped = false;
@@ -45,7 +63,7 @@ export function MessageNotifications(props: {
             dedupeKey: `message:${messageId}`,
             action: { label: "View", onClick: () => current.current.onOpen(roomId, threadRootMessageId) },
           });
-          nativeNotify(title, body);
+          nativeNotify(title, body, { onClick: () => current.current.onOpen(roomId, threadRootMessageId), tag: messageId });
         }).catch(() => {});
     });
     return () => { stopped = true; unlisten(); };

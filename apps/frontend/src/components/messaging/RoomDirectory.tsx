@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, FolderPlus, GripVertical, Pencil, Plus, Trash2, Users } from "lucide-react";
@@ -110,12 +110,25 @@ function DirectoryContent({
   const [pendingOrder, setPendingOrder] = useState<RoomSection[] | null>(null);
   const deleteCancel = useRef<HTMLButtonElement>(null);
   const leaveCancel = useRef<HTMLButtonElement>(null);
+  const newSectionInput = useRef<HTMLInputElement>(null);
+  // Neither dialog has a DialogTrigger, so Radix has no element to hand focus
+  // back to and drops it on <body>. Remember what opened each one.
+  const manageTrigger = useRef<HTMLButtonElement>(null);
+  const leaveTrigger = useRef<HTMLElement | null>(null);
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
   const sections = pendingOrder ?? savedSections;
   const drafts = sections.map((section) => ({ ...section, name: nameEdits[section.id] ?? section.name }));
+  // One predicate for every write out of this dialog: the backend rejects a
+  // blank name, so Add and Delete must not ship someone's half-typed rename
+  // along for the ride.
+  const blankName = drafts.some((section) => !section.name.trim());
+  const trimmedDrafts = () => drafts.map((section) => ({ ...section, name: section.name.trim() }));
+  const blankHintId = `${id}-section-blank`;
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  const sectionName = (sectionId: string | number) => sections.find((section) => section.id === String(sectionId))?.name ?? "Section";
   // The row `savePrefs` is acting on, so one in-flight star doesn't disable
   // every other row's trigger. Only read while `savePrefs.pending`, so a
   // stale value after the action settles is inert.
@@ -138,8 +151,24 @@ function DirectoryContent({
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants) });
 
   // The delete confirm replaces the dialog's controls in place, so focus has
-  // to follow it — and land on Cancel, never on the destructive button.
-  useEffect(() => { if (deleting) deleteCancel.current?.focus(); }, [deleting]);
+  // to follow it — and land on Cancel, never on the destructive button. On the
+  // way back it returns to the Delete control that opened it, or to the new
+  // section field when that row is gone because the delete went through.
+  useEffect(() => {
+    if (deleting) { deleteCancel.current?.focus(); return; }
+    const opener = deleteTrigger.current;
+    deleteTrigger.current = null;
+    if (opener) (opener.isConnected ? opener : newSectionInput.current)?.focus();
+  }, [deleting]);
+
+  // Section ids are UUIDs — a keyboard drag must never read one aloud.
+  const position = (sectionId: string | number) => `position ${sections.findIndex((section) => section.id === String(sectionId)) + 1} of ${sections.length}`;
+  const announcements: Announcements = {
+    onDragStart: ({ active }) => `Picked up ${sectionName(active.id)}.`,
+    onDragOver: ({ active, over }) => over ? `${sectionName(active.id)} is over ${position(over.id)}.` : undefined,
+    onDragEnd: ({ active, over }) => over ? `${sectionName(active.id)} was moved to ${position(over.id)}.` : `${sectionName(active.id)} was dropped.`,
+    onDragCancel: ({ active }) => `Reordering ${sectionName(active.id)} was cancelled.`,
+  };
 
   async function persistSections(next: RoomSection[]) {
     if (!onSaveSections) return false;
@@ -242,7 +271,7 @@ function DirectoryContent({
           <option value="unread">Unread first</option>
         </select>
         <Button variant="ghost" size="icon" aria-label="Next unread conversation" disabled={unreadRooms.length === 0} onClick={selectNextUnread}><ChevronDown aria-hidden="true" /></Button>
-        {onSaveSections && <Button variant="ghost" size="icon" aria-label="Manage sections" onClick={openManageSections}><FolderPlus aria-hidden="true" /></Button>}
+        {onSaveSections && <Button ref={manageTrigger} variant="ghost" size="icon" aria-label="Manage sections" onClick={openManageSections}><FolderPlus aria-hidden="true" /></Button>}
         {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
       </div>
     </div>
@@ -252,7 +281,7 @@ function DirectoryContent({
     {savePrefs.error && <p role="alert" className="px-2 text-sm text-err">{savePrefs.error}</p>}
     {saveSections.error && !managing && <p role="alert" className="px-2 text-sm text-err">{saveSections.error}</p>}
     {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections}>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.map((group) => {
       const collapsed = prefs.collapsed.includes(group.id);
@@ -285,11 +314,13 @@ function DirectoryContent({
             onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
             onMoveToSection={onSetPrefs && sections.length > 0
               ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
-            onLeave={onLeaveRoom && room.kind === "channel" ? () => { leave.reset(); setLeaving(room); } : undefined}
+            onLeave={onLeaveRoom && room.kind === "channel" ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
             onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
         })}</ul>
       </>;
-      return group.custom
+      // No grip at all when the caller cannot save an order — a drag handle
+      // that silently does nothing is worse than no handle.
+      return group.custom && onSaveSections
         ? <SortableSection key={group.id} id={group.id} label={group.label}>{body}</SortableSection>
         : <section key={group.id} aria-label={group.label}>{body()}</section>;
     })}
@@ -376,7 +407,8 @@ function DirectoryContent({
     </form>
     </DialogContent>
     <Dialog open={managing} onOpenChange={(open) => { if (!open && !saveSections.pending) { setManaging(false); saveSections.reset(); } }}>
-      <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto">
+      <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
+        onCloseAutoFocus={(event) => { if (manageTrigger.current?.isConnected) { event.preventDefault(); manageTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle>Manage sections</DialogTitle>
           <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels or Direct messages.</DialogDescription>
         </DialogHeader>
@@ -386,44 +418,49 @@ function DirectoryContent({
           <label className="sr-only" htmlFor={`${id}-section-${section.id}`}>Rename {section.name}</label>
           <input id={`${id}-section-${section.id}`} className="room-input" value={nameEdits[section.id] ?? section.name}
             maxLength={SECTION_NAME_MAX_CHARS} disabled={saveSections.pending || !!deleting}
+            aria-invalid={(nameEdits[section.id] ?? section.name).trim() ? undefined : true}
+            aria-describedby={(nameEdits[section.id] ?? section.name).trim() ? undefined : blankHintId}
             onChange={(event) => setNameEdits({ ...nameEdits, [section.id]: event.target.value })} />
           <Button type="button" variant="ghost" size="icon" aria-label={`Delete ${section.name}`}
-            disabled={saveSections.pending || !!deleting} onClick={() => { saveSections.reset(); setDeleting(section); }}><Trash2 aria-hidden="true" /></Button>
+            disabled={saveSections.pending || !!deleting || blankName}
+            onClick={(event) => { saveSections.reset(); deleteTrigger.current = event.currentTarget; setDeleting(section); }}><Trash2 aria-hidden="true" /></Button>
         </li>)}</ul>}
         <form className="room-section-edit" onSubmit={async (event) => {
           event.preventDefault();
           const name = newSection.trim();
           if (!name || sections.length >= MAX_SECTIONS) return;
-          if (await persistSections([...drafts, { id: crypto.randomUUID(), name }])) { setNewSection(""); setNameEdits({}); }
+          if (blankName) return;
+          if (await persistSections([...trimmedDrafts(), { id: crypto.randomUUID(), name }])) { setNewSection(""); setNameEdits({}); }
         }}>
           <label className="sr-only" htmlFor={`${id}-new-section`}>New section name</label>
-          <input id={`${id}-new-section`} className="room-input" value={newSection} maxLength={SECTION_NAME_MAX_CHARS}
+          <input ref={newSectionInput} id={`${id}-new-section`} className="room-input" value={newSection} maxLength={SECTION_NAME_MAX_CHARS}
             disabled={saveSections.pending || !!deleting} onChange={(event) => setNewSection(event.target.value)} />
-          <Button type="submit" variant="outline" disabled={!newSection.trim() || sections.length >= MAX_SECTIONS || saveSections.pending || !!deleting}>Add section</Button>
+          <Button type="submit" variant="outline" disabled={!newSection.trim() || sections.length >= MAX_SECTIONS || saveSections.pending || !!deleting || blankName}>Add section</Button>
         </form>
         {sections.length >= MAX_SECTIONS && <p className="text-sm text-muted-foreground">You can keep up to {MAX_SECTIONS} sections.</p>}
-        {drafts.some((section) => !section.name.trim()) && <p className="text-sm text-muted-foreground">Every section needs a name.</p>}
+        {blankName && <p id={blankHintId} className="text-sm text-muted-foreground">Every section needs a name.</p>}
         {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
           <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels or Direct messages.</p>
           <div className="room-composer-actions">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
-            <Button type="button" variant="destructive" disabled={saveSections.pending}
-              onClick={async () => { if (await persistSections(drafts.filter((section) => section.id !== deleting.id))) { setDeleting(null); setNameEdits({}); } }}>
+            <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}
+              onClick={async () => { if (await persistSections(trimmedDrafts().filter((section) => section.id !== deleting.id))) { setDeleting(null); setNameEdits({}); } }}>
               {saveSections.pending ? "Deleting…" : "Delete section"}</Button>
           </div>
         </div>}
         {!deleting && <DialogFooter className="gap-2">
           <Button type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setNameEdits({}); setManaging(false); saveSections.reset(); }}>Cancel</Button>
-          <Button type="button" disabled={saveSections.pending || drafts.some((section) => !section.name.trim())}
-            onClick={async () => { if (await persistSections(drafts.map((section) => ({ ...section, name: section.name.trim() })))) { setNameEdits({}); setManaging(false); } }}>
+          <Button type="button" disabled={saveSections.pending || blankName}
+            onClick={async () => { if (await persistSections(trimmedDrafts())) { setNameEdits({}); setManaging(false); } }}>
             {saveSections.pending ? "Saving…" : "Save sections"}</Button>
         </DialogFooter>}
       </DialogContent>
     </Dialog>
     <Dialog open={!!leaving} onOpenChange={(open) => { if (!open && !leave.pending) { setLeaving(null); leave.reset(); } }}>
       <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md"
-        onOpenAutoFocus={(event) => { event.preventDefault(); leaveCancel.current?.focus(); }}>
+        onOpenAutoFocus={(event) => { event.preventDefault(); leaveCancel.current?.focus(); }}
+        onCloseAutoFocus={(event) => { if (leaveTrigger.current?.isConnected) { event.preventDefault(); leaveTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle className="break-words">Leave {leaving ? roomDisplayName(leaving, leaving.participants) : ""}?</DialogTitle>
           <DialogDescription>You will stop receiving its messages and lose access to its history. An admin can add you back.</DialogDescription>
         </DialogHeader>

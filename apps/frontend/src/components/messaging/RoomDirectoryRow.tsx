@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { Bell, BellOff, Hash, Link, LogOut, MailOpen, MessageCircle, MoreHorizontal, Pencil, Star, Users } from "lucide-react";
 import type { RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -22,10 +23,12 @@ export interface RoomDirectoryRowProps {
   onCopyLink: () => void;
   onMoveToSection?: (sectionId: string | null) => void;
   sections: readonly RoomSection[];
-  onLeave?: () => void;
+  /** Handed this row's overflow trigger so the confirm dialog can return focus to it. */
+  onLeave?: (trigger: HTMLButtonElement | null) => void;
 }
 
 export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onMoveToSection, sections, onLeave }: RoomDirectoryRowProps) {
+  const actionsTrigger = useRef<HTMLButtonElement>(null);
   const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
   // A muted room never carries a badge (spec: muted rows are muted-coloured,
   // with the word "Muted" so colour is never the only signal).
@@ -50,7 +53,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
     </button>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={busy}><MoreHorizontal aria-hidden="true" /></Button>
+        <Button ref={actionsTrigger} variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={busy}><MoreHorizontal aria-hidden="true" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {onToggleStar && <DropdownMenuItem onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>}
@@ -64,7 +67,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         </>}
         {onLeave && <>
           <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onSelect={onLeave}><LogOut aria-hidden="true" />Leave channel</DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => onLeave(actionsTrigger.current)}><LogOut aria-hidden="true" />Leave channel</DropdownMenuItem>
         </>}
       </DropdownMenuContent>
     </DropdownMenu>

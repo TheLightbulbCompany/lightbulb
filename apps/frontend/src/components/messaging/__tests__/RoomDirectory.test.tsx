@@ -347,13 +347,47 @@ it("creates a section, renames it, and deletes it from the manage dialog", async
   expect(onSaveSections).toHaveBeenLastCalledWith([]);
 });
 
-it("moves a room into a section from the row menu", async () => {
+it("moves a room into a section and back out from the row menu", async () => {
   const onSetPrefs = vi.fn().mockResolvedValue(undefined);
-  render(<RoomDirectory {...sectionProps} onSetPrefs={onSetPrefs} sections={[{ id: "s-1", name: "Ship" }]}
-    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  const props = { ...sectionProps, onSetPrefs, sections: [{ id: "s-1", name: "Ship" }] };
+  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
   await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Move to Ship" }));
   expect(onSetPrefs).toHaveBeenCalledWith("plain", { sectionId: "s-1" });
+
+  // Once it is in a section the menu offers the way back out (Task 7 names
+  // that item "Remove from section"), which writes a null sectionId.
+  rerender(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain", sectionId: "s-1" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Remove from section" }));
+  expect(onSetPrefs).toHaveBeenLastCalledWith("plain", { sectionId: null });
+});
+
+it("returns focus to the Manage sections button when the dialog closes", async () => {
+  render(<RoomDirectory {...sectionProps} sections={[{ id: "s-1", name: "Ship" }]} rooms={[]} />);
+  const manage = screen.getByRole("button", { name: "Manage sections" });
+  await userEvent.click(manage);
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Manage sections" })).not.toBeInTheDocument());
+  expect(manage).toHaveFocus();
+});
+
+it("refuses to save, add or delete while a section name is blank", async () => {
+  const onSaveSections = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections}
+    sections={[{ id: "s-1", name: "Ship" }, { id: "s-2", name: "Admin" }]} rooms={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.clear(within(dialog).getByLabelText("Rename Ship"));
+  await userEvent.type(within(dialog).getByLabelText("New section name"), "Admin");
+  expect(within(dialog).getByLabelText("Rename Ship")).toHaveAttribute("aria-invalid", "true");
+  expect(within(dialog).getByText("Every section needs a name.")).toBeInTheDocument();
+  // A blank rename must not ride along with an unrelated add or delete.
+  expect(within(dialog).getByRole("button", { name: "Add section" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "Delete Admin" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "Save sections" })).toBeDisabled();
+  expect(onSaveSections).not.toHaveBeenCalled();
 });
 
 it("reorders sections with the keyboard and persists the new order", async () => {

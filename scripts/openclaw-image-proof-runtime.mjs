@@ -71,11 +71,11 @@ export function assertLobsterRuntimeContract(report, fixtureFile) {
   );
 }
 
-function assertConfig(config, fixture) {
+export function assertConfig(config, fixture) {
   assert(config.meta?.lastTouchedVersion === "2026.9.3", `${fixture.file}: wrong config version`);
   assert(
-    config.channels && Object.keys(config.channels).length === 0,
-    `${fixture.file}: channel fixtures must remain empty and conditional`,
+    config.channels?.lightbulb?.enabled === true && Object.keys(config.channels).length === 1,
+    `${fixture.file}: fixtures must contain only the enabled native Lightbulb channel`,
   );
   assert(config.acp?.enabled === true, `${fixture.file}: production ACP default is missing`);
   assert(

@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { useRoomResources } from "@/hooks/useRoomResources";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "codex",
@@ -55,6 +56,76 @@ async function openSession() {
   await userEvent.click(await screen.findByRole("button", { name: /Open Codex/ }));
 }
 afterEach(() => vi.useRealTimers());
+
+it("applies continuing directory snapshots under frequent hints with bounded request concurrency", async () => {
+  const f = setup();
+  const pending: Array<(value: RoomResources) => void> = [];
+  f.client.listResources.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+  const { result } = renderHook(() => useRoomResources("room", f.source));
+  for (let round = 0; round < 4; round++) {
+    act(() => { for (let hint = 0; hint < 20; hint++) f.emit("room.resources.changed"); });
+    expect(f.client.listResources).toHaveBeenCalledTimes(round + 1);
+    await act(async () => pending[round]({ ...resources, sessions: [{ ...session, providerVersion: `snapshot-${round}` }] }));
+    expect(result.current.data?.sessions[0].providerVersion).toBe(`snapshot-${round}`);
+    expect(result.current.revision).toBe(round + 1);
+    expect(f.client.listResources).toHaveBeenCalledTimes(round + 2);
+  }
+  await act(async () => pending[4](resources));
+  expect(result.current.data?.sessions[0].providerVersion).toBe("0.149.0");
+  expect(result.current.loading).toBe(false);
+  expect(f.client.listResources).toHaveBeenCalledTimes(5);
+});
+
+it.each(["old-first", "new-first"])("starts a new authorized epoch without waiting for the old fetch (%s)", async order => {
+  const f = setup();
+  const pending: Array<(value: RoomResources) => void> = [];
+  f.client.listResources.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+  const { result } = renderHook(() => useRoomResources("room", f.source));
+  act(() => { f.emit("room.resources.changed"); f.emit("room.metadata.changed"); });
+  expect(result.current.data).toBeNull();
+  expect(f.client.listResources).toHaveBeenCalledTimes(2);
+  act(() => f.emit("room.resources.changed"));
+  const authorized = { devices: [], sessions: [], pairedNodes: [] };
+  if (order === "old-first") {
+    await act(async () => pending[0](resources));
+    expect(result.current.data).toBeNull();
+    expect(f.client.listResources).toHaveBeenCalledTimes(2);
+  }
+  await act(async () => pending[1](authorized));
+  expect(result.current.data).toEqual(authorized);
+  expect(f.client.listResources).toHaveBeenCalledTimes(3);
+  if (order === "new-first") {
+    await act(async () => pending[0](resources));
+    expect(result.current.data).toEqual(authorized);
+    expect(result.current.loading).toBe(true);
+  }
+  await act(async () => pending[2](authorized));
+  expect(result.current.loading).toBe(false);
+  expect(result.current.revision).toBe(2);
+});
+
+it("drops queued refreshes on revocation and unmount without blocking a reopened pane", async () => {
+  const f = setup();
+  const pending: Array<(value: RoomResources) => void> = [];
+  f.client.listResources.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+  const first = renderHook(() => useRoomResources("room", f.source));
+  act(() => { f.emit("room.resources.changed"); f.emit("room.access.removed"); });
+  await act(async () => pending[0](resources));
+  expect(first.result.current.data).toBeNull();
+  expect(first.result.current.loading).toBe(false);
+  expect(f.client.listResources).toHaveBeenCalledTimes(1);
+  first.unmount();
+  const second = renderHook(() => useRoomResources("room", f.source));
+  act(() => f.emit("room.resources.changed"));
+  second.unmount();
+  const reopened = renderHook(() => useRoomResources("room", f.source));
+  await act(async () => pending[1](resources));
+  expect(reopened.result.current.data).toBeNull();
+  expect(f.client.listResources).toHaveBeenCalledTimes(3);
+  await act(async () => pending[2]({ devices: [], sessions: [], pairedNodes: [] }));
+  expect(reopened.result.current.data?.sessions).toEqual([]);
+  expect(reopened.result.current.loading).toBe(false);
+});
 
 it("groups only authorized resources, targets session input separately, and restores keyboard focus", async () => {
   const f = setup();

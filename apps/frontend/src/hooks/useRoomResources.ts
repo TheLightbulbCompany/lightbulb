@@ -20,32 +20,47 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
   const [accessRevision, setAccessRevision] = useState(0);
   const request = useRef(0);
   const blocked = useRef(false);
+  const refreshing = useRef(false);
+  const queued = useRef(false);
+  const invalidate = useCallback(() => {
+    request.current += 1;
+    refreshing.current = false;
+    queued.current = false;
+  }, []);
   const revoke = useCallback(() => {
     blocked.current = true;
-    request.current += 1;
+    invalidate();
     setData(null);
     setLoading(false);
     setAccessRevision(v => v + 1);
     setError("Access to these resources was removed. Reopen the panel to check access.");
-  }, []);
+  }, [invalidate]);
   const refresh = useCallback(async () => {
     if (blocked.current) return;
+    if (refreshing.current) { queued.current = true; return; }
+    refreshing.current = true;
     const id = ++request.current;
     setLoading(true);
     try {
-      const next = await client.listResources(roomId);
-      if (id !== request.current || blocked.current) return;
-      setData(next);
-      setError(null);
-      setRevision(v => v + 1);
-    } catch (e) {
-      if (id !== request.current) return;
-      if (accessLost(e)) { revoke(); return; }
-      setData(null);
-      setAccessRevision(v => v + 1);
-      setError("Could not refresh devices and sessions. Try again.");
+      // Hints coalesce; each successful snapshot applies before the queued refresh.
+      do {
+        queued.current = false;
+        try {
+          const next = await client.listResources(roomId);
+          if (id !== request.current || blocked.current) return;
+          setData(next);
+          setError(null);
+          setRevision(v => v + 1);
+        } catch (e) {
+          if (id !== request.current) return;
+          if (accessLost(e)) { revoke(); return; }
+          setData(null);
+          setAccessRevision(v => v + 1);
+          setError("Could not refresh devices and sessions. Try again.");
+        }
+      } while (queued.current && id === request.current && !blocked.current);
     } finally {
-      if (id === request.current) setLoading(false);
+      if (id === request.current) { refreshing.current = false; setLoading(false); }
     }
   }, [client, roomId, revoke]);
   useEffect(() => {
@@ -55,7 +70,9 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
       if (!("roomId" in event.payload) || event.payload.roomId !== roomId) return;
       if (event.type === "room.access.removed") { revoke(); return; }
       if (event.type === "room.metadata.changed" || event.type === "room.subscription.rotated") {
-        request.current += 1;
+        // Authorization changes start a new epoch immediately, without waiting
+        // for an obsolete fetch; its completion cannot touch the new queue.
+        invalidate();
         setData(null);
         setAccessRevision(v => v + 1);
         void refresh();
@@ -63,8 +80,8 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
     });
     // Reuses the room's existing live subscription. Poll only while this pane exists.
     const timer = setInterval(() => void refresh(), 5000);
-    return () => { unsubscribe(); clearInterval(timer); blocked.current = true; request.current += 1; };
-  }, [onEvent, roomId, refresh, revoke]);
+    return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
+  }, [onEvent, roomId, refresh, revoke, invalidate]);
   const previousConnection = useRef(connectionRevision);
   useEffect(() => {
     if (previousConnection.current !== connectionRevision) void refresh();

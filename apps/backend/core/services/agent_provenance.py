@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Collection, Literal, TypedDict
 
 
-AgentOrigin = Literal["Seed", "Marketplace", "Custom"]
+AgentOrigin = Literal["Seed", "Starter", "Marketplace", "Custom"]
 
 
 class MarketplaceProvenance(TypedDict):
@@ -54,6 +54,7 @@ def stamp_agent_provenance(
     agent: Any,
     *,
     seeded_ids: Collection[str],
+    starter_ids: Collection[str] = (),
     sidecar: dict[str, Any] | None = None,
 ) -> Any:
     """Stamp one Paperclip agent with the authoritative Isol8 origin."""
@@ -64,6 +65,8 @@ def stamp_agent_provenance(
     seeded = isinstance(agent_id, str) and agent_id in seeded_ids
     if seeded:
         return {**agent, "seeded": True, "origin": "Seed"}
+    if isinstance(agent_id, str) and agent_id in starter_ids:
+        return {**agent, "seeded": False, "origin": "Starter"}
 
     marketplace = marketplace_provenance(sidecar)
     if marketplace is not None:

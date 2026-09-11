@@ -1382,9 +1382,14 @@ def _paid_account(**extra):
     return {"owner_id": "user_p", "subscription_status": "active", **extra}
 
 
-def _company_row(company_id="co1", status="active", friday="friday1", atlas="atlas1"):
+def _company_row(company_id="co1", status="active", friday="friday1", atlas="atlas1", starter_ids=None):
     seeded = [x for x in (friday, atlas) if x is not None] or None
-    return MagicMock(company_id=company_id, status=status, seeded_agent_ids=seeded)
+    return MagicMock(
+        company_id=company_id,
+        status=status,
+        seeded_agent_ids=seeded,
+        starter_agent_ids=starter_ids,
+    )
 
 
 @pytest.mark.asyncio
@@ -1410,6 +1415,23 @@ async def test_arm_paid_seeds_nightly_routine_for_friday():
     assert kwargs["title"] == "Nightly CEO progress"
     assert kwargs["cron"] == "0 8 * * *"
     assert kwargs["timezone"] == "UTC"
+
+
+@pytest.mark.asyncio
+async def test_arm_paid_prefers_starter_ceo_for_nightly_routine():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "starter-ceo"}))
+    seed = AsyncMock(return_value="rid-nightly")
+    with (
+        patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=_paid_account())),
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.user_provision.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")),
+        patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
+        patch("core.services.user_provision.create_enabled_schedule_routine", seed),
+    ):
+        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+
+    assert seed.await_args.kwargs["agent_id"] == "starter-ceo"
 
 
 @pytest.mark.asyncio

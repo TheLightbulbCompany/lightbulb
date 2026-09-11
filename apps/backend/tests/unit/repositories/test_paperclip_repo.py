@@ -100,6 +100,7 @@ def _make_company(user_id="u1", status="active", **kwargs):
         last_error=kwargs.get("last_error"),
         scheduled_purge_at=kwargs.get("scheduled_purge_at"),
         seeded_agent_ids=kwargs.get("seeded_agent_ids"),
+        starter_agent_ids=kwargs.get("starter_agent_ids"),
         onboarding_generation=kwargs.get("onboarding_generation"),
         funnel_state=kwargs.get("funnel_state"),
         funnel_submitted_at=kwargs.get("funnel_submitted_at"),
@@ -125,6 +126,28 @@ async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
     await repo.put(_make_company(user_id="user_noseed"))
     retrieved = await repo.get("user_noseed")
     assert retrieved.seeded_agent_ids is None
+
+
+async def test_starter_agent_ids_round_trip(repo):
+    starter_ids = {
+        "ceo": "agent-ceo",
+        "engineering": "agent-eng",
+        "finance": "agent-fin",
+        "growth": "agent-growth",
+        "analytics": "agent-analytics",
+        "customer_operations": "agent-cx",
+    }
+    await repo.put(_make_company(user_id="user_starter", starter_agent_ids=starter_ids))
+
+    assert (await repo.get("user_starter")).starter_agent_ids == starter_ids
+
+
+async def test_legacy_seeded_row_reads_without_starter_ids(repo):
+    await repo.put(_make_company(user_id="user_legacy", seeded_agent_ids=["friday_id", "atlas_id"]))
+
+    retrieved = await repo.get("user_legacy")
+    assert retrieved.seeded_agent_ids == ["friday_id", "atlas_id"]
+    assert retrieved.starter_agent_ids is None
 
 
 async def test_paperclip_email_round_trips(repo):
@@ -583,6 +606,49 @@ async def test_resolve_owner_row_org_finds_creator_row_via_gsi(repo):
     assert resolved is not None
     assert resolved.user_id == "user_creator"
     assert resolved.onboarding_generation == "01CREATOR"
+
+
+async def test_resolve_owner_row_prefers_row_with_starter_ids(repo):
+    """A member row may be older, but starter identity lives only on the
+    authoritative owner row."""
+    now = datetime.now(timezone.utc)
+    await repo.put(_make_company(user_id="user_member", org_id="org_acme", created_at=now))
+    await repo.put(
+        _make_company(
+            user_id="user_owner",
+            org_id="org_acme",
+            created_at=now + timedelta(seconds=5),
+            starter_agent_ids={"ceo": "agent-ceo"},
+        )
+    )
+
+    resolved = await repo.resolve_owner_row("org_acme")
+    assert resolved is not None
+    assert resolved.user_id == "user_owner"
+    assert resolved.starter_agent_ids == {"ceo": "agent-ceo"}
+
+
+async def test_remove_starter_agent_id_removes_only_matching_entry(repo):
+    await repo.put(
+        _make_company(
+            user_id="user_owner",
+            org_id="org_acme",
+            starter_agent_ids={"ceo": "agent-ceo", "finance": "agent-fin"},
+        )
+    )
+
+    await repo.remove_starter_agent_id("org_acme", "agent-fin")
+
+    assert (await repo.get("user_owner")).starter_agent_ids == {"ceo": "agent-ceo"}
+
+
+async def test_remove_unknown_starter_agent_id_is_a_no_op(repo):
+    starter_ids = {"ceo": "agent-ceo", "finance": "agent-fin"}
+    await repo.put(_make_company(user_id="user_owner", starter_agent_ids=starter_ids))
+
+    await repo.remove_starter_agent_id("user_owner", "agent-other")
+
+    assert (await repo.get("user_owner")).starter_agent_ids == starter_ids
 
 
 async def test_find_owner_row_hydrates_from_gsi_without_a_second_get(repo):
@@ -1641,6 +1707,20 @@ async def test_onboarding_state_projects_first_contact_and_friday(repo):
     assert state["first_contact_attempts"] == 0
     # Friday is seeded FIRST in provision_org, so she is index 0.
     assert state["friday_agent_id"] == "agent_friday"
+
+
+async def test_onboarding_state_prefers_starter_ceo_over_legacy_friday(repo):
+    await repo.put(
+        _make_company(
+            user_id="u1",
+            org_id="u1",
+            onboarding_generation="01G",
+            seeded_agent_ids=["agent_friday", "agent_atlas"],
+            starter_agent_ids={"ceo": "agent_ceo"},
+        )
+    )
+
+    assert (await repo.get_onboarding_state("u1"))["friday_agent_id"] == "agent_ceo"
 
 
 # --- Pending brief (intake before the workspace can receive it) --------------

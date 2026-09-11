@@ -42,7 +42,9 @@ from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
     get_seeded_agent_ids,
+    get_starter_agent_ids,
     is_seeded_agent,
+    remove_starter_agent_id,
     pair_with_openclaw,
 )
 from core.services.paperclip_agent_lifecycle import delete_agent_everywhere
@@ -77,7 +79,7 @@ router = APIRouter()
 # core.services.agent_redaction so neither surface can drift on what's secret.
 
 
-def _mark_seeded(agent, seeded_ids, sidecar=None):
+def _mark_seeded(agent, seeded_ids, sidecar=None, starter_ids=()):
     """Stamp backend-authored seed and origin fields for the browser.
 
     ``seeded`` is the single source of truth the Teams UI uses to lock
@@ -86,7 +88,12 @@ def _mark_seeded(agent, seeded_ids, sidecar=None):
     agent is never falsely locked. Marketplace identity requires a complete
     server-written deployment sidecar; ambiguous legacy rows become Custom.
     """
-    return stamp_agent_provenance(agent, seeded_ids=seeded_ids, sidecar=sidecar)
+    return stamp_agent_provenance(
+        agent,
+        seeded_ids=seeded_ids,
+        starter_ids=starter_ids,
+        sidecar=sidecar,
+    )
 
 
 async def _load_agent_sidecars(owner_id: str, agent_ids: list[str]) -> dict[str, dict]:
@@ -448,11 +455,18 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
     )
     envelope = envelope_list(upstream, "agents")
     owner_id = _resolve_owner_id(ctx)
-    seeded_ids = await get_seeded_agent_ids(owner_id=owner_id, repo=_repo())
+    repo = _repo()
+    seeded_ids, starter_ids = await asyncio.gather(
+        get_seeded_agent_ids(owner_id=owner_id, repo=repo),
+        get_starter_agent_ids(owner_id=owner_id, repo=repo),
+    )
     agent_ids = [a["id"] for a in envelope["agents"] if isinstance(a.get("id"), str)]
     sidecars = await _load_agent_sidecars(owner_id, agent_ids)
     return {
-        "agents": [_mark_seeded(_redact_agent(a), seeded_ids, sidecars.get(a.get("id"))) for a in envelope["agents"]]
+        "agents": [
+            _mark_seeded(_redact_agent(a), seeded_ids, sidecars.get(a.get("id")), starter_ids)
+            for a in envelope["agents"]
+        ]
     }
 
 
@@ -654,9 +668,13 @@ async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
         session_cookie=ctx.session_cookie,
     )
     owner_id = _resolve_owner_id(ctx)
-    seeded_ids = await get_seeded_agent_ids(owner_id=owner_id, repo=_repo())
+    repo = _repo()
+    seeded_ids, starter_ids = await asyncio.gather(
+        get_seeded_agent_ids(owner_id=owner_id, repo=repo),
+        get_starter_agent_ids(owner_id=owner_id, repo=repo),
+    )
     sidecars = await _load_agent_sidecars(owner_id, [agent_id])
-    return _mark_seeded(_redact_agent(upstream), seeded_ids, sidecars.get(agent_id))
+    return _mark_seeded(_redact_agent(upstream), seeded_ids, sidecars.get(agent_id), starter_ids)
 
 
 @router.patch("/agents/{agent_id}")
@@ -700,12 +718,15 @@ async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     (defense in depth — the UI deletes via the gateway, but this endpoint
     is still reachable directly).
     """
-    if await is_seeded_agent(owner_id=_resolve_owner_id(ctx), agent_id=agent_id):
+    owner_id = _resolve_owner_id(ctx)
+    if await is_seeded_agent(owner_id=owner_id, agent_id=agent_id):
         raise HTTPException(status_code=403, detail="Seeded agents (Friday/Atlas) cannot be deleted.")
-    return await delete_agent_everywhere(
-        owner_id=_resolve_owner_id(ctx),
+    result = await delete_agent_everywhere(
+        owner_id=owner_id,
         agent_id=agent_id,
     )
+    await remove_starter_agent_id(owner_id=owner_id, agent_id=agent_id)
+    return result
 
 
 @router.post("/agents/{agent_id}/pause")

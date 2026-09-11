@@ -44,6 +44,7 @@ def client(teams_ctx, monkeypatch):
         return teams_ctx
 
     monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
+    monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value=set()))
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     try:
         yield TestClient(app)
@@ -87,6 +88,20 @@ def test_list_agents_stamps_seeded_flag(client, monkeypatch):
     assert by_id["friday_id"]["origin"] == "Seed"
     assert by_id["user_id"]["seeded"] is False
     assert by_id["user_id"]["origin"] == "Custom"
+
+
+def test_list_agents_stamps_starter_without_seed_protection(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "agent-ceo"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value={"agent-ceo"}))
+
+    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer test"})
+
+    assert r.json() == {"agents": [{"id": "agent-ceo", "seeded": False, "origin": "Starter"}]}
 
 
 def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch):
@@ -402,10 +417,13 @@ def test_delete_agent_allows_non_seeded(client, monkeypatch):
     delete_everywhere = AsyncMock(return_value={"deleted": True})
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
     monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=False))
+    remove_starter = AsyncMock()
+    monkeypatch.setattr(agents_mod, "remove_starter_agent_id", remove_starter)
 
     r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
+    remove_starter.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
 
 
 def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):

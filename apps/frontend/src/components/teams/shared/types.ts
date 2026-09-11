@@ -783,7 +783,7 @@ export interface CompanyAgent {
    *  seeded-agent IDs by the BFF, never from role/name. */
   seeded?: boolean;
   /** Backend-authored install source. Seller artifacts cannot set this. */
-  origin?: "Seed" | "Marketplace" | "Custom";
+  origin?: "Seed" | "Starter" | "Marketplace" | "Custom";
   marketplace?: {
     listingId: string;
     slug: string;

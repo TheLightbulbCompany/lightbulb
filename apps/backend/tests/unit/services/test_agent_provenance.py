@@ -56,3 +56,28 @@ def test_complete_sidecar_returns_canonical_marketplace_fields():
             "seller": "seller-id",
         },
     }
+
+
+def test_starter_origin_wins_over_marketplace_without_seed_protection():
+    sidecar = {
+        "listing_id": "listing-id",
+        "template_slug": "forge",
+        "template_version": 3,
+        "seller_id": "seller-id",
+    }
+
+    starter = stamp_agent_provenance(
+        {"id": "agent-ceo"},
+        seeded_ids=set(),
+        starter_ids={"agent-ceo"},
+        sidecar=sidecar,
+    )
+    legacy_seed = stamp_agent_provenance(
+        {"id": "agent-ceo"},
+        seeded_ids={"agent-ceo"},
+        starter_ids={"agent-ceo"},
+        sidecar=sidecar,
+    )
+
+    assert starter == {"id": "agent-ceo", "seeded": False, "origin": "Starter"}
+    assert legacy_seed == {"id": "agent-ceo", "seeded": True, "origin": "Seed"}

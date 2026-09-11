@@ -204,10 +204,10 @@ async def test_get_overview_reads_current_month_usage_period():
 
 
 def _paperclip_repo_returning(company) -> MagicMock:
-    """A fake ``_paperclip_repo()`` return value whose ``.get`` resolves to
-    ``company`` (a PaperclipCompany instance or None)."""
+    """A fake ``_paperclip_repo()`` resolving to ``company``."""
     repo = MagicMock()
     repo.get = AsyncMock(return_value=company)
+    repo.resolve_owner_row = AsyncMock(return_value=company)
     return repo
 
 
@@ -245,6 +245,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
         updated_at=now,
         funnel_state="submitted",
         bootstrap_state="failed",
+        starter_agent_ids={"ceo": "agent-ceo"},
     )
 
     with (
@@ -278,6 +279,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
     assert result["container"]["claim_stale"] in (True, False)
     assert result["paperclip"]["funnel_state"] == "submitted"
     assert result["paperclip"]["bootstrap_state"] == "failed"
+    assert result["paperclip"]["starter_agent_ids"] == {"ceo": "agent-ceo"}
 
 
 @pytest.mark.asyncio
@@ -360,7 +362,7 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
 
 @pytest.mark.asyncio
 async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_row():
-    """A failing/timed-out _paperclip_repo().get() flows through _with_timeout
+    """A failing/timed-out owner-row lookup flows through _with_timeout
     as an {"error", "source"} sentinel -- not None, and not a real
     PaperclipCompany. _narrow_paperclip only special-cases `company is None`;
     threading the sentinel through it unnarrowed would silently fabricate a
@@ -373,6 +375,7 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
 
     failing_repo = MagicMock()
     failing_repo.get = AsyncMock(side_effect=RuntimeError("ddb_blip"))
+    failing_repo.resolve_owner_row = AsyncMock(side_effect=RuntimeError("ddb_blip"))
 
     with (
         patch(

@@ -213,7 +213,7 @@ def derive(
     now: datetime,
     weeks: int = WINDOW_WEEKS,
 ) -> dict:
-    # company <-> owner. Org members share a company; prefer the seeded (owner) row.
+    # company <-> owner. Org members share a company; prefer the identity-bearing owner row.
     company_owner: dict[str, str] = {}
     for row in paperclip:
         uid = str(row.get("user_id") or "")
@@ -221,7 +221,7 @@ def derive(
         if uid.startswith("__") or not cid:
             continue
         owner = row.get("org_id") or uid
-        if cid not in company_owner or row.get("seeded_agent_ids"):
+        if cid not in company_owner or row.get("starter_agent_ids") or row.get("seeded_agent_ids"):
             company_owner[cid] = owner
     owner_company = {o: c for c, o in company_owner.items()}
     company_name = {c["id"]: c.get("name") for c in companies}

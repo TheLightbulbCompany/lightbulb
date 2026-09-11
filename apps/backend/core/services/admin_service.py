@@ -304,6 +304,7 @@ _PAPERCLIP_PROVISION_FIELDS = (
     "paperclip_user_id",
     "last_error",
     "seeded_agent_ids",
+    "starter_agent_ids",
     "scheduled_purge_at",
     "onboarding_generation",
     "funnel_state",
@@ -423,7 +424,7 @@ async def get_provisioning(user_id: str) -> dict:
 
     status_contract, paperclip_row, gate = await asyncio.gather(
         _with_timeout(compute_status(owner_id, container=container), "readiness_status"),
-        _with_timeout(_paperclip_repo().get(owner_id), "ddb_paperclip"),
+        _with_timeout(_paperclip_repo().resolve_owner_row(owner_id), "ddb_paperclip"),
         _with_timeout(probe_provision_gate(owner_id=owner_id), "provision_gate"),
     )
     paperclip_read_failed = _read_failed(paperclip_row, label="ddb_paperclip")

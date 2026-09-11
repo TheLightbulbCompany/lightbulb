@@ -60,10 +60,11 @@
   /* The legacy ink steps /docs and /blog still read. They are computed at
      :root from cream and inherit as fixed dark greys, so they must be
      re-pointed here or body copy stays dark on the navy ground. */
-  --midnight-soft: rgba(245, 239, 226, 0.84);
-  --midnight-muted: rgba(245, 239, 226, 0.72);
-  --midnight-label: rgba(245, 239, 226, 0.66);
-  --midnight-faint: rgba(245, 239, 226, 0.5);
+  /* Measured on the navy ground / on --cream-deeper (the card step): */
+  --midnight-soft: rgba(245, 239, 226, 0.84);   /* 11.0:1 / 9.2:1 */
+  --midnight-muted: rgba(245, 239, 226, 0.72);  /* 8.3:1 / 7.1:1 — body copy; cream, not brass, so it never reads as a link */
+  --midnight-label: rgba(245, 239, 226, 0.66);  /* 7.2:1 / 6.2:1 */
+  --midnight-faint: rgba(245, 239, 226, 0.5);   /* 4.7:1 / 4.2:1 — non-text only, clears the 3:1 bar */
   --edge: rgba(245, 239, 226, 0.14);
   --edge-soft: rgba(245, 239, 226, 0.09);
 }

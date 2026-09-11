@@ -32,6 +32,8 @@
 .room-message-actions { position: absolute; top: 0; right: 0; z-index: 1; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground) 10%, transparent); opacity: 0; pointer-events: none; }
 .room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
 .room-message-actions button { border-radius: 4px; }
+.room-quick-reactions { display: inline-flex; gap: 2px; }
+.room-quick-reactions button { min-width: 28px; }
 @media (hover: none), (pointer: coarse) {
   .room-message-actions { opacity: 1; pointer-events: auto; }
   /* The picker covers every emoji already; the quick row is a hover-affordance shortcut that doesn't earn its width on touch. */
@@ -179,8 +181,6 @@
 .room-message-gutter { flex: none; width: 32px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
 .room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
 @media (hover: none), (pointer: coarse) { .room-message-gutter { opacity: 1; } }
-.room-quick-reactions { display: inline-flex; gap: 2px; }
-.room-quick-reactions button { min-width: 28px; }
 
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }

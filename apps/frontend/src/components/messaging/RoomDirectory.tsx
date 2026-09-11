@@ -1,10 +1,11 @@
 "use client";
 
 import { useId, useState } from "react";
-import { Hash, MessageCircle, Plus, Users } from "lucide-react";
+import { ChevronDown, Hash, MailOpen, MessageCircle, MoreHorizontal, Plus, Users } from "lucide-react";
 import type { ListenMode, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { roomDisplayName, roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
@@ -25,6 +26,7 @@ export interface RoomDirectoryProps {
   onSelectRoom: (roomId: string) => void;
   onSelectParticipant: (participant: DirectoryParticipant) => void | Promise<void>;
   onCreate?: (creation: ConversationCreation) => void | Promise<boolean>;
+  onMarkUnread?: (roomId: string) => void | Promise<void>;
   creationBusy?: boolean;
   creationError?: string;
   onRetry?: () => void;
@@ -42,6 +44,7 @@ function DirectoryContent({
   onSelectRoom,
   onSelectParticipant,
   onCreate,
+  onMarkUnread,
   creationBusy = false,
   creationError,
   onRetry,
@@ -53,6 +56,8 @@ function DirectoryContent({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [markingUnread, setMarkingUnread] = useState<string | null>(null);
+  const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
   const validName = kind !== "channel" || (name.trim().length >= 1 && name.trim().length <= 80);
   const validCount = kind === "dm" ? selected.size === 1 : kind === "group-dm" ? selected.size >= 2 : true;
   const canCreate = !!onCreate && validName && validCount && selected.size <= 31;
@@ -61,6 +66,28 @@ function DirectoryContent({
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
   });
   const partialError = state === "error" && rooms.length > 0;
+  const unreadRooms = rooms.filter((room) => room.unreadCount > 0);
+
+  function selectNextUnread() {
+    if (unreadRooms.length === 0) return;
+    const currentIndex = rooms.findIndex((room) => room.roomId === currentRoomId);
+    const next = [...rooms.slice(currentIndex + 1), ...rooms.slice(0, currentIndex + 1)]
+      .find((room) => room.unreadCount > 0);
+    if (next) onSelectRoom(next.roomId);
+  }
+
+  async function markRoomUnread(roomId: string, label: string) {
+    if (!onMarkUnread || markingUnread) return;
+    setMarkingUnread(roomId);
+    setUnreadError(null);
+    try {
+      await onMarkUnread(roomId);
+    } catch {
+      setUnreadError({ roomId, label });
+    } finally {
+      setMarkingUnread(null);
+    }
+  }
 
   if (state !== "ready" && !partialError) return <nav className="room-directory" aria-label="Conversations">
     <h2 className="font-semibold">Conversations</h2>
@@ -95,8 +122,13 @@ function DirectoryContent({
 
   return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav className="room-directory" aria-label="Conversations">
     <div className="room-directory-heading"><h2 className="font-semibold">Conversations</h2>
-      {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
+      <div className="room-directory-heading-actions">
+        <Button variant="ghost" size="icon" aria-label="Next unread conversation" disabled={unreadRooms.length === 0} onClick={selectNextUnread}><ChevronDown aria-hidden="true" /></Button>
+        {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
+      </div>
     </div>
+    {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
+      onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
     {(["Channels", "Direct messages"] as const).map((group) => {
       const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : room.kind !== "channel");
@@ -106,14 +138,18 @@ function DirectoryContent({
         <ul>{entries.map((room) => {
           const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
           const label = roomDisplayName(room, room.participants);
-          return <li key={room.roomId}><button type="button" className={`room-directory-entry ${room.unreadCount > 0 ? "font-semibold" : ""}`}
+          return <li key={room.roomId} className="room-directory-row"><button type="button" className={`room-directory-entry ${room.unreadCount > 0 ? "font-semibold" : ""}`}
             aria-current={room.roomId === currentRoomId ? "page" : undefined} onClick={() => onSelectRoom(room.roomId)}>
             {room.kind === "dm" && room.participants.length === 1
               ? <ParticipantAvatar participant={room.participants[0]} size="sm" />
               : <Icon size={16} aria-hidden="true" />}
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
             {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
-          </button></li>;
+          </button>{onMarkUnread && <DropdownMenu><DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={markingUnread === room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
+          </DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={markingUnread !== null} onSelect={() => void markRoomUnread(room.roomId, label)}>
+            <MailOpen aria-hidden="true" />{markingUnread === room.roomId ? "Marking unread…" : "Mark unread"}
+          </DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</li>;
         })}</ul>
       </section>;
     })}

@@ -99,6 +99,11 @@
 }
 .room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--muted); }
 .room-directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; }
+.room-directory-row .room-directory-entry { min-width: 0; }
+.room-directory-actions { flex: none; opacity: 0; }
+.room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
+@media (hover: none) { .room-directory-actions { opacity: 1; } }
 .room-directory-group { font-size: .875rem; font-weight: 600; color: var(--muted-foreground); margin: 0 8px 8px; }
 .room-directory-entry { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 5px 10px; text-align: left; border-radius: 6px; cursor: pointer; }
 .room-directory-entry:hover, .room-directory-entry[aria-current="page"] { background: var(--cream-deeper); }

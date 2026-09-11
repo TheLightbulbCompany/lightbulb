@@ -1042,6 +1042,27 @@ async def set_read_cursor(room_id: str, user_id: str, last_read_seq: int) -> int
     return await get_read_cursor(room_id, user_id)
 
 
+async def mark_unread(room_id: str, user_id: str, *, joined_seq: int) -> int:
+    """Leave at least the latest room message unread without advancing the cursor."""
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    target = max(int(joined_seq), max(0, int(meta["lastSeq"]) - 1))
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": room_pk(room_id), "sk": read_sk(user_id)},
+            UpdateExpression="SET lastReadSeq = :n, userId = :u, updatedAt = :now",
+            ConditionExpression="attribute_exists(lastReadSeq) AND lastReadSeq > :n",
+            ExpressionAttributeValues={":n": target, ":u": user_id, ":now": utc_now_iso()},
+        )
+        return target
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    return await get_read_cursor(room_id, user_id)
+
+
 # ---------------------------------------------------------------------------
 # private user streams
 # ---------------------------------------------------------------------------

@@ -293,6 +293,7 @@ export function MessagingWorkspaceProvider({
     currentRoomId: rooms.activeRoomId ?? undefined,
     onSelectRoom: rooms.selectRoom,
     onSelectParticipant: selectParticipant,
+    onMarkUnread: rooms.markUnread,
     onCreate: createRoom,
     creationBusy,
     creationError,

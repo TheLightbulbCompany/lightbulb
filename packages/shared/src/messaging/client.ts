@@ -38,6 +38,7 @@ export interface MessagingClient {
   uploadAttachment(roomId: string, image: File): Promise<ImageAttachment>;
   downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
+  markUnread(roomId: string): Promise<ReadCursorResponse>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
@@ -68,6 +69,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),
     markRead: (roomId, request) => api.put(`${roomPath(roomId)}/read`, request) as Promise<ReadCursorResponse>,
+    markUnread: (roomId) => api.post(`${roomPath(roomId)}/unread`, {}) as Promise<ReadCursorResponse>,
     async setTyping(request) {
       await api.post("/messaging/typing", request);
     },

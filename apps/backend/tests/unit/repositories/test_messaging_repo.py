@@ -421,6 +421,45 @@ async def test_read_cursor_is_monotonic_and_bounded(table):
 
 
 @pytest.mark.asyncio
+async def test_mark_unread_only_lowers_cursor_to_one_before_latest(table):
+    room_id, _ = await _room()
+    for index in range(1, 5):
+        await _post(room_id, client_id=f"m-{index}")
+    await repo.set_read_cursor(room_id, USER_A, 4)
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0) == 3
+    await repo.set_read_cursor(room_id, USER_B, 2)
+    assert await repo.mark_unread(room_id, USER_B, joined_seq=0) == 2
+
+
+@pytest.mark.asyncio
+async def test_mark_unread_respects_join_floor_and_empty_room(table):
+    room_id, _ = await _room()
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0) == 0
+    for index in range(1, 5):
+        await _post(room_id, client_id=f"floor-{index}")
+    await repo.set_read_cursor(room_id, USER_A, 4)
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=3) == 3
+
+
+@pytest.mark.asyncio
+async def test_mark_unread_races_with_read_and_new_message_without_clearing_unread(table):
+    room_id, _ = await _room()
+    for index in range(1, 5):
+        await _post(room_id, client_id=f"race-{index}")
+    await repo.set_read_cursor(room_id, USER_A, 4)
+
+    await asyncio.gather(
+        repo.mark_unread(room_id, USER_A, joined_seq=0),
+        repo.set_read_cursor(room_id, USER_A, 4),
+        _post(room_id, client_id="race-new"),
+    )
+
+    cursor = await repo.get_read_cursor(room_id, USER_A)
+    assert cursor in {3, 4}
+    assert int((await repo.get_room(room_id))["lastSeq"]) - cursor >= 1
+
+
+@pytest.mark.asyncio
 async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
     first = await repo.ensure_user_stream(OWNER, USER_A)
     assert await repo.ensure_user_stream(OWNER, USER_A) == first

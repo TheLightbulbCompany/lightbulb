@@ -1237,6 +1237,12 @@ async def set_read_cursor(auth: AuthContext, room_id: str, request: ReadCursorRe
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
 
 
+async def mark_room_unread(auth: AuthContext, room_id: str) -> ReadCursorResponse:
+    _, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    value = await messaging_repo.mark_unread(room_id, auth.user_id, joined_seq=int(member.get("joinedSeq", 0)))
+    return ReadCursorResponse(room_id=room_id, last_read_seq=value)
+
+
 async def _publish_room_metadata(meta: dict) -> None:
     from core.services.live_events import get_live_event_publisher
 

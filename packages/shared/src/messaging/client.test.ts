@@ -63,6 +63,7 @@ describe("messaging HTTP client", () => {
     await client.upsertMember(roomId, { kind: "agent", id: agentId, role: "member", listenMode: "mentions" });
     await client.removeMember(roomId, "agent", agentId);
     await client.markRead(roomId, { lastReadSeq: 9 });
+    await client.markUnread(roomId);
     await client.setTyping({ roomId, isTyping: true });
     await client.abortRun("run-1");
     await client.steerRun("run-1", { text: "focus on checkout" });
@@ -74,6 +75,7 @@ describe("messaging HTTP client", () => {
     });
     expect(methods.del).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/members/agent/${agentId}`);
     expect(methods.put).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/read`, { lastReadSeq: 9 });
+    expect(methods.post).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/unread`, {});
     expect(methods.post).toHaveBeenCalledWith("/messaging/typing", { roomId, isTyping: true });
     expect(methods.post).toHaveBeenCalledWith("/messaging/runs/run-1/abort", {});
     expect(methods.post).toHaveBeenCalledWith("/messaging/runs/run-1/steer", { text: "focus on checkout" });

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomComposer } from "../RoomComposer";
 import type { RoomParticipant } from "../types";
@@ -22,6 +22,18 @@ it("exposes the eight formatting controls in one toolbar", () => {
   for (const name of ["Bold", "Italic", "Strikethrough", "Bulleted list", "Numbered list", "Inline code", "Code block", "Link"]) {
     expect(screen.getByRole("button", { name })).toBe(toolbar.querySelector(`[aria-label="${name}"]`));
   }
+});
+
+it("uses a single roving tab stop across the toolbar and moves focus with ArrowRight", () => {
+  render(<Harness />);
+  const toolbar = screen.getByRole("toolbar", { name: "Formatting" });
+  const buttons = within(toolbar).getAllByRole("button");
+  const zeroTabIndex = buttons.filter((button) => button.getAttribute("tabindex") === "0");
+  expect(zeroTabIndex).toHaveLength(1);
+  expect(zeroTabIndex[0]).toBe(buttons[0]);
+  buttons[0].focus();
+  fireEvent.keyDown(buttons[0], { key: "ArrowRight" });
+  expect(buttons[1]).toHaveFocus();
 });
 
 it("wraps the selection from the toolbar and unwraps on a second press", () => {

@@ -81,6 +81,8 @@ function ComposerAttempt({
   const dragDepthRef = useRef(0);
   const externalDragDepthRef = useRef(0);
   const addImagesRef = useRef<(files: File[]) => void>(() => {});
+  const [toolbarIndex, setToolbarIndex] = useState(0);
+  const toolbarButtons = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
 
@@ -359,9 +361,23 @@ function ComposerAttempt({
     onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) event.preventDefault(); }}
     onDragLeave={handleFormDragLeave}
     onDrop={handleFormDrop}>
-    <div className="room-format" role="toolbar" aria-label="Formatting">
-      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon }) => <Button key={style} type="button" variant="ghost" size="icon-sm"
-        aria-label={controlLabel} title={controlLabel} disabled={!editable} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
+    <div className="room-format" role="toolbar" aria-label="Formatting"
+      onKeyDown={(event) => {
+        const count = FORMAT_CONTROLS.length;
+        let next: number;
+        if (event.key === "ArrowRight") next = (toolbarIndex + 1) % count;
+        else if (event.key === "ArrowLeft") next = (toolbarIndex - 1 + count) % count;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = count - 1;
+        else return;
+        event.preventDefault();
+        setToolbarIndex(next);
+        toolbarButtons.current[next]?.focus();
+      }}>
+      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
+        ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
+        aria-label={controlLabel} title={controlLabel} disabled={!editable}
+        onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
     </div>
     {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop images to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>

@@ -487,6 +487,7 @@ class LiveConfig(ContractModel):
     realtime_endpoint: str
     region: str
     user_channel_key: uuid.UUID
+    workspace_id: uuid.UUID
 
 
 class ApiError(ContractModel):

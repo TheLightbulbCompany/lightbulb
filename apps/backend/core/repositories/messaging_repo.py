@@ -19,6 +19,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     STREAM#<key>    META                               reverse mapping AppSync onSubscribe reads
     OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
+    OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
+    OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
 
 Only ``WORK#`` and ``LIVE#`` rows carry ``expiresAt`` (7 days). Every read here is
 ``ConsistentRead=True``; the GSI is queried by ``list_rooms_for_member`` and nowhere else.
@@ -149,6 +151,10 @@ def work_operation_sk(operation_id: str) -> str:
     return f"WORK#OPERATION#{operation_id}"
 
 
+def workspace_sk() -> str:
+    return "WORKSPACE"
+
+
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
@@ -205,6 +211,34 @@ async def _get(pk: str, sk: str) -> dict | None:
     response = await run_in_thread(table.get_item, Key={"pk": pk, "sk": sk}, ConsistentRead=True)
     item = response.get("Item")
     return _plain(item) if item else None
+
+
+async def ensure_workspace_id(owner_id: str) -> str:
+    """The owner's opaque channel-path segment, minted once (spec §3)."""
+    row = await _get(owner_pk(owner_id), workspace_sk())
+    if row is not None:
+        return row["workspaceId"]
+    candidate = str(uuid.uuid4())
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "pk": owner_pk(owner_id),
+                "sk": workspace_sk(),
+                "workspaceId": candidate,
+                "ownerId": owner_id,
+                "createdAt": utc_now_iso(),
+            },
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+        return candidate
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    row = await _get(owner_pk(owner_id), workspace_sk())
+    if row is None:
+        raise MessagingRepoError("workspace id allocation raced and no row exists")
+    return row["workspaceId"]
 
 
 async def scan_growth_rows() -> tuple[list[dict], list[dict]]:
@@ -448,6 +482,7 @@ async def create_room(
 
     now = utc_now_iso()
     table_name = _table().name
+    workspace_id = await ensure_workspace_id(owner_id)
     meta = {
         "pk": room_pk(room_id),
         "sk": "META",
@@ -459,6 +494,7 @@ async def create_room(
         "lastSeq": 0,
         "lastMessageAt": None,
         "deliveryKey": str(uuid.uuid4()),
+        "workspaceId": workspace_id,
         "createdAt": now,
         "updatedAt": now,
     }
@@ -1206,6 +1242,7 @@ async def ensure_user_stream(owner_id: str, user_id: str) -> str:
     table_name = _table().name
     now = utc_now_iso()
     key = str(uuid.uuid4())
+    workspace_id = await ensure_workspace_id(owner_id)
     mapping = {
         "pk": owner_pk(owner_id),
         "sk": userstream_sk(user_id),
@@ -1222,6 +1259,7 @@ async def ensure_user_stream(owner_id: str, user_id: str) -> str:
         "ownerId": owner_id,
         "userId": user_id,
         "active": True,
+        "workspaceId": workspace_id,
         "createdAt": now,
     }
     if current is None:

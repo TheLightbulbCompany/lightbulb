@@ -18,6 +18,7 @@ DELIVERY_KEY = "33333333-3333-4333-8333-333333333333"
 OLD_DELIVERY_KEY = "44444444-4444-4444-8444-444444444444"
 CHANNEL_KEY = "55555555-5555-4555-8555-555555555555"
 EVENT_ID = "66666666-6666-4666-8666-666666666666"
+WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 OWNER_ID = "org_owner"
 USER_ID = "user_alice"
 BOB_ID = "user_bob"
@@ -124,7 +125,7 @@ class ProjectorTests(unittest.TestCase):
         for deleted in (None, CREATED_AT):
             old = message_item()
             updated = {**old, "messageRevision": 1, "editedText": "changed", "editedAt": CREATED_AT, "deletedAt": deleted}
-            index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY}})
+            index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "workspaceId": WORKSPACE_ID}})
             record = stream_record(updated)
             record["eventName"] = "MODIFY"
             record["dynamodb"]["OldImage"] = av_map(old)
@@ -138,7 +139,7 @@ class ProjectorTests(unittest.TestCase):
     def test_delayed_insert_of_deleted_message_does_not_publish_original(self):
         old = message_item()
         latest = {**old, "messageRevision": 1, "editedText": None, "editedAt": CREATED_AT, "deletedAt": CREATED_AT}
-        index._ddb_client = FakeDdb({(old["pk"], old["sk"]): latest, (old["pk"], "META"): {"deliveryKey": DELIVERY_KEY}})
+        index._ddb_client = FakeDdb({(old["pk"], old["sk"]): latest, (old["pk"], "META"): {"deliveryKey": DELIVERY_KEY, "workspaceId": WORKSPACE_ID}})
         with patch.object(index, "_publish") as publish, patch.object(index, "_notify_members") as notify:
             index.process_record(stream_record(old))
             self.assertEqual(publish.call_args.args[1]["type"], "room.message.updated")
@@ -184,10 +185,12 @@ class ProjectorTests(unittest.TestCase):
 
     @patch("index._publish")
     def test_room_projection_strong_reads_and_uses_current_delivery_key(self, publish):
-        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
         index.process_record(stream_record(message_item()))
 
-        self.assertEqual(publish.call_args.args[0], f"/rooms/{ROOM_ID}/{DELIVERY_KEY}")
+        self.assertEqual(publish.call_args.args[0], f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}")
         event = publish.call_args.args[1]
         self.assertEqual(event["type"], "room.message.created")
         self.assertEqual(event["eventId"], MESSAGE_ID)
@@ -196,14 +199,25 @@ class ProjectorTests(unittest.TestCase):
         self.assertTrue(index._ddb_client.calls[0]["ConsistentRead"])
 
     @patch("index._publish")
+    def test_room_meta_without_workspace_id_fails_the_record_and_publishes_nothing(self, publish):
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
+        result = index.handler({"Records": [stream_record(message_item(), "42")]}, object())
+        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "42"}]})
+        publish.assert_not_called()
+
+    @patch("index._publish")
     def test_private_message_hint_targets_and_rechecks_access_without_content(self, publish):
         recipient = "user_bob"
         member = {"id": recipient, "ownerId": OWNER_ID, "joinedSeq": 0}
         items = {
-            (f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm"},
+            (f"ROOM#{ROOM_ID}", "META"): {
+                "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm", "workspaceId": WORKSPACE_ID,
+            },
             (f"ROOM#{ROOM_ID}", f"MEMBER#human#{recipient}"): member,
             (f"OWNER#{OWNER_ID}", f"USERSTREAM#{recipient}"): {"active": True, "channelKey": CHANNEL_KEY},
-            (f"STREAM#{CHANNEL_KEY}", "META"): {"active": True, "ownerId": OWNER_ID, "userId": recipient},
+            (f"STREAM#{CHANNEL_KEY}", "META"): {
+                "active": True, "ownerId": OWNER_ID, "userId": recipient, "workspaceId": WORKSPACE_ID,
+            },
         }
         for kind, mentioned, thread, expected in [
             ("dm", False, False, True), ("group-dm", False, False, True),
@@ -221,7 +235,7 @@ class ProjectorTests(unittest.TestCase):
             publish.reset_mock()
             index._project_message(message)
             channel, event = publish.call_args_list[0].args
-            self.assertEqual(channel, f"/users/{CHANNEL_KEY}")
+            self.assertEqual(channel, f"/ws/{WORKSPACE_ID}/users/{CHANNEL_KEY}")
             self.assertEqual(event["payload"]["notify"], expected)
             self.assertNotEqual(event["eventId"], message["messageId"])
             self.assertNotIn("hello", json.dumps(event))
@@ -255,12 +269,13 @@ class ProjectorTests(unittest.TestCase):
                     "userId": USER_ID,
                     "active": True,
                     "channelKey": CHANNEL_KEY,
+                    "workspaceId": WORKSPACE_ID,
                 }
             }
         )
         expected = live_event()
         index.process_record(stream_record(live_item()))
-        publish.assert_called_once_with(f"/users/{CHANNEL_KEY}", expected)
+        publish.assert_called_once_with(f"/ws/{WORKSPACE_ID}/users/{CHANNEL_KEY}", expected)
         self.assertTrue(index._ddb_client.calls[0]["ConsistentRead"])
 
     @patch("index._publish")
@@ -275,6 +290,7 @@ class ProjectorTests(unittest.TestCase):
                 "userId": USER_ID,
                 "active": True,
                 "channelKey": OLD_DELIVERY_KEY,
+                "workspaceId": WORKSPACE_ID,
             },
         ]
         for mapping in mappings:
@@ -308,7 +324,9 @@ class ProjectorTests(unittest.TestCase):
     @patch("index._publish")
     def test_partial_batch_reports_only_bad_record_and_replayed_success_is_safe(self, publish):
         second_id = "77777777-7777-4777-8777-777777777777"
-        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
         good_one = stream_record(message_item(), "10")
         bad = {"eventID": "bad", "eventName": "INSERT", "dynamodb": {"SequenceNumber": "11"}}
         good_two = stream_record(message_item(second_id, 2), "12")
@@ -347,6 +365,7 @@ def push_world(kind: str = "channel", muted: tuple[str, ...] = (), tokens: dict 
     items = {
         (f"ROOM#{ROOM_ID}", "META"): {
             "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": kind, "name": "general",
+            "workspaceId": WORKSPACE_ID,
         },
     }
     for user, key in keys.items():
@@ -355,7 +374,9 @@ def push_world(kind: str = "channel", muted: tuple[str, ...] = (), tokens: dict 
             member["muted"] = True
         items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{user}")] = member
         items[(f"OWNER#{OWNER_ID}", f"USERSTREAM#{user}")] = {"active": True, "channelKey": key}
-        items[(f"STREAM#{key}", "META")] = {"active": True, "ownerId": OWNER_ID, "userId": user}
+        items[(f"STREAM#{key}", "META")] = {
+            "active": True, "ownerId": OWNER_ID, "userId": user, "workspaceId": WORKSPACE_ID,
+        }
         devices = tokens.get(user) or []
         if devices:
             items[(user, "USER")] = {
@@ -591,7 +612,11 @@ class MetricsTests(unittest.TestCase):
 
     def test_notify_latency_uses_elapsed_time_and_room_kind_dimension(self):
         index._ddb_client = FakeDdb(
-            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "channel"}}
+            {
+                (f"ROOM#{ROOM_ID}", "META"): {
+                    "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "channel", "workspaceId": WORKSPACE_ID,
+                }
+            }
         )
         message = message_item()
         message["createdAt"] = "2020-01-01T00:00:00Z"
@@ -611,7 +636,10 @@ class MetricsTests(unittest.TestCase):
         old = message_item()
         updated = {**old, "messageRevision": 1, "editedText": "changed", "editedAt": CREATED_AT, "deletedAt": None}
         index._ddb_client = FakeDdb(
-            {(old["pk"], old["sk"]): updated, (f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY}}
+            {
+                (old["pk"], old["sk"]): updated,
+                (f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "workspaceId": WORKSPACE_ID},
+            }
         )
         with patch.object(index, "_publish"):
             _, lines = capture_stdout(index._project_message, old)
@@ -622,7 +650,11 @@ class MetricsTests(unittest.TestCase):
         # "Z" -- confirm _parse_rfc3339 (shared with _require_timestamp) and
         # the latency metric both handle that shape, not just the "Z" one.
         index._ddb_client = FakeDdb(
-            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm"}}
+            {
+                (f"ROOM#{ROOM_ID}", "META"): {
+                    "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm", "workspaceId": WORKSPACE_ID,
+                }
+            }
         )
         message = message_item()
         message["createdAt"] = "2020-01-01T00:00:00.123456+00:00"

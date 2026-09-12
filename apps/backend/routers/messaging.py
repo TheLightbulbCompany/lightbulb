@@ -214,6 +214,7 @@ async def _require_hook_token(owner_id: str, request: Request) -> dict:
 async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
+    workspace_id = await messaging_repo.ensure_workspace_id(owner_id)
     try:
         from core.services.teams_event_broker import get_broker
 
@@ -227,6 +228,7 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
         realtime_endpoint=settings.APPSYNC_EVENTS_REALTIME_ENDPOINT,
         region=settings.APPSYNC_EVENTS_REGION or settings.AWS_REGION,
         user_channel_key=key,
+        workspace_id=workspace_id,
     )
 
 

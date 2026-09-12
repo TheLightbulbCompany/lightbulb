@@ -804,3 +804,15 @@ async def test_scan_growth_rows_returns_only_messages_and_rooms_without_bodies(t
     assert "text" not in messages[0] and "mentions" not in messages[0]
     assert [r["roomId"] for r in rooms] == [room_id]
     assert {r["sk"] for r in rooms} == {"META"}
+
+
+@pytest.mark.asyncio
+async def test_ensure_workspace_id_mints_once_and_is_stamped_on_rooms_and_streams(table):
+    first = await repo.ensure_workspace_id(OWNER)
+    assert first == await repo.ensure_workspace_id(OWNER)
+    assert first != await repo.ensure_workspace_id("owner_other")
+    room_id, meta = await _room()  # the file's existing helper around create_room
+    assert meta["workspaceId"] == first
+    assert (await repo.get_room(room_id))["workspaceId"] == first
+    key = await repo.ensure_user_stream(OWNER, USER_A)
+    assert (await repo.get_stream(key))["workspaceId"] == first

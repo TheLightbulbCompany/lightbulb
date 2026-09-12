@@ -29,7 +29,9 @@ export function usePresence(enabled: boolean, scope: string): ReadonlySet<string
     if (!enabled) return;
     const beat = () => {
       if (document.visibilityState !== "visible" || !isPresent(ACTIVE_WITHIN_MS)) return;
-      void api.post("/messaging/presence", {}).catch(() => {});
+      // Deferred so a synchronous throw from the client (or a stub) can never
+      // escape the effect and unmount the shell; a missed beat self-heals next tick.
+      void Promise.resolve().then(() => api.post("/messaging/presence", {})).catch(() => {});
     };
     beat();
     const timer = window.setInterval(beat, HEARTBEAT_MS);

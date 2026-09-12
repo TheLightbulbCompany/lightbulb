@@ -347,8 +347,10 @@ class Workspace:
     def read_file_info(self, user_id: str, path: str) -> dict:
         """Return metadata and optionally content for a file.
 
-        Text files are returned as a UTF-8 string. Images are returned as a
-        base64-encoded string. All other binary files have ``content=None``.
+        Text files are returned as a UTF-8 string. Images and PDFs are
+        returned as a base64-encoded string (the frontend's PDF preview points
+        the browser's native renderer at it via an object URL — no server-side
+        rendering). All other binary files have ``content=None``.
 
         Args:
             user_id: The user whose workspace to read from.
@@ -413,12 +415,12 @@ class Workspace:
                     "content": content,
                 }
 
-        if mime_type.startswith("image/"):
+        if mime_type.startswith("image/") or mime_type == "application/pdf":
             try:
                 raw = resolved.read_bytes()
                 content = base64.b64encode(raw).decode("ascii")
             except OSError as exc:
-                logger.error("Failed to read image %r for %s: %s", path, user_id, exc)
+                logger.error("Failed to read file %r for %s: %s", path, user_id, exc)
                 raise WorkspaceError(
                     f"Failed to read {path!r} for {user_id}: {exc}",
                     user_id=user_id,

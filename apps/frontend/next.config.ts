@@ -63,7 +63,13 @@ const reportOnlyCsp = [
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io`,
-  `frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")}`,
+  // blob: is required for <iframe src="blob:...">, the PDF preview path (both
+  // the new FileViewerDialog/FileContentViewer PDF branch and the pre-existing
+  // Teams ArtifactViewerDialog use it) — measured live: without it, Chrome logs
+  // a real `frame-src` CSP violation for a blob-URL iframe even though the
+  // page that created the blob is same-origin. Report-Only means it doesn't
+  // block today, but it would the moment this header is promoted to enforcing.
+  `frame-src 'self' blob: https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")}`,
   "worker-src 'self' blob:",
   "manifest-src 'self'",
   "form-action 'self'",

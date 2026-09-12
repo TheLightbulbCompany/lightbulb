@@ -785,6 +785,45 @@ async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport
 
 
 @pytest.mark.asyncio
+async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_heartbeats(transport):
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    response = await relay(transport).handle_message(
+        "conn-1", registration(title="Desktop and mobile notifications", cwdName="lightbulb")
+    )
+    sid = response["sessionId"]
+    listed = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert (listed.title, listed.cwd_name) == ("Desktop and mobile notifications", "lightbulb")
+    transport[4].clear()
+    # activeTurnId matches the registered value: this heartbeat is silent about
+    # everything except title/cwdName, which is the one omission under test.
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.heartbeat",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "status": "busy",
+            "activeTurnId": "turn-1",
+        },
+    )
+    assert (await repo.get_session(OWNER, sid))["title"] == "Desktop and mobile notifications"
+    assert transport[4] == []
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.heartbeat",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "status": "busy",
+            "title": "Renamed by the harness",
+        },
+    )
+    assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
+    assert any(ROOM in hint["channel"] for hint in transport[4])
+
+
+@pytest.mark.asyncio
 async def test_http_dispatch_failure_returns_durable_receipt_without_logging_text(transport, caplog):
     from core.auth import get_current_user
     from routers.messaging import router

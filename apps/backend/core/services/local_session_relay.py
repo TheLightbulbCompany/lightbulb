@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
@@ -40,6 +40,8 @@ class Descriptor(ContractModel):
     status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 class Register(ContractModel):
@@ -56,6 +58,8 @@ class Heartbeat(ContractModel):
     status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 Event = sessions.LocalSessionEventBody
@@ -249,12 +253,18 @@ class LocalSessionRelay:
                     if isinstance(message, Events):
                         response = await self._events(cid, connection, enrollment, row, message)
                     elif isinstance(message, Heartbeat):
+                        labels = {
+                            key: value
+                            for key, value in (("title", message.title), ("cwdName", message.cwd_name))
+                            if value is not None
+                        }
                         updated = _revised(
                             row,
                             status=message.status,
                             activeTurnId=message.active_turn_id,
                             onlineUntil=int(time.time()) + LIVENESS_SECONDS,
                             workspace=message.workspace.model_dump(by_alias=True),
+                            **labels,
                         )
                         # Heartbeats may withdraw authority. A fresh registration
                         # is required to restore it after runtime revalidation.
@@ -276,6 +286,8 @@ class LocalSessionRelay:
                                 "capabilities",
                                 "capabilitiesVerified",
                                 "controlUnavailableReason",
+                                "title",
+                                "cwdName",
                             )
                         ) or (row["onlineUntil"] <= int(time.time()) and updated["status"] != "offline")
                         await repo.put_session(

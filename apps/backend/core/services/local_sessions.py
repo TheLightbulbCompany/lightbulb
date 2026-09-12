@@ -102,6 +102,8 @@ class SessionRegistration(ContractModel):
     # The adapter must verify THIS provider version; omitted never inherits trust.
     capabilities_verified: bool = False
     online_until: int = Field(default=0, ge=0)
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 class LocalSession(ContractModel):
@@ -118,6 +120,8 @@ class LocalSession(ContractModel):
     capabilities: Capabilities
     capabilities_verified: bool
     latest_event_seq: int = Field(default=0, ge=0)
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 class PairedNode(ContractModel):

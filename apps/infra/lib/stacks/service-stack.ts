@@ -1431,20 +1431,6 @@ export class ServiceStack extends cdk.Stack {
       // it off the namespace handle keeps this string in lockstep with
       // ContainerStack rather than hard-coding the env suffix here.
       PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
-      // Clerk publishable key for the paperclip-proxy bootstrap HTML.
-      // The bootstrap loads the Clerk SDK in the browser, fetches a JWT,
-      // and POSTs it to /__handshake__ to get a host-scoped session
-      // cookie on company.isol8.co. Same value the frontend uses as
-      // NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — publishable by design (Clerk
-      // serves it in HTML), so plain env var is appropriate (not a
-      // Secrets Manager secret). Same per-env runner-secret pattern as
-      // STRIPE_WORKSPACE_PRICE_ID. Dev fallback hardcoded so local synths
-      // and developer cdk-synth-from-laptop work out of the box.
-      CLERK_PUBLISHABLE_KEY:
-        env === "prod"
-          ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
-          : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
-              "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
       // Historical Apple subscription lifecycle only. New purchase/restore is
       // retired and /billing/apple/link is an authenticated 410 tombstone, but
       // every value remains required for /webhooks/apple-iap to build its JWS

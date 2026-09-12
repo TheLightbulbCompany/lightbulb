@@ -20,15 +20,9 @@ def dynamodb_table():
             KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
             AttributeDefinitions=[
                 {"AttributeName": "owner_id", "AttributeType": "S"},
-                {"AttributeName": "gateway_token", "AttributeType": "S"},
                 {"AttributeName": "status", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "gateway-token-index",
-                    "KeySchema": [{"AttributeName": "gateway_token", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
                 {
                     "IndexName": "status-index",
                     "KeySchema": [{"AttributeName": "status", "KeyType": "HASH"}],

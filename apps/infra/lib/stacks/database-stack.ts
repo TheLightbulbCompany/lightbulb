@@ -120,10 +120,6 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
     });
     this.containersTable.addGlobalSecondaryIndex({
-      indexName: "gateway-token-index",
-      partitionKey: { name: "gateway_token", type: dynamodb.AttributeType.STRING },
-    });
-    this.containersTable.addGlobalSecondaryIndex({
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
     });

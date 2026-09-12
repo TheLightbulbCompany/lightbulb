@@ -37,8 +37,8 @@ jest.mock("expo-crypto", () => ({ randomUUID: () => "44444444-4444-4444-8444-444
 const mockRoom: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",
   pinnedMessageIds: [], topic: null, starred: false, muted: false, sectionId: null,
-  lastMessageSeq: 4, lastMessageAt: "2026-09-11T10:03:00Z", unreadCount: 0,
-  updatedAt: "2026-09-11T10:03:00Z", lastReadSeq: 4, createdAt: "2026-09-11T09:00:00Z",
+  lastMessageSeq: 4, lastMessageAt: "2026-09-11T10:03:00Z", unreadCount: 2,
+  updatedAt: "2026-09-11T10:03:00Z", lastReadSeq: 2, createdAt: "2026-09-11T09:00:00Z",
   members: [
     { kind: "human", id: "user-a", displayName: "Alice", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "x", joinedSeq: 0 },
     { kind: "agent", id: "agent-1", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "x", joinedSeq: 0 },
@@ -59,6 +59,7 @@ const mockBase = [
 ];
 let mockMessages: CanonicalRoomMessage[] = [...mockBase];
 
+const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 4 }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m5", messageSeq: 5, text: "on it", threadRootMessageId: "m1" }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
@@ -67,7 +68,7 @@ const mockLive = {
     listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
     getRoom: jest.fn(async () => mockRoom),
     listMessages: jest.fn(async () => ({ messages: mockMessages, nextAfterSeq: null })),
-    markRead: jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 4 })),
+    markRead: mockMarkRead,
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
@@ -98,6 +99,7 @@ afterAll(() => {
 describe("thread screen", () => {
   beforeEach(() => {
     mockPush.mockClear();
+    mockMarkRead.mockClear();
     mockSendMessage.mockClear();
     mockMessages = [...mockBase];
   });
@@ -127,6 +129,14 @@ describe("thread screen", () => {
   it("titles itself Thread and names the conversation underneath", async () => {
     await render(<Thread />);
     await waitFor(() => expect(screen.getByText("#Launch")).toBeTruthy());
+  });
+
+  // Slack's rule: a thread is not the room. The read cursor is per room and
+  // Phase A adds no per-thread state, so a thread marks nothing read.
+  it("never marks the room read, even though the room has unread messages", async () => {
+    await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("first")).toBeTruthy());
+    expect(mockMarkRead).not.toHaveBeenCalled();
   });
 
   it("labels a reply that failed to send and retries it", async () => {

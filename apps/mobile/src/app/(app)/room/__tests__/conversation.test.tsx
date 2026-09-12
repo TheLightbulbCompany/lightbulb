@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { dateDividerLabel, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
 import { AppState } from "react-native";
 
@@ -9,6 +9,10 @@ jest.setTimeout(20000);
 // Every out-of-scope name a jest.mock factory reaches for is `mock`-prefixed —
 // babel-plugin-jest-hoist rejects the rest.
 const mockPush = jest.fn();
+// A handle on the focus effect, so a test can drive the blur/re-focus a pushed
+// thread screen causes. Upstream this is navigation; here it is the only way to
+// reach the transition at all.
+const mockFocus: { blur?: () => void; focus?: () => void } = {};
 jest.mock("expo-router", () => {
   // useFocusEffect is an EFFECT upstream. A mock that calls the callback during
   // render turns the screen's setFocused into a render-phase update, which React
@@ -25,7 +29,18 @@ jest.mock("expo-router", () => {
       replace: jest.fn(),
     },
     Stack: { Screen: () => null },
-    useFocusEffect: (cb: () => void) => useEffect(cb, [cb]),
+    useFocusEffect: (cb: () => undefined | (() => void)) =>
+      useEffect(() => {
+        let cleanup = cb();
+        mockFocus.blur = () => {
+          cleanup?.();
+          cleanup = undefined;
+        };
+        mockFocus.focus = () => {
+          cleanup = cb();
+        };
+        return () => cleanup?.();
+      }, [cb]),
     useLocalSearchParams: () => ({ roomId: "room-1" }),
   };
 });
@@ -121,6 +136,17 @@ describe("conversation screen", () => {
 
   it("marks the room read up to the newest sequence once it is on screen", async () => {
     await render(<Conversation />);
+    await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
+  });
+
+  // The thread screen deliberately marks nothing read (Slack's rule), so the
+  // room's cursor only moves again once this screen is focused back.
+  it("marks the room read again when a pushed thread screen is popped", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
+    await act(async () => mockFocus.blur?.());
+    mockMarkRead.mockClear();
+    await act(async () => mockFocus.focus?.());
     await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
   });
 

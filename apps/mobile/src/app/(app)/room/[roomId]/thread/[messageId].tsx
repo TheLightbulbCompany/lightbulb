@@ -28,8 +28,8 @@ import { useMobileRooms, useSendDrafts } from "../../../../../lib/rooms";
 export default function ThreadScreen() {
   const { roomId, messageId } = useLocalSearchParams<{ roomId: string; messageId: string }>();
   const { userId } = useAuth();
-  // The SCREEN's own focus. While this thread is up the conversation behind it
-  // is blurred, so only one of the two marks the room read.
+  // The SCREEN's own focus, driving the live subscription only: a blurred thread
+  // hands the room's subscription claim back to the conversation behind it.
   const [focused, setFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
@@ -37,7 +37,14 @@ export default function ThreadScreen() {
       return () => setFocused(false);
     }, []),
   );
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused });
+  // `visible: false`, unconditionally — a thread is not the room, and Slack does
+  // not clear a channel's unread badge because you read one of its threads. The
+  // read cursor is per room, so marking read here would mark messages the user
+  // has never seen. The conversation screen picks the marking back up on its
+  // visible-flip listener the moment this screen is popped.
+  // ponytail: the residual room badge until the conversation is opened is the
+  // accepted ceiling; per-thread read state is Phase B and needs a backend field.
+  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false });
 
   // selectRoom's identity changes with every message (it closes over
   // markVisibleRead), and each call bumps the hook's selection-cancellation

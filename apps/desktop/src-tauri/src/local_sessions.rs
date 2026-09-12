@@ -28,7 +28,7 @@ pub type Result<T> = std::result::Result<T, String>;
 pub fn normalize_public_message(provider: &str, session: &str, row: &Value) -> Result<Vec<Value>> {
     match provider {
         "claude" => claude::normalize(session, row),
-        "codex" => codex::normalize(session, row).map(|e| e.into_iter().collect()),
+        "codex" => codex::normalize(session, row),
         _ => Err("unsupported provider".into()),
     }
 }

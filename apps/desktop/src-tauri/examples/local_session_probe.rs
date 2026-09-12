@@ -457,8 +457,8 @@ mod tests {
         let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0"}});
         assert!(message("codex", "s", &meta).unwrap().is_empty());
         assert!(message("codex", "other", &meta).is_err());
-        let row = json!({"type":"response_item","timestamp":"2026-09-11T00:00:00Z","payload":{
-            "type":"message","role":"assistant","phase":"final_answer","id":"m","content":[{"type":"output_text","text":"done"}]}});
+        let row = json!({"type":"event_msg","timestamp":"2026-09-11T00:00:00Z","payload":{
+            "type":"item_completed","thread_id":"s","turn_id":"t1","item":{"type":"AgentMessage","id":"m","phase":"final_answer","content":[{"type":"Text","text":"done"}]}}});
         assert_eq!(message("codex", "s", &row).unwrap()[0]["text"], "done");
         // Replay observed envelope shapes through fragmented input; UTF-8 splits are covered above.
         let wire = format!("{meta}\n{row}\n");
@@ -538,11 +538,11 @@ mod tests {
     fn unknown_or_nonpublic_message_shapes_never_emit_text() {
         let claude = json!({"type":"assistant","sessionId":"s","version":"2.1.268",
             "message":{"role":"assistant","content":[{"type":"text","text":"public"}]}});
-        let codex = json!({"type":"response_item","payload":{"type":"message","role":"assistant",
-            "phase":"final_answer","content":[{"type":"output_text","text":"public"}]}});
+        let codex = json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"s",
+            "turn_id":"t1","item":{"type":"AgentMessage","id":"a1","phase":"final_answer","content":[{"type":"Text","text":"public"}]}}});
         for phase in ["commentary", "final_answer"] {
             let mut row = codex.clone();
-            row["payload"]["phase"] = json!(phase);
+            row["payload"]["item"]["phase"] = json!(phase);
             assert_eq!(message("codex", "s", &row).unwrap()[0]["text"], "public");
         }
         for (provider, base, path, value) in [
@@ -553,11 +553,8 @@ mod tests {
             ("claude", &claude, "/channel", json!("analysis")),
             ("codex", &codex, "/type", json!("unknown")),
             ("codex", &codex, "/payload/type", json!("unknown")),
-            ("codex", &codex, "/payload/phase", json!("analysis")),
-            ("codex", &codex, "/payload/phase", json!("unknown")),
-            ("codex", &codex, "/payload/phase", Value::Null),
-            ("codex", &codex, "/payload/channel", json!("analysis")),
-            ("codex", &codex, "/payload/channel", json!("unknown")),
+            ("codex", &codex, "/payload/item/type", json!("unknown")),
+            ("codex", &codex, "/payload/item/content", json!([])),
             ("codex", &codex, "/phase", json!("unknown")),
         ] {
             let mut row = base.clone();

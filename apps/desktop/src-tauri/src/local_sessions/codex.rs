@@ -23,6 +23,7 @@ fn from_rollout(
     let reported = row["payload"]["cli_version"]
         .as_str()
         .ok_or("missing runtime version")?;
+    let (status, active_turn, title) = tail_state(&path);
     Ok(NativeSession {
         provider: "codex".into(),
         conversation: conversation.into(),
@@ -34,10 +35,13 @@ fn from_rollout(
         version: reported.into(),
         restriction: (reported != "0.149.0" || reported != version)
             .then(|| "runtime-unverified".into()),
-        status: "unknown".into(),
-        title: None,
-        cwd_name: None,
-        active_turn: None,
+        status: status.into(),
+        title,
+        cwd_name: row["payload"]["cwd"]
+            .as_str()
+            .and_then(|c| Path::new(c).file_name())
+            .map(|n| n.to_string_lossy().into_owned()),
+        active_turn,
     })
 }
 
@@ -113,71 +117,312 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
     Ok(queued_id(&output, &native.conversation))
 }
 
-pub(super) fn normalize(session: &str, row: &Value) -> Result<Option<Value>> {
+/// Last turn event and first prompt in the rollout's final 2 MiB.
+pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let Ok(mut file) = secure_file(path) else {
+        return ("unknown", None, None);
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return ("unknown", None, None);
+    };
+    let offset = len.saturating_sub(2 * 1024 * 1024);
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return ("unknown", None, None);
+    }
+    let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
+    if offset > 0 {
+        let mut partial = String::new();
+        let _ = reader.read_line(&mut partial);
+    }
+    let (mut status, mut turn, mut title) = ("unknown", None, None);
+    for line in reader.lines().map_while(|l| l.ok()) {
+        let Ok(row) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if row["type"] != "event_msg" {
+            continue;
+        }
+        let payload = &row["payload"];
+        match payload["type"].as_str() {
+            Some("task_started") => {
+                status = "busy";
+                turn = payload["turn_id"].as_str().map(str::to_owned);
+            }
+            Some("task_complete") | Some("turn_aborted") => {
+                status = "idle";
+                turn = None;
+            }
+            Some("item_completed")
+                if title.is_none() && payload["item"]["type"] == "UserMessage" =>
+            {
+                let text = payload["item"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let first = text.lines().next().unwrap_or("").trim();
+                if !first.is_empty() && !first.starts_with(HEADER_PREFIX) {
+                    title = Some(first.chars().take(60).collect());
+                }
+            }
+            _ => {}
+        }
+    }
+    (status, turn, title)
+}
+
+fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
+    let id = item["id"].as_str();
+    let texts = |content: &Value, block: &str| {
+        content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == block)
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let basename = |p: &str| {
+        Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    Some(match item["type"].as_str()? {
+        "UserMessage" => {
+            let text = texts(&item["content"], "text");
+            if text.is_empty() {
+                return None;
+            }
+            match teammate_contribution(&text) {
+                Some((provenance, body)) => {
+                    let mut e = event("text", "user", &body, ts, id);
+                    if let Some(actor) = actor_of(&provenance) {
+                        e["actor"] = actor;
+                    }
+                    e
+                }
+                None => event("text", "user", &text, ts, id),
+            }
+        }
+        "AgentMessage" => {
+            let text = texts(&item["content"], "Text");
+            if text.is_empty() {
+                return None;
+            }
+            event("text", "assistant", &text, ts, id)
+        }
+        "Reasoning" => {
+            let text = item["summary_text"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            event("thinking", "assistant", &text, ts, id)
+        }
+        "CommandExecution" => {
+            let command = item["command"]
+                .as_array()
+                .and_then(|c| c.last())
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let output = item["aggregated_output"].as_str().unwrap_or("");
+            let (text, lines) = preview(output, PREVIEW_LINES);
+            let failed =
+                item["status"] == "failed" || item["exit_code"].as_i64().is_some_and(|c| c != 0);
+            let mut e = event("tool", "assistant", &text, ts, id);
+            e["tool"] = json!({"name": "CommandExecution",
+                "status": if item["status"] == "in_progress" { "running" } else if failed { "error" } else { "done" },
+                "input": bound_json(json!({"command": command}), MAX_TOOL_INPUT),
+                "result": bound_json(json!({"exitCode": item["exit_code"], "output": output}), MAX_TOOL_RESULT),
+                "lines": lines});
+            e
+        }
+        "FileChange" => {
+            let changes: serde_json::Map<String, Value> = item["changes"].as_object().into_iter().flatten()
+                .map(|(path, change)| (basename(path), json!({"type": change["type"], "diff": change["diff"], "content": change["content"]})))
+                .collect();
+            let names = changes.keys().cloned().collect::<Vec<_>>().join(", ");
+            let mut e = event("tool", "assistant", &names, ts, id);
+            e["tool"] = json!({"name": "FileChange", "status": if item["status"] == "failed" { "error" } else { "done" },
+                "result": bound_json(Value::Object(changes), MAX_TOOL_RESULT)});
+            e
+        }
+        "McpToolCall" => {
+            let label = format!(
+                "{}.{}",
+                item["server"].as_str().unwrap_or(""),
+                item["tool"].as_str().unwrap_or("")
+            );
+            let mut e = event("tool", "assistant", &label, ts, id);
+            e["tool"] = json!({"name": "McpToolCall",
+                "status": if item["result"]["isError"] == true || item["status"] == "failed" { "error" } else { "done" },
+                "input": bound_json(json!({"server": item["server"], "tool": item["tool"], "arguments": item["arguments"]}), MAX_TOOL_INPUT),
+                "result": bound_json(json!({"content": item["result"]["content"]}), MAX_TOOL_RESULT)});
+            e
+        }
+        "Extension" => {
+            let query = item["query"].as_str().unwrap_or("");
+            let mut e = event("tool", "assistant", query, ts, id);
+            e["tool"] = json!({"name": item["kind"].as_str().unwrap_or("Extension"), "status": "done", "input": {"query": query}});
+            e
+        }
+        "SubAgentActivity" | "CollabAgentToolCall" => {
+            let label = item["agent_path"]
+                .as_str()
+                .or(item["tool"].as_str())
+                .unwrap_or("");
+            let mut e = event("tool", "assistant", label, ts, id);
+            e["tool"] = json!({"name": item["type"], "status": "done"});
+            e
+        }
+        "ContextCompaction" => lifecycle("compaction", "", ts, id),
+        _ => return None,
+    })
+}
+
+pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     if row.get("channel").is_some() || row.get("phase").is_some() {
-        return Ok(None);
+        return Ok(vec![]);
     }
     if row["type"] == "session_meta"
         && (row["payload"]["id"] != session || row["payload"]["cli_version"] != "0.149.0")
     {
         return Err("runtime-unverified".into());
     }
-    let body = &row["payload"];
-    if row["type"] != "response_item"
-        || body["type"] != "message"
-        || body.get("channel").is_some()
-        || match body["role"].as_str() {
-            Some("assistant") => {
-                !matches!(body["phase"].as_str(), Some("commentary" | "final_answer"))
-            }
-            Some("user") => body.get("phase").is_some(),
-            _ => true,
-        }
-    {
-        return Ok(None);
+    if row["type"] != "event_msg" {
+        return Ok(vec![]);
     }
-    let text = body["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|b| {
-            b["type"]
-                == if body["role"] == "user" {
-                    "input_text"
-                } else {
-                    "output_text"
-                }
-        })
-        .filter_map(|b| b["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok((!text.is_empty())
-        .then(|| json!({"kind":"text","role":body["role"],"text":text,"truncated":false})))
+    let payload = &row["payload"];
+    let ts = row["timestamp"].as_str();
+    let turn = |suffix: &str| payload["turn_id"].as_str().map(|t| format!("{t}:{suffix}"));
+    Ok(match payload["type"].as_str() {
+        Some("task_started") => vec![lifecycle("turn_start", "", ts, turn("start").as_deref())],
+        Some("task_complete") => vec![lifecycle("turn_end", "", ts, turn("end").as_deref())],
+        Some("turn_aborted") => vec![lifecycle("turn_aborted", "", ts, turn("abort").as_deref())],
+        Some("item_completed") => item(&payload["item"], ts).into_iter().collect(),
+        _ => vec![],
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn local_sessions_codex_public_phases_only() {
+    fn local_sessions_codex_items_become_terminal_items() {
         let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0","source":"cli"}});
-        assert!(normalize("s", &meta).unwrap().is_none());
+        assert!(normalize("s", &meta).unwrap().is_empty());
         assert!(normalize("other", &meta).is_err());
-        let row = json!({"type":"response_item","timestamp":"2026-09-11T00:00:00Z","payload":{
-            "type":"message","role":"assistant","phase":"final_answer","id":"m","content":[{"type":"output_text","text":"done"}]}});
-        assert_eq!(normalize("s", &row).unwrap().unwrap()["text"], "done");
-        for phase in ["analysis", "unknown"] {
-            let mut unknown = row.clone();
-            unknown["payload"]["phase"] = json!(phase);
-            assert!(normalize("s", &unknown).unwrap().is_none());
-        }
+        let ts = "2026-09-12T10:00:00.000Z";
+        let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
+        let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
+        assert_eq!(
+            (user[0]["text"].as_str(), user[0]["actor"].clone()),
+            (Some("run it"), json!({"userId":"user_a"}))
+        );
+        let reasoning = normalize(
+            "s",
+            &ev(json!({"type":"Reasoning","id":"r1","summary_text":["**Planning the rerun**"]})),
+        )
+        .unwrap();
+        assert_eq!(
+            (reasoning[0]["kind"].as_str(), reasoning[0]["text"].as_str()),
+            (Some("thinking"), Some("**Planning the rerun**"))
+        );
+        let output = (1..=25)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cmd = normalize("s", &ev(json!({"type":"CommandExecution","id":"e1","command":["/bin/zsh","-lc","git status"],"cwd":"file:///x","aggregated_output":output,"exit_code":1,"status":"completed"}))).unwrap();
+        assert_eq!(cmd[0]["tool"]["name"], "CommandExecution");
+        assert_eq!(cmd[0]["tool"]["input"]["command"], "git status");
+        assert_eq!(cmd[0]["tool"]["status"], "error");
+        assert_eq!(cmd[0]["tool"]["lines"], 25);
+        assert_eq!(
+            cmd[0]["text"].as_str().unwrap().lines().count(),
+            PREVIEW_LINES
+        );
+        let change = normalize("s", &ev(json!({"type":"FileChange","id":"f1","changes":{"/Users/me/repo/src/a.ts":{"type":"update","diff":"-a\n+b"}}}))).unwrap();
+        assert_eq!(change[0]["text"], "a.ts");
+        assert_eq!(change[0]["tool"]["result"]["a.ts"]["diff"], "-a\n+b");
+        let mcp = normalize("s", &ev(json!({"type":"McpToolCall","id":"m1","server":"codex_app","tool":"open","arguments":{"a":1},"status":"completed","result":{"content":[{"type":"text","text":"ok"}],"isError":false}}))).unwrap();
+        assert_eq!(
+            (mcp[0]["text"].as_str(), mcp[0]["tool"]["status"].as_str()),
+            (Some("codex_app.open"), Some("done"))
+        );
+        let search = normalize(
+            "s",
+            &ev(json!({"type":"Extension","kind":"web.search","id":"w1","query":"k6 timeout"})),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                search[0]["tool"]["name"].as_str(),
+                search[0]["text"].as_str()
+            ),
+            (Some("web.search"), Some("k6 timeout"))
+        );
+        let final_answer = normalize("s", &ev(json!({"type":"AgentMessage","id":"a1","phase":"final_answer","content":[{"type":"Text","text":"Done."}]}))).unwrap();
+        assert_eq!(
+            (
+                final_answer[0]["kind"].as_str(),
+                final_answer[0]["text"].as_str()
+            ),
+            (Some("text"), Some("Done."))
+        );
+        assert_eq!(
+            normalize("s", &ev(json!({"type":"ContextCompaction","id":"c1"}))).unwrap()[0]
+                ["lifecycle"],
+            "compaction"
+        );
+        let started = json!({"type":"event_msg","timestamp":ts,"payload":{"type":"task_started","turn_id":"t1"}});
+        assert_eq!(
+            normalize("s", &started).unwrap()[0]["lifecycle"],
+            "turn_start"
+        );
+        let aborted = json!({"type":"event_msg","timestamp":ts,"payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted"}});
+        assert_eq!(
+            normalize("s", &aborted).unwrap()[0]["lifecycle"],
+            "turn_aborted"
+        );
+        assert!(normalize("s", &json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"legacy"}]}})).unwrap().is_empty());
+        assert!(normalize(
+            "s",
+            &json!({"type":"event_msg","payload":{"type":"token_count"}})
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn local_sessions_codex_tail_state_reports_busy_idle_and_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let started = json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"t9"}});
+        let complete =
+            json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"t9"}});
+        let user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Check whether the timeout also happens at concurrency 50, please, and report back with numbers"}]}}});
+        fs::write(&path, format!("{user}\n{started}\n")).unwrap();
+        let (status, turn, title) = tail_state(&path);
+        assert_eq!((status, turn.as_deref()), ("busy", Some("t9")));
+        assert_eq!(title.as_deref().map(str::len), Some(60));
+        fs::write(&path, format!("{user}\n{started}\n{complete}\n")).unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        fs::write(&path, "{}\n").unwrap();
+        assert_eq!(tail_state(&path), ("unknown", None, None));
     }
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {
         let dir = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(dir.path()).unwrap();
         let path = root.join("rollout-owned.jsonl");
-        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"t1\"}}\n").unwrap();
         let process = Process {
             pid: 42,
             birth_micros: 123,
@@ -186,7 +431,7 @@ mod tests {
         let found = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
         assert_eq!(found.conversation, "owned");
         assert_eq!(found.process.birth_micros, 123);
-        assert_eq!(found.status, "unknown");
+        assert_eq!(found.status, "busy");
         assert!(from_rollout(
             &root.join("other-profile"),
             process.clone(),

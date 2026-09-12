@@ -263,17 +263,31 @@ export class ApiStack extends cdk.Stack {
   public readonly appsyncEventsApiArn: string;
   public readonly appsyncEventsRegion: string;
   /**
-   * Messaging-plane identifiers the ORR dashboard plots. Plain strings, never
-   * constructs — same cross-stack posture as every other export here (see the
-   * `containersTableName` note above and the comments in `service-stack.ts`):
-   * a construct reference would create a CloudFormation Export the
-   * observability stack imports, and an imported export cannot be changed
-   * while it is in use.
+   * Messaging-plane names the ORR dashboard plots.
+   *
+   * The three below are assigned from the SAME literal template the construct
+   * is named with, never `queue.queueName` / `fn.functionName`. A construct
+   * reference is a token, and a token consumed by another stack becomes a
+   * CloudFormation Export — which CloudFormation then refuses to change while
+   * anything imports it. That is the deadlock the `containersTableName` note
+   * above describes, and it is why the house pattern is names-not-constructs.
    */
-  public readonly appsyncEventApiId: string;
   public readonly openClawWorkQueueName: string;
   public readonly openClawWorkDlqName: string;
   public readonly messagingProjectorFunctionName: string;
+  /**
+   * The AppSync Event API id — the ONE deliberate exception, and the one
+   * cross-stack Export this stack adds.
+   *
+   * Unlike a queue or a function, an Event API id is assigned by AppSync at
+   * create time: there is no literal form to write down, so the dashboard
+   * widget that plots AWS/AppSync metrics can only get it by import. The cost
+   * is that CloudFormation will refuse to REPLACE the Event API while the
+   * observability stack imports this value — replacing it means first
+   * deploying an observability stack without the AppSync widgets, then
+   * replacing the API, then putting the widgets back.
+   */
+  public readonly appsyncEventApiId: string;
   public readonly wsApiId: string;
   public readonly wsStage: string;
 
@@ -586,8 +600,10 @@ export class ApiStack extends cdk.Stack {
     });
     this.openClawWorkQueueUrl = workQueue.queueUrl;
     this.openClawWorkQueueArn = workQueue.queueArn;
-    this.openClawWorkQueueName = workQueue.queueName;
-    this.openClawWorkDlqName = workDlq.queueName;
+    // Literals, matching the queueName templates above exactly — see the
+    // field declarations for why these are not `workQueue.queueName`.
+    this.openClawWorkQueueName = `${resourcePrefix(env)}openclaw-work.fifo`;
+    this.openClawWorkDlqName = `${resourcePrefix(env)}openclaw-work-dlq.fifo`;
 
     const projectorFailureBucket = new s3.Bucket(
       this,
@@ -688,7 +704,7 @@ export class ApiStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       }),
     });
-    this.messagingProjectorFunctionName = projectorFn.functionName;
+    this.messagingProjectorFunctionName = `${resourcePrefix(env)}messaging-projector`;
     messagingTable.grantReadData(projectorFn);
     // Expo push tokens live on the users table, owned by DatabaseStack. Imported
     // by name so the projector needs no cross-stack prop (read-only: token

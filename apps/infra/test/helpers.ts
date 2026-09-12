@@ -72,6 +72,18 @@ export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
 export function synthApiStack(
   environment: "dev" | "prod" = "dev",
 ): Template {
+  return Template.fromStack(buildApiStack(environment));
+}
+
+/**
+ * The same wiring, returning the STACK rather than its template — for the few
+ * assertions that need to compare a `public readonly` field against the
+ * resource it names (the messaging names the observability dashboard imports
+ * are literals, so nothing else would catch them drifting).
+ */
+export function buildApiStack(
+  environment: "dev" | "prod" = "dev",
+): ApiStack {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
 
@@ -103,5 +115,5 @@ export function synthApiStack(
     containersTableName: containersTable.tableName,
   });
 
-  return Template.fromStack(api);
+  return api;
 }

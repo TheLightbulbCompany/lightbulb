@@ -324,7 +324,8 @@ export class LightbulbStage extends cdk.Stage {
           companySlugsTable: tableName(env, "company-slugs"),
           agentEmailAddressesTable: tableName(env, "agent-email-addresses"),
           // Both owned by ApiStack, not DatabaseStack (see api-stack.ts) —
-          // still plain names, for the same no-cross-stack-export reason.
+          // still plain literal names, for the same no-cross-stack-export
+          // reason as the eight above.
           messagingTable: api.messagingTableName,
           wsConnectionsTable: api.connectionsTableName,
         },

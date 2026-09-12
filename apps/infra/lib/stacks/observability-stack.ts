@@ -91,8 +91,17 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   authorizerFunctionName: string;
   /**
    * Messaging-plane names for the dashboard's Messaging block. All owned by
-   * ApiStack; passed as plain strings (names/ids, never constructs) for the
-   * same reason as `databaseTables` above.
+   * ApiStack.
+   *
+   * The three names are LITERALS on the ApiStack side, not `queue.queueName` /
+   * `fn.functionName` — a token consumed across stacks becomes a
+   * CloudFormation Export, and an export cannot be changed while anything
+   * imports it (the deadlock documented on `databaseTables` above).
+   *
+   * `appsyncEventApiId` is the single exception and the only import this stack
+   * takes from ApiStack: AppSync assigns the id at create time, so there is no
+   * literal to write. See its declaration in `api-stack.ts` for the
+   * consequence (replacing the Event API needs these widgets removed first).
    */
   messaging: {
     workQueueName: string;
@@ -878,14 +887,21 @@ def handler(event, context):
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );
     // The construct id says BackendLiveness (the reaper is long gone), but the
-    // LOGICAL id must stay ReaperHeartbeatAlarm. A CloudWatch alarm's physical
+    // LOGICAL id must stay exactly as deployed. A CloudWatch alarm's physical
     // id is its AlarmName, and AlarmName is unchanged here — so a new logical
     // id would make CloudFormation create the "new" alarm (an upsert onto the
     // same name) and then DELETE it again in the cleanup phase when it removes
     // the old logical resource. The result is a page-tier alarm silently gone.
     // Pinning the logical id renames the code with no template diff at all.
+    //
+    // The hash suffix is LOAD-BEARING and is NOT decoration: CDK derives the
+    // logical id as <construct id><hash of the construct path>, so the
+    // deployed id is `ReaperHeartbeatAlarm31FA055D`, not `ReaperHeartbeatAlarm`
+    // (verified by synthesizing with the override removed). Pinning the
+    // unhashed string would have caused the exact deletion this override
+    // exists to prevent. The test below asserts this literal key.
     (heartbeatAlarm.node.defaultChild as cloudwatch.CfnAlarm).overrideLogicalId(
-      "ReaperHeartbeatAlarm",
+      "ReaperHeartbeatAlarm31FA055D",
     );
 
     // -------------------------------------------------------------------
@@ -3144,6 +3160,7 @@ def handler(event, _ctx):
           "5xx",
           "timeout",
           "transport",
+          "other",
         ]),
         width: 6,
         height: 6,
@@ -3211,6 +3228,9 @@ def handler(event, _ctx):
         title: "Container wake outcomes",
         left: splitBy("messaging.wake.outcome", "outcome", [
           "dispatched",
+          "already_running",
+          "in_flight",
+          "converting",
           "blocked",
           "operator_stopped",
           "no_row",
@@ -3245,7 +3265,11 @@ def handler(event, _ctx):
     // long did the human wait for the reply. Both chat widgets are still on
     // the dashboard, in Row 3 with the rest of the chat pipeline.
     const agentAnsweredRate = new cloudwatch.MathExpression({
-      expression: "100 * (1 - zero / IF(total > 0, total, 1))",
+      // FILL(zero, 0): a period in which NO message missed its targets
+      // publishes no `count_bucket=0` datapoint at all, and CloudWatch
+      // arithmetic yields nothing for a period unless every operand has data —
+      // so without FILL the widget goes blank exactly when things are healthy.
+      expression: "100 * (1 - FILL(zero, 0) / IF(total > 0, total, 1))",
       usingMetrics: {
         // count_bucket=0 is "select_dispatch_targets returned nothing", i.e.
         // the message was addressed to an agent and woke none.
@@ -3374,44 +3398,28 @@ def handler(event, _ctx):
         width: 8,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
-        title: "Chat E2E latency",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.e2e.latency",
-            statistic: "p50",
-            dimensionsMap: dims,
-          }),
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.e2e.latency",
-            statistic: "p99",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 8,
-        height: 6,
-      }),
       // "Bedrock throttles" widget removed — chat.bedrock.throttle is never
       // emitted; AWS-native Bedrock throttles are on the W46 alarm.
       //
       // The two former Row-1 SLO widgets, moved here now that the headline is
-      // the messaging product. The latency one is scoped to source=webchat
-      // (the dimension the backend adds alongside `room`/`other`) so it is
-      // comparable with W9; the success-rate one deliberately is NOT — see
-      // the note on that widget.
+      // the messaging product. Both are scoped to source=webchat (the
+      // dimension the backend adds alongside `room`/`other`), matching W9/W10
+      // — room traffic has its own SLO in Row 1. The p50 line is what the
+      // unscoped "Chat E2E latency" widget used to carry; that widget is gone
+      // rather than sitting next to this one plotting the same p99 twice.
       new cloudwatch.GraphWidget({
-        title: "Webchat p99 latency (SLO: <20s)",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.e2e.latency",
-            statistic: "p99",
-            period: cdk.Duration.hours(1),
-            dimensionsMap: { ...dims, source: "webchat" },
-          }),
-        ],
+        title: "Webchat E2E latency (SLO: p99 < 20s)",
+        left: (["p50", "p99"] as const).map(
+          (statistic) =>
+            new cloudwatch.Metric({
+              namespace: "LightbulbAI",
+              metricName: "chat.e2e.latency",
+              statistic,
+              period: cdk.Duration.hours(1),
+              dimensionsMap: { ...dims, source: "webchat" },
+              label: statistic,
+            }),
+        ),
         width: 8,
         height: 6,
       }),
@@ -3421,7 +3429,9 @@ def handler(event, _ctx):
         title: "Webchat success rate (SLO: 99.5%)",
         left: [
           new cloudwatch.MathExpression({
-            expression: "100 * (1 - errors / IF(total > 0, total, 1))",
+            // FILL(errors, 0) for the same reason as Row 1: no errors means
+            // no datapoint, which would blank the widget when it is healthy.
+            expression: "100 * (1 - FILL(errors, 0) / IF(total > 0, total, 1))",
             usingMetrics: {
               errors: new cloudwatch.Metric({
                 namespace: "LightbulbAI",

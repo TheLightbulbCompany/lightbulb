@@ -6,7 +6,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ROOT_DOMAIN } from "../lib/domains";
-import { synthApiStack } from "./helpers";
+import { buildApiStack, synthApiStack } from "./helpers";
 
 // Hoist a single ApiStack synthesis and reuse across tests.
 const API_TEMPLATE = synthApiStack();
@@ -711,6 +711,26 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
         TreatMissingData: "breaching",
       }),
     );
+  });
+
+  // The dashboard names these three by LITERAL, so the observability stack
+  // takes no CloudFormation Export on them (an export cannot be changed while
+  // anything imports it). A literal is only safe while it matches the resource
+  // it names, and nothing else would notice if the two drifted apart.
+  test("the names the dashboard imports match the resources they name", () => {
+    const api = buildApiStack();
+    const template = Template.fromStack(api);
+
+    const queueNames = Object.values(
+      template.findResources("AWS::SQS::Queue"),
+    ).map((q: any) => q.Properties.QueueName);
+    expect(queueNames).toContain(api.openClawWorkQueueName);
+    expect(queueNames).toContain(api.openClawWorkDlqName);
+
+    const functionNames = Object.values(
+      template.findResources("AWS::Lambda::Function"),
+    ).map((f: any) => f.Properties.FunctionName);
+    expect(functionNames).toContain(api.messagingProjectorFunctionName);
   });
 
   // AppSync is the whole browser/mobile delivery leg and had no alarm at all:

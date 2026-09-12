@@ -265,7 +265,26 @@ const ROLLUP_DIMENSIONS = [
   "source",
 ];
 
-type MetricBinding = { alarm: string; metricName: string; extraDims: string[] };
+/**
+ * The `service` dimension value each LightbulbAI metric is published under.
+ *
+ * Everything is the backend except the projector Lambda, which emits its own
+ * EMF. This is a separate check from the dimension-SET contract below because
+ * the two fail differently: a wrong service is a right dimension key with a
+ * wrong VALUE, which the set check cannot see at all — the alarm looks
+ * perfectly formed and receives nothing forever. W75 is the live case.
+ */
+const EMITTING_SERVICE: Record<string, string> = {
+  "messaging.projector.push": "messaging-projector",
+};
+const DEFAULT_EMITTING_SERVICE = "lightbulb-backend";
+
+type MetricBinding = {
+  alarm: string;
+  metricName: string;
+  service: string | undefined;
+  extraDims: string[];
+};
 
 /**
  * Every Isol8-namespace metric an alarm binds, from BOTH shapes CloudFormation
@@ -287,6 +306,8 @@ function isol8MetricBindings(template: Template): MetricBinding[] {
       bindings.push({
         alarm,
         metricName,
+        service: (dimensions ?? []).find((d: any) => d.Name === "service")
+          ?.Value,
         extraDims: (dimensions ?? [])
           .map((d: any) => d.Name)
           .filter((k: string) => k !== "env" && k !== "service")
@@ -605,6 +626,32 @@ describe("ObservabilityStack", () => {
     expect(offenders).toEqual([]);
   });
 
+  // The dimension-SET contract above is blind to this: a wrong `service` VALUE
+  // is a correctly-shaped alarm that receives nothing forever. W75 watches the
+  // projector Lambda, which emits under its own service name.
+  test("every alarm binds the service dimension value its emitter publishes", () => {
+    const offenders = isol8MetricBindings(template)
+      .filter(
+        (b) =>
+          b.service !==
+          (EMITTING_SERVICE[b.metricName] ?? DEFAULT_EMITTING_SERVICE),
+      )
+      .map(
+        (b) =>
+          `${b.alarm}: binds "${b.metricName}" with service=${b.service}, ` +
+          `emitter publishes ${EMITTING_SERVICE[b.metricName] ?? DEFAULT_EMITTING_SERVICE}`,
+      );
+    expect(offenders).toEqual([]);
+
+    // Anti-vacuity, and the point of the whole test: the non-default case is
+    // actually present, so the map is not dead weight.
+    expect(
+      isol8MetricBindings(template).filter(
+        (b) => b.service === "messaging-projector",
+      ),
+    ).toHaveLength(1);
+  });
+
   // Two of the three alarms issue #1486 found dead. They are correct BECAUSE
   // put_metric emits the [env, service] rollup — pin the binding so a future
   // "let me add a dimension to this alarm" quietly kills them again.
@@ -695,6 +742,23 @@ describe("ObservabilityStack", () => {
   // gateway.running.count survived the flat-fee cutover, the alarm was
   // renamed backend-liveness in Phase 1).
   // ---------------------------------------------------------------------
+
+  // The construct is named BackendLivenessAlarm; the LOGICAL id must stay the
+  // one already deployed, hash and all. A CloudWatch alarm's physical id is its
+  // AlarmName — unchanged here — so a different logical id makes CloudFormation
+  // create the alarm and then delete it again in the cleanup phase, taking the
+  // live page-tier liveness alarm with it. The hash is not decoration: CDK
+  // derives `<construct id><path hash>`, so pinning the bare
+  // "ReaperHeartbeatAlarm" would cause the very deletion the pin prevents.
+  test("the backend-liveness alarm keeps its deployed logical id", () => {
+    for (const env of ["dev", "prod"] as const) {
+      expect(
+        Object.keys(
+          buildTemplate(env).findResources("AWS::CloudWatch::Alarm"),
+        ),
+      ).toContain("ReaperHeartbeatAlarm31FA055D");
+    }
+  });
 
   test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {

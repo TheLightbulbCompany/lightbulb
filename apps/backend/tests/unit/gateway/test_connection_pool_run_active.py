@@ -1,5 +1,6 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -216,3 +217,82 @@ async def test_subscribe_room_session_subscribes_once_and_survives_reconnect():
     for key in list(conn._room_session_subs):
         await conn._send_room_session_subscribe(key)
     assert [m["params"] for m in subscribes(conn._ws)] == [{"key": SESSION_KEY}]
+
+
+class ExplodingWS:
+    async def send(self, raw: str) -> None:
+        raise ConnectionResetError("socket gone")
+
+
+@pytest.mark.asyncio
+async def test_room_session_subscribe_retries_after_a_failed_send(monkeypatch):
+    """A failed subscribe used to be permanent: the key was added BEFORE the
+    send, so every later call short-circuited and the room streamed zero frames
+    for the life of the connection. The key must be dropped so the next
+    dispatch re-subscribes."""
+    metrics: list[tuple] = []
+    monkeypatch.setattr(
+        "core.gateway.connection_pool.put_metric",
+        lambda name, value=1.0, unit="Count", dimensions=None: metrics.append((name, dimensions)),
+    )
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._ws = ExplodingWS()
+    conn._room_session_subs = set()
+    conn.user_id = "user_abc123"
+
+    await conn.subscribe_room_session(SESSION_KEY)
+
+    assert conn._room_session_subs == set(), "a failed subscribe must not be remembered as done"
+    assert metrics == [("messaging.room_session.subscribe", {"outcome": "error"})]
+
+    # The next dispatch actually reaches the socket.
+    conn._ws = FakeWS()
+    await conn.subscribe_room_session(SESSION_KEY)
+
+    assert [m["params"] for m in conn._ws.sent] == [{"key": SESSION_KEY}]
+    assert conn._room_session_subs == {SESSION_KEY}
+    assert metrics[-1] == ("messaging.room_session.subscribe", {"outcome": "ok"})
+
+
+@pytest.mark.asyncio
+async def test_publish_room_frame_emits_outcome_and_frame_type(monkeypatch):
+    """`messaging.room_frame.publish` is how a silent AppSync fanout failure
+    becomes visible — the publish is already swallowed so nothing else shows it."""
+    metrics: list[tuple] = []
+    monkeypatch.setattr(
+        "core.gateway.connection_pool.put_metric",
+        lambda name, value=1.0, unit="Count", dimensions=None: metrics.append((name, dimensions)),
+    )
+    monkeypatch.setattr(
+        "core.repositories.messaging_repo.get_room",
+        AsyncMock(return_value={"ownerId": "user_abc123"}),
+    )
+    monkeypatch.setattr(
+        "core.repositories.messaging_repo.get_member",
+        AsyncMock(return_value={"id": AGENT_ID}),
+    )
+
+    published: list[str] = []
+
+    class FakePublisher:
+        async def publish_room(self, room_id, event):
+            published.append(room_id)
+            if len(published) > 1:
+                raise RuntimeError("appsync rejected the event")
+
+    monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: FakePublisher())
+
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.owner_id = "user_abc123"
+    conn.user_id = "user_abc123"
+    conn._active_runs = {}
+    conn._room_run_context = {}
+    conn._live_publish_lock = asyncio.Lock()
+
+    await conn._publish_room_frame(SESSION_KEY, {"type": "chunk", "content": "hi"})
+    await conn._publish_room_frame(SESSION_KEY, {"type": "done"})
+
+    assert metrics == [
+        ("messaging.room_frame.publish", {"outcome": "ok", "frame_type": "chunk"}),
+        ("messaging.room_frame.publish", {"outcome": "error", "frame_type": "done"}),
+    ]

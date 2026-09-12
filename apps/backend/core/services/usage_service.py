@@ -51,6 +51,8 @@ async def record_usage(
     cache_read: int,
     cache_write: int,
     raw_cost_microcents: int | None = None,
+    room_turn: bool = False,
+    event_kind: str | None = None,
 ) -> None:
     """Record a single LLM usage event for analytics.
 
@@ -76,6 +78,14 @@ async def record_usage(
     override is present. Token counts are still recorded for analytics in
     all cases. ``None`` (the default — no ``estimatedCostUsd`` on the row)
     falls back to the token-based path unchanged.
+
+    ``room_turn`` marks a turn dispatched from a messaging room, and
+    ``event_kind`` is that dispatch's kind (``user_request`` for an addressed
+    message or DM, ``room_event`` for ambient traffic — see
+    ``messaging.select_dispatch_targets``). A room turn writes one extra
+    counter row, ``room:{event_kind}:{period}``, so ambient spend can be read
+    apart from addressed spend; the owner/lifetime/member rollups above are
+    unchanged and still carry every turn exactly once.
     """
     bare_model = _strip_provider_prefix(model)
     # The raw-cost override (OpenClaw's cache-inclusive ``estimatedCostUsd``)
@@ -155,6 +165,16 @@ async def record_usage(
         cache_read,
         cache_write,
     )
+    if room_turn:
+        await usage_repo.increment(
+            owner_id,
+            f"room:{event_kind or 'unknown'}:{period}",
+            spend_microcents,
+            input_tokens,
+            output_tokens,
+            cache_read,
+            cache_write,
+        )
 
 
 async def get_usage_summary(owner_id: str) -> dict:

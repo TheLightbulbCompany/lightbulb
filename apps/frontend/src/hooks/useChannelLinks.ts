@@ -36,15 +36,15 @@ export interface UseChannelLinksResult {
 }
 
 /**
- * The ONE `/channels/links/me` fetcher — hoisted out of three private
- * copies that each carried their own response type + SWR call against the
- * same endpoint: `useGetStartedDerived`'s channel-complete derivation,
- * `MyChannelsSection`, and `AgentChannelsSection`.
+ * The ONE `/channels/links/me` fetcher — hoisted out of private copies that
+ * each carried their own response type + SWR call against the same endpoint
+ * (`MyChannelsSection`, `AgentChannelsSection`, and the since-retired
+ * Get-started guide's channel-complete derivation).
  *
- * `enabled` null-gates the SWR key (SWR's canonical conditional-fetch gate).
- * `useGetStartedDerived` passes its `chatReady` signal so this read never
- * fires during the cold-start window; the two channel-management surfaces
- * (which render only once mounted and always need the list) pass `true`.
+ * `enabled` null-gates the SWR key (SWR's canonical conditional-fetch gate)
+ * so a caller can hold the read until its surface is actually live; the two
+ * channel-management surfaces (which render only once mounted and always
+ * need the list) pass `true`.
  *
  * Options are fixed at `revalidateOnFocus: false, dedupingInterval:
  * 300_000` for every caller: channel-link state changes rarely (only on a

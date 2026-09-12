@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import { OrganizationList, useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
-import { useSearchParams } from "next/navigation";
 import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, HelpCircle, ListTodo, SlidersHorizontal, Pause, Play } from "lucide-react";
 import Link from "next/link";
 
@@ -35,14 +34,11 @@ import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
-import { GetStarted } from "@/components/getstarted/GetStarted";
-import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
-import { pushSearchParams } from "@/lib/shellNav";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
-import { useGetStartedDerived } from "@/components/chat/shell/useGetStartedDerived";
+import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface ChatLayoutProps {
@@ -101,7 +97,6 @@ export function ChatLayout({
   // runs). Shares the `/teams/agents` SWR key the pause/resume control below
   // already reads, so this adds no request on this shell.
   const rosterEntries = useRosterEntries(agents);
-  const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   // Stripe checkout-return handling (banner + webhook polling + URL cleanup)
@@ -186,7 +181,7 @@ export function ChatLayout({
   // `freshlyInstalledAgentId` so the matching sidebar row plays the
   // `slideIn` animation. Clear the flag after the animation has had time
   // to finish so the class isn't reapplied on subsequent renders.
-  const { state: drawerState, setFreshlyInstalled, open: openMarketplace } = useMarketplaceDrawer();
+  const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
 
   useEffect(() => {
     if (!drawerState.freshlyInstalledAgentId) return;
@@ -199,13 +194,7 @@ export function ChatLayout({
   // the seller-listings read + cross-reference lives in the shared shell hook.
   const publishedAgentIds = useSellerPublishedAgents();
 
-  // "Get started" guide. `chatReady` (the signal that the chat surface is
-  // actually live and interactive) and the four completion signals
-  // (chat/hire/channel/task) are all derived in the shared shell hook — see
-  // its doc comment for the full readiness-gate rationale (why `chatReady`
-  // is stronger than `useProvisioningState().phase === "normal"`) and why
-  // each completion read stays null-keyed until `chatReady`.
-  const { chatReady, ...getStartedDerived } = useGetStartedDerived();
+  const { chatReady } = useChatReady();
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });
@@ -479,56 +468,6 @@ export function ChatLayout({
             )}
           </div>
 
-          {chatReady && (
-            <GetStarted
-              derived={getStartedDerived}
-              actions={{
-                chat: () => {
-                  // Don't select/act on an empty id: if no real agent exists
-                  // yet, bail rather than passing "" to handleSelectAgent.
-                  const targetId = defaultId ?? agents[0]?.id;
-                  if (!targetId) return;
-                  handleSelectAgent(targetId);
-                  window.dispatchEvent(new CustomEvent("getstarted:focus-composer"));
-                },
-                task: () => {
-                  // ONE navigation to the Tasks panel with the New-task
-                  // intent. Mirror what `setActivePanel` (page.tsx) would
-                  // build — set panel, drop stale agent/detailId filters —
-                  // and add `newIssue=onboarding` so Tasks auto-opens its
-                  // New-task dialog (read by IssuesPanel) pre-filled with the
-                  // CEO-directed first task. Calling `onPanelChange` and then
-                  // a second relative `?panel=…` push grew two history
-                  // entries (Back needed two presses) and the relative form
-                  // dropped the other query params setActivePanel preserves.
-                  const params = new URLSearchParams(searchParams.toString());
-                  params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
-                  params.delete("agent");
-                  params.delete("detailId");
-                  params.set("newIssue", "onboarding");
-                  pushSearchParams(params);
-                },
-                hire: () => openMarketplace({ view: "browse" }),
-                channel: () => {
-                  // Route to a surface where a fresh user can actually CREATE
-                  // their first bot: the default agent's inspector Channels tab
-                  // (AgentChannelsSection). The old /settings?panel=channels
-                  // (MyChannelsSection) is link-only and dead-ends a zero-bot
-                  // user. ?inspectorTab=channels is read by AgentInspectorPanel
-                  // to open straight on that tab.
-                  // Bail without navigating if there's no real agent to target
-                  // rather than pushing ?agent= with an empty id.
-                  const agentId = defaultId ?? agents[0]?.id;
-                  if (!agentId) return;
-                  const params = new URLSearchParams(searchParams.toString());
-                  params.set("panel", "agent-inspector");
-                  params.set("agent", agentId);
-                  params.set("inspectorTab", "channels");
-                  pushSearchParams(params);
-                },
-              }}
-            />
-          )}
         </div>
 
         {fileViewerOpen && (

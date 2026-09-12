@@ -494,8 +494,7 @@ export function MessagingWorkspaceProvider({
     onDownloadAttachment: rooms.downloadAttachment,
   } : null;
 
-  // A muted room still counts in the sidebar but never in the browser-tab
-  // title -- muting is the promise that the conversation stops interrupting.
+  // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.
   const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
 
   return <MessagingWorkspaceContext.Provider value={{

@@ -407,7 +407,7 @@ function RoomContent({
     if (!showDetail || showResources) return;
     // An open dialog owns Escape — dismissing the overlay underneath it as
     // well would close two things on one keypress. A Radix popper (menu,
-    // emoji picker, tooltip) is portalled out of this subtree, so its own
+    // emoji picker) is portalled out of this subtree, so its own
     // Escape reaches this window listener too and needs the same exemption.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !hasBlockingShortcutDialog()

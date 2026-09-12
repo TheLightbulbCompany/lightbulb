@@ -63,8 +63,8 @@ pub struct AuthState {
     pub proxy_handle: Mutex<Option<crate::proxy::ProxyHandle>>,
     /// Bundled `openclaw node run` subprocess. Same lifetime as `proxy_handle`.
     pub subprocess_handle: Mutex<Option<crate::subprocess::SubprocessHandle>>,
-    /// Serializes local-MCP mutation end to end: the `openclaw.json`
-    /// read-modify-write AND the sidecar restart that follows it.
+    /// Serializes bootstrap and local-MCP mutation end to end: the
+    /// `openclaw.json` read-modify-write AND sidecar startup/restart.
     ///
     /// Two reasons it covers both halves, not just the restart:
     /// - The restart is take-handle -> await shutdown -> await spawn, so two
@@ -336,6 +336,12 @@ async fn run_bootstrap(
     display_name: &str,
     permissions: Option<DesktopPermissions>,
 ) -> Result<(), String> {
+    let state = app
+        .try_state::<AuthState>()
+        .ok_or_else(|| "AuthState not managed".to_string())?;
+    // Startup also rewrites the private config; keep MCP edits/restarts out
+    // until the new subprocess handles have been published.
+    let _serialized = state.node_host_mutation.lock().await;
     let jwt_snapshot = jwt_arc
         .read()
         .map(|g| g.clone())
@@ -670,6 +676,10 @@ async fn start_from_persisted_state(
     cli_id: keychain::DeviceIdentity,
     app_data: std::path::PathBuf,
 ) -> Result<(), String> {
+    let state = app
+        .try_state::<AuthState>()
+        .ok_or_else(|| "AuthState not managed".to_string())?;
+    let _serialized = state.node_host_mutation.lock().await;
     let state_dir = state_dir_in(&app_data);
     let binary = resolve_node_host_binary()?;
     let display_name = persisted.display_name.clone();

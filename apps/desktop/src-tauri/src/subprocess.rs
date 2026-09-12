@@ -109,6 +109,7 @@ pub async fn spawn(
     public_key_pem: &str,
     gateway_token: &str,
 ) -> Result<SubprocessHandle, String> {
+    crate::local_mcp::restrict_node_integrations(&state_dir)?;
     // 0. Retire the pre-8.1 node-host config file.
     retire_legacy_node_host_config(&state_dir)?;
 
@@ -171,6 +172,8 @@ pub async fn spawn(
     let port_str = proxy_port.to_string();
     let mut cmd = Command::new(&binary);
     cmd.env("OPENCLAW_STATE_DIR", &state_dir)
+        // Do not inherit a path to the user's personal OpenClaw config.
+        .env("OPENCLAW_CONFIG_PATH", crate::local_mcp::config_path(&state_dir))
         .env("OPENCLAW_GATEWAY_TOKEN", gateway_token)
         .env("LIGHTBULB_PROXY_PORT", &port_str)
         .stdout(Stdio::piped())
@@ -223,6 +226,43 @@ impl SubprocessHandle {
 #[cfg(test)]
 mod tests {
     use super::retire_legacy_node_host_config;
+
+    #[tokio::test]
+    async fn spawn_loads_only_the_restricted_app_private_config() {
+        use ed25519_dalek::pkcs8::{EncodePrivateKey, EncodePublicKey};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("app-state");
+        let binary = dir.path().join("check-config");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\ntest \"$OPENCLAW_CONFIG_PATH\" = \"$OPENCLAW_STATE_DIR/openclaw.json\"\n",
+        ).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        let handle = super::spawn(
+            binary,
+            12345,
+            state.clone(),
+            key.to_pkcs8_pem(Default::default()).unwrap().as_str(),
+            &key.verifying_key().to_public_key_pem(Default::default()).unwrap(),
+            "synthetic-test-token",
+        ).await.unwrap();
+        let mut child = handle.child.lock().await;
+        assert!(child.as_mut().unwrap().wait().await.unwrap().success());
+        let config: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state.join("openclaw.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(
+            config["plugins"]["entries"]["anthropic"]["config"]["sessionCatalog"]["enabled"],
+            false,
+        );
+        assert_eq!(
+            config["plugins"]["entries"]["ollama"]["config"]["nodeInference"]["enabled"],
+            false,
+        );
+    }
 
     /// The 8.1 sidecar refuses to start while either legacy file is present,
     /// and nothing self-heals it — so both must go, and re-running must be safe.

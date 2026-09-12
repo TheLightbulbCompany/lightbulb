@@ -10,9 +10,9 @@
   "full": "ghcr.io/openclaw/openclaw:2026.5.28",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended",
   "dev": {
-    "tag": "2026.9.3-isol8.2-7d2b332",
-    "artifactDigest": "sha256:e13e5f84cd3761d15a538a7d5d1f97ac1c624413725ddd9c1534e685cb35d34e",
-    "runtimeManifestDigest": "sha256:8fec443b03d8e046fd63675b0bd45be63d82736dec491226a7d57b25edb1cea2"
+    "tag": "2026.9.3-isol8.2-1da8ca8",
+    "artifactDigest": "sha256:b47614beea9204a374c4522e7560855221c71765601cea3cf8a566a1b4a7f563",
+    "runtimeManifestDigest": "sha256:31797bd10397526e4c65da81fa8f3730c65e7288b08d88505b0f46933aa41be2"
   },
   "prod": {
     "tag": "2026.9.3-isol8.2-7d2b332",

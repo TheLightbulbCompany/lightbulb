@@ -43,6 +43,8 @@ from core.services.messaging import (
     RoomDetail,
     RoomListResponse,
     ImageAttachment,
+    RunEventRequest,
+    RunEventResponse,
     RunStatusResponse,
     SectionsRequest,
     SteerRunRequest,
@@ -563,3 +565,9 @@ async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: 
 async def get_agent_message_receipt(owner_id: str, event_id: str, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.get_agent_receipt(owner_id, event_id)
+
+
+@router.post("/internal/messaging/runs/{owner_id}/events", response_model=RunEventResponse)
+async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
+    await _require_hook_token(owner_id, request)
+    return await service.handle_run_event(owner_id, body)

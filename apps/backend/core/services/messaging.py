@@ -26,9 +26,11 @@ from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo, messaging_repo
-from core.containers import get_gateway_pool_if_started, get_workspace
+from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
+from core.services.push_service import send_push_to_user
 from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
+from core.services.usage_service import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +356,7 @@ class AgentMessageRequest(ContractModel):
     text: str
     reply_to_message_id: uuid.UUID | None
     thread_root_message_id: uuid.UUID | None
+    run_id: uuid.UUID | None = None
 
     @field_validator("event_id")
     @classmethod
@@ -414,6 +417,39 @@ class RunStatusResponse(ContractModel):
 
     run_id: str
     state: Literal["running", "terminal"]
+
+
+class RunUsage(ContractModel):
+    model: str
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cache_read_tokens: int = Field(ge=0)
+    cache_write_tokens: int = Field(ge=0)
+    estimated_cost_usd: float | None = None
+
+
+class RunEventRequest(ContractModel):
+    run_id: uuid.UUID
+    type: Literal["run.started", "run.heartbeat", "run.ended"]
+    at: datetime
+    session_key: str | None = None
+    outcome: Literal["completed", "error", "aborted", "ignored", "gate_error"] | None = None
+    error_kind: str | None = None
+    usage: RunUsage | None = None
+
+    @model_validator(mode="after")
+    def _ended_is_complete(self) -> "RunEventRequest":
+        if self.type == "run.ended":
+            if self.outcome is None:
+                raise ValueError("run.ended requires outcome")
+            if self.outcome not in {"ignored", "gate_error"} and self.usage is None:
+                raise ValueError("run.ended requires usage for a run that started")
+        return self
+
+
+class RunEventResponse(ContractModel):
+    run_id: uuid.UUID
+    status: Literal["applied", "replayed"]
 
 
 class SteerRunRequest(ContractModel):
@@ -1759,31 +1795,117 @@ def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], li
     return mentions, _unresolved_mention_reasons(text, members)
 
 
-def _receipt_run_id(owner_id: str, agent_id: str, room_id: str) -> str | None:
-    """The in-flight run id for the agent's room session, if the gateway knows it.
+RUN_ERROR_MESSAGES = {
+    "agent_did_not_start": "The agent did not start this run.",
+    "agent_stopped_responding": "The agent stopped responding.",
+}
 
-    The container's receipt POST carries no run identity (the host send context
-    has no run field), but the backend's own gateway connection has been
-    recording every event's runId on the session's active-run entry since the
-    run started — so the reply's run is known here in the common case. Best
-    effort by design: any miss (no connection, run already terminal, a run the
-    gateway never saw such as cron) returns None and the message persists
-    exactly as before, on the clients' text-match fallback. Must never raise —
-    a best-effort lookup must not fail the receipt path.
-    """
-    # Same grammar as openclaw_work.lightbulb_session_key and the channel
-    # plugin's sessionKeyFor (duplicated, not imported: openclaw_work imports
-    # this module, so importing it back would cycle).
-    session_key = f"agent:{agent_id}:lightbulb:channel:{room_id}"
+
+async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
+    """The terminal `error` + `run_ended` pair for a run whose container published nothing
+    (never started, or closed by the sweeper). Frames carry runId and agentId like the
+    plugin's own."""
+    publisher = get_live_event_publisher()
+    base = {"roomId": row["roomId"], "agentId": row["agentId"], "runId": row["runId"]}
+    stamp = {"runId": row["runId"], "agentId": row["agentId"]}
+    message = RUN_ERROR_MESSAGES.get(error_kind or "", "Agent run failed")
+    for frame in (
+        {"type": "error", "message": message, **({"code": error_kind} if error_kind else {}), **stamp},
+        {"type": "run_ended", "outcome": "error", **stamp},
+    ):
+        await publisher.publish_room(
+            row["roomId"], make_live_event("room.run.frame", {**base, "frame": frame}, room_id=row["roomId"])
+        )
+
+
+def _ms_between(start: Any, end: Any) -> float | None:
     try:
-        # if_started: no pool means no tracked runs, so None is the answer —
-        # and a cold process must not pay singleton construction (~2s of boto
-        # setup) inside this latency-measured receipt path.
-        pool = get_gateway_pool_if_started()
-        return pool.run_id_for_session(owner_id, session_key) if pool else None
-    except Exception:
-        logger.exception("run-id lookup failed for agent %s room %s", agent_id, room_id)
+        return max(0.0, (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).total_seconds() * 1000)
+    except (TypeError, ValueError):
         return None
+
+
+async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventResponse:
+    """Apply one at-least-once callback from the container's run supervisor (spec §4/§5)."""
+    run_id = str(event.run_id)
+    if event.type == "run.started":
+        applied = await messaging_repo.start_run(owner_id, run_id, session_key=event.session_key or "")
+    elif event.type == "run.heartbeat":
+        applied = await messaging_repo.heartbeat_run(owner_id, run_id)
+    else:
+        usage = event.usage.model_dump(mode="json", by_alias=True) if event.usage else None
+        row = await messaging_repo.end_run(
+            owner_id, run_id, outcome=event.outcome, error_kind=event.error_kind, usage=usage
+        )
+        applied = row is not None
+        if row is not None:
+            event_kind = row.get("eventKind") or "unknown"
+            put_metric("messaging.run.ended", dimensions={"outcome": event.outcome, "event_kind": event_kind})
+            for name, start, end in (
+                ("messaging.run.start_latency", "dispatchedAt", "startedAt"),
+                ("messaging.run.duration", "startedAt", "endedAt"),
+            ):
+                value = _ms_between(row.get(start), row.get(end)) if row.get(start) and row.get(end) else None
+                if value is not None:
+                    put_metric(name, value=value, unit="Milliseconds", dimensions={"event_kind": event_kind})
+            await _after_run_ended(owner_id, row, event.outcome, event.usage)
+            if event.outcome == "error" and not row.get("startedAt"):
+                try:
+                    await publish_run_error_frames(row, event.error_kind)
+                except Exception:
+                    logger.exception("run error frames failed")
+    if not applied and await messaging_repo.get_run(owner_id, run_id) is None:
+        put_metric("messaging.run.callback", dimensions={"type": event.type, "outcome": "unknown"})
+        raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
+    put_metric(
+        "messaging.run.callback", dimensions={"type": event.type, "outcome": "applied" if applied else "replayed"}
+    )
+    return RunEventResponse(run_id=event.run_id, status="applied" if applied else "replayed")
+
+
+async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsage | None) -> None:
+    """Usage counters (analytics only; Metronome is billed by the meter Lambda) and the
+    failure push. ``outcome`` is the event's own outcome (not re-read off ``row``, which
+    the ledger only ever stores this same value into). Never raises into the callback."""
+    if outcome not in {"completed", "error", "aborted"}:
+        return
+    trigger = await messaging_repo.get_message_by_id(row["roomId"], row["triggerMessageId"])
+    author = (trigger or {}).get("author") or {}
+    member_user_id = author.get("id") if author.get("kind") == "human" else None
+    if usage is not None:
+        cost = usage.estimated_cost_usd
+        raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
+        # Same drop rule as the personal-chat path: no token volume and no billable cost.
+        if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
+            try:
+                await record_usage(
+                    owner_id=owner_id,
+                    user_id=member_user_id or owner_id,
+                    model=usage.model,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read=usage.cache_read_tokens,
+                    cache_write=usage.cache_write_tokens,
+                    raw_cost_microcents=raw_cost_microcents,
+                    room_turn=True,
+                    event_kind=row.get("eventKind"),
+                )
+            except Exception:
+                logger.exception("room run usage record failed")
+    # A completed reply is pushed by the projector on room.message.created; only a
+    # failure has no message to carry it.
+    if outcome == "error" and member_user_id and member_user_id.startswith("user_"):
+        try:
+            roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
+            name = (roster.get(row["agentId"]) or {}).get("name") or "Agent"
+            await send_push_to_user(
+                member_user_id,
+                f"{name} run failed",
+                "Agent run failed",
+                {"agentId": row["agentId"], "roomId": row["roomId"], "runId": row["runId"]},
+            )
+        except Exception:
+            logger.exception("run failure push failed")
 
 
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
@@ -1808,10 +1930,17 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     mentions, unresolved = parse_agent_mentions(request.text, members)
     targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)
-    # Stamp the producing run when the gateway still holds it: clients retire
-    # the run card on an exact runId match instead of showing card + message
-    # side by side (the doubles). None keeps today's text-match fallback.
-    run_id = _receipt_run_id(owner_id, agent_id, room_id)
+    # Stamp the producing run when the container names it: clients retire the
+    # run card on an exact runId match instead of showing card + message side
+    # by side (the doubles). None keeps today's text-match fallback.
+    run_id = str(request.run_id) if request.run_id else None
+    if run_id is not None:
+        # A present run id is a claim about the ledger, not a hint: it must be this
+        # owner's run for this room and agent. A run that already closed still accepts
+        # its late reply (durable retries, sweeper closures) — delivery is at-least-once.
+        run = await messaging_repo.get_run(owner_id, run_id)
+        if run is None or run.get("roomId") != room_id or run.get("agentId") != agent_id:
+            raise ApiProblem("RUN_NOT_FOUND", "runId does not name this owner's run for this room and agent.")
     req_hash = messaging_repo.request_hash(
         room_id,
         agent_id,

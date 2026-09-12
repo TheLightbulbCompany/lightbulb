@@ -1,8 +1,8 @@
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useRef } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors } from "../../../config/theme";
+import { colors, fonts } from "../../../config/theme";
 import { useMobileRooms } from "../../../lib/rooms";
 
 /**
@@ -13,6 +13,8 @@ import { useMobileRooms } from "../../../lib/rooms";
 export default function AgentRedirect() {
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
+  // Retry nonce: re-fires the resolve below without remounting.
+  const [attempt, setAttempt] = useState(0);
   // Through a ref, and keyed on agentId alone: selectAgentDm's identity changes
   // with the room directory, and a second call supersedes the first, which then
   // resolves null — a re-fire would race its own fallback.
@@ -33,11 +35,28 @@ export default function AgentRedirect() {
         if (roomId) router.replace(`/(app)/room/${roomId}`);
         else giveUp();
       })
-      .catch(giveUp);
+      // No redirect on failure: the error card below (rooms.selectRoomError)
+      // is the surface, with a retry. The old silent bounce to home hid
+      // every resolve-or-create failure.
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, attempt]);
+  if (rooms.selectRoomError) {
+    return (
+      <View style={styles.wrap}>
+        <Text style={styles.errorText}>{rooms.selectRoomError}</Text>
+        <Pressable
+          onPress={() => setAttempt((count) => count + 1)}
+          accessibilityRole="button"
+          accessibilityLabel="Retry opening conversation"
+        >
+          <Text style={styles.retryText}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
   return (
     <View style={styles.wrap}>
       <ActivityIndicator color={colors.forest} />
@@ -46,5 +65,7 @@ export default function AgentRedirect() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.cream },
+  wrap: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.cream, gap: 8, padding: 24 },
+  errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.errorText, textAlign: "center" },
+  retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
 });

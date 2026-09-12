@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 
 const mockReplace = jest.fn();
 jest.mock("expo-router", () => ({
@@ -14,8 +14,11 @@ jest.mock("@clerk/clerk-expo", () => ({
 jest.mock("expo-crypto", () => ({ randomUUID: () => "44444444-4444-4444-8444-444444444444" }));
 
 const mockSelectAgentDm = jest.fn(async (_agentId: string): Promise<string | null> => "room-9");
+// The hook's failure surface: the screen reads it on each render, so tests
+// flip it between renders to simulate the reject → error-card transition.
+const mockRoomsState: { selectRoomError: string | null } = { selectRoomError: null };
 jest.mock("../../../../lib/rooms", () => ({
-  useMobileRooms: () => ({ selectAgentDm: mockSelectAgentDm, roomsLoading: false }),
+  useMobileRooms: () => ({ selectAgentDm: mockSelectAgentDm, roomsLoading: false, selectRoomError: mockRoomsState.selectRoomError }),
 }));
 
 import AgentRedirect from "../[agentId]";
@@ -23,6 +26,7 @@ import AgentRedirect from "../[agentId]";
 beforeEach(() => {
   mockReplace.mockClear();
   mockSelectAgentDm.mockClear();
+  mockRoomsState.selectRoomError = null;
 });
 
 it("resolves the agent's DM room and replaces the route with it", async () => {
@@ -37,8 +41,15 @@ it("falls back to the roster instead of spinning forever when no room resolves",
   await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/(app)/home"));
 });
 
-it("falls back to the roster when resolving the DM rejects", async () => {
+it("surfaces the failure with a retry instead of silently leaving", async () => {
   mockSelectAgentDm.mockRejectedValueOnce(new Error("offline"));
-  await render(<AgentRedirect />);
-  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/(app)/home"));
+  const screen = await render(<AgentRedirect />);
+  await waitFor(() => expect(mockSelectAgentDm).toHaveBeenCalledWith("agent-1"));
+  // The hook records the failure on selectRoomError; the next render is the card.
+  mockRoomsState.selectRoomError = "Conversation unavailable";
+  screen.rerender(<AgentRedirect />);
+  expect(await screen.findByText("Conversation unavailable")).toBeTruthy();
+  expect(mockReplace).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText("Retry opening conversation"));
+  await waitFor(() => expect(mockSelectAgentDm).toHaveBeenCalledTimes(2));
 });

@@ -1,14 +1,17 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
+import * as Notifications from "expo-notifications";
 import { Redirect, Tabs } from "expo-router";
 import { StyleSheet, type ColorValue } from "react-native";
-import type { ComponentProps } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 
 import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors, fonts } from "../../config/theme";
-import { getCurrentChat } from "../../lib/activeAgent";
+import { getCurrentTarget } from "../../lib/activeAgent";
+import { useMobileRooms } from "../../lib/rooms";
+import { badgeCount, useChannelMentions } from "../../lib/unreadBadge";
 import { LiveEventsProvider } from "../../providers/live-events";
 
 // Feather glyphs for each top-level tab, mirroring the web sidebar sections.
@@ -18,27 +21,51 @@ function tabIcon(name: ComponentProps<typeof Feather>["name"]) {
   };
 }
 
+/**
+ * The unread number, Slack's way: DMs and mentions only, muted rooms excluded.
+ * Renders nothing — it lives inside LiveEventsProvider (the room machine needs
+ * that context) and lifts the count out to the layout, which is the component
+ * that owns the Tabs.Screen options.
+ *
+ * It also owns the app-icon badge, because the same number belongs on both and
+ * the projector sends no `badge` in its push payload.
+ */
+function TabBadge({ onCount }: { onCount: (total: number) => void }) {
+  const { rooms } = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
+  const mentions = useChannelMentions();
+  const total = badgeCount(rooms, mentions);
+  useEffect(() => {
+    onCount(total);
+    void Notifications.setBadgeCountAsync(total).catch(() => {});
+  }, [onCount, total]);
+  return null;
+}
+
 // Tab shell mirroring the web sidebar's top-level sections, gated on Clerk
 // auth (the mobile equivalent of the web's middleware route protection).
 // LiveEventsProvider sits inside the auth gate so AppSync subscriptions only
 // exist for signed-in users.
 export default function AppLayout() {
   const { isSignedIn, isLoaded } = useAuth();
+  const [unread, setUnread] = useState(0);
   if (!isLoaded) return null;
   if (!isSignedIn) return <Redirect href="/(auth)/sign-in" />;
 
   return (
     <LiveEventsProvider>
-      {/* getCurrentChat reads the chat screen's focused agent + session
-          (activeAgent.ts) so the notification handler suppresses the banner for
-          a reply the user is actively watching stream in. */}
-      <PushRegistration getCurrentChat={getCurrentChat} />
+      {/* getCurrentTarget reads the conversation (and thread) currently on
+          screen (activeAgent.ts) so the notification handler suppresses the
+          banner only for a message the user is already watching arrive. */}
+      <PushRegistration getCurrentTarget={getCurrentTarget} />
       {/* Above ProvisionGate, so nothing that can reach an agent — chat, the
           first-run brief, a Teams comment — renders before the user has agreed
           to their content going to a third-party AI provider (App Store
           5.1.1(i)/5.1.2(i)). */}
       <AiConsentGate>
         <ProvisionGate>
+          {/* Inside the gate: an owner with no workspace yet has no rooms to
+              count, and the list fetch would only 403 in a retry loop. */}
+          <TabBadge onCount={setUnread} />
           <Tabs
             screenOptions={{
               headerShown: true,
@@ -72,7 +99,11 @@ export default function AppLayout() {
                 door to them. */}
             <Tabs.Screen
               name="home"
-              options={{ title: "Home", tabBarIcon: tabIcon("home") }}
+              options={{
+                title: "Home",
+                tabBarIcon: tabIcon("home"),
+                tabBarBadge: unread || undefined,
+              }}
             />
             <Tabs.Screen
               name="dms"

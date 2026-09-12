@@ -21,6 +21,7 @@ import { LocalMessageRows, MessageGroup } from "../../../../components/room/Mess
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
+import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { useMobileRooms, useSendDrafts } from "../../../../lib/rooms";
 
 /** Distance from the bottom, in px, still counted as "at the bottom". */
@@ -39,11 +40,19 @@ function Conversation() {
   // The SCREEN's own focus. expo-router blurs a pushed screen (a thread) without
   // backgrounding the app, and read marking is "on screen AND foregrounded".
   const [focused, setFocused] = useState(true);
+  // The same effect also claims the push handler's target — this conversation,
+  // no thread — so a message the reader is watching arrive does not banner.
+  // One effect, not two: focus and the target are the same event, and the
+  // suite's focus mock keeps one handle per screen.
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
-      return () => setFocused(false);
-    }, []),
+      const release = claimRoomTarget(roomId ?? null, null);
+      return () => {
+        setFocused(false);
+        release();
+      };
+    }, [roomId]),
   );
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused });
 

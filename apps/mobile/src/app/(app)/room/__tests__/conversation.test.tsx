@@ -100,6 +100,7 @@ const mockLive = {
 jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 
 import Conversation from "../[roomId]/index";
+import { getCurrentTarget } from "../../../../lib/activeAgent";
 
 // jest-expo leaves AppState.currentState undefined; a device reports "active",
 // and the RoomsPlatform ANDs it into isVisible(), which gates read marking.
@@ -208,5 +209,14 @@ describe("conversation screen", () => {
       },
     });
     expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
+  });
+
+  // Nothing wrote the push handler's target before this task: the signal existed
+  // and no screen set it, so the in-app banner was never suppressed.
+  it("claims the push target while on screen and releases it on blur", async () => {
+    await render(<Conversation />);
+    expect(getCurrentTarget()).toMatchObject({ roomId: "room-1", threadId: null });
+    await act(async () => mockFocus.blur?.());
+    expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
   });
 });

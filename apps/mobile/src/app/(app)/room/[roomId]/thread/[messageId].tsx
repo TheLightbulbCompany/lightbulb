@@ -17,6 +17,7 @@ import { LocalMessageRows, MessageGroup } from "../../../../../components/room/M
 import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
+import { claimRoomTarget } from "../../../../../lib/activeAgent";
 import { useMobileRooms, useSendDrafts } from "../../../../../lib/rooms";
 
 /**
@@ -31,11 +32,18 @@ export default function ThreadScreen() {
   // The SCREEN's own focus, driving the live subscription only: a blurred thread
   // hands the room's subscription claim back to the conversation behind it.
   const [focused, setFocused] = useState(true);
+  // The same effect claims the push handler's target: a reply to THIS thread is
+  // on screen and banners nothing, while a new message in the room behind it
+  // still does.
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
-      return () => setFocused(false);
-    }, []),
+      const release = claimRoomTarget(roomId ?? null, messageId ?? null);
+      return () => {
+        setFocused(false);
+        release();
+      };
+    }, [roomId, messageId]),
   );
   // `visible: false`, unconditionally — a thread is not the room, and Slack does
   // not clear a channel's unread badge because you read one of its threads. The

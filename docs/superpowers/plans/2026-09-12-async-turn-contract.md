@@ -2256,7 +2256,7 @@ git commit -m "feat(messaging): run event callback route with ledger transitions
 - Test: `apps/backend/tests/unit/services/test_run_ledger.py`
 
 **Interfaces:**
-- Consumes: Task 9 `list_overdue_runs`, `get_run`, `end_run`; `live_events.get_live_event_publisher().publish_room`; `messaging.make_live_event`.
+- Consumes: Task 9 `list_overdue_runs`, `get_run`, `end_run`; Task 10 `messaging.publish_run_error_frames(row, error_kind)` (the shared terminal `error` + `run_ended` publisher).
 - Produces: `sweep_runs_once() -> int`, `run_ledger_sweeper(stop: asyncio.Event)`; metric `messaging.run.swept {error}`.
 
 - [ ] **Step 1: Failing tests**
@@ -2281,18 +2281,16 @@ def _row(status, deadline):
 async def test_overdue_runs_close_as_error_with_an_error_and_run_ended_frame(monkeypatch, status, error_kind):
     monkeypatch.setattr(run_ledger, "put_metric", lambda *a, **k: None)
     monkeypatch.setattr(run_ledger.time, "time", lambda: 1_000)
-    publisher = AsyncMock()
+    ended_row = {**_row("ended", 900), "outcome": "error", "errorKind": error_kind}
     with (
         patch.object(run_ledger.messaging_repo, "list_overdue_runs", AsyncMock(return_value=[{"ownerId": "o", "runId": "r1"}])),
         patch.object(run_ledger.messaging_repo, "get_run", AsyncMock(return_value=_row(status, 900))),
-        patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value={**_row("ended", 900), "outcome": "error", "errorKind": error_kind})) as end,
-        patch.object(run_ledger, "get_live_event_publisher", lambda: publisher),
+        patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value=ended_row)) as end,
+        patch.object(run_ledger, "publish_run_error_frames", AsyncMock()) as frames,
     ):
         assert await run_ledger.sweep_runs_once() == 1
     end.assert_awaited_once_with("o", "r1", outcome="error", error_kind=error_kind)
-    frames = [call.args[1]["payload"]["frame"] for call in publisher.publish_room.await_args_list]
-    assert [f["type"] for f in frames] == ["error", "run_ended"]
-    assert frames[0]["code"] == error_kind and frames[1]["outcome"] == "error" and frames[1]["runId"] == "r1" and frames[1]["agentId"] == "a1"
+    frames.assert_awaited_once_with(ended_row, error_kind)
 
 
 @pytest.mark.asyncio
@@ -2327,16 +2325,11 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services.live_events import get_live_event_publisher
-from core.services.messaging import make_live_event
+from core.services.messaging import publish_run_error_frames
 
 logger = logging.getLogger(__name__)
 
 _SWEEP_SECONDS = 60
-_MESSAGES = {
-    "agent_did_not_start": "The agent did not start this run.",
-    "agent_stopped_responding": "The agent stopped responding.",
-}
 
 
 async def sweep_runs_once() -> int:
@@ -2354,21 +2347,10 @@ async def sweep_runs_once() -> int:
         put_metric("messaging.run.ended", dimensions={"outcome": "error", "event_kind": ended.get("eventKind") or "unknown"})
         put_metric("messaging.run.swept", dimensions={"error": error_kind})
         try:
-            await _publish_terminal_frames(ended, error_kind)
+            await publish_run_error_frames(ended, error_kind)
         except Exception:
             logger.warning("sweeper terminal frames failed (%s)", error_kind, exc_info=True)
     return closed
-
-
-async def _publish_terminal_frames(row: dict, error_kind: str) -> None:
-    publisher = get_live_event_publisher()
-    base = {"roomId": row["roomId"], "agentId": row["agentId"], "runId": row["runId"]}
-    stamp = {"runId": row["runId"], "agentId": row["agentId"]}
-    for frame in (
-        {"type": "error", "message": _MESSAGES[error_kind], "code": error_kind, **stamp},
-        {"type": "run_ended", "outcome": "error", **stamp},
-    ):
-        await publisher.publish_room(row["roomId"], make_live_event("room.run.frame", {**base, "frame": frame}, room_id=row["roomId"]))
 
 
 async def run_ledger_sweeper(stop: asyncio.Event) -> None:

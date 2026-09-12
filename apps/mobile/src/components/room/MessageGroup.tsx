@@ -1,5 +1,5 @@
 import Feather from "@expo/vector-icons/Feather";
-import { linkifyMentions, type CanonicalRoomMessage, type ImageAttachment, type RoomMember } from "@lightbulb/shared";
+import { linkifyMentions, type CanonicalRoomMessage, type MessageAttachment, type RoomMember } from "@lightbulb/shared";
 import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -26,7 +26,7 @@ function AttachmentImage({
   downloadAttachment,
 }: {
   roomId: string;
-  attachment: ImageAttachment;
+  attachment: MessageAttachment;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
 }) {
   const [uri, setUri] = useState<string | null>(null);

@@ -115,7 +115,7 @@ export type {
   CreateMessageRequest,
   CreateRoomRequest,
   UpdateMessageRequest,
-  ImageAttachment,
+  MessageAttachment,
   ListenMode,
   LiveConfig,
   MemberPrefsRequest,
@@ -129,6 +129,7 @@ export type {
   RoomSummary,
   RunStatusResponse,
 } from "./messaging/types";
+export { MESSAGE_ATTACHMENT_MAX_BYTES } from "./messaging/types";
 export { createRuntimeClient, RuntimeRpcError } from "./runtime/client";
 export type {
   RuntimeApprovalDecision,

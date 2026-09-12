@@ -4,7 +4,7 @@ import type {
   CanonicalRoomMessage,
   CreateMessageRequest,
   UpdateMessageRequest,
-  ImageAttachment,
+  MessageAttachment,
   CreateRoomRequest,
   LiveConfig,
   MemberKind,
@@ -54,7 +54,7 @@ export interface MessagingClient {
   removeMember(roomId: string, kind: MemberKind, memberId: string): Promise<void>;
   listMessages(roomId: string, afterSeq: number, limit?: number): Promise<MessagePage>;
   sendMessage(roomId: string, request: CreateMessageRequest): Promise<CanonicalRoomMessage>;
-  uploadAttachment(roomId: string, image: RoomAttachmentInput): Promise<ImageAttachment>;
+  uploadAttachment(roomId: string, image: RoomAttachmentInput): Promise<MessageAttachment>;
   downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
   markUnread(roomId: string, fromSeq?: number): Promise<ReadCursorResponse>;
@@ -94,7 +94,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     uploadAttachment: (roomId, image) => {
       const body = new FormData();
       body.append("image", image as Blob);
-      return api.upload(`${roomPath(roomId)}/attachments`, body) as Promise<ImageAttachment>;
+      return api.upload(`${roomPath(roomId)}/attachments`, body) as Promise<MessageAttachment>;
     },
     downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),
     markRead: (roomId, request) => api.put(`${roomPath(roomId)}/read`, request) as Promise<ReadCursorResponse>,

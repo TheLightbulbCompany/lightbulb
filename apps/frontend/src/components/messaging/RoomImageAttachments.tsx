@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { ImageAttachment } from "@lightbulb/shared";
+import type { MessageAttachment } from "@lightbulb/shared";
 
 export function RoomImageAttachments({ roomId, attachments, download }: {
   roomId: string;
-  attachments: readonly ImageAttachment[];
+  attachments: readonly MessageAttachment[];
   download: (roomId: string, attachmentId: string) => Promise<Blob>;
 }) {
   const [urls, setUrls] = useState<Record<string, string>>({});

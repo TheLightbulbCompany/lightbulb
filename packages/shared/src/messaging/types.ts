@@ -114,15 +114,26 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
-  attachments?: ImageAttachment[];
+  attachments?: MessageAttachment[];
 }
 
-export interface ImageAttachment {
+export interface MessageAttachment {
   id: string;
   fileName: string;
-  contentType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  contentType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "application/pdf";
   size: number;
 }
+
+/** Mirrors the backend's per-content-type cap (`ATTACHMENT_MAX_BYTES_BY_TYPE`
+ *  in `core/services/messaging.py`) -- images keep the original 5 MiB limit,
+ *  a PDF gets a larger 20 MiB one. */
+export const MESSAGE_ATTACHMENT_MAX_BYTES: Record<MessageAttachment["contentType"], number> = {
+  "image/png": 5 * 1024 * 1024,
+  "image/jpeg": 5 * 1024 * 1024,
+  "image/webp": 5 * 1024 * 1024,
+  "image/gif": 5 * 1024 * 1024,
+  "application/pdf": 20 * 1024 * 1024,
+};
 
 export interface CreateMessageRequest {
   clientMessageId: string;

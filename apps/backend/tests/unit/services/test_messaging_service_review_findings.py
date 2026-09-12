@@ -13,7 +13,8 @@ from core.services.messaging import (
     CreateRoomMember,
     CreateRoomRequest,
     CreateMessageRequest,
-    validate_image_bytes,
+    MessageAttachment,
+    validate_attachment_bytes,
     create_room,
     create_human_message,
     get_agent_receipt,
@@ -193,18 +194,41 @@ def test_attachment_only_message_is_valid_and_empty_message_is_not():
 
 
 def test_image_validation_rejects_spoofed_and_svg_uploads():
-    assert validate_image_bytes("image/png", b"\x89PNG\r\n\x1a\nrest") == ".png"
+    assert validate_attachment_bytes("image/png", b"\x89PNG\r\n\x1a\nrest") == ".png"
     with pytest.raises(ValueError):
-        validate_image_bytes("image/png", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        validate_attachment_bytes("image/png", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
     with pytest.raises(ValueError):
-        validate_image_bytes("image/svg+xml", b"<svg/>")
+        validate_attachment_bytes("image/svg+xml", b"<svg/>")
+
+
+def test_pdf_validation_accepts_valid_bytes_rejects_spoofed_and_oversized():
+    assert validate_attachment_bytes("application/pdf", b"%PDF-1.7\nrest") == ".pdf"
+    with pytest.raises(ValueError):
+        validate_attachment_bytes("application/pdf", b"not actually a pdf")
+    oversized = b"%PDF-1.7\n" + b"0" * (messaging.PDF_MAX_BYTES + 1)
+    with pytest.raises(ValueError):
+        validate_attachment_bytes("application/pdf", oversized)
+
+
+def test_message_attachment_enforces_per_type_size_cap():
+    MessageAttachment(
+        id=uuid.uuid4(), file_name="doc.pdf", content_type="application/pdf", size=messaging.PDF_MAX_BYTES
+    )
+    with pytest.raises(ValueError):
+        MessageAttachment(
+            id=uuid.uuid4(), file_name="doc.pdf", content_type="application/pdf", size=messaging.PDF_MAX_BYTES + 1
+        )
+    with pytest.raises(ValueError):
+        MessageAttachment(
+            id=uuid.uuid4(), file_name="big.png", content_type="image/png", size=messaging.IMAGE_MAX_BYTES + 1
+        )
 
 
 def test_attachment_filename_matches_plugin_utf8_contract(tmp_path, monkeypatch):
     workspace = Workspace(str(tmp_path))
     monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
     monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
-    attachment = messaging.store_image_attachment(
+    attachment = messaging.store_attachment(
         "owner", str(uuid.uuid4()), "🙂" * 200 + "\x7f.png", "image/png", b"\x89PNG\r\n\x1a\nrest"
     )
     assert len(attachment.file_name.encode("utf-8")) <= 255
@@ -216,11 +240,11 @@ def test_attachment_load_rejects_metadata_id_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
     monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
     room_id = str(uuid.uuid4())
-    attachment = messaging.store_image_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
+    attachment = messaging.store_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
     sidecar = tmp_path / "owner" / messaging.attachment_dir(room_id) / f"{attachment.id}.json"
     sidecar.write_text(sidecar.read_text().replace(str(attachment.id), str(uuid.uuid4())))
     with pytest.raises(ApiProblem):
-        messaging.load_image_attachment("owner", room_id, str(attachment.id))
+        messaging.load_attachment("owner", room_id, str(attachment.id))
 
 
 def test_attachment_store_rejects_symlink_to_another_room(tmp_path, monkeypatch):
@@ -234,8 +258,32 @@ def test_attachment_store_rejects_symlink_to_another_room(tmp_path, monkeypatch)
     room_path.symlink_to(sibling_path, target_is_directory=True)
 
     with pytest.raises(ValueError, match="escapes its room"):
-        messaging.store_image_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
+        messaging.store_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
     assert list(sibling_path.iterdir()) == []
+
+
+def test_pdf_attachment_round_trips_through_store_and_load(tmp_path, monkeypatch):
+    workspace = Workspace(str(tmp_path))
+    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
+    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+    room_id = str(uuid.uuid4())
+    pdf_bytes = b"%PDF-1.7\n" + b"content" * 100
+    stored = messaging.store_attachment("owner", room_id, "contract.pdf", "application/pdf", pdf_bytes)
+    assert stored.content_type == "application/pdf"
+
+    loaded, data = messaging.load_attachment("owner", room_id, str(stored.id))
+    assert data == pdf_bytes
+    assert loaded.file_name == "contract.pdf"
+
+
+def test_pdf_attachment_store_rejects_oversized_upload(tmp_path, monkeypatch):
+    workspace = Workspace(str(tmp_path))
+    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
+    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+    room_id = str(uuid.uuid4())
+    oversized = b"%PDF-1.7\n" + b"0" * (messaging.PDF_MAX_BYTES + 1)
+    with pytest.raises(ValueError):
+        messaging.store_attachment("owner", room_id, "big.pdf", "application/pdf", oversized)
 
 
 @pytest.mark.asyncio
@@ -248,7 +296,7 @@ async def test_attachment_download_checks_current_room_membership(monkeypatch):
         raise ApiProblem("ROOM_FORBIDDEN", "No access")
 
     monkeypatch.setattr(messaging, "require_room_member", deny)
-    monkeypatch.setattr(messaging, "load_image_attachment", lambda *_: pytest.fail("loaded before membership check"))
+    monkeypatch.setattr(messaging, "load_attachment", lambda *_: pytest.fail("loaded before membership check"))
     with pytest.raises(ApiProblem):
         await get_room_attachment(str(uuid.uuid4()), str(uuid.uuid4()), AuthContext(user_id="user", org_id="owner"))
     assert checked

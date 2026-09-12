@@ -106,7 +106,10 @@ describe("AgentChat canonical history retry", () => {
       .mockResolvedValue({ messages: [canonicalMessage], nextAfterSeq: null });
 
     await render(<AgentChat />);
-    expect(await screen.findByText(/History is temporarily unavailable/)).toBeTruthy();
+    // The shared hook reports a page-read failure as a flag, not a message
+    // (`historyError: boolean`), so the card carries the generic copy — the
+    // retry, not the reason, is what this suite pins.
+    expect(await screen.findByText(/Couldn’t load history/)).toBeTruthy();
 
     fireEvent.press(screen.getByLabelText("Retry loading history"));
 

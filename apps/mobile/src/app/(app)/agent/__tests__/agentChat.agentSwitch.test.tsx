@@ -27,7 +27,7 @@ jest.mock("expo-router", () => {
 // suite pins: nothing else may be relied on to clear a stale conversation.
 jest.mock("@clerk/clerk-expo", () => ({
   useUser: () => ({ user: null }),
-  useAuth: () => ({ getToken: jest.fn(async () => "token") }),
+  useAuth: () => ({ userId: "user_a", getToken: jest.fn(async () => "token") }),
 }));
 
 jest.mock("expo-crypto", () => ({

@@ -23,22 +23,27 @@ const mockRoom = {
   lastReadSeq: 0, createdAt: "2026-09-09T00:00:00.000Z",
 };
 type LiveHandler = (event: Record<string, unknown>) => void;
-let mockLiveHandler: LiveHandler | null = null;
+// The real provider fans every event out to EVERY registered handler; the
+// screen and the shared useRooms each register one, so a single-slot mock
+// silently drops whichever of them re-subscribed first.
+const mockLiveHandlers = new Set<LiveHandler>();
+const emitLiveEvent = (event: Record<string, unknown>) => {
+  for (const handler of [...mockLiveHandlers]) handler(event);
+};
 const mockMessaging = {
   listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
   getRoom: jest.fn(async () => mockRoom),
   listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
   markRead: jest.fn(async () => ({ roomId: "room_a", lastReadSeq: 0 })),
+  getRunStatus: jest.fn(async () => ({ runId: "run_1", state: "running" })),
   sendMessage: jest.fn(),
   abortRun: jest.fn(),
 };
 const mockLiveChannels = ["/rooms/room_a/delivery_a"];
 const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: LiveHandler) => {
-  mockLiveHandler = handler;
-  return () => {
-    if (mockLiveHandler === handler) mockLiveHandler = null;
-  };
+  mockLiveHandlers.add(handler);
+  return () => mockLiveHandlers.delete(handler);
 };
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
@@ -64,7 +69,7 @@ function frame(msg: Record<string, unknown>) {
   const runId = typeof msg.runId === "string" ? msg.runId : "active-run";
   const payloadFrame = { agentId: "agent_a", ...msg };
   return act(async () => {
-    mockLiveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: { roomId: "room_a", agentId: "agent_a", runId, frame: payloadFrame },
     });
@@ -73,7 +78,7 @@ function frame(msg: Record<string, unknown>) {
 
 describe("AgentChat server-truth run state", () => {
   beforeEach(() => {
-    mockLiveHandler = null;
+    mockLiveHandlers.clear();
     mockClaimActiveRoomSubscription.mockClear();
   });
 

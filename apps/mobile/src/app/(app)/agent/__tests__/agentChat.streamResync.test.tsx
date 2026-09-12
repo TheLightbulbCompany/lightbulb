@@ -28,22 +28,27 @@ const mockSendMessage = jest.fn(async (_roomId: string, request: { clientMessage
   mentions: [], replyToMessageId: null, threadRootMessageId: null,
   createdAt: "2026-09-09T00:00:00.000Z", runId: "run_1",
 }));
-let liveHandler: ((event: unknown) => void) | null = null;
+// The real provider fans every event out to EVERY registered handler; the
+// screen and the shared useRooms each register one, so a single-slot mock
+// silently drops whichever of them re-subscribed first.
+const mockLiveHandlers = new Set<(event: unknown) => void>();
+const emitLiveEvent = (event: unknown) => {
+  for (const handler of [...mockLiveHandlers]) handler(event);
+};
 const mockMessaging = {
   listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
   getRoom: jest.fn(async () => mockRoom),
   listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
   markRead: jest.fn(async () => ({ roomId: "room_a", lastReadSeq: 1 })),
+  getRunStatus: jest.fn(async () => ({ runId: "run_1", state: "running" })),
   sendMessage: mockSendMessage,
   abortRun: jest.fn(),
 };
 const mockLiveChannels = ["/rooms/room_a/delivery_a"];
 const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: (event: unknown) => void) => {
-  liveHandler = handler;
-  return () => {
-    if (liveHandler === handler) liveHandler = null;
-  };
+  mockLiveHandlers.add(handler);
+  return () => mockLiveHandlers.delete(handler);
 };
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
@@ -77,7 +82,7 @@ async function startRun(): Promise<string> {
 async function frame(runId: string, value: Record<string, unknown>) {
   const payloadFrame = { agentId: "agent_a", runId, ...value };
   await act(async () => {
-    liveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: { roomId: "room_a", agentId: "agent_a", runId, frame: payloadFrame },
     });
@@ -86,7 +91,7 @@ async function frame(runId: string, value: Record<string, unknown>) {
 
 async function finishRun(runId: string) {
   await act(async () => {
-    liveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: {
         roomId: "room_a",
@@ -102,7 +107,7 @@ describe("AgentChat stream resync across tool splits", () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
     mockClaimActiveRoomSubscription.mockClear();
-    liveHandler = null;
+    mockLiveHandlers.clear();
   });
 
   afterEach(async () => {

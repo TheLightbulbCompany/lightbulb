@@ -982,6 +982,7 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
     }
     prompt = {"kind": "text", "role": "user", "text": "hi", "actor": {"userId": BOB.user_id}}
     old = {"kind": "text", "role": "assistant", "text": "plain"}
+    agent_prompt = {"kind": "text", "role": "user", "text": "from the agent", "actor": {"agentId": "agent_1"}}
     body = {
         "type": "local.session.events",
         "sessionId": sid,
@@ -994,10 +995,11 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
             result,
             old,
             {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"},
+            agent_prompt,
         ],
     }
     ack = await relay(transport).handle_message("conn-1", body)
-    assert ack["afterSeq"] == 5
+    assert ack["afterSeq"] == 6
     page = await service.list_events(BOB, ROOM, sid)
     events = page.model_dump(by_alias=True, exclude_none=True)["events"]
     assert events[0]["actor"] == {"userId": BOB.user_id}
@@ -1011,7 +1013,7 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
             {
                 **body,
                 "batchId": "b2",
-                "afterSeq": 5,
+                "afterSeq": 6,
                 "events": [{"kind": "text", "role": "user", "text": "x", "actor": {"userId": "u", "agentId": "a"}}],
             },
         )
@@ -1026,11 +1028,17 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
     app.dependency_overrides[get_current_user] = lambda: BOB
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(f"/messaging/rooms/{ROOM}/local-sessions/{sid}/events")
+    assert response.status_code == 200
     wire = response.json()
     assert "nextAfterSeq" in wire and wire["nextAfterSeq"] is None
     wire_events = wire["events"]
     assert not set(wire_events[3]) & {"ts", "itemId", "parentId", "actor", "tool", "lifecycle"}
     assert wire_events[1]["tool"]["name"] == "Bash" and wire_events[1]["ts"] == "2026-09-12T10:00:00.000Z"
+    # Nested optionals must be absent too: a null userId makes the web read an agent
+    # follow-up as the Mac owner, and a null tool.lines makes a call's label render
+    # as its own output.
+    assert wire_events[5]["actor"] == {"agentId": "agent_1"}
+    assert set(wire_events[1]["tool"]) == {"name", "status", "input"}
 
 
 @pytest.mark.asyncio

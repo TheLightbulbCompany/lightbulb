@@ -515,6 +515,9 @@ class LocalSessionRelay:
                 except ApiProblem:
                     await repo.replace_command(command, _revised(command, state="rejected", updatedAt=int(time.time())))
                     continue
+                # Resolved before the claim: a membership read inside the claim window
+                # can spend the lease and turn a dispatchable command into a rejection.
+                actor = await _actor_label(command)
                 claim = _revised(command, claimUntil=min(int(time.time()) + CLAIM_SECONDS, command["deliverBy"]))
                 await repo.replace_command(command, claim, checks=checks)
                 row = await repo.get_session(owner, sid)
@@ -527,7 +530,7 @@ class LocalSessionRelay:
                         continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
-                    envelope = {"type": "local.session.command", "command": public, "actor": await _actor_label(claim)}
+                    envelope = {"type": "local.session.command", "command": public, "actor": actor}
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))

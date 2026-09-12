@@ -137,6 +137,19 @@ class RoomResources(ContractModel):
     paired_nodes: list[PairedNode]
 
 
+def _drop_none(model, result: dict, info, names: tuple[str, ...]) -> dict:
+    """An unset optional field is absent from the wire, never an explicit null.
+
+    The web distinguishes the two: `"userId" in actor` is true for a null key, and
+    `tool.lines != undefined` is true for null, which renders a call's label as its
+    own output.
+    """
+    for name in names:
+        if getattr(model, name) is None:
+            result.pop(model.model_fields[name].alias if info.by_alias else name, None)
+    return result
+
+
 class EventActor(ContractModel):
     user_id: OpaqueId | None = None
     agent_id: OpaqueId | None = None
@@ -147,6 +160,10 @@ class EventActor(ContractModel):
             raise ValueError("actor needs exactly one of userId or agentId")
         return self
 
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("user_id", "agent_id"))
+
 
 class EventTool(ContractModel):
     name: Annotated[str, Field(min_length=1, max_length=128)]
@@ -154,6 +171,10 @@ class EventTool(ContractModel):
     input: Any = None
     result: Any = None
     lines: int | None = Field(default=None, ge=0)
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("input", "result", "lines"))
 
 
 Lifecycle = Literal["turn_start", "turn_end", "turn_aborted", "compaction", "approval_pending"]
@@ -175,14 +196,9 @@ class LocalSessionEventBody(ContractModel):
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        result = handler(self)
-        # Old-shape events stay byte-compatible: an unset optional field is absent
-        # from the wire, not an explicit null (LocalSessionEventPage cannot use
+        # Old-shape events stay byte-compatible (LocalSessionEventPage cannot use
         # response_model_exclude_none -- next_after_seq's null is meaningful).
-        for name in ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle"):
-            if getattr(self, name) is None:
-                result.pop(self.model_fields[name].alias if info.by_alias else name, None)
-        return result
+        return _drop_none(self, handler(self), info, ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle"))
 
 
 class LocalSessionEvent(LocalSessionEventBody):
@@ -250,12 +266,8 @@ class CommandReceipt(LocalSessionCommand):
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        result = handler(self)
         # Human wire stays byte-compatible with existing deny_unknown_fields clients.
-        for name in ("actor_user_id", "actor", "invocation_expires_at"):
-            if getattr(self, name) is None:
-                result.pop(self.model_fields[name].alias if info.by_alias else name, None)
-        return result
+        return _drop_none(self, handler(self), info, ("actor_user_id", "actor", "invocation_expires_at"))
 
 
 Caller = AuthContext | AgentInvocation

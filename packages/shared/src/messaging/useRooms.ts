@@ -59,11 +59,20 @@ export interface RoomsPlatform {
   userId: string | null;
   /** Active organisation, or null for a personal workspace. */
   orgId: string | null;
+  /**
+   * The live-events context value. MUST be referentially stable across
+   * renders, and so must everything on it: `messaging`, `onEvent`,
+   * `claimActiveRoomSubscription`, `liveChannels`. Each is a dependency of an
+   * effect inside the hook; a fresh object per render does not error, it
+   * re-fires the history reconcile into "Maximum update depth exceeded".
+   * Both apps' providers memoize their context value; a platform adapter
+   * must pass it through, never rebuild it.
+   */
   live: RoomsLiveSource;
   /** True when this room surface is on screen AND the app is foregrounded.
    *  Web: document visible + window focused. Mobile: AppState active. */
   isVisible(): boolean;
-  /** Subscribe to changes in `isVisible()`. MUST be referentially stable. */
+  /** Subscribe to changes in `isVisible()`. MUST be referentially stable, as must `isVisible`. */
   onVisibilityChange(listener: () => void): () => void;
   /** RFC-4122 v4. Web: crypto.randomUUID. Mobile: expo-crypto randomUUID. */
   uuid(): string;

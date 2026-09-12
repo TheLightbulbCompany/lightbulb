@@ -13,6 +13,7 @@ export default tseslint.config(...tseslint.configs.recommended, {
       { name: "document", message: "DOM-only — inject via PlatformAdapter." },
       { name: "localStorage", message: "DOM-only — inject via PlatformAdapter." },
       { name: "navigator", message: "DOM-only — inject via PlatformAdapter." },
+      { name: "crypto", message: "No randomUUID on Hermes — inject via RoomsPlatform.uuid / PlatformAdapter." },
     ],
   },
 });

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { dateDividerLabel, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, dateDividerLabel, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
 import { AppState } from "react-native";
 
 // The real @lightbulb/shared room machine runs here (that is the point of the
@@ -13,6 +13,11 @@ const mockPush = jest.fn();
 // thread screen causes. Upstream this is navigation; here it is the only way to
 // reach the transition at all.
 const mockFocus: { blur?: () => void; focus?: () => void } = {};
+// The blocked-state tests each need their own SWR cache entry (the shared
+// room machine's `useSWR(["messaging-room", scope, activeRoomId], ...)` is
+// keyed off this), so a getRoom override in one test can't be served from
+// another test's cached "room-1" success. Reset in beforeEach.
+let mockRoomId = "room-1";
 jest.mock("expo-router", () => {
   // useFocusEffect is an EFFECT upstream. A mock that calls the callback during
   // render turns the screen's setFocused into a render-phase update, which React
@@ -41,7 +46,7 @@ jest.mock("expo-router", () => {
         };
         return () => cleanup?.();
       }, [cb]),
-    useLocalSearchParams: () => ({ roomId: "room-1" }),
+    useLocalSearchParams: () => ({ roomId: mockRoomId }),
   };
 });
 jest.mock("@clerk/clerk-expo", () => ({
@@ -82,11 +87,20 @@ const mockSetReaction = jest.fn(async () => mockMsg({ messageId: "m2", messageSe
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
-  liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
+  // room-unavailable is the blocked-states suite's own room id (its Try again
+  // recovery needs its post-retry reconcile to actually run).
+  liveChannels: ["/rooms/room-1/k", "/rooms/room-unavailable/k"], connectionRevision: 1,
   messaging: {
     listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
-    getRoom: jest.fn(async () => mockRoom),
-    listMessages: jest.fn(async () => ({ messages: mockMessages, nextAfterSeq: null })),
+    // Stamps whatever roomId it's asked for onto the fixture, so a
+    // blocked-states test can select a fresh, never-cached room id (SWR dedupes
+    // identical keys across the fast-firing tests in this file, so reusing
+    // "room-1" would just replay ITS cached success and never call this mock).
+    getRoom: jest.fn(async (roomId: string) => ({ ...mockRoom, roomId })),
+    listMessages: jest.fn(async (roomId: string) => ({
+      messages: mockMessages.map((message) => ({ ...message, roomId })),
+      nextAfterSeq: null,
+    })),
     markRead: mockMarkRead,
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
@@ -125,6 +139,7 @@ describe("conversation screen", () => {
     mockMarkUnread.mockClear();
     mockSetReaction.mockClear();
     mockMessages = [...mockBase];
+    mockRoomId = "room-1";
   });
 
   it("shows the author name once per run and a day divider above the first message", async () => {
@@ -273,5 +288,46 @@ describe("conversation screen", () => {
     expect(getCurrentTarget()).toMatchObject({ roomId: "room-1", threadId: null });
     await act(async () => mockFocus.blur?.());
     expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
+  });
+
+  // Mirrors web's RoomPanel `room-blocked` guard (search `room-blocked`):
+  // the whole panel is replaced, not banner-over-composer.
+  describe("blocked states", () => {
+    it("shows the loading state with neither timeline nor composer while the room is loading", async () => {
+      mockRoomId = "room-loading";
+      mockLive.messaging.getRoom.mockImplementationOnce(() => new Promise(() => {}));
+      await render(<Conversation />);
+      expect(screen.getByText("Loading conversation…")).toBeTruthy();
+      expect(screen.queryByTestId("room-timeline")).toBeNull();
+      expect(screen.queryByPlaceholderText("Message")).toBeNull();
+    });
+
+    it("shows the access-removed state with no composer and no retry once access was rotated away", async () => {
+      mockRoomId = "room-access-removed";
+      mockLive.messaging.getRoom.mockRejectedValueOnce(new ApiError(403, null));
+      await render(<Conversation />);
+      await waitFor(() =>
+        expect(
+          screen.getByText("Access removed. You can no longer view this conversation."),
+        ).toBeTruthy(),
+      );
+      expect(screen.queryByTestId("room-timeline")).toBeNull();
+      expect(screen.queryByPlaceholderText("Message")).toBeNull();
+      expect(screen.queryByText("Try again")).toBeNull();
+    });
+
+    it("shows the unavailable state, and Try again recovers the room", async () => {
+      mockRoomId = "room-unavailable";
+      mockLive.messaging.getRoom.mockRejectedValueOnce(new Error("boom"));
+      await render(<Conversation />);
+      await waitFor(() =>
+        expect(screen.getByText("This conversation is unavailable.")).toBeTruthy(),
+      );
+      expect(screen.queryByTestId("room-timeline")).toBeNull();
+      expect(screen.queryByPlaceholderText("Message")).toBeNull();
+      await fireEvent.press(screen.getByText("Try again"));
+      await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+      expect(screen.getByPlaceholderText("Message")).toBeTruthy();
+    });
   });
 });

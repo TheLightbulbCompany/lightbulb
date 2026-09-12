@@ -21,6 +21,7 @@ import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleto
 import { HeaderBack } from "../../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
+import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
 import {
   RoomComposer,
   useComposerKeyboardOffset,
@@ -127,20 +128,45 @@ export default function ThreadScreen() {
     [members],
   );
 
+  // Hoisted above the blocked-state early return below — see the room screen.
+  const keyboardOffset = useComposerKeyboardOffset();
+
+  const headerOptions = {
+    title: "Thread",
+    // A push can deep-link straight into a thread, with no room beneath it to
+    // pop back to — hence the explicit fallback. On `headerOptions` rather than
+    // inline so the blocked-state early return below keeps it: a blocked screen
+    // with no way out is worse than the state it is reporting.
+    headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}`} />,
+  };
+
+  // Same guard as the room screen (search `room-blocked` in web's RoomPanel):
+  // a reader with no access, or a room that failed to open, replaces the
+  // WHOLE panel, not just this thread's timeline/composer.
+  if (rooms.roomLoading || rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
+    const blockedState = rooms.roomLoading
+      ? "loading" as const
+      : rooms.accessRemoved
+        ? "access-removed" as const
+        : "unavailable" as const;
+    return (
+      <View style={styles.container}>
+        <Stack.Screen options={headerOptions} />
+        <RoomBlockedState
+          state={blockedState}
+          onRetry={blockedState === "unavailable" ? rooms.refreshRoom : undefined}
+        />
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={useComposerKeyboardOffset()}
+      keyboardVerticalOffset={keyboardOffset}
     >
-      <Stack.Screen
-        options={{
-          title: "Thread",
-          // A push can deep-link straight into a thread, with no room beneath
-          // it to pop back to — hence the explicit fallback.
-          headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}`} />,
-        }}
-      />
+      <Stack.Screen options={headerOptions} />
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle} numberOfLines={1}>
           {subtitle}

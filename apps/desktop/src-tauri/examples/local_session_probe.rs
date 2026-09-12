@@ -63,12 +63,11 @@ impl JsonLines {
     }
 }
 
-fn message(provider: &str, session: &str, row: &Value) -> Result<Option<Value>> {
-    Ok(
-        lightbulb_desktop::local_sessions::normalize_public_message(provider, session, row)?.map(
-            |event| json!({"role":event["role"],"text":event["text"],"timestamp":row["timestamp"]}),
-        ),
-    )
+fn message(provider: &str, session: &str, row: &Value) -> Result<Vec<Value>> {
+    Ok(lightbulb_desktop::local_sessions::normalize_public_message(provider, session, row)?
+        .into_iter()
+        .map(|event| json!({"role":event["role"],"kind":event["kind"],"text":event["text"],"timestamp":row["timestamp"]}))
+        .collect())
 }
 
 fn command(program: &str, args: &[&str]) -> Result<String> {
@@ -331,7 +330,7 @@ fn run() -> Result<()> {
                 let n = file.read(&mut bytes).map_err(|e| e.to_string())?;
                 offset += n as u64;
                 for row in decoder.push(&bytes[..n])? {
-                    if let Some(mut event) = message(&identity.provider, &identity.session, &row)? {
+                    for mut event in message(&identity.provider, &identity.session, &row)? {
                         event["observed_elapsed_ms"] = json!(start.elapsed().as_millis());
                         println!("{event}");
                     }
@@ -443,10 +442,7 @@ mod tests {
     fn observed_claude_messages_validate_session_and_ignore_nontext() {
         let row = json!({"type":"assistant","sessionId":"s","version":"2.1.268","uuid":"m",
             "message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"thinking","signature":"never-export"}]}});
-        assert_eq!(
-            message("claude", "s", &row).unwrap().unwrap()["text"],
-            "hello"
-        );
+        assert_eq!(message("claude", "s", &row).unwrap()[0]["text"], "hello");
         assert!(message("claude", "other", &row).is_err());
         let mut missing = row.clone();
         missing.as_object_mut().unwrap().remove("sessionId");
@@ -459,14 +455,11 @@ mod tests {
     #[test]
     fn observed_codex_metadata_and_completed_message_are_distinct() {
         let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0"}});
-        assert!(message("codex", "s", &meta).unwrap().is_none());
+        assert!(message("codex", "s", &meta).unwrap().is_empty());
         assert!(message("codex", "other", &meta).is_err());
         let row = json!({"type":"response_item","timestamp":"2026-09-11T00:00:00Z","payload":{
             "type":"message","role":"assistant","phase":"final_answer","id":"m","content":[{"type":"output_text","text":"done"}]}});
-        assert_eq!(
-            message("codex", "s", &row).unwrap().unwrap()["text"],
-            "done"
-        );
+        assert_eq!(message("codex", "s", &row).unwrap()[0]["text"], "done");
         // Replay observed envelope shapes through fragmented input; UTF-8 splits are covered above.
         let wire = format!("{meta}\n{row}\n");
         for split in 0..=wire.len() {
@@ -475,7 +468,7 @@ mod tests {
             rows.extend(decoder.push(&wire.as_bytes()[split..]).unwrap());
             let events: Vec<_> = rows
                 .iter()
-                .filter_map(|r| message("codex", "s", r).unwrap())
+                .flat_map(|r| message("codex", "s", r).unwrap())
                 .collect();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0]["text"], "done");
@@ -550,10 +543,7 @@ mod tests {
         for phase in ["commentary", "final_answer"] {
             let mut row = codex.clone();
             row["payload"]["phase"] = json!(phase);
-            assert_eq!(
-                message("codex", "s", &row).unwrap().unwrap()["text"],
-                "public"
-            );
+            assert_eq!(message("codex", "s", &row).unwrap()[0]["text"], "public");
         }
         for (provider, base, path, value) in [
             ("claude", &claude, "/type", json!("unknown")),
@@ -578,7 +568,7 @@ mod tests {
                 .unwrap()
                 .insert(key.into(), value);
             assert!(
-                message(provider, "s", &row).unwrap().is_none(),
+                message(provider, "s", &row).unwrap().is_empty(),
                 "{provider} {path}"
             );
         }

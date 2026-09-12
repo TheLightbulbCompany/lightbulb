@@ -25,14 +25,10 @@ pub type Result<T> = std::result::Result<T, String>;
 
 /// Shared with the retained, rerunnable native probe so privacy filtering has
 /// one implementation. Only version-bound completed public text is supported.
-pub fn normalize_public_message(
-    provider: &str,
-    session: &str,
-    row: &Value,
-) -> Result<Option<Value>> {
+pub fn normalize_public_message(provider: &str, session: &str, row: &Value) -> Result<Vec<Value>> {
     match provider {
         "claude" => claude::normalize(session, row),
-        "codex" => codex::normalize(session, row),
+        "codex" => codex::normalize(session, row).map(|e| e.into_iter().collect()),
         _ => Err("unsupported provider".into()),
     }
 }
@@ -983,12 +979,12 @@ impl Mirror {
             let mut cursor = self.cursor.clone();
             let mut queue = Vec::new();
             for row in cursor.read(path)? {
-                let event = normalize_public_message(
+                let events = normalize_public_message(
                     &self.native.provider,
                     &self.native.conversation,
                     &row,
                 )?;
-                if let Some(mut event) = event {
+                for mut event in events {
                     let text = event["text"].as_str().unwrap_or("");
                     if text.len() > 65536 {
                         let mut end = 65536;

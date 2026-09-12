@@ -684,7 +684,7 @@ impl Host {
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         if let Some(socket) = &mut socket {
-            let _ = claude::send(socket, &text).await;
+            let _ = claude::send(socket, &text, "lightbulb-teammate").await;
         } else if let Ok(Some(id)) = codex::send(&native, &text).await {
             return journal.finish(&cmd.session_id, &cmd.request_id, Some(id), true);
         }

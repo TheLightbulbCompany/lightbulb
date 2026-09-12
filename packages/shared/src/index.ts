@@ -5,8 +5,13 @@
  * and platform-parameterized data hooks.
  *
  * This barrel is the package's public surface: every line here is imported by
- * `apps/frontend`, `apps/mobile` or both. Internals stay internal — import them
- * relatively from inside the package instead of re-exporting them here.
+ * `apps/frontend`, `apps/mobile` or both — with two deliberate exceptions that
+ * have no consumer yet and must NOT be pruned: everything originating in
+ * `messaging/{useRooms,timeline,mentions}.ts`, held for the mobile port onto the
+ * shared room machine, and the approvals/questions rail (`Question*`, the
+ * runtime approval/question resolve requests), kept pending the owner's call on
+ * a renderer. Internals stay internal — import them relatively from inside the
+ * package instead of re-exporting them here.
  */
 export type { PlatformAdapter } from "./adapter";
 

@@ -31,7 +31,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "containers": (
         [("owner_id", "HASH", "S")],
         {
-            "gateway-token-index": [("gateway_token", "HASH", "S")],
             "status-index": [("status", "HASH", "S")],
         },
     ),

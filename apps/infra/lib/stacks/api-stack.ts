@@ -478,16 +478,6 @@ export class ApiStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
-    // GSI to fan out realtime events from the Teams BFF: given a user_id,
-    // return every active browser WS connection for that user. KEYS_ONLY
-    // projection — broker only needs connectionId, full row lives at the
-    // base table. Spec: docs/superpowers/specs/2026-05-04-teams-realtime-design.md
-    connectionsTable.addGlobalSecondaryIndex({
-      indexName: "by-user-id",
-      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
-    });
-
     // GSI for owner-keyed WS event fan-out: given an ownerId (org_id for org
     // members, user_id for personal owners), return every active connection
     // for that owner so any backend instance can deliver to all of an owner's

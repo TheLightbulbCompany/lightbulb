@@ -65,6 +65,48 @@ describe("createFramePublisher", () => {
     vi.useRealTimers();
   });
 
+  it("evicts a drained channel and still publishes the next batch on it independently", async () => {
+    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const pub = createFramePublisher({ fetch: fetch as any, region: "us-east-1", credentials: async () => CREDS });
+    // Nothing queued for this channel: no publish, and the flush returns without waiting.
+    await expect(pub.flush(CHANNEL)).resolves.toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+
+    pub.push(ENDPOINT, CHANNEL, frame("run_active"));
+    await pub.flush(CHANNEL);
+    // The entry is gone now; this push rebuilds one, and its batch must not carry the first.
+    pub.push(ENDPOINT, CHANNEL, frame("done"));
+    await pub.flush(CHANNEL);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const batches = fetch.mock.calls.map(([, init]: any[]) =>
+      JSON.parse(init.body).events.map((event: string) => JSON.parse(event).payload.frame.type),
+    );
+    expect(batches).toEqual([["run_active"], ["done"]]);
+  });
+
+  it("waits for an in-flight publish even though the entry is evicted as it settles", async () => {
+    vi.useFakeTimers();
+    try {
+      let landed = false;
+      const fetch = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        landed = true;
+        return new Response("{}", { status: 200 });
+      });
+      const pub = createFramePublisher({ fetch: fetch as any, region: "us-east-1", credentials: async () => CREDS });
+      pub.push(ENDPOINT, CHANNEL, frame("run_ended"));
+      // The assertion runs at flush-resolution time: an eviction that let flush() skip the
+      // await would resolve it before the post landed.
+      const flushed = pub.flush(CHANNEL).then(() => expect(landed).toBe(true));
+      await vi.runAllTimersAsync();
+      await flushed;
+      await expect(pub.flush(CHANNEL)).resolves.toBeUndefined();
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops an unserializable frame without poisoning the channel", async () => {
     const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
     const logged: string[] = [];

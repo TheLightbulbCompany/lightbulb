@@ -73,6 +73,12 @@ export function ecsCredentialsProvider(env, fetchImpl) {
 }
 const isStreaming = (event) => event.payload.frame.type === "chunk" || event.payload.frame.type === "thinking";
 export function createFramePublisher(deps) {
+    /**
+     * One entry per live channel. A channel embeds the room's rotating deliveryKey, so
+     * entries must not outlive their traffic: a drained queue is evicted once its chain has
+     * settled (see flushNow), which keeps this bounded by the rooms framing right now
+     * rather than by every room+key the container has ever framed.
+     */
     const queues = new Map();
     async function post(endpoint, channel, events, attempt = 0) {
         let body;
@@ -114,8 +120,21 @@ export function createFramePublisher(deps) {
             clearTimeout(queue.timer);
         queue.timer = undefined;
         const batch = queue.events.splice(0, FRAME_BATCH);
+        queue.pending += 1;
         // A rejecting step would poison the chain forever and reject every later flush().
-        queue.chain = queue.chain.then(() => post(queue.endpoint, channel, batch)).catch(() => { });
+        queue.chain = queue.chain
+            .then(() => post(queue.endpoint, channel, batch))
+            .catch(() => { })
+            .then(() => {
+            queue.pending -= 1;
+            // Evict only a fully settled, still-drained entry that is still the live one:
+            // `pending` keeps a later batch on this same chain from being orphaned, and the
+            // identity check leaves a newer Queue built by an intervening push alone. A
+            // flush() already holds its own reference, so the wait survives the eviction.
+            if (queue.pending === 0 && queue.events.length === 0 && !queue.timer && queues.get(channel) === queue) {
+                queues.delete(channel);
+            }
+        });
         if (queue.events.length > 0)
             flushNow(channel);
     }
@@ -123,7 +142,7 @@ export function createFramePublisher(deps) {
         push(endpoint, channel, event) {
             let queue = queues.get(channel);
             if (!queue) {
-                queue = { endpoint, events: [], chain: Promise.resolve() };
+                queue = { endpoint, events: [], chain: Promise.resolve(), pending: 0 };
                 queues.set(channel, queue);
             }
             queue.endpoint = endpoint;
@@ -136,6 +155,8 @@ export function createFramePublisher(deps) {
         /** Publish everything queued for the channel and wait for the in-flight posts. */
         async flush(channel) {
             flushNow(channel);
+            // Captured before the await: an eviction that lands while the chain is settling
+            // cannot make this skip the wait, and a channel with nothing queued returns at once.
             const queue = queues.get(channel);
             if (queue)
                 await queue.chain;

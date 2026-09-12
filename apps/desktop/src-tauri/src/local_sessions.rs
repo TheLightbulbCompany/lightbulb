@@ -188,7 +188,7 @@ pub(crate) fn teammate_contribution(text: &str) -> Option<(Value, String)> {
     let rest = text.strip_prefix(HEADER_PREFIX)?;
     let header_end = rest.find("}]\n")?;
     let header = &rest[..header_end + 1];
-    let provenance: Value = serde_json::from_str(&header[header.find('{')?..]).ok()?;
+    let provenance: Value = serde_json::from_str(&header[header.find("{\"")?..]).ok()?;
     if !provenance.is_object() {
         return None;
     }
@@ -1501,6 +1501,12 @@ mod tests {
         assert_eq!(
             (body.as_str(), actor_of(&provenance)),
             ("hello", Some(json!({"agentId":"friday"})))
+        );
+        let brace_in_name = "[Lightbulb teammate contribution from @aden (Aden {Kim}) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nhello";
+        let (provenance, body) = teammate_contribution(brace_in_name).unwrap();
+        assert_eq!(
+            (body.as_str(), actor_of(&provenance)),
+            ("hello", Some(json!({"userId":"user_a"})))
         );
         assert!(teammate_contribution("ordinary prompt").is_none());
         assert!(teammate_contribution("[Lightbulb teammate contribution not-json]\nx").is_none());

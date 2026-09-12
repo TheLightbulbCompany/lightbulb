@@ -358,31 +358,27 @@ impl Host {
         wake: Arc<tokio::sync::Notify>,
         status: Arc<std::sync::Mutex<String>>,
     ) {
-        use futures_util::FutureExt;
         let mut restart = 1u64;
         loop {
-            // AssertUnwindSafe: the host is persisted to disk on every mutating change, so a
-            // torn iteration from a caught panic loses nothing durable.
-            let outcome = std::panic::AssertUnwindSafe(self.run_once(
-                &enrollment,
-                &identity,
-                wake.clone(),
-                status.clone(),
-            ))
-            .catch_unwind()
-            .await;
+            // Release builds abort on panic (Cargo.toml), so a panic is a visible crash, never a
+            // silent dark relay; this loop covers the loops ending on their own.
+            let started = Instant::now();
+            self.run_once(&enrollment, &identity, wake.clone(), status.clone())
+                .await;
             if let Ok(mut s) = status.lock() {
                 *s = "disconnected".into();
             }
             if self.stop.load(Ordering::SeqCst) {
                 return;
             }
-            relay_log(&match outcome {
-                Ok(()) => format!("supervisor loop ended; restarting in {restart}s"),
-                Err(_) => format!("supervisor loop panicked; restarting in {restart}s"),
-            });
+            relay_log(&format!("supervisor loop ended; restarting in {restart}s"));
             tokio::time::sleep(Duration::from_secs(restart)).await;
-            restart = (restart * 2).min(60);
+            // A healthy hours-long run should not leave the next restart pinned at the cap.
+            restart = if started.elapsed() >= Duration::from_secs(60) {
+                1
+            } else {
+                (restart * 2).min(60)
+            };
         }
     }
 
@@ -1780,9 +1776,12 @@ mod tests {
         let host = Host {
             workspace_at: Instant::now(),
             workspace_key: None,
-            dir: dir.path().into(),
+            // Nonexistent: the first discovery-driven observe()/persist fails here, so
+            // run_once returns on its own (not via `stop`) -- the case that actually
+            // exercises the restart loop, unlike an always-blocking empty-mirrors host.
+            dir: dir.path().join("missing"),
             home: dir.path().into(),
-            mirrors: BTreeMap::new(),
+            mirrors: BTreeMap::from([("native".to_string(), test_mirror("native", "g1"))]),
             stop: stop.clone(),
         };
         let enrollment = Enrollment {
@@ -1804,9 +1803,18 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(2500)).await;
             stopper.store(true, Ordering::SeqCst);
         });
+        let started = Instant::now();
         tokio::time::timeout(Duration::from_secs(8), host.supervise(enrollment, identity, wake, status.clone()))
             .await
             .expect("supervise returns once stop is set");
+        // A single non-looping run_once call would have returned as soon as the very
+        // first attempt errored -- milliseconds in, well under the stop flip at 2.5s.
+        // Only a loop that restarts run_once and waits for `stop` takes at least that long.
+        assert!(
+            started.elapsed() >= Duration::from_millis(2500),
+            "returned too fast for a restart loop: {:?}",
+            started.elapsed()
+        );
         assert_eq!(status.lock().unwrap().as_str(), "disconnected");
     }
     #[tokio::test]

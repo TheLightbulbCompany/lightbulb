@@ -23,7 +23,7 @@
 - Work in the worktree `.claude/worktrees/native-session-terminal-view` (branch `worktree-native-session-terminal-view`). Run `pnpm install` from that root once before the first shared/web task; `cd apps/backend && uv sync` before the first backend task.
 - Test commands:
   - backend: `cd apps/backend && uv run pytest tests/unit/services/test_local_sessions.py tests/unit/services/test_local_session_relay.py -q`
-  - desktop: `TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib local_sessions --offline` (drop `--offline` if the registry cache is cold); probe example: same with `--example local_session_probe`
+  - desktop: `TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib local_sessions --offline` (drop `--offline` if the registry cache is cold); probe example, run SEPARATELY and UNFILTERED: `TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --example local_session_probe --offline` — a combined `--lib local_sessions --example …` invocation applies the `local_sessions` name filter to the example too and runs none of its tests (found during Task 9)
   - shared: `pnpm --filter @lightbulb/shared typecheck && pnpm --filter @lightbulb/shared test`
   - web: `pnpm --filter @lightbulb/frontend test -- <test paths>` and `pnpm --filter @lightbulb/frontend exec tsc --noEmit`
 - Commits end with the session trailers:

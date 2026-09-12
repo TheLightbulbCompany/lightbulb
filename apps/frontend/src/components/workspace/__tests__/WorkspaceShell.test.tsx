@@ -53,11 +53,10 @@ vi.mock("@/components/chat/TrialBanner", () => ({ TrialBanner: () => null }));
 vi.mock("@/components/chat/OutOfCreditsBanner", () => ({ OutOfCreditsBanner: () => null }));
 vi.mock("@/components/chat/LaunchJoinBanner", () => ({ LaunchJoinBanner: () => null }));
 vi.mock("@/components/chat/LaunchJoinModal", () => ({ LaunchJoinModal: () => null }));
-vi.mock("@/components/getstarted/GetStarted", () => ({ GetStarted: () => null }));
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({ useMarketplaceDrawer: () => ({ open: vi.fn() }) }));
 vi.mock("@/components/chat/shell/useUserSyncOnce", () => ({ useUserSyncOnce: () => {} }));
 vi.mock("@/components/chat/shell/useCheckoutReturn", () => ({ useCheckoutReturn: () => ({ showSubscriptionSuccess: true }) }));
-vi.mock("@/components/chat/shell/useGetStartedDerived", () => ({ useGetStartedDerived: () => ({ chatReady: state.chatReady }) }));
+vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: state.chatReady }) }));
 beforeEach(() => {
   state.phase = "selecting";
   state.organization = null;

@@ -394,6 +394,15 @@ fn display_path(path: &str, cwd: Option<&str>, home: Option<&str>) -> String {
     basename(Some(path)).unwrap_or_else(|| path.to_owned())
 }
 
+/// An unknown tool's free-form string is often a local absolute path; show it the way the TUI
+/// would. Anything else (a URL, a query) travels intact.
+fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String {
+    match text.starts_with('/') || text.starts_with('~') {
+        true => display_path(text, cwd, home),
+        false => text.to_owned(),
+    }
+}
+
 fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
     match name {
@@ -408,8 +417,8 @@ fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> 
         _ => input
             .as_object()
             .and_then(|o| o.values().find_map(Value::as_str))
-            .unwrap_or("")
-            .to_owned(),
+            .map(|s| display_if_path(s, cwd, home))
+            .unwrap_or_default(),
     }
 }
 
@@ -453,8 +462,12 @@ fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) 
         "TodoWrite" => pick(&["todos"]),
         _ => input
             .as_object()
-            .and_then(|o| o.iter().find(|(_, v)| v.is_string()))
-            .map(|(k, v)| json!({k: v}))
+            .and_then(|o| {
+                o.iter().find_map(|(k, v)| {
+                    v.as_str()
+                        .map(|s| json!({k: display_if_path(s, cwd, home)}))
+                })
+            })
             .unwrap_or(json!({})),
     }
 }
@@ -470,7 +483,14 @@ fn tool_use(block: &Value, row: &Value, ts: Option<&str>) -> Value {
         ts,
         block["id"].as_str(),
     );
-    e["tool"] = json!({"name": name, "status": "running", "input": bound_json(tool_input(name, &block["input"], cwd, home.as_deref()), MAX_TOOL_INPUT)});
+    let (input, cut) = bound_json(
+        tool_input(name, &block["input"], cwd, home.as_deref()),
+        MAX_TOOL_INPUT,
+    );
+    e["tool"] = json!({"name": name, "status": "running", "input": input});
+    if cut {
+        e["truncated"] = json!(true);
+    }
     e
 }
 
@@ -500,8 +520,12 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     } else {
         json!({"content": content})
     };
+    let (result, cut) = bound_json(result, MAX_TOOL_RESULT);
     e["tool"] = json!({"name": "result", "status": if block["is_error"] == true { "error" } else { "done" },
-        "result": bound_json(result, MAX_TOOL_RESULT), "lines": lines});
+        "result": result, "lines": lines});
+    if cut {
+        e["truncated"] = json!(true);
+    }
     e
 }
 
@@ -1088,5 +1112,45 @@ mod tests {
         let events = normalize("s", &call).unwrap();
         assert_eq!(events[0]["text"], "src/a.ts");
         assert_eq!(events[0]["tool"]["input"]["file_path"], "src/a.ts");
+    }
+
+    #[test]
+    fn local_sessions_claude_unknown_tool_paths_are_displayed_not_leaked() {
+        let input = json!({"path": "/Users/alice/private/repo/file.txt"});
+        let cwd = Some("/Users/alice/work");
+        assert_eq!(summary("mcp__x__open", &input, cwd, None), "file.txt");
+        assert_eq!(
+            tool_input("mcp__x__open", &input, cwd, None)["path"],
+            "file.txt"
+        );
+        let under = Some("/Users/alice/private");
+        assert_eq!(
+            summary("mcp__x__open", &input, under, None),
+            "repo/file.txt"
+        );
+        assert_eq!(
+            tool_input("mcp__x__open", &input, under, None)["path"],
+            "repo/file.txt"
+        );
+        // Anything that is not a local path travels intact.
+        let query = json!({"query": "hello"});
+        assert_eq!(summary("mcp__x__search", &query, cwd, None), "hello");
+        assert_eq!(
+            tool_input("mcp__x__search", &query, cwd, None)["query"],
+            "hello"
+        );
+    }
+
+    #[test]
+    fn local_sessions_claude_tool_result_reports_a_bounded_payload_as_truncated() {
+        let row = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1","timestamp":"2026-09-12T10:00:00.000Z",
+            "toolUseResult":{"stdout":"x".repeat(MAX_TOOL_RESULT * 2),"stderr":"","interrupted":false},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"short preview","is_error":false}]}});
+        let events = normalize("s", &row).unwrap();
+        assert_eq!(events[0]["text"], "short preview");
+        assert_eq!(
+            events[0]["truncated"], true,
+            "a shrunken tool.result must not claim to be complete"
+        );
     }
 }

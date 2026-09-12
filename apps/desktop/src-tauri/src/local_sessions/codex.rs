@@ -37,10 +37,11 @@ fn from_rollout(
             .then(|| "runtime-unverified".into()),
         status: status.into(),
         title,
+        // The backend's SessionRegistration caps cwd_name at 128 characters.
         cwd_name: row["payload"]["cwd"]
             .as_str()
             .and_then(|c| Path::new(c).file_name())
-            .map(|n| n.to_string_lossy().into_owned()),
+            .map(|n| n.to_string_lossy().chars().take(128).collect()),
         active_turn,
     })
 }
@@ -210,6 +211,14 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             }
         }
         "AgentMessage" => {
+            // The TUI renders every AgentMessage, and the phase is often absent; withhold only a
+            // phase this build does not know, which may not be transcript prose at all.
+            if item["phase"]
+                .as_str()
+                .is_some_and(|p| p != "commentary" && p != "final_answer")
+            {
+                return None;
+            }
             let text = texts(&item["content"], "Text");
             if text.is_empty() {
                 return None;
@@ -237,11 +246,17 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             let failed =
                 item["status"] == "failed" || item["exit_code"].as_i64().is_some_and(|c| c != 0);
             let mut e = event("tool", "assistant", &text, ts, id);
+            let (input, input_cut) = bound_json(json!({"command": command}), MAX_TOOL_INPUT);
+            let (result, result_cut) = bound_json(
+                json!({"exitCode": item["exit_code"], "output": output}),
+                MAX_TOOL_RESULT,
+            );
             e["tool"] = json!({"name": "CommandExecution",
                 "status": if item["status"] == "in_progress" { "running" } else if failed { "error" } else { "done" },
-                "input": bound_json(json!({"command": command}), MAX_TOOL_INPUT),
-                "result": bound_json(json!({"exitCode": item["exit_code"], "output": output}), MAX_TOOL_RESULT),
-                "lines": lines});
+                "input": input, "result": result, "lines": lines});
+            if input_cut || result_cut {
+                e["truncated"] = json!(true);
+            }
             e
         }
         "FileChange" => {
@@ -250,8 +265,12 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                 .collect();
             let names = changes.keys().cloned().collect::<Vec<_>>().join(", ");
             let mut e = event("tool", "assistant", &names, ts, id);
+            let (result, cut) = bound_json(Value::Object(changes), MAX_TOOL_RESULT);
             e["tool"] = json!({"name": "FileChange", "status": if item["status"] == "failed" { "error" } else { "done" },
-                "result": bound_json(Value::Object(changes), MAX_TOOL_RESULT)});
+                "result": result});
+            if cut {
+                e["truncated"] = json!(true);
+            }
             e
         }
         "McpToolCall" => {
@@ -261,16 +280,30 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                 item["tool"].as_str().unwrap_or("")
             );
             let mut e = event("tool", "assistant", &label, ts, id);
+            let (input, input_cut) = bound_json(
+                json!({"server": item["server"], "tool": item["tool"], "arguments": item["arguments"]}),
+                MAX_TOOL_INPUT,
+            );
+            let (result, result_cut) = bound_json(
+                json!({"content": item["result"]["content"]}),
+                MAX_TOOL_RESULT,
+            );
             e["tool"] = json!({"name": "McpToolCall",
                 "status": if item["result"]["isError"] == true || item["status"] == "failed" { "error" } else { "done" },
-                "input": bound_json(json!({"server": item["server"], "tool": item["tool"], "arguments": item["arguments"]}), MAX_TOOL_INPUT),
-                "result": bound_json(json!({"content": item["result"]["content"]}), MAX_TOOL_RESULT)});
+                "input": input, "result": result});
+            if input_cut || result_cut {
+                e["truncated"] = json!(true);
+            }
             e
         }
         "Extension" => {
             let query = item["query"].as_str().unwrap_or("");
             let mut e = event("tool", "assistant", query, ts, id);
-            e["tool"] = json!({"name": item["kind"].as_str().unwrap_or("Extension"), "status": "done", "input": bound_json(json!({"query": query}), MAX_TOOL_INPUT)});
+            let (input, cut) = bound_json(json!({"query": query}), MAX_TOOL_INPUT);
+            e["tool"] = json!({"name": item["kind"].as_str().unwrap_or("Extension"), "status": "done", "input": input});
+            if cut {
+                e["truncated"] = json!(true);
+            }
             e
         }
         "SubAgentActivity" | "CollabAgentToolCall" => {
@@ -384,6 +417,12 @@ mod tests {
             ),
             (Some("text"), Some("Done."))
         );
+        // Absent phase is ordinary; only an unrecognized phase is withheld.
+        let commentary = normalize("s", &ev(json!({"type":"AgentMessage","id":"a2","phase":"commentary","content":[{"type":"Text","text":"Thinking aloud."}]}))).unwrap();
+        assert_eq!(commentary[0]["text"].as_str(), Some("Thinking aloud."));
+        let bare = normalize("s", &ev(json!({"type":"AgentMessage","id":"a3","content":[{"type":"Text","text":"Still done."}]}))).unwrap();
+        assert_eq!(bare[0]["text"].as_str(), Some("Still done."));
+        assert!(normalize("s", &ev(json!({"type":"AgentMessage","id":"a4","phase":"analysis","content":[{"type":"Text","text":"scratch"}]}))).unwrap().is_empty());
         assert_eq!(
             normalize("s", &ev(json!({"type":"ContextCompaction","id":"c1"}))).unwrap()[0]
                 ["lifecycle"],
@@ -456,6 +495,12 @@ mod tests {
             "0.149.0"
         )
         .is_err());
+        // The backend caps cwd_name at 128 characters; a longer basename would
+        // fail registration and loop the mirror.
+        let long = "d".repeat(200);
+        fs::write(&path, format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\",\"cwd\":\"/tmp/{long}\"}}}}\n")).unwrap();
+        let bounded_cwd = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        assert_eq!(bounded_cwd.cwd_name.unwrap().chars().count(), 128);
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
         assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
     }

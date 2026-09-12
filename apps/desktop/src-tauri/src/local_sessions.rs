@@ -83,13 +83,15 @@ fn redact_pem(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("-----BEGIN ") {
+        out.push_str(&rest[..start]);
+        out.push_str("[redacted]");
+        // A 20-line tool preview can cut a key between BEGIN and END. Fail closed:
+        // drop everything from the header on rather than ship the key body.
         let Some(end) = rest[start..].find("-----END ") else {
-            break;
+            return out;
         };
         let tail = &rest[start + end + 9..];
         let close = tail.find("-----").map(|i| i + 5).unwrap_or(tail.len());
-        out.push_str(&rest[..start]);
-        out.push_str("[redacted]");
         rest = &tail[close..];
     }
     out.push_str(rest);
@@ -125,8 +127,9 @@ pub(crate) fn redact(text: &str) -> String {
     out
 }
 
-/// Redact every string leaf, then shrink string leaves until the JSON fits `max` bytes; Null if it cannot.
-pub(crate) fn bound_json(mut value: Value, max: usize) -> Value {
+/// Redact every string leaf, then shrink string leaves until the JSON fits `max` bytes; Null if it
+/// cannot. The flag is true when anything was cut or nulled, so the caller can mark its event.
+pub(crate) fn bound_json(mut value: Value, max: usize) -> (Value, bool) {
     fn walk(v: &mut Value, f: &dyn Fn(&mut String)) {
         match v {
             Value::String(s) => f(s),
@@ -137,14 +140,16 @@ pub(crate) fn bound_json(mut value: Value, max: usize) -> Value {
     }
     walk(&mut value, &|s| *s = redact(s));
     let mut per = max;
+    let mut shrunk = false;
     while serde_json::to_string(&value)
         .map(|s| s.len() > max)
         .unwrap_or(true)
     {
         if per < 64 {
-            return Value::Null;
+            return (Value::Null, true);
         }
         per /= 2;
+        shrunk = true;
         walk(&mut value, &|s| {
             let (cut, truncated) = bounded(s, per);
             if truncated {
@@ -152,7 +157,7 @@ pub(crate) fn bound_json(mut value: Value, max: usize) -> Value {
             }
         });
     }
-    value
+    (value, shrunk)
 }
 
 pub(crate) fn event(
@@ -956,7 +961,7 @@ fn split_text(event: &Value) -> Vec<Value> {
             single["text"] = json!(bounded(single["text"].as_str().unwrap_or(""), budget).0);
             if let Some(result) = single.pointer_mut("/tool/result") {
                 if !result.is_null() {
-                    *result = bound_json(result.take(), budget);
+                    *result = bound_json(result.take(), budget).0;
                 }
             }
             single["truncated"] = json!(true);
@@ -1952,11 +1957,22 @@ mod tests {
             redact("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\nafter"),
             "[redacted]\nafter"
         );
-        let big = bound_json(json!({"stdout": "x".repeat(20_000), "code": 0}), 4096);
+        // A 20-line tool preview can cut the block before its END marker.
+        assert_eq!(
+            redact("x\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\nMIIF"),
+            "x\n[redacted]"
+        );
+        assert_eq!(redact("nothing to hide here"), "nothing to hide here");
+        let (big, cut) = bound_json(json!({"stdout": "x".repeat(20_000), "code": 0}), 4096);
         assert!(serde_json::to_string(&big).unwrap().len() <= 4096 && big["code"] == 0);
+        assert!(cut, "a shrunken payload reports itself truncated");
+        assert_eq!(
+            bound_json(json!({"stdout": "small", "code": 0}), 4096),
+            (json!({"stdout": "small", "code": 0}), false)
+        );
         assert_eq!(
             bound_json(json!(vec![1u8; 1000]), 64),
-            Value::Null,
+            (Value::Null, true),
             "nothing shrinkable left"
         );
     }

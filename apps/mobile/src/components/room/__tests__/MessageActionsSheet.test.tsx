@@ -107,6 +107,28 @@ describe("MessageActionsSheet", () => {
     expect(onMarkUnread).toHaveBeenCalledTimes(1);
   });
 
+  // A tombstone as the backend projects one: `canonical_message` blanks text,
+  // attachments AND reactions, so reacting to it and copying its text are both
+  // dead ends. The web hides the same two on `deletedAt`.
+  it("offers neither reactions nor Copy text on a deleted message", async () => {
+    await render(
+      <MessageActionsSheet
+        message={{ ...message, deletedAt: "2026-09-11T10:05:00Z", text: "", reactions: {} }}
+        currentUserId="user-a"
+        roomId="room-1"
+        onClose={() => {}}
+        onReact={() => {}}
+        onReplyInThread={() => {}}
+        onMarkUnread={() => {}}
+      />,
+    );
+    expect(screen.queryAllByLabelText(/^React with /)).toHaveLength(0);
+    expect(screen.queryByText("Copy text")).toBeNull();
+    // The permalink still resolves a tombstone, so this row stays.
+    expect(screen.getByText("Copy link")).toBeTruthy();
+    expect(screen.getByText("Mark unread")).toBeTruthy();
+  });
+
   // Both are the thread screen's shape, and both are the web's `!inThread` rule:
   // inside a thread there is nowhere to reply-in-thread TO (the composer below
   // already is that thread), and the read cursor is per room, so a thread cannot

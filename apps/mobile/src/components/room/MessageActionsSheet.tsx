@@ -69,7 +69,7 @@ export function MessageActionsSheet({
         ]),
     ...(onMarkUnread ? [{ icon: "mail" as const, label: "Mark unread", run: onMarkUnread }] : []),
     {
-      icon: "link",
+      icon: "link" as const,
       label: "Copy link",
       run: () => Clipboard.setStringAsync(messageUrl(roomId, message.messageId)),
     },

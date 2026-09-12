@@ -4,6 +4,9 @@ Living strategy doc. Started 2026-08-17. Framework: Reid Hoffman & Chris Yeh,
 *Blitzscaling* (four growth factors, two growth limiters, three innovation types,
 firefighting hierarchy).
 
+Metric definitions moved to §3; the admin growth page (`/admin/growth`) and the
+founder's Daily Lightbulb Brief implement them.
+
 **Status legend:** `DECIDED` · `LEANING` · `OPEN` · `REJECTED`
 
 ---
@@ -60,11 +63,12 @@ retention, then pour.
 Read the P&L as **two businesses**, and never blend them:
 
 **A. Subscription business — where the margin dollars live**
-- Flat: $50/mo · Teams: $50 base + $20/seat · Ultra Pro: $150/mo
+- Workspace: $50/mo · Ultra: $150/mo — both seat-free, unlimited members per
+  workspace, no per-seat pricing (`CLAUDE.md` Billing section).
 - COGS/owner/mo: Fargate Spot 1vCPU/4GB ≈ $13 (on-demand fallback ≈ $42 — Spot
   availability is a real margin variable), plus EFS/NAT/DDB/ALB share ≈ $3–6
-- **≈ 60–70% gross margin. Teams seats are near-pure margin** (seats share the
-  owner's existing container).
+- **≈ 60–70% gross margin.** Additional workspace members are near-pure margin
+  — they share the owner's existing container at no extra COGS.
 
 **B. Credit business — pass-through, not profit**
 - Bedrock credits resold at ~3%. This is **GMV, not revenue**. Report net (the 3%),
@@ -85,57 +89,47 @@ near-zero inference cost to Isol8 today.
 
 ## 3. PMF evidence — the metric set `DECIDED`
 
-The automations rail changed what our value moment *is*. Before it, engagement
-looked like chat sessions (indistinguishable from every AI chat product). After it,
-the promise is directly measurable: **an agent did real work the owner did not
-prompt.**
+Superseded 2026-09-12: the automations-North-Star metric set below this line
+used to live here (chat-session engagement vs. autonomous-run counts). The
+2026-09-10 pivot to a native multiplayer messaging workspace replaced it —
+"an agent did real work the owner did not prompt" is no longer the value
+moment; a human and an agent working together in a shared room is. The
+replacement set is the business-metrics section of the observability audit
+(`docs/superpowers/plans/2026-09-12-observability-audit.md` §6), adopted
+verbatim below.
 
-**Activation gate:** subscribed → container ready → ≥1 automation armed →
-**first trigger/schedule-fired run completes successfully**. Deliberately excludes
-"sent a chat message" — chat is the demo, automations are the product.
+**Cohorts anchor to the 2026-09-10 messaging pivot** — a workspace's week 0 is
+its first exposure to the multiplayer messaging surface; chat-era activity
+before that date does not count toward any cohort below.
 
-**North Star:** successful autonomous runs per active owner per week, split by
-initiation type. The *rising share* of autonomous vs. human-prompted runs over an
-owner's lifetime is the signal that we are becoming an employee, not a chatbot.
+Stage: 37 workspaces, 4 paying, 5 with any room activity. Focus is
+activation and retention, not revenue. Five weekly metrics, computed from the
+messaging table (`MSG#` rows carry `authorKind` + `createdAt`) and PostHog:
 
-**Origin tagging is mandatory** (verified in `agent_routine_provisioning.py`):
+| # | Metric | Definition | Now | 30 / 60 / 90 day | Decision it informs / if below |
+|---|---|---|---|---|---|
+| 1 | **Activated workspace rate** | % of new trial workspaces where within 7 days a human sent ≥5 room messages on ≥2 distinct days and received ≥1 agent reply | not instrumented; countable by hand from 104 prod messages | 25% / 35% / 45% | spend on acquisition vs first session. Below: fix the top onboarding wall the Daily Brief names before scaling outreach |
+| 2 | **Weekly active workspaces + multiplayer share** | workspaces with ≥1 human room message that week; share with ≥2 distinct human senders | ≤5 WAW; share unknown | 8 / 15 / 30 WAW; 20 / 30 / 40% share | is the multiplayer bet real. Below: in-product invite nudge in `#general` |
+| 3 | **Agent answered rate + p50 reply time** | % of agent-addressed human messages answered within 2 min; p50 seconds | unmeasured live; 4 known misses in the DLQ | 95%/60 s → 98%/45 s → 99%/30 s | reliability vs feature spend. Below: treat as an incident (DLQ, worker, wake) |
+| 4 | **Paying workspaces + trial→paid by cohort** | count of active subscriptions; conversions ÷ trials by signup week | 4 paying (≈$200 MRR); 7 conversions / ~61 trials ≈ 11% in 30d | 8 / 15 / 25 paying; 12 / 15 / 20% | trial window and cap ($3/day, 3 days). Below: interview the 3 cancellations; extend trial for activated workspaces |
+| 5 | **W4 retention of activated workspaces** | % of activated workspaces with ≥1 human message in week 4 | n too small | 40 / 50 / 60% | leaky bucket vs growth. Below: seed the rooms/agents retained workspaces use |
 
-| Bucket | Treatment |
-|---|---|
-| Owner-authored automations + owner-**armed** marketplace routines | ✅ Counts toward North Star. Marketplace routines seed `enabled: false`, so arming is a genuine owner decision. |
-| Seeded **"Nightly CEO progress"** (cron `0 8 * * *`, `[NIGHTLY-CEO-LOOP]` sentinel, armed for paid owners only) | ❌ Excluded from the count — it is manufactured autonomy. Measure instead: pause/delete rate (churn leading indicator) and engagement with its output. |
-| Marketplace-deployed but still dormant | Funnel metric — exposes the deploy→trust gap. |
+Ignore: landing visitors and raw signups (382 → 63 → 7 says attention is not
+the constraint); total messages (agents inflate it — count human messages);
+roster size / agent count; Paperclip company count (38, includes tests);
+`agent_run_completed` volume (routines and the nightly CEO inflate it — it
+was the old North Star and rewards automation churn, not humans coming back).
 
-Never count nightly-CEO runs as retention evidence in an investor-facing number.
-
-**Retention — three layers:**
-1. Usage: W1/W4/W8 cohorts on "≥1 successful autonomous run this week."
-2. **Automation survival**: % of automations still armed and firing at day 30. Our
-   unfair instrument — an auto-paused (circuit breaker) or deleted-within-7-days
-   automation announces churn weeks before Stripe does. Queryable today via
-   `routineHealth` / `isAutoPaused`.
-3. Revenue: logo churn, NRR, Teams seat expansion.
-
-**Depth:** automations per active owner; **distinct trigger providers connected per
-owner** (GitHub + Stripe + Gmail wired in = embedded in operations = switching cost).
-
-**Organic pull:** organic/referral signup share, marketplace-originated signups,
-Sean Ellis "very disappointed" survey once ~30–40 activated externals exist.
-
-**Counter-metrics (falsifiers):** circuit-breaker auto-pause rate, automations
-deleted <7 days, `provision.gate.blocked` codes, cancellation reasons.
-
-**At current scale (~15 external signups, ~4 working containers) cohort percentages
-are noise.** The honest bar right now: *five external owners with armed automations
-firing successfully for four consecutive weeks, who say they would be very
-disappointed.* That is achievable pre-distribution-fix and is what makes opening the
-taps safe.
-
-**Instrumentation gap:** PostHog is frontend-only and structurally blind to
-server-side runs. Fix: emit one event per completed run
-(`owner, initiation_type, trigger_provider, outcome`) server-side or as EMF.
-Enforce internal/external segmentation (admin@isol8.co, prasiddha@gmail.com)
-before any aggregate read — this burned us once on container crash stats.
+Events to add (server-side `capture_product_event`, `distinct_id` = sender's
+Clerk id, mirroring `run_analytics.py`): `room_message_sent{room_kind,
+mentions_agents, is_thread_reply, has_attachment, first_in_room}`,
+`agent_reply_delivered{room_kind, latency_ms, event_kind}`,
+`agent_dispatch_missed{reason}`, `room_created{kind}`,
+`room_member_added{member_kind}`, `workspace_second_human_active` (once),
+`reaction_added`, `notification_shown`/`notification_clicked{channel:web|push}`
+(client), `message_search_used` (client); redefine
+`trial_first_agent_response` as first agent reply in a room; add `reason`
+from Stripe `cancellation_details` to `subscription_cancelled`.
 
 ---
 
@@ -186,6 +180,17 @@ revenue — finance growth.** Note that revenue share is not merely rejected on
 principle; it directly contradicts the "100% of revenue" promise already in market.
 
 ### 4.0.1 The paywall inversion `OPEN` — highest-leverage change available
+
+**Superseded by the 2026-09-10 messaging pivot.** This section's framing —
+chat is the free commodity demo, automations behind the paywall are the real
+product, so trial owners need one unlocked automation to see it — assumed the
+old activation thesis. Messaging is now the product surface itself, live for
+every workspace including trial, so the "employee is invisible pre-payment"
+problem this section solves no longer exists in the same shape. Kept for the
+cost-fencing and scheduled-waker analysis below, which still applies to
+whatever the next paywall-visibility gap turns out to be; do not re-propose
+the automation unlock as written without re-deriving it against §3's
+messaging-first activation metrics.
 
 **The value moment is behind the paywall, and the paywall is where we lose people.**
 

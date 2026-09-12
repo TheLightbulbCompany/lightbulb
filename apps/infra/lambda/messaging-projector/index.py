@@ -39,7 +39,6 @@ LIVE_EVENT_TYPES = frozenset(
         "room.metadata.changed",
         "room.subscription.rotated",
         "room.access.removed",
-        "runtime.operation.changed",
         "runtime.approval.requested",
         "runtime.approval.resolved",
         "runtime.question.requested",

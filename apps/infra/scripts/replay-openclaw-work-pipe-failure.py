@@ -75,23 +75,16 @@ def validate_work_event(document: object) -> tuple[dict, str, str]:
         raise ValueError("Pipe DLQ event has invalid FIFO fields")
 
     pointer = _normalise({key: _deserializer.deserialize(value) for key, value in payload.items()})
-    if set(pointer) == {"kind", "roomId", "agentId", "throughSeq"}:
-        if pointer["kind"] != "room_dispatch":
-            raise ValueError("unknown work pointer")
-        _uuid(pointer["roomId"], "roomId")
-        _uuid(pointer["agentId"], "agentId")
-        if (
-            isinstance(pointer["throughSeq"], bool)
-            or not isinstance(pointer["throughSeq"], int)
-            or pointer["throughSeq"] < 1
-        ):
-            raise ValueError("throughSeq must be a positive integer")
-    elif set(pointer) == {"kind", "ownerId", "operationId"}:
-        if pointer["kind"] != "runtime_operation" or not isinstance(pointer["ownerId"], str) or not pointer["ownerId"]:
-            raise ValueError("unknown work pointer")
-        _uuid(pointer["operationId"], "operationId")
-    else:
+    if set(pointer) != {"kind", "roomId", "agentId", "throughSeq"} or pointer["kind"] != "room_dispatch":
         raise ValueError("unknown work pointer")
+    _uuid(pointer["roomId"], "roomId")
+    _uuid(pointer["agentId"], "agentId")
+    if (
+        isinstance(pointer["throughSeq"], bool)
+        or not isinstance(pointer["throughSeq"], int)
+        or pointer["throughSeq"] < 1
+    ):
+        raise ValueError("throughSeq must be a positive integer")
     # The Pipe forwards the raw stream record (no input template), so the
     # replay must re-send the same record — the worker unwraps payload.M.
     return event, group_id, dedup_id

@@ -17,8 +17,6 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     ROOM#<room>     LIVE#<eventId>#USER#<user>         one-shot private-user notification outbox
     OWNER#<owner>   USERSTREAM#<user>                  current opaque private-channel key
     STREAM#<key>    META                               reverse mapping AppSync onSubscribe reads
-    OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
-    OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
 
 Only ``WORK#`` and ``LIVE#`` rows carry ``expiresAt`` (7 days). Every read here is
 ``ConsistentRead=True``; the GSI is queried by ``list_rooms_for_member`` and nowhere else.
@@ -140,14 +138,6 @@ def stream_pk(channel_key: str) -> str:
     return f"STREAM#{channel_key}"
 
 
-def operation_sk(operation_id: str) -> str:
-    return f"OPERATION#{operation_id}"
-
-
-def work_operation_sk(operation_id: str) -> str:
-    return f"WORK#OPERATION#{operation_id}"
-
-
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
@@ -155,10 +145,6 @@ def _sha256(s: str) -> str:
 def room_fifo_ids(owner_id: str, room_id: str, agent_id: str, message_id: str) -> tuple[str, str]:
     """(MessageGroupId, MessageDeduplicationId) for a room wake — spec §9."""
     return _sha256(f"room|{owner_id}|{room_id}|{agent_id}"), _sha256(f"message|{message_id}|{agent_id}")
-
-
-def operation_fifo_ids(owner_id: str, operation_id: str) -> tuple[str, str]:
-    return _sha256(f"runtime|{owner_id}"), _sha256(f"operation|{operation_id}")
 
 
 def deterministic_room_id(owner_id: str, user_id: str, client_room_id: str) -> str:
@@ -1315,137 +1301,6 @@ async def put_user_sections(owner_id: str, user_id: str, sections: list[dict]) -
         },
     )
     return stored
-
-
-# ---------------------------------------------------------------------------
-# runtime operations
-# ---------------------------------------------------------------------------
-
-
-async def create_operation(
-    *, owner_id: str, operation_id: str, requester_user_id: str, method: str, params: dict
-) -> dict:
-    now = utc_now_iso()
-    table_name = _table().name
-    group, dedup = operation_fifo_ids(owner_id, operation_id)
-    row = {
-        "pk": owner_pk(owner_id),
-        "sk": operation_sk(operation_id),
-        "operationId": operation_id,
-        "ownerId": owner_id,
-        "requesterUserId": requester_user_id,
-        "method": method,
-        "params": _ddb_safe(params),
-        "state": "queued",
-        "result": None,
-        "error": None,
-        "createdAt": now,
-        "updatedAt": now,
-    }
-    await _transact(
-        [
-            {"Put": {"TableName": table_name, "Item": row, "ConditionExpression": "attribute_not_exists(sk)"}},
-            {
-                "Put": {
-                    "TableName": table_name,
-                    "Item": {
-                        "pk": owner_pk(owner_id),
-                        "sk": work_operation_sk(operation_id),
-                        "payload": {"kind": "runtime_operation", "ownerId": owner_id, "operationId": operation_id},
-                        "messageGroupId": group,
-                        "messageDeduplicationId": dedup,
-                        "expiresAt": _expires_at(),
-                    },
-                    "ConditionExpression": "attribute_not_exists(sk)",
-                }
-            },
-        ]
-    )
-    return row
-
-
-async def get_operation(owner_id: str, operation_id: str) -> dict | None:
-    return await _get(owner_pk(owner_id), operation_sk(operation_id))
-
-
-async def claim_operation(owner_id: str, operation_id: str, *, lease_token: str, lease_until: int) -> dict | None:
-    """queued -> running, or reclaim a ``running`` row whose lease expired.
-    Returns the row when this caller holds the lease, else None (terminal or
-    someone else's live lease)."""
-    now_epoch = int(time.time())
-    try:
-        response = await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": operation_sk(operation_id)},
-            UpdateExpression="SET #state = :running, leaseToken = :token, leaseUntil = :until, updatedAt = :now",
-            ConditionExpression="attribute_exists(sk) AND (#state = :queued OR (#state = :running AND leaseUntil < :now_epoch))",
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={
-                ":running": "running",
-                ":queued": "queued",
-                ":token": lease_token,
-                ":until": int(lease_until),
-                ":now": utc_now_iso(),
-                ":now_epoch": now_epoch,
-            },
-            ReturnValues="ALL_NEW",
-        )
-        return _plain(response["Attributes"])
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return None
-        raise
-
-
-async def release_operation(owner_id: str, operation_id: str, *, lease_token: str) -> bool:
-    """Return a transiently blocked operation to ``queued`` for SQS retry."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": operation_sk(operation_id)},
-            UpdateExpression="SET #state = :queued, updatedAt = :now REMOVE leaseToken, leaseUntil",
-            ConditionExpression="#state = :running AND leaseToken = :token",
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={
-                ":queued": "queued",
-                ":running": "running",
-                ":token": lease_token,
-                ":now": utc_now_iso(),
-            },
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
-async def complete_operation(
-    owner_id: str, operation_id: str, *, lease_token: str, state: str, result: Any, error: dict | None
-) -> dict | None:
-    """running -> succeeded|failed, only for the lease holder. Returns the row or None."""
-    try:
-        response = await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": operation_sk(operation_id)},
-            UpdateExpression="SET #state = :state, #result = :result, #error = :error, updatedAt = :now REMOVE leaseToken, leaseUntil",
-            ConditionExpression="#state = :running AND leaseToken = :token",
-            ExpressionAttributeNames={"#state": "state", "#result": "result", "#error": "error"},
-            ExpressionAttributeValues={
-                ":state": state,
-                ":result": _ddb_safe(result),
-                ":error": _ddb_safe(error),
-                ":now": utc_now_iso(),
-                ":running": "running",
-                ":token": lease_token,
-            },
-            ReturnValues="ALL_NEW",
-        )
-        return _plain(response["Attributes"])
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return None
-        raise
 
 
 # ---------------------------------------------------------------------------

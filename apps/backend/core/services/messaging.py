@@ -60,7 +60,6 @@ API_ERROR_STATUS = {
     "MEMBER_NOT_FOUND": 404,
     "MESSAGE_NOT_FOUND": 404,
     "RUN_NOT_FOUND": 404,
-    "OPERATION_NOT_FOUND": 404,
     "IDEMPOTENCY_CONFLICT": 409,
     "AGENT_LIFECYCLE_CONFLICT": 409,
     "MESSAGE_CONFLICT": 409,
@@ -88,7 +87,6 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "room.message.available",
         "room.subscription.rotated",
         "room.access.removed",
-        "runtime.operation.changed",
         "runtime.approval.requested",
         "runtime.approval.resolved",
         "runtime.question.requested",
@@ -421,12 +419,6 @@ class SteerRunResponse(ContractModel):
     state: Literal["accepted"] = "accepted"
 
 
-class RuntimeErrorDto(ContractModel):
-    code: str
-    message: str
-    retryable: bool
-
-
 class RuntimeRpcRequest(ContractModel):
     request_id: uuid.UUID
     method: str = Field(min_length=1, max_length=256)
@@ -436,10 +428,6 @@ class RuntimeRpcRequest(ContractModel):
 class RuntimeRpcResponse(ContractModel):
     ok: Literal[True] = True
     payload: Any
-
-
-class RuntimeOperationAccepted(ContractModel):
-    operation_id: uuid.UUID
 
 
 class ResolveApprovalRequest(ContractModel):
@@ -461,15 +449,6 @@ class ResolveQuestionRequest(ContractModel):
 
 class ResolveRuntimeResponse(ContractModel):
     id: str
-
-
-class RuntimeOperation(ContractModel):
-    operation_id: uuid.UUID
-    state: Literal["queued", "running", "succeeded", "failed"]
-    created_at: datetime
-    updated_at: datetime
-    result: Any | None
-    error: RuntimeErrorDto | None
 
 
 class LiveConfig(ContractModel):
@@ -782,17 +761,6 @@ def load_image_attachment(owner_id: str, room_id: str, attachment_id: str) -> tu
     except ValueError as exc:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment is invalid.") from exc
     return metadata, data
-
-
-def runtime_operation(item: dict[str, Any]) -> RuntimeOperation:
-    return RuntimeOperation(
-        operation_id=item["operationId"],
-        state=item["state"],
-        created_at=item["createdAt"],
-        updated_at=item["updatedAt"],
-        result=item.get("result"),
-        error=item.get("error"),
-    )
 
 
 async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:

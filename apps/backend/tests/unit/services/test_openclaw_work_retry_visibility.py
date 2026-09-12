@@ -239,7 +239,11 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
 
     session_key = "agent:a1:lightbulb:channel:11111111-1111-4111-8111-111111111111"
     assert cleared == [("owner-1", session_key, {})]
-    assert metrics == [("messaging.ambient_gate", {"dimensions": {"outcome": "not_admitted"}})]
+    assert [(name, kwargs["dimensions"]) for name, kwargs in metrics] == [
+        ("messaging.ingress.post", {"status_class": "409", "event_kind": "room_event"}),
+        ("messaging.ingress.latency", {"event_kind": "room_event"}),
+        ("messaging.ambient_gate", {"outcome": "not_admitted", "event_kind": "room_event"}),
+    ]
 
 
 @pytest.mark.asyncio
@@ -302,9 +306,11 @@ async def test_consumed_outcome_clears_synthetic_run(monkeypatch, event_kind, ou
         event_kind,
     )
 
-    assert metrics == (
-        [("messaging.ambient_gate", {"dimensions": {"outcome": outcome}})] if event_kind == "room_event" else []
-    )
+    assert [(name, kwargs["dimensions"]) for name, kwargs in metrics] == [
+        ("messaging.ingress.post", {"status_class": "202", "event_kind": event_kind}),
+        ("messaging.ingress.latency", {"event_kind": event_kind}),
+        ("messaging.ambient_gate", {"outcome": outcome, "event_kind": event_kind}),
+    ]
     assert len(cleared) == 1
 
 

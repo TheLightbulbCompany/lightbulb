@@ -453,6 +453,19 @@ async def test_room_turn_without_a_dispatching_member_still_falls_back_to_owner(
 
 
 @pytest.mark.asyncio
+async def test_room_turn_ignores_a_carried_member_that_is_not_a_clerk_id(conn):
+    """Same shape guard the run-completion push applies: a non-Clerk id would
+    mint a bogus `member:{id}:{period}` counter row the usage panel renders."""
+    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, member_id="agent_7")
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        await conn._handle_message({"type": "event", "event": "agent", "payload": _room_lifecycle_end()})
+        await asyncio.sleep(0)
+
+    assert mock_fetch.call_args[0][1] == "org_1"
+
+
+@pytest.mark.asyncio
 async def test_active_run_is_read_before_the_terminal_can_clear_it(conn):
     """The chat terminal clears _active_runs on the same reader loop, so the
     carried member has to be captured synchronously — reading it inside the

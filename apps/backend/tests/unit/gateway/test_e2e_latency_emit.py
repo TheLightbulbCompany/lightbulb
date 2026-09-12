@@ -257,3 +257,27 @@ async def test_budget_reclassified_error_is_marked_reclassified(conn):
 
     errors = [dims for name, dims in captured if name == "chat.error"]
     assert errors == [{"reason": "trial_daily_cap", "reclassified": "true", "source": "webchat"}]
+
+
+@pytest.mark.asyncio
+async def test_unknown_error_kind_collapses_to_other(conn):
+    """errorKind is upstream's enum, not ours, and it crosses a process
+    boundary unvalidated — an unlisted code must not mint a new CloudWatch
+    dimension value."""
+    captured = await _drive_terminal(
+        conn,
+        "agent:main:main",
+        {"state": "error", "errorMessage": "boom", "errorKind": "some_new_upstream_kind"},
+    )
+
+    errors = [dims for name, dims in captured if name == "chat.error"]
+    assert errors == [{"reason": "other", "reclassified": "false", "source": "webchat"}]
+
+
+@pytest.mark.asyncio
+async def test_missing_error_kind_is_unknown_not_other(conn):
+    """`unknown` is a real upstream value, so an absent errorKind keeps it."""
+    captured = await _drive_terminal(conn, "agent:main:main", {"state": "error", "errorMessage": "boom"})
+
+    errors = [dims for name, dims in captured if name == "chat.error"]
+    assert errors == [{"reason": "unknown", "reclassified": "false", "source": "webchat"}]

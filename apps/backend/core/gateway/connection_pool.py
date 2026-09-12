@@ -235,6 +235,18 @@ BUDGET_BLOCK_MESSAGES = {
     "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
 }
 
+# The closed vocabulary of `chat.error`'s `reason` dimension: OpenClaw's own
+# errorKind enum (upstream src/infra/errors.ts) plus the money codes
+# `_budget_error_code` substitutes, which are exactly the keys above — derived,
+# not retyped, so a new money code cannot drift out of the set. errorKind is an
+# enum upstream but crosses a process boundary and nothing here validates it
+# (ChatErrorCard deliberately renders an unmapped code verbatim, which is right
+# for a human and wrong for a metric), so anything unlisted collapses to
+# "other" rather than minting a CloudWatch dimension value.
+_CHAT_ERROR_REASONS = frozenset(
+    {"refusal", "timeout", "rate_limit", "context_length", "unknown", *BUDGET_BLOCK_MESSAGES}
+)
+
 
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
@@ -1708,7 +1720,8 @@ class GatewayConnection:
         entry by ``mark_run_active`` (read by the caller while the run is still
         open). A room/channel session key carries no member at all, so without
         it every room turn's spend was attributed to the owner — the same
-        attribution the run-completion push already uses.
+        attribution the run-completion push already uses, and it is accepted
+        under the same ``user_``-prefix guard.
 
         Falls back to self.user_id (the owner) when no per-member attribution
         is available (unlinked DM, group, webchat-personal, unknown).
@@ -1727,7 +1740,10 @@ class GatewayConnection:
         if parsed.get("source") == "webchat" and parsed.get("member_id"):
             return parsed["member_id"]
 
-        if isinstance(carried_member, str) and carried_member:
+        # Same shape guard `_dispatch_push_notification` applies to this value:
+        # only a Clerk id is a member. Anything else would mint a bogus
+        # `member:{id}:{period}` counter row the usage panel then renders.
+        if isinstance(carried_member, str) and carried_member.startswith("user_"):
             return carried_member
 
         return self.user_id
@@ -2036,10 +2052,11 @@ class GatewayConnection:
                 # _budget_error_code rewrote a gate throttle into a money code,
                 # which is the difference between "the model failed" and "the
                 # owner is out of budget".
+                reason = str(error_kind or "unknown")
                 put_metric(
                     "chat.error",
                     dimensions={
-                        "reason": str(error_kind or "unknown"),
+                        "reason": reason if reason in _CHAT_ERROR_REASONS else "other",
                         "reclassified": "true" if upstream_message else "false",
                         **source_dim,
                     },

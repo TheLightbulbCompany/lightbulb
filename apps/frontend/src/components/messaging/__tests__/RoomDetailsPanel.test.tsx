@@ -42,13 +42,13 @@ it("keeps a pinned message that is not loaded yet reachable", async () => {
   expect(onOpenMessage).toHaveBeenCalledWith("gone");
 });
 
-it("shows an empty state per tab", () => {
+it("shows an empty state per tab, scoping files/links to loaded history rather than claiming the room has none", () => {
   const { rerender } = render(<RoomDetailsPanel {...props} />);
   expect(screen.getByText("No pinned messages yet.")).toBeInTheDocument();
   rerender(<RoomDetailsPanel {...props} tab="files" />);
-  expect(screen.getByText("No files shared yet.")).toBeInTheDocument();
+  expect(screen.getByText("No files in the messages loaded so far. Scroll back in the conversation to load more.")).toBeInTheDocument();
   rerender(<RoomDetailsPanel {...props} tab="links" />);
-  expect(screen.getByText("No links shared yet.")).toBeInTheDocument();
+  expect(screen.getByText("No links in the messages loaded so far. Scroll back in the conversation to load more.")).toBeInTheDocument();
 });
 
 it("lists messages carrying attachments under Files", () => {
@@ -141,6 +141,13 @@ it("names each jump for its own row and marks only the row being unpinned busy",
   expect(other).toBeDisabled();
   await act(async () => finish());
   expect(screen.getAllByRole("button", { name: "Unpin this message" })).toHaveLength(2);
+});
+
+it("returns focus to the Pins tab after a successful unpin, rather than dropping it to <body>", async () => {
+  const onUnpin = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDetailsPanel {...props} messages={[message("m1")]} pinnedMessageIds={["m1"]} onUnpin={onUnpin} />);
+  await userEvent.click(screen.getByRole("button", { name: "Unpin this message" }));
+  expect(screen.getByRole("tab", { name: "Pins" })).toHaveFocus();
 });
 
 it("reports a failed unpin and leaves the row usable", async () => {

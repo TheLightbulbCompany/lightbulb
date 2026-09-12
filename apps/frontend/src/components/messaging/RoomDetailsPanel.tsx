@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Paperclip, PinOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -91,8 +91,13 @@ export function RoomDetailsPanel({
   async function unpin(messageId: string) {
     if (!onUnpin) return;
     setUnpinning(messageId);
-    await run(() => onUnpin(messageId), "The pin could not be removed.");
+    let unpinned = false;
+    await run(() => onUnpin(messageId), "The pin could not be removed.", () => { unpinned = true; });
     setUnpinning(null);
+    // The pin row unmounts once the caller's data reflects the unpin, taking
+    // its Unpin button with it -- move focus to the (always-present) Pins tab
+    // before that happens, rather than leaving it to fall to <body>.
+    if (unpinned) document.getElementById(`${id}-tab-pins`)?.focus();
   }
 
   function selectTab(next: DetailsTab) {
@@ -115,8 +120,12 @@ export function RoomDetailsPanel({
     (event.currentTarget.children[next] as HTMLElement | undefined)?.focus();
   }
 
-  const files = messages.filter((message) => !message.deletedAt && message.attachments?.length);
-  const links = extractLinks(messages);
+  // RoomPanel re-renders on every room.run.frame -- many times a second while
+  // an agent streams -- and `links` runs a regex over every loaded message
+  // body, so both must be memoized on the one thing that actually changes
+  // them rather than re-derived on every one of those renders.
+  const files = useMemo(() => messages.filter((message) => !message.deletedAt && message.attachments?.length), [messages]);
+  const links = useMemo(() => extractLinks(messages), [messages]);
   const activeWork = <section aria-labelledby={`${id}-runs`}>
     <h4 id={`${id}-runs`} className="font-semibold">Active work</h4>
     {activeRuns.length === 0 ? <p className="text-sm text-muted-foreground">No active runs.</p>
@@ -159,7 +168,7 @@ export function RoomDetailsPanel({
         })}</ul>)}
 
       {tab === "files" && (files.length === 0
-        ? <p className="text-sm text-muted-foreground">No files shared yet.</p>
+        ? <p className="text-sm text-muted-foreground">No files in the messages loaded so far. Scroll back in the conversation to load more.</p>
         : <ul aria-label="Shared files">{files.map((message) => <li key={message.messageId} className="room-details-row">
           <Paperclip size={14} aria-hidden="true" className="mt-1" />
           <div className="flex-1 min-w-0">
@@ -170,7 +179,7 @@ export function RoomDetailsPanel({
         </li>)}</ul>)}
 
       {tab === "links" && (links.length === 0
-        ? <p className="text-sm text-muted-foreground">No links shared yet.</p>
+        ? <p className="text-sm text-muted-foreground">No links in the messages loaded so far. Scroll back in the conversation to load more.</p>
         : <ul aria-label="Shared links">{links.map((link) => <li key={link.href} className="room-details-row">
           <p className="room-wrap flex-1"><a href={link.href} target="_blank" rel="noopener noreferrer"
             className="text-info underline underline-offset-4">{link.label}</a></p>

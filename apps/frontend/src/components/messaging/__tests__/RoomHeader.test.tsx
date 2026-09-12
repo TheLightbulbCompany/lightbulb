@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { RoomHeader } from "../RoomHeader";
@@ -58,6 +58,33 @@ it("clears a failed topic save's banner when the edit is cancelled with Escape",
   await userEvent.type(screen.getByLabelText("Topic"), "{Escape}");
 
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("saves the topic from the Save button, showing a pending label", async () => {
+  let resolve!: () => void;
+  const onSetTopic = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+  render(<RoomHeader {...props} onSetTopic={onSetTopic} />);
+  await userEvent.click(screen.getByRole("button", { name: "Edit topic" }));
+  await userEvent.clear(screen.getByLabelText("Topic"));
+  await userEvent.type(screen.getByLabelText("Topic"), "Ship v3");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(onSetTopic).toHaveBeenCalledWith("Ship v3");
+  expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await act(async () => resolve());
+  expect(screen.queryByLabelText("Topic")).not.toBeInTheDocument();
+});
+
+it("cancels the topic edit from the Cancel button, the same as Escape", async () => {
+  const onSetTopic = vi.fn();
+  render(<RoomHeader {...props} onSetTopic={onSetTopic} />);
+  const trigger = screen.getByRole("button", { name: "Edit topic" });
+  await userEvent.click(trigger);
+  await userEvent.clear(screen.getByLabelText("Topic"));
+  await userEvent.type(screen.getByLabelText("Topic"), "nope");
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(onSetTopic).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText("Topic")).not.toBeInTheDocument();
+  expect(screen.getByText("Ship v2")).toBeInTheDocument();
 });
 
 it("offers an add-topic affordance when there is none", () => {

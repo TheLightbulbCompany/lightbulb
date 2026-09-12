@@ -271,6 +271,25 @@ it("shows canonical members and only running work in collapsible room details", 
   expect(within(screen.getByRole("complementary", { name: "Room details" })).getByText("No active runs.")).toBeInTheDocument();
 });
 
+it("shows the newest reply's relative time beside the reply count", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date("2026-09-10T00:12:00Z"));
+    render(<RoomPanel {...props} messages={[
+      message,
+      // The newest reply by messageSeq is listed FIRST in the array, and the
+      // older one second -- a `replies.at(-1)`/last-array-element regression
+      // would show reply-1's time (7m ago) instead of reply-2's (2m ago).
+      { ...message, messageId: "reply-2", messageSeq: 3, text: "Second reply", threadRootMessageId: message.messageId, createdAt: "2026-09-10T00:10:00Z" },
+      { ...message, messageId: "reply-1", messageSeq: 2, text: "First reply", threadRootMessageId: message.messageId, createdAt: "2026-09-10T00:05:00Z" },
+    ]} />);
+    const reply = screen.getByRole("button", { name: "Reply in thread, 2 replies · last reply 2m ago" });
+    expect(reply).toHaveTextContent("2 replies · last reply 2m ago");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("focuses a thread and restores its trigger and collapsed preference on Escape", async () => {
   const user = userEvent.setup();
   const onSelectThread = vi.fn();
@@ -278,7 +297,7 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
     message,
     { ...message, messageId: "reply", messageSeq: 2, text: "Thread reply", threadRootMessageId: message.messageId, replyToMessageId: message.messageId },
   ]} />);
-  const reply = screen.getByRole("button", { name: "Reply in thread, 1 reply" });
+  const reply = screen.getByRole("button", { name: /^Reply in thread, 1 reply/ });
   await user.click(reply);
   expect(onSelectThread).toHaveBeenLastCalledWith("message");
   expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();

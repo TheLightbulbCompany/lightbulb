@@ -29,23 +29,29 @@ HTTP_ENDPOINT = os.environ.get("APPSYNC_EVENTS_HTTP_ENDPOINT", "")
 REGION = os.environ.get("APPSYNC_EVENTS_REGION", os.environ.get("AWS_REGION", ""))
 MAX_EVENT_BYTES = 230 * 1024
 MAX_MESSAGE_BYTES = 100_000
+# Must equal core.services.messaging.LIVE_EVENT_TYPES -- a type missing here is
+# silently dropped from the LIVE# outbox. Guarded by the backend's
+# tests/unit/services/test_live_event_registry.py.
 LIVE_EVENT_TYPES = frozenset(
     {
-        "room.message.created",
-        "room.message.updated",
-        "room.message.available",
-        "room.typing.changed",
-        "room.run.frame",
-        "room.metadata.changed",
-        "room.subscription.rotated",
         "room.access.removed",
+        "room.member.updated",
+        "room.message.available",
+        "room.message.created",
+        "room.message.reactions.changed",
+        "room.message.updated",
+        "room.metadata.changed",
+        "room.resources.changed",
+        "room.run.frame",
+        "room.subscription.rotated",
+        "room.typing.changed",
+        "paperclip.event",
         "runtime.approval.requested",
         "runtime.approval.resolved",
+        "runtime.progress.changed",
         "runtime.question.requested",
         "runtime.question.resolved",
-        "runtime.progress.changed",
         "runtime.resource.invalidated",
-        "paperclip.event",
     }
 )
 

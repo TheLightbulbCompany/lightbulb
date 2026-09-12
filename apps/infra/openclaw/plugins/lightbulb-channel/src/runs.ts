@@ -144,12 +144,16 @@ export function createRunSupervisor(deps: {
 }) {
   const runs = new Map<string, ActiveRun>();
   /**
-   * Session key -> the most recently started run on it. The immediate ack means the FIFO
-   * group no longer serializes two turns on one room session, so for overlapping runs this
-   * names the newest — which is the one whose durable final is being delivered, and hence
-   * the right run id to stamp on an outbound reply.
+   * Session key -> the one run actually turning on it. The immediate ack means the FIFO
+   * group no longer serializes two turns on one room session, so the supervisor serializes
+   * them here instead: a second accept is parked in `queued` and only becomes this entry
+   * when its predecessor finishes. So this always names the running turn — the one whose
+   * durable final is being delivered, and hence the right run id to stamp on an outbound
+   * reply, and the only correct fallback correlator in `onEvent`.
    */
   const bySession = new Map<string, string>();
+  /** Session key -> turns accepted while that session was busy, oldest first. */
+  const queued = new Map<string, Array<{ run: ActiveRun; turn: () => Promise<AmbientGateOutcome> }>>();
   /** Host run id -> our run id, learned from the first event that carries a session key. */
   const bySdkRun = new Map<string, string>();
   let unsubscribe: (() => void) | undefined;
@@ -226,7 +230,6 @@ export function createRunSupervisor(deps: {
       }
       return;
     }
-    markStarted(run); // any event for the session proves the run is live
     const transformed = transformAgentEvent(evt.stream, evt.data);
     if (!transformed) return;
     if (transformed.type === "chunk") trackText(run, evt.data);
@@ -235,10 +238,19 @@ export function createRunSupervisor(deps: {
   async function finish(run: ActiveRun, gate?: "ignored" | "gate_error", failure?: unknown): Promise<void> {
     if (run.heartbeat) clearInterval(run.heartbeat);
     // Retire the run before the terminal frames: a late event must not be framed after
-    // run_ended, and a throw below must not strand the entry in either map.
+    // run_ended, and a throw below must not strand the entry in either map — or stall the
+    // session's queue, which is why the hand-off happens here and not after the awaits.
+    const owned = bySession.get(run.sessionKey) === run.runId;
     runs.delete(run.runId);
-    if (bySession.get(run.sessionKey) === run.runId) bySession.delete(run.sessionKey);
     for (const [sdkRunId, owner] of bySdkRun) if (owner === run.runId) bySdkRun.delete(sdkRunId);
+    if (owned) {
+      bySession.delete(run.sessionKey);
+      const next = dequeue(run.sessionKey);
+      if (next) {
+        bySession.set(run.sessionKey, next.run.runId);
+        launch(next.run, next.turn);
+      }
+    }
     let outcome: RunOutcome;
     let errorKind: string | undefined;
     let message = "Agent run failed";
@@ -272,9 +284,30 @@ export function createRunSupervisor(deps: {
       ...(gate ? {} : { usage: usageFor(run) }),
     });
   }
+  /** Only the session's current owner is turning; a queued run has nothing to reach yet. */
   function sessionIdFor(runId: string): string | undefined {
     const run = runs.get(runId);
-    return run ? deps.sdk.resolveActiveEmbeddedRunSessionId(run.sessionKey) : undefined;
+    if (!run || bySession.get(run.sessionKey) !== run.runId) return undefined;
+    return deps.sdk.resolveActiveEmbeddedRunSessionId(run.sessionKey);
+  }
+  /** Removes and returns a parked turn: the head of the session's line, or one named run. */
+  function dequeue(sessionKey: string, runId?: string): { run: ActiveRun; turn: () => Promise<AmbientGateOutcome> } | undefined {
+    const line = queued.get(sessionKey);
+    if (!line) return undefined;
+    const at = runId ? line.findIndex((entry) => entry.run.runId === runId) : 0;
+    const [entry] = at < 0 ? [] : line.splice(at, 1);
+    if (!line.length) queued.delete(sessionKey);
+    return entry;
+  }
+  // finish() can still throw (a frame flush, or getSessionEntry reading a torn row);
+  // nothing is left to report it to, so it is logged and never rethrown.
+  function launch(run: ActiveRun, turn: () => Promise<AmbientGateOutcome>): void {
+    void turn()
+      .then(
+        (gate) => finish(run, gate === "dispatched" ? undefined : gate),
+        (failure) => finish(run, undefined, failure),
+      )
+      .catch((error) => logFailure(run.runId, error));
   }
 
   return {
@@ -283,17 +316,27 @@ export function createRunSupervisor(deps: {
       unsubscribe ??= deps.sdk.onAgentEvent(onEvent);
       const run: ActiveRun = { ...spec, started: false, text: { done: "", current: "" } };
       runs.set(spec.runId, run);
+      // Accepted is started: the host serializes a second turn on this session behind the
+      // first, and a run that reported nothing until its first agent event is closed by the
+      // backend sweeper as agent_did_not_start long before it gets to run.
+      markStarted(run);
+      const busy = bySession.get(spec.sessionKey);
+      if (busy !== undefined && runs.has(busy)) {
+        queued.set(spec.sessionKey, [...(queued.get(spec.sessionKey) ?? []), { run, turn }]);
+        return;
+      }
       bySession.set(spec.sessionKey, spec.runId);
-      // finish() can still throw (a frame flush, or getSessionEntry reading a torn row);
-      // nothing is left to report it to, so it is logged and never rethrown.
-      void turn()
-        .then(
-          (gate) => finish(run, gate === "dispatched" ? undefined : gate),
-          (failure) => finish(run, undefined, failure),
-        )
-        .catch((error) => logFailure(spec.runId, error));
+      launch(run, turn);
     },
     abort(runId: string): "aborting" | "not_found" {
+      const run = runs.get(runId);
+      // A queued turn has not been dispatched to the host, so there is nothing to abort
+      // there: drop it from the line and report its own end.
+      if (run && dequeue(run.sessionKey, runId)) {
+        run.terminal = { phase: "end", aborted: true };
+        void finish(run).catch((error) => logFailure(runId, error));
+        return "aborting";
+      }
       const sessionId = sessionIdFor(runId);
       return sessionId && deps.sdk.abortEmbeddedAgentRun(sessionId) ? "aborting" : "not_found";
     },

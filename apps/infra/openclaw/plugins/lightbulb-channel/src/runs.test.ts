@@ -18,7 +18,12 @@ const RUN = {
   threadRootMessageId: null,
   eventKind: "user_request" as const,
 };
+/** Two more accepts on the SAME room session — the host would serialize these turns. */
+const RUN2 = { ...RUN, runId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" };
+const RUN3 = { ...RUN, runId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" };
 const ENTRY = { sessionId: "session-1", model: "claude-sonnet-4-6", inputTokens: 1200, outputTokens: 300, cacheRead: 5000, cacheWrite: 100, estimatedCostUsd: 0.0123 };
+/** A turn that never settles, so the run it belongs to stays the session's running one. */
+const pending = () => vi.fn(() => new Promise<"dispatched">(() => {}));
 
 function harness() {
   let listener: ((evt: any) => void) | undefined;
@@ -88,12 +93,17 @@ describe("run supervisor", () => {
     expect(h.sent().at(-1)).toMatchObject({ type: "run.ended", outcome: "error", errorKind: "timeout", usage: expect.any(Object) });
   });
 
-  it("reports ignored without frames or usage when the ambient gate declines", async () => {
+  it("reports ignored without content frames or usage when the ambient gate declines", async () => {
     const h = harness();
     h.runs.start(RUN, async () => "ignored");
     await h.settle();
-    expect(h.types()).toEqual([]);
-    expect(h.sent()).toEqual([{ runId: RUN.runId, type: "run.ended", at: "2026-09-12T03:15:00.000Z", outcome: "ignored" }]);
+    // Acceptance is reported before the gate has ruled, so the activity indicator turns
+    // on and back off — but nothing is rendered into the room and no usage is billed.
+    expect(h.types()).toEqual(["run_active", "run_ended", "run_active"]);
+    expect(h.sent()).toEqual([
+      { runId: RUN.runId, type: "run.started", at: "2026-09-12T03:15:00.000Z", sessionKey: RUN.sessionKey },
+      { runId: RUN.runId, type: "run.ended", at: "2026-09-12T03:15:00.000Z", outcome: "ignored" },
+    ]);
   });
 
   it("heartbeats every 30 s while running and stops at the end", async () => {
@@ -120,6 +130,68 @@ describe("run supervisor", () => {
     expect(h.runs.steer(RUN.runId, "focus on tests")).toBe("accepted");
     expect(h.sdk.queueAgentHarnessMessage).toHaveBeenCalledWith("session-1", "focus on tests");
     expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN.runId);
+  });
+
+  it("serializes a second turn on the same session behind the first", async () => {
+    const h = harness();
+    let finishFirst!: (v: "dispatched") => void;
+    const second = pending();
+    h.runs.start(RUN, () => new Promise((resolve) => { finishFirst = resolve; }));
+    h.runs.start(RUN2, second);
+    expect(second).not.toHaveBeenCalled();
+    // The reply stamp names the running turn, not the newest accepted one.
+    expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN.runId);
+    expect(h.runs.steer(RUN2.runId, "hurry")).toBe("not_found"); // nothing to steer yet
+    finishFirst("dispatched");
+    await h.settle();
+    expect(second).toHaveBeenCalledOnce();
+    expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN2.runId);
+  });
+
+  it("marks a queued run started at accept and heartbeats it while it waits", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.runs.start(RUN, pending());
+    h.runs.start(RUN2, pending());
+    expect(h.sent().map((e: any) => [e.runId, e.type])).toEqual([[RUN.runId, "run.started"], [RUN2.runId, "run.started"]]);
+    expect(h.types()).toEqual(["run_active", "run_active"]);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+    expect(h.sent().filter((e: any) => e.type === "run.heartbeat").map((e: any) => e.runId).sort()).toEqual([RUN.runId, RUN2.runId]);
+    vi.useRealTimers();
+  });
+
+  it("aborts a queued run without ever running it, and lets the one behind it through", async () => {
+    const h = harness();
+    let finishFirst!: (v: "dispatched") => void;
+    const second = pending();
+    const third = pending();
+    h.runs.start(RUN, () => new Promise((resolve) => { finishFirst = resolve; }));
+    h.runs.start(RUN2, second);
+    h.runs.start(RUN3, third);
+    expect(h.runs.abort(RUN2.runId)).toBe("aborting");
+    await h.settle();
+    expect(second).not.toHaveBeenCalled();
+    expect(h.sdk.abortEmbeddedAgentRun).not.toHaveBeenCalled(); // the host never saw this turn
+    expect(h.sent().find((e: any) => e.runId === RUN2.runId && e.type === "run.ended")).toMatchObject({ outcome: "aborted" });
+    finishFirst("dispatched");
+    await h.settle();
+    expect(third).toHaveBeenCalledOnce();
+    expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN3.runId);
+  });
+
+  it("attributes an overlapping event to the running run, not the queued one", async () => {
+    const h = harness();
+    let finishFirst!: (v: "dispatched") => void;
+    h.runs.start(RUN, () => new Promise((resolve) => { finishFirst = resolve; }));
+    h.emit({ stream: "lifecycle", data: { phase: "start" } });
+    h.runs.start(RUN2, pending());
+    h.emit({ stream: "assistant", sessionKey: undefined, deliverySessionKey: undefined, data: { text: "Hi", delta: "Hi" } });
+    const chunks = h.frames.push.mock.calls.map((c: any[]) => c[2].payload.frame).filter((f: any) => f.type === "chunk");
+    expect(chunks).toEqual([{ type: "chunk", content: "Hi", append: true, runId: RUN.runId, agentId: "friday" }]);
+    expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN.runId);
+    finishFirst("dispatched");
+    await h.settle();
+    expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN2.runId);
   });
 });
 

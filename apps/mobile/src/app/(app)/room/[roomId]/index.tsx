@@ -125,15 +125,15 @@ function Conversation() {
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
 
   // The messageId of the most recent failed reaction toggle (mirrors the web's
-  // single `reactionError` string state) — cleared on the next toggle that
-  // succeeds, from either the reactions row or the long-press sheet.
+  // single `reactionError` string state) — cleared UNCONDITIONALLY at the start
+  // of every new attempt (matching RoomPanel.toggleReaction's timing exactly:
+  // `setReactionError(null)` before the call, not only after a success), from
+  // either the reactions row or the long-press sheet.
   const [reactionErrorMessageId, setReactionErrorMessageId] = useState<string | null>(null);
   const reactToMessage = useCallback(
     (messageId: string, emoji: string, active: boolean) => {
-      void rooms
-        .setReaction(messageId, emoji, active)
-        .then(() => setReactionErrorMessageId((current) => (current === messageId ? null : current)))
-        .catch(() => setReactionErrorMessageId(messageId));
+      setReactionErrorMessageId(null);
+      void rooms.setReaction(messageId, emoji, active).catch(() => setReactionErrorMessageId(messageId));
     },
     [rooms],
   );

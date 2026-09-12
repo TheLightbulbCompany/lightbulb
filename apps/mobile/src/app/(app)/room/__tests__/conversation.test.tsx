@@ -218,6 +218,29 @@ describe("conversation screen", () => {
     await waitFor(() => expect(mockMarkUnread).toHaveBeenCalledWith("room-1", 2));
   });
 
+  // The bug this task exists to fix: both screens used to swallow
+  // `setReaction`'s rejection with `.catch(() => {})`, so a failed reaction
+  // looked like nothing happened. This exercises the real `reactToMessage`
+  // path (not just the presentational `reactionError` prop) end to end, and
+  // covers the unconditional-clear timing: a rejection on one message must
+  // not survive a SUCCESSFUL toggle on a different one.
+  it("surfaces a failed reaction toggle and clears it on a later success elsewhere", async () => {
+    mockSetReaction.mockRejectedValueOnce(new Error("offline"));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent(screen.getByText("second"), "longPress");
+    await fireEvent.press(screen.getByLabelText("React with 🎉"));
+    await waitFor(() =>
+      expect(screen.getByText("Could not update reaction. Try again.")).toBeTruthy(),
+    );
+    // A successful toggle on a DIFFERENT message (m1, "first") still clears it.
+    await fireEvent(screen.getByText("first"), "longPress");
+    await fireEvent.press(screen.getByLabelText("React with 🎉"));
+    await waitFor(() =>
+      expect(screen.queryByText("Could not update reaction. Try again.")).toBeNull(),
+    );
+  });
+
   it("opens the thread from the sheet's Reply in thread", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());

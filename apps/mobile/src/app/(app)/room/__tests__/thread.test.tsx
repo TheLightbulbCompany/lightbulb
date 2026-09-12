@@ -62,6 +62,7 @@ let mockMessages: CanonicalRoomMessage[] = [...mockBase];
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 4 }));
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m5", messageSeq: 5, text: "on it", threadRootMessageId: "m1" }));
+const mockSetReaction = jest.fn(async () => mockMsg({ messageId: "m1", reactions: { "🎉": ["user-a"] } }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
   liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
@@ -75,7 +76,7 @@ const mockLive = {
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
-    updateMessage: jest.fn(), setReaction: jest.fn(), getLiveConfig: jest.fn(), listResources: jest.fn(),
+    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
   onEvent: () => () => {}, onChatMessage: () => () => {},
@@ -104,6 +105,7 @@ describe("thread screen", () => {
     mockMarkRead.mockClear();
     mockSendMessage.mockClear();
     mockMarkUnread.mockClear();
+    mockSetReaction.mockClear();
     mockMessages = [...mockBase];
   });
 
@@ -168,6 +170,28 @@ describe("thread screen", () => {
     await fireEvent.press(screen.getByText("Not sent · tap to retry"));
     await waitFor(() => expect(screen.queryByText("Not sent · tap to retry")).toBeNull());
     expect(mockSendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  // The bug this task exists to fix: this screen used to swallow
+  // `setReaction`'s rejection with `.catch(() => {})`. Exercises the real
+  // `reactToMessage` path end to end, including the unconditional-clear
+  // timing: a rejection on the reply must not survive a SUCCESSFUL toggle on
+  // the pinned root.
+  it("surfaces a failed reaction toggle and clears it on a later success elsewhere", async () => {
+    mockSetReaction.mockRejectedValueOnce(new Error("offline"));
+    await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent(screen.getByText("second"), "longPress");
+    await fireEvent.press(screen.getByLabelText("React with 🎉"));
+    await waitFor(() =>
+      expect(screen.getByText("Could not update reaction. Try again.")).toBeTruthy(),
+    );
+    // A successful toggle on the pinned root ("first") still clears it.
+    await fireEvent(screen.getByText("first"), "longPress");
+    await fireEvent.press(screen.getByLabelText("React with 🎉"));
+    await waitFor(() =>
+      expect(screen.queryByText("Could not update reaction. Try again.")).toBeNull(),
+    );
   });
 
   // The threadId half is what keeps a reply to THIS thread suppressed while a

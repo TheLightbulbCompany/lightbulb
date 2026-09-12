@@ -632,11 +632,6 @@ class PaperclipProvisioning:
             #    for org members.
             svc_token = service_token.mint(owner_id)
 
-            adapter_config = synthesize_openclaw_adapter(
-                gateway_url=_ws_gateway_url(self._env_name),
-                service_token=svc_token,
-                user_id=owner_user_id,
-            )
             starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
             for starter_key, name, role, title, parent_key in STARTER_ROSTER:
                 if starter_agent_ids.get(starter_key):
@@ -645,6 +640,13 @@ class PaperclipProvisioning:
                 if parent_key and not reports_to:
                     continue
                 try:
+                    # Synthesis mints a device key when none is supplied.
+                    # Each starter needs a distinct paired.json identity.
+                    adapter_config = synthesize_openclaw_adapter(
+                        gateway_url=_ws_gateway_url(self._env_name),
+                        service_token=svc_token,
+                        user_id=owner_user_id,
+                    )
                     agent = await self._admin.create_agent(
                         company_id=company_id,
                         name=name,

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildTimeline, dateDividerLabel } from "../timeline";
-import type { RoomMessage } from "../types";
+import {
+  buildTimeline,
+  dateDividerLabel,
+  lastSequence,
+  mergeCanonicalMessages,
+  roomDisplayName,
+  runView,
+} from "./timeline";
+import type { ChatIncomingMessage } from "../live/types";
+import type { CanonicalRoomMessage as RoomMessage } from "./types";
 
 const base: RoomMessage = { messageId: "m", roomId: "r", messageSeq: 0, roomRevision: 1, author: { kind: "agent", id: "friday", displayName: "Friday" }, text: "x", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-11T10:00:00Z", runId: null };
 const at = (seq: number, iso: string, author = base.author, extra: Partial<RoomMessage> = {}): RoomMessage => ({ ...base, messageId: `m${seq}`, messageSeq: seq, createdAt: iso, author, ...extra });
@@ -69,5 +77,60 @@ describe("dateDividerLabel", () => {
     expect(dateDividerLabel(yesterday, now)).toBe("Yesterday");
     expect(dateDividerLabel(withinWeek, now)).toBe(withinWeek.toLocaleDateString(undefined, { weekday: "long" }));
     expect(dateDividerLabel(overWeek, now)).toBe(overWeek.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }));
+  });
+});
+
+describe("mergeCanonicalMessages", () => {
+  it("keeps the newer revision of content and of reactions independently", () => {
+    const a = { ...base, messageId: "m1", messageSeq: 1, messageRevision: 2, text: "new", reactionRevision: 1, reactions: {} };
+    const b = { ...a, messageRevision: 1, text: "old", reactionRevision: 2, reactions: { "👍": ["u1"] } };
+    expect(mergeCanonicalMessages([a], [b])).toEqual([{ ...a, reactions: { "👍": ["u1"] }, reactionRevision: 2 }]);
+  });
+  it("drops reactions on a deleted message and sorts by sequence", () => {
+    const deleted = { ...base, messageId: "m2", messageSeq: 2, deletedAt: "now", reactions: { "👍": ["u1"] } };
+    expect(mergeCanonicalMessages([deleted], [{ ...base, messageId: "m1", messageSeq: 1 }]).map((m) => m.messageSeq)).toEqual([1, 2]);
+    expect(mergeCanonicalMessages([], [deleted])[0].reactions).toEqual({});
+  });
+  it("reports the last sequence, and zero for an empty room", () => {
+    expect(lastSequence([{ ...base, messageSeq: 7 }])).toBe(7);
+    expect(lastSequence([])).toBe(0);
+  });
+});
+
+describe("runView", () => {
+  const frame = (f: Partial<ChatIncomingMessage>) => f as ChatIncomingMessage;
+  it("folds tool frames into one row per call id and keeps progress across a tool_end", () => {
+    const view = runView({
+      roomId: "r", agentId: "a", runId: "run1", text: "", thinking: "", state: "running",
+      frames: [
+        frame({ type: "tool_start", runId: "run1", tool: "bash", toolCallId: "t1", args: { cmd: "ls" } }),
+        frame({ type: "command_output", runId: "run1", toolCallId: "t1", output: "a.txt" }),
+        frame({ type: "tool_end", runId: "run1", tool: "bash", toolCallId: "t1", result: [{ type: "text", text: "done" }] }),
+      ],
+    });
+    expect(view.tools).toHaveLength(1);
+    expect(view.tools[0]).toMatchObject({ id: "t1", name: "bash", status: "done", progressText: "a.txt" });
+  });
+  it("marks a tool_error row as error and keeps activity rows separate", () => {
+    const view = runView({
+      roomId: "r", agentId: "a", runId: "run1", text: "", thinking: "", state: "failed",
+      frames: [
+        frame({ type: "tool_error", runId: "run1", tool: "bash", toolCallId: "t1", meta: "boom" }),
+        frame({ type: "agent_activity", runId: "run1", activity: "plan", title: "Planning", detail: {} }),
+      ],
+    });
+    expect(view.tools.map((t) => t.status)).toEqual(["error", "done"]);
+    expect(view.tools[1].kind).toBe("activity");
+  });
+});
+
+describe("roomDisplayName", () => {
+  it("prefers the room name, then participants, then a kind fallback", () => {
+    const p = [{ displayName: "Friday" }, { displayName: "Aden" }];
+    expect(roomDisplayName({ kind: "channel", name: "Launch" }, [])).toBe("Launch");
+    expect(roomDisplayName({ kind: "dm", name: null }, p)).toBe("Friday");
+    expect(roomDisplayName({ kind: "group-dm", name: null }, p)).toBe("Friday and Aden");
+    expect(roomDisplayName({ kind: "channel", name: null }, [])).toBe("Untitled channel");
+    expect(roomDisplayName(undefined, [])).toBe("Conversation");
   });
 });

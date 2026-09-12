@@ -106,6 +106,22 @@ export type {
 } from "./live/types";
 export { createMessagingClient } from "./messaging/client";
 export type { MessagingClient } from "./messaging/client";
+export {
+  GROUP_WINDOW_MS,
+  buildTimeline,
+  dateDividerLabel,
+  frameText,
+  lastSequence,
+  mergeCanonicalMessages,
+  roomDisplayName,
+  runView,
+} from "./messaging/timeline";
+export type {
+  LiveRoomRun,
+  RoomRunView,
+  RunToolCall,
+  TimelineItem,
+} from "./messaging/timeline";
 export type {
   LocalDevice,
   LocalSession,

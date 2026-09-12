@@ -17,17 +17,7 @@ export const roomKindLabel = {
   "group-dm": "Group chat",
 } as const;
 
-export function roomDisplayName(
-  room: Pick<CanonicalRoomSummary, "kind" | "name"> | undefined,
-  participants: readonly Pick<RoomMember, "displayName">[],
-): string {
-  if (!room) return "Conversation";
-  if (room.name) return room.name;
-  const names = participants.map((participant) => participant.displayName);
-  if (room.kind === "dm") return names[0] ?? "Direct message";
-  if (room.kind === "group-dm") return names.length ? names.join(" and ") : "Group chat";
-  return "Untitled channel";
-}
+export { roomDisplayName } from "@lightbulb/shared";
 
 export type RoomParticipant = RoomMember & { agentActivity?: RosterState };
 export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle"> & { agentActivity?: RosterState };

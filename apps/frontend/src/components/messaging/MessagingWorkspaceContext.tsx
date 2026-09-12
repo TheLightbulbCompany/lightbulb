@@ -2,8 +2,8 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { extractResultText, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
-import { useRooms, type LiveRoomRun } from "@/hooks/useRooms";
+import { runView, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
+import { useRooms } from "@/hooks/useRooms";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -19,60 +19,7 @@ import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
-import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomRunView, RoomSummary } from "./types";
-
-function frameText(blocks: unknown): string | undefined {
-  return extractResultText({ content: blocks }) || undefined;
-}
-
-function runView(run: LiveRoomRun): RoomRunView {
-  const tools = new Map<string, RoomRunView["tools"][number]>();
-  run.frames.forEach((frame, index) => {
-    if (frame.type === "tool_start") {
-      const id = frame.toolCallId ?? `${frame.runId}:${frame.tool}`;
-      tools.set(id, { id, name: frame.tool, args: frame.args ?? {}, result: null, status: "running" });
-    } else if (frame.type === "tool_progress") {
-      const current = tools.get(frame.toolCallId) ?? {
-        id: frame.toolCallId,
-        name: frame.tool,
-        args: {},
-        result: null,
-        status: "running" as const,
-      };
-      tools.set(frame.toolCallId, { ...current, progressText: frameText(frame.partialResult) });
-    } else if (frame.type === "tool_end" || frame.type === "tool_error") {
-      const id = frame.toolCallId ?? `${frame.runId}:${frame.tool}`;
-      const current = tools.get(id);
-      tools.set(id, {
-        id,
-        name: frame.tool,
-        args: current?.args ?? {},
-        result: frame.result ?? frame.meta ?? null,
-        status: frame.type === "tool_error" ? "error" : "done",
-        progressText: current?.progressText,
-      });
-    } else if (frame.type === "command_output") {
-      const current = tools.get(frame.toolCallId);
-      if (current && frame.output) {
-        tools.set(frame.toolCallId, {
-          ...current,
-          progressText: `${current.progressText ?? ""}${frame.output}`,
-        });
-      }
-    } else if (frame.type === "agent_activity" && frame.activity !== "run_status") {
-      const id = `${frame.runId}:activity:${index}`;
-      tools.set(id, {
-        id,
-        name: frame.title,
-        args: frame.detail ?? {},
-        result: null,
-        status: "done",
-        kind: "activity",
-      });
-    }
-  });
-  return { ...run, tools: [...tools.values()] };
-}
+import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomSummary } from "./types";
 
 export interface MessagingWorkspaceValue {
   activeRoomId: string | null;

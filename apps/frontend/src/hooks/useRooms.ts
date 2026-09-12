@@ -6,6 +6,8 @@ import useSWR from "swr";
 import {
   ApiError,
   accumulateStreamText,
+  lastSequence,
+  mergeCanonicalMessages,
   type CanonicalRoomMessage,
   type ChatIncomingMessage,
   type CreateMessageRequest,
@@ -46,21 +48,8 @@ export interface TypingMember {
   expiresAt: string;
 }
 
-export function mergeCanonicalMessages(
-  current: readonly CanonicalRoomMessage[],
-  incoming: readonly CanonicalRoomMessage[],
-): CanonicalRoomMessage[] {
-  const byId = new Map(current.map((message) => [message.messageId, message]));
-  for (const message of incoming) {
-    const previous = byId.get(message.messageId);
-    const content = (previous?.messageRevision ?? 0) > (message.messageRevision ?? 0) ? previous! : message;
-    const reactions = (previous?.reactionRevision ?? 0) > (message.reactionRevision ?? 0) ? previous! : message;
-    byId.set(message.messageId, { ...content, reactions: content.deletedAt ? {} : reactions.reactions, reactionRevision: reactions.reactionRevision });
-  }
-  return [...byId.values()].sort((left, right) => left.messageSeq - right.messageSeq);
-}
+export { mergeCanonicalMessages } from "@lightbulb/shared";
 
-const lastSequence = (messages: readonly CanonicalRoomMessage[]) => messages.at(-1)?.messageSeq ?? 0;
 const NO_ROOMS: never[] = [];
 const NO_SECTIONS: RoomSection[] = [];
 

@@ -29,7 +29,7 @@ import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
-import { buildTimeline } from "./timeline";
+import { buildTimeline } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import { roomDisplayName } from "./types";
 import type {

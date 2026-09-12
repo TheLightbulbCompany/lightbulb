@@ -46,6 +46,10 @@ jobs:
   test-desktop:
     name: TestDesktop
     if: github.event_name == 'pull_request'
+    # Pull-request code runs on the persistent signing Mac; drop the workflow's
+    # `contents: write` token, which only the build/publish jobs need.
+    permissions:
+      contents: read
     runs-on:
     - self-hosted
     - macos-desktop

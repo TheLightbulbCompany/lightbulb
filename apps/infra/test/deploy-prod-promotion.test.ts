@@ -139,6 +139,10 @@ describe("desktop-build.yml prod promotion gate", () => {
     expect(jobLevelIf(jobs.get("test-desktop")!)).toBe("if: github.event_name == 'pull_request'");
     expect(jobs.get("test-desktop")).toMatch(/cargo test --manifest-path\n\s+apps\/desktop\/src-tauri\/Cargo.toml --lib local_sessions/);
     expect(jobs.get("test-desktop")).toMatch(/--example local_session_probe/);
+    // The workflow-level token is `contents: write` for the signing/publishing
+    // build jobs; a PR-triggered job running fork-authored code on the
+    // persistent self-hosted Mac must not inherit it.
+    expect(jobs.get("test-desktop")).toContain("permissions:\n      contents: read");
   });
 
   it("requires the development job to succeed before production", () => {

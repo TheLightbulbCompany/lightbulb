@@ -144,4 +144,8 @@ it("parses a room.member.updated frame and rejects a malformed one", () => {
   expect(parseLiveEvent(event)).toEqual(event);
   expect(parseLiveEvent({ ...event, payload: {} })).toBeNull();
   expect(parseLiveEvent({ ...event, payload: { roomId: 42 } })).toBeNull();
+  // Relaxing the cross-check waives only an ABSENT envelope roomId: one that
+  // is present and disagrees with the payload is still a rejected frame.
+  expect(parseLiveEvent({ ...event, roomId: "other" })).toBeNull();
+  expect(parseLiveEvent({ ...event, roomId: "room-1" })).toEqual({ ...event, roomId: "room-1" });
 });

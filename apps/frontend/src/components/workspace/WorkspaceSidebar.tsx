@@ -14,7 +14,6 @@ import { useBilling } from "@/hooks/useBilling";
 import { visibleCompanySections } from "@/components/chat/companySections";
 import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
-import { Logo } from "@/components/Logo";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { FreeTierNote } from "@/components/chat/FreeTierNote";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -47,6 +46,9 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   const subscriptionStatus = account?.subscription_status ?? null;
   const isTrialExpired = isFreeTierExpired(subscriptionStatus, account?.trial_end, nowMs);
   const userName = user?.fullName || user?.firstName || "User";
+  // ponytail: first membership stands in for the active org (workspace-first
+  // onboarding gives one org per user); read useAuth().orgId if that changes.
+  const workspaceName = user?.organizationMemberships?.[0]?.organization?.name || "Lightbulb";
   const userInitials = userName
     .split(" ")
     .map((n: string) => n[0])
@@ -66,9 +68,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   return (
     <div className="cream-sidebar">
       <div className="sidebar-header">
-        <div className="sidebar-logo">
-          <Logo size="sm" href={null} />
-        </div>
+        <h1 className="workspace-name" title={workspaceName}>{workspaceName}</h1>
       </div>
 
 

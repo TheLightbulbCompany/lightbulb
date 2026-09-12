@@ -19,7 +19,8 @@
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
 .room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: .875rem; font-weight: 400; }
 .room-topic-dot { color: var(--muted-foreground); }
-.room-topic-form { flex: 1 1 200px; min-width: 0; }
+.room-topic-form { display: flex; align-items: center; gap: 4px; flex: 1 1 200px; min-width: 0; }
+.room-topic-form .room-input { flex: 1 1 auto; }
 .room-header-error { flex-basis: 100%; }
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .room-facepile { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 6px; }
@@ -205,7 +206,7 @@
      button itself) need the 44px in both axes; the sort select is a touch
      target too. */
   .room-directory-heading-actions button, .room-directory-group-header button,
-  .room-directory-actions { min-width: 44px; }
+  .room-directory-actions, .room-directory-grip { min-width: 44px; }
   .room-directory select { min-height: 44px; }
   /* The section dialogs are portalled out of .room-directory, so they need the
      touch floor stated again. */
@@ -245,7 +246,7 @@
 
 .room-directory-group-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .room-directory-group-header .room-directory-group { flex: 1 1 auto; margin-bottom: 4px; }
-.room-directory-grip { display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 4px; border-radius: 4px; color: var(--muted-foreground); cursor: grab; }
+.room-directory-grip { display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 4px; border-radius: 4px; color: var(--muted-foreground); cursor: grab; touch-action: none; }
 .room-directory-grip:hover, .room-directory-grip:focus-visible { color: var(--foreground); background: var(--cream-deeper); }
 .room-directory-grip:active { cursor: grabbing; }
 /* The section being dragged reads as lifted without relying on colour alone:

@@ -426,11 +426,14 @@ function RoomContent({
   function renderMessage(message: RoomMessage, inThread = false, collapsed = false) {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
+    const replies = inThread ? [] : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId);
+    const lastReply = replies.reduce<RoomMessage | undefined>((latest, candidate) =>
+      !latest || candidate.messageSeq > latest.messageSeq ? candidate : latest, undefined);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
       message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
-      replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
+      replyCount={replies.length} lastReplyAt={lastReply?.createdAt}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
@@ -98,7 +100,10 @@ it("shows mark-unread progress and lets the user retry a failure", async () => {
 
   await user.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
   await user.click(screen.getByRole("menuitem", { name: "Mark unread" }));
-  expect(screen.getByRole("button", { name: "Conversation actions for Launch" })).toBeDisabled();
+  // Radix returns focus to the trigger on select; it must stay focusable
+  // (aria-busy, not disabled) or the browser blurs it straight to <body>.
+  expect(screen.getByRole("button", { name: "Conversation actions for Launch" })).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByRole("button", { name: "Conversation actions for Launch" })).toBeEnabled();
   await act(async () => reject(new Error("offline")));
   expect(screen.getByRole("alert")).toHaveTextContent("Could not mark Launch unread");
   await user.click(screen.getByRole("button", { name: "Try again" }));
@@ -205,6 +210,79 @@ it("surfaces a failed star without leaving the row looking starred", async () =>
   await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("offline");
   expect(screen.queryByRole("heading", { name: "Starred" })).not.toBeInTheDocument();
+});
+
+it("returns focus to the row's own trigger after starring re-parents it into Starred", async () => {
+  let resolveSetPrefs!: () => void;
+  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
+  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
+    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn() };
+  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
+  expect(onSetPrefs).toHaveBeenCalledWith("plain", { starred: true });
+  // Mirrors the real setRoomPrefs (useRooms.ts): the optimistic re-bucket into
+  // Starred lands on the `rooms` prop while the request is still in flight --
+  // well before this action's own promise settles -- moving the row (and its
+  // overflow trigger) into a different DOM subtree.
+  rerender(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain", starred: true }]} />);
+  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Starred"]);
+  await act(async () => resolveSetPrefs());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Conversation actions for Plain" })).toHaveFocus());
+});
+
+it("keeps a failed star's error banner across a room switch", async () => {
+  const onSetPrefs = vi.fn().mockRejectedValue(new Error("offline"));
+  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
+    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn(),
+    rooms: [{ ...base, roomId: "plain", name: "Plain" }] };
+  const { rerender } = render(<RoomDirectory {...props} currentRoomId="plain" />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("offline");
+  // Only currentRoomId changes here -- the directory must not remount (and
+  // silently drop the banner) just because the viewer opened another room.
+  rerender(<RoomDirectory {...props} currentRoomId="other" />);
+  expect(screen.getByRole("alert")).toHaveTextContent("offline");
+});
+
+it("guards against a double star while the row's own save is still pending", async () => {
+  let resolveSetPrefs!: () => void;
+  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={onSetPrefs} onMarkUnread={vi.fn()}
+    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
+  expect(onSetPrefs).toHaveBeenCalledTimes(1);
+  // Reopen the row menu while the first save is still in flight -- the
+  // trigger stays enabled (so focus restoration keeps working), but the item
+  // itself is disabled, and setRoomPrefs' own guard must hold even if it
+  // weren't.
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  const item = await screen.findByRole("menuitem", { name: "Star conversation" });
+  expect(item).toHaveAttribute("data-disabled");
+  await userEvent.click(item);
+  expect(onSetPrefs).toHaveBeenCalledTimes(1);
+  await act(async () => resolveSetPrefs());
+});
+
+it("focuses the destination group's header when starring collapses the row out of view", async () => {
+  window.localStorage.clear();
+  window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: ["starred"], sort: "alpha" }));
+  let resolveSetPrefs!: () => void;
+  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
+  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
+    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn() };
+  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
+  // Starred is already collapsed and "plain" is not the open room, so once it
+  // re-buckets into Starred its row (and overflow trigger) never renders at all.
+  rerender(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain", starred: true }]} />);
+  expect(screen.queryByRole("button", { name: "Conversation actions for Plain" })).not.toBeInTheDocument();
+  await act(async () => resolveSetPrefs());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Expand Starred" })).toHaveFocus());
 });
 
 it("sorts unread first when asked and remembers the choice per owner scope", async () => {
@@ -388,6 +466,17 @@ it("refuses to save, add or delete while a section name is blank", async () => {
   expect(within(dialog).getByRole("button", { name: "Delete Admin" })).toBeDisabled();
   expect(within(dialog).getByRole("button", { name: "Save sections" })).toBeDisabled();
   expect(onSaveSections).not.toHaveBeenCalled();
+});
+
+// vitest's config here has no `css: true`, so imported stylesheets never
+// reach jsdom and getComputedStyle/toHaveStyle can't see them -- assert
+// against the source text instead of a rendered computed style.
+it("keeps the section drag grip usable on touch and above the 44px touch floor", () => {
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  // PointerSensor claims the gesture only once the browser isn't allowed to
+  // treat it as a scroll of `.room-directory` first.
+  expect(css).toMatch(/\.room-directory-grip\s*\{[^}]*touch-action:\s*none;/);
+  expect(css).toMatch(/\.room-directory-actions,\s*\.room-directory-grip\s*\{\s*min-width:\s*44px;\s*\}/);
 });
 
 it("reorders sections with the keyboard and persists the new order", async () => {

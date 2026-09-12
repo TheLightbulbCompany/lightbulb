@@ -1502,6 +1502,10 @@ git commit -m "feat(desktop): Codex adapter mirrors thread items and reports bus
         assert!(parts.len() > 1);
         // 11_000 of text budget leaves room for the other fields inside a 12_000 wire budget per event.
         assert!(parts.iter().all(|p| p["itemId"] == "m" && ascii_wire_len(p).unwrap() <= 12_000));
+        assert_eq!(split_text(&json!({"kind":"thinking","role":"assistant","text":"","truncated":false})).len(), 1, "empty markers still travel");
+        let tool = split_text(&json!({"kind":"tool","role":"tool","text":"x".repeat(20_000),"truncated":false,"tool":{"name":"result","status":"done"}}));
+        assert_eq!(tool.len(), 1, "tool events are bounded, never chunked");
+        assert!(tool[0]["truncated"] == true && tool[0]["text"].as_str().unwrap().len() == 8192);
         assert_eq!(parts.iter().map(|p| p["text"].as_str().unwrap()).collect::<String>(), "é".repeat(6000));
     }
 ```
@@ -1515,6 +1519,21 @@ git commit -m "feat(desktop): Codex adapter mirrors thread items and reports bus
 ```rust
 fn split_text(event: &Value) -> Vec<Value> {
     let text = event["text"].as_str().unwrap_or("");
+    // Lifecycle markers and thinking markers carry no text; they still travel.
+    if text.is_empty() {
+        return vec![event.clone()];
+    }
+    // A tool event carries its bounded `tool.result`; chunking would clone it per part
+    // and the web keys tool rows by itemId, so the preview text is bounded instead.
+    if event["kind"] == "tool" {
+        let (cut, truncated) = bounded(text, 8192);
+        let mut single = event.clone();
+        single["text"] = json!(cut);
+        if truncated {
+            single["truncated"] = json!(true);
+        }
+        return vec![single];
+    }
     let mut result = vec![];
     let mut start = 0;
     while start < text.len() {

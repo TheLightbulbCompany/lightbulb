@@ -323,7 +323,13 @@ one event under the 16 KiB envelope with headroom, and matches the TUI, which
 also caps what it shows before "expand". Chunk sizes are chosen against
 `ascii_wire_len` (non-ASCII expands sixfold on the wire), not character
 counts. Splitting continues to work for oversized prose (`split_text` with a
-shared `itemId`).
+shared `itemId`); tool events are never split (their preview text is bounded
+to 8 KiB instead, since each chunk would carry the whole `tool.result`), and
+empty-text markers (thinking, turn boundaries) always travel as one event.
+Paths in tool summaries and inputs render as the TUI shows them: relative to
+the session `cwd`, else `~/…`, else the basename. The teammate-header
+fallback for unknown native wrappers only fires when the header starts the
+text; a prompt that merely mentions the header stays an ordinary prompt.
 
 ### 4.2 Codex (`codex.rs`)
 

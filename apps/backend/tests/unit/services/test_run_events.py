@@ -211,3 +211,27 @@ async def test_ended_error_with_started_publishes_nothing(metrics):
             "o", _event(type="run.ended", outcome="error", error_kind="agent_did_not_start", usage=USAGE)
         )
     publisher.publish_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_processing_failure_never_5xxes_an_applied_ended_callback(metrics):
+    """A transient failure looking up the trigger message (get_message_by_id, called by
+    _after_run_ended before either of its own guarded blocks) must not propagate out of
+    handle_run_event: the ledger row is already closed, so the callback must still report
+    applied, and the error+run_ended frames (published before post-processing runs) must
+    still go out for a never-started error row."""
+    row = {**ROW, "outcome": "error"}
+    row.pop("startedAt")
+    publisher = AsyncMock()
+    with (
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=row)),
+        patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(side_effect=RuntimeError("ddb down"))),
+        patch.object(messaging, "get_live_event_publisher", lambda: publisher),
+    ):
+        result = await messaging.handle_run_event(
+            "o", _event(type="run.ended", outcome="error", error_kind="agent_did_not_start", usage=USAGE)
+        )
+    assert result.status == "applied"
+    assert publisher.publish_room.await_count == 2
+    frame_types = [call.args[1]["payload"]["frame"]["type"] for call in publisher.publish_room.await_args_list]
+    assert frame_types == ["error", "run_ended"]

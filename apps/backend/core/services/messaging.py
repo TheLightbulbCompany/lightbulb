@@ -1848,12 +1848,15 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                 value = _ms_between(row.get(start), row.get(end)) if row.get(start) and row.get(end) else None
                 if value is not None:
                     put_metric(name, value=value, unit="Milliseconds", dimensions={"event_kind": event_kind})
-            await _after_run_ended(owner_id, row, event.outcome, event.usage)
             if event.outcome == "error" and not row.get("startedAt"):
                 try:
                     await publish_run_error_frames(row, event.error_kind)
                 except Exception:
                     logger.exception("run error frames failed")
+            try:
+                await _after_run_ended(owner_id, row, event.outcome, event.usage)
+            except Exception:
+                logger.exception("run post-processing failed")
     if not applied and await messaging_repo.get_run(owner_id, run_id) is None:
         put_metric("messaging.run.callback", dimensions={"type": event.type, "outcome": "unknown"})
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")

@@ -23,7 +23,7 @@ from core.auth import AuthContext, resolve_owner_id
 from core.repositories import container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
-from core.services.starter_roster import ROLE_KEYS as STARTER_ROLE_KEYS
+from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
 
 RoomKind = Literal["channel", "dm", "group-dm"]
 MemberKind = Literal["human", "agent"]
@@ -41,14 +41,11 @@ MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
-LIVE_SCHEMA_VERSION = 1
 DEFAULT_ROOM_NAME = "general"
 DEFAULT_ROOM_WELCOME = (
     "Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. "
     "I’ll coordinate. Tell us what you’re trying to build or change."
 )
-# The starter role keys, owned by core.services.starter_roster.
-_STARTER_KEYS = STARTER_ROLE_KEYS
 
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,

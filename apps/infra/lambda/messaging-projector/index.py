@@ -320,44 +320,70 @@ def _push_tokens(user_id: str) -> list[str]:
         return []
 
 
-def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any]) -> None:
-    """One Expo request for every token this message notified. Never raises.
+def _push_title(message: dict[str, Any], meta: dict[str, Any], mentioned: bool) -> str:
+    """Who said it, and where — the one line iOS shows in bold above the text.
 
-    No ticket handling: the projector has read-only DynamoDB access.
+    Slack's shape: a DM banner is the sender's name alone (the room adds
+    nothing you don't already know), everything else names the room, and a
+    mention says so, because on a channel the mention is the only reason the
+    push exists at all. An agent needs no marker: ``displayName`` already IS
+    the agent's name for agent-authored messages.
+    """
+    author = message["author"]["displayName"]
+    if meta.get("kind") == "dm":
+        return author
+    # Every room kind may be nameless (CreateRoomRequest.name is optional), and
+    # only channels wear the "#" — a group DM's name is not a channel name.
+    name = meta.get("name")
+    where = (f"#{name}" if meta.get("kind") == "channel" else name) if name else None
+    if not where:
+        return f"{author} mentioned you" if mentioned else author
+    return f"{author} mentioned you in {where}" if mentioned else f"{author} in {where}"
+
+
+def _send_push(
+    recipients: list[tuple[str, bool]], message: dict[str, Any], meta: dict[str, Any]
+) -> None:
+    """One Expo request for every (token, mentioned) this message notified.
+
+    Never raises. No ticket handling: the projector has read-only DynamoDB
+    access. The title is per recipient because "mentioned you" is.
     """
     # ponytail: no token pruning; prune DeviceNotRegistered when the projector
     # gets write access to the users table.
-    if not tokens:
+    if not recipients:
         return
     try:
-        if len(tokens) > MAX_PUSH_TOKENS:
+        if len(recipients) > MAX_PUSH_TOKENS:
             # ponytail: one request, extra tokens dropped. Chunk into batches of
             # 100 when a single room outgrows it.
             logger.warning(
-                "projector push capped tokens=%d sent=%d", len(tokens), MAX_PUSH_TOKENS
+                "projector push capped tokens=%d sent=%d", len(recipients), MAX_PUSH_TOKENS
             )
             _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "capped"})
-            tokens = tokens[:MAX_PUSH_TOKENS]
-        author = message["author"]["displayName"]
-        # Every room kind may be nameless (CreateRoomRequest.name is optional).
-        name = meta.get("name") if meta.get("kind") == "channel" else None
-        title = f"{author} in #{name}" if name else author
+            recipients = recipients[:MAX_PUSH_TOKENS]
         data = {
             "roomId": message["roomId"],
             "messageId": message["messageId"],
             "messageSeq": message["messageSeq"],
             "threadRootMessageId": message["threadRootMessageId"],
         }
+        # A whitespace-only caption is an attachment, not a body.
+        text = message["text"].strip()[:PUSH_BODY_CHARS] or "Sent an image"
         body = json.dumps([
             {
                 "to": token,
-                "title": title,
-                # A whitespace-only caption is an attachment, not a body.
-                "body": message["text"].strip()[:PUSH_BODY_CHARS] or "Sent an image",
+                "title": _push_title(message, meta, mentioned),
+                "body": text,
                 "data": data,
                 "sound": "default",
+                # APNs thread-id: iOS stacks one conversation into one group
+                # instead of N unrelated banners. Deliberately NOT collapseId,
+                # which REPLACES the undelivered notification and would hide
+                # every message in a burst but the newest.
+                "threadId": message["roomId"],
             }
-            for token in tokens
+            for token, mentioned in recipients
         ]).encode("utf-8")
         request = urllib.request.Request(
             EXPO_PUSH_URL,
@@ -371,12 +397,14 @@ def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any])
         _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "ok"})
     except Exception as exc:  # noqa: BLE001 - push is best-effort
         logger.warning(
-            "projector push send failed tokens=%d error_type=%s", len(tokens), type(exc).__name__
+            "projector push send failed tokens=%d error_type=%s",
+            len(recipients),
+            type(exc).__name__,
         )
         _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "send_error"})
 
 
-def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
+def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple[str, bool]]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
     root = message["threadRootMessageId"]
@@ -390,7 +418,8 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
             and (row.get("messageId") == root or row.get("threadRootMessageId") == root)
         }
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
-    tokens: list[str] = []
+    # (token, was this token's owner @mentioned) — the push title is per reader.
+    recipients: list[tuple[str, bool]] = []
     for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
         user_id = candidate["id"]
         # Recheck membership after discovery, including remove/rejoin history floor.
@@ -416,7 +445,8 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
             if member.get("muted") is True:
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})
             else:
-                tokens.extend(_push_tokens(user_id))
+                at_me = user_id in mentioned
+                recipients.extend((token, at_me) for token in _push_tokens(user_id))
         # Content stays behind an authenticated HTTP read, even if access is
         # removed between this membership check and the user's delivery.
         _publish(f"/users/{key}", {
@@ -426,7 +456,7 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
             "payload": {"roomId": room_id, "messageId": message["messageId"],
                         "messageSeq": seq, "threadRootMessageId": root, "notify": notify},
         })
-    return tokens
+    return recipients
 
 
 def _current_credentials():
@@ -520,7 +550,7 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
-    tokens = _notify_members(message, meta)
+    recipients = _notify_members(message, meta)
     _publish(f"/rooms/{message['roomId']}/{delivery_key}", event)
     try:
         _emit_metric(
@@ -534,7 +564,7 @@ def _project_message(item: dict[str, Any]) -> None:
     # Push LAST: a raising publish replays the whole record, and Expo has no
     # eventId dedupe, so an earlier send would banner every member twice.
     # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.
-    _send_push(tokens, message, meta)
+    _send_push(recipients, message, meta)
 
 
 def _project_live(item: dict[str, Any]) -> None:

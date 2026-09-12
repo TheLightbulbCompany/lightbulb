@@ -368,10 +368,10 @@ def push_world(kind: str = "channel", muted: tuple[str, ...] = (), tokens: dict 
     return items
 
 
-def push_message(text: str = "hello") -> dict:
+def push_message(text: str = "hello", mentions: tuple[str, ...] = (BOB_ID, CAROL_ID)) -> dict:
     message = message_item(sequence=2)
     message["text"] = text
-    message["mentions"] = [{"kind": "human", "id": BOB_ID}, {"kind": "human", "id": CAROL_ID}]
+    message["mentions"] = [{"kind": "human", "id": user} for user in mentions]
     return message
 
 
@@ -403,8 +403,10 @@ class PushTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 5)
         messages = json.loads(request.data)
         self.assertEqual(sorted(m["to"] for m in messages), ["tok-bob", "tok-carol"])
-        self.assertTrue(all(m["title"] == "Alice in #general" for m in messages))
+        self.assertTrue(all(m["title"] == "Alice mentioned you in #general" for m in messages))
         self.assertTrue(all(m["sound"] == "default" for m in messages))
+        # APNs thread-id: one conversation groups into one stack on iOS.
+        self.assertTrue(all(m["threadId"] == ROOM_ID for m in messages))
         self.assertEqual(messages[0]["body"], "hello")
         self.assertEqual(messages[0]["data"], {
             "roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 2, "threadRootMessageId": None,
@@ -465,11 +467,26 @@ class PushTests(unittest.TestCase):
         self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "501"}]})
         urlopen.assert_not_called()
 
-    def test_nameless_channel_titles_with_the_author_alone(self):
+    def test_nameless_channel_drops_the_room_but_keeps_the_mention(self):
         world = push_world()
         world[(f"ROOM#{ROOM_ID}", "META")]["name"] = None
         _, urlopen = self.project(world)
-        self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["title"], "Alice")
+        self.assertEqual(
+            json.loads(urlopen.call_args.args[0].data)[0]["title"], "Alice mentioned you"
+        )
+
+    def test_group_dm_names_the_room_and_titles_each_reader_separately(self):
+        # A group DM notifies every member, so one message carries both titles:
+        # Bob was @mentioned, Carol was not. The "#" is a channel's, not a
+        # group DM's.
+        _, urlopen = self.project(
+            push_world(kind="group-dm"), push_message(mentions=(BOB_ID,))
+        )
+        titles = {m["to"]: m["title"] for m in json.loads(urlopen.call_args.args[0].data)}
+        self.assertEqual(
+            titles,
+            {"tok-bob": "Alice mentioned you in general", "tok-carol": "Alice in general"},
+        )
 
     def test_more_than_one_hundred_tokens_sends_one_hundred_and_warns(self):
         world = push_world(tokens={BOB_ID: [f"tok-{n}" for n in range(101)]})

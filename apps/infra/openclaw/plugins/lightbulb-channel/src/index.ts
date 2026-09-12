@@ -23,6 +23,7 @@ import {
   waitUntilAbort,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { dispatchGatewayMethod } from "openclaw/plugin-sdk/gateway-method-runtime";
 import { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once";
 // @ts-expect-error OpenClaw 2026.9.3 exports this runtime JS subpath but omits its declaration file.
 import { completeWithPreparedSimpleCompletionModel, prepareSimpleCompletionModelForAgent } from "openclaw/plugin-sdk/simple-completion-runtime";
@@ -48,6 +49,7 @@ import {
   startGatewayAccount,
   type LightbulbAccount,
 } from "./channel.js";
+import { RPC_ROUTE, createRpcHandler } from "./rpc.js";
 
 export const lightbulbChannelConfigSchema = buildJsonChannelConfigSchema(
   CHANNEL_CONFIG_JSON_SCHEMA,
@@ -199,5 +201,14 @@ export default defineChannelPluginEntry({
       fetch: (url, init) => fetch(url, init),
       nodes: () => api.runtime.nodes.list({ connected: true }),
     }), { names: ["lightbulb_local_sessions"] });
+    // Registered here, not through registerPluginHttpRoute: only the plugin-API path reads the
+    // manifest's gatewayMethodDispatch contract and grants dispatchGatewayMethod to the route.
+    api.registerHttpRoute({
+      path: RPC_ROUTE,
+      auth: "gateway",
+      match: "exact",
+      gatewayRuntimeScopeSurface: "trusted-operator",
+      handler: createRpcHandler({ dispatch: dispatchGatewayMethod, readBody: readJsonWebhookBodyOrReject as any }),
+    });
   },
 });

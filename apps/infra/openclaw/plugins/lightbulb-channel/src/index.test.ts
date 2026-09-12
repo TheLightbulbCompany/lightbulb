@@ -434,7 +434,7 @@ describe("strict package and channel configuration", () => {
   it("registers the optional adapter through the real full/tool-discovery SDK entry only", () => {
     for (const mode of ["full", "tool-discovery", "discovery", "cli-metadata"]) {
       const registerTool = vi.fn();
-      entry.register({ registrationMode: mode, registerChannel: vi.fn(), registerTool, runtime: { nodes: { list: vi.fn() } } } as any);
+      entry.register({ registrationMode: mode, registerChannel: vi.fn(), registerTool, registerHttpRoute: vi.fn(), runtime: { nodes: { list: vi.fn() } } } as any);
       expect(registerTool.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 1 : 0);
       if (registerTool.mock.calls.length) {
         expect(registerTool.mock.calls[0][1]).toEqual({ names: ["lightbulb_local_sessions"] });

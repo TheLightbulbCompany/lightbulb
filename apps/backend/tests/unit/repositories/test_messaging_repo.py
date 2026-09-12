@@ -783,3 +783,24 @@ async def test_mark_unread_from_a_sequence_leaves_that_message_and_everything_af
     assert await repo.mark_unread(room_id, USER_A, joined_seq=0) == 4
     await repo.set_read_cursor(room_id, USER_A, 5)
     assert await repo.mark_unread(room_id, USER_A, joined_seq=3, from_seq=1) == 3
+
+
+@pytest.mark.asyncio
+async def test_scan_growth_rows_returns_only_messages_and_rooms_without_bodies(table):
+    """The admin growth read sees every MSG# row and every ROOM META row — and
+    nothing else. ``STREAM#…`` rows also carry sk="META", so the pk prefix is what
+    separates a room from a private-channel pointer; message text is never
+    projected, because a metrics read has no business carrying message bodies."""
+    room_id, _ = await _room()
+    await _post(room_id, text="secret plan")
+    await repo.ensure_user_stream(OWNER, USER_A)
+
+    messages, rooms = await repo.scan_growth_rows()
+
+    assert [m["roomId"] for m in messages] == [room_id]
+    assert messages[0]["author"]["kind"] == "human" and messages[0]["ownerId"] == OWNER
+    assert messages[0]["dispatchTargets"] == [{"agentId": FRIDAY, "eventKind": "room_event"}]
+    assert messages[0]["createdAt"]
+    assert "text" not in messages[0] and "mentions" not in messages[0]
+    assert [r["roomId"] for r in rooms] == [room_id]
+    assert {r["sk"] for r in rooms} == {"META"}

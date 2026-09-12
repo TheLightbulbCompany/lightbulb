@@ -70,6 +70,9 @@ Open verification (task 1 of the plan): confirm the exact `ctx.identity` field t
 carries the IAM caller ARN in an Events handler by publishing once from a
 container-shaped role into a scratch handler that logs `ctx.identity`.
 
+Verified 2026-09-12 on dev: the IAM caller ARN is ctx.identity.userArn, shaped
+arn:aws:sts::{account}:assumed-role/{roleName}/{session}.
+
 ## 4. Turn contract
 
 ### Dispatch (backend SQS consumer)

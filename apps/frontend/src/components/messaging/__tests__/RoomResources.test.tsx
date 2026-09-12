@@ -485,6 +485,23 @@ it("retries the failed older page rather than silently refreshing a different re
   expect(await screen.findByText("Native event 151")).toBeInTheDocument();
 });
 
+it("shows the harness title, keeps the composer, and renders tool rows in the terminal grammar", async () => {
+  const f = setup();
+  f.client.listResources.mockResolvedValue({ ...resources, sessions: [{ ...session, title: "Retry fix", status: "busy", latestEventSeq: 2 }] });
+  f.client.listLocalSessionEvents.mockResolvedValue({ nextAfterSeq: null, events: [
+    { seq: 1, kind: "text", role: "user", text: "fix the retry", truncated: false },
+    { seq: 2, kind: "tool", role: "assistant", text: "pnpm test", truncated: false, itemId: "e1", tool: { name: "CommandExecution", status: "done", result: { output: "1 passed" }, lines: 1 } },
+  ] });
+  render(<RoomPanel {...f.props} />);
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  await userEvent.click(await screen.findByRole("button", { name: /Open Codex · Retry fix/ }));
+  expect(await screen.findByRole("heading", { name: /Codex · Retry fix/ })).toBeInTheDocument();
+  expect(screen.getByText("Ran pnpm test")).toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Working" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send follow-up" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Copy session link" })).toBeInTheDocument();
+});
+
 it("cannot race a new send with a receipt check or erase the next draft", async () => {
   const f = setup();
   render(<RoomPanel {...f.props} />);

@@ -94,6 +94,7 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
 export function useLocalSessionHistory(
   client: RoomResourceSource["client"], roomId: string, sessionId: string,
   latestEventSeq: number, revision: number, onAccessLost: () => void,
+  live?: { onEvent: RoomResourceSource["onEvent"]; busy: boolean },
 ) {
   const [events, setEvents] = useState<LocalSessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -147,6 +148,17 @@ export function useLocalSessionHistory(
   useEffect(() => {
     if (initialized.current && follow.current) void load("newer");
   }, [revision, load]);
+  const onEvent = live?.onEvent;
+  const tailBusy = live?.busy ?? false;
+  useEffect(() => {
+    if (!onEvent) return;
+    const unsubscribe = onEvent(event => {
+      if (event.type === "room.resources.changed" && "roomId" in event.payload && event.payload.roomId === roomId && initialized.current && follow.current) void load("newer");
+    });
+    // Tail the session while a turn runs; the 5s resources poll covers idle sessions.
+    const timer = setInterval(() => { if (initialized.current && follow.current) void load("newer"); }, tailBusy ? 1000 : 5000);
+    return () => { unsubscribe(); clearInterval(timer); };
+  }, [onEvent, tailBusy, roomId, load]);
   return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
     hasNewer: more || latestEventSeq > (events.at(-1)?.seq ?? 0) };
 }

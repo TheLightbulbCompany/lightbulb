@@ -36,6 +36,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import _get_resource, run_in_thread, utc_now_iso
+from core.dynamodb import plain as _plain
 
 logger = logging.getLogger(__name__)
 
@@ -163,17 +164,6 @@ def _expires_at() -> int:
     return int(time.time()) + OUTBOX_TTL_S
 
 
-def _plain(value: Any) -> Any:
-    """Convert DynamoDB ``Decimal`` values back to ordinary JSON numbers."""
-    if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
-    if isinstance(value, dict):
-        return {k: _plain(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_plain(v) for v in value]
-    return value
-
-
 def _ddb_safe(value: Any) -> Any:
     """Convert JSON-compatible floats before passing values to DynamoDB."""
     if isinstance(value, float):
@@ -216,11 +206,18 @@ def _is_cancelled(exc: ClientError) -> bool:
     return exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
 
 
-def _cancel_codes(exc: ClientError) -> list[str | None]:
-    reasons = exc.response.get("CancellationReasons")
-    if not isinstance(reasons, list):
-        return []
-    return [r.get("Code") if isinstance(r, dict) else None for r in reasons]
+async def _paginate(**kwargs: Any) -> list[dict]:
+    """Drain one table query, following ``LastEvaluatedKey`` and honouring ``Limit``."""
+    table = _table()
+    limit = kwargs.get("Limit")
+    items: list[dict] = []
+    while True:
+        response = await run_in_thread(table.query, **kwargs)
+        items.extend(_plain(response.get("Items", [])))
+        last = response.get("LastEvaluatedKey")
+        if not last or (limit is not None and len(items) >= limit):
+            return items[:limit] if limit is not None else items
+        kwargs["ExclusiveStartKey"] = last
 
 
 async def _query(
@@ -230,7 +227,6 @@ async def _query(
     ascending: bool = True,
     limit: int | None = None,
     between: tuple[str, str] | None = None,
-    lt: str | None = None,
 ) -> list[dict]:
     from boto3.dynamodb.conditions import Key
 
@@ -239,22 +235,10 @@ async def _query(
         cond = cond & Key("sk").begins_with(begins_with)
     elif between is not None:
         cond = cond & Key("sk").between(*between)
-    elif lt is not None:
-        cond = cond & Key("sk").lt(lt)
-    table = _table()
-    items: list[dict] = []
     kwargs: dict = {"KeyConditionExpression": cond, "ConsistentRead": True, "ScanIndexForward": ascending}
     if limit is not None:
         kwargs["Limit"] = limit
-    while True:
-        response = await run_in_thread(table.query, **kwargs)
-        items.extend(_plain(response.get("Items", [])))
-        if limit is not None and len(items) >= limit:
-            return items[:limit]
-        last = response.get("LastEvaluatedKey")
-        if not last:
-            return items
-        kwargs["ExclusiveStartKey"] = last
+    return await _paginate(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +283,6 @@ async def get_read_cursor(room_id: str, user_id: str) -> int:
     return int(row["lastReadSeq"]) if row else 0
 
 
-async def get_human_idempotency(room_id: str, user_id: str, client_message_id: str) -> dict | None:
-    return await _get(room_pk(room_id), human_idemp_sk(user_id, client_message_id))
-
-
 async def get_agent_idempotency(owner_id: str, event_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), agent_idemp_sk(event_id))
 
@@ -341,18 +321,10 @@ async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> lis
     from boto3.dynamodb.conditions import Key
 
     table = _table()
-    rows: list[dict] = []
-    kwargs: dict = {
-        "IndexName": GSI_BY_MEMBER,
-        "KeyConditionExpression": Key("memberKey").eq(member_key(owner_id, kind, member_id)),
-    }
-    while True:
-        response = await run_in_thread(table.query, **kwargs)
-        rows.extend(_plain(response.get("Items", [])))
-        last = response.get("LastEvaluatedKey")
-        if not last:
-            break
-        kwargs["ExclusiveStartKey"] = last
+    rows = await _paginate(
+        IndexName=GSI_BY_MEMBER,
+        KeyConditionExpression=Key("memberKey").eq(member_key(owner_id, kind, member_id)),
+    )
     if not rows:
         return []
     metas: dict[str, dict] = {}

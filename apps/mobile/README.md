@@ -150,14 +150,23 @@ After an EAS `preview` build (dev API/Clerk):
 1. Sign in on a **physical** device; grant the notification permission prompt.
 2. Send a message to an agent; **background the app**; confirm a push arrives
    showing the **agent name** (title) + **reply preview** (body).
-3. **Tap** it → it lands on that agent's chat.
+3. **Tap** it → it lands on the conversation the message is in (a reply in a
+   thread lands on the thread screen; a legacy `agentId`-only push resolves that
+   agent's DM and redirects into it).
 4. Repeat with **desktop and web closed (phone-only)** to exercise the teardown
    guard — the backend↔container connection must stay alive through the run so
    the completion push still fires with nothing else connected.
-5. (Once `getCurrentAgentId` is threaded from the chat screen) with the app
-   **foregrounded on that agent's chat**, confirm **no duplicate banner**. v1
-   ships `getCurrentAgentId → null` (shows all banners), so this step verifies the
-   follow-up, not current behavior.
+5. With the app **foregrounded on that conversation**, confirm **no duplicate
+   banner** — the room and thread screens claim the push target
+   (`claimRoomTarget` in `src/lib/activeAgent.ts`) and the handler suppresses
+   only that exact room+thread. Then check the two halves of the rule: a message
+   in a **different** room still banners, and a **thread reply** banners while
+   you are on the parent conversation but not while you are in that thread.
+6. Check the badges: a DM or an `@you` bumps the **Home tab** and the **app icon**
+   (`badgeCount` — DMs and mentions only, nothing from a muted room, nothing
+   from a plain channel post), and opening the room clears them. The icon badge
+   is written by the running app, so a push received while the app is killed
+   does not move it until launch.
 
 ## Checks
 

@@ -17,6 +17,7 @@ jest.mock(
     getExpoPushTokenAsync: jest.fn(async () => ({ data: "ExponentPushToken[test]" })),
     getLastNotificationResponseAsync: jest.fn(async () => null),
     setNotificationHandler: jest.fn(),
+    setBadgeCountAsync: jest.fn(async () => true),
     addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
   }),
   { virtual: true },

@@ -86,6 +86,7 @@ const mockLive = {
 jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 
 import Thread from "../[roomId]/thread/[messageId]";
+import { getCurrentTarget } from "../../../../lib/activeAgent";
 
 // jest-expo leaves AppState.currentState undefined; a device reports "active",
 // and the RoomsPlatform ANDs it into isVisible(), which gates read marking.
@@ -167,5 +168,14 @@ describe("thread screen", () => {
     await fireEvent.press(screen.getByText("Not sent · tap to retry"));
     await waitFor(() => expect(screen.queryByText("Not sent · tap to retry")).toBeNull());
     expect(mockSendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  // The threadId half is what keeps a reply to THIS thread suppressed while a
+  // reply to a sibling thread of the same room still banners.
+  it("claims the push target for this thread, not just its room", async () => {
+    const { unmount } = await render(<Thread />);
+    expect(getCurrentTarget()).toMatchObject({ roomId: "room-1", threadId: "m1" });
+    await unmount();
+    expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
   });
 });

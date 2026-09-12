@@ -30,7 +30,14 @@ import { PushRegistration } from "./PushRegistration";
 it("requests a token and POSTs it once", async () => {
   // RNTL 14's render() is async — await it before asserting effects.
   await render(
-    <PushRegistration getCurrentChat={() => ({ agentId: null, sessionId: null })} />,
+    <PushRegistration
+      getCurrentTarget={() => ({
+        agentId: null,
+        sessionId: null,
+        roomId: null,
+        threadId: null,
+      })}
+    />,
   );
   await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
   const [path, body] = mockPost.mock.calls[0];
@@ -58,9 +65,25 @@ function responseWith(data: Record<string, unknown>) {
   return { notification: { request: { content: { data } } } };
 }
 
+/** Drive the warm-path listener: mount, then hand it a tapped response. */
+async function routeTap(data: Record<string, unknown>) {
+  await mountAndSettle();
+  const listener = (
+    Notifications.addNotificationResponseReceivedListener as jest.Mock
+  ).mock.calls.at(-1)?.[0] as (r: unknown) => void;
+  listener(responseWith(data));
+}
+
 async function mountAndSettle() {
   await render(
-    <PushRegistration getCurrentChat={() => ({ agentId: null, sessionId: null })} />,
+    <PushRegistration
+      getCurrentTarget={() => ({
+        agentId: null,
+        sessionId: null,
+        roomId: null,
+        threadId: null,
+      })}
+    />,
   );
 }
 
@@ -126,6 +149,26 @@ describe("notification tap routing", () => {
 
     await waitFor(() => expect(mockPush).toHaveBeenCalled());
     expect(String(mockPush.mock.calls[0][0])).toContain("/agent/agent_1");
+  });
+
+  it("routes a room push to the conversation", async () => {
+    await routeTap({ roomId: "room-1", messageId: "m1", messageSeq: 2, threadRootMessageId: null });
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1");
+  });
+
+  it("routes a thread reply to the thread screen", async () => {
+    await routeTap({ roomId: "room-1", messageId: "m2", messageSeq: 3, threadRootMessageId: "m1" });
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/thread/m1");
+  });
+
+  // The room branch sits between Teams and agent, so both neighbours are
+  // re-asserted on the warm path the room tests use.
+  it("still routes a Teams push to its issue", async () => {
+    await routeTap({ source: "teams", issueId: "i1" });
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/(app)/teams/issue/[id]",
+      params: { id: "i1" },
+    });
   });
 
   it("does nothing when the app was not opened from a notification", async () => {

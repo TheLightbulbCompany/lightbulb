@@ -1,5 +1,3 @@
-import type { MessagingApiError } from "../messaging/types";
-
 export interface RuntimeError {
   code: string;
   message: string;
@@ -37,5 +35,3 @@ export type RuntimeQuestionResolveRequest =
       secretStoreAllowedHosts?: string[];
     }
   | { cancel: true };
-
-export type RuntimeApiError = MessagingApiError;

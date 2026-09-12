@@ -28,7 +28,7 @@ export function recordRecentEmoji(emoji: string): void {
   }
 }
 
-export interface EmojiPickerProps {
+interface EmojiPickerProps {
   onPick: (emoji: string) => void;
   disabled?: boolean;
   triggerLabel?: string;

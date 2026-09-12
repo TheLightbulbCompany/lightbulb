@@ -36,7 +36,6 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   liveChannels: readonly string[];
   liveError: string | null;
   messaging: ReturnType<typeof createMessagingClient>;
-  runtime: ReturnType<typeof createRuntimeClient>;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(
     handler: (
@@ -186,7 +185,6 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       liveChannels: live.liveChannels,
       liveError: configError ? "Live updates are reconnecting." : live.lastError,
       messaging,
-      runtime,
       claimActiveRoomSubscription,
       onChatMessage,
       rpc: runtime.rpc,

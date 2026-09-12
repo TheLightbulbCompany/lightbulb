@@ -2,7 +2,8 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomDetailsPanel, extractLinks } from "../RoomDetailsPanel";
-import type { RoomMessage, RoomSummary } from "../types";
+import type { RoomSummary } from "@lightbulb/shared";
+import type { RoomMessage } from "../types";
 
 const room: RoomSummary = {
   roomId: "room-1", name: "Roadmap", kind: "channel", roomRevision: 3, lastMessageSeq: 4,

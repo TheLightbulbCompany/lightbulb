@@ -1,6 +1,6 @@
 import type { SidebarSort } from "./roomSections";
 
-export const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
+const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
 export interface SidebarPrefs { collapsed: string[]; sort: SidebarSort }
 const EMPTY: SidebarPrefs = { collapsed: [], sort: "alpha" };
 

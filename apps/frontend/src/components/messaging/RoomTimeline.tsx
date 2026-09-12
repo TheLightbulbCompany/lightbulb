@@ -7,7 +7,7 @@ import { buildTimeline } from "@lightbulb/shared";
 import type { RoomMessage } from "./types";
 import "./messaging.css";
 
-export interface RoomTimelineProps {
+interface RoomTimelineProps {
   roomId: string;
   messages: readonly RoomMessage[];
   readSeq: number | null;

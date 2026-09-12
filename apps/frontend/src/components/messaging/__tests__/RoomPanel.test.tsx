@@ -1,13 +1,32 @@
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
-import type { RoomMessage, RoomParticipant, RoomRunView } from "../types";
+import type { RoomRunView } from "@lightbulb/shared";
+import type { RoomMessage, RoomParticipant } from "../types";
+
+// RoomPanel reads the narrow breakpoint straight off matchMedia (tests/setup.ts
+// stubs "nothing matches", i.e. the wide layout). Call narrowViewport() in a
+// test that needs the stacked layout; the afterEach puts the wide stub back.
+const wideMatchMedia = window.matchMedia;
+const narrowViewport = () => {
+  window.matchMedia = ((query: string) => ({
+    matches: query === "(max-width: 859px)",
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+};
+afterEach(() => { window.matchMedia = wideMatchMedia; });
 
 const owner: RoomParticipant = { kind: "human", id: "owner", displayName: "Owner", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
 const friday: RoomParticipant = { ...owner, kind: "agent", id: "friday", displayName: "Friday", role: "member", agentActivity: "running" };
-const message: RoomMessage = { messageId: "message", roomId: "room", messageSeq: 1, roomRevision: 1, author: { kind: "agent", id: "friday", displayName: "Old name" }, text: "Hello", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-10T00:00:00Z", runId: null, run: { state: "completed" } };
+const message: RoomMessage = { messageId: "message", roomId: "room", messageSeq: 1, roomRevision: 1, author: { kind: "agent", id: "friday", displayName: "Old name" }, text: "Hello", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-10T00:00:00Z", runId: null };
 const props: RoomPanelProps = {
   ownerScopeId: "org", currentUserId: "owner", roomId: "room", state: "ready", httpReady: true, liveConnected: true,
   room: { roomId: "room", kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 1, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null },
@@ -44,6 +63,7 @@ it.each(["dm", "group-dm", "channel"] as const)("does not expose management with
 });
 
 it("reveals and focuses same-room message navigation from a narrow resources pane", async () => {
+  narrowViewport();
   const targetedWhileHidden: boolean[] = [];
   const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
     if (this.dataset.messageId === "message") targetedWhileHidden.push(!!this.closest(".room-conversation[hidden]"));
@@ -51,7 +71,7 @@ it("reveals and focuses same-room message navigation from a narrow resources pan
   const source = { client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 };
   function ControlledRoom({ target }: { target: string | null }) {
     const [thread, setThread] = useState<string | null>(null);
-    return <RoomPanel {...props} narrow resourceSource={source} selectedThreadId={thread} onSelectThread={setThread} targetMessageId={target} />;
+    return <RoomPanel {...props} resourceSource={source} selectedThreadId={thread} onSelectThread={setThread} targetMessageId={target} />;
   }
   try {
     const view = render(<ControlledRoom target={null} />);
@@ -118,7 +138,6 @@ it("names a DM for its counterpart and uses canonical author and member activity
   const article = screen.getByRole("article", { name: "Message from Friday" });
   expect(within(article).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(article).getByText("Agent")).toBeInTheDocument();
-  expect(within(article).getByRole("status", { name: "Work status" })).toHaveTextContent("Completed");
   fireEvent.click(screen.getByRole("button", { name: "View members, 2 in this conversation" }));
   const members = screen.getByRole("complementary", { name: "Room details" });
   expect(within(members).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
@@ -228,7 +247,8 @@ it("opens profiles before the real DM action for human and agent authors and dis
 });
 
 it("opens and closes the real room context on a narrow viewport", async () => {
-  render(<RoomPanel {...props} narrow />);
+  narrowViewport();
+  render(<RoomPanel {...props} />);
   const history = screen.getByRole("region", { name: "Messages" });
   await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(history).not.toBeVisible();
@@ -240,7 +260,8 @@ it("opens and closes the real room context on a narrow viewport", async () => {
 });
 
 it("closes the room details panel and restores its trigger on Escape", async () => {
-  render(<RoomPanel {...props} narrow />);
+  narrowViewport();
+  render(<RoomPanel {...props} />);
   const history = screen.getByRole("region", { name: "Messages" });
   await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   const details = screen.getByRole("complementary", { name: "Room details" });
@@ -252,8 +273,8 @@ it("closes the room details panel and restores its trigger on Escape", async () 
 });
 
 it("returns focus to the Details trigger, not <body>, when Escape closes the room details panel at wide width", async () => {
-  // No `narrow` prop and the default matchMedia stub (tests/setup.ts) matches
-  // nothing, so this renders as the docked (>=1180px) layout -- the restore
+  // The default matchMedia stub (tests/setup.ts) matches nothing, so this
+  // renders as the docked (>=1180px) layout -- the restore
   // effect used to gate its close branch on `isNarrow` and dropped focus to
   // <body> here.
   render(<RoomPanel {...props} />);
@@ -498,7 +519,8 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
 it.each(["thread", "resources"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();
-  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork}
+  narrowViewport();
+  render(<RoomPanel {...props} onLinkToWork={onLinkToWork}
     resourceSource={{ client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 }}
     />);
   const history = screen.getByRole("region", { name: "Messages" });

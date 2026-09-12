@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import type { RoomMessage, RoomParticipant } from "./types";
 
-export interface RoomMessageSearchProps {
+interface RoomMessageSearchProps {
   roomId: string;
   messages: readonly RoomMessage[];
   participants: readonly RoomParticipant[];

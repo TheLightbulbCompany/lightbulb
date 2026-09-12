@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
-import type { RoomParticipant, RoomSummary } from "./types";
+import type { RoomSummary } from "@lightbulb/shared";
+import type { RoomParticipant } from "./types";
 
 const names = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
 

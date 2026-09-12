@@ -1175,23 +1175,39 @@ impl Mirror {
         self.pending = Some(batch.clone());
         Ok(Some(batch))
     }
-    fn acknowledge(&mut self, batch_id: &str, after_seq: u64) -> Result<()> {
-        if self.pending.is_none() && after_seq == self.after_seq {
-            // A registration ACK already reconciled this batch; its own late ACK is a no-op.
-            return Ok(());
+    /// Returns `Ok(true)` if this ack advanced state, `Ok(false)` if it was a stale
+    /// duplicate safely ignored (e.g. the relay answering a re-sent batch twice).
+    fn acknowledge(&mut self, batch_id: &str, after_seq: u64) -> Result<bool> {
+        let Some(pending) = self.pending.as_ref() else {
+            return if after_seq <= self.after_seq {
+                Ok(false)
+            } else {
+                Err("unexpected upload acknowledgment".into())
+            };
+        };
+        if pending["batchId"] != batch_id {
+            // A duplicate ack for an earlier, already-applied batch can arrive after a
+            // different batch is already pending; ignore it rather than conflict.
+            return if after_seq <= self.after_seq {
+                Ok(false)
+            } else {
+                Err(format!(
+                    "upload cursor conflict: ack for another batch at {after_seq} beyond local {}",
+                    self.after_seq
+                ))
+            };
         }
-        let pending = self
-            .pending
-            .as_ref()
-            .ok_or("unexpected upload acknowledgment")?;
         let count = pending["events"].as_array().map(Vec::len).unwrap_or(0) as u64;
-        if pending["batchId"] != batch_id || after_seq != self.after_seq + count {
-            return Err("upload cursor conflict".into());
+        if after_seq != self.after_seq + count {
+            return Err(format!(
+                "upload cursor conflict: acked at {after_seq}, expected {}",
+                self.after_seq + count
+            ));
         }
         self.after_seq = after_seq;
         self.queue.drain(..count as usize);
         self.pending = None;
-        Ok(())
+        Ok(true)
     }
     /// Adopt the relay's cursor when neither "nothing applied" nor "the pending batch was
     /// applied" explains it. The local backlog is dropped; one system marker tells viewers.
@@ -1884,10 +1900,45 @@ mod tests {
         let mut mirror = test_mirror(dir.path().join("transcript.jsonl"));
         mirror.after_seq = 7;
         // The registration ACK already reconciled this batch; its own ACK arrives late.
-        mirror.acknowledge("b1", 7).unwrap();
+        assert_eq!(mirror.acknowledge("b1", 7), Ok(false));
         assert_eq!(mirror.after_seq, 7);
         assert!(mirror.pending.is_none());
         assert!(mirror.acknowledge("b1", 8).is_err(), "a cursor we never reached is still a conflict");
+    }
+    #[test]
+    fn local_sessions_acknowledge_ignores_stale_duplicate_batch_acks_but_conflicts_on_real_mismatches(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(dir.path().join("transcript.jsonl"));
+
+        // No pending batch, cursor > local: unexplained.
+        mirror.after_seq = 5;
+        assert!(mirror.acknowledge("stale", 6).is_err());
+
+        // A batch is outstanding under a different batchId than the one arriving.
+        let events = vec![json!({"kind":"text","role":"assistant","text":"e","truncated":false})];
+        mirror.queue = events.clone();
+        mirror.pending = Some(json!({"batchId":"b2","events":events}));
+
+        // Duplicate ack for an earlier, already-applied batchId at/under the local
+        // cursor: ignored as stale, no state change.
+        assert_eq!(mirror.acknowledge("b1", 5), Ok(false));
+        assert_eq!(mirror.after_seq, 5);
+        assert!(mirror.pending.is_some(), "the still-outstanding batch is untouched");
+        assert_eq!(mirror.queue.len(), 1);
+
+        // Different batchId, cursor beyond local: unexplained, not stale.
+        assert!(mirror.acknowledge("b1", 6).is_err());
+
+        // Right batchId, wrong cursor: a real conflict.
+        assert!(mirror.acknowledge("b2", 99).is_err());
+        assert!(mirror.pending.is_some());
+
+        // Matching ack applies: cursor advances, queue drains, pending clears.
+        assert_eq!(mirror.acknowledge("b2", 6), Ok(true));
+        assert_eq!(mirror.after_seq, 6);
+        assert!(mirror.pending.is_none());
+        assert!(mirror.queue.is_empty());
     }
     #[test]
     fn local_sessions_tool_event_is_bounded_against_the_wire_not_its_byte_length() {

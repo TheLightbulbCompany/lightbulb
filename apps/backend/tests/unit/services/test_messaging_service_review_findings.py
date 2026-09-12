@@ -46,7 +46,7 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
         "dispatchTargets": [{"agentId": "specialist", "eventKind": "user_request"}],
         "attachments": [],
     }
-    create = AsyncMock(return_value=created)
+    create = AsyncMock(return_value=(created, False))
     capture = AsyncMock()
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"kind": "channel"}, {})))
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=members[2]))

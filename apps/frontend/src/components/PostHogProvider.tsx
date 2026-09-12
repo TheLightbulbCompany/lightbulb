@@ -35,6 +35,23 @@ const POSTHOG_UI_HOST = "https://us.posthog.com";
 const SIGNUP_INTENT_KEY = "isol8:signup_intent:v1";
 const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
 
+/**
+ * The PostHog project is shared by dev and prod, so client events carry no
+ * environment on their own — a dev session pollutes prod funnels unless
+ * every event is tagged. `NEXT_PUBLIC_API_URL` is baked in per-deploy (see
+ * CLAUDE.md's "API URL by environment"), so its host is the one build-time
+ * signal for which environment this bundle is running in.
+ */
+export function resolveEnvironment(apiUrl: string | undefined): "prod" | "dev" {
+  try {
+    return new URL(apiUrl ?? "").hostname === "api.flickmeon.ai" ? "prod" : "dev";
+  } catch {
+    return "dev";
+  }
+}
+
+const ENVIRONMENT = resolveEnvironment(process.env.NEXT_PUBLIC_API_URL);
+
 function safeStorageGet(key: string): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -152,7 +169,7 @@ function PostHogInit() {
     // the browser context names in-app webviews that `$browser` reports
     // indistinguishably as "Mobile Safari". Must come after init() —
     // register() no-ops until the SDK has loaded.
-    register({ signup_flow_id: signupFlowId(), ...browserContext() });
+    register({ signup_flow_id: signupFlowId(), environment: ENVIRONMENT, ...browserContext() });
   }, []);
   return null;
 }
@@ -318,7 +335,7 @@ function PostHogIdentify() {
       // — reset() clears super properties, and the next person to sign up on
       // this browser must not inherit the previous journey's id.
       rotateSignupFlowId();
-      register({ signup_flow_id: signupFlowId(), ...browserContext() });
+      register({ signup_flow_id: signupFlowId(), environment: ENVIRONMENT, ...browserContext() });
     }
   }, [isSignedIn, userId, user]);
 

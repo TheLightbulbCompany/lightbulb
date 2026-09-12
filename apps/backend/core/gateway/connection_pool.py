@@ -235,6 +235,18 @@ BUDGET_BLOCK_MESSAGES = {
     "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
 }
 
+# The closed vocabulary of `chat.error`'s `reason` dimension: OpenClaw's own
+# errorKind enum (upstream src/infra/errors.ts) plus the money codes
+# `_budget_error_code` substitutes, which are exactly the keys above — derived,
+# not retyped, so a new money code cannot drift out of the set. errorKind is an
+# enum upstream but crosses a process boundary and nothing here validates it
+# (ChatErrorCard deliberately renders an unmapped code verbatim, which is right
+# for a human and wrong for a metric), so anything unlisted collapses to
+# "other" rather than minting a CloudWatch dimension value.
+_CHAT_ERROR_REASONS = frozenset(
+    {"refusal", "timeout", "rate_limit", "context_length", "unknown", *BUDGET_BLOCK_MESSAGES}
+)
+
 
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
@@ -1013,11 +1025,20 @@ class GatewayConnection:
         try:
             await self._ws.send(json.dumps(frame))
         except Exception:
+            # The key is added to _room_session_subs BEFORE the send, so a
+            # failure used to be PERMANENT: every later subscribe_room_session
+            # short-circuited on the membership test and the room streamed zero
+            # frames for the life of the connection. Drop it so the next
+            # dispatch (openclaw_work subscribes before every run) retries.
+            self._room_session_subs.discard(session_key)
+            put_metric("messaging.room_session.subscribe", dimensions={"outcome": "error"})
             logger.warning(
                 "sessions.messages.subscribe send failed user=%s",
                 self.user_id,
                 exc_info=True,
             )
+            return
+        put_metric("messaging.room_session.subscribe", dimensions={"outcome": "ok"})
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""
@@ -1455,16 +1476,27 @@ class GatewayConnection:
             },
             room_id=parsed["room_id"],
         )
+        # Bounded by the _ROOM_SAFE_FRAME_TYPES gate at the top of this method.
+        frame_type = str(normalized.get("type"))
         try:
             async with self._live_publish_lock:
                 await get_live_event_publisher().publish_room(parsed["room_id"], event)
         except Exception:
+            put_metric(
+                "messaging.room_frame.publish",
+                dimensions={"outcome": "error", "frame_type": frame_type},
+            )
             logger.warning(
                 "room run-frame publish failed owner=%s frame_type=%s",
                 self.owner_id,
-                normalized.get("type"),
+                frame_type,
                 exc_info=True,
             )
+            return
+        put_metric(
+            "messaging.room_frame.publish",
+            dimensions={"outcome": "ok", "frame_type": frame_type},
+        )
 
     def _private_audience(self, session_key: str) -> str | None:
         run = self._active_runs.get(session_key.lower()) if session_key else None
@@ -1524,10 +1556,23 @@ class GatewayConnection:
             )
             return
 
+        # Read the active-run entry HERE, on the reader loop, not inside the
+        # task below: the chat terminal that clears `_active_runs` arrives on
+        # the same loop and the spawned task is not guaranteed to run first.
+        active = self._active_runs.get(session_key.lower()) or {}
+        carried_member = active.get("member_id")
+        event_kind = active.get("event_kind")
+        room_turn = parse_lightbulb_session_key(session_key) is not None
+
         async def _resolve_then_record():
             try:
-                member_id = await self._resolve_member_from_session(parsed)
-                await self._fetch_and_record_usage(session_key, member_id)
+                member_id = await self._resolve_member_from_session(parsed, carried_member)
+                await self._fetch_and_record_usage(
+                    session_key,
+                    member_id,
+                    room_turn=room_turn,
+                    event_kind=event_kind,
+                )
             except Exception:
                 # Don't let billing failures crash the gateway reader. Log
                 # with full traceback so DynamoDB outages and similar
@@ -1668,11 +1713,18 @@ class GatewayConnection:
         self._push_tasks.add(task)
         task.add_done_callback(self._push_tasks.discard)
 
-    async def _resolve_member_from_session(self, parsed: dict) -> str:
+    async def _resolve_member_from_session(self, parsed: dict, carried_member: str | None = None) -> str:
         """Map a parsed session key to the Clerk member_id.
 
-        Falls back to self.user_id (the owner) if no per-member attribution
-        is available (unlinked DM, group, channel, webchat-personal, unknown).
+        *carried_member* is the dispatching member recorded on the active-run
+        entry by ``mark_run_active`` (read by the caller while the run is still
+        open). A room/channel session key carries no member at all, so without
+        it every room turn's spend was attributed to the owner — the same
+        attribution the run-completion push already uses, and it is accepted
+        under the same ``user_``-prefix guard.
+
+        Falls back to self.user_id (the owner) when no per-member attribution
+        is available (unlinked DM, group, webchat-personal, unknown).
         """
         if parsed.get("source") == "dm":
             link = await channel_link_repo.get_by_peer(
@@ -1687,6 +1739,12 @@ class GatewayConnection:
 
         if parsed.get("source") == "webchat" and parsed.get("member_id"):
             return parsed["member_id"]
+
+        # Same shape guard `_dispatch_push_notification` applies to this value:
+        # only a Clerk id is a member. Anything else would mint a bogus
+        # `member:{id}:{period}` counter row the usage panel then renders.
+        if isinstance(carried_member, str) and carried_member.startswith("user_"):
+            return carried_member
 
         return self.user_id
 
@@ -1758,7 +1816,14 @@ class GatewayConnection:
         )
         return None
 
-    async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
+    async def _fetch_and_record_usage(
+        self,
+        session_key: str,
+        member_user_id: str,
+        *,
+        room_turn: bool = False,
+        event_kind: str | None = None,
+    ) -> None:
         """Fetch session token counts via RPC and record usage.
 
         Analytics only. The free-tier daily-spend counter is NOT written
@@ -1835,6 +1900,8 @@ class GatewayConnection:
                     cache_read=cache_read,
                     cache_write=cache_write,
                     raw_cost_microcents=raw_cost_microcents,
+                    room_turn=room_turn,
+                    event_kind=event_kind,
                 )
                 logger.info(
                     "Recorded usage for user %s (member=%s): model=%s in=%d out=%d",
@@ -1919,6 +1986,20 @@ class GatewayConnection:
             state = payload.get("state")
             if state not in {"final", "error", "aborted"} or not run_id:
                 return
+            # Which surface this turn came from, so the chat SLOs can be read
+            # per-surface instead of as one blended number. A run's room id is
+            # carried by its session key (`agent:<id>:lightbulb:channel:<room>`)
+            # and nowhere else — the active-run entry holds the room's
+            # event_kind/thread but never the id — so parsing the key is the
+            # room test, and it is the same key `mark_run_active` opened the run
+            # with. put_metric still publishes the [env, service] rollup
+            # alongside, so the existing dimensionless alarms keep working.
+            if room is not None:
+                source_dim = {"source": "room"}
+            elif parsed_key.get("source") == "webchat":
+                source_dim = {"source": "webchat"}
+            else:
+                source_dim = {"source": "other"}
             self._run_text.pop(run_id, None)
             run_is_side = self._is_side_run(run_id)
             primary_started_at: float | None = None
@@ -1935,7 +2016,7 @@ class GatewayConnection:
                         carried_member = active.get("member_id")
 
             if state == "final":
-                put_metric("chat.message.count")
+                put_metric("chat.message.count", dimensions=source_dim)
                 if is_true_terminal and not run_is_side and (self._extract_assistant_text(payload) or "").strip():
                     self._emit_trial_first_response()
                 thinking = self._extract_thinking_text(payload)
@@ -1965,6 +2046,21 @@ class GatewayConnection:
                     if money is not None:
                         upstream_message = str(message)
                         error_kind, message = money
+                # The counterpart of chat.message.count: W10's error rate divides
+                # the two. `reason` is OpenClaw's bounded errorKind enum (plus
+                # our own money codes); `reclassified` records whether
+                # _budget_error_code rewrote a gate throttle into a money code,
+                # which is the difference between "the model failed" and "the
+                # owner is out of budget".
+                reason = str(error_kind or "unknown")
+                put_metric(
+                    "chat.error",
+                    dimensions={
+                        "reason": reason if reason in _CHAT_ERROR_REASONS else "other",
+                        "reclassified": "true" if upstream_message else "false",
+                        **source_dim,
+                    },
+                )
                 frame = {"type": "error", "message": str(message), "agent_id": agent_id, "runId": run_id}
                 if error_kind:
                     frame["code"] = error_kind
@@ -1999,7 +2095,7 @@ class GatewayConnection:
             if primary_started_at is not None:
                 elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0)
                 if elapsed_ms <= _E2E_LATENCY_CEILING_MS:
-                    put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
+                    put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds", dimensions=source_dim)
                 else:
                     put_metric("chat.run.abandoned")
             return

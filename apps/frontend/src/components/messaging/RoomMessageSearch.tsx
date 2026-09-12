@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { capture } from "@/lib/analytics";
 import type { RoomMessage, RoomParticipant } from "./types";
 
 interface RoomMessageSearchProps {
@@ -27,7 +28,18 @@ export function RoomMessageSearch({ roomId, messages, participants, loading = fa
   const loadedMessageIds = new Set(roomMessages.map((message) => message.messageId));
   const matches = term ? roomMessages.filter((message) => message.text.toLowerCase().includes(term)).reverse() : [];
 
+  // Fires once per completed search — closing the dialog (however: Escape,
+  // overlay click, or picking a result) after the user actually typed
+  // something. An empty term means the dialog was opened and dismissed
+  // without a search ever happening.
+  const reportSearchCompletion = () => {
+    if (!term) return;
+    const resultCountBucket = matches.length === 0 ? "0" : matches.length <= 5 ? "1-5" : "6+";
+    capture("message_search_used", { result_count_bucket: resultCountBucket });
+  };
+
   return <Dialog open={open} onOpenChange={(next) => {
+    if (!next) reportSearchCompletion();
     setOpen(next);
     if (next) { setQuery(""); selected.current = null; onLoad?.(); }
   }}>
@@ -57,7 +69,7 @@ export function RoomMessageSearch({ roomId, messages, participants, loading = fa
           const start = Math.max(0, message.text.toLowerCase().indexOf(term) - 60);
           return <li key={message.messageId}>
             <button type="button" disabled={!threadLoaded} className="w-full rounded-sm p-3 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-              onClick={() => { selected.current = message; setOpen(false); }}>
+              onClick={() => { reportSearchCompletion(); selected.current = message; setOpen(false); }}>
               <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm"><span className="font-semibold">{name}</span>
                 {validDate && <time dateTime={message.createdAt} className="text-muted-foreground">{new Date(message.createdAt).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</time>}
                 {message.threadRootMessageId && <span className="text-muted-foreground">Thread reply</span>}

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { capture } from "@/lib/analytics";
 import { nativeNotify } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
 
@@ -59,11 +60,16 @@ export function MessageNotifications(props: {
             ? `${message.author.displayName} in #${room.name ?? "channel"}`
             : message.author.displayName;
           const body = message.text.slice(0, 180) || "Sent an image";
+          capture("notification_shown", { channel: "web", room_kind: room.kind });
+          const onClick = () => {
+            capture("notification_clicked", { channel: "web", room_kind: room.kind });
+            current.current.onOpen(roomId, threadRootMessageId);
+          };
           notifySuccess(`${title}: ${body}`, {
             dedupeKey: `message:${messageId}`,
-            action: { label: "View", onClick: () => current.current.onOpen(roomId, threadRootMessageId) },
+            action: { label: "View", onClick },
           });
-          nativeNotify(title, body, { onClick: () => current.current.onOpen(roomId, threadRootMessageId), tag: messageId });
+          nativeNotify(title, body, { onClick, tag: messageId });
         }).catch(() => {});
     });
     return () => { stopped = true; unlisten(); };

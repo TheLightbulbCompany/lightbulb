@@ -1,4 +1,6 @@
-"""Tests for the chat.e2e.latency SLO emission in GatewayConnection.
+"""Tests for the chat.* metric emissions in GatewayConnection (the
+chat.e2e.latency SLO plus the `source` split shared with chat.message.count
+and chat.error).
 
 The span is no longer correlated by a bespoke run_id->start map. Instead the
 END is emitted from the pool's existing per-session active-run window: the
@@ -12,10 +14,12 @@ after all frame forwarding, gated on the captured ``started_at``.
 
 Covers:
   - A primary-run TRUE terminal (final) with a pre-populated active-run
-    started_at emits chat.e2e.latency with a positive Milliseconds value and
-    no dimensions.
+    started_at emits chat.e2e.latency with a positive Milliseconds value.
   - A terminal for a session_key with NO active-run entry emits nothing.
   - A side (`/btw`) run terminal emits nothing (it owns no active-run window).
+  - The `source` dimension on chat.message.count / chat.e2e.latency /
+    chat.error: `room` for a canonical room session key, `webchat` for a
+    webchat one, `other` for anything else (cron, channel, group).
 """
 
 import os
@@ -94,9 +98,10 @@ async def test_primary_terminal_emits_positive_latency(conn):
     name, value, unit, dimensions = latency[0]
     assert unit == "Milliseconds"
     assert value > 0, "elapsed latency must be a positive value"
-    # No dimensions — alarm W9 reads chat.e2e.latency on {env,service} only
-    # (auto-injected by put_metric); a custom dim would create an un-alarmed stream.
-    assert dimensions is None
+    # `source` only — alarm W9 reads chat.e2e.latency on {env,service}, which
+    # put_metric still publishes as its rollup dimension set alongside this one.
+    # Any dimension beyond the surface split would be un-alarmed noise.
+    assert dimensions == {"source": "webchat"}
     # The active-run window was cleared on the true terminal (no leak).
     assert session_key not in conn._active_runs
 
@@ -167,3 +172,112 @@ async def test_side_run_terminal_emits_nothing(conn):
     assert not [c for c in captured if c[0] == "chat.e2e.latency"], "side run must not emit latency"
     # The primary window is left intact — the side terminal never touched it.
     assert session_key in conn._active_runs
+
+
+# A canonical room session key: agent:<agent-uuid>:lightbulb:channel:<room-uuid>.
+_ROOM_AGENT_ID = "11111111-1111-4111-8111-111111111111"
+_ROOM_ID = "22222222-2222-4222-8222-222222222222"
+_ROOM_SESSION_KEY = f"agent:{_ROOM_AGENT_ID}:lightbulb:channel:{_ROOM_ID}"
+
+
+async def _drive_terminal(conn, session_key, payload_extra) -> list[tuple]:
+    """Run one chat terminal through _handle_message, returning (name, dims)."""
+    conn._active_runs[session_key.lower()] = {
+        "started_at": time.monotonic() - 0.01,
+        "last_event_at": time.monotonic(),
+        "agent_id": "main",
+        "awaiting_approval": False,
+    }
+    captured: list[tuple] = []
+
+    def capture(name, value=1.0, unit="Count", dimensions=None):
+        captured.append((name, dimensions))
+
+    with (
+        patch("core.gateway.connection_pool.put_metric", side_effect=capture),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
+    ):
+        await conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"sessionKey": session_key, "runId": "run-src", **payload_extra},
+            }
+        )
+    return captured
+
+
+_FINAL = {"state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}}
+
+
+@pytest.mark.asyncio
+async def test_room_terminal_tags_source_room(conn):
+    """A canonical room session key splits the chat SLOs onto source=room."""
+    by_name = dict(await _drive_terminal(conn, _ROOM_SESSION_KEY, _FINAL))
+
+    assert by_name["chat.message.count"] == {"source": "room"}
+    assert by_name["chat.e2e.latency"] == {"source": "room"}
+
+
+@pytest.mark.asyncio
+async def test_non_room_non_webchat_terminal_tags_source_other(conn):
+    """A channel/group session key is neither room nor webchat."""
+    by_name = dict(await _drive_terminal(conn, "agent:main:telegram:group:-100123", _FINAL))
+
+    assert by_name["chat.message.count"] == {"source": "other"}
+    assert by_name["chat.e2e.latency"] == {"source": "other"}
+
+
+@pytest.mark.asyncio
+async def test_error_terminal_emits_chat_error_with_reason_and_source(conn):
+    """chat.error is W10's numerator; it carries the errorKind and the surface."""
+    captured = await _drive_terminal(
+        conn,
+        "agent:main:main",
+        {"state": "error", "errorMessage": "boom", "errorKind": "context_length"},
+    )
+
+    errors = [dims for name, dims in captured if name == "chat.error"]
+    assert errors == [{"reason": "context_length", "reclassified": "false", "source": "webchat"}]
+
+
+@pytest.mark.asyncio
+async def test_budget_reclassified_error_is_marked_reclassified(conn):
+    """A gate throttle rewritten into a money code is distinguishable."""
+    with patch.object(
+        conn,
+        "_budget_error_code",
+        AsyncMock(return_value=("trial_daily_cap", "Daily limit reached")),
+    ):
+        captured = await _drive_terminal(
+            conn,
+            "agent:main:main",
+            {"state": "error", "errorMessage": "Too many requests", "errorKind": "rate_limit"},
+        )
+
+    errors = [dims for name, dims in captured if name == "chat.error"]
+    assert errors == [{"reason": "trial_daily_cap", "reclassified": "true", "source": "webchat"}]
+
+
+@pytest.mark.asyncio
+async def test_unknown_error_kind_collapses_to_other(conn):
+    """errorKind is upstream's enum, not ours, and it crosses a process
+    boundary unvalidated — an unlisted code must not mint a new CloudWatch
+    dimension value."""
+    captured = await _drive_terminal(
+        conn,
+        "agent:main:main",
+        {"state": "error", "errorMessage": "boom", "errorKind": "some_new_upstream_kind"},
+    )
+
+    errors = [dims for name, dims in captured if name == "chat.error"]
+    assert errors == [{"reason": "other", "reclassified": "false", "source": "webchat"}]
+
+
+@pytest.mark.asyncio
+async def test_missing_error_kind_is_unknown_not_other(conn):
+    """`unknown` is a real upstream value, so an absent errorKind keeps it."""
+    captured = await _drive_terminal(conn, "agent:main:main", {"state": "error", "errorMessage": "boom"})
+
+    errors = [dims for name, dims in captured if name == "chat.error"]
+    assert errors == [{"reason": "unknown", "reclassified": "false", "source": "webchat"}]

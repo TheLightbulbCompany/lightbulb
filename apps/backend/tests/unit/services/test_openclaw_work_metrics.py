@@ -35,7 +35,7 @@ def _dimension_sets(metrics, name):
     return [kwargs.get("dimensions") for metric_name, kwargs in metrics if metric_name == name]
 
 
-async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted):
+async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted, meta=None):
     """Drive one ``_dispatch_message`` against a fake container + plugin."""
     ledger.setdefault("created", [])
     ledger.setdefault("ended", [])
@@ -81,7 +81,9 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     monkeypatch.setattr(worker, "_post", fake_post)
     await worker._dispatch_message(
-        {
+        meta
+        if meta is not None
+        else {
             "ownerId": "owner-1",
             "roomId": _ROOM,
             "kind": "channel",
@@ -368,6 +370,38 @@ async def test_dispatch_writes_the_ledger_row_and_the_run_contract(monkeypatch):
     }
     assert ledger["ended"] == []
     assert {"status": "accepted", "event_kind": "user_request"} in _dimension_sets(metrics, "messaging.ingress.ack")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_heals_a_meta_row_missing_workspace_id(monkeypatch):
+    """A META row that predates workspaceId is healed lazily, and the run object
+    that reaches the container + the ledger row both carry the healed id."""
+    heal_calls = []
+
+    async def fake_heal(pk, sk, meta):
+        heal_calls.append((pk, sk, meta))
+        return WS
+
+    monkeypatch.setattr(work.messaging_repo, "workspace_id_for_meta", fake_heal)
+    metrics, ledger, posted = _capture_metrics(monkeypatch), {}, {}
+    await _dispatch(
+        monkeypatch,
+        answer=_Answer(202, {"status": "accepted"}),
+        event_kind="user_request",
+        metrics=metrics,
+        ledger=ledger,
+        posted=posted,
+        meta={"ownerId": "owner-1", "roomId": _ROOM, "kind": "channel", "revision": 1, "deliveryKey": KEY},
+    )
+    assert heal_calls == [(work.messaging_repo.room_pk(_ROOM), "META", heal_calls[0][2])]
+    expected = work.messaging_repo.run_id_for("a1", "m1")
+    assert posted["body"]["run"] == {
+        "runId": expected,
+        "workspaceId": WS,
+        "frameChannel": f"/ws/{WS}/rooms/{_ROOM}/{KEY}",
+        "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+    }
+    assert ledger["created"][0][2]["workspace_id"] == WS
 
 
 @pytest.mark.asyncio

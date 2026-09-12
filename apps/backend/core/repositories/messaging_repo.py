@@ -256,6 +256,27 @@ async def ensure_workspace_id(owner_id: str) -> str:
     return row["workspaceId"]
 
 
+async def workspace_id_for_meta(pk: str, sk: str, meta: dict) -> str:
+    """The row's workspaceId, stamped lazily for rows that predate the id (roll-window rows, fixtures)."""
+    workspace_id = meta.get("workspaceId")
+    if isinstance(workspace_id, str) and workspace_id:
+        return workspace_id
+    workspace_id = await ensure_workspace_id(meta["ownerId"])
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": pk, "sk": sk},
+            UpdateExpression="SET workspaceId = :ws",
+            ConditionExpression="attribute_not_exists(workspaceId)",
+            ExpressionAttributeValues={":ws": workspace_id},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    meta["workspaceId"] = workspace_id
+    return workspace_id
+
+
 async def scan_growth_rows() -> tuple[list[dict], list[dict]]:
     """``(messages, rooms)`` — every ``MSG#`` row and every room ``META`` row.
 

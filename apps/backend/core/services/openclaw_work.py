@@ -402,10 +402,11 @@ class OpenClawWorkWorker:
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return
         run_id = messaging_repo.run_id_for(member["id"], message["messageId"])
+        workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
         body["run"] = {
             "runId": run_id,
-            "workspaceId": meta["workspaceId"],
-            "frameChannel": f"/ws/{meta['workspaceId']}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
+            "workspaceId": workspace_id,
+            "frameChannel": f"/ws/{workspace_id}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
             "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
         }
         created = await messaging_repo.create_run(
@@ -413,7 +414,7 @@ class OpenClawWorkWorker:
             run_id,
             room_id=meta["roomId"],
             agent_id=member["id"],
-            workspace_id=meta["workspaceId"],
+            workspace_id=workspace_id,
             trigger_message_id=message["messageId"],
             event_kind=event_kind,
         )

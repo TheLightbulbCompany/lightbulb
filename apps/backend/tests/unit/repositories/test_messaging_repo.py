@@ -3,10 +3,11 @@
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.repositories import messaging_repo as repo
@@ -826,6 +827,38 @@ async def test_ensure_workspace_id_mints_once_and_is_stamped_on_rooms_and_stream
     assert (await repo.get_room(room_id))["workspaceId"] == first
     key = await repo.ensure_user_stream(OWNER, USER_A)
     assert (await repo.get_stream(key))["workspaceId"] == first
+
+
+@pytest.mark.asyncio
+async def test_workspace_id_for_meta_returns_the_existing_id_without_writing(table, monkeypatch):
+    ensure = AsyncMock()
+    monkeypatch.setattr(repo, "ensure_workspace_id", ensure)
+    meta = {"ownerId": OWNER, "workspaceId": "existing-ws"}
+    assert await repo.workspace_id_for_meta("ROOM#x", "META", meta) == "existing-ws"
+    ensure.assert_not_called()
+    assert (await repo._get("ROOM#x", "META")) is None
+
+
+@pytest.mark.asyncio
+async def test_workspace_id_for_meta_stamps_and_returns_the_ensured_id_when_missing(table, monkeypatch):
+    monkeypatch.setattr(repo, "ensure_workspace_id", AsyncMock(return_value="minted-ws"))
+    meta = {"ownerId": OWNER}
+    assert await repo.workspace_id_for_meta("ROOM#x", "META", meta) == "minted-ws"
+    assert meta["workspaceId"] == "minted-ws"
+    assert (await repo._get("ROOM#x", "META"))["workspaceId"] == "minted-ws"
+
+
+@pytest.mark.asyncio
+async def test_workspace_id_for_meta_ignores_a_conditional_check_failed_race(table, monkeypatch):
+    monkeypatch.setattr(repo, "ensure_workspace_id", AsyncMock(return_value="minted-ws"))
+    monkeypatch.setattr(
+        repo,
+        "run_in_thread",
+        AsyncMock(side_effect=ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")),
+    )
+    meta = {"ownerId": OWNER}
+    assert await repo.workspace_id_for_meta("ROOM#x", "META", meta) == "minted-ws"
+    assert meta["workspaceId"] == "minted-ws"
 
 
 RUN_ROOM = "22222222-2222-4222-8222-222222222222"

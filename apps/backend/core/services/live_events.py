@@ -101,7 +101,10 @@ class LiveEventPublisher:
         if meta is None:
             return False
         key = _uuid(str(meta.get("deliveryKey", "")), "room delivery key")
-        workspace = _uuid(str(meta.get("workspaceId", "")), "room workspace id")
+        workspace = _uuid(
+            await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(room_id), "META", meta),
+            "room workspace id",
+        )
         await self._publish(f"/ws/{workspace}/rooms/{room_id}/{key}", validated)
         return True
 
@@ -119,7 +122,10 @@ class LiveEventPublisher:
             or reverse.get("userId") != user_id
         ):
             return False
-        workspace = _uuid(str(reverse.get("workspaceId", "")), "stream workspace id")
+        workspace = _uuid(
+            await messaging_repo.workspace_id_for_meta(messaging_repo.stream_pk(key), "META", reverse),
+            "stream workspace id",
+        )
         await self._publish(f"/ws/{workspace}/users/{key}", validated)
         return True
 

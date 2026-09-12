@@ -3,9 +3,10 @@
 import { useMemo } from "react";
 import { activateMessagesPanel } from "@/components/workspace/workspaceController";
 import { useMessagingWorkspaceOptional } from "./MessagingWorkspaceContext";
-import { roomDisplayName, roomKindLabel } from "./types";
+import { roomDisplayName } from "@lightbulb/shared";
+import { roomKindLabel } from "./types";
 
-export interface RoomCommandItem {
+interface RoomCommandItem {
   id: string;
   label: string;
   sublabel: string;

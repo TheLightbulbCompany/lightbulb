@@ -148,18 +148,7 @@ export async function fetchJsonWithStatus(
   const requestId = response.headers.get(REQUEST_ID_HEADER);
   config.onRequestId?.(requestId);
 
-  // NOTE: content-type casing intentionally mirrors the original
-  // (`content-type` here vs `Content-Type` in authenticatedFetch) — Headers
-  // lookups are case-insensitive either way.
-  let body: unknown = null;
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    try {
-      body = await response.json();
-    } catch {
-      body = null;
-    }
-  }
+  const body = await parseJsonBody(response);
 
   if (!response.ok) {
     const message = extractDetailMessage(body);
@@ -172,8 +161,9 @@ export async function fetchJsonWithStatus(
 /**
  * Build the authenticated fetch used by every JSON method.
  *
- * Exported for the platform wrappers (web's `useApi` exposes methods built on
- * this); not intended for direct feature-code use.
+ * Package-internal: `createApiClient` below is the only caller, and the barrel
+ * does not re-export this. It stays a named export so `client.test.ts` can drive
+ * the auth/request-id/error paths without going through the method surface.
  */
 export function createAuthenticatedFetch(config: ApiClientConfig) {
   return async function authenticatedFetch(

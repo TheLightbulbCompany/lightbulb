@@ -7,9 +7,6 @@ import type {
   RuntimeRpcOutcome,
 } from "./types";
 
-const RETRY_DELAY_MIN_MS = 100;
-const RETRY_DELAY_MAX_MS = 5_000;
-
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -53,16 +50,6 @@ export class RuntimeRpcError extends Error {
       details: record(value?.details) ?? undefined,
     });
   }
-}
-
-export function isRetryableRuntimeError(error: unknown): boolean {
-  return error instanceof Error && (error as { retryable?: unknown }).retryable === true;
-}
-
-export function runtimeRetryDelayMs(error: unknown, fallbackMs: number): number {
-  const retryAfter = (error as { retryAfter?: unknown } | null | undefined)?.retryAfter;
-  if (typeof retryAfter !== "number" || !(retryAfter > 0)) return fallbackMs;
-  return Math.min(Math.max(retryAfter * 1_000, RETRY_DELAY_MIN_MS), RETRY_DELAY_MAX_MS);
 }
 
 function invalidResponse(): RuntimeRpcError {

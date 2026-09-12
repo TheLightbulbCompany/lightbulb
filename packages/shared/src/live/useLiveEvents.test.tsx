@@ -85,10 +85,9 @@ afterEach(() => {
 });
 
 describe("useLiveEvents", () => {
-  it("turns over one user and one room subscription, reconciles after acknowledgements, and demuxes room frames", async () => {
+  it("turns over one user and one room subscription and demuxes room frames", async () => {
     const onEvent = vi.fn();
     const onChatMessage = vi.fn();
-    const onReconcile = vi.fn();
     let uuid = 0;
     const options: UseLiveEventsOptions = {
       config,
@@ -98,7 +97,6 @@ describe("useLiveEvents", () => {
       uuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}`,
       onEvent,
       onChatMessage,
-      onReconcile,
     };
     const { result, rerender } = renderHook((props) => useLiveEvents(props), {
       initialProps: options,
@@ -116,7 +114,6 @@ describe("useLiveEvents", () => {
 
     act(() => acknowledgeSubscriptions(first));
     expect(result.current.liveConnected).toBe(true);
-    expect(onReconcile).toHaveBeenCalledTimes(1);
 
     const roomSubscription = first.subscriptions().find((subscription) => subscription.channel === roomA)!;
     const event = {
@@ -135,14 +132,12 @@ describe("useLiveEvents", () => {
     act(() => first.receive({ type: "data", id: roomSubscription.id, event: [JSON.stringify(event)] }));
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ eventId: "event-1" }));
     expect(onChatMessage).toHaveBeenCalledWith(event.payload.frame, expect.objectContaining({ roomId: event.roomId }));
-    expect(result.current.lastEventAt).not.toBeNull();
 
     rerender({ ...options, roomChannel: roomB });
     await flush();
     expect(first.sent).toContainEqual({ type: "unsubscribe", id: roomSubscription.id });
     const roomBSubscription = first.subscriptions().find((subscription) => subscription.channel === roomB)!;
     act(() => first.receive({ type: "subscribe_success", id: roomBSubscription.id }));
-    expect(onReconcile).toHaveBeenCalledTimes(2);
 
     rerender({ ...options, roomChannel: null });
     expect(first.sent).toContainEqual({ type: "unsubscribe", id: roomBSubscription.id });

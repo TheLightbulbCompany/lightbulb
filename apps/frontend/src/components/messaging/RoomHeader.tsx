@@ -2,18 +2,18 @@
 
 import { useId, useRef, useState, type ReactNode } from "react";
 import { Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Users } from "lucide-react";
-import type { MemberPrefsRequest } from "@lightbulb/shared";
+import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { copyText, roomPermalink } from "./messageLinks";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { useAsyncAction } from "./useAsyncAction";
-import type { RoomParticipant, RoomSummary } from "./types";
+import type { RoomParticipant } from "./types";
 
 const FACES = 4;
 
-export interface RoomHeaderProps {
+interface RoomHeaderProps {
   room?: RoomSummary;
   roomName: string;
   counterparts: readonly RoomParticipant[];

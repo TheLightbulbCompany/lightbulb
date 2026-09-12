@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import type { ListenMode, MemberPrefsRequest, RoomKind, RoomSection } from "@lightbulb/shared";
+import { roomDisplayName, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -17,7 +17,7 @@ import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
-import { roomDisplayName, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
+import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {

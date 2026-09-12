@@ -5,7 +5,8 @@ import { Paperclip, PinOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { useAsyncAction } from "./useAsyncAction";
-import type { RoomMessage, RoomParticipant, RoomRunView, RoomSummary } from "./types";
+import type { RoomRunView, RoomSummary } from "@lightbulb/shared";
+import type { RoomMessage, RoomParticipant } from "./types";
 
 export type DetailsTab = "members" | "pins" | "files" | "links" | "about";
 
@@ -15,7 +16,7 @@ const TABS: Array<{ id: DetailsTab; label: string }> = [
 ];
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/g;
 
-export interface RoomDetailsPanelProps {
+interface RoomDetailsPanelProps {
   room?: RoomSummary;
   roomName: string;
   tab: DetailsTab;

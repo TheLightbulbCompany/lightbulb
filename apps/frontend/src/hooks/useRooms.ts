@@ -5,9 +5,6 @@ import { useAuth } from "@clerk/nextjs";
 import { useRooms as useSharedRooms, type RoomsPlatform } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 
-export { mergeCanonicalMessages } from "@lightbulb/shared";
-export type { LiveRoomRun, OptimisticRoomMessage, SendState, TypingMember } from "@lightbulb/shared";
-
 // The browser's half of RoomsPlatform. Both callbacks are []-stable so the
 // shared hook's visibility effect subscribes once, not once per render.
 const isVisible = () => document.visibilityState === "visible" && document.hasFocus();

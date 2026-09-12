@@ -2,7 +2,7 @@ import type { MemberRef } from "@lightbulb/shared";
 
 const PREFIX = "lightbulb.messaging.draft|";
 
-export interface StoredDraft {
+interface StoredDraft {
   text: string;
   mentions: MemberRef[];
 }

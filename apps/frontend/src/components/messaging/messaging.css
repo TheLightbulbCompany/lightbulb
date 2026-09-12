@@ -62,10 +62,6 @@
 .room-message-mentions-me { background: color-mix(in srgb, var(--info) 8%, transparent); border-radius: 6px; }
 .room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; height: 28px; }
 .room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
-.room-run { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding-top: 8px; }
-.room-run details { width: 100%; font-size: .875rem; }
-.room-run summary { cursor: pointer; color: var(--muted-foreground); padding: 4px 0; width: fit-content; }
-.room-run pre { margin-top: 8px; padding: 8px; background: var(--muted); max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
 .room-composer { position: relative; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0 20px 16px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 8px; background: var(--background); }
 .room-composer:focus-within { border-color: var(--ring); }
@@ -225,7 +221,7 @@
   .room-composer { margin: 0 8px max(8px, env(safe-area-inset-bottom)); padding: 8px; }
   .room-context { border-left: 0; }
   .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
-  .room-panel button, .room-directory button, .room-run summary { min-height: 44px; }
+  .room-panel button, .room-directory button { min-height: 44px; }
   /* The header's icon buttons (Star/Mute/Conversation options) are 36px
      square and Search is 42px wide -- both under the touch floor even though
      min-height above already clears 44. */

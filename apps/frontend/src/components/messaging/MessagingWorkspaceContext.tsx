@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
@@ -18,7 +18,7 @@ import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
-import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomSummary } from "./types";
+import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
   activeRoomId: string | null;
@@ -60,7 +60,7 @@ export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null 
  * is open, but must not stack a sheet over someone else's dialog — the ⌘K
  * palette.
  */
-export function useMessagingShortcuts(
+function useMessagingShortcuts(
   rooms: readonly RoomSummary[],
   activeRoomId: string | null,
   selectRoom: (roomId: string) => void,

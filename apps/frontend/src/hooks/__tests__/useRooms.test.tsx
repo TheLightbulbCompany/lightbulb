@@ -76,7 +76,8 @@ const live = {
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "user-a", orgId: "org-a" }) }));
 
-import { mergeCanonicalMessages, useRooms } from "../useRooms";
+import { mergeCanonicalMessages } from "@lightbulb/shared";
+import { useRooms } from "../useRooms";
 import { useRoomResources } from "../useRoomResources";
 
 it("keeps newer reactions when message snapshots arrive out of order", () => {

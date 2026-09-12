@@ -7,7 +7,7 @@ import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
 import { draftKey } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
-import type { LiveRoomRun } from "@/hooks/useRooms";
+import type { LiveRoomRun } from "@lightbulb/shared";
 
 const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: "org" }) }));

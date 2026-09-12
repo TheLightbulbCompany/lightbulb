@@ -46,7 +46,6 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
       shared.onEvent = onEvent;
       return {
         liveConnected: shared.liveConnected,
-        lastEventAt: null,
         connectionRevision: shared.connectionRevision,
         liveChannels: [],
         lastError: null,

@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } 
 import { capture } from "@/lib/analytics";
 import type { RoomMessage, RoomParticipant } from "./types";
 
-export interface RoomMessageSearchProps {
+interface RoomMessageSearchProps {
   roomId: string;
   messages: readonly RoomMessage[];
   participants: readonly RoomParticipant[];

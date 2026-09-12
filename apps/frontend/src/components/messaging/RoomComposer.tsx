@@ -18,7 +18,6 @@ export interface RoomComposerProps {
   text: string;
   onTextChange: (text: string) => void;
   members: readonly RoomParticipant[];
-  defaultAgentId?: string;
   focusAgentId?: string;
   clientMessageId: string;
   sendState: "idle" | "sending" | "persisted" | "uncertain" | "rejected";
@@ -79,7 +78,6 @@ function ComposerAttempt({
   text,
   onTextChange,
   members,
-  defaultAgentId,
   focusAgentId,
   clientMessageId,
   sendState,
@@ -162,7 +160,6 @@ function ComposerAttempt({
     if (sendState === "rejected" || sendState === "persisted") setCallbackUncertain(false);
   }
 
-  const defaultMention = defaultAgentId ? { kind: "agent" as const, id: defaultAgentId } : null;
   // A DM with exactly one agent puts that agent first — the same signal the
   // context already uses for focusAgentId.
   const mentionable = focusAgentId
@@ -185,7 +182,6 @@ function ComposerAttempt({
   // inserted (or what the sender typed by hand). There is no separate
   // "picked mentions" side-state to drift from the text.
   const mentions = resolveTypedMentions(text, members);
-  if (defaultMention && !mentions.some((mention) => sameMember(mention, defaultMention))) mentions.push(defaultMention);
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
   const error = bytes > 100_000

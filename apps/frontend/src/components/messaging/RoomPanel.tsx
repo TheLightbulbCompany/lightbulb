@@ -571,7 +571,8 @@ function RoomContent({
         disabled={!actionable || composer.disabled}
         dropTargetRef={historyRef} />
     </div>
-    {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
+    {showContext && !showDetail && <aside className="room-context" aria-label="Room details"
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
         participants={participants} actionable={actionable}

@@ -239,6 +239,18 @@ it("opens and closes the real room context on a narrow viewport", async () => {
   expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
 });
 
+it("closes the room details panel and restores its trigger on Escape", async () => {
+  render(<RoomPanel {...props} narrow />);
+  const history = screen.getByRole("region", { name: "Messages" });
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = screen.getByRole("complementary", { name: "Room details" });
+  expect(history).not.toBeVisible();
+  fireEvent.keyDown(details, { key: "Escape" });
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(history).toBeVisible();
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
+});
+
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
   render(<RoomPanel {...props} messages={[{ ...message, author: { kind, id: "friday", displayName: "Announcement" } }]} />);
   const article = screen.getByRole("article", { name: "Message from Announcement" });

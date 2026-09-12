@@ -29,9 +29,12 @@ export const ASK_AI_PROMPT = [
   "setup, simplicity, and pricing?",
 ].join(" ");
 
+/** Every provider we ship a tile for. Keyed so AskAI's MARKS map must cover each. */
+export type AskAiProviderId = "chatgpt" | "claude" | "gemini" | "perplexity" | "grok";
+
 export type AskAiProvider = {
   /** Stable key, used for the React list and as a test handle. */
-  id: string;
+  id: AskAiProviderId;
   /** Tile label, e.g. "Ask ChatGPT". */
   label: string;
   /** Base URL; the prompt is appended as the `q` param. */

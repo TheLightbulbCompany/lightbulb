@@ -255,6 +255,8 @@ function Conversation() {
               rows={rows}
               onRetry={(clientMessageId) => void retry(clientMessageId)}
               downloadAttachment={rooms.downloadAttachment}
+              members={members ?? []}
+              currentUserId={userId ?? ""}
             />
             {runs.map((run) => (
               <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
@@ -295,6 +297,7 @@ function Conversation() {
                 router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
               }
               downloadAttachment={rooms.downloadAttachment}
+              members={members ?? []}
             />
           );
         }}

@@ -1,5 +1,5 @@
 import Feather from "@expo/vector-icons/Feather";
-import type { CanonicalRoomMessage, ImageAttachment } from "@lightbulb/shared";
+import { linkifyMentions, type CanonicalRoomMessage, type ImageAttachment, type RoomMember } from "@lightbulb/shared";
 import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -107,18 +107,19 @@ export function MessageGroup({
   message,
   collapsed,
   replyCount,
-  currentUserId = "",
+  currentUserId,
   onLongPress,
   onOpenThread,
   onToggleReaction,
   reactionError = false,
   downloadAttachment,
+  members = [],
 }: {
   message: CanonicalRoomMessage;
   collapsed: boolean;
   replyCount: number;
-  /** Needed only to mark the viewer's own reaction chip as selected. */
-  currentUserId?: string;
+  /** Marks the viewer's own reaction chip as selected and tints a message that mentions them. */
+  currentUserId: string;
   onLongPress?: () => void;
   onOpenThread?: () => void;
   /** Omitted (e.g. for an in-flight local row) hides the reactions row entirely. */
@@ -126,15 +127,22 @@ export function MessageGroup({
   /** True when this message's last reaction toggle failed. */
   reactionError?: boolean;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  members?: readonly RoomMember[];
 }) {
   const [timeShown, setTimeShown] = useState(false);
   const time = formatTime(message.createdAt);
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(
     ([, users]) => users.length > 0,
   );
+  // Web's `.room-message-mentions-me` (RoomPanel.tsx): the whole row tints
+  // when the message's structured mentions name the viewer.
+  const mentionsMe = message.mentions.some(
+    (mention) => mention.kind === "human" && mention.id === currentUserId,
+  );
   return (
     <Pressable
-      style={collapsed ? styles.collapsed : styles.group}
+      testID="message-group"
+      style={[collapsed ? styles.collapsed : styles.group, mentionsMe && styles.mentionsMe]}
       onLongPress={() => {
         setTimeShown(true);
         onLongPress?.();
@@ -156,7 +164,7 @@ export function MessageGroup({
         {message.deletedAt ? (
           <Text style={styles.deleted}>Message deleted</Text>
         ) : (
-          <MessageMarkdown text={message.text} />
+          <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} />
         )}
         {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 ? (
           <MessageReactions
@@ -199,10 +207,14 @@ export function LocalMessageRows({
   rows,
   onRetry,
   downloadAttachment,
+  members = [],
+  currentUserId,
 }: {
   rows: readonly LocalMessageRow[];
   onRetry: (clientMessageId: string) => void;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  members?: readonly RoomMember[];
+  currentUserId: string;
 }) {
   return (
     <>
@@ -213,6 +225,8 @@ export function LocalMessageRows({
             collapsed={false}
             replyCount={0}
             downloadAttachment={downloadAttachment}
+            members={members}
+            currentUserId={currentUserId}
           />
           {unsent ? (
             <Pressable
@@ -233,6 +247,8 @@ export function LocalMessageRows({
 const styles = StyleSheet.create({
   group: { marginTop: spacing.lg },
   collapsed: { marginTop: spacing.xs, paddingLeft: MESSAGE_BODY_INDENT },
+  // Web's `.room-message-mentions-me`.
+  mentionsMe: { backgroundColor: colors.mentionRowBg, borderRadius: radii.sm },
   head: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   author: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 22, color: colors.ink },
   time: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },

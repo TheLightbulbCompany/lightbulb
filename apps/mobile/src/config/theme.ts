@@ -91,6 +91,10 @@ const palette = {
   gold: "#B68235",
   /** Info (`--info`) — in_review status. 6.76:1 on cream. */
   info: "#1e52cc",
+  /** Mention chip background — info at 12% (`.room-mention`). */
+  mentionBg: "rgba(30,82,204,0.12)",
+  /** Mentioned-viewer row tint — info at 8% (`.room-message-mentions-me`). */
+  mentionRowBg: "rgba(30,82,204,0.08)",
 
   // Text — midnight mixed into cream, contrast measured against cream.
   /** Primary text (`--midnight`). 15.24:1. */

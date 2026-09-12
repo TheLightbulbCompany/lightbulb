@@ -1,7 +1,9 @@
+import { parseMentionHref } from "@lightbulb/shared";
 import { memo } from "react";
 import { Text, View } from "react-native";
 import Markdown, {
   MarkdownIt,
+  renderRules,
   type ASTNode,
   type RenderRules,
 } from "react-native-markdown-display";
@@ -13,7 +15,9 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
  * MarkdownContent/CodeBlock scale; fenced code gets the bordered
  * header-bar treatment via a custom `fence` rule (no syntax colors v1).
  * Links open externally through the library's default Linking.openURL
- * handler; only the color/underline is ours.
+ * handler; only the color/underline is ours. A `mention:` href (written by
+ * the shared `linkifyMentions` grammar) instead renders as an inert chip via
+ * a custom `link` rule.
  *
  * Exported memoized: completed transcript segments keep a stable `text`,
  * so only the actively streaming segment re-parses per chunk.
@@ -41,6 +45,32 @@ const rules: RenderRules = {
         </View>
         <Text style={styles.fence}>{content}</Text>
       </View>
+    );
+  },
+  // Mentions ride the same markdown-link grammar as the web (spec: one
+  // grammar for both readers). `linkifyMentions` (called by the caller before
+  // this text ever reaches us) rewrites a member token into
+  // `[@token](mention:kind:id)`; a href that parses as a mention renders as an
+  // inert chip instead of a link. Everything else — including a bare-URL
+  // autolink from `linkify: true` — falls through to the library's own `link`
+  // rule unchanged, so it still opens via `Linking.openURL`.
+  link: (node, children, parent, styles, onLinkPress) => {
+    const href = (node.attributes as { href?: string }).href;
+    const mention = href ? parseMentionHref(href) : null;
+    if (!mention) {
+      return renderRules.link?.(node, children, parent, styles, onLinkPress) ?? null;
+    }
+    // Not `{children}`: AstRenderer computes a leaf `text` node's inherited
+    // style from its ancestor chain's AST *type* ("link"), before this rule
+    // ever runs — so the already-rendered children would still carry the
+    // link color/underline no matter what style we hand the wrapper here.
+    // A mention token is always flat text (no nested markdown), so reading
+    // it straight off the AST sidesteps that inherited styling entirely.
+    const label = node.children.map((child) => child.content).join("");
+    return (
+      <Text key={node.key} style={styles.mention}>
+        {label}
+      </Text>
     );
   },
 };
@@ -91,6 +121,15 @@ const markdownStyles = {
   // bold so iOS doesn't look for a bold face inside the 700 family.
   strong: { fontFamily: fonts.sansSemiBold, fontWeight: "normal" as const },
   link: { color: colors.forest, textDecorationLine: "underline" as const },
+  // `.room-mention` on web: info text on a 12% info wash, no underline, not
+  // tappable (the `link` rule above renders it with no onPress).
+  mention: {
+    color: colors.info,
+    backgroundColor: colors.mentionBg,
+    borderRadius: radii.xs,
+    paddingHorizontal: spacing.xs,
+    fontFamily: fonts.sansSemiBold,
+  },
   bullet_list: { marginBottom: spacing.md },
   ordered_list: { marginBottom: spacing.md },
   list_item: { marginBottom: spacing.xs },

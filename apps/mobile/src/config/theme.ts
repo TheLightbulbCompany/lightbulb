@@ -1,17 +1,26 @@
 /**
+ * 2026-09-12: the web moved to Sphere's quiet chrome (#2547 / #2536) — white
+ * ground and neutral greys instead of warm cream and navy — and these values
+ * now mirror main's `globals.css` light block one-for-one (cream #ffffff,
+ * cream-deep #fafafa, cream-deeper #ededed, edge #e4e4e7, midnight #242428,
+ * midnight-soft #45454b, midnight-muted #6b6b73, midnight-faint #8e8e94,
+ * info #1e52cc). The state colours (ok/warn/err) and the brand marks (bulb,
+ * brass) did not change. The web's `.dark` block has no mobile counterpart
+ * yet — dark mode is Phase B, keyed off useColorScheme.
+ *
  * Design tokens for the mobile app (RN has no CSS variables; this is the
  * StyleSheet-era stand-in).
  *
  * Values come from the Lightbulb Brand Identity Manual and mirror the web
  * frontend's `globals.css` `:root` block one-for-one. Four colours only —
- * midnight #0F1A2B (dark ground, ALL body copy on cream), cream #F5EFE2
+ * midnight #242428 (dark ground, ALL body copy on cream), cream #ffffff
  * (light ground, never pure white), bulb #F0C34E (the light — never type,
  * never a fill), brass #B68235 (rules and small labels ON MIDNIGHT only;
  * 2.94:1 on cream, so never type there). ALL color literals live here —
  * screens import tokens, never raw colors.
  *
  * The text steps are midnight mixed into cream, i.e. the literal value of
- * web's `color-mix(in srgb, #0F1A2B N%, #F5EFE2)`. Each carries its mix and
+ * web's `color-mix(in srgb, #242428 N%, #ffffff)`. Each carries its mix and
  * its measured contrast on cream so the next person can re-derive it.
  *
  * The app is cream-only — there is no midnight surface — so the reversed
@@ -31,21 +40,21 @@ import type { TextStyle } from "react-native";
 const palette = {
   // Surfaces
   /** Page / main background (`--cream`). Never pure white. */
-  cream: "#F5EFE2",
+  cream: "#ffffff",
   /** The one surface step — hover/selected, inset wells (`--cream-deep`). */
-  creamDeeper: "#EFE8D9",
+  creamDeeper: "#fafafa",
   /** The second step — pressed, table stripe (`--cream-deeper`). */
-  creamDeepest: "#E7DECB",
+  creamDeepest: "#ededed",
   /** User chat bubble background — the one surface step. */
-  userBubble: "#EFE8D9",
+  userBubble: "#fafafa",
   /** Inline code / chip background — the one surface step. */
-  chip: "#EFE8D9",
+  chip: "#fafafa",
   /** Pressed sunken header / disabled send-button fill — the second step. */
-  creamPressed: "#E7DECB",
+  creamPressed: "#ededed",
   /** Fenced code block body background — the one surface step. */
-  codeBg: "#EFE8D9",
+  codeBg: "#fafafa",
   /** Loading skeleton fill — the one surface step. */
-  skeleton: "#EFE8D9",
+  skeleton: "#fafafa",
   /**
    * NOT white. The manual has no white; cream is the lightest ground there
    * is, and cards are delineated by an `edge` border, not by a surface shift
@@ -53,25 +62,25 @@ const palette = {
    * ~98 call sites read it, including button labels on the midnight CTA,
    * where cream-on-midnight is exactly right.
    */
-  white: "#F5EFE2",
+  white: "#ffffff",
 
   // Borders
   /** Hairline borders on cream (`--edge`). */
-  edge: "#DED5C2",
+  edge: "#e4e4e7",
   /** Softer separation on cream (`--edge-soft`). */
-  edgeSoft: "#E8E0D0",
+  edgeSoft: "#f0f0f2",
   /** Was a forest-tinted hairline; the manual has one hairline (`--edge`). */
-  edgeForest: "#DED5C2",
+  edgeForest: "#e4e4e7",
 
   // Brand
   /** Midnight — primary CTA, links, focus (`--midnight`). */
-  forest: "#0F1A2B",
+  forest: "#242428",
   /** Success — active status dots (`--ok`). 5.44:1 on cream. */
   forestSoft: "#3A6B45",
   /** Brand tint surface — monogram bg. The one surface step. */
-  forestTint: "#EFE8D9",
+  forestTint: "#fafafa",
   /** Composer focus ring — midnight at 25%. */
-  forestFocusBorder: "rgba(15,26,43,0.25)",
+  forestFocusBorder: "rgba(36,36,40,0.25)",
   /** Halo ring around active status dots — success at 18%. */
   forestHalo: "rgba(58,107,69,0.18)",
   /**
@@ -81,27 +90,27 @@ const palette = {
    */
   gold: "#B68235",
   /** Info (`--info`) — in_review status. 6.76:1 on cream. */
-  info: "#35566F",
+  info: "#1e52cc",
 
   // Text — midnight mixed into cream, contrast measured against cream.
   /** Primary text (`--midnight`). 15.24:1. */
-  ink: "#0F1A2B",
+  ink: "#242428",
   /** Secondary text — midnight 80% into cream. 8.46:1. */
-  inkSoft: "#3D4550",
+  inkSoft: "#45454b",
   /** Assistant message body text — primary ink. */
-  assistantInk: "#0F1A2B",
+  assistantInk: "#242428",
   /** Tertiary / metadata text — midnight 64% into cream. 4.98:1. */
-  mute: "#62676D",
+  mute: "#6b6b73",
   /**
    * Disabled text and non-text marks (dots, chevrons, rules) — midnight 50%
    * into cream. 3.28:1, which clears the 3:1 non-text bar but NOT the 4.5:1
    * text floor. Anything that reads as text belongs on `mute`.
    */
-  muteSoft: "#828486",
+  muteSoft: "#8e8e94",
   /** Small uppercase labels — midnight 61% into cream. 4.55:1, the lowest step over AA. */
-  sectionCount: "#696D72",
+  sectionCount: "#6b6b73",
   /** Input placeholders — midnight 64% into cream. 4.98:1. */
-  placeholder: "#62676D",
+  placeholder: "#6b6b73",
 
   // Status — the manual's state pairs, on-cream halves (§06).
   /** Warning / thinking (`--warn`). 5.30:1. */
@@ -119,42 +128,42 @@ const palette = {
   errorBorder: "#96382B",
 
   // Disconnected banner — the surface step, ruled and marked in warning.
-  bannerBg: "#EFE8D9",
+  bannerBg: "#fafafa",
   bannerBorder: "#96501A",
   bannerText: "#96501A",
 
   // Footer user card — initials avatar
   /** Initials-avatar fill — the one surface step. */
-  avatarBg: "#EFE8D9",
+  avatarBg: "#fafafa",
   /** Initials-avatar text — primary ink. */
-  avatarText: "#0F1A2B",
+  avatarText: "#242428",
 
   // Roster row overlays. These were cream-at-85/90% back when the ground was
   // #faf7f2; on the manual's cream they are cream OVER cream, which composites
   // to exactly the page colour and makes press feedback a no-op. A row that
   // draws no background of its own can only be marked by a surface STEP.
   /** Row press feedback — the one surface step. */
-  rowPressed: "#EFE8D9",
+  rowPressed: "#fafafa",
   /** Row selected — the second step, so selected still reads under a press. */
-  rowActive: "#E7DECB",
+  rowActive: "#ededed",
   /**
    * Active session row background. Was midnight at 8%, which composited to
    * rgb(227,222,211) and dropped the row's 11–12px `mute` metadata to 4.25:1.
    * The surface step keeps it at 4.68:1.
    */
-  sessionActive: "#EFE8D9",
+  sessionActive: "#fafafa",
   /** Modal backdrop scrim behind bottom sheets — midnight at 35%. */
-  scrim: "rgba(15,26,43,.35)",
+  scrim: "rgba(36,36,40,.35)",
 
   // Board status-chip tints (Teams board cards) — a ≤10% wash of the chip's
   // own state colour, the one fill the manual allows a state colour. Neutral
   // statuses get the surface step instead, because mute is not a state.
-  statusTintBacklog: "#EFE8D9",
+  statusTintBacklog: "#fafafa",
   statusTintTodo: "rgba(150,80,26,.10)",
   statusTintProgress: "rgba(150,80,26,.10)",
   statusTintReview: "rgba(53,86,111,.10)",
   statusTintBlocked: "rgba(150,56,43,.10)",
-  statusTintCancelled: "#EFE8D9",
+  statusTintCancelled: "#fafafa",
   statusTintDone: "rgba(58,107,69,.10)",
 
   // Tool-pill status trios — wash + state-coloured type, dot and border.
@@ -165,7 +174,7 @@ const palette = {
       border: "#3A6B45",
       dot: "#3A6B45",
     },
-    done: { bg: "#EFE8D9", text: "#62676D", border: "#DED5C2", dot: "#828486" },
+    done: { bg: "#fafafa", text: "#6b6b73", border: "#e4e4e7", dot: "#8e8e94" },
     error: {
       bg: "rgba(150,56,43,.10)",
       text: "#96382B",

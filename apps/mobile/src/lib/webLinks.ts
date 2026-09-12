@@ -40,3 +40,11 @@ export const teamsDetailUrl = (
   detailId
     ? `${WEB_ORIGIN}/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(detailId)}`
     : teamsPanelUrl(fallbackListKey);
+
+/**
+ * A workspace permalink to one message — the web's own `messagePermalink` keys
+ * (`panel=chat&room=…&message=…`), which `resolvePanel` reads to open the
+ * Messages panel on that room and scroll to that message.
+ */
+export const messageUrl = (roomId: string, messageId: string): string =>
+  `${WEB_ORIGIN}/chat?panel=chat&room=${encodeURIComponent(roomId)}&message=${encodeURIComponent(messageId)}`;

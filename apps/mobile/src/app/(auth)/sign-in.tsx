@@ -62,7 +62,7 @@ export default function SignIn() {
         await startAppleAuthenticationFlow();
       if (createdSessionId && setActiveFromFlow) {
         await setActiveFromFlow({ session: createdSessionId });
-        // (auth) layout redirects to /(app)/chat once isSignedIn flips.
+        // (auth) layout redirects to /(app)/home once isSignedIn flips.
       }
       // A null session is the user dismissing the native Apple sheet (Clerk
       // resolves rather than throwing for cancels) — stay quiet, no error.
@@ -91,7 +91,7 @@ export default function SignIn() {
       });
       if (createdSessionId) {
         await setActive({ session: createdSessionId });
-        // (auth) layout redirects to /(app)/chat once isSignedIn flips.
+        // (auth) layout redirects to /(app)/home once isSignedIn flips.
       } else if (
         authSessionResult?.type === "cancel" ||
         authSessionResult?.type === "dismiss"
@@ -117,7 +117,7 @@ export default function SignIn() {
       const attempt = await signIn.create({ identifier: email.trim(), password });
       if (attempt.status === "complete") {
         await setActive({ session: attempt.createdSessionId });
-        // (auth) layout redirects to /(app)/chat once isSignedIn flips.
+        // (auth) layout redirects to /(app)/home once isSignedIn flips.
       } else {
         setError(
           "This account needs another verification step — sign in on flickmeon.ai for now.",

@@ -89,6 +89,8 @@ export {
   resolveTypedMentions,
 } from "./messaging/mentions";
 export type { CompletionTrigger, MentionTarget, TriggerKind } from "./messaging/mentions";
+export { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji } from "./messaging/emoji";
+export type { EmojiEntry } from "./messaging/emoji";
 export { useRooms } from "./messaging/useRooms";
 export type {
   OptimisticRoomMessage,
@@ -108,6 +110,7 @@ export type {
   RoomResources,
   CanonicalRoomMessage,
   CreateMessageRequest,
+  CreateRoomRequest,
   UpdateMessageRequest,
   ImageAttachment,
   ListenMode,

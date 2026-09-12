@@ -158,7 +158,7 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
   // Sentinel re-resolution: the snapshot resolves chat:__default__ through
   // defaultIdRef at recompute time, and the roster arriving is not a dockview
   // event — without this, a cold load leaves focusedChatAgentId /
-  // visibleChatAgentIds null (no sidebar highlight, no SessionList, toast
+  // visibleChatAgentIds null (no sidebar highlight, toast
   // suppression misses the watched run) until some unrelated layout event.
   // Declared AFTER the ref-sync effect above so the ref is fresh when it runs.
   useEffect(() => {

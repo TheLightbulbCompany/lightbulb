@@ -46,9 +46,7 @@ function renderGroup(items: RenderGroup["items"]): RenderGroup[] {
 
 const props = {
   isStreaming: false,
-  isTyping: false,
   agentName: "Friday",
-  onOpenFile: () => {},
 };
 
 describe("MessageList — tool run coalescing", () => {

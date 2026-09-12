@@ -37,9 +37,7 @@ describe("MessageList /btw side card", () => {
       <MessageList
         renderGroups={btwGroups()}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     expect(screen.getByText(/BTW/i)).toBeInTheDocument();
@@ -51,9 +49,7 @@ describe("MessageList /btw side card", () => {
       <MessageList
         renderGroups={btwGroups()}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     expect(screen.getByText("what time is it")).toBeInTheDocument();
@@ -65,9 +61,7 @@ describe("MessageList /btw side card", () => {
       <MessageList
         renderGroups={btwGroups(true)}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     const card = screen.getByTestId("btw-card");
@@ -82,9 +76,7 @@ describe("MessageList /btw side card", () => {
       <MessageList
         renderGroups={btwGroups(false)}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     const card = screen.getByTestId("btw-card");

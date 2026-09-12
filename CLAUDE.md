@@ -815,7 +815,7 @@ touching. The load-bearing structure:
   `MobileChatShell` on mobile. Start here for anything room-shaped.
 - `components/chat/` — what the browser-gateway chat island left behind:
   `MessageList` (now a read-only transcript renderer, used by the Teams run
-  detail), `SessionList`/`ArchivedSessions`, `ProvisioningStepper` and the
+  detail), `ProvisioningStepper` and the
   provider-setup steps. `ChatLayout.tsx` is the **mobile-only** shell.
 - `components/teams/` — Teams Inbox (panels routed by `TeamsPanelRouter.tsx`
   via `PANEL_LOADERS`/`DETAIL_LOADERS`; shared types in `shared/types.ts`;

@@ -119,7 +119,6 @@ vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentCreateDialog: () => null,
   AgentRenameDialog: () => null,
   AgentDeleteDialog: () => null,
-  SessionDeleteDialog: () => null,
 }));
 vi.mock("@/components/Logo", () => ({ Logo: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));

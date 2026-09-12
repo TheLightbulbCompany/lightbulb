@@ -399,7 +399,7 @@ describe("workspaceController", () => {
     // Cold load: the sentinel chat panel opens before useAgents().defaultId
     // exists, so the snapshot can't resolve it. The roster arriving is not a
     // dockview event — the shell must call refreshWorkspaceSnapshot to
-    // re-resolve, or sidebar highlight / SessionList / toast suppression stay
+    // re-resolve, or sidebar highlight / toast suppression stay
     // broken until some unrelated layout event.
     const api = makeFakeApi();
     let rosterDefaultId: string | undefined = undefined; // roster not loaded yet

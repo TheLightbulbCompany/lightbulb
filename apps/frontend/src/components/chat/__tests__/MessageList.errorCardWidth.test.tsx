@@ -21,9 +21,7 @@ function renderAssistant(message: HistoryMessage) {
     <MessageList
       renderGroups={assistantGroup(message)}
       isStreaming={false}
-      isTyping={false}
       agentName="Friday"
-      onOpenFile={() => {}}
     />,
   );
 }

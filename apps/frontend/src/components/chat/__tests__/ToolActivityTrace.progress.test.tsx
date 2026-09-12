@@ -83,9 +83,7 @@ describe("ToolActivityTrace — live progress (C)", () => {
       <MessageList
         renderGroups={groupWithRunningToolProgress()}
         isStreaming
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     // Expand the row, then assert the live output is rendered. Addressed by
@@ -99,9 +97,7 @@ describe("ToolActivityTrace — live progress (C)", () => {
       <MessageList
         renderGroups={groupWithCompletedEmptyResultProgress()}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     // Expand the row, then assert the streamed output survives into history.

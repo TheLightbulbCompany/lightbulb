@@ -58,7 +58,6 @@ function renderStream(text: string) {
     <MessageList
       renderGroups={streamGroup(text)}
       isStreaming
-      isTyping={false}
       agentName="Friday"
     />,
   );
@@ -96,7 +95,6 @@ describe("MessageList — jump to latest", () => {
       <MessageList
         renderGroups={streamGroup("chunk chunk")}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -124,7 +122,6 @@ describe("MessageList — jump to latest", () => {
       <MessageList
         renderGroups={streamGroup("chunk chunk")}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -142,7 +139,6 @@ describe("MessageList — jump to latest", () => {
       <MessageList
         renderGroups={streamGroup("chunk chunk")}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -163,7 +159,6 @@ describe("MessageList — jump to latest", () => {
       <MessageList
         renderGroups={streamGroup("chunk chunk")}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -176,7 +171,6 @@ describe("MessageList — jump to latest", () => {
       <MessageList
         renderGroups={streamGroup("chunk chunk chunk")}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );

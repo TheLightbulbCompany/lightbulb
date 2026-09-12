@@ -34,8 +34,10 @@ async def main(apply: bool) -> int:
     while True:
         page = await run_in_thread(table.scan, **kwargs)
         for row in page.get("Items", []):
-            workspace_id = await repo.ensure_workspace_id(row["ownerId"])
             if apply:
+                # ensure_workspace_id MINTS the id when the owner has none, so it
+                # is a write and stays out of the dry run: counting is the dry run.
+                workspace_id = await repo.ensure_workspace_id(row["ownerId"])
                 try:
                     await run_in_thread(
                         table.update_item,

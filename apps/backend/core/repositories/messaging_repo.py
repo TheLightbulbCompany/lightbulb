@@ -1568,6 +1568,12 @@ async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
 
 
+async def has_open_runs(owner_id: str) -> bool:
+    """Any ledger row still carrying the sweep marker (removed by ``end_run``)."""
+    rows = await _query(owner_pk(owner_id), begins_with="RUN#")
+    return any("sweep" in row for row in rows)
+
+
 async def _run_update(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
     try:
         response = await run_in_thread(

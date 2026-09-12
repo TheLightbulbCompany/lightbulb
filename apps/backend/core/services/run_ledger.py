@@ -20,22 +20,26 @@ async def sweep_runs_once() -> int:
     now = int(time.time())
     closed = 0
     for ref in await messaging_repo.list_overdue_runs(now):
-        row = await messaging_repo.get_run(ref["ownerId"], ref["runId"])
-        if row is None or row.get("status") == "ended" or int(row.get("deadlineAt", 0)) >= now:
-            continue  # closed or extended between the index read and this consistent read
-        error_kind = "agent_did_not_start" if row["status"] == "dispatched" else "agent_stopped_responding"
-        ended = await messaging_repo.end_run(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)
-        if ended is None:
-            continue
-        closed += 1
-        put_metric(
-            "messaging.run.ended", dimensions={"outcome": "error", "event_kind": ended.get("eventKind") or "unknown"}
-        )
-        put_metric("messaging.run.swept", dimensions={"error": error_kind})
+        # One poisoned row must not cost the rest of the tick.
         try:
+            row = await messaging_repo.get_run(ref["ownerId"], ref["runId"])
+            if row is None or row.get("status") == "ended" or int(row.get("deadlineAt", 0)) >= now:
+                continue  # closed or extended between the index read and this consistent read
+            error_kind = "agent_did_not_start" if row["status"] == "dispatched" else "agent_stopped_responding"
+            ended = await messaging_repo.end_run(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)
+            if ended is None:
+                continue
+            closed += 1
+            put_metric(
+                "messaging.run.ended",
+                dimensions={"outcome": "error", "event_kind": ended.get("eventKind") or "unknown"},
+            )
+            put_metric("messaging.run.swept", dimensions={"error": error_kind})
             await publish_run_error_frames(ended, error_kind)
         except Exception:
-            logger.warning("sweeper terminal frames failed (%s)", error_kind, exc_info=True)
+            put_metric("messaging.run.swept", dimensions={"error": "candidate_error"})
+            logger.warning("sweeper candidate failed", exc_info=True)
+            continue
     return closed
 
 

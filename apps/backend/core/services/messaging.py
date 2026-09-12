@@ -431,9 +431,9 @@ class RunEventRequest(ContractModel):
     run_id: uuid.UUID
     type: Literal["run.started", "run.heartbeat", "run.ended"]
     at: datetime
-    session_key: str | None = None
+    session_key: str | None = Field(default=None, max_length=512)
     outcome: Literal["completed", "error", "aborted", "ignored", "gate_error"] | None = None
-    error_kind: str | None = None
+    error_kind: str | None = Field(default=None, max_length=128)
     usage: RunUsage | None = None
 
     @model_validator(mode="after")

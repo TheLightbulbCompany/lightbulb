@@ -480,7 +480,10 @@ async def get_run_status(run_id: str, auth: AuthContext = Depends(get_current_us
     try:
         _, row = await _resolved_run(auth, run_id)
     except ApiProblem as exc:
-        if exc.error.code != "RUN_NOT_FOUND":
+        # A run whose agent has left the room is as over as one that never
+        # existed: the client's only use for this read is to stop showing
+        # "Working".
+        if exc.error.code not in {"RUN_NOT_FOUND", "RUN_NOT_ACTIVE"}:
             raise
         return RunStatusResponse(run_id=run_id, state="terminal")
     return RunStatusResponse(run_id=run_id, state="terminal" if row.get("status") == "ended" else "running")

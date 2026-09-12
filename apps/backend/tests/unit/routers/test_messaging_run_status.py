@@ -68,3 +68,23 @@ async def test_get_run_status_reports_terminal_for_a_run_it_has_no_memory_of():
         result = await get_run_status("run-1", auth=_auth())
 
     assert result == RunStatusResponse(run_id="run-1", state="terminal")
+
+
+@pytest.mark.asyncio
+async def test_get_run_status_reports_terminal_when_the_agent_left_the_room():
+    """`_resolved_run` refuses a run whose agent is no longer a member
+    (RUN_NOT_ACTIVE). The client still just needs to stop showing "Working"."""
+    from routers.messaging import get_run_status
+
+    with (
+        patch(
+            "routers.messaging.messaging_repo.get_run",
+            new_callable=AsyncMock,
+            return_value={"runId": "run-1", "roomId": ROOM_ID, "agentId": AGENT_ID, "status": "started"},
+        ),
+        patch("routers.messaging.service.require_room_member", new_callable=AsyncMock),
+        patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=None),
+    ):
+        result = await get_run_status("run-1", auth=_auth())
+
+    assert result == RunStatusResponse(run_id="run-1", state="terminal")

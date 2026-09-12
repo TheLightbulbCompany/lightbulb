@@ -8,7 +8,7 @@ from datetime import datetime
 
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.connection_service import ConnectionService
 
 TRIAL_IDLE_SECONDS = 180
@@ -45,7 +45,7 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         activity = _activity_epoch(row)
         if activity > now - TRIAL_IDLE_SECONDS:
             continue
-        if pool.has_active_runs(owner_id) or pool.is_parked(owner_id):
+        if await messaging_repo.has_open_runs(owner_id) or pool.has_active_runs(owner_id) or pool.is_parked(owner_id):
             continue
         if await connections.has_live_operator_connection(owner_id):
             continue
@@ -71,7 +71,7 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
         if not account or account.get("subscription_status") != "trial_local":
             continue
-        if pool.has_active_runs(owner_id) or pool.is_parked(owner_id):
+        if await messaging_repo.has_open_runs(owner_id) or pool.has_active_runs(owner_id) or pool.is_parked(owner_id):
             continue
         if await connections.has_live_operator_connection(owner_id):
             continue

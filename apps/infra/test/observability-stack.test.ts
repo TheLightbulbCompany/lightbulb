@@ -218,7 +218,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // core/services/live_events.py
   "messaging.live.publish": [["outcome", "status_class"]],
   // core/gateway/connection_pool.py
-  "messaging.room_session.subscribe": [["outcome"]],
   "messaging.room_frame.publish": [["frame_type", "outcome"]],
   // apps/infra/lambda/messaging-projector/index.py — note this one emits with
   // service="messaging-projector", not the backend's service dimension.

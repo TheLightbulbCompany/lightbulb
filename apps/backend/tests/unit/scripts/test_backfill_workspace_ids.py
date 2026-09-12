@@ -19,10 +19,12 @@ async def test_default_mode_scans_and_reports_but_never_writes():
     table = _table([{"pk": "ROOM#r1", "sk": "META", "ownerId": "owner_1"}])
     with (
         patch.object(mod.repo, "_table", return_value=table),
-        patch.object(mod.repo, "ensure_workspace_id", AsyncMock(return_value="ws-1")),
+        patch.object(mod.repo, "ensure_workspace_id", AsyncMock(return_value="ws-1")) as ensure,
     ):
         assert await mod.main(apply=False) == 0
     table.update_item.assert_not_called()
+    # ensure_workspace_id mints (writes) when the owner has none.
+    ensure.assert_not_awaited()
 
 
 @pytest.mark.asyncio

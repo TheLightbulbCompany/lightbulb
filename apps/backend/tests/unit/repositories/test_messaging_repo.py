@@ -892,3 +892,13 @@ async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
     ]
     await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
     assert await repo.list_overdue_runs(now + 10_000) == []
+
+
+@pytest.mark.asyncio
+async def test_has_open_runs_follows_the_sweep_marker(table):
+    assert not await repo.has_open_runs("owner_1")
+    run_id, _ = await _dispatched()
+    assert await repo.has_open_runs("owner_1")
+    assert not await repo.has_open_runs("owner_2")
+    await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert not await repo.has_open_runs("owner_1")

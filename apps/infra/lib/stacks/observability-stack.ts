@@ -970,7 +970,7 @@ def handler(event, context):
   }
 
   // =========================================================================
-  // Messaging platform alarms (P19-P23, W68-W76)
+  // Messaging platform alarms (P19-P22, W68-W76)
   // =========================================================================
 
   /**
@@ -1072,22 +1072,6 @@ def handler(event, context):
       description:
         "PAGE: the container's lightbulb-channel ingress rejected a dispatch " +
         "with a 4xx. Non-transient: those messages never reach the agent.",
-    });
-
-    // -- P23: room run frames cannot be subscribed --
-    // Without the session subscription the backend never sees the agent's run
-    // events, so the UI shows nothing happening even when the agent is working.
-    this.createAlarm({
-      id: "P23",
-      name: "messaging-room-subscribe-error",
-      metricName: "messaging.room_session.subscribe",
-      dimensions: { outcome: "error" },
-      threshold: 0,
-      periodMinutes: 5,
-      severity: "page",
-      description:
-        "PAGE: subscribing to a room's agent session failed - run frames for " +
-        "that room never reach the UI.",
     });
 
     // -- W68: messages that mention an agent and reach nobody --

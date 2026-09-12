@@ -166,8 +166,11 @@ function callerOwnerId(ctx) {
   if (typeof arn !== 'string') util.unauthorized();
   const parts = arn.split('/');
   if (parts.length !== 3 || parts[0].indexOf(':assumed-role') === -1) util.unauthorized();
-  if (parts[1].indexOf(OWNER_ROLE_PREFIX) !== 0) return null;
-  return parts[1].substring(OWNER_ROLE_PREFIX.length);
+  if (parts[1].indexOf(OWNER_ROLE_PREFIX) === 0) return parts[1].substring(OWNER_ROLE_PREFIX.length);
+  // Dev and prod share one AWS account: an owner role of the OTHER environment is a
+  // stranger, not a trusted platform role. Backend/projector roles never carry the marker.
+  if (parts[1].indexOf('-owner-bedrock-') !== -1) util.unauthorized();
+  return null;
 }
 export const onSubscribe = {
   request(ctx) {
@@ -535,8 +538,11 @@ export class ApiStack extends cdk.Stack {
       encryption: sqs.QueueEncryption.KMS,
       encryptionMasterKey: messagingKey,
       // The plugin acks within milliseconds (async turn contract); a pointer
-      // not acked in 60 s is redelivered, and five failures are a poison pointer.
-      deadLetterQueue: { queue: workDlq, maxReceiveCount: 5 },
+      // not acked in 60 s is redelivered. ≈5 min at the consumer's 10 s retry
+      // visibility — a parked container's cold start, not a plugin failure, is
+      // what the budget must cover; ingress is effect-once so repeated POSTs
+      // are idempotent.
+      deadLetterQueue: { queue: workDlq, maxReceiveCount: 30 },
     });
     const pipeFailureQueue = new sqs.Queue(this, "OpenClawWorkPipeFailures", {
       queueName: `${resourcePrefix(env)}openclaw-work-pipe-failures`,

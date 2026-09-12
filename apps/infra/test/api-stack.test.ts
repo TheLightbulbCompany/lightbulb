@@ -303,7 +303,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
         VisibilityTimeout: 60,
         ReceiveMessageWaitTimeSeconds: 20,
         KmsMasterKeyId: expect.anything(),
-        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 5 }),
+        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 30 }),
       }),
     );
     expect(byName["lightbulb-dev-openclaw-work-dlq.fifo"]).toEqual(
@@ -577,6 +577,9 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     expect(code).toContain("'ws'");
     expect(code).toContain("userArn");
     expect(code).toContain("owner-bedrock-");
+    // A foreign environment's owner role (same AWS account) is refused, not trusted.
+    expect(code).toContain("'-owner-bedrock-'");
+    expect(code).toContain("indexOf('-owner-bedrock-') !== -1) util.unauthorized()");
     expect(code).toContain("workspaceId");
   });
 

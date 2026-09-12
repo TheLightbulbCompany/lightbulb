@@ -1681,9 +1681,11 @@ mod tests {
             let batch = next_frame(&mut socket).await;
             assert_eq!(batch["type"], "local.session.events");
             reply(&mut socket, json!({"type":"local.session.error","code":"LOCAL_SESSION_CONFLICT","sessionId":SID})).await;
-            // The client must not close the socket in response.
-            let quiet = tokio::time::timeout(Duration::from_millis(1200), socket.next()).await;
-            assert!(quiet.is_err(), "a rejected batch must not drop the connection: {quiet:?}");
+            // Only a loop that is still polling socket.next() answers a ping; the old code
+            // returned Err and never polled again, so it produced no pong.
+            socket.send(Message::Ping(b"still-there".to_vec().into())).await.unwrap();
+            let pong = tokio::time::timeout(Duration::from_millis(1500), socket.next()).await;
+            assert!(matches!(pong, Ok(Some(Ok(Message::Pong(_))))), "a rejected batch must not drop the connection: {pong:?}");
             socket.close(None).await.unwrap();
         });
         let mut mirror = test_mirror("native", "g1");

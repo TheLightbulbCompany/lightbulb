@@ -42,6 +42,16 @@ pub(super) struct Host {
     stop: Arc<AtomicBool>,
 }
 
+/// A connection that lived long enough was healthy: start over at one second. A short-lived one
+/// (connect-then-die, the 2026-09-12 loop) doubles the wait, capped at 30 s.
+fn reconnect_delay(previous: u64, lived: Duration) -> u64 {
+    if lived >= Duration::from_secs(30) {
+        1
+    } else {
+        (previous * 2).clamp(1, 30)
+    }
+}
+
 impl Host {
     async fn observe_workspace(&mut self, key: &str) -> Result<()> {
         let execution = self
@@ -234,10 +244,10 @@ impl Host {
         })
     }
 
-    pub(super) async fn supervise(
-        mut self,
-        enrollment: Enrollment,
-        identity: crate::keychain::DeviceIdentity,
+    async fn run_once(
+        &mut self,
+        enrollment: &Enrollment,
+        identity: &crate::keychain::DeviceIdentity,
         wake: Arc<tokio::sync::Notify>,
         status: Arc<std::sync::Mutex<String>>,
     ) {
@@ -260,6 +270,7 @@ impl Host {
                 if self.stop.load(Ordering::SeqCst) {
                     break;
                 }
+                let mut lived = Duration::ZERO;
                 let result: Result<()> = async {
                     let token = crate::device_token::mint_device_token(
                         &identity.private_key_pem,
@@ -298,10 +309,24 @@ impl Host {
                     if let Ok(mut s) = status.lock() {
                         *s = "connected".into();
                     }
-                    delay = 1;
-                    self.connection(&mut socket, &mut rx).await
+                    relay_log(&format!(
+                        "connected; {} mirrored sessions",
+                        self.mirrors.len()
+                    ));
+                    let started = Instant::now();
+                    let outcome = self.connection(&mut socket, &mut rx).await;
+                    lived = started.elapsed();
+                    outcome
                 }
                 .await;
+                relay_log(&format!(
+                    "connection ended after {:.1}s: {}",
+                    lived.as_secs_f64(),
+                    match &result {
+                        Ok(()) => "paused".to_owned(),
+                        Err(e) => e.to_string(),
+                    }
+                ));
                 if let Ok(mut s) = status.lock() {
                     *s = if result.is_err() {
                         "disconnected"
@@ -320,11 +345,47 @@ impl Host {
                 {
                     break;
                 }
-                delay = (delay * 2).min(30);
+                delay = reconnect_delay(delay, lived);
             }
         };
         tokio::select! {_ = discovery=>{},_ = network=>{}}
     }
+
+    pub(super) async fn supervise(
+        mut self,
+        enrollment: Enrollment,
+        identity: crate::keychain::DeviceIdentity,
+        wake: Arc<tokio::sync::Notify>,
+        status: Arc<std::sync::Mutex<String>>,
+    ) {
+        use futures_util::FutureExt;
+        let mut restart = 1u64;
+        loop {
+            // AssertUnwindSafe: the host is persisted to disk on every mutating change, so a
+            // torn iteration from a caught panic loses nothing durable.
+            let outcome = std::panic::AssertUnwindSafe(self.run_once(
+                &enrollment,
+                &identity,
+                wake.clone(),
+                status.clone(),
+            ))
+            .catch_unwind()
+            .await;
+            if let Ok(mut s) = status.lock() {
+                *s = "disconnected".into();
+            }
+            if self.stop.load(Ordering::SeqCst) {
+                return;
+            }
+            relay_log(&match outcome {
+                Ok(()) => format!("supervisor loop ended; restarting in {restart}s"),
+                Err(_) => format!("supervisor loop panicked; restarting in {restart}s"),
+            });
+            tokio::time::sleep(Duration::from_secs(restart)).await;
+            restart = (restart * 2).min(60);
+        }
+    }
+
     async fn connection(
         &mut self,
         socket: &mut Socket,
@@ -441,7 +502,8 @@ impl Host {
                     let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                     let batch = match capture_batch(mirror) {
                         Ok(batch) => batch,
-                        Err(_) => {
+                        Err(reason) => {
+                            relay_log(&format!("{} history unreadable: {reason}", short(key)));
                             registered.remove(key);
                             persist_changed(&self.dir, key, mirror, &before)?;
                             continue;
@@ -493,20 +555,23 @@ impl Host {
                             }
                             let mirror = self.mirrors.get_mut(&key).ok_or("unknown local session")?;
                             let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
-                            let pending_id = mirror.pending.as_ref().and_then(|p| p["batchId"].as_str()).unwrap_or("").to_owned();
+                            let pending_id = mirror.pending.as_ref().and_then(|p| p["batchId"].as_str()).map(str::to_owned);
                             let pending_count = mirror.pending.as_ref().and_then(|p| p["events"].as_array()).map(|e| e.len() as u64).unwrap_or(0);
                             if after == mirror.after_seq {
                                 // Nothing was applied since the last ACK.
-                            } else if pending_count > 0 && after == mirror.after_seq + pending_count {
+                            } else if let (Some(id), true) = (pending_id.as_deref(), pending_count > 0 && after == mirror.after_seq + pending_count) {
                                 // The relay applied the in-flight batch; its ACK never reached this Mac.
-                                mirror.acknowledge(&pending_id, after)?;
+                                mirror.acknowledge(id, after)?;
                                 relay_log(&format!("{} reconciled a lost ack: cursor {after}", short(&key)));
                             } else {
                                 relay_log(&format!("{} cursor resync: local {} (+{pending_count} pending) relay {after}", short(&key), mirror.after_seq));
                                 mirror.resync(after);
                             }
                             mirror.session_id = Some(sid.into());
-                            if is_register {mirror.registered();}
+                            if is_register {
+                                mirror.registered();
+                                relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
+                            }
                             let advanced=mirror.advance();
                             persist_changed(&self.dir,&key,mirror,&before)?;
                             // An ACK for live B cannot re-enable B after discovery
@@ -1698,5 +1763,105 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert!(stored.pending.is_some(), "the rejected batch stays pending for the next connection's reconciliation");
         assert_eq!(stored.after_seq, 0);
+    }
+    #[test]
+    fn local_sessions_reconnect_delay_backs_off_unless_the_connection_lived() {
+        assert_eq!(reconnect_delay(1, Duration::from_secs(0)), 2);
+        assert_eq!(reconnect_delay(2, Duration::from_secs(5)), 4);
+        assert_eq!(reconnect_delay(16, Duration::from_secs(29)), 30);
+        assert_eq!(reconnect_delay(30, Duration::from_secs(1)), 30);
+        assert_eq!(reconnect_delay(30, Duration::from_secs(30)), 1);
+        assert_eq!(reconnect_delay(4, Duration::from_secs(600)), 1);
+    }
+    #[tokio::test]
+    async fn local_sessions_supervisor_keeps_running_after_the_network_loop_ends_and_honours_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let host = Host {
+            workspace_at: Instant::now(),
+            workspace_key: None,
+            dir: dir.path().into(),
+            home: dir.path().into(),
+            mirrors: BTreeMap::new(),
+            stop: stop.clone(),
+        };
+        let enrollment = Enrollment {
+            owner_id: "org".into(),
+            human_user_id: "alice".into(),
+            device_id: "mac".into(),
+            gateway_url: "wss://127.0.0.1:1".into(),
+            enabled: true,
+            paused: false,
+            server_revision: None,
+            remote_disabled: false,
+            attempt: None,
+        };
+        let identity = crate::keychain::generate_keypair();
+        let status = Arc::new(std::sync::Mutex::new(String::new()));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let stopper = stop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            stopper.store(true, Ordering::SeqCst);
+        });
+        tokio::time::timeout(Duration::from_secs(8), host.supervise(enrollment, identity, wake, status.clone()))
+            .await
+            .expect("supervise returns once stop is set");
+        assert_eq!(status.lock().unwrap().as_str(), "disconnected");
+    }
+    #[tokio::test]
+    async fn local_sessions_registration_ack_with_batchless_pending_falls_through_to_resync() {
+        let dir = tempfile::tempdir().unwrap();
+        let persisted = dir.path().join("local.json");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            // Cursor math says "the pending batch applied" (after == after_seq + pending_count),
+            // but the persisted pending row has no batchId to acknowledge against.
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g1",
+                "afterSeq":379,"serverTime":100,"reconcile":null})).await;
+            let batch = next_frame(&mut socket).await;
+            assert_eq!(batch["type"], "local.session.events");
+            assert_eq!(batch["afterSeq"], 379);
+            assert_eq!(batch["events"].as_array().unwrap().len(), 1);
+            assert_eq!(batch["events"][0]["role"], "system");
+            assert!(batch["events"][0]["text"].as_str().unwrap().contains("could not mirror"));
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":batch["batchId"],"afterSeq":380})).await;
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    tick.tick().await;
+                    let m: Mirror = private_read(&persisted).unwrap();
+                    if m.after_seq == 380 && m.pending.is_none() {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            socket.close(None).await.unwrap();
+        });
+        let events: Vec<Value> = vec![json!({"kind":"text","role":"assistant","text":"line 0","truncated":false})];
+        let mut mirror = test_mirror("native", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("g1".into());
+        mirror.after_seq = 378;
+        mirror.queue = events.clone();
+        // No "batchId" field at all -- the buggy path treated this as `unwrap_or("")`.
+        mirror.pending = Some(json!({"type":"local.session.events","sessionId":SID,"generation":"g1",
+            "afterSeq":378,"events":events}));
+        let mut host = test_host(dir.path(), vec![("local", mirror)]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
+        assert_eq!(stored.after_seq, 380);
+        assert!(stored.pending.is_none() && stored.queue.is_empty());
     }
 }

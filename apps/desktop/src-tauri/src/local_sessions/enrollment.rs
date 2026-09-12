@@ -188,7 +188,10 @@ impl Controller {
                         let mut bytes = [0; 1];
                         loop {
                             if socket.recv(&mut bytes).await.is_err() {
-                                break;
+                                // A dead hook socket must never end this select and drop
+                                // `supervise` -- park here instead of going dark.
+                                transport::relay_log("hook socket error; listener stopped");
+                                std::future::pending::<()>().await;
                             }
                             hook_wake.notify_one();
                         }

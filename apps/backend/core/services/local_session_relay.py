@@ -96,7 +96,9 @@ def _revised(row: dict, **changes) -> dict:
     return {**row, **changes, "revision": str(uuid.uuid4())}
 
 
-def _conflict() -> ApiProblem:
+def _conflict(reason: str, **fields: object) -> ApiProblem:
+    # Ids, seqs and reasons only — never frame content.
+    logger.warning("local session conflict: %s", reason, extra={"reason": reason, **fields})
     return ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed; reconcile before retrying.")
 
 
@@ -178,14 +180,14 @@ class LocalSessionRelay:
     async def _current(self, cid: str, connection: dict, sid: str, generation: str | None) -> dict:
         owner = connection.get("org_id") or connection["user_id"]
         row = await repo.get_session(owner, sid)
-        if (
-            not row
-            or row.get("humanUserId") != connection["user_id"]
-            or row.get("deviceId") != connection["device_id"]
-            or row.get("connectionId") != cid
-            or (generation is not None and row.get("generation") != generation)
-        ):
-            raise _conflict()
+        if not row:
+            raise _conflict("missing", sid=sid, cid=cid)
+        if row.get("humanUserId") != connection["user_id"] or row.get("deviceId") != connection["device_id"]:
+            raise _conflict("ownership", sid=sid, cid=cid)
+        if row.get("connectionId") != cid:
+            raise _conflict("older connection", sid=sid, cid=cid)
+        if generation is not None and row.get("generation") != generation:
+            raise _conflict("generation chain", sid=sid, cid=cid)
         return row
 
     async def handle_message(self, cid: str, body: dict) -> dict:
@@ -221,12 +223,12 @@ class LocalSessionRelay:
                             int(previous.get("connectedAt", "0")),
                             previous.get("connectionId", ""),
                         ):
-                            raise _conflict()
+                            raise _conflict("older connection", sid=sid, cid=cid)
                         if (
                             previous["generation"] != descriptor.generation
                             and message.previous_generation != previous["generation"]
                         ):
-                            raise _conflict()
+                            raise _conflict("generation chain", sid=sid, cid=cid)
                     # The desktop is the only party that can verify the native runtime (live process,
                     # transcript rows, inbox socket) and it fails closed with a controlUnavailableReason.
                     # A backend version list could only drift from it, and did (Claude 2.1.269).
@@ -258,6 +260,10 @@ class LocalSessionRelay:
                         "generation": row["generation"],
                         "afterSeq": row["eventSeq"],
                     }
+                    logger.info(
+                        "local session registered",
+                        extra={"sid": sid, "cid": cid, "cursor": row["eventSeq"], "resumed": previous is not None},
+                    )
                 else:
                     sid = str(message.session_id)
                     # A current connection may reconcile its journal from an older
@@ -350,15 +356,16 @@ class LocalSessionRelay:
                 if not store._is_cancelled(exc):
                     raise
                 connection, enrollment = await self.connect(cid)
-        raise _conflict()
+        raise _conflict("revision contention", cid=cid)
 
     async def _events(self, cid: str, connection: dict, enrollment: dict, row: dict, message: Events) -> dict:
+        sid = row["sessionId"]
         first_seq = message.after_seq + 1
         previous = await store._get(row["pk"], f"EVENT#{first_seq:020d}")
         digest = store.request_hash(message.model_dump(mode="json", by_alias=True))
         if previous:
             if previous.get("batchHash") != digest:
-                raise _conflict()
+                raise _conflict("batch hash", sid=sid, first_seq=first_seq)
             return {
                 "type": "local.session.events.ack",
                 "sessionId": row["sessionId"],
@@ -366,7 +373,7 @@ class LocalSessionRelay:
                 "afterSeq": previous["batchEndSeq"],
             }
         if message.after_seq != row.get("eventSeq", 0):
-            raise _conflict()
+            raise _conflict("cursor", sid=sid, expected=row.get("eventSeq", 0), got=message.after_seq)
         now = int(time.time() * 1000)
         has_text = any(event.kind == "text" for event in message.events)
         if has_text and now < row.get("nextTextAt", 0):
@@ -417,13 +424,14 @@ class LocalSessionRelay:
         }
 
     async def _receipt(self, cid: str, connection: dict, enrollment: dict, row: dict, message: Receipt) -> dict:
-        command = await repo.get_command(row["ownerId"], row["sessionId"], message.request_id)
+        sid = row["sessionId"]
+        command = await repo.get_command(row["ownerId"], sid, message.request_id)
         if not command or command["expectedGeneration"] != message.generation or command["state"] == "pending":
-            raise _conflict()
+            raise _conflict("receipt command", sid=sid)
         outcome = dict(state=message.outcome, held=message.held, providerMessageId=message.provider_message_id)
         if command["state"] in {"applied", "rejected"}:
             if any(command.get(key) != value for key, value in outcome.items()):
-                raise _conflict()
+                raise _conflict("receipt outcome", sid=sid)
         else:
             await repo.replace_command(
                 command,
@@ -449,10 +457,10 @@ class LocalSessionRelay:
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:
-            raise _conflict()
+            raise _conflict("dispatch identity", sid=sid)
         now = int(time.time())
         if command["deliverBy"] <= now or (not claim and command.get("claimUntil", 0) <= now):
-            raise _conflict()
+            raise _conflict("dispatch expiry", sid=sid)
         if current["revision"] != row["revision"]:
             # Transcript/liveness/admission writes also change META. Retry the
             # snapshot; only substantive authorization/control failures reject.

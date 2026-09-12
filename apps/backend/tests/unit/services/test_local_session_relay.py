@@ -1066,3 +1066,29 @@ async def test_relay_capabilities_follow_the_desktop_verification_not_a_version_
     row = await repo.get_session(OWNER, response["sessionId"])
     assert row["capabilitiesVerified"] is verified
     assert row["capabilities"]["sendMode"] == ("queue" if verified else "none")
+
+
+@pytest.mark.asyncio
+async def test_cursor_conflict_is_logged_with_reason_and_seqs_but_never_text(transport, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="core.services.local_session_relay")
+    sid = await start(transport)
+    registered = next(r for r in caplog.records if r.getMessage() == "local session registered")
+    assert registered.levelno == logging.INFO and registered.sid == sid and registered.cursor == 0
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "batch-1",
+        "afterSeq": 0,
+        "events": [{"kind": "text", "role": "assistant", "text": "private transcript", "truncated": False}],
+    }
+    await relay(transport).handle_message("conn-1", body)
+    # afterSeq 5 has no stored row, so this is a cursor mismatch (row cursor 1), not a batch-hash replay.
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", {**body, "batchId": "batch-new", "afterSeq": 5})
+    conflict = next(r for r in caplog.records if "conflict" in r.getMessage())
+    assert conflict.levelno == logging.WARNING
+    assert conflict.reason == "cursor" and conflict.expected == 1 and conflict.got == 5 and conflict.sid == sid
+    assert "private transcript" not in caplog.text

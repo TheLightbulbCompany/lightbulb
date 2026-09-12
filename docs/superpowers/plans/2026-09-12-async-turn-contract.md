@@ -1615,7 +1615,6 @@ git commit -m "feat(messaging): lazy workspace id stamped on rooms and streams; 
 **Files:**
 - Modify: `packages/shared/src/messaging/types.ts:172-178` (`LiveConfig`)
 - Modify: `packages/shared/src/live/appsyncEvents.ts:113-114`
-- Modify: `packages/shared/src/messaging/useRooms.ts:320`
 - Modify: `apps/frontend/src/hooks/useLiveEvents.tsx:82-83`
 - Modify: `apps/mobile/src/providers/live-events.tsx:131-134`
 - Test: `packages/shared/src/live/appsyncEvents.test.ts:66-67,231`, `packages/shared/src/live/useLiveEvents.test.tsx:55-62`, `apps/frontend/src/hooks/__tests__/useLiveEvents.test.tsx:100-125`
@@ -1656,8 +1655,9 @@ export interface LiveConfig {
 // appsyncEvents.ts:113-114
     const users = unique.filter((channel) => channel.includes("/users/"));
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
-// useRooms.ts:320 — subscriptionPath stays "/rooms/{id}/{key}"; the live channel carries the workspace prefix
-    if (!subscriptionPath || !liveChannels.some((channel) => channel.endsWith(subscriptionPath))) return;
+// useRooms.ts is NOT touched: the messaging-latency pass (another session) deletes the
+// `liveChannels.includes(subscriptionPath)` gate at :319-323 outright; history reconciles
+// off activeRoomId. Do not reintroduce a liveChannels dependency there.
 // apps/frontend/src/hooks/useLiveEvents.tsx:82-83
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
   const roomChannel = config && activeRoom ? `/ws/${config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;

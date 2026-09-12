@@ -502,6 +502,24 @@ it("shows the harness title, keeps the composer, and renders tool rows in the te
   expect(screen.getByRole("button", { name: "Copy session link" })).toBeInTheDocument();
 });
 
+it("submits the follow-up on Enter, keeps Shift+Enter as a newline, and ignores Enter mid-IME composition", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  const input = screen.getByRole("textbox", { name: /Send to Codex/ });
+  await userEvent.type(input, "line one{Shift>}{Enter}{/Shift}line two");
+  expect(input).toHaveValue("line one\nline two");
+  expect(f.client.submitLocalSessionCommand).not.toHaveBeenCalled();
+  fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+  fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+  expect(f.client.submitLocalSessionCommand).not.toHaveBeenCalled();
+  expect(input).toHaveValue("line one\nline two");
+  await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledWith("room", session.sessionId,
+    expect.objectContaining({ kind: "send", text: "line one\nline two" }));
+  expect(input).toHaveValue("");
+});
+
 it("cannot race a new send with a receipt check or erase the next draft", async () => {
   const f = setup();
   render(<RoomPanel {...f.props} />);

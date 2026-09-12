@@ -127,7 +127,7 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
       <label htmlFor={id} className="text-sm font-semibold">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!canSend || locked} onChange={event => setText(event.target.value)}
-          onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}
+          onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}
           placeholder="Ask this session a follow-up… (Enter sends, Shift+Enter newline)" /></div>
       {!canSend && <p className="text-sm text-muted-foreground">Sending is unavailable for this session.</p>}
       <Button type="submit" disabled={!canSend || locked || !text.trim()}>Send follow-up</Button>

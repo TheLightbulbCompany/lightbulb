@@ -25,9 +25,11 @@ interface ActionRow {
  * so `visible` is a literal — the caller dropping the target IS the dismissal.
  * The cost is no slide-out; the card appears and vanishes.
  *
- * `onReplyInThread` is optional and its row is omitted without it: inside a
+ * `onReplyInThread` and `onMarkUnread` are optional and their rows are omitted
+ * without them — the same `!inThread` gate the web applies to both. Inside a
  * thread there is nowhere to reply-in-thread TO (the composer below already is
- * that thread), which is the same `!inThread` gate the web applies.
+ * that thread), and the read cursor is per room, so a thread cannot express its
+ * own unread.
  *
  * ponytail: fixed set only; the "more" picker lands with Phase B's emoji sheet,
  * which also brings Edit and Delete for your own messages.
@@ -47,7 +49,7 @@ export function MessageActionsSheet({
   onClose: () => void;
   onReact: (emoji: string, active: boolean) => void;
   onReplyInThread?: () => void;
-  onMarkUnread: () => void;
+  onMarkUnread?: () => void;
 }) {
   // A tombstone carries no text, no attachments and no reactions (the server
   // blanks all three), so reacting to one and copying its text are both dead.
@@ -65,7 +67,7 @@ export function MessageActionsSheet({
             run: () => Clipboard.setStringAsync(message.text),
           },
         ]),
-    { icon: "mail", label: "Mark unread", run: onMarkUnread },
+    ...(onMarkUnread ? [{ icon: "mail" as const, label: "Mark unread", run: onMarkUnread }] : []),
     {
       icon: "link",
       label: "Copy link",

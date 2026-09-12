@@ -189,20 +189,17 @@ export default function ThreadScreen() {
           currentUserId={userId ?? ""}
           roomId={roomId}
           onClose={() => setActionTarget(null)}
+          // ponytail: a rejected reaction is swallowed, so the emoji just never
+          // appears; the upgrade is an inline error under the message (what the
+          // web's `reactionError` does) or a toast.
           onReact={(emoji, active) =>
             void rooms.setReaction(actionTarget.messageId, emoji, active).catch(() => {})
           }
-          // No Reply in thread: this IS the thread, the composer below is the
-          // reply box, and Paperclip threads are one level deep.
-          //
-          // Mark unread marks the ROOM from this message's sequence — the read
-          // cursor is per room, so that is the only unread a thread can express.
-          // ponytail: per-thread unread is Phase B (a backend field), and
-          // popping back to the conversation re-marks the room read, so this
-          // sticks only when the user leaves the room from here.
-          onMarkUnread={() =>
-            void rooms.markUnread(roomId, actionTarget.messageSeq).catch(() => {})
-          }
+          // No Reply in thread and no Mark unread — the web's `!inThread` rule.
+          // A reply cannot root a nested thread, and the read cursor is per room,
+          // so marking unread here is undone the moment the conversation behind
+          // this screen is re-focused; the action stays thread-hidden until
+          // per-thread read state exists (Phase B, needs a backend field).
         />
       )}
       <RoomComposer

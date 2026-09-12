@@ -107,9 +107,11 @@ describe("MessageActionsSheet", () => {
     expect(onMarkUnread).toHaveBeenCalledTimes(1);
   });
 
-  // Inside a thread there is nowhere to reply-in-thread TO — the composer below
-  // already is that thread. The web hides the same action on `inThread`.
-  it("omits Reply in thread when the caller has nowhere to push", async () => {
+  // Both are the thread screen's shape, and both are the web's `!inThread` rule:
+  // inside a thread there is nowhere to reply-in-thread TO (the composer below
+  // already is that thread), and the read cursor is per room, so a thread cannot
+  // express its own unread at all.
+  it("omits Reply in thread and Mark unread when the caller passes no handler", async () => {
     await render(
       <MessageActionsSheet
         message={message}
@@ -117,10 +119,12 @@ describe("MessageActionsSheet", () => {
         roomId="room-1"
         onClose={() => {}}
         onReact={() => {}}
-        onMarkUnread={() => {}}
       />,
     );
     expect(screen.queryByText("Reply in thread")).toBeNull();
+    expect(screen.queryByText("Mark unread")).toBeNull();
+    // The sheet is still open and still useful.
     expect(screen.getByText("Copy text")).toBeTruthy();
+    expect(screen.getByText("Copy link")).toBeTruthy();
   });
 });

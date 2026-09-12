@@ -141,16 +141,19 @@ describe("thread screen", () => {
     expect(mockMarkRead).not.toHaveBeenCalled();
   });
 
-  // The shared machine's read cursor is per ROOM, so this is the only unread a
-  // thread can express: the room, from this reply on. Per-thread unread is
-  // Phase B (it needs a backend field).
-  it("marks the room unread from a reply, and offers no nested thread", async () => {
+  // The web's `!inThread` rule, both halves: a thread reply cannot open a nested
+  // thread, and the read cursor is per ROOM — marking the room unread from here
+  // is undone the moment the conversation behind this screen is re-focused.
+  // The conversation screen keeps the action (see conversation.test.tsx).
+  it("offers neither a nested thread nor Mark unread on a reply", async () => {
     await render(<Thread />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
     await fireEvent(screen.getByText("second"), "longPress");
+    // The sheet IS open — these two are absent, not the whole sheet.
+    expect(screen.getByText("Copy text")).toBeTruthy();
     expect(screen.queryByText("Reply in thread")).toBeNull();
-    await fireEvent.press(screen.getByText("Mark unread"));
-    await waitFor(() => expect(mockMarkUnread).toHaveBeenCalledWith("room-1", 2));
+    expect(screen.queryByText("Mark unread")).toBeNull();
+    expect(mockMarkUnread).not.toHaveBeenCalled();
   });
 
   it("labels a reply that failed to send and retries it", async () => {

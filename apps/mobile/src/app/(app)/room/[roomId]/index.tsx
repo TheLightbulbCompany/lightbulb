@@ -251,6 +251,9 @@ function Conversation() {
           currentUserId={userId ?? ""}
           roomId={roomId}
           onClose={() => setActionTarget(null)}
+          // ponytail: both rejections are swallowed, so a failed reaction or
+          // mark-unread just looks like nothing happened; the upgrade is an
+          // inline error under the message (the web's `reactionError`) or a toast.
           onReact={(emoji, active) =>
             void rooms.setReaction(actionTarget.messageId, emoji, active).catch(() => {})
           }

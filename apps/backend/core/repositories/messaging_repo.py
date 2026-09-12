@@ -517,15 +517,21 @@ async def create_message(
     source_agent_id: str | None,
     client_message_id: str | None,
     attachments: list[dict] | None = None,
-) -> dict:
+) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
     outbox row per dispatch target. Retries the sequence race; a durable
     replay returns the original message; a changed body raises
-    ``IdempotencyConflict``."""
+    ``IdempotencyConflict``.
+
+    Returns ``(message, replayed)``. ``replayed`` is True when a durable
+    receipt already existed and NOTHING was written — the agent path is built
+    around retries, so a caller with post-commit side effects that must happen
+    once per message (telemetry, latency measurement) has to skip them here.
+    """
     prior = await _get(idemp_pk, idemp_sk)
     if prior is not None:
-        return await _replay_or_conflict(prior, req_hash)
+        return await _replay_or_conflict(prior, req_hash), True
 
     table_name = _table().name
     target_ids = [t["agentId"] for t in dispatch_targets]
@@ -588,13 +594,13 @@ async def create_message(
         items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
         try:
             await _transact(items)
-            return _plain(message)
+            return _plain(message), False
         except ClientError as exc:
             if not _is_cancelled(exc):
                 raise
         prior = await _get(idemp_pk, idemp_sk)
         if prior is not None:
-            return await _replay_or_conflict(prior, req_hash)
+            return await _replay_or_conflict(prior, req_hash), True
         # Sequence race (or a same-instant duplicate seq) — reread and retry.
         logger.info("messaging: sequence conflict on room=%s attempt=%d", room_id, attempt + 1)
     raise MessagingRepoError(f"could not append to room {room_id} after {_SEQ_RETRY_ATTEMPTS} attempts")

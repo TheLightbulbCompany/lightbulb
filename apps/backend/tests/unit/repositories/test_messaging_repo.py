@@ -78,6 +78,11 @@ async def _room(members=None, client_room_id="c-room-1", name="launch"):
 
 
 async def _post(room_id, text="hi", targets=None, client_id="m-1", author=None):
+    """The message only — ``_post_write`` keeps the replay flag."""
+    return (await _post_write(room_id, text, targets, client_id, author))[0]
+
+
+async def _post_write(room_id, text="hi", targets=None, client_id="m-1", author=None):
     author = author or {"kind": "human", "id": USER_A, "displayName": "Ann"}
     return await repo.create_message(
         room_id=room_id,
@@ -368,9 +373,11 @@ async def test_message_transaction_writes_idemp_and_one_work_row_per_target(tabl
 @pytest.mark.asyncio
 async def test_message_replay_returns_original_and_changed_body_conflicts(table):
     room_id, _ = await _room()
-    first = await _post(room_id, text="same")
-    again = await _post(room_id, text="same")
+    first, first_replayed = await _post_write(room_id, text="same")
+    again, again_replayed = await _post_write(room_id, text="same")
     assert again["messageId"] == first["messageId"] and (await repo.get_room(room_id))["lastSeq"] == 1
+    # The flag is what lets a caller skip post-commit side effects on a retry.
+    assert (first_replayed, again_replayed) == (False, True)
     with pytest.raises(repo.IdempotencyConflict):
         await _post(room_id, text="different")
 
@@ -379,7 +386,7 @@ async def test_message_replay_returns_original_and_changed_body_conflicts(table)
 async def test_agent_receipt_is_owner_scoped_by_event_id(table):
     room_id, _ = await _room()
     author = {"kind": "agent", "id": FRIDAY, "displayName": "Friday"}
-    m = await repo.create_message(
+    m, _ = await repo.create_message(
         room_id=room_id,
         owner_id=OWNER,
         idemp_pk=repo.owner_pk(OWNER),

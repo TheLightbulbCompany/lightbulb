@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { EmojiPicker, RECENT_EMOJI_KEY, readRecentEmoji, recordRecentEmoji } from "../EmojiPicker";
-import { ALL_EMOJI, searchEmoji } from "../emojiData";
+import { ALL_EMOJI, searchEmoji } from "@lightbulb/shared";
 
 beforeEach(() => localStorage.clear());
 

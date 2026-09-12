@@ -63,6 +63,8 @@ const state = {
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
   messages: [], optimisticMessages: [], typingMembers: [], runs: [] as LiveRoomRun[],
+  historyLoading: false, historyComplete: false, historyError: false, historyErrorMessage: null as string | null,
+  loadHistory: vi.fn(), selectRoomError: null as string | null,
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
@@ -84,6 +86,9 @@ beforeEach(() => {
   mocks.rooms.mockReturnValue(state);
   mocks.agents.mockReturnValue({ agents: [{ id: "agent-friday", name: "Friday" }] });
   mocks.roster.mockReturnValue([{ agent: { id: "agent-friday" }, state: "running" }]);
+  state.selectRoomError = null;
+  state.historyError = false;
+  state.historyErrorMessage = null;
 });
 afterEach(() => { cleanup(); localStorage.clear(); });
 
@@ -131,6 +136,27 @@ it("routes message authors through the existing participant DM action", async ()
   compose();
   await act(async () => panel.onSelectParticipant?.(panel.participants[1]));
   expect(state.selectDm).toHaveBeenCalledWith(panel.participants[1]);
+});
+
+it("surfaces a failed DM resolve as a dismissible alert and passes the history reason through", () => {
+  // Fresh element per render: rerendering the identical object bails out and
+  // would never re-read the mocked hook.
+  const tree = () => (<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext />
+    <MessagingDirectory onOpenRoom={undefined} />
+    <MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  const view = render(tree());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  state.selectRoomError = "Conversation unavailable";
+  state.historyError = true;
+  state.historyErrorMessage = "History is temporarily unavailable";
+  view.rerender(tree());
+  expect(screen.getByRole("alert")).toHaveTextContent("Conversation unavailable");
+  expect(panel.historyError).toBe(true);
+  expect(panel.historyErrorMessage).toBe("History is temporarily unavailable");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 it("returns DM failures to the profile so it can offer retry", async () => {

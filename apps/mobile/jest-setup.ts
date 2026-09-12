@@ -17,6 +17,7 @@ jest.mock(
     getExpoPushTokenAsync: jest.fn(async () => ({ data: "ExponentPushToken[test]" })),
     getLastNotificationResponseAsync: jest.fn(async () => null),
     setNotificationHandler: jest.fn(),
+    setBadgeCountAsync: jest.fn(async () => true),
     addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
   }),
   { virtual: true },
@@ -41,3 +42,9 @@ jest.mock(
   }),
   { virtual: true },
 );
+
+// Clipboard: a real dep, mocked so no suite reaches the native module. Suites
+// that assert WHAT was copied re-mock it with their own spy.
+jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }), {
+  virtual: true,
+});

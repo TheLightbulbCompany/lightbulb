@@ -134,6 +134,13 @@ export function MessagingWorkspaceProvider({
   threadClientMessageIdRef.current = threadClientMessageId;
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationError, setCreationError] = useState<string>();
+  // A failed DM resolve-or-create (rooms.selectRoomError) otherwise vanishes:
+  // the caller rethrows but nobody renders it. Dismissal is local — the hook
+  // itself clears the error on the next successful select or create.
+  const [selectErrorDismissed, setSelectErrorDismissed] = useState<string | null>(null);
+  const selectRoomError = rooms.selectRoomError && rooms.selectRoomError !== selectErrorDismissed
+    ? rooms.selectRoomError
+    : null;
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
   useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts, shortcutsOpen);
@@ -407,6 +414,7 @@ export function MessagingWorkspaceProvider({
     historyLoading: rooms.historyLoading,
     historyComplete: rooms.historyComplete,
     historyError: rooms.historyError,
+    historyErrorMessage: rooms.historyErrorMessage,
     onLoadHistory: rooms.loadHistory,
     pendingMessages: pending,
     typingMembers: rooms.typingMembers.filter((member) => member.userId !== userId),
@@ -458,5 +466,8 @@ export function MessagingWorkspaceProvider({
       rooms.selectRoom(roomId);
       setNotificationTarget({ roomId, threadId: targetThreadId });
       activateMessagesPanel();
-    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}</MessagingWorkspaceContext.Provider>;
+    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
+    {selectRoomError && <div role="alert" className="px-4 py-2 text-sm text-err">{selectRoomError}{" "}
+      <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
+    </div>}</MessagingWorkspaceContext.Provider>;
 }

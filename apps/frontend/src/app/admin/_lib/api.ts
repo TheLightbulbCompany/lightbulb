@@ -169,65 +169,54 @@ export interface FleetData {
   grid: FleetGridItem[] | null;
 }
 
-export interface GrowthWeekRow {
+/** One ISO week of activity, from the messaging table (audit §6 metric 2).
+ * Every field is `null` when the messaging scan failed — the page renders that
+ * as an em dash / a gap, never as a zero. */
+export interface GrowthWeeklyActive {
   week: string;
-  owners_active: number;
-  autonomous_ok: number;
-  human_ok: number;
-  nightly_ok: number;
-  autonomous_share: number | null;
+  workspaces: number | null;
+  multiplayer: number | null;
+  multiplayer_share: number | null;
 }
-export interface GrowthOwnerStage {
-  owner_id: string;
-  name: string;
-  stage:
-    | "signed_up"
-    | "subscribed"
-    | "container_ready"
-    | "onboarding_complete"
-    | "automation_armed"
-    | "first_autonomous_success";
-  plan: string | null;
-  status: string | null;
-  onboarding_state: string;
-  first_autonomous_at: string | null;
+/** One signup-week cohort: how many became measurable, activated, and pay (§6 metrics 1 + 4).
+ * `signups`/`paying` are billing-fed and survive a failed messaging scan; the
+ * other two go `null` with it. */
+export interface GrowthCohort {
+  week: string;
+  signups: number;
+  /** Cohort members whose 7-day activation window has closed (or that already activated). */
+  measurable: number | null;
+  activated: number | null;
+  paying: number;
 }
 export interface GrowthSegment {
-  owners: {
+  workspaces: {
     total: number;
-    paid: number;
-    paid_by_plan: Record<string, number>;
-    paid_by_provider: Record<string, number>;
+    paying: number;
+    paying_by_plan: Record<string, number>;
+    paying_by_provider: Record<string, number>;
     trial_active: number;
     trial_expired: number;
     signups_by_week: { week: string; n: number }[];
   };
-  activation: {
-    stages: Record<GrowthOwnerStage["stage"], number>;
-    /** Order-independent per-flag counts — each true regardless of whether an
-     * earlier stage in the ladder above was reached. See growth.py's derive(). */
-    flags: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, number>;
-    owners: GrowthOwnerStage[];
+  /** Messaging-fed; every field is `null` when `sources.messaging` is not "ok". */
+  activation: { activated: number | null; measurable: number | null; rate: number | null };
+  weekly_active: GrowthWeeklyActive[];
+  answered: {
+    dispatched: number | null;
+    answered: number | null;
+    rate: number | null;
+    p50_reply_s: number | null;
   };
-  north_star: { weeks: GrowthWeekRow[] };
-  headline: { bar: number; count: number; owners: string[]; weeks: string[] };
-  retention: {
-    weekly_active_owners: { week: string; n: number }[];
-    automation_survival: { armed: number; paused_manual: number; auto_paused: number; archived: number };
-  };
-  depth: {
-    armed_per_owner: { owner_id: string; name: string; armed: number; trigger_kinds: string[] }[];
-    providers_per_owner: { owner_id: string; name: string; providers: string[] }[];
-  };
-  counters: {
-    auto_paused: { owner_id: string; name: string; title: string; since: string | null }[];
-    archived_within_7d: { owner_id: string; name: string; title: string }[];
-  };
-  nightly_ceo: { armed: number; opted_out: number; never_armed: number };
-  /** Daily-resolution runs/signups for the charts — 56 rows each, zeros included. */
+  cohorts: GrowthCohort[];
+  retention_w4: { eligible: number | null; retained: number | null; rate: number | null };
+  messaging: { rooms: number | null; human_messages_this_week: number | null };
+  /** Daily-resolution series for the charts — 56 rows each, zeros included.
+   * `human_messages` and `activated` carry `null` when the messaging scan failed. */
   daily: {
-    runs: { day: string; autonomous_ok: number; human_ok: number; nightly_ok: number }[];
     signups: { day: string; n: number }[];
+    human_messages: { day: string; n: number | null }[];
+    activated: { day: string; n: number | null }[];
   };
 }
 export interface GrowthData {
@@ -241,14 +230,15 @@ export interface GrowthData {
   gate_blocked_7d: { code: string; n: number }[];
   /** Sparse — one row per (day, code) that occurred. */
   gate_blocked_daily: { day: string; code: string; n: number }[];
+  /** openclaw-work-dlq.fifo depth; null when the CloudWatch read failed. */
+  dlq_depth: number | null;
   posthog: {
-    runs: { week: string; kind: string; n: number }[];
     funnel: { week: string; event: string; owners: number }[];
     signup_sources: { source: string; owners: number }[];
     /** Sparse — one row per (day, event) that occurred. */
     funnel_daily: { day: string; event: string; owners: number }[];
   };
-  sources: Record<"ddb" | "aurora" | "posthog" | "cloudwatch" | "clerk", string>;
+  sources: Record<"ddb" | "messaging" | "posthog" | "cloudwatch" | "clerk", string>;
 }
 
 export interface DeployRow {

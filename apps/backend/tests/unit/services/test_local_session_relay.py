@@ -385,7 +385,10 @@ async def test_registration_server_bounds_compatibility_liveness_and_reconnect(t
     assert (await repo.get_session(OWNER, sid))["connectionId"] == "conn-2"
     await relay(transport).handle_message(
         "conn-2",
-        {**registration(generation="generation-2", providerVersion="unproven"), "previousGeneration": "generation-1"},
+        {
+            **registration(generation="generation-2", controlUnavailableReason="unsupported-version"),
+            "previousGeneration": "generation-1",
+        },
     )
     row = await repo.get_session(OWNER, sid)
     assert row["generation"] == "generation-2" and not row["capabilitiesVerified"]
@@ -1028,3 +1031,30 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
     wire_events = wire["events"]
     assert not set(wire_events[3]) & {"ts", "itemId", "parentId", "actor", "tool", "lifecycle"}
     assert wire_events[1]["tool"]["name"] == "Bash" and wire_events[1]["ts"] == "2026-09-12T10:00:00.000Z"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "version", "reason", "verified"),
+    [
+        ("claude", "2.1.269", None, True),
+        ("claude", "2.1.300", None, True),
+        ("codex", "0.160.0", None, True),
+        ("claude", "2.1.269", "unsupported-version", False),
+        ("codex", "0.149.0", "runtime-unverified", False),
+    ],
+)
+async def test_relay_capabilities_follow_the_desktop_verification_not_a_version_list(
+    transport, provider, version, reason, verified
+):
+    # The desktop verifies the live runtime and fails closed with a controlUnavailableReason.
+    # A backend version list can only drift from it (it did: the desktop learned Claude 2.1.269
+    # on 2026-09-11 and the relay kept 2.1.269 sessions send-disabled).
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    response = await relay(transport).handle_message(
+        "conn-1", registration(provider=provider, providerVersion=version, controlUnavailableReason=reason)
+    )
+    row = await repo.get_session(OWNER, response["sessionId"])
+    assert row["capabilitiesVerified"] is verified
+    assert row["capabilities"]["sendMode"] == ("queue" if verified else "none")

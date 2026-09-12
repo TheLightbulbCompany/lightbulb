@@ -1,37 +1,31 @@
-"""Read-only SQL against the Paperclip Aurora cluster via the RDS Data API.
+"""Addressing for the Paperclip Aurora cluster (RDS Data API).
 
-The backend task role already carries ``rds-data:ExecuteStatement`` on the
-cluster and ``secretsmanager:GetSecretValue`` on the DASH-named
+The backend task role carries ``rds-data:ExecuteStatement`` on the cluster and
+``secretsmanager:GetSecretValue`` on the DASH-named
 ``lightbulb-{env}-paperclip-db-credentials`` secret (service-stack.ts
 ``AccountWipePaperclipAurora*``), granted for the account-wipe user delete.
-This module is the shared wiring for that grant: ``paperclip_user_delete``
-imports the ARN/client helpers from here, and fleet aggregates
-(``core/services/ops/growth.py``) use ``select_rows``.
+This module is the shared wiring for that grant, and ``paperclip_user_delete``
+— which imports the ARN/client helpers below — is its only consumer.
 
-Why SQL and not ``PaperclipAdminClient``: every Paperclip REST read is
-company-scoped, so a fleet aggregate over N tenants is 3-4 calls per tenant;
-one SQL statement covers all tenants and returns an aggregate that fits the
-Data API's 1 MiB response cap (10 MB with ``formatRecordsAs=JSON``). Column
-names come from the deployed fork's drizzle schema
-(``~/dev/paperclip-fork/packages/db/src/schema``) — verify against the pinned
-tag in ``paperclip-version.json`` before adding a statement.
+It also held ``select_rows``, a read-only SELECT door for fleet aggregates. That
+went with the /admin/growth rebuild (2026-09-12): the growth page is computed
+from the messaging table and billing rows now, and nothing else read Paperclip
+over SQL. If a fleet aggregate ever needs SQL again, recover it from the history
+of this file rather than reaching for ``PaperclipAdminClient`` — every REST read
+there is company-scoped, so an aggregate over N tenants is 3-4 calls per tenant.
+Column names come from the deployed fork's drizzle schema
+(``~/dev/paperclip-fork/packages/db/src/schema``); verify against the pinned tag
+in ``paperclip-version.json``.
 """
 
 from __future__ import annotations
 
-import json
-
 import boto3
 
 from core.config import settings
-from core.dynamodb import run_in_thread
 
 # Same AWS account both envs share (see core.billing.bedrock_aip.OUR_ACCOUNT_ID).
 _ACCOUNT_ID = "877352799272"
-
-# env -> secret ARN. ListSecrets has no resource-level scoping and paginates;
-# resolve once per process.
-_secret_arn_cache: dict[str, str] = {}
 
 
 def rds_data_client():
@@ -55,34 +49,3 @@ def find_secret_arn(sm_client, env: str) -> str:
             if needle in s["Name"]:
                 return s["ARN"]
     raise RuntimeError(f"Could not find paperclip-db-credentials secret for env={env}")
-
-
-async def select_rows(
-    sql: str,
-    *,
-    env: str | None = None,
-    parameters: list[dict] | None = None,
-) -> list[dict]:
-    """Run one SELECT/WITH statement and return rows as dicts keyed by column alias.
-
-    Refuses anything else — the master credentials can write, this door cannot.
-    ``formatRecordsAs=JSON`` renders timestamps/uuids/jsonb as strings and
-    ints/floats/bools natively (AWS data-api-json docs); duplicate column
-    labels are a Data API error, so alias every expression.
-    """
-    head = sql.lstrip()[:6].upper()
-    if not (head.startswith("SELECT") or head.startswith("WITH")):
-        raise ValueError("select_rows only runs SELECT/WITH statements")
-    env = env or settings.ENVIRONMENT
-    if env not in _secret_arn_cache:
-        _secret_arn_cache[env] = await run_in_thread(find_secret_arn, secretsmanager_client(), env)
-    resp = await run_in_thread(
-        rds_data_client().execute_statement,
-        resourceArn=cluster_arn(env),
-        secretArn=_secret_arn_cache[env],
-        database="paperclip",
-        sql=sql,
-        parameters=parameters or [],
-        formatRecordsAs="JSON",
-    )
-    return json.loads(resp.get("formattedRecords") or "[]")

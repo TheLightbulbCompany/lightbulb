@@ -26,7 +26,6 @@ from core.services.messaging import ApiProblem, ContractModel, make_live_event, 
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
 CLAIM_SECONDS = 5
-_COMPATIBLE = {("claude", "2.1.268"), ("codex", "0.149.0")}
 logger = logging.getLogger(__name__)
 
 
@@ -228,10 +227,10 @@ class LocalSessionRelay:
                             and message.previous_generation != previous["generation"]
                         ):
                             raise _conflict()
-                    compatible = (
-                        descriptor.provider,
-                        descriptor.provider_version,
-                    ) in _COMPATIBLE and descriptor.control_unavailable_reason is None
+                    # The desktop is the only party that can verify the native runtime (live process,
+                    # transcript rows, inbox socket) and it fails closed with a controlUnavailableReason.
+                    # A backend version list could only drift from it, and did (Claude 2.1.269).
+                    compatible = descriptor.control_unavailable_reason is None
                     row = _revised(
                         previous or {},
                         **descriptor.model_dump(by_alias=True),

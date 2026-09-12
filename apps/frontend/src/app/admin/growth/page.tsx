@@ -6,16 +6,14 @@ import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { getGrowth } from "../_lib/api";
 import {
   AcquisitionChart,
-  ActivationGateChart,
-  AutomationSurvivalChart,
+  CohortChart,
   GateBlockedDailyChart,
+  HumanMessagesChart,
   KpiStrip,
-  NorthStarRunsChart,
-  PosthogCrosscheckChart,
-  SignupsPerDayChart,
-  WeeklyActiveOwnersChart,
+  RetentionChart,
+  WeeklyActiveChart,
 } from "./charts";
-import { Acquisition, Activation, Counters, Headline, NorthStar, Owners, PosthogCrosscheck, RetentionDepth } from "./sections";
+import { Acquisition, Cohorts, Counters, Headline, Messaging, WeeklyActive, Workspaces } from "./sections";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +31,8 @@ export default async function AdminGrowthPage() {
       <div>
         <h1 className="text-xl font-semibold text-foreground">Growth</h1>
         <p className="text-xs text-muted-foreground">
-          Metric set from docs/growth/2026-08-17-blitzscaling-strategy.md §3. External owners only; internal accounts below.
+          The five metrics defined in docs/superpowers/plans/2026-09-12-observability-audit.md §6, computed from the
+          messaging table and billing rows. External workspaces only; internal accounts below.
           {data ? ` Generated ${data.generated_at}, ${data.window_weeks}-week window.` : ""}
         </p>
       </div>
@@ -51,47 +50,38 @@ export default async function AdminGrowthPage() {
       {data ? (
         <>
           <KpiStrip seg={data.segments.external} />
+          <Messaging seg={data.segments.external} data={data} />
 
           <div className="grid gap-6 xl:grid-cols-2">
-            <AcquisitionChart data={data} />
-            <SignupsPerDayChart seg={data.segments.external} />
-            <NorthStarRunsChart seg={data.segments.external} />
-            <WeeklyActiveOwnersChart seg={data.segments.external} />
-            <ActivationGateChart seg={data.segments.external} />
-            <AutomationSurvivalChart seg={data.segments.external} />
+            <AcquisitionChart data={data} seg={data.segments.external} />
+            <WeeklyActiveChart seg={data.segments.external} />
+            <CohortChart seg={data.segments.external} />
+            <RetentionChart seg={data.segments.external} />
+            <HumanMessagesChart seg={data.segments.external} />
             <GateBlockedDailyChart data={data} />
-            <PosthogCrosscheckChart data={data} />
           </div>
 
           <Card title="Details">
             <div>
               <details className={DETAIL_WRAPPER}>
-                <summary className={DETAIL_SUMMARY}>Owners</summary>
-                <Owners seg={data.segments.external} />
+                <summary className={DETAIL_SUMMARY}>Workspaces</summary>
+                <Workspaces seg={data.segments.external} />
+              </details>
+              <details className={DETAIL_WRAPPER}>
+                <summary className={DETAIL_SUMMARY}>Weekly active + multiplayer</summary>
+                <WeeklyActive seg={data.segments.external} />
+              </details>
+              <details className={DETAIL_WRAPPER}>
+                <summary className={DETAIL_SUMMARY}>Cohorts — activation and trial → paid</summary>
+                <Cohorts seg={data.segments.external} />
               </details>
               <details className={DETAIL_WRAPPER}>
                 <summary className={DETAIL_SUMMARY}>Acquisition</summary>
                 <Acquisition seg={data.segments.external} data={data} />
               </details>
               <details className={DETAIL_WRAPPER}>
-                <summary className={DETAIL_SUMMARY}>Activation</summary>
-                <Activation seg={data.segments.external} />
-              </details>
-              <details className={DETAIL_WRAPPER}>
-                <summary className={DETAIL_SUMMARY}>North Star</summary>
-                <NorthStar seg={data.segments.external} />
-              </details>
-              <details className={DETAIL_WRAPPER}>
-                <summary className={DETAIL_SUMMARY}>Depth</summary>
-                <RetentionDepth seg={data.segments.external} />
-              </details>
-              <details className={DETAIL_WRAPPER}>
                 <summary className={DETAIL_SUMMARY}>Counter-metrics</summary>
-                <Counters seg={data.segments.external} data={data} />
-              </details>
-              <details className={DETAIL_WRAPPER}>
-                <summary className={DETAIL_SUMMARY}>PostHog cross-check</summary>
-                <PosthogCrosscheck data={data} />
+                <Counters data={data} />
               </details>
             </div>
           </Card>
@@ -101,11 +91,19 @@ export default async function AdminGrowthPage() {
               <summary className={DETAIL_SUMMARY}>Show internal metrics</summary>
               <div className="space-y-6 pt-2">
                 <Headline seg={data.segments.internal} audience="Internal accounts" />
-                <ActivationGateChart seg={data.segments.internal} />
-                <NorthStarRunsChart seg={data.segments.internal} />
+                <WeeklyActiveChart seg={data.segments.internal} />
               </div>
             </details>
           </Card>
+
+          <p className="text-xs text-muted-foreground">
+            Definitions are binding and live in docs/superpowers/plans/2026-09-12-observability-audit.md §6. Activated =
+            within 7 days of the trial start, one human sent ≥5 room messages on ≥2 distinct UTC days AND the workspace
+            received ≥1 agent message. Weekly active = ≥1 human room message that ISO week; multiplayer = ≥2 distinct
+            human senders. Answered = an agent message in the same room within 120s of an addressed human message.
+            Paying = subscription_status &ldquo;active&rdquo;. W4 retention = an activated workspace with ≥1 human
+            message in the 4th ISO week after activation.
+          </p>
         </>
       ) : null}
     </div>

@@ -1,5 +1,6 @@
 """REST endpoints for browsing agent workspace files on EFS."""
 
+import asyncio
 import logging
 from pathlib import PurePosixPath
 
@@ -17,6 +18,10 @@ router = APIRouter()
 
 # NOTE: _validate_relative_path, _ensure_within_subtree and _collect_recursive
 # are imported by routers/brain.py — its security posture depends on these.
+# _collect_recursive is blocking EFS (NFS) I/O and is no longer used by the
+# workspace tree route: call it only via asyncio.to_thread, and only over a
+# bounded vault. A ~114k-entry agent workspace took ~150 s per walk on the
+# event loop and froze prod (2026-09-12).
 def _validate_relative_path(path: str) -> None:
     """Reject empty paths, absolute paths, dot-only paths, and any segment equal to '..'.
 
@@ -197,10 +202,13 @@ def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
 async def list_workspace_tree(
     agent_id: str,
     path: str = Query("", description="Subdirectory path relative to agent workspace"),
-    recursive: bool = Query(False, description="List all files recursively"),
     auth: AuthContext = Depends(get_current_user),
 ):
-    """List files and directories in an agent's workspace."""
+    """List ONE directory of an agent's workspace; the client expands level by level.
+
+    There is deliberately no recursive mode: the workspace is EFS (NFS), where a
+    walk costs several round trips per entry (see the note on _collect_recursive).
+    """
     owner_id = resolve_owner_id(auth)
     workspace = get_workspace()
 
@@ -208,25 +216,22 @@ async def list_workspace_tree(
     full_path = f"{agent_base}/{path}" if path else agent_base
     _guard_read_subpath(workspace, owner_id, agent_base, full_path, path)
 
-    if recursive:
-        all_entries: list = []
-        _collect_recursive(workspace, owner_id, full_path, all_entries, agent_base)
-        return {"files": _strip_agent_prefix(all_entries, agent_id)}
-    else:
-        try:
-            entries = workspace.list_directory(owner_id, full_path)
-        except WorkspaceError as exc:
-            if "not found" in str(exc).lower():
-                raise HTTPException(status_code=404, detail=str(exc))
-            if "traversal" in str(exc).lower():
-                raise HTTPException(status_code=403, detail="Access denied")
-            logger.exception("Failed to list workspace directory for owner %s", owner_id)
-            raise HTTPException(status_code=500, detail="Failed to list workspace directory")
-
+    def _list() -> list[dict]:
+        entries = workspace.list_directory(owner_id, full_path)
         # Drop immediate entries that resolve outside the agent subtree (e.g. a
         # symlink to a sibling workspace) so they're neither shown nor clickable.
-        entries = [e for e in entries if _within_subtree(workspace, owner_id, e["path"], agent_base)]
-        return {"files": _strip_agent_prefix(entries, agent_id)}
+        return [e for e in entries if _within_subtree(workspace, owner_id, e["path"], agent_base)]
+
+    try:
+        entries = await asyncio.to_thread(_list)  # EFS I/O stays off the event loop
+    except WorkspaceError as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        if "traversal" in str(exc).lower():
+            raise HTTPException(status_code=403, detail="Access denied")
+        logger.exception("Failed to list workspace directory for owner %s", owner_id)
+        raise HTTPException(status_code=500, detail="Failed to list workspace directory")
+    return {"files": _strip_agent_prefix(entries, agent_id)}
 
 
 @router.get("/workspace/{agent_id}/file")

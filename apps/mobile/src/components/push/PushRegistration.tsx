@@ -9,11 +9,16 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { makeAdapter } from "../../lib/adapter";
 import { parseAgentDeepLink } from "../../lib/deepLink";
-import { configureNotificationHandler } from "../../lib/notifications";
+import {
+  configureNotificationHandler,
+  type NotificationData,
+  type NotificationTarget,
+} from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
 
-/** Route a tapped notification (warm OR cold-start launch) to its agent room
- * or the Teams issue an agent is waiting on.
+/** Route a tapped notification (warm OR cold-start launch) to the conversation
+ * it is about, the thread when it is a reply, or the Teams issue an agent is
+ * waiting on.
  *
  * The Teams case is checked FIRST because it is the one that used to fall
  * through. Teams pushes deliberately carry no `agentId` — the backend omits it
@@ -31,13 +36,7 @@ function routeFromResponse(
 ): void {
   if (!response) return;
   const data = response.notification.request.content.data as
-    | {
-        agentId?: string;
-        sessionKey?: string;
-        url?: string;
-        source?: string;
-        issueId?: string;
-      }
+    | (NotificationData & { url?: string; source?: string; issueId?: string })
     | undefined;
 
   // Every Teams push concerns an issue — a thread interaction waiting on a
@@ -50,6 +49,19 @@ function routeFromResponse(
       pathname: "/(app)/teams/issue/[id]",
       params: { id: data.issueId },
     });
+    return;
+  }
+
+  // A room push (the messaging projector's) lands in the conversation, or in
+  // the thread when it is a reply — the same two screens the in-app banner
+  // suppression checks against. Before the agent branch: a room push carries no
+  // agentId today, but the order makes that independent of the payload.
+  if (data?.roomId) {
+    router.push(
+      data.threadRootMessageId
+        ? `/(app)/room/${data.roomId}/thread/${data.threadRootMessageId}`
+        : `/(app)/room/${data.roomId}`,
+    );
     return;
   }
 
@@ -66,12 +78,12 @@ function routeFromResponse(
  * Mounted inside the signed-in subtree (LiveEventsProvider). Requests notification
  * permission, registers the Expo push token with the backend, installs the
  * foreground-suppression handler, and routes notification taps (including the
- * one that cold-started the app) to the right agent chat. Renders nothing.
+ * one that cold-started the app) to the right conversation. Renders nothing.
  */
 export function PushRegistration({
-  getCurrentChat,
+  getCurrentTarget,
 }: {
-  getCurrentChat: () => { agentId: string | null; sessionId: string | null };
+  getCurrentTarget: () => NotificationTarget;
 }) {
   const { getToken, userId } = useAuth();
   const getTokenRef = useRef(getToken);
@@ -140,10 +152,11 @@ export function PushRegistration({
     };
   }, []);
 
-  // Foreground-suppression handler (reads the on-screen chat at handle-time).
+  // Foreground-suppression handler (reads the on-screen conversation at
+  // handle-time).
   useEffect(() => {
-    configureNotificationHandler(getCurrentChat);
-  }, [getCurrentChat]);
+    configureNotificationHandler(getCurrentTarget);
+  }, [getCurrentTarget]);
 
   return null;
 }

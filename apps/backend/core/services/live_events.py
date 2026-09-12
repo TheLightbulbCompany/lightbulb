@@ -90,6 +90,7 @@ class LiveEventPublisher:
     def __init__(self, *, http_client: Any | None = None, credentials: Any | None = None) -> None:
         self._http = http_client
         self._credentials = credentials
+        self._signing_lock = asyncio.Lock()
 
     async def publish_room(self, room_id: str, event: dict[str, Any]) -> bool:
         room_id = _uuid(room_id, "room id")
@@ -133,7 +134,8 @@ class LiveEventPublisher:
         last_error: Exception | None = None
         last_status_class = "transport"
         for attempt in range(2):
-            request = self._signed_request(endpoint, body)
+            async with self._signing_lock:
+                request = await asyncio.to_thread(self._signed_request, endpoint, body)
             try:
                 response = await self._post(endpoint, body, dict(request.headers))
             except Exception as exc:
@@ -181,6 +183,8 @@ class LiveEventPublisher:
             credentials = get_session().get_credentials()
             if credentials is None:
                 raise LivePublishError("AWS task credentials unavailable")
+            self._credentials = credentials
+        if hasattr(credentials, "get_frozen_credentials"):
             credentials = credentials.get_frozen_credentials()
         request = AWSRequest(
             method="POST",

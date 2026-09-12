@@ -512,13 +512,6 @@ class Settings(BaseSettings):
     # route 503s, so a half-configured environment can never complete a
     # handshake and start receiving events it cannot verify.
     META_WEBHOOK_VERIFY_TOKEN: str = ""
-    # Clerk publishable key (the same value the frontend uses as
-    # NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY). The paperclip-proxy bootstrap page
-    # renders inline JS that loads the Clerk SDK and handshakes a session
-    # cookie; the SDK needs this key to identify which Clerk instance to
-    # talk to. Publishable keys are public by design — Clerk literally
-    # serves them in HTML; storing in env (not Secrets Manager) is correct.
-    CLERK_PUBLISHABLE_KEY: str = ""
     # Public URL of the frontend (e.g. https://dev.flickmeon.ai). Used by
     # the paperclip-proxy to redirect users back to /chat when they land on
     # company.isol8.co without prerequisites (no container, no Clerk

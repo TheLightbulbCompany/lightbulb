@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 import stripe
 
@@ -425,41 +424,3 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     }
     logger.info("launch_close: %s", summary)
     return summary
-
-
-async def winner_checkout_discount(owner_id: str) -> list[dict] | None:
-    """``[{"coupon": id}]`` when this owner's sheet row is a winner whose free
-    month hasn't been attached yet — pre-applied by
-    ``billing_service._build_subscription_checkout`` so an unpaid winner's
-    checkout is $0 with no code to type. None otherwise. Never raises — a
-    launch read must never break checkout."""
-    try:
-        if launch_phase.schedule() is None:
-            return None
-        if launch_settings.COUPON_REDEEM_BY <= datetime.now(timezone.utc):
-            # An expired coupon on a Checkout Session is a Stripe
-            # InvalidRequestError at Session.create — a winner subscribing
-            # after the redeem-by instant gets a normal full-price checkout.
-            return None
-        coupon = launch_phase.coupon_id()
-        if not coupon:
-            return None
-        user = await user_repo.get(owner_id)
-        email = ((user or {}).get("email") or "").strip().lower()
-        if not email:
-            # Legacy user rows can lack the email column — Clerk is the
-            # email truth (same order launch_service.resolve_email uses;
-            # there is no JWT claim on the checkout path, so the admin API
-            # is the fallback). Best-effort: any miss means no discount.
-            try:
-                from core.services import clerk_admin
-
-                email = (await clerk_admin.get_primary_email(owner_id)).strip().lower()
-            except Exception:  # noqa: BLE001 — no resolvable email, no discount
-                return None
-        row = await launch_waitlist_repo.get(email)
-        if row and row.get("winner") and not row.get("coupon_attached_at"):
-            return [{"coupon": coupon}]
-    except Exception:  # noqa: BLE001 — never let a launch read break checkout
-        logger.warning("launch_close: winner discount lookup failed for %s", owner_id, exc_info=True)
-    return None

@@ -103,17 +103,6 @@ def get_user_mac_node(user_id: str) -> dict | None:
     return entry if entry.get("clientId") == "openclaw-macos" else None
 
 
-def get_user_node(user_id: str) -> dict | None:
-    """Deprecated alias — prefers CLI node (exec-capable) when both kinds are present.
-
-    Use get_user_cli_node / get_user_mac_node when you specifically need
-    one or the other. Kept so legacy callers (session-binding,
-    handle_node_disconnect's owning-close check) keep working until they
-    migrate.
-    """
-    return get_user_cli_node(user_id) or get_user_mac_node(user_id)
-
-
 def get_patched_session(session_key: str) -> str | None:
     """Return the nodeId a session is patched with, or None."""
     return _patched_sessions.get(session_key)

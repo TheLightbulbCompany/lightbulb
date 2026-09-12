@@ -777,64 +777,6 @@ async def test_attach_handles_the_legacy_single_discount_shape():
     assert modifies[0][2]["discounts"] == [{"discount": "di_old"}, {"coupon": "coup_1"}]
 
 
-# ---------------------------------------------------------------------------
-# winner_checkout_discount — the unpaid-winner checkout pre-apply
-# ---------------------------------------------------------------------------
-
-
-def _discount_patches(row, coupon="coup_1"):
-    return (
-        patch("core.services.launch_close.launch_phase.schedule", return_value=_sched()),
-        patch("core.services.launch_close.launch_phase.coupon_id", return_value=coupon),
-        patch("core.services.launch_close.user_repo.get", AsyncMock(return_value={"email": "a@x.com"})),
-        patch("core.services.launch_close.launch_waitlist_repo.get", AsyncMock(return_value=row)),
-    )
-
-
-async def test_winner_discount_applies_for_an_unattached_winner():
-    p = _discount_patches(_row("a@x.com", 1, winner=True))
-    with p[0], p[1], p[2], p[3]:
-        assert await launch_close.winner_checkout_discount("user_a") == [{"coupon": "coup_1"}]
-
-
-@pytest.mark.parametrize(
-    "row",
-    [
-        _row("a@x.com", 1),  # not a winner
-        _row("a@x.com", 1, winner=True, coupon_attached_at="2026-09-30T16:00:00+00:00"),  # already consumed
-        None,  # no sheet row
-    ],
-)
-async def test_winner_discount_absent_otherwise(row):
-    p = _discount_patches(row)
-    with p[0], p[1], p[2], p[3]:
-        assert await launch_close.winner_checkout_discount("user_a") is None
-
-
-async def test_winner_discount_absent_once_the_coupon_redeem_by_has_passed():
-    """A flagged winner subscribing after Oct 31 gets a NORMAL full-price
-    checkout — an expired coupon on Session.create is an uncaught Stripe
-    InvalidRequestError (500), not a discount."""
-    from datetime import timedelta
-
-    p = _discount_patches(_row("a@x.com", 1, winner=True))
-    with p[0], p[1], p[2], p[3]:
-        with patch(
-            "core.services.launch_settings.COUPON_REDEEM_BY",
-            datetime.now(timezone.utc) - timedelta(days=1),
-        ):
-            assert await launch_close.winner_checkout_discount("user_a") is None
-
-
-async def test_winner_discount_never_raises():
-    p = _discount_patches(_row("a@x.com", 1, winner=True))
-    with p[0], p[1], p[2]:
-        with patch(
-            "core.services.launch_close.launch_waitlist_repo.get", AsyncMock(side_effect=RuntimeError("ddb down"))
-        ):
-            assert await launch_close.winner_checkout_discount("user_a") is None
-
-
 async def test_the_pot_freeze_folds_in_counted_teams_only():
     """Teams never reach the sheet, so they are not in `final_roster_count` —
     they are folded into the pot separately, at $10 + $5/seat, and ONLY the

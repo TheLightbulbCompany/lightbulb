@@ -57,17 +57,6 @@ async def get_by_owner_id(owner_id: str, *, consistent: bool = False) -> dict | 
     return response.get("Item")
 
 
-async def get_by_gateway_token(token: str) -> dict | None:
-    table = _get_table()
-    response = await run_in_thread(
-        table.query,
-        IndexName="gateway-token-index",
-        KeyConditionExpression=Key("gateway_token").eq(token),
-    )
-    items = response.get("Items", [])
-    return items[0] if items else None
-
-
 async def get_by_status(status: str) -> list[dict]:
     """Return every container row with the given status.
 

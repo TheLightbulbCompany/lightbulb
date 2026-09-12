@@ -240,30 +240,6 @@ async def test_get_by_owner_id_nonexistent(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_get_by_gateway_token(dynamodb_table):
-    from core.repositories import container_repo
-
-    await container_repo.upsert(
-        "user_3",
-        {
-            "gateway_token": "tok_ghi",
-            "status": "running",
-        },
-    )
-    item = await container_repo.get_by_gateway_token("tok_ghi")
-    assert item is not None
-    assert item["owner_id"] == "user_3"
-
-
-@pytest.mark.asyncio
-async def test_get_by_gateway_token_nonexistent(dynamodb_table):
-    from core.repositories import container_repo
-
-    item = await container_repo.get_by_gateway_token("nope")
-    assert item is None
-
-
-@pytest.mark.asyncio
 async def test_get_by_status(dynamodb_table):
     from core.repositories import container_repo
 

@@ -137,24 +137,6 @@ async def get_profile_by_handle(handle: str) -> dict | None:
     return await marketplace_repo.find_seller_by_handle(normalised)
 
 
-async def check_handle_available(handle: str, *, for_seller_id: str | None = None) -> bool:
-    """True if handle is free, OR taken by ``for_seller_id`` (i.e. unchanged).
-
-    Validates first — callers receive False for reserved / malformed
-    handles without doing a DDB read, matching the publish-flow UX
-    where the input is rejected before the network round-trip.
-    """
-    normalised = normalize_handle(handle)
-    try:
-        validate_handle(normalised)
-    except SellerProfileError:
-        return False
-    existing = await get_profile_by_handle(normalised)
-    if existing is None:
-        return True
-    return for_seller_id is not None and existing.get("seller_id") == for_seller_id
-
-
 async def upsert_profile(
     *,
     seller_id: str,

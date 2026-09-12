@@ -25,30 +25,6 @@ from core.config import settings
 from core.repositories import marketplace_repo
 
 
-def summarize_requirements(manifest: dict) -> dict:
-    """Denormalize ``manifest.requirements`` into counts + the connectable
-    provider set + a blocking flag, for fast listing render and the publish
-    gate. ``has_blocking`` is true when any ``unavailable`` ("won't run as
-    published") row exists.
-    """
-    reqs = (manifest or {}).get("requirements") or []
-    counts = {"included": 0, "connect": 0, "byo": 0, "unavailable": 0}
-    providers: list[str] = []
-    for r in reqs:
-        if not isinstance(r, dict):
-            continue
-        disp = r.get("disposition")
-        if disp in counts:
-            counts[disp] += 1
-        if disp == "connect" and r.get("kind") != "channel":
-            providers.append(r.get("key"))
-    return {
-        "counts": counts,
-        "requires_providers": sorted({p for p in providers if p}),
-        "has_blocking": counts["unavailable"] > 0,
-    }
-
-
 class InvalidStateError(Exception):
     """Listing is not in the state required for the operation."""
 

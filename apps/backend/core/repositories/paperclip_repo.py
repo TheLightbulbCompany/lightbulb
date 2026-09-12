@@ -130,9 +130,10 @@ def _org_create_claim_key(org_id: str) -> str:
 # by-org-id or by-status-purge-at query as if it were a company row.
 #
 # Keyed by OWNER id (org_id for an org, user_id for a personal owner) rather
-# than by the submitting member: onboarding is company-scoped (see the module
-# docstring on routers/onboarding.py), and the owner row this eventually drains
-# into may not exist yet -- so there is no row PK to key it by.
+# than by the submitting member: onboarding is company-scoped, and the owner
+# row this eventually drains into may not exist yet -- so there is no row PK to
+# key it by. The drain runs from routers/container.py's status poll, through
+# core/services/onboarding_brief.reconcile_pending_brief.
 _PENDING_BRIEF_PREFIX = "__pending_brief__:"
 
 
@@ -488,8 +489,8 @@ class PaperclipRepo:
 
         Owner-row resolution is delegated to ``resolve_owner_row`` -- the
         single canonical "which row is THE owner row" path shared with
-        ``routers/onboarding.py`` and ``routers/container.py`` -- so org vs.
-        personal resolution has exactly one implementation.
+        ``routers/container.py`` and ``core/containers/ecs_manager.py`` -- so
+        org vs. personal resolution has exactly one implementation.
 
         A row that doesn't exist yet, or that predates ONBOARD's writers,
         returns every onboarding field at its "genuinely not started"
@@ -1133,10 +1134,10 @@ class PaperclipRepo:
         query ``PaperclipProvisioning.find_org_owner`` runs (rather than a
         refactor of that tested, load-bearing method) -- see
         ``resolve_owner_row`` for why the repo needs this independently of
-        provisioning: onboarding reads/writes (``routers/onboarding.py``,
-        ``routers/container.py``) need to resolve an ``owner_id`` to the row
-        that carries onboarding truth WITHOUT going through the
-        provisioning orchestrator.
+        provisioning: onboarding reads/writes (``routers/container.py``'s
+        status poll and ``core/services/onboarding_brief.py``) need to resolve
+        an ``owner_id`` to the row that carries onboarding truth WITHOUT going
+        through the provisioning orchestrator.
 
         Filters to ``status="active"`` before picking the oldest, mirroring
         ``find_org_owner``: a disabled/provisioning/failed row is not
@@ -1340,42 +1341,6 @@ class PaperclipRepo:
             pass
         except Exception as e:  # noqa: BLE001 — bookkeeping must not undo a send
             logger.warning("settle_first_contact failed for %s: %s", user_id, e)
-
-    async def bump_first_contact_attempts(self, user_id: str, *, onboarding_generation: str, limit: int) -> bool:
-        """Increment-and-check, called BEFORE a nudge is dispatched.
-
-        Nudge runs re-register the run-completion callback — otherwise
-        attempts 2 and 3 would have no trigger, since the bootstrap run
-        terminates exactly once — so this counter is the SOLE bound on that
-        loop. Incrementing after dispatch, or not at all, is an unbounded
-        chain of agent runs.
-
-        Returns True when a nudge may be dispatched.
-        """
-        table = self._table()
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": user_id},
-                UpdateExpression=("SET first_contact_attempts = if_not_exists(first_contact_attempts, :zero) + :one"),
-                ConditionExpression=(
-                    "onboarding_generation = :gen AND "
-                    "(attribute_not_exists(first_contact_attempts) OR first_contact_attempts < :limit)"
-                ),
-                ExpressionAttributeValues={
-                    ":zero": 0,
-                    ":one": 1,
-                    ":limit": limit,
-                    ":gen": onboarding_generation,
-                },
-            )
-            return True
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            # Budget exhausted — the loop bound doing its job.
-            return False
-        except Exception as e:  # noqa: BLE001 — an observer must never raise
-            logger.warning("bump_first_contact_attempts failed for %s: %s", user_id, e)
-            return False
 
     async def claim_funnel_submission(
         self,
@@ -1666,11 +1631,13 @@ class PaperclipRepo:
         result; fulfilment must not independently select or force an agent.
 
         ``overwrite=True`` skips the put-if-absent guard entirely and
-        replaces whatever is there, ``pending`` included -- for the landing
-        card's pre-container "edit your idea" flow (routers/onboarding.py),
-        which the caller only takes for an owner it has confirmed has no
-        container row yet, so there is no in-flight fulfilment claim on this
-        item to clobber. Never pass this for a container-having owner.
+        replaces whatever is there, ``pending`` included -- for a
+        pre-container "edit your idea" re-submit, which a caller may only take
+        for an owner it has confirmed has no container row yet, so there is no
+        in-flight fulfilment claim on this item to clobber. (The landing card
+        that used it went away with routers/onboarding.py; the guard stays
+        because the put-if-absent semantics below depend on it.) Never pass
+        this for a container-having owner.
         """
         item = {
             "user_id": _pending_brief_key(owner_id),

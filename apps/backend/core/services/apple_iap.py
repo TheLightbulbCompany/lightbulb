@@ -15,13 +15,16 @@ PyJWT. That library does chain building, root pinning, OCSP-style checks, and
 bundle/environment matching. Do not "simplify" it into a `jwt.decode(...,
 options={"verify_signature": False})`; that is the whole bug.
 
-Two entry points, deliberately sharing one mapping function:
+One entry point: :func:`apply_notification` — App Store Server Notifications
+V2, the ONLY way we hear about renewals, expiries, refunds and billing retries
+for the historical subscribers we still reconcile. The client is not involved
+and may never open the app again.
 
-- :func:`link_purchase` — the client posts the JWS it just received. Used once,
-  at purchase, to bind ``originalTransactionId`` to an owner.
-- :func:`apply_notification` — App Store Server Notifications V2, which is the
-  ONLY way we hear about renewals, expiries, refunds and billing retries. The
-  client is not involved and may never open the app again.
+The purchase-link half (``link_purchase``/``verify_transaction`` and the
+``appAccountToken`` derivation they fenced on) was deleted once
+``POST /billing/apple/link`` became a 410 tombstone — no client can submit a
+transaction any more, so nothing reached them. ``POST /billing/checkout`` is
+the sole subscription purchase API.
 
 The status this produces is stored as Apple's OWN status, and the shared
 ``subscription_status`` every entitlement predicate reads is derived from both
@@ -41,14 +44,12 @@ as success.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories import billing_repo
 from core.services import webhook_dedup
@@ -65,27 +66,6 @@ class AppleIapNotConfigured(AppleIapError):
     """IAP settings are absent — the feature is off in this environment."""
 
 
-def owner_account_token(owner_id: str) -> str:
-    """The ``appAccountToken`` a purchase by ``owner_id`` must carry.
-
-    Derived rather than stored: SHA-256 of the owner id, first 16 bytes shaped
-    into a v5-style UUID, because StoreKit accepts only a UUID in that field and
-    owner ids (``user_2ab…``) are not one. Deriving means there is no per-owner
-    token to mint, store, look up, or leak — the server recomputes it and
-    compares.
-
-    Retired mobile purchase clients used this same computation. Keep it stable
-    while historical Apple transactions and their lifecycle remain supported:
-    changing it would invalidate the account binding on those transactions.
-
-    Lowercase hex, matching what Apple echoes back and what the JS side emits.
-    """
-    h = hashlib.sha256(owner_id.encode()).hexdigest()[:32]
-    # Version 5 in the high nibble of byte 6; RFC-4122 variant in byte 8.
-    h = f"{h[:12]}5{h[13:16]}8{h[17:]}"
-    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
-
-
 @dataclass(frozen=True)
 class AppleSubscription:
     """The subset of a verified transaction this system acts on."""
@@ -96,10 +76,6 @@ class AppleSubscription:
     expires_at_ms: int | None
     #: Isol8 ``subscription_status`` this transaction implies.
     status: str
-    #: ``appAccountToken`` the client stamped at purchase, when present — the
-    #: UUID form of an owner id (see :func:`owner_account_token`), not the owner
-    #: id itself, because StoreKit only accepts a UUID here.
-    owner_hint: str | None
     #: Which Apple environment signed this. A "sandbox" grant is a real plan
     #: given away free, so it is logged at link time — see _verify_signed for
     #: why that is accepted rather than gated.
@@ -577,147 +553,9 @@ def _subscription_from_transaction(
             expires_at_ms=expires_at_ms,
             in_grace_period=grace_period_expires_ms is not None,
         ),
-        owner_hint=getattr(transaction, "appAccountToken", None) or None,
         environment=environment,
         signed_date_ms=getattr(transaction, "signedDate", None),
     )
-
-
-def verify_transaction(signed_transaction: str) -> AppleSubscription:
-    """Verify a client-supplied JWS transaction and project it.
-
-    Raises AppleIapError when the signature, chain, bundle id, environment, or
-    product id does not check out.
-    """
-    payload, environment = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
-    return _subscription_from_transaction(payload, None, environment)
-
-
-async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubscription:
-    """Bind a freshly-verified purchase to ``owner_id``.
-
-    Called from the app right after StoreKit reports success. Idempotent: the
-    same transaction replayed writes the same row, so a client retrying after a
-    dropped response cannot double-grant or corrupt anything.
-    """
-    # Organization workspaces use Stripe-managed Workspace or Ultra
-    # subscriptions; an Apple purchase can never be attached to an org.
-    #
-    # This is a money fence, not a UX one, and it belongs on the server. An org
-    # that reaches this by any route (client bug, stale build, direct call) has
-    # ALREADY been charged by Apple by the time we see the transaction, and the
-    # write below would fail anyway: a team_billing_required org has no billing
-    # row by construction, so set_apple_subscription returns None and the caller
-    # gets a permanent dead end with real money taken. Refuse before StoreKit is
-    # ever reached instead.
-    if is_org_owner_id(owner_id):
-        raise AppleIapError("Workspace subscriptions are managed through Stripe and cannot use the App Store")
-
-    subscription = verify_transaction(signed_transaction)
-
-    # `appAccountToken` is the ONLY binding here that is not a race: the client
-    # stamps it at purchase and Apple echoes it inside the SIGNED payload, so a
-    # replay by another account cannot strip or forge it, and the comparison
-    # needs no read at all.
-    #
-    # REQUIRED, not advisory. The earlier version checked it "when present" —
-    # which sounds careful and fenced nothing, because the client was not
-    # stamping it, so `owner_hint` was always None and the branch never ran.
-    # Requiring it is safe precisely because IAP has never shipped: there is no
-    # install base of un-stamped purchases to grandfather, and every transaction
-    # that can exist comes from a build that stamps.
-    #
-    # Deliberately narrows one case: an owner who deletes their Isol8 account
-    # and signs up again cannot restore onto the new one, because the token is
-    # bound to the id that bought it. That is the correct trade — the looser
-    # rule ("allow it when no row claims the transaction") makes deleting an
-    # account the bypass for sharing a subscription, since the wipe removes the
-    # very row the check reads. Recovery is to cancel in iOS Settings and
-    # subscribe again on the new account.
-    if not subscription.owner_hint:
-        raise AppleIapError("this Apple transaction carries no account binding and cannot be linked")
-    if subscription.owner_hint.lower() != owner_account_token(owner_id):
-        raise AppleIapError("this Apple transaction was purchased by a different account")
-
-    # Refuse to move a live subscription between accounts. Without this, one
-    # Apple ID could be walked across accounts to keep several of them paid.
-    #
-    # Kept as a second line even though the token check above already decides
-    # the cross-account case, because it catches an id owned by a DIFFERENT row
-    # — something no single-row write condition can see. It is NOT sufficient
-    # alone: it reads a non-unique, eventually-consistent GSI, so two accounts
-    # submitting the same unlinked JWS could both be told "unowned", and each
-    # one's write condition only fences its own row.
-    existing = await billing_repo.get_by_apple_original_transaction_id(subscription.original_transaction_id)
-    if existing is not None and existing.get("owner_id") != owner_id:
-        raise AppleIapError("this Apple subscription is already linked to another account")
-
-    # A revocation that arrived while nothing was linked leaves no row and so no
-    # watermark for the write below to lose against. Without this check, an
-    # owner refunded before linking could link afterwards and be handed the
-    # subscription their money was returned for.
-    if await webhook_dedup.has_event(_revoked_key(subscription.original_transaction_id)):
-        logger.warning(
-            "apple_iap.link_refused_revoked owner_id=%s original_transaction_id=%s",
-            owner_id,
-            subscription.original_transaction_id,
-        )
-        raise AppleIapError("this Apple transaction was refunded or revoked and cannot be linked")
-
-    # Captured BEFORE the write: was_trial is an observation of the pre-write
-    # row, and set_apple_subscription moves the status off trial_local.
-    before = await billing_repo.get_by_owner_id(owner_id)
-
-    written = await billing_repo.set_apple_subscription(
-        owner_id,
-        original_transaction_id=subscription.original_transaction_id,
-        status=subscription.status,
-        expires_at=subscription.expires_at_ms,
-        # The JWS signing time, so the LINK path shares the notification
-        # watermark instead of bypassing it. Without this, an owner who was
-        # refunded could re-POST the transaction they still hold — signature and
-        # account token both still valid, `revocationDate` absent because the
-        # blob predates the refund — and flip their own row back to active.
-        # StoreKit re-signs on every fetch, so a genuine restore carries a fresh
-        # value and only a replayed old blob loses the comparison.
-        signed_date=subscription.signed_date_ms,
-    )
-    if written is None:
-        # The write was refused. That is not automatically a failure: it also
-        # happens when a server notification for this same subscription already
-        # landed with a later signedDate, which is the ordinary race between the
-        # client's link call and Apple's SUBSCRIBED webhook.
-        current = await billing_repo.get_by_owner_id(owner_id)
-        if current and current.get("apple_original_transaction_id") == subscription.original_transaction_id:
-            # Apple's own notification is authoritative over the client's
-            # snapshot, so report ITS status rather than the JWS's. A refunded
-            # owner replaying an old blob lands here and is told "canceled".
-            authoritative = current.get("apple_subscription_status") or subscription.status
-            logger.info(
-                "apple_iap.link_superseded owner_id=%s original_transaction_id=%s status=%s",
-                owner_id,
-                subscription.original_transaction_id,
-                authoritative,
-            )
-            return replace(subscription, status=authoritative)
-        # No billing row, or the row is bound to a different Apple transaction.
-        raise AppleIapError(f"could not link this transaction to owner {owner_id}")
-    await _convert_trial_if_needed(
-        owner_id,
-        was_trial=(before or {}).get("subscription_status") == "trial_local",
-        subscription=subscription,
-    )
-    logger.info(
-        # environment is logged because a "sandbox" grant is a REAL plan given
-        # away for free — expected from TestFlight testers, and the only way to
-        # notice if the TestFlight link ever leaks.
-        "apple_iap.linked owner_id=%s original_transaction_id=%s status=%s environment=%s",
-        owner_id,
-        subscription.original_transaction_id,
-        subscription.status,
-        subscription.environment,
-    )
-    return subscription
 
 
 async def apply_notification(signed_payload: str) -> tuple[str, str] | None:
@@ -840,7 +678,10 @@ async def _apply_verified_notification(
         # the pre-revocation JWS, and with no row there is no watermark for a
         # later link write to lose against — so they could link afterwards and
         # be granted the subscription they were just refunded for. Leave a
-        # tombstone that `link_purchase` consults instead.
+        # tombstone. NOTE: with the purchase-link path retired, nothing
+        # reads that marker any more — it is kept because the revoked/cleared
+        # pair is still written symmetrically and a future restore path would
+        # need it. See `_mark_revoked`.
         if subscription.status == "canceled":
             await _mark_revoked(subscription.original_transaction_id, subscription.expires_at_ms)
             # The GSI is eventually consistent, so "no row" can simply mean the
@@ -860,9 +701,8 @@ async def _apply_verified_notification(
             # A resubscribe reuses the SAME originalTransactionId, and if the
             # original purchase was never linked this branch is where its
             # SUBSCRIBED lands too. Without clearing here, the tombstone from
-            # the earlier refund outlives the new purchase and `link_purchase`
-            # refuses a customer who has just paid again — for up to the 30-day
-            # TTL. `_clear_revoked` further down only runs once a row exists,
+            # the earlier refund outlives the new purchase for up to the
+            # 30-day TTL. `_clear_revoked` further down only runs once a row exists,
             # which by definition it does not here.
             await _clear_revoked(subscription.original_transaction_id, best_effort=False)
         logger.warning(

@@ -59,30 +59,78 @@ indicators, file attachments beyond images, Android.
 
 Nothing else is shared. Rendering stays per platform.
 
-## Mobile surface
+## Mobile surface — Slack's shape (owner decision 2026-09-11)
 
-- **Chat tab → Rooms list.** `src/app/(app)/chat.tsx` replaces the agent grid
-  with a `FlatList` of rooms: kind glyph, name (`roomDisplayName`), last
-  activity time, unread count bold. Sections: Channels, Direct messages
-  (group DMs inside). The existing `AgentPickerSheet` stays as the "New
-  message" affordance and routes to `selectAgentDm`.
-- **Room screen.** `agent/[agentId].tsx` is renamed to `room/[roomId].tsx`
-  (keep an `agent/[agentId]` redirect that resolves the DM room, so old push
-  payloads and deep links still work). It renders `CanonicalRoomMessage`
-  items with author name/avatar when the author changes, the existing
-  `MessageMarkdown`/`ToolPill`/`AgentHead`, image attachments through
-  `downloadAttachment`, and the live run block driven by the shared timeline
-  helper. `markRead` on mount, on `AppState` active, and when the newest
-  message arrives while the screen is focused.
-- **Composer.** The current input gains the `@` typeahead (a `FlatList` above
-  the keyboard, filtered on `mentionHandle`/display name) and sends
-  `mentions` built by the shared resolver. Image attach stays as is.
-- **Push.** `routeFromResponse` gains the `roomId` branch first:
-  `/(app)/room/{roomId}` with `messageId` as a param; the foreground handler
-  suppresses the banner when that room is on screen (`shouldSuppressBanner`
-  gets a `roomId` case beside the agent/session one).
-- **Badge.** The Chat tab badge is the sum of `unreadCount`; `setBadgeCount`
-  mirrors it on the app icon when the app backgrounds.
+The owner's ruling: copy how Slack's iOS app does it. That settles the three
+questions that were open in the first draft (no agent roster; a real thread
+screen; one shared room machine) and fixes the information architecture.
+
+**Tabs (bottom bar):** Home · DMs · Activity · You. Search rides in the Home
+header. "Later" is not copied.
+
+- **Home.** The conversation list with collapsible sections Starred ·
+  Channels · Direct messages (group DMs inside DMs), a search field in the
+  header, and the pencil button for a new message. Row anatomy copies
+  Slack: `#` or lock glyph for channels, avatar or stacked avatars for DMs,
+  name, unread rows bold with a count badge for DMs and mentions, muted rows
+  dimmed with no badge. Swipe right marks read/unread; swipe left opens
+  Mute and Star. Sort is newest activity first within a section.
+- **DMs.** The same rows filtered to `dm` and `group-dm`, with the other
+  party's avatar, sorted by recency.
+- **Activity.** Mentions of you and replies to threads you posted in, newest
+  first, each opening the message. Phase B.
+- **You.** The existing Settings screen.
+- **New message (pencil).** Pick one or more people or agents; a single agent
+  or person resolves to the existing DM (`selectAgentDm` / `selectDm`), more
+  than one creates a group DM. The pre-pivot agent roster (`chat.tsx` grid)
+  is retired; agents remain reachable under Control → Agents.
+
+**Conversation screen** (`src/app/(app)/room/[roomId].tsx`, generalised from
+today's `agent/[agentId].tsx`, which keeps a redirect so old push payloads
+and deep links still resolve their DM room):
+
+- Header: kind glyph and name, member count; tapping opens the conversation
+  details sheet (members, notification setting, mute, leave for channels).
+- Timeline: messages grouped by author with avatar and name on the first of
+  a run, time on long-press, day dividers, a "New messages" line at the last
+  read sequence, a jump-to-latest pill when scrolled up, images through
+  `downloadAttachment`, the live agent run block (`ToolPill`, streaming text)
+  driven by the shared timeline helper. A message with replies shows a
+  "N replies" row that opens the thread screen.
+- Long-press on a message: reaction bar (the shipped fixed set plus "more")
+  and an action sheet — Reply in thread, Copy text, Mark unread, Copy link.
+  Edit and Delete for your own messages (Phase B).
+- Read marking: on open, on `AppState` active, and when the newest message
+  arrives while the screen is focused, mirroring the web's `markVisibleRead`.
+- Composer: multiline text, `@` typeahead sheet listing members with avatar,
+  `@handle` and display name (humans and agents; the shared resolver builds
+  `mentions`), `:` emoji typeahead, attach photo, send button; keyboard-aware.
+
+**Thread screen** (`room/[roomId]/thread/[messageId].tsx`): the root message
+pinned at the top, replies below in the same item renderer, its own composer
+that sends with `replyToMessageId`/`threadRootMessageId`, and Slack's "Also
+send to #channel" toggle omitted for this round.
+
+**Notifications, copying Slack's rules:**
+
+- Push title "Name in #channel" for channels, "Name" for DMs; body is the
+  preview; grouped per conversation by the OS using `threadIdentifier` =
+  roomId. Tapping lands in the conversation and scrolls to the message once
+  loaded; a thread reply lands in the thread screen.
+- The in-app banner is suppressed only when that conversation is on screen
+  (`shouldSuppressBanner` gains a `roomId` case beside the agent/session one).
+- The app icon badge counts DMs and mentions only, never plain channel
+  unreads — Slack's rule, and the projector already knows which is which
+  because its `notify` decision is exactly "DM, mention, or your thread".
+  The client mirrors the same rule for the Home tab badge.
+- Per-conversation setting: All new messages / Mentions only / Nothing, plus
+  Mute, stored on the room member row (Phase 3's `muted` today; the
+  three-way setting is Phase B and needs one backend field).
+
+**Phases.** A: tabs, Home and DMs lists, conversation screen, thread screen,
+composer with `@`, read marking, push routing, badges. B: Activity tab,
+per-conversation notification setting, swipe actions, conversation details
+sheet, edit/delete own messages, reactions beyond the fixed set.
 
 ## Notifications contract (already shipped or in flight)
 
@@ -101,12 +149,9 @@ Nothing else is shared. Rendering stays per platform.
 3. Verify on a device against dev with the e2e account: open a channel from a
    push, `@` a human, receive a push for a DM with the app killed.
 
-## Open decisions (owner)
+## Decisions (settled 2026-09-11)
 
-1. **Keep the agent roster anywhere?** Recommended: no; "New message" opens
-   the picker, and agents are reachable through Control → Agents as today.
-2. **Threads on the phone:** inline quoted context only (recommended) or a
-   real thread screen now.
-3. **Scope of the shared extraction:** move `useRooms` wholesale behind an
-   adapter (recommended, one PR, web wrapper keeps the web contract) versus
-   duplicating a smaller hook in mobile and converging later.
+The owner ruled "copy how Slack does it", which resolved the first draft's
+three questions: the agent roster is retired; threads get a real screen; the
+room state machine moves into `packages/shared` behind an adapter with the
+web app as a thin wrapper.

@@ -1,10 +1,12 @@
-"""Apple IAP entitlement mapping, linking, and notification handling.
+"""Apple IAP entitlement mapping and notification handling.
 
-The JWS verifier itself is Apple's library and is not re-tested here — what IS
-tested is everything we built around it: that an unverifiable payload never
-reaches a write, that event types map to the right ``subscription_status``, that
-a subscription cannot be walked between accounts, and that Apple's retry /
-out-of-order delivery cannot corrupt entitlement.
+The purchase-link half is gone — ``POST /billing/apple/link`` is a 410
+tombstone, so ``apply_notification`` is the only way a transaction reaches this
+module. The JWS verifier itself is Apple's library and is not re-tested here —
+what IS tested is everything we built around it: that an unverifiable payload
+never reaches a write, that event types map to the right
+``subscription_status``, and that Apple's retry / out-of-order delivery cannot
+corrupt entitlement.
 """
 
 import time
@@ -24,10 +26,6 @@ def _transaction(**overrides):
         productId="company.thelightbulb.mobile.plan.monthly",
         expiresDate=1_800_000_000_000,
         revocationDate=None,
-        # Every purchase our client makes carries this — link_purchase requires
-        # it, because it is the only cross-account fence that is not a race.
-        # Derived, not pasted, so the fixture cannot drift from the algorithm.
-        appAccountToken=apple_iap.owner_account_token("user_1"),
         # When Apple SIGNED this blob. StoreKit re-signs on every fetch, so a
         # genuine restore is recent and only a replayed old copy is stale.
         signedDate=1_700_000_500_000,
@@ -55,9 +53,9 @@ def _product_id(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_trial_conversion(monkeypatch):
-    """link_purchase now reads the row before writing (to see whether this
-    purchase converts an owner off the free tier) and may dispatch a container
-    reprovision. Both are stubbed by default so the mapping tests stay
+    """apply_notification reads the row before writing (to see whether this
+    notification converts an owner off the free tier) and may dispatch a
+    container reprovision. Both are stubbed by default so the mapping tests stay
     hermetic; the conversion tests say the interesting thing explicitly."""
     # No row -> before_status is None -> _convert_trial_if_needed returns
     # immediately. The function itself is deliberately NOT replaced: stubbing it
@@ -81,9 +79,10 @@ def _no_teardown(monkeypatch):
 def _no_revocation_tombstone(monkeypatch):
     """Default: this transaction was not revoked before linking.
 
-    link_purchase consults the dedup table for that marker, which no unit test
-    has. Stubbed to the ordinary answer here so the tombstone tests can say the
-    interesting one explicitly rather than every other test tripping over it.
+    The revoked/cleared pair is written from the notification path, which reads
+    the dedup table no unit test has. Stubbed to the ordinary answer here so the
+    tombstone tests can say the interesting one explicitly rather than every
+    other test tripping over it.
     """
     monkeypatch.setattr(apple_iap.webhook_dedup, "has_event", AsyncMock(return_value=False))
     monkeypatch.setattr(apple_iap.webhook_dedup, "record_event_or_skip", AsyncMock())
@@ -149,89 +148,6 @@ def test_unconfigured_environment_raises_not_configured(monkeypatch):
     with pytest.raises(AppleIapNotConfigured):
         apple_iap._verifier()
     apple_iap._verifier.cache_clear()
-
-
-# ---------------------------------------------------------------------------
-# link_purchase
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_writes_entitlement():
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(
-            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
-        ) as set_sub,
-    ):
-        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    assert result.status == "active"
-    set_sub.assert_awaited_once()
-    assert set_sub.await_args.kwargs["original_transaction_id"] == "2000000000000001"
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_rejects_an_unverifiable_transaction():
-    """The security boundary: a payload the verifier rejects must never reach a
-    write. A forged one that did would hand out a paid plan for free."""
-
-    def _boom(_):
-        raise ValueError("bad signature")
-
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=_boom)
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError):
-            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="forged")
-
-    set_sub.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_refuses_to_move_a_subscription_between_accounts():
-    """Without this, one Apple ID could be walked across accounts to keep
-    several of them paid off a single subscription."""
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value={"owner_id": "user_OTHER"}),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError, match="already linked"):
-            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    set_sub.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_is_idempotent_for_the_same_owner():
-    """A client retrying after a dropped response must not be an error."""
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value={"owner_id": "user_1"}),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
-    ):
-        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    assert result.status == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -405,31 +321,6 @@ async def test_unactionable_notification_is_acked_not_retried():
     set_sub.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Org fence (PR review finding: an org routed here gets CHARGED and then fails)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_refuses_org_owners():
-    """The Apple product is personal-only; workspace subscriptions use Stripe.
-
-    An org reaching link_purchase has already been charged by Apple, and the
-    write would fail anyway — a team_billing_required org has no billing row by
-    construction, so set_apple_subscription returns None. Refuse before the
-    verifier, so no charge can be recorded against the wrong plan shape.
-    """
-    with (
-        patch.object(apple_iap, "_verifier") as verifier,
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError, match="Stripe"):
-            await apple_iap.link_purchase(owner_id="org_abc", signed_transaction="jws")
-
-    verifier.assert_not_called()
-    set_sub.assert_not_awaited()
-
-
 def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
     """The per-transaction product check is `if expected and ...`, so an empty
     APPLE_IAP_PRODUCT_ID would skip it silently. Rollout sets the bundle id and
@@ -448,206 +339,6 @@ def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
         apple_iap._verifier.cache_clear()
 
 
-@pytest.mark.asyncio
-async def test_link_rejects_a_transaction_purchased_by_another_account():
-    """appAccountToken is stamped by the client at purchase and echoed inside
-    the SIGNED payload, so a mismatch is proof the buyer was someone else — the
-    strongest binding available, and unlike the GSI lookup it cannot race."""
-    verifier = SimpleNamespace(
-        verify_and_decode_signed_transaction=lambda _: _transaction(appAccountToken="user_OTHER")
-    )
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError, match="different account"):
-            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    set_sub.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_link_fails_loudly_when_the_conditional_write_refuses():
-    """A refused write on a row bound to ANOTHER transaction is a real failure.
-    Returning success there would tell a customer they are subscribed when
-    nothing was recorded."""
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value=None)),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "user_1", "apple_original_transaction_id": "SOMEONE_ELSE"}),
-        ),
-    ):
-        with pytest.raises(AppleIapError, match="could not link"):
-            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-
-@pytest.mark.asyncio
-async def test_a_refunded_owner_cannot_replay_their_old_transaction():
-    """The replay: after a REFUND cancels the entitlement, the owner still holds
-    the original JWS. Its signature and account token are still valid and its
-    `revocationDate` is absent — the blob predates the refund — so re-POSTing it
-    used to flip the row back to active and hand back a subscription that had
-    been paid back.
-
-    The write now carries the JWS signing time, so the old blob loses the
-    watermark to the refund notification, and the reply reports Apple's status
-    rather than the stale payload's."""
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        # Refused: a REFUND notification already landed with a later signedDate.
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value=None)) as set_sub,
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_owner_id",
-            AsyncMock(
-                return_value={
-                    "owner_id": "user_1",
-                    "apple_original_transaction_id": "2000000000000001",
-                    "apple_subscription_status": "canceled",
-                }
-            ),
-        ),
-    ):
-        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    # Apple's status wins over the replayed payload's "active".
-    assert result.status == "canceled"
-    # And the watermark was actually supplied, which is what refused the write.
-    assert set_sub.await_args.kwargs["signed_date"] == 1_700_000_500_000
-
-
-@pytest.mark.asyncio
-async def test_the_link_path_supplies_the_jws_signing_time_as_a_watermark():
-    """Without it the link path bypasses the out-of-order fence entirely — the
-    condition is skipped when signed_date is None."""
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(
-            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
-        ) as set_sub,
-    ):
-        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    assert set_sub.await_args.kwargs["signed_date"] == 1_700_000_500_000
-
-
-# ---------------------------------------------------------------------------
-# appAccountToken — the only cross-account fence that is not a race.
-# ---------------------------------------------------------------------------
-
-
-def test_owner_account_token_is_a_uuid_and_stable():
-    token = apple_iap.owner_account_token("user_2abcDEF")
-    assert token == apple_iap.owner_account_token("user_2abcDEF")
-    assert len(token) == 36
-    assert [len(p) for p in token.split("-")] == [8, 4, 4, 4, 12]
-    # StoreKit requires a UUID; version + variant nibbles must be well-formed.
-    assert token[14] == "5"
-    assert token[19] == "8"
-    assert token != apple_iap.owner_account_token("user_other")
-
-
-def test_owner_account_token_matches_the_client_derivation():
-    """Compatibility check against the retired client's literal outputs.
-
-    Historical transactions retain these account bindings, so changing the
-    server derivation would make their signed tokens impossible to validate.
-    """
-    assert apple_iap.owner_account_token("user_2abcDEF") == "6d2d23ed-6454-54b1-8b21-49eca4734604"
-    assert apple_iap.owner_account_token("user_x") == "0f0a552a-1e17-5118-8bfc-6a9430304d4b"
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_refuses_a_transaction_bought_by_another_account():
-    """The replay: B submits A's signed transaction. The token is inside the
-    payload Apple signed, so B cannot strip or forge it."""
-    verifier = SimpleNamespace(
-        verify_and_decode_signed_transaction=lambda _: _transaction(
-            appAccountToken=apple_iap.owner_account_token("user_A")
-        )
-    )
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError, match="different account"):
-            await apple_iap.link_purchase(owner_id="user_B", signed_transaction="jws")
-
-    set_sub.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_refuses_a_transaction_with_no_account_binding():
-    """Required, not advisory. Checking it "when present" fenced nothing while
-    the client sent nothing — the branch simply never ran."""
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction(appAccountToken=None))
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError, match="no account binding"):
-            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    set_sub.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_link_purchase_accepts_apples_uppercase_token():
-    """Apple echoes appAccountToken as an uppercase UUID in some payloads. A
-    case-sensitive compare would reject every genuine purchase."""
-    verifier = SimpleNamespace(
-        verify_and_decode_signed_transaction=lambda _: _transaction(
-            appAccountToken=apple_iap.owner_account_token("user_1").upper()
-        )
-    )
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(
-            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
-        ) as set_sub,
-    ):
-        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    assert result.status == "active"
-    set_sub.assert_awaited_once()
-
-
 # ---------------------------------------------------------------------------
 # Environment fallback. App Review buys with SANDBOX transactions against the
 # PRODUCTION backend, so pinning one environment fails the very submission
@@ -655,8 +346,7 @@ async def test_link_purchase_accepts_apples_uppercase_token():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_a_sandbox_transaction_verifies_against_a_production_backend(monkeypatch):
+def test_a_sandbox_transaction_verifies_against_a_production_backend(monkeypatch):
     """The App Review case. A production-pinned verifier rejects the reviewer's
     own purchase, and the submission fails for a reason no log makes obvious."""
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ENVIRONMENT", "production")
@@ -671,16 +361,9 @@ async def test_a_sandbox_transaction_verifies_against_a_production_backend(monke
         built.append(environment_name)
         return prod if environment_name == "production" else sandbox
 
-    with (
-        patch.object(apple_iap, "_verifier", _fake_verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
-    ):
-        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+    with patch.object(apple_iap, "_verifier", _fake_verifier):
+        payload, environment = apple_iap._verify_signed("verify_and_decode_signed_transaction", "jws")
+    result = apple_iap._subscription_from_transaction(payload, None, environment)
 
     assert result.status == "active"
     # Configured environment first — the common case must not pay for the rare one.
@@ -696,7 +379,7 @@ def test_the_configured_environment_is_tried_first_and_alone_when_it_works():
         return SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
 
     with patch.object(apple_iap, "_verifier", _fake_verifier):
-        apple_iap.verify_transaction("jws")
+        apple_iap._verify_signed("verify_and_decode_signed_transaction", "jws")
 
     assert built == ["sandbox"]
 
@@ -713,7 +396,8 @@ def test_an_unbuildable_fallback_does_not_break_the_working_environment(monkeypa
         return SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
 
     with patch.object(apple_iap, "_verifier", _fake_verifier):
-        assert apple_iap.verify_transaction("jws").status == "active"
+        payload, environment = apple_iap._verify_signed("verify_and_decode_signed_transaction", "jws")
+    assert apple_iap._subscription_from_transaction(payload, None, environment).status == "active"
 
 
 def test_an_unconfigured_primary_still_raises_not_configured():
@@ -724,11 +408,10 @@ def test_an_unconfigured_primary_still_raises_not_configured():
 
     with patch.object(apple_iap, "_verifier", _fake_verifier):
         with pytest.raises(AppleIapNotConfigured):
-            apple_iap.verify_transaction("jws")
+            apple_iap._verify_signed("verify_and_decode_signed_transaction", "jws")
 
 
-@pytest.mark.asyncio
-async def test_a_sandbox_transaction_grants_a_real_plan_deliberately(monkeypatch):
+def test_a_sandbox_transaction_grants_a_real_plan_deliberately(monkeypatch):
     """Pins a DECISION, not just behaviour.
 
     A sandbox purchase is free and TestFlight runs sandbox StoreKit against the
@@ -751,16 +434,9 @@ async def test_a_sandbox_transaction_grants_a_real_plan_deliberately(monkeypatch
     def _fake_verifier(environment_name: str = ""):
         return prod if environment_name == "production" else sandbox
 
-    with (
-        patch.object(apple_iap, "_verifier", _fake_verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
-    ):
-        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+    with patch.object(apple_iap, "_verifier", _fake_verifier):
+        payload, environment = apple_iap._verify_signed("verify_and_decode_signed_transaction", "jws")
+    result = apple_iap._subscription_from_transaction(payload, None, environment)
 
     assert result.status == "active"
     # Carried so the log line can name it — the only way a leaked TestFlight
@@ -799,28 +475,6 @@ async def test_a_refund_for_an_unlinked_purchase_leaves_a_tombstone(monkeypatch)
 
     keys = [c.args[0] if c.args else c.kwargs.get("event_id") for c in marked.await_args_list]
     assert "apple_revoked:2000000000000001" in keys
-
-
-@pytest.mark.asyncio
-async def test_a_tombstoned_transaction_cannot_be_linked_afterwards(monkeypatch):
-    """The whole point: refunded before linking, then linked. Without the
-    tombstone this grants the subscription the money was returned for."""
-    monkeypatch.setattr(apple_iap.webhook_dedup, "has_event", AsyncMock(return_value=True))
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
-
-    with (
-        patch.object(apple_iap, "_verifier", return_value=verifier),
-        patch.object(
-            apple_iap.billing_repo,
-            "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
-    ):
-        with pytest.raises(AppleIapError, match="refunded or revoked"):
-            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
-
-    set_sub.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1038,7 +692,7 @@ def test_a_reversed_refund_after_the_paid_period_does_not_grant():
 async def test_an_unlinked_resubscribe_clears_its_own_tombstone(monkeypatch):
     """The gap the tombstone opened. If the original purchase was never linked,
     the resubscribe's SUBSCRIBED lands in the SAME no-row branch — so the
-    tombstone outlived the new purchase and link_purchase refused a customer
+    tombstone outlived the new purchase and refused a customer
     who had just paid again, for up to the 30-day TTL."""
     verifier = SimpleNamespace(
         verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
@@ -1358,17 +1012,20 @@ async def test_buying_off_the_free_tier_persists_a_provider_and_reprovisions(mon
 
     monkeypatch.setattr(swh, "start_trial_conversion", _start)
 
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
     with (
         patch.object(apple_iap, "_verifier", return_value=verifier),
         patch.object(
             apple_iap.billing_repo,
             "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value={"owner_id": "user_1"}),
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
-        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+        await apple_iap.apply_notification("signed")
 
     # Bedrock: what the trial already ran on, and it asks the buyer for nothing
     # — the App Store sheet has no provider picker.
@@ -1392,17 +1049,20 @@ async def test_an_owner_who_already_had_a_plan_is_not_reconverted(monkeypatch):
     provider = AsyncMock()
     monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
 
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
     with (
         patch.object(apple_iap, "_verifier", return_value=verifier),
         patch.object(
             apple_iap.billing_repo,
             "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value={"owner_id": "user_1"}),
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
-        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+        await apple_iap.apply_notification("signed")
 
     provider.assert_not_awaited()
 
@@ -1475,7 +1135,10 @@ async def test_a_failed_provider_write_is_retried_by_the_next_notification(monke
 
     monkeypatch.setattr(swh, "start_trial_conversion", _start)
 
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
     # The row keeps NO provider_choice throughout — which is exactly the
     # condition the retry keys on. Its subscription_status is irrelevant.
     monkeypatch.setattr(
@@ -1489,16 +1152,16 @@ async def test_a_failed_provider_write_is_retried_by_the_next_notification(monke
         patch.object(
             apple_iap.billing_repo,
             "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value={"owner_id": "user_1"}),
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
-        # First link: the provider write fails.
-        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+        # First notification: the provider write fails.
+        await apple_iap.apply_notification("signed")
         assert started == [], "reprovision dispatched without a provider to resolve"
 
         # Second: it succeeds, and the conversion completes.
-        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+        await apple_iap.apply_notification("signed")
 
     assert len(attempts) == 2
     assert started == [("user_1", "2000000000000001")]
@@ -1536,17 +1199,22 @@ async def test_a_trial_owner_with_a_pre_picked_provider_still_gets_reprovisioned
 
     monkeypatch.setattr(swh, "start_trial_conversion", _start)
 
-    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
     with (
         patch.object(apple_iap, "_verifier", return_value=verifier),
         patch.object(
             apple_iap.billing_repo,
             "get_by_apple_original_transaction_id",
-            AsyncMock(return_value=None),
+            # `was_trial` on the notification path is read off THIS row, and it
+            # is what carries the reprovision when a provider is already stored.
+            AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "trial_local"}),
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
-        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+        await apple_iap.apply_notification("signed")
 
     # Their chosen provider is NOT overwritten with the Bedrock default...
     provider.assert_not_awaited()

@@ -26,19 +26,6 @@ def plain_ddb_table():
         yield "ws-conn-test"
 
 
-def test_store_machine_connection_writes_ttl_and_last_ping_at(plain_ddb_table):
-    client = boto3.client("dynamodb", region_name="us-east-1")
-    service = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-
-    before = int(time.time())
-    service.store_connection("c1", "user_a", None, connection_type="node")
-    after = int(time.time())
-
-    item = client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": "c1"}})["Item"]
-    assert before <= int(item["lastPingAt"]["N"]) <= after
-    assert int(item["ttl"]["N"]) > after + 3600
-
-
 @pytest.mark.asyncio
 async def test_gateway_connected_fresh_and_absent(plain_ddb_table):
     service = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")

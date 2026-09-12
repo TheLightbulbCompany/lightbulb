@@ -40,7 +40,13 @@ def _assistant(conn, text: str, delta: str, run_id: str = "run_1", **extra) -> d
 
 
 def _resync_text(frame: dict) -> str:
-    """What FrameSender ships to a client with no continuity for this run."""
+    """The frame's authoritative per-run text.
+
+    ``_full_content`` when the frame is an append delta, ``content`` otherwise.
+    Nothing ships ``_full_content`` any more (``_publish_room_frame`` strips
+    it); it is the snapshot ``_rewrite_run_full_text`` widens so the run prefix
+    stays complete for the cumulative-replacement frames that DO ship.
+    """
     return frame.get("_full_content", frame["content"])
 
 

@@ -383,22 +383,6 @@ _APPROVAL_CREATE_ROUTES = (re.compile(r"^api/companies/[^/]+/approvals/?$"),)
 _APPROVAL_RESUBMIT_ROUTES = (re.compile(r"^api/approvals/[^/]+/resubmit/?$"),)
 
 
-def _parse_json_object(body: bytes) -> dict | None:
-    """Parse ``body`` as a JSON object, or ``None`` if it isn't one.
-
-    A non-JSON / non-object body carries no forgeable adapterType field. This is
-    the LENIENT parse; the filter itself fails closed on an unparseable body that
-    declares ``application/json`` (see ``_assert_paperclip_request_allowed``).
-    """
-    if not body:
-        return None
-    try:
-        data = json.loads(body)
-    except Exception:  # noqa: BLE001 — a non-JSON body carries no adapterType
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 

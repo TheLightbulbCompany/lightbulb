@@ -20,9 +20,8 @@ from core.services.webhook_dedup import (
     complete_event_processing,
     get_or_create_top_up_intent,
     get_active_top_up,
-    get_membership_lifecycle,
+    membership_lifecycle_key,
     record_event_or_skip,
-    record_permanent_marker,
     settle_active_top_up,
     set_active_top_up_status,
 )
@@ -171,21 +170,6 @@ async def test_processing_lease_retries_only_after_expiry_and_completed_events_s
         await complete_event_processing("msg_delete", first)
     await complete_event_processing("msg_delete", replacement)
     assert await begin_event_processing("msg_delete", source="clerk", lease_seconds=30) is None
-
-
-@pytest.mark.asyncio
-async def test_permanent_marker_has_no_ttl_and_is_idempotent(dedup_table, monkeypatch):
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    await record_permanent_marker("human-subject-deleted:abc", source="clerk-human-deleted")
-    await record_permanent_marker("human-subject-deleted:abc", source="clerk-human-deleted")
-
-    item = (
-        boto3.resource("dynamodb", region_name="us-east-1")
-        .Table(dedup_table)
-        .get_item(Key={"event_id": "human-subject-deleted:abc"}, ConsistentRead=True)["Item"]
-    )
-    assert item["state"] == "completed"
-    assert "ttl" not in item
 
 
 @pytest.mark.asyncio
@@ -449,8 +433,11 @@ async def test_container_independent_membership_epoch_serializes_and_rejects_sta
         )
         is None
     )
-    assert await get_membership_lifecycle(owner_id, alias) == {
-        "event_id": "msg_create",
-        "sequence": create_sequence,
-        "state": "allowed",
-    }
+    stored = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table(dedup_table)
+        .get_item(Key={"event_id": membership_lifecycle_key(owner_id, alias)}, ConsistentRead=True)["Item"]
+    )
+    assert stored["lifecycle_event_id"] == "msg_create"
+    assert stored["sequence"] == create_sequence
+    assert stored["access_state"] == "allowed"

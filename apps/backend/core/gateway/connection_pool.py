@@ -621,19 +621,6 @@ class GatewayConnection:
             if run_id:
                 run["run_id"] = run_id
 
-    def reset_run_state_dedup(self) -> None:
-        """Forget the last-forwarded ``run_active`` per session so the next
-        ``sessions.changed`` re-forwards it as a fresh transition.
-
-        Called when a frontend (re)connects: the dedup in the ``sessions.changed``
-        handler suppresses repeat ``hasActiveRun:true`` frames, but a tab that
-        opens/reconnects mid-run has no local busy state (the frontend clears it
-        on disconnect), so it needs the ongoing run re-announced. Clearing the
-        map makes the next event a transition again. Separate from
-        ``_active_runs`` (untouched — that is the parked-vs-dead signal).
-        """
-        self._run_state.clear()
-
     def _clear_active_run(
         self,
         session_key: str,
@@ -1139,10 +1126,12 @@ class GatewayConnection:
         (coalesced events concatenate their deltas — see
         ``mergeBufferedAgentPayload``). We forward the delta plus the full
         text: ``content`` holds the delta with ``append: True``, and
-        ``_full_content`` (internal, stripped by ``FrameSender``) holds the
-        accumulated text so the sender can ship a full-text frame to a
-        connection that has not yet seen this run (mid-run reconnect) or
-        that dropped a frame. When the event carries no usable delta — or
+        ``_full_content`` holds the accumulated text. ``_full_content`` is
+        internal and never reaches a client — ``_publish_room_frame`` pops it
+        before publishing — but ``_rewrite_run_full_text`` reads it as the
+        append frame's per-message snapshot, which is what keeps the per-run
+        prefix complete for the cumulative-replacement frames that DO carry
+        authoritative text. When the event carries no usable delta — or
         sets ``replace: true`` (the new text is not a prefix-extension of
         what was streamed) — we fall back to the legacy full-text
         cumulative-replacement frame.
@@ -1301,8 +1290,9 @@ class GatewayConnection:
 
         Append-delta form when the event carries a usable delta (the common
         case): ``content`` is the delta, ``append: True``, and
-        ``_full_content`` carries the accumulated text for the sender's
-        per-connection full-text resync (see ``FrameSender``). Legacy
+        ``_full_content`` carries the accumulated text. ``_full_content`` is
+        internal state for ``_rewrite_run_full_text`` only; no client sees it
+        (``_publish_room_frame`` strips it). Legacy
         cumulative full-text form when the delta is absent/empty or the event
         sets ``replace: true`` — the client replaces its buffer with
         ``content`` exactly as it always has.
@@ -1350,8 +1340,10 @@ class GatewayConnection:
         Two frame shapes carry authoritative text and both are widened here:
 
         - append form — ``content`` is the delta, ``_full_content`` is the
-          snapshot ``FrameSender`` ships to a client with no continuity for
-          this run (mid-run reconnect, a second tab, a dropped frame);
+          per-message snapshot. Nothing ships it (``_publish_room_frame``
+          strips it); widening it here is what keeps ``blocks`` carrying the
+          whole run, so a later cumulative frame is not truncated to its own
+          assistant message;
         - cumulative-replacement form — ``content`` IS the snapshot, and the
           client replaces its whole buffer with it.
 

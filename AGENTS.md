@@ -611,7 +611,7 @@ Flat modules: `config.py` (Pydantic settings), `auth.py` (Clerk JWT via PyJWT;
 `get_current_user` → `AuthContext`, JWKS cache w/ 5-minute TTL + 15-min
 max-stale fail-closed), `dynamodb.py`, `encryption.py` (Fernet),
 `constants.py` (`SYSTEM_ACTOR_ID = "__system__"`), `openclaw_version.py`,
-`secrets_manager.py`, `tenancy_codes.py`.
+`secrets_manager.py`.
 
 Subpackages: `billing/` (Bedrock AIPs, pricing, gate URL — see the Billing
 section), `containers/`, `gateway/`, `repositories/`, `services/`, `crypto/`,

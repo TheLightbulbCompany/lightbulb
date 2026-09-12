@@ -8,8 +8,8 @@ at the FastAPI boundary.
 
 This module also defines the shared ``_ctx`` Depends helper (and the
 indirection helpers it leans on — ``_admin``, ``_repo``,
-``_gateway_url_for_env``, ``_decrypt_service_token``) that the rest of
-the Teams BFF (Tasks 7-12) imports.
+``_gateway_url_for_env``) that the rest of the Teams BFF (Tasks 7-12)
+imports.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool, get_workspace
-from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
 from core.services.paperclip_adapter_config import (
@@ -162,19 +161,6 @@ def _gateway_url_for_env() -> str:
     return _ws_gateway_url(settings.ENVIRONMENT or "")
 
 
-async def _decrypt_service_token(user_id: str) -> str:
-    """Look up the user's paperclip-companies row and decrypt the
-    Fernet-encrypted OpenClaw service token.
-
-    Async because the DDB read goes through ``run_in_thread`` under the
-    hood. Tests monkeypatch with an ``AsyncMock``.
-    """
-    company = await _repo().get(user_id)
-    if company is None:
-        raise RuntimeError(f"no paperclip company row for user {user_id}")
-    return decrypt(company.service_token_encrypted)
-
-
 def _creator_user_id(ctx) -> str:
     """Return the creator's Clerk user_id (used as the adapterConfig
     ``sessionKey`` fallback for non-issue runs).
@@ -223,16 +209,6 @@ async def _user_session(ctx) -> str:
     helper just reads it back off the ``TeamsContext``.
     """
     return ctx.session_cookie
-
-
-async def _service_token_for(ctx) -> str:
-    """Return the user's decrypted OpenClaw service token.
-
-    Wrapper around ``_decrypt_service_token`` keyed by the creator's
-    user_id. Pairing tests monkeypatch this helper directly so they can
-    skip the DDB read entirely.
-    """
-    return await _decrypt_service_token(_creator_user_id(ctx))
 
 
 async def _container_is_reachable(

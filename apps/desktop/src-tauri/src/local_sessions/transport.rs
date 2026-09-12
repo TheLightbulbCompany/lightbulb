@@ -979,6 +979,9 @@ mod tests {
             version: "2.1.268".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         }
     }
     #[tokio::test]
@@ -1214,6 +1217,9 @@ mod tests {
             version: "0.149.0".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -1319,6 +1325,9 @@ mod tests {
             version: "0.149.0".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),

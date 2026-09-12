@@ -37,6 +37,179 @@ pub fn normalize_public_message(
     }
 }
 
+pub(crate) const MAX_TEXT: usize = 12 * 1024;
+pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
+pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
+pub(crate) const PREVIEW_LINES: usize = 20;
+pub(crate) const HEADER_PREFIX: &str = "[Lightbulb teammate contribution";
+pub(crate) const NOTICE_PREFIX: &str = "[Lightbulb workspace advisory: ";
+
+/// Cut `text` to at most `max` bytes on a char boundary.
+pub(crate) fn bounded(text: &str, max: usize) -> (String, bool) {
+    if text.len() <= max {
+        return (text.to_owned(), false);
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), true)
+}
+
+/// The first `lines` lines plus the total line count, as the TUI's collapsed output does.
+pub(crate) fn preview(text: &str, lines: usize) -> (String, u64) {
+    (
+        text.lines().take(lines).collect::<Vec<_>>().join("\n"),
+        text.lines().count() as u64,
+    )
+}
+
+fn looks_secret(word: &str) -> bool {
+    let tail_ok = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    };
+    (word.starts_with("AKIA")
+        && word.len() == 20
+        && word
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || (word.starts_with("sk-") && word.len() >= 24 && tail_ok(&word[3..]))
+        || ((word.starts_with("ghp_")
+            || word.starts_with("gho_")
+            || word.starts_with("github_pat_"))
+            && word.len() >= 30)
+        || ((word.starts_with("xoxb-") || word.starts_with("xoxp-") || word.starts_with("xoxa-"))
+            && word.len() >= 20)
+}
+
+fn redact_pem(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("-----BEGIN ") {
+        let Some(end) = rest[start..].find("-----END ") else {
+            break;
+        };
+        let tail = &rest[start + end + 9..];
+        let close = tail.find("-----").map(|i| i + 5).unwrap_or(tail.len());
+        out.push_str(&rest[..start]);
+        out.push_str("[redacted]");
+        rest = &tail[close..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Credential-shaped tokens become "[redacted]". A backstop, never a guarantee.
+pub(crate) fn redact(text: &str) -> String {
+    fn flush(word: &mut String, previous: &mut String, out: &mut String) {
+        if word.is_empty() {
+            return;
+        }
+        let bearer = previous.eq_ignore_ascii_case("bearer") && word.len() >= 20;
+        out.push_str(if bearer || looks_secret(word) {
+            "[redacted]"
+        } else {
+            word
+        });
+        *previous = std::mem::take(word);
+    }
+    let text = redact_pem(text);
+    let mut out = String::with_capacity(text.len());
+    let (mut word, mut previous) = (String::new(), String::new());
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '/' | '.') {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut previous, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut previous, &mut out);
+    out
+}
+
+/// Redact every string leaf, then shrink string leaves until the JSON fits `max` bytes; Null if it cannot.
+pub(crate) fn bound_json(mut value: Value, max: usize) -> Value {
+    fn walk(v: &mut Value, f: &dyn Fn(&mut String)) {
+        match v {
+            Value::String(s) => f(s),
+            Value::Array(a) => a.iter_mut().for_each(|x| walk(x, f)),
+            Value::Object(o) => o.values_mut().for_each(|x| walk(x, f)),
+            _ => {}
+        }
+    }
+    walk(&mut value, &|s| *s = redact(s));
+    let mut per = max;
+    while serde_json::to_string(&value)
+        .map(|s| s.len() > max)
+        .unwrap_or(true)
+    {
+        if per < 64 {
+            return Value::Null;
+        }
+        per /= 2;
+        walk(&mut value, &|s| {
+            let (cut, truncated) = bounded(s, per);
+            if truncated {
+                *s = format!("{cut}…");
+            }
+        });
+    }
+    value
+}
+
+pub(crate) fn event(
+    kind: &str,
+    role: &str,
+    text: &str,
+    ts: Option<&str>,
+    item_id: Option<&str>,
+) -> Value {
+    let (text, truncated) = bounded(&redact(text), MAX_TEXT);
+    let mut value = json!({"kind": kind, "role": role, "text": text, "truncated": truncated});
+    if let Some(ts) = ts {
+        value["ts"] = json!(ts);
+    }
+    if let Some(id) = item_id {
+        value["itemId"] = json!(id);
+    }
+    value
+}
+
+pub(crate) fn lifecycle(name: &str, text: &str, ts: Option<&str>, item_id: Option<&str>) -> Value {
+    let mut value = event("lifecycle", "system", text, ts, item_id);
+    value["lifecycle"] = json!(name);
+    value
+}
+
+/// Split a Lightbulb-authored ingress text into (provenance, teammate text). None for ordinary native input.
+pub(crate) fn teammate_contribution(text: &str) -> Option<(Value, String)> {
+    let rest = text.strip_prefix(HEADER_PREFIX)?;
+    let header_end = rest.find("}]\n")?;
+    let header = &rest[..header_end + 1];
+    let provenance: Value = serde_json::from_str(&header[header.find('{')?..]).ok()?;
+    if !provenance.is_object() {
+        return None;
+    }
+    let mut body = &rest[header_end + 3..];
+    if body.starts_with(NOTICE_PREFIX) {
+        if let Some(end) = body.find("]\n") {
+            body = &body[end + 2..];
+        }
+    }
+    Some((provenance, body.to_owned()))
+}
+
+pub(crate) fn actor_of(provenance: &Value) -> Option<Value> {
+    if let Some(user) = provenance["actorUserId"].as_str() {
+        return Some(json!({"userId": user}));
+    }
+    provenance["actor"]["id"]
+        .as_str()
+        .map(|id| json!({"agentId": id}))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Enrollment {
@@ -544,6 +717,12 @@ struct NativeSession {
     version: String,
     restriction: Option<String>,
     status: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cwd_name: Option<String>,
+    #[serde(default)]
+    active_turn: Option<String>,
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -934,6 +1113,9 @@ mod tests {
             version: "2.1.268".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -1153,6 +1335,9 @@ mod tests {
             version: "0.149.0".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -1226,6 +1411,9 @@ mod tests {
                 version: "2.1.268".into(),
                 restriction: None,
                 status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1260,5 +1448,61 @@ mod tests {
             "final before exit",
             "an enrolled transcript's anchored final records survive process exit"
         );
+    }
+
+    #[test]
+    fn local_sessions_helpers_bound_preview_and_redact() {
+        assert_eq!(bounded("héllo", 3), ("hé".into(), true));
+        assert_eq!(preview("a\nb\nc", 2), ("a\nb".into(), 3));
+        let leaked = "token AKIAIOSFODNN7EXAMPLE and sk-abcdefghijklmnopqrstuvwxyz12 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc plain sk-short";
+        let clean = redact(leaked);
+        assert!(
+            !clean.contains("AKIAIOSFODNN7EXAMPLE")
+                && !clean.contains("sk-abcdefghijklmnopqrstuvwxyz12")
+                && !clean.contains("eyJhbGci")
+        );
+        assert!(clean.contains("plain sk-short"));
+        assert_eq!(
+            redact("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\nafter"),
+            "[redacted]\nafter"
+        );
+        let big = bound_json(json!({"stdout": "x".repeat(20_000), "code": 0}), 4096);
+        assert!(serde_json::to_string(&big).unwrap().len() <= 4096 && big["code"] == 0);
+        assert_eq!(
+            bound_json(json!(vec![1u8; 1000]), 64),
+            Value::Null,
+            "nothing shrinkable left"
+        );
+    }
+
+    #[test]
+    fn local_sessions_event_builders_and_teammate_header_parse() {
+        let e = event(
+            "text",
+            "assistant",
+            "hi",
+            Some("2026-09-12T10:00:00.000Z"),
+            Some("m1"),
+        );
+        assert_eq!(
+            e,
+            json!({"kind":"text","role":"assistant","text":"hi","truncated":false,"ts":"2026-09-12T10:00:00.000Z","itemId":"m1"})
+        );
+        assert_eq!(
+            lifecycle("turn_end", "", None, None)["lifecycle"],
+            "turn_end"
+        );
+        let labelled = "[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_1\",\"actorHandle\":\"aden\"}]\n[Lightbulb workspace advisory: something changed.]\nCheck concurrency 50";
+        let (provenance, body) = teammate_contribution(labelled).unwrap();
+        assert_eq!(body, "Check concurrency 50");
+        assert_eq!(actor_of(&provenance), Some(json!({"userId":"user_1"})));
+        let legacy = "[Lightbulb teammate contribution {\"roomId\":\"r\",\"requestId\":\"q\",\"actor\":{\"kind\":\"agent\",\"id\":\"friday\"}}]\nhello";
+        let (provenance, body) = teammate_contribution(legacy).unwrap();
+        assert_eq!(
+            (body.as_str(), actor_of(&provenance)),
+            ("hello", Some(json!({"agentId":"friday"})))
+        );
+        assert!(teammate_contribution("ordinary prompt").is_none());
+        assert!(teammate_contribution("[Lightbulb teammate contribution not-json]\nx").is_none());
     }
 }

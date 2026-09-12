@@ -35,6 +35,9 @@ fn from_rollout(
         restriction: (reported != "0.149.0" || reported != version)
             .then(|| "runtime-unverified".into()),
         status: "unknown".into(),
+        title: None,
+        cwd_name: None,
+        active_turn: None,
     })
 }
 

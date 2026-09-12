@@ -92,6 +92,9 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
             _ => "unknown",
         }
         .into(),
+        title: None,
+        cwd_name: None,
+        active_turn: None,
     })
 }
 
@@ -565,6 +568,9 @@ mod tests {
             version: "2.1.268".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let ingress = Ingress {
             workspace_revision: None,

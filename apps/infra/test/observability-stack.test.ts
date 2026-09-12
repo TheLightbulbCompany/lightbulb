@@ -121,9 +121,16 @@ function buildTemplate(envName: "dev" | "prod"): Template {
         channelLinksTable: `${tablePrefix(envName)}channel-links`,
         companySlugsTable: `${tablePrefix(envName)}company-slugs`,
         agentEmailAddressesTable: `${tablePrefix(envName)}agent-email-addresses`,
+        messagingTable: `${tablePrefix(envName)}messaging`,
+        wsConnectionsTable: `${tablePrefix(envName)}ws-connections`,
       },
-      connectionsTableName: `${tablePrefix(envName)}ws-connections`,
       authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
+      messaging: {
+        workQueueName: `${resourcePrefix(envName)}openclaw-work.fifo`,
+        workDlqName: `${resourcePrefix(envName)}openclaw-work-dlq.fifo`,
+        projectorFunctionName: `${resourcePrefix(envName)}messaging-projector`,
+        appsyncEventApiId: "test-event-api-id",
+      },
       paperclipDbCluster,
       paperclipService,
     };
@@ -174,9 +181,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "bootstrap.state": [["status"]],
   "channel.configure": [["provider", "status"]],
   "channel.rpc": [["provider", "status"]],
-  "chat.e2e.latency": [[]],
-  "chat.error": [["reason", "reclassified"]],
-  "chat.message.count": [[]],
+  // `source` (webchat | room | other) added by the 2026-09-12 gateway task.
+  "chat.e2e.latency": [["source"]],
+  "chat.error": [["reason", "reclassified", "source"]],
+  "chat.message.count": [["source"]],
   "chat.session_usage.fetch.error": [[]],
   "company_stripe.account.created": [[]],
   "container.efs.access_point": [["op", "status"]],
@@ -194,10 +202,33 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "gateway.rpc.error": [["method"]],
   "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
+  // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
+  // core/services/messaging.py — create_human_message / create_agent_message.
+  "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
+  // core/services/messaging.py — after each select_dispatch_targets call.
+  "messaging.dispatch.targets": [["count_bucket", "room_kind", "source"]],
+  "messaging.mention.unresolved": [["reason"]],
+  "messaging.reply.latency": [["event_kind", "matched", "room_kind"]],
+  // core/services/openclaw_work.py — the work-queue worker.
+  "messaging.worker.alive": [[]],
+  "messaging.work.queue_wait": [["kind"]],
+  "messaging.worker.message": [["kind", "outcome"], ["error", "kind", "outcome"]],
+  "messaging.ingress.post": [["event_kind", "status_class"]],
+  "messaging.wake.outcome": [["outcome"]],
+  // core/services/live_events.py
+  "messaging.live.publish": [["outcome"], ["outcome", "status_class"]],
+  // core/gateway/connection_pool.py
+  "messaging.room_session.subscribe": [["outcome"]],
+  "messaging.room_frame.publish": [["frame_type", "outcome"]],
+  // apps/infra/lambda/messaging-projector/index.py — note this one emits with
+  // service="messaging-projector", not the backend's service dimension.
+  "messaging.projector.push": [["outcome"]],
   "metronome.gate.refresh_error": [[]],
   "metronome.webhook": [["result"], ["blocked", "result"]],
   "operator.upstream.closed": [[]],
   "paperclip.upstream.error": [["kind"]],
+  // core/services/push_service.py — send_push_to_user.
+  "push.send": [["error_kind", "outcome"]],
   "provision.gate.blocked": [["code"]],
   // run_analytics.schedule_run_completed — full set {outcome, source}; W67
   // binds {outcome=failure, source=paperclip} (autonomous-run reliability).
@@ -212,6 +243,27 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "workspace.file.write.error": [[]],
   "workspace.path_traversal.attempt": [[]],
 };
+
+/**
+ * The single dimensions `put_metric` publishes an [env, service, d] rollup for.
+ *
+ * This is the whole reason an alarm can say "errors, across every value of the
+ * qualifier" — every op, every provider, every `kind` — without a SEARCH
+ * expression, which CloudWatch rejects on alarms outright. An alarm naming one
+ * dimension OUTSIDE this set (`event_kind`, `room_kind`, `frame_type`,
+ * `error_kind`, `author_kind`, `kind`) binds an identity nothing publishes
+ * unless it happens to be that metric's complete set.
+ *
+ * Keep in lockstep with `_ROLLUP_KEYS` / the per-dimension rollups in
+ * apps/backend/core/observability/metrics.py.
+ */
+const ROLLUP_DIMENSIONS = [
+  "status",
+  "outcome",
+  "status_class",
+  "count_bucket",
+  "source",
+];
 
 type MetricBinding = { alarm: string; metricName: string; extraDims: string[] };
 
@@ -279,8 +331,9 @@ describe("ObservabilityStack", () => {
   // account-wide findings, so dev doesn't get a duplicate copy of them.
   test("creates EventBridge rules for security findings (dev, no account-wide rules)", () => {
     // ECS TaskStopped (W39) + ECS TaskRunning (W59 multi-task detector) +
-    // Aurora failover/failure (W61b). GuardDuty + Access Analyzer are prod-only.
-    template.resourceCountIs("AWS::Events::Rule", 3);
+    // Aurora failover/failure (W61b) + the hourly alert-subscription monitor.
+    // GuardDuty + Access Analyzer are prod-only.
+    template.resourceCountIs("AWS::Events::Rule", 4);
   });
 
   // The $1,500 account-wide Budget is PROD-GATED (see createCostAlarms) —
@@ -382,6 +435,79 @@ describe("ObservabilityStack", () => {
     });
   });
 
+  // The prod subscriptions CloudFormation believed it owned had been deleted
+  // by SNS, and CFN still reported them CREATE_COMPLETE — only a NEW construct
+  // id recreates them. Pin the ids so a later "tidy up" rename does not
+  // silently recreate the same dead-letterbox situation.
+  test("alert email subscriptions use the recreated V2 construct ids", () => {
+    const logicalIds = Object.keys(
+      template.findResources("AWS::SNS::Subscription"),
+    );
+    for (const id of ["AlertsPageEmailV2", "AlertsWarnEmailV2"]) {
+      // CDK appends a uniqueness hash to the logical id, so match the prefix.
+      expect(logicalIds.some((logicalId) => logicalId.startsWith(id))).toBe(
+        true,
+      );
+    }
+  });
+
+  // Nothing else watches whether the alert topics have a live destination, and
+  // the failure mode is total silence, so missing monitor data must read as
+  // failure rather than health.
+  test("subscription-confirmation alarms exist and treat missing data as breaching", () => {
+    for (const [name, tier] of [
+      ["lightbulb-dev-P17-alert-subscriptions-page-topic", "page"],
+      ["lightbulb-dev-P18-alert-subscriptions-warn-topic", "warn"],
+    ]) {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: name,
+        Namespace: "LightbulbAI/Alerting",
+        MetricName: "SubscriptionsConfirmed",
+        ComparisonOperator: "LessThanThreshold",
+        TreatMissingData: "breaching",
+        EvaluationPeriods: 2,
+        Period: 3600,
+        // Dev has only the mailbox on both tiers.
+        Threshold: 1,
+        Dimensions: [{ Name: "topic", Value: tier }],
+        // Both page: a warn-tier alarm about a dead warn topic would deliver
+        // to the topic it is reporting on.
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+      });
+    }
+  });
+
+  // messaging.worker.alive is gauged on every poll iteration including empty
+  // ones, so absence of samples is unambiguous — and must read as failure.
+  test("messaging worker heartbeat pages on absent samples", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-P19-messaging-worker-dead",
+      Namespace: "LightbulbAI",
+      MetricName: "messaging.worker.alive",
+      Statistic: "SampleCount",
+      Period: 60,
+      Threshold: 1,
+      EvaluationPeriods: 5,
+      ComparisonOperator: "LessThanThreshold",
+      TreatMissingData: "breaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+    });
+  });
+
+  // The messaging table is the product's busiest table and had no DynamoDB
+  // alarm at all until it joined the shared table set.
+  test("the messaging table is in the DynamoDB alarm set", () => {
+    for (const prefix of ["W40-ddb-read", "W41-ddb-write", "W42-ddb-errors"]) {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: `lightbulb-dev-${prefix}-messaging`,
+        Namespace: "AWS/DynamoDB",
+        Dimensions: [
+          { Name: "TableName", Value: `${tablePrefix("dev")}messaging` },
+        ],
+      });
+    }
+  });
+
   test("dashboard has correct name", () => {
     template.hasResourceProperties("AWS::CloudWatch::Dashboard", {
       DashboardName: "lightbulb-dev-orr",
@@ -455,17 +581,14 @@ describe("ObservabilityStack", () => {
         // The [env, service] rollup is emitted for every metric, so an alarm
         // that adds no dimensions of its own is always watching real data.
         if (b.extraDims.length === 0) return null;
-        // Likewise the [env, service, status] rollup, emitted for any metric
-        // whose full set carries a status dimension (put_metric's
-        // _STATUS_ROLLUP_KEYS). This is what lets an error alarm aggregate
-        // across a qualifier it should not enumerate — every op, every
-        // provider — without a SEARCH expression, which CloudWatch rejects on
-        // alarms outright. Mirrors the emitter's condition exactly: the rollup
-        // exists if and only if the emitter tags status.
+        // Likewise a per-dimension rollup, emitted for any metric whose full
+        // set carries one of ROLLUP_DIMENSIONS. Mirrors the emitter's
+        // condition exactly: the rollup exists if and only if the emitter
+        // tags that dimension.
         if (
           b.extraDims.length === 1 &&
-          b.extraDims[0] === "status" &&
-          emitted.some((set) => set.includes("status"))
+          ROLLUP_DIMENSIONS.includes(b.extraDims[0]) &&
+          emitted.some((set) => set.includes(b.extraDims[0]))
         ) {
           return null;
         }
@@ -482,23 +605,50 @@ describe("ObservabilityStack", () => {
     expect(offenders).toEqual([]);
   });
 
-  // The three alarms issue #1486 found dead. They are correct BECAUSE
+  // Two of the three alarms issue #1486 found dead. They are correct BECAUSE
   // put_metric emits the [env, service] rollup — pin the binding so a future
   // "let me add a dimension to this alarm" quietly kills them again.
-  test("W2/W8/W10 watch the env+service rollup, with no extra dimensions", () => {
-    const rollupOnly = isol8MetricBindings(template).filter(
-      (b) =>
-        ["container.lifecycle.latency", "gateway.rpc.error", "chat.error"].includes(
-          b.metricName,
-        ),
+  //
+  // W10 (chat.error) left this set: it now scopes to source=webchat, which is
+  // a published per-dimension rollup, and is covered by the source assertions
+  // below instead.
+  test("W2/W8 watch the env+service rollup, with no extra dimensions", () => {
+    const rollupOnly = isol8MetricBindings(template).filter((b) =>
+      ["container.lifecycle.latency", "gateway.rpc.error"].includes(
+        b.metricName,
+      ),
     );
     expect(rollupOnly.map((b) => b.metricName).sort()).toEqual([
-      "chat.error",
       "container.lifecycle.latency",
       "gateway.rpc.error",
     ]);
     for (const b of rollupOnly) {
       expect(b.extraDims).toEqual([]);
+    }
+  });
+
+  // W9/W10 are the WEBCHAT SLOs — room traffic has its own latency page (P21),
+  // and folding the two together made the 20s/1% thresholds meaningless.
+  // BOTH of W10's legs must carry the dimension: scoping only the numerator or
+  // only the denominator yields a plausible-looking wrong ratio, which is
+  // worse than either whole number.
+  test("W9/W10 scope every chat.* leg to source=webchat", () => {
+    const chatBindings = isol8MetricBindings(template).filter(
+      (b) =>
+        b.alarm.includes("chat-e2e-latency") || b.alarm.includes("chat-error-rate"),
+    );
+    expect(chatBindings).toHaveLength(3); // W9 latency + W10 errors + W10 total
+    for (const b of chatBindings) {
+      expect(b.extraDims).toEqual(["source"]);
+    }
+    for (const alarmName of [
+      "lightbulb-dev-W9-chat-e2e-latency-p99",
+      "lightbulb-dev-W10-chat-error-rate",
+    ]) {
+      const alarm = Object.values(
+        template.findResources("AWS::CloudWatch::Alarm"),
+      ).find((r: any) => r.Properties.AlarmName === alarmName) as any;
+      expect(JSON.stringify(alarm)).toContain('"Value":"webchat"');
     }
   });
 
@@ -750,8 +900,8 @@ describe("ObservabilityStack — prod-only paths", () => {
   // these render exactly once, on the prod stack.
   test("prod creates EventBridge rules for security findings", () => {
     // ECS TaskStopped (W39) + ECS TaskRunning (W59) + Aurora failover (W61b)
-    // + GuardDuty + Access Analyzer.
-    template.resourceCountIs("AWS::Events::Rule", 5);
+    // + the alert-subscription monitor + GuardDuty + Access Analyzer.
+    template.resourceCountIs("AWS::Events::Rule", 6);
   });
 
   test("prod creates the account-wide AWS Budget", () => {

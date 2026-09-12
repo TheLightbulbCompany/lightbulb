@@ -667,20 +667,25 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
       API_TEMPLATE.findResources("AWS::CloudWatch::Alarm"),
     ) as any[];
     const names = alarms.map((alarm) => alarm.Properties.AlarmName);
-    expect(names).toEqual(
-      expect.arrayContaining([
-        "lightbulb-dev-openclaw-work-dlq-visible",
-        "lightbulb-dev-openclaw-work-oldest-age",
-        "lightbulb-dev-openclaw-work-pipe-dlq-visible",
-        "lightbulb-dev-openclaw-work-pipe-failures",
-        "lightbulb-dev-openclaw-work-pipe-stopped",
-        "lightbulb-dev-messaging-projector-errors",
-        "lightbulb-dev-messaging-projector-failures-stored",
-        "lightbulb-dev-messaging-projector-s3-failures",
-        "lightbulb-dev-messaging-projector-iterator-age",
-      ]),
-    );
-    for (const alarm of alarms.filter((item) => names.includes(item.Properties.AlarmName))) {
+    // Named explicitly, not derived from `names`: filtering the alarm list by
+    // the list of its own names is a no-op, so this used to assert that EVERY
+    // alarm in the stack pages — which quietly became wrong the moment a
+    // warn-tier alarm was added.
+    const pagingAlarms = [
+      "lightbulb-dev-openclaw-work-dlq-visible",
+      "lightbulb-dev-openclaw-work-oldest-age",
+      "lightbulb-dev-openclaw-work-pipe-dlq-visible",
+      "lightbulb-dev-openclaw-work-pipe-failures",
+      "lightbulb-dev-openclaw-work-pipe-stopped",
+      "lightbulb-dev-messaging-projector-errors",
+      "lightbulb-dev-messaging-projector-failures-stored",
+      "lightbulb-dev-messaging-projector-s3-failures",
+      "lightbulb-dev-messaging-projector-iterator-age",
+    ];
+    expect(names).toEqual(expect.arrayContaining(pagingAlarms));
+    for (const alarm of alarms.filter((item) =>
+      pagingAlarms.includes(item.Properties.AlarmName),
+    )) {
       expect(alarm.Properties.AlarmActions).toEqual([
         expect.stringContaining("lightbulb-dev-alerts-page"),
       ]);
@@ -706,5 +711,39 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
         TreatMissingData: "breaching",
       }),
     );
+  });
+
+  // AppSync is the whole browser/mobile delivery leg and had no alarm at all:
+  // subscriptions could be refused and events dropped while every queue and
+  // projector alarm stayed green. EventAPIId (not the GraphQLAPIId every
+  // AppSync example uses) is the load-bearing detail — the wrong dimension
+  // would never receive a datapoint.
+  test("AppSync Event API server errors page and delivery losses warn", () => {
+    const byName = Object.fromEntries(
+      (Object.values(
+        API_TEMPLATE.findResources("AWS::CloudWatch::Alarm"),
+      ) as any[]).map((alarm) => [alarm.Properties.AlarmName, alarm.Properties]),
+    );
+
+    const tiers: [string, string, string][] = [
+      ["subscribeservererror", "SubscribeServerError", "page"],
+      ["connectservererror", "ConnectServerError", "page"],
+      ["broadcasteventservererror", "BroadcastEventServerError", "page"],
+      ["broadcastdroppedevents", "BroadcastDroppedEvents", "warn"],
+      ["failedevents", "FailedEvents", "warn"],
+      ["5xxerror", "5XXError", "warn"],
+    ];
+    for (const [suffix, metricName, tier] of tiers) {
+      const alarm = byName[`lightbulb-dev-messaging-appsync-${suffix}`];
+      expect(alarm).toBeDefined();
+      expect(alarm.Namespace).toBe("AWS/AppSync");
+      expect(alarm.MetricName).toBe(metricName);
+      expect(alarm.Threshold).toBe(0);
+      expect(alarm.Period).toBe(300);
+      expect(alarm.Dimensions.map((d: any) => d.Name)).toEqual(["EventAPIId"]);
+      expect(alarm.AlarmActions).toEqual([
+        expect.stringContaining(`lightbulb-dev-alerts-${tier}`),
+      ]);
+    }
   });
 });

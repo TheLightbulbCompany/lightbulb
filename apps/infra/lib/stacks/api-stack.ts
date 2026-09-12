@@ -262,6 +262,18 @@ export class ApiStack extends cdk.Stack {
   public readonly appsyncEventsRealtimeEndpoint: string;
   public readonly appsyncEventsApiArn: string;
   public readonly appsyncEventsRegion: string;
+  /**
+   * Messaging-plane identifiers the ORR dashboard plots. Plain strings, never
+   * constructs — same cross-stack posture as every other export here (see the
+   * `containersTableName` note above and the comments in `service-stack.ts`):
+   * a construct reference would create a CloudFormation Export the
+   * observability stack imports, and an imported export cannot be changed
+   * while it is in use.
+   */
+  public readonly appsyncEventApiId: string;
+  public readonly openClawWorkQueueName: string;
+  public readonly openClawWorkDlqName: string;
+  public readonly messagingProjectorFunctionName: string;
   public readonly wsApiId: string;
   public readonly wsStage: string;
 
@@ -574,6 +586,8 @@ export class ApiStack extends cdk.Stack {
     });
     this.openClawWorkQueueUrl = workQueue.queueUrl;
     this.openClawWorkQueueArn = workQueue.queueArn;
+    this.openClawWorkQueueName = workQueue.queueName;
+    this.openClawWorkDlqName = workDlq.queueName;
 
     const projectorFailureBucket = new s3.Bucket(
       this,
@@ -651,6 +665,7 @@ export class ApiStack extends cdk.Stack {
     this.appsyncEventsRealtimeEndpoint = `wss://${eventApi.realtimeDns}/event/realtime`;
     this.appsyncEventsApiArn = eventApi.apiArn;
     this.appsyncEventsRegion = this.region;
+    this.appsyncEventApiId = eventApi.apiId;
 
     const projectorFn = new lambda.Function(this, "MessagingProjector", {
       functionName: `${resourcePrefix(env)}messaging-projector`,
@@ -673,6 +688,7 @@ export class ApiStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       }),
     });
+    this.messagingProjectorFunctionName = projectorFn.functionName;
     messagingTable.grantReadData(projectorFn);
     // Expo push tokens live on the users table, owned by DatabaseStack. Imported
     // by name so the projector needs no cross-stack prop (read-only: token
@@ -978,6 +994,89 @@ def handler(event, context):
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+
+    // -------------------------------------------------------------------
+    // AppSync Event API — the live-delivery leg, previously unwatched
+    // -------------------------------------------------------------------
+    // Every alarm above covers the write path (stream → Pipe → queue → worker)
+    // and the projector Lambda. Nothing covered AppSync itself, so the whole
+    // browser/mobile delivery leg could fail — subscriptions refused, events
+    // dropped on broadcast — while every existing alarm stayed green and the
+    // UI just went quiet. Clients do reconcile over HTTP after a gap, which is
+    // why dropped/failed events warn while a hard server error pages.
+    const warnAction = new cloudwatchActions.SnsAction(
+      sns.Topic.fromTopicArn(
+        this,
+        "MessagingAlertsWarn",
+        alertTopicArn(this.region, this.account, env, "warn"),
+      ),
+    );
+    const appsyncMetric = (metricName: string) =>
+      new cloudwatch.Metric({
+        namespace: "AWS/AppSync",
+        metricName,
+        // Event APIs publish under EventAPIId, NOT the GraphQLAPIId every
+        // AppSync doc example uses — a GraphQLAPIId-dimensioned alarm here
+        // would never receive a datapoint.
+        dimensionsMap: { EventAPIId: eventApi.apiId },
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+      });
+    const appsyncAlarm = (
+      id: string,
+      metricName: string,
+      severity: "page" | "warn",
+      description: string,
+    ) => {
+      const alarm = new cloudwatch.Alarm(this, id, {
+        alarmName: `${resourcePrefix(env)}messaging-appsync-${metricName.toLowerCase()}`,
+        alarmDescription: description,
+        metric: appsyncMetric(metricName),
+        threshold: 0,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      alarm.addAlarmAction(severity === "page" ? pageAction : warnAction);
+      return alarm;
+    };
+
+    appsyncAlarm(
+      "MessagingAppSyncSubscribeServerErrorAlarm",
+      "SubscribeServerError",
+      "page",
+      "PAGE: AppSync failed a room/user subscription server-side - clients get no live messages.",
+    );
+    appsyncAlarm(
+      "MessagingAppSyncConnectServerErrorAlarm",
+      "ConnectServerError",
+      "page",
+      "PAGE: AppSync failed a realtime connection server-side - clients cannot open the live socket.",
+    );
+    appsyncAlarm(
+      "MessagingAppSyncBroadcastServerErrorAlarm",
+      "BroadcastEventServerError",
+      "page",
+      "PAGE: AppSync failed to broadcast published events - live delivery is down.",
+    );
+    appsyncAlarm(
+      "MessagingAppSyncBroadcastDroppedAlarm",
+      "BroadcastDroppedEvents",
+      "warn",
+      "AppSync dropped events during broadcast - some clients missed a message until they reconcile over HTTP.",
+    );
+    appsyncAlarm(
+      "MessagingAppSyncFailedEventsAlarm",
+      "FailedEvents",
+      "warn",
+      "AppSync rejected published events - the publish never reached subscribers.",
+    );
+    appsyncAlarm(
+      "MessagingAppSync5xxAlarm",
+      "5XXError",
+      "warn",
+      "AppSync Event API is returning 5xx to clients.",
+    );
 
     // =========================================================================
     // Lambda Authorizer (machine credentials only for WebSocket $connect)

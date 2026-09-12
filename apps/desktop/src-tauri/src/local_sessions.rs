@@ -947,6 +947,20 @@ fn split_text(event: &Value) -> Vec<Value> {
         if truncated {
             single["truncated"] = json!(true);
         }
+        // Those are UTF-8 byte bounds; the envelope charges 6 wire chars per UTF-16 unit
+        // of a non-ASCII char, so a CJK result can still build an event that never fits
+        // alone. Shrink the assembled event against the wire itself.
+        let mut budget = 8192;
+        while budget >= 64 && ascii_wire_len(&single).is_ok_and(|wire| wire > 15_000) {
+            budget /= 2;
+            single["text"] = json!(bounded(single["text"].as_str().unwrap_or(""), budget).0);
+            if let Some(result) = single.pointer_mut("/tool/result") {
+                if !result.is_null() {
+                    *result = bound_json(result.take(), budget);
+                }
+            }
+            single["truncated"] = json!(true);
+        }
         return vec![single];
     }
     let mut result = vec![];
@@ -979,6 +993,57 @@ fn split_text(event: &Value) -> Vec<Value> {
         result.push(event.clone());
     }
     result
+}
+
+/// Make an event acceptable to the backend's contract before it is queued. Harness ids
+/// travel verbatim and are not ours to trust; a rejected batch tears the connection down
+/// and the same head of queue replays forever.
+fn admissible(event: &mut Value) {
+    fn opaque(value: &Value) -> bool {
+        value.as_str().is_some_and(|s| {
+            (1..=256).contains(&s.len())
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+        })
+    }
+    if let Some(map) = event.as_object_mut() {
+        for key in ["itemId", "parentId"] {
+            if map.get(key).is_some_and(|v| !opaque(v)) {
+                map.remove(key);
+            }
+        }
+    }
+    if let Some(ts) = event
+        .get("ts")
+        .and_then(Value::as_str)
+        .map(|t| bounded(t, 40).0)
+    {
+        event["ts"] = json!(ts);
+    }
+    let name = event
+        .pointer("/tool/name")
+        .and_then(Value::as_str)
+        .map(|n| bounded(n, 128).0);
+    if let Some(name) = name {
+        event["tool"]["name"] = json!(if name.is_empty() {
+            "tool"
+        } else {
+            name.as_str()
+        });
+    }
+}
+
+/// Stands in for an event that cannot be sent at all, so the queue keeps moving.
+fn unsendable(original: &Value) -> Value {
+    let mut marker = event(
+        "text",
+        "system",
+        "[Lightbulb could not mirror one event: it exceeded the envelope]",
+        original["ts"].as_str(),
+        original["itemId"].as_str(),
+    );
+    marker["truncated"] = json!(true);
+    marker
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1057,6 +1122,7 @@ impl Mirror {
                     &row,
                 )?;
                 for mut event in events {
+                    admissible(&mut event);
                     let text = event["text"].as_str().unwrap_or("");
                     if text.len() > MAX_TEXT {
                         let mut end = MAX_TEXT;
@@ -1090,9 +1156,14 @@ impl Mirror {
                 break;
             }
         }
-        // A single event that cannot fit alone is a normalizer bug, not something to skip silently.
         if events.is_empty() {
-            return Err("event envelope exceeds limit".into());
+            // A single event that cannot fit alone would replay forever (the batch fails,
+            // the session re-registers, the persisted queue restores it). Mirror a marker
+            // in its place and keep going.
+            let marker = unsendable(&self.queue[0]);
+            self.queue[0] = marker.clone();
+            events.push(marker);
+            batch["events"] = Value::Array(events);
         }
         self.pending = Some(batch.clone());
         Ok(Some(batch))
@@ -1751,6 +1822,116 @@ mod tests {
         assert_eq!(mirror.queue.len(), 6 - n);
         let second = mirror.next_batch().unwrap().unwrap();
         assert_eq!(second["events"][0]["text"], popped_text);
+    }
+
+    fn test_mirror(transcript: PathBuf) -> Mirror {
+        Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.269".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        }
+    }
+
+    #[test]
+    fn local_sessions_tool_event_is_bounded_against_the_wire_not_its_byte_length() {
+        // 20 KiB of CJK passes every byte bound, but the envelope charges 6 wire chars
+        // per UTF-16 unit: unshrunk, this event can never fit alone and wedges the session.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let stdout = "漢字テスト".repeat(20 * 1024 / "漢字テスト".len() + 1);
+        assert!(stdout.len() >= 20 * 1024);
+        let row = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1","timestamp":"2026-09-12T10:00:00.000Z",
+            "toolUseResult":{"stdout":&stdout,"stderr":"","interrupted":false},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":&stdout,"is_error":false}]}});
+        fs::write(&transcript, format!("{row}\n")).unwrap();
+        let mut mirror = test_mirror(transcript);
+        let batch = mirror
+            .next_batch()
+            .expect("a CJK tool result must not wedge the queue")
+            .unwrap();
+        let events = batch["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "a tool event is never split");
+        assert!(ascii_wire_len(&events[0]).unwrap() <= 15_000);
+        assert_eq!(events[0]["truncated"], true);
+    }
+
+    #[test]
+    fn local_sessions_admissible_drops_ids_and_names_the_backend_would_reject() {
+        // Upstream ids travel verbatim; a rejected batch tears the connection down and
+        // replays the same head of queue forever.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let row = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"bad id","timestamp":"2026-09-12T10:00:00.000Z",
+            "message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool_use","id":"toolu_1","name":"","input":{}}]}});
+        fs::write(&transcript, format!("{row}\n")).unwrap();
+        let mut mirror = test_mirror(transcript);
+        let batch = mirror.next_batch().unwrap().unwrap();
+        let events = batch["events"].as_array().unwrap();
+        assert_eq!(events[0]["text"], "hello");
+        assert!(
+            events[0].get("itemId").is_none(),
+            "an itemId with a space cannot match the backend's pattern"
+        );
+        assert_eq!(events[1]["tool"]["name"], "tool");
+    }
+
+    #[test]
+    fn local_sessions_next_batch_marks_an_unsendable_event_instead_of_wedging() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(dir.path().join("absent.jsonl"));
+        // Nothing shrinks actor.userId, so this event can never fit alone.
+        mirror.queue = vec![
+            json!({"kind":"text","role":"user","text":"hi","truncated":false,
+            "ts":"2026-09-12T10:00:00.000Z","itemId":"u1","actor":{"userId":"漢".repeat(4000)}}),
+        ];
+        let batch = mirror
+            .next_batch()
+            .expect("an unsendable event must not wedge the queue")
+            .unwrap();
+        let event = &batch["events"][0];
+        assert_eq!(
+            (&event["kind"], &event["role"]),
+            (&json!("text"), &json!("system"))
+        );
+        assert!(event["text"]
+            .as_str()
+            .unwrap()
+            .contains("could not mirror one event"));
+        assert_eq!(event["truncated"], true);
+        assert_eq!(event["itemId"], "u1");
+        assert_eq!(event["ts"], "2026-09-12T10:00:00.000Z");
+        assert!(ascii_wire_len(&batch).unwrap() <= 16384);
+        assert_eq!(
+            mirror.queue.len(),
+            1,
+            "the marker replaces the event in place"
+        );
+        mirror
+            .acknowledge(batch["batchId"].as_str().unwrap(), 1)
+            .unwrap();
+        assert!(mirror.queue.is_empty());
     }
 
     #[test]

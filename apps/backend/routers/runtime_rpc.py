@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from core.auth import AuthContext, get_current_user
 from core.services import runtime_rpc as service
@@ -10,6 +10,8 @@ from core.services.messaging import (
     ResolveApprovalRequest,
     ResolveQuestionRequest,
     ResolveRuntimeResponse,
+    RuntimeOperation,
+    RuntimeOperationAccepted,
     RuntimeRpcRequest,
     RuntimeRpcResponse,
 )
@@ -17,9 +19,20 @@ from core.services.messaging import (
 router = APIRouter()
 
 
-@router.post("/rpc", response_model=RuntimeRpcResponse)
-async def runtime_rpc(request: RuntimeRpcRequest, auth: AuthContext = Depends(get_current_user)):
-    return await service.execute(auth, request)
+@router.post(
+    "/rpc",
+    response_model=RuntimeRpcResponse | RuntimeOperationAccepted,
+    responses={202: {"model": RuntimeOperationAccepted}},
+)
+async def runtime_rpc(request: RuntimeRpcRequest, response: Response, auth: AuthContext = Depends(get_current_user)):
+    status, payload = await service.execute(auth, request)
+    response.status_code = status
+    return payload
+
+
+@router.get("/operations/{operation_id}", response_model=RuntimeOperation)
+async def runtime_operation(operation_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.get_operation(auth, operation_id)
 
 
 @router.post("/approvals/{approval_id}/resolve", response_model=ResolveRuntimeResponse)

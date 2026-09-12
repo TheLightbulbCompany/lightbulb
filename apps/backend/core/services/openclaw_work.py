@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import traceback
 import uuid
 from decimal import Decimal
@@ -18,10 +19,13 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
+from core.services import runtime_rpc
+from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
     ApiProblem,
     canonical_message,
     json_body_size,
+    make_live_event,
     with_human_handles,
 )
 
@@ -32,6 +36,7 @@ _HISTORY_LIMIT = 20
 _VISIBILITY_SECONDS = 300
 _RETRY_VISIBILITY_SECONDS = 10
 _VISIBILITY_REFRESH_SECONDS = 120
+_OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
 
@@ -70,6 +75,16 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
         ):
             raise ValueError("invalid throughSeq")
         value["throughSeq"] = int(through)
+        return value
+    if kind == "runtime_operation":
+        if set(value) != {"kind", "ownerId", "operationId"}:
+            raise ValueError("invalid runtime_operation pointer")
+        if not isinstance(value["ownerId"], str) or not value["ownerId"]:
+            raise ValueError("invalid ownerId")
+        try:
+            value["operationId"] = str(uuid.UUID(value["operationId"]))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid operationId") from exc
         return value
     raise ValueError("unknown work pointer kind")
 
@@ -193,7 +208,10 @@ class OpenClawWorkWorker:
         extender = asyncio.create_task(self._extend_visibility(message))
         try:
             pointer = deserialize_pointer(message.get("Body", ""))
-            await self._room_dispatch(pointer)
+            if pointer["kind"] == "room_dispatch":
+                await self._room_dispatch(pointer)
+            else:
+                await self._runtime_operation(pointer)
             await asyncio.to_thread(
                 self._sqs.delete_message,
                 QueueUrl=settings.OPENCLAW_WORK_QUEUE_URL,
@@ -359,6 +377,7 @@ class OpenClawWorkWorker:
             pool.clear_active_run(owner_id, session_key)
             return
         from core.services import local_session_grants
+        from core.services.messaging import ApiProblem
 
         invocation = None
         try:
@@ -412,6 +431,82 @@ class OpenClawWorkWorker:
             return await self._http.post(url, content=content, headers=headers)
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
             return await client.post(url, content=content, headers=headers)
+
+    async def _runtime_operation(self, pointer: dict[str, Any]) -> None:
+        owner_id = pointer["ownerId"]
+        operation_id = pointer["operationId"]
+        row = await messaging_repo.get_operation(owner_id, operation_id)
+        if row is None or row.get("state") in {"succeeded", "failed"}:
+            return
+        lease = uuid.uuid4().hex
+        claimed = await messaging_repo.claim_operation(
+            owner_id,
+            operation_id,
+            lease_token=lease,
+            lease_until=int(time.time()) + _OPERATION_LEASE_SECONDS,
+        )
+        if claimed is None:
+            latest = await messaging_repo.get_operation(owner_id, operation_id)
+            if latest is None or latest.get("state") in {"succeeded", "failed"}:
+                return
+            raise WorkRetry("runtime operation lease is still active")
+        try:
+            result = await runtime_rpc.execute_sync(
+                owner_id=owner_id,
+                user_id=claimed["requesterUserId"],
+                request_id=operation_id,
+                method=claimed["method"],
+                params=claimed["params"],
+            )
+        except ApiProblem as exc:
+            if exc.error.code == "RUNTIME_UNAVAILABLE" and exc.error.retryable:
+                await messaging_repo.release_operation(owner_id, operation_id, lease_token=lease)
+                raise WorkRetry("runtime operation is waiting for the runtime") from exc
+            completed = await messaging_repo.complete_operation(
+                owner_id,
+                operation_id,
+                lease_token=lease,
+                state="failed",
+                result=None,
+                error={
+                    "code": exc.error.code,
+                    "message": exc.error.message,
+                    "retryable": exc.error.retryable,
+                },
+            )
+        except Exception as exc:
+            completed = await messaging_repo.complete_operation(
+                owner_id,
+                operation_id,
+                lease_token=lease,
+                state="failed",
+                result=None,
+                error={"code": "INTERNAL_ERROR", "message": "Runtime operation failed.", "retryable": False},
+            )
+            logger.warning("runtime operation failed (%s)", type(exc).__name__)
+        else:
+            completed = await messaging_repo.complete_operation(
+                owner_id,
+                operation_id,
+                lease_token=lease,
+                state="succeeded",
+                result=result,
+                error=None,
+            )
+        if completed is None:
+            raise WorkRetry("runtime operation lease changed before completion")
+        event = make_live_event(
+            "runtime.operation.changed",
+            {
+                "operationId": operation_id,
+                "state": completed["state"],
+                "updatedAt": completed["updatedAt"],
+                "result": completed.get("result"),
+                "error": completed.get("error"),
+            },
+            event_id=operation_id,
+        )
+        await get_live_event_publisher().publish_user(owner_id, completed["requesterUserId"], event)
 
 
 _worker: OpenClawWorkWorker | None = None

@@ -569,6 +569,37 @@ async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
 
 
 @pytest.mark.asyncio
+async def test_operation_lifecycle_lease_and_outbox(table):
+    row = await repo.create_operation(
+        owner_id=OWNER, operation_id="op-1", requester_user_id=USER_A, method="agents.create", params={"name": "Ray"}
+    )
+    assert row["state"] == "queued"
+    work = next(i for i in table.scan()["Items"] if i["sk"] == "WORK#OPERATION#op-1")
+    group, dedup = repo.operation_fifo_ids(OWNER, "op-1")
+    assert work["payload"] == {"kind": "runtime_operation", "ownerId": OWNER, "operationId": "op-1"}
+    assert work["messageGroupId"] == group and work["messageDeduplicationId"] == dedup
+    claimed = await repo.claim_operation(OWNER, "op-1", lease_token="t1", lease_until=int(time.time()) + 300)
+    assert claimed["state"] == "running"
+    assert await repo.claim_operation(OWNER, "op-1", lease_token="t2", lease_until=int(time.time()) + 300) is None
+    # Expired lease can be reclaimed by a redelivery.
+    table.update_item(
+        Key={"pk": f"OWNER#{OWNER}", "sk": "OPERATION#op-1"},
+        UpdateExpression="SET leaseUntil = :z",
+        ExpressionAttributeValues={":z": 1},
+    )
+    reclaimed = await repo.claim_operation(OWNER, "op-1", lease_token="t2", lease_until=int(time.time()) + 300)
+    assert reclaimed["leaseToken"] == "t2"
+    assert (
+        await repo.complete_operation(OWNER, "op-1", lease_token="t1", state="succeeded", result={}, error=None) is None
+    )
+    done = await repo.complete_operation(
+        OWNER, "op-1", lease_token="t2", state="succeeded", result={"agentId": "x"}, error=None
+    )
+    assert done["state"] == "succeeded" and "leaseToken" not in done
+    assert await repo.claim_operation(OWNER, "op-1", lease_token="t3", lease_until=int(time.time()) + 300) is None
+
+
+@pytest.mark.asyncio
 async def test_wipe_deletes_room_partitions_owner_rows_and_streams_only_for_that_owner(table):
     room_id, _ = await _room()
     await _post(room_id)

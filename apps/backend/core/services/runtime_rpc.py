@@ -14,11 +14,13 @@ from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.metrics import put_metric
-from core.repositories import container_repo
+from core.repositories import container_repo, messaging_repo
 from core.services.messaging import (
     ApiProblem,
+    RuntimeOperationAccepted,
     RuntimeRpcRequest,
     RuntimeRpcResponse,
+    runtime_operation,
 )
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
@@ -267,13 +269,26 @@ async def _running_container(owner_id: str) -> tuple[dict, str]:
     )
 
 
-async def execute(auth: AuthContext, request: RuntimeRpcRequest) -> RuntimeRpcResponse:
+async def execute(
+    auth: AuthContext, request: RuntimeRpcRequest
+) -> tuple[int, RuntimeRpcResponse | RuntimeOperationAccepted]:
     owner_id = resolve_owner_id(auth)
     params = dict(request.params)
     _guard_method(request.method, params, auth.user_id)
     if request.method in _MUTATING_METHODS:
         # Clear a racing idle-stop claim before any durable or external effect.
         await container_repo.touch_last_interactive(owner_id)
+    if request.method == "agents.create":
+        operation_id = str(uuid.uuid4())
+        await messaging_repo.create_operation(
+            owner_id=owner_id,
+            operation_id=operation_id,
+            requester_user_id=auth.user_id,
+            method=request.method,
+            params=_sanitize_agent_create(params),
+        )
+        return 202, RuntimeOperationAccepted(operation_id=operation_id)
+
     result = await execute_sync(
         owner_id=owner_id,
         user_id=auth.user_id,
@@ -281,7 +296,7 @@ async def execute(auth: AuthContext, request: RuntimeRpcRequest) -> RuntimeRpcRe
         method=request.method,
         params=params,
     )
-    return RuntimeRpcResponse(payload=result)
+    return 200, RuntimeRpcResponse(payload=result)
 
 
 async def execute_sync(
@@ -539,3 +554,15 @@ async def execute_control(
             retryable=True,
             retry_after=3,
         ) from exc
+
+
+async def get_operation(auth: AuthContext, operation_id: str):
+    owner_id = resolve_owner_id(auth)
+    try:
+        operation_id = str(uuid.UUID(operation_id))
+    except ValueError as exc:
+        raise ApiProblem("INVALID_REQUEST", "Invalid operation ID.") from exc
+    row = await messaging_repo.get_operation(owner_id, operation_id)
+    if row is None or row.get("requesterUserId") != auth.user_id:
+        raise ApiProblem("OPERATION_NOT_FOUND", "Runtime operation not found.")
+    return runtime_operation(row)

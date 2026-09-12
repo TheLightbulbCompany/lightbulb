@@ -1,7 +1,11 @@
 """The projector Lambda re-declares the live-event registry; keep the two equal.
 
-A type the projector does not list is silently dropped from the LIVE# outbox,
-so drift here is a delivery outage with no error anywhere.
+Drift makes the projector REJECT the record rather than drop it quietly:
+_validate_live_event raises on an unlisted type, the record is retried, then
+parked in the failure bucket and paged (messaging-projector-failures-stored).
+Today only room.access.removed / room.subscription.rotated reach this path --
+_remove_member_with_notices is the one LIVE# writer -- so this equality is a
+guard against future drift, not a fix for a live bug.
 """
 
 import importlib.util

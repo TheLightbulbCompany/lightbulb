@@ -29,9 +29,13 @@ HTTP_ENDPOINT = os.environ.get("APPSYNC_EVENTS_HTTP_ENDPOINT", "")
 REGION = os.environ.get("APPSYNC_EVENTS_REGION", os.environ.get("AWS_REGION", ""))
 MAX_EVENT_BYTES = 230 * 1024
 MAX_MESSAGE_BYTES = 100_000
-# Must equal core.services.messaging.LIVE_EVENT_TYPES -- a type missing here is
-# silently dropped from the LIVE# outbox. Guarded by the backend's
-# tests/unit/services/test_live_event_registry.py.
+# Must equal core.services.messaging.LIVE_EVENT_TYPES. Drift does not lose an
+# event silently: _validate_live_event raises on an unlisted type, so the record
+# is retried, then parked in the failure bucket and paged
+# (messaging-projector-failures-stored). Today only room.access.removed and
+# room.subscription.rotated reach this path (_remove_member_with_notices is the
+# one LIVE# writer), so the equality test in the backend's
+# tests/unit/services/test_live_event_registry.py guards against future drift.
 LIVE_EVENT_TYPES = frozenset(
     {
         "room.access.removed",
@@ -48,6 +52,7 @@ LIVE_EVENT_TYPES = frozenset(
         "paperclip.event",
         "runtime.approval.requested",
         "runtime.approval.resolved",
+        "runtime.operation.changed",
         "runtime.progress.changed",
         "runtime.question.requested",
         "runtime.question.resolved",

@@ -1649,9 +1649,18 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     # EFS is NFS. These reads open and read whole image files, so running them
     # inline blocked the event loop -- every other request on the process, not
     # just this send -- for the duration of the slowest one.
+    # `return_exceptions=True` so a second bad attachment id in the same request
+    # does not leave its exception unretrieved -- these are concurrent now, and
+    # the default would propagate the first and drop the rest, which asyncio
+    # then logs as "exception was never retrieved". The caller still sees the
+    # first failure, exactly as it did when this was a serial comprehension.
     loaded = await asyncio.gather(
-        *(run_in_thread(load_image_attachment, owner_id, room_id, str(value)) for value in request.attachment_ids)
+        *(run_in_thread(load_image_attachment, owner_id, room_id, str(value)) for value in request.attachment_ids),
+        return_exceptions=True,
     )
+    for result in loaded:
+        if isinstance(result, BaseException):
+            raise result
     attachments = [meta.model_dump(mode="json", by_alias=True) for meta, _ in loaded]
     req_hash = messaging_repo.request_hash(
         request.text,

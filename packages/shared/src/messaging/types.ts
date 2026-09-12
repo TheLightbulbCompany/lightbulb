@@ -30,12 +30,21 @@ export interface RoomSummary {
   starred: boolean;
   muted: boolean;
   sectionId: string | null;
+  /**
+   * Everyone in the room. A DM has no name of its own — it IS its counterpart —
+   * so without this a client cannot label its own sidebar, and both apps used to
+   * follow the room list with one `getRoom` per DM just to read a name. That
+   * fan-out re-ran on every `roomRevision` bump (a rename, a delivery-key
+   * rotation), which is why the sidebar kept dropping back to a loading state.
+   */
+  members: RoomMember[];
+  lastReadSeq: number;
 }
 
 export interface RoomDetail extends RoomSummary {
+  /** The AppSync channel secret. Deliberately absent from RoomSummary — it is
+   *  only ever needed for the one room actually being subscribed. */
   deliveryKey: string;
-  members: RoomMember[];
-  lastReadSeq: number;
   createdAt: string;
   pinnedMessageIds: string[];
 }

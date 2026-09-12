@@ -18,7 +18,7 @@ vi.mock("@/components/messaging/MessagingWorkspace", () => ({
         <button key={kind} onClick={() => onOpenRoom({
           roomId: kind, name: null, roomRevision: 1, lastMessageSeq: 0,
           lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z",
-          topic: null, starred: false, muted: false, sectionId: null,
+          topic: null, starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0,
           kind: kind === "human" ? "dm" : kind,
           participants: [{ kind: kind === "human" ? "human" : "agent", id: "agent-1", displayName: "Counterpart", mentionHandle: null }],
         })}>{kind}</button>

@@ -62,9 +62,21 @@ jest.mock("expo-router", () => {
     useLocalSearchParams: () => ({ roomId: mockRoomId }),
   };
 });
+// Each case runs in its own workspace scope, because SWR keys its cache on it
+// and the app mounts no SWRConfig provider — so without this every case in this
+// file shares one module-level cache and the suite is order-dependent. It
+// surfaces now because marking a room read updates that cache in place (the
+// shared hook applies the server's returned cursor instead of re-fetching the
+// room AND the room list after every PUT /read): a room left read by one case
+// starts the next already caught up, with no unread boundary to draw and
+// nothing left to mark. Every case passes alone while three fail together.
+//
+// The scope and not the user, because the screen reads `userId` and asserts on
+// it; `useOrganization` it never touches.
+let mockScope = 0;
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
-  useOrganization: () => ({ organization: null }),
+  useOrganization: () => ({ organization: { id: `org-${mockScope}` } }),
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({
@@ -160,6 +172,7 @@ afterAll(() => {
 
 describe("conversation screen", () => {
   beforeEach(() => {
+    mockScope += 1;
     mockPush.mockClear();
     mockMarkRead.mockClear();
     mockSendMessage.mockClear();
@@ -194,13 +207,22 @@ describe("conversation screen", () => {
 
   // The thread screen deliberately marks nothing read (Slack's rule), so the
   // room's cursor only moves again once this screen is focused back.
-  it("marks the room read again when a pushed thread screen is popped", async () => {
+  //
+  // Returning to a room whose cursor already sits at the newest sequence has
+  // nothing to move, so it writes nothing. This used to re-send the identical
+  // cursor on every focus: marking read re-fetched the room, the re-fetch
+  // restored the server's older `lastReadSeq`, and the guard meant to stop a
+  // redundant write never saw the value just written. Read state is applied
+  // from the server's returned cursor now, so the guard holds and a pointless
+  // PUT /read per focus is gone.
+  it("does not re-mark a room whose cursor already sits at the newest sequence when a thread screen is popped", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
     await act(async () => mockFocus.blur?.());
     mockMarkRead.mockClear();
     await act(async () => mockFocus.focus?.());
-    await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
+    await act(async () => { await Promise.resolve(); });
+    expect(mockMarkRead).not.toHaveBeenCalled();
   });
 
   it("keeps thread replies out of the main timeline and opens the thread from the replies row", async () => {

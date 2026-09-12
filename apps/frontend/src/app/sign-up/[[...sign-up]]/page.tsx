@@ -203,7 +203,7 @@ export default function Page() {
         {/* LEFT: BRAND PANEL */}
         <div className="auth-brand" aria-hidden="true">
           <div className="auth-brand-top">
-            <Logo tone="cream" size="lg" />
+            <Logo tone="cream" size="lg" withMark />
           </div>
 
           <div className="auth-brand-middle">
@@ -265,7 +265,7 @@ export default function Page() {
           <div className="auth-card">
             {/* Mobile-only logo */}
             <div className="auth-mobile-logo">
-              <Logo size="md" />
+              <Logo size="md" withMark />
             </div>
 
             <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />

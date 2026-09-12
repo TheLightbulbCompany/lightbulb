@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
+import { LogoMark } from "@/components/Logo";
 import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
 import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
@@ -28,7 +29,8 @@ import { useIsDesktop } from "@/hooks/useIsDesktop";
 // of nothing.
 function WorkspaceShellLoading() {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: "100vh" }}>
+      <LogoMark className="brand-mark--hero" />
       <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
     </div>
   );

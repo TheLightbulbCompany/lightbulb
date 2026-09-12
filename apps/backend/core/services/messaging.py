@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import unicodedata
 import uuid
 from pathlib import PurePath
@@ -23,6 +24,7 @@ from pydantic.alias_generators import to_camel
 from core.auth import AuthContext, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
+from core.dynamodb import run_in_thread
 from core.repositories import container_repo, messaging_repo
 from core.containers import get_gateway_pool_if_started, get_workspace
 from core.containers.workspace import WorkspaceError
@@ -148,12 +150,24 @@ class RoomSummary(ContractModel):
     muted: bool = False
     section_id: str | None = None
     topic: str | None = None
+    # A DM has no name of its own -- it IS its counterpart, so a client cannot
+    # label one row of its own sidebar without the member list. Carrying it here
+    # is what lets the room LIST be the whole sidebar: before this, every client
+    # followed the list with one GET /rooms/{id} per DM purely to read a name,
+    # and re-ran that fan-out whenever any room's revision moved (a rename, a
+    # delivery-key rotation), dropping the sidebar back to a loading state.
+    # `delivery_key` deliberately stays out -- it is the AppSync channel secret
+    # and is only needed for the room actually being subscribed.
+    members: list[RoomMember] = []
+    last_read_seq: int = Field(ge=0, default=0)
 
 
 class RoomDetail(RoomSummary):
-    delivery_key: uuid.UUID
+    # Re-declared as required: the list tolerates their absence for a client
+    # holding a response from before they existed, the detail never does.
     members: list[RoomMember]
     last_read_seq: int = Field(ge=0)
+    delivery_key: uuid.UUID
     created_at: datetime
     pinned_message_ids: list[str] = []
 
@@ -823,7 +837,29 @@ async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
     return roster
 
 
+# A human's display name is fetched from Clerk, which is an HTTPS call with its
+# own TLS handshake. It was being made on EVERY message send and EVERY typing
+# ping -- two of the three hottest paths on the surface -- for a value that
+# changes only when someone edits their Clerk profile. Cached per process (the
+# backend runs desiredCount: 1), short enough that a rename shows up on its own.
+_DISPLAY_NAME_TTL_SECONDS = 300.0
+_display_names: dict[str, tuple[float, str]] = {}
+
+
 async def human_display_name(user_id: str) -> str:
+    cached = _display_names.get(user_id)
+    now = time.monotonic()
+    if cached and now - cached[0] < _DISPLAY_NAME_TTL_SECONDS:
+        return cached[1]
+    resolved = await _resolve_human_display_name(user_id)
+    # A failed lookup falls back to the user id. Caching that would pin an
+    # opaque id onto every message for the whole TTL, so only cache real names.
+    if resolved != user_id:
+        _display_names[user_id] = (now, resolved)
+    return resolved
+
+
+async def _resolve_human_display_name(user_id: str) -> str:
     from core.services.clerk_admin import get_user
 
     user = await get_user(user_id)
@@ -840,6 +876,15 @@ async def human_display_name(user_id: str) -> str:
     if emails and emails[0].get("email_address"):
         return str(emails[0]["email_address"]).split("@", 1)[0][:256]
     return user_id
+
+
+async def _touch_last_interactive_quietly(owner_id: str) -> None:
+    """Bump the owner's idle clock off the send path. A failure here must never
+    surface as a failed send -- the message is already durable by this point."""
+    try:
+        await container_repo.touch_last_interactive(owner_id)
+    except Exception:
+        logger.warning("touch_last_interactive failed", extra={"owner_id": owner_id}, exc_info=True)
 
 
 async def _validate_human_in_owner(owner_id: str, user_id: str) -> None:
@@ -958,16 +1003,52 @@ async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
     return [RoomSection(id=row["id"], name=row["name"]) for row in (prefs or {}).get("sections", [])]
 
 
+# Rooms summarised at once. Every repo call is a thread hop onto the default
+# executor (~6 threads on a 2-vCPU task), so an unbounded gather over a large
+# workspace would flood it and leave every other request on the process queued
+# behind a single room list.
+#
+# Note this bounds ROOMS, and each one issues three calls concurrently — so the
+# real ceiling on submitted work is three times this number. That is deliberate:
+# the calls are IO-bound and mostly sit waiting on DynamoDB, so a modest queue
+# behind the pool costs nothing, whereas the serial version this replaced cost
+# two full round trips per room in sequence.
+_SUMMARY_CONCURRENCY = 8
+
+
 async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
+    """Every room the caller can see, with the members each row needs to name
+    itself.
+
+    The per-room reads run concurrently. They used to run serially -- two
+    awaited round trips per room, so a 20-room workspace was a 40-deep serial
+    chain before the response could start. The membership recheck stays: the
+    GSI backing ``list_rooms_for_member`` is eventually consistent, so a member
+    removed a moment ago can still be discovered by it, and ``get_member`` is
+    the strongly-consistent read that keeps them out of the response.
+    """
     discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
-    summaries: list[RoomSummary] = []
-    for row in discovered:
+    limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
+
+    async def summarise(row: dict) -> RoomSummary | None:
         meta = row["meta"]
-        member = await messaging_repo.get_member(meta["roomId"], "human", user_id)
+        room_id = meta["roomId"]
+        async with limit:
+            member, last_read, members = await asyncio.gather(
+                messaging_repo.get_member(room_id, "human", user_id),
+                messaging_repo.get_read_cursor(room_id, user_id),
+                messaging_repo.list_members(room_id),
+            )
         if member is None:
-            continue
-        last_read = await messaging_repo.get_read_cursor(meta["roomId"], user_id)
-        summaries.append(RoomSummary(**_room_summary_fields(meta, member, last_read)))
+            return None
+        return RoomSummary(
+            **_room_summary_fields(meta, member, last_read),
+            members=[_room_member(item) for item in with_human_handles(members)],
+            last_read_seq=last_read,
+        )
+
+    settled = await asyncio.gather(*(summarise(row) for row in discovered))
+    summaries = [summary for summary in settled if summary is not None]
     summaries.sort(key=lambda room: room.updated_at, reverse=True)
     return summaries
 
@@ -1565,10 +1646,22 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)
-    attachments = [
-        load_image_attachment(owner_id, room_id, str(value))[0].model_dump(mode="json", by_alias=True)
-        for value in request.attachment_ids
-    ]
+    # EFS is NFS. These reads open and read whole image files, so running them
+    # inline blocked the event loop -- every other request on the process, not
+    # just this send -- for the duration of the slowest one.
+    # `return_exceptions=True` so a second bad attachment id in the same request
+    # does not leave its exception unretrieved -- these are concurrent now, and
+    # the default would propagate the first and drop the rest, which asyncio
+    # then logs as "exception was never retrieved". The caller still sees the
+    # first failure, exactly as it did when this was a serial comprehension.
+    loaded = await asyncio.gather(
+        *(run_in_thread(load_image_attachment, owner_id, room_id, str(value)) for value in request.attachment_ids),
+        return_exceptions=True,
+    )
+    for result in loaded:
+        if isinstance(result, BaseException):
+            raise result
+    attachments = [meta.model_dump(mode="json", by_alias=True) for meta, _ in loaded]
     req_hash = messaging_repo.request_hash(
         request.text,
         mentions,
@@ -1628,7 +1721,11 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                 owner_id=owner_id,
                 props={"reason": "no_targets", "room_kind": room_kind},
             )
-    await container_repo.touch_last_interactive(owner_id)
+    # Neither of these is part of the response. `touch_last_interactive` writes
+    # to the containers table purely to feed the idle/park clock, and it was
+    # being awaited after the message was already durable -- a whole round trip
+    # of latency the sender paid for nothing.
+    asyncio.create_task(_touch_last_interactive_quietly(owner_id))
     from core.services.onboarding_brief import capture_first_workspace_message
 
     asyncio.create_task(capture_first_workspace_message(owner_id, item))

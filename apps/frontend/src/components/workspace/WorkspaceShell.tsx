@@ -5,6 +5,7 @@
 // Mounted by page.tsx inside MarketplaceDrawerProvider > GatewayProvider >
 // ExecApprovalsProvider (Task 13); mobile keeps ChatLayout.
 import "dockview-react/dist/styles/dockview.css";
+import { LogoMark } from "@/components/Logo";
 import "./workspace.css";
 import { constrainGroupHeight } from "./groupConstraints";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -121,7 +122,8 @@ export function WorkspaceShell(): React.ReactElement {
   }
   if (onboardingPhase !== "ready" || !isSignedIn || !userId || !organization) {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: "100vh" }}>
+        <LogoMark className="brand-mark--hero" />
         <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
       </div>
     );

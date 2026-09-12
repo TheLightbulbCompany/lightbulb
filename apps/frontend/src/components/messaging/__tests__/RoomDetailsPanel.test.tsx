@@ -8,7 +8,7 @@ import type { RoomMessage } from "../types";
 const room: RoomSummary = {
   roomId: "room-1", name: "Roadmap", kind: "channel", roomRevision: 3, lastMessageSeq: 4,
   lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-11T10:00:00Z",
-  topic: "Ship v2", starred: false, muted: false, sectionId: null,
+  topic: "Ship v2", starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0,
 };
 const message = (id: string, extra: Partial<RoomMessage> = {}): RoomMessage => ({
   messageId: id, roomId: "room-1", messageSeq: Number(id.slice(1)), roomRevision: 1,

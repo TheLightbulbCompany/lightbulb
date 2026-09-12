@@ -92,9 +92,16 @@ export function useRuntimeRpc<T = unknown>(
       if (nextError instanceof RuntimeRpcError && !nextError.retryable) return;
       const retryCount = options?.retryCount ?? 0;
       if (retryCount >= 100) return;
-      const delay = typeof swrConfig.refreshInterval === "number" && swrConfig.refreshInterval > 0
+      const base = typeof swrConfig.refreshInterval === "number" && swrConfig.refreshInterval > 0
         ? swrConfig.refreshInterval
         : swrConfig.errorRetryInterval ?? 3_000;
+      // Backs off rather than retrying flat. Callers that pass a FUNCTION for
+      // `refreshInterval` (useAgents does, to stop polling once the roster
+      // arrives) never matched the numeric branch, so they fell to a flat 3s —
+      // and a container that is still cold fails every one of them, which made
+      // an ordinary boot roughly five minutes of POST /runtime/rpc at full
+      // rate. Capped so a long boot is still covered, just quietly.
+      const delay = Math.min(base * 2 ** Math.min(retryCount, 5), 30_000);
       setTimeout(() => revalidate({ retryCount: retryCount + 1 }), delay);
     },
     ...config,

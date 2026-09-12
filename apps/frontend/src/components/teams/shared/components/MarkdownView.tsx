@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components, UrlTransform } from "react-markdown";
@@ -180,16 +180,32 @@ export interface MarkdownViewProps {
  * overflows its column — in the Teams task view it bled off the right edge into the
  * metadata panel. `min-w-0` lets this shrink below its content's intrinsic width inside
  * a flex/grid parent; `overflow-wrap:anywhere` forces a break inside the long token. */
-export function MarkdownView({ children, components, skipHtml, urlTransform }: MarkdownViewProps) {
+// Module scope, so react-markdown sees the same array every render. As an
+// inline literal it was a fresh array each time, which defeats memoisation
+// inside the renderer as well as outside it.
+const REMARK_PLUGINS = [remarkGfm, remarkSoftBreaks];
+
+/**
+ * Memoised on purpose.
+ *
+ * This mounts a full remark/rehype pipeline, and the room timeline renders one
+ * per message — through a render-prop closure that React Compiler cannot see
+ * across, so every re-render of the room panel re-parsed every message body.
+ * The panel re-renders on each composer keystroke (the draft lives in the same
+ * provider), each typing signal and each streamed chunk. Props are all stable
+ * by value or by reference (`markdownComponents` and the room's overrides are
+ * module constants), so a shallow compare is enough.
+ */
+export const MarkdownView = memo(function MarkdownView({ children, components, skipHtml, urlTransform }: MarkdownViewProps) {
   const merged = useMemo(
     () => (components ? { ...markdownComponents, ...components } : markdownComponents),
     [components],
   );
   return (
     <div className="min-w-0 [overflow-wrap:anywhere]">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={merged} skipHtml={skipHtml} urlTransform={urlTransform}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={merged} skipHtml={skipHtml} urlTransform={urlTransform}>
         {children}
       </ReactMarkdown>
     </div>
   );
-}
+});

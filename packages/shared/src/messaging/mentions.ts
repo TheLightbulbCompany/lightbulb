@@ -45,6 +45,26 @@ export function parseMentionHref(href: string): { kind: "human" | "agent"; id: s
   return (kind === "human" || kind === "agent") && id ? { kind, id } : null;
 }
 
+/**
+ * Token list and pattern per participant list.
+ *
+ * Both derive only from `participants`, but `linkifyMentions` is called once
+ * per message per render of the timeline — so without this every render sorted
+ * the token list and compiled a fresh RegExp for every message on screen.
+ * Keyed on the array's identity (both apps hand over a memoised array) and
+ * weak, so a stale roster cannot pin memory.
+ */
+const grammarCache = new WeakMap<object, { entries: TokenEntry[]; pattern: RegExp | null }>();
+
+function grammarFor(participants: readonly MentionTarget[]): { entries: TokenEntry[]; pattern: RegExp | null } {
+  const cached = grammarCache.get(participants);
+  if (cached) return cached;
+  const entries = tokenEntries(participants);
+  const grammar = { entries, pattern: entries.length === 0 ? null : tokenPattern(entries) };
+  grammarCache.set(participants, grammar);
+  return grammar;
+}
+
 export function linkifyMentions(
   text: string,
   // Unused: the composer resolves typed @tokens to structured mentions on
@@ -53,9 +73,8 @@ export function linkifyMentions(
   mentions: readonly MemberRef[],
   participants: readonly MentionTarget[],
 ): string {
-  const entries = tokenEntries(participants);
-  if (entries.length === 0) return text;
-  const pattern = tokenPattern(entries);
+  const { entries, pattern } = grammarFor(participants);
+  if (pattern === null) return text;
   const rewrite = (segment: string) =>
     segment.replace(pattern, (match, lead: string, token: string) => {
       const entry = entries.find((candidate) => candidate.token.toLowerCase() === token.toLowerCase());

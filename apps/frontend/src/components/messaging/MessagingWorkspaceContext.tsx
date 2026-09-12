@@ -132,7 +132,25 @@ export function MessagingWorkspaceProvider({
   const threadClientMessageIdRef = useRef(threadClientMessageId);
   clientMessageIdRef.current = clientMessageId;
   threadClientMessageIdRef.current = threadClientMessageId;
+  // Read in the send failure path, which resolves long after its closure was
+  // built and must know where the owner actually is now.
+  const activeRoomIdRef = useRef(rooms.activeRoomId);
+  activeRoomIdRef.current = rooms.activeRoomId;
+  const threadIdRef = useRef<string | null>(threadId);
+  threadIdRef.current = threadId;
+  // Mirror the live composer text. Read in the send failure path to decide
+  // whether there is anything there worth protecting.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const threadDraftRef = useRef(threadDraft);
+  threadDraftRef.current = threadDraft;
   const [creationBusy, setCreationBusy] = useState(false);
+  const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
+  // Bumped whenever a draft is written for a room OTHER than the active one —
+  // which only the send-failure path does. Without it the sidebar's draft dot
+  // and Drafts section would not show a recovered draft until some unrelated
+  // render happened to recompute them.
+  const [recoveredDrafts, setRecoveredDrafts] = useState(0);
   const [creationError, setCreationError] = useState<string>();
   // A failed DM resolve-or-create (rooms.selectRoomError) otherwise vanishes:
   // the caller rethrows but nobody renders it. Dismissal is local — the hook
@@ -180,12 +198,14 @@ export function MessagingWorkspaceProvider({
     : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
-    participants: (rooms.directoryRoomDetails.get(room.roomId)?.members ?? [])
+    // Straight off the room summary — this used to come from a per-DM
+    // `getRoom` fan-out, so until it settled every DM row read "Direct message".
+    participants: (room.members ?? [])
       .filter((member) => member.kind !== "human" || member.id !== userId)
       .map((member) => member.kind === "agent"
         ? { ...member, agentActivity: activityByAgentId.get(member.id) }
         : { ...member, online: online.has(member.id) }),
-  })), [rooms.rooms, rooms.directoryRoomDetails, activityByAgentId, userId, online]);
+  })), [rooms.rooms, activityByAgentId, userId, online]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
@@ -233,31 +253,121 @@ export function MessagingWorkspaceProvider({
     writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) });
   }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
 
+  /**
+   * Park a failed message's text in a room's stored draft — but never on top of
+   * something newer.
+   *
+   * There is one draft slot per room and, in this path, two possible claimants:
+   * the message that just failed and whatever the owner has typed since. The
+   * live text is the owner's current intent and exists nowhere else, so it
+   * wins; the failed text is dropped rather than allowed to overwrite it.
+   *
+   * ponytail: a failed message should live in the timeline as a failed row with
+   * its own retry, the way Slack does it, which removes the contention
+   * entirely. That needs a rejected state on the pending row in RoomPanel —
+   * `useRooms` currently drops the optimistic entry on failure — and is not
+   * this change.
+   */
+  const recoverDraft = useCallback((key: string, request: CreateMessageRequest) => {
+    if (readDraft(key).text.trim()) return;
+    writeDraft(key, { text: request.text, mentions: request.mentions });
+    setRecoveredDrafts((count) => count + 1);
+  }, []);
+
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
     // Read before the await: this is the room the message was sent FROM, even
     // if the owner switches rooms while it is in flight.
     const roomId = rooms.activeRoomId;
-    await sendRoomMessage(request);
-    // Clearing the SENDING room's stored row is always correct once the send
-    // succeeded — so it happens before the attempt-id guards, which a room
-    // switch mid-send trips and which only protect the NEW room's in-memory
-    // draft state below.
+    // Empty the box NOW, before the round trip — not after it.
+    //
+    // This used to await the POST first, and because `sendState` is "sending"
+    // for that whole flight the textarea was also disabled, so a sender watched
+    // their own text sit frozen in the composer while an optimistic copy of it
+    // rendered in the timeline below. Clearing on the keystroke is what makes
+    // sending feel instant; the optimistic row already carries the pending,
+    // failed and uncertain states, and `reconcileSend` still holds the request
+    // by its client id, so nothing is lost if the send does not land.
+    let rotatedTo: string | null = null;
     if (thread) {
       if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
-      if (threadClientMessageIdRef.current !== request.clientMessageId) return;
-      setThreadDraft("");
-      setThreadClientMessageId(crypto.randomUUID());
+      if (threadClientMessageIdRef.current === request.clientMessageId) {
+        rotatedTo = crypto.randomUUID();
+        // The ref mirrors the composer's CURRENT id, so it has to move now
+        // rather than at the next render — a send that rejects in the same
+        // microtask would otherwise read a stale ref and conclude the composer
+        // had moved on when it had not.
+        threadClientMessageIdRef.current = rotatedTo;
+        threadDraftRef.current = "";
+        setThreadDraft("");
+        setThreadClientMessageId(rotatedTo);
+      }
     } else {
       if (roomId) clearDraft(draftKey(scope, roomId, null));
-      if (clientMessageIdRef.current !== request.clientMessageId) return;
-      setDraft("");
-      setClientMessageId(crypto.randomUUID());
+      if (clientMessageIdRef.current === request.clientMessageId) {
+        rotatedTo = crypto.randomUUID();
+        clientMessageIdRef.current = rotatedTo;   // see the thread branch above
+        draftRef.current = "";
+        setDraft("");
+        setClientMessageId(rotatedTo);
+      }
     }
-  }, [sendRoomMessage, rooms.activeRoomId, scope]);
+    try {
+      await sendRoomMessage(request);
+    } catch (error) {
+      // Give it back. The composer has already moved on to a fresh id, so
+      // without this the failed message has nowhere to live: its optimistic row
+      // is dropped by `useRooms` on failure, its text was cleared, and both
+      // "Retry message" and "Check message status" would act on an id that
+      // tracks nothing. Re-adopting the failed id is what makes `sendState`
+      // report rejected/uncertain again and points retry at the real request.
+      const sameRoom = activeRoomIdRef.current === roomId;
+      // ...but only into the composer this send actually left behind. Sending a
+      // second message, or typing into the fresh box, rotates the id again —
+      // and re-adopting the failed one then remounts the composer and destroys
+      // that newer, unsent work (its text and any attached-but-unsent images).
+      // Newer work wins: it is the owner's live intent, and unlike the failed
+      // message it exists nowhere else.
+      // Two ways the composer stops being the empty box this send left behind,
+      // and BOTH have to be checked: sending again rotates the id, but simply
+      // TYPING does not — it only fills the box. Restoring over either is the
+      // same data loss, so the box must still be the one we rotated to AND
+      // still be empty.
+      const composerHeld = !thread && rotatedTo !== null
+        && clientMessageIdRef.current === rotatedTo && draftRef.current.trim() === "";
+      const threadComposerHeld = thread && rotatedTo !== null
+        && threadClientMessageIdRef.current === rotatedTo && threadDraftRef.current.trim() === "";
+      if (thread) {
+        if (sameRoom && threadComposerHeld && threadIdRef.current === request.threadRootMessageId) {
+          setThreadDraft(request.text);
+          setThreadClientMessageId(request.clientMessageId);
+        } else if (roomId && request.threadRootMessageId) {
+          recoverDraft(draftKey(scope, roomId, request.threadRootMessageId), request);
+        }
+      } else if (sameRoom && composerHeld) {
+        setDraft(request.text);
+        setClientMessageId(request.clientMessageId);
+      } else if (roomId) {
+        // Nowhere live to put it — the owner is in another room, or has moved
+        // the composer on. It goes to that room's stored draft instead.
+        recoverDraft(draftKey(scope, roomId, null), request);
+      }
+      // Rethrown: the composer's own submit() turns a rejection into its
+      // uncertain state, and that path must keep working.
+      throw error;
+    }
+  }, [sendRoomMessage, rooms.activeRoomId, scope, recoverDraft]);
 
-  // Read every render: localStorage is the source, so no prop dependency
-  // could describe when this changes.
-  const draftRoomIds = listDraftRoomIds(scope);
+  // localStorage is the source, so no prop dependency truly describes when this
+  // changes — but it walks every key in the store and JSON.parses each hit, and
+  // every writer is in this component: the draft effects below, and the
+  // send-failure path, which is the only one that can write for a room the
+  // owner has already left (hence `recoveredDrafts`). Recomputing when one of
+  // those moves is enough, and keeps the walk off the keystroke path for every
+  // other room's row.
+  const draftRoomIds = useMemo(
+    () => listDraftRoomIds(scope),
+    [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts],
+  );
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
@@ -314,14 +424,17 @@ export function MessagingWorkspaceProvider({
   }
 
   async function selectParticipant(participant: DirectoryParticipant) {
-    setCreationBusy(true);
+    // Only the row being opened goes busy. This used to set `creationBusy`,
+    // which disables EVERY roster row, so opening one conversation froze the
+    // whole list for the duration of the round trip.
+    setOpeningParticipant(`${participant.kind}:${participant.id}`);
     setCreationError(undefined);
     try {
       await rooms.selectDm(participant);
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
     } finally {
-      setCreationBusy(false);
+      setOpeningParticipant(null);
     }
   }
 
@@ -372,9 +485,23 @@ export function MessagingWorkspaceProvider({
   const readSeqAtOpen = useRef<{ roomId: string; seq: number | null } | null>(null);
   if (rooms.activeRoom && readSeqAtOpen.current?.roomId !== rooms.activeRoom.roomId) readSeqAtOpen.current = { roomId: rooms.activeRoom.roomId, seq: rooms.activeRoom.lastReadSeq ?? null };
 
-  const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
-  const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
-  const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
+  // `directoryLoading` is gone with the fan-out that produced it: the room list
+  // is now the whole sidebar, so there is nothing else to wait for.
+  const directoryState = rooms.roomsLoading ? "loading" : rooms.roomsError ? "error" : "ready";
+  // Messages in hand beat a pending room-detail read. The detail GET only adds
+  // the delivery key and pinned ids; blocking the whole panel on it meant a
+  // room you opened a moment ago still showed "Loading conversation…".
+  const roomState = rooms.roomLoading && rooms.messages.length === 0 ? "loading"
+    : rooms.accessRemoved ? "access-removed"
+    : rooms.roomError ? "unavailable"
+    : rooms.liveConnected ? "ready" : "reconnecting";
+  // Every message still in flight for this room, NOT just the one the composer
+  // happens to be pointing at. The composer rotates to a fresh id the moment a
+  // send leaves, so filtering by it here meant the "Sending…" bubble matched
+  // nothing and the message vanished until the server answered — the opposite
+  // of the point. `useRooms` already scopes these to the active room and clears
+  // them on a room change, and RoomPanel splits main-timeline from thread.
+  const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
   const canManageResponses = ["owner", "admin"].includes(viewerRole);
 
@@ -387,6 +514,7 @@ export function MessagingWorkspaceProvider({
     currentRoomId: rooms.activeRoomId ?? undefined,
     onSelectRoom: rooms.selectRoom,
     onSelectParticipant: selectParticipant,
+    openingParticipant,
     onMarkUnread: rooms.markUnread,
     onSetPrefs: rooms.setRoomPrefs,
     onSaveSections: rooms.saveSections,

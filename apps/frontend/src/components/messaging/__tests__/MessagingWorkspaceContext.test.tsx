@@ -58,11 +58,11 @@ const room: RoomDetail = {
 };
 const state = {
   resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 },
-  rooms: [room], roomsError: undefined, roomsLoading: false,
+  rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
-  messages: [], optimisticMessages: [], typingMembers: [], runs: [] as LiveRoomRun[],
+  messages: [], optimisticMessages: [] as Array<{ clientMessageId: string; roomId: string; text: string; mentions: never[]; replyToMessageId: null; threadRootMessageId: string | null; createdAt: string }>, typingMembers: [], runs: [] as LiveRoomRun[],
   historyLoading: false, historyComplete: false, historyError: false, historyErrorMessage: null as string | null,
   loadHistory: vi.fn(), selectRoomError: null as string | null,
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
@@ -76,6 +76,8 @@ beforeEach(() => {
   state.rooms = [room];
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
+  state.roomsError = undefined;
+  state.optimisticMessages = [];
   state.directoryError = undefined;
   state.directoryLoading = false;
   state.accessRemoved = false;
@@ -255,8 +257,10 @@ it.each(["owner", "admin"] as const)("connects channel %s management to existing
   expect(state.removeMember).toHaveBeenCalledWith({ kind: "agent", id: "agent-friday" });
 });
 
-it("surfaces directory hydration failures through the existing retry control while retaining available rooms", () => {
-  state.directoryError = new Error("Directory hydration failed");
+it("surfaces a failed room list through the existing retry control while retaining available rooms", () => {
+  // There is no separate directory hydration any more — the room list IS the
+  // directory, so its own error is the only one the sidebar can report.
+  state.roomsError = new Error("Conversations could not be loaded");
   compose();
   expect(directory.state).toBe("error");
   expect(directory.rooms[0]).toMatchObject({ roomId: room.roomId, participants: [expect.objectContaining({ displayName: "Friday" })] });
@@ -392,6 +396,149 @@ it("does not clear the new room's draft when the old room's send finishes", asyn
   });
 
   expect(panel.composer.text).toBe("Keep this draft in B");
+});
+
+it("shows a message as pending while it is in flight, even though the composer has moved on", async () => {
+  // The composer empties and takes a fresh client id the instant a send leaves,
+  // so the optimistic row can no longer be found by asking the composer what it
+  // is holding. If it is, the bubble matches nothing and the message is
+  // invisible until the server answers — worse than the frozen box it replaced.
+  let resolveSend!: () => void;
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  const request = { clientMessageId: sentId, text: "In flight", mentions: [], replyToMessageId: null, threadRootMessageId: null };
+  // What useRooms.sendMessage does synchronously before it awaits.
+  state.sendMessage.mockImplementationOnce(() => {
+    state.optimisticMessages = [{ ...request, roomId: room.roomId, createdAt: "2026-09-10T00:00:00Z" }];
+    return new Promise<void>((resolve) => { resolveSend = resolve; });
+  });
+  act(() => panel.composer.onTextChange("In flight"));
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)); });
+
+  expect(panel.composer.text).toBe("");
+  expect(panel.composer.clientMessageId).not.toBe(sentId);
+  expect(panel.pendingMessages?.map((message) => message.clientMessageId)).toContain(sentId);
+
+  await act(async () => { resolveSend(); await sending; });
+});
+
+it("hands a failed send back its text and its identity so retry still reaches it", async () => {
+  // On failure `useRooms` drops the optimistic row and the draft has already
+  // been cleared, so unless the composer re-adopts the failed id the message is
+  // gone: nothing rendered, nothing to retry, and both "Retry message" and
+  // "Check message status" would act on an id that tracks no request.
+  state.sendMessage.mockImplementationOnce(() => Promise.reject(new Error("network")));
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("Please come back"));
+  const request = { clientMessageId: sentId, text: "Please come back", mentions: [], replyToMessageId: null, threadRootMessageId: null };
+
+  await act(async () => {
+    await Promise.resolve(panel.composer.onSubmit(request)).catch(() => {});
+  });
+
+  expect(panel.composer.text).toBe("Please come back");
+  expect(panel.composer.clientMessageId).toBe(sentId);
+});
+
+it("recovers a failed send into the room it was sent from when the owner has moved on, and shows it in the sidebar", async () => {
+  // The other half of the recovery path: the composer is showing a different
+  // room by the time the send fails, so the text cannot go back into it. It
+  // goes back to the sending room's stored draft instead — and the sidebar has
+  // to notice, which it will not do off `draft`/`activeRoomId` alone because
+  // neither moves when a background room's draft is written.
+  let rejectSend!: (error: Error) => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSend = reject; }));
+  const view = compose();
+  act(() => panel.composer.onTextChange("Sent from room-1"));
+  const request = {
+    clientMessageId: panel.composer.clientMessageId,
+    text: "Sent from room-1",
+    mentions: [],
+    replyToMessageId: null,
+    threadRootMessageId: null,
+  };
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)).catch(() => {}); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  state.rooms = [room, { ...room, roomId: "room-2" }];
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+
+  await act(async () => { rejectSend(new Error("network")); await sending; });
+
+  // Stored against the room it was sent FROM, not the one now on screen.
+  expect(JSON.parse(localStorage.getItem(draftKey("org", "room-1", null))!).text).toBe("Sent from room-1");
+  expect(panel.composer.text).toBe("");
+  // And the sidebar knows about it without waiting for an unrelated render.
+  expect(directory.draftRoomIds).toContain("room-1");
+});
+
+it("does not overwrite text typed into the composer while an earlier send was still in flight", async () => {
+  // The other door onto the same data loss: typing does not rotate the client
+  // id, it only fills the box. So checking the id alone still let a failed send
+  // overwrite text the owner had typed but not yet sent.
+  let rejectSend!: (error: Error) => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSend = reject; }));
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("the one that fails"));
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit({
+    clientMessageId: sentId, text: "the one that fails", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  })).catch(() => {}); });
+
+  // Same composer instance, no second send — just typing.
+  const liveId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("something else entirely"));
+
+  await act(async () => { rejectSend(new Error("network")); await sending; });
+
+  expect(panel.composer.text).toBe("something else entirely");
+  expect(panel.composer.clientMessageId).toBe(liveId);
+});
+
+it("does not clobber newer unsent work when an earlier send fails", async () => {
+  // Two sends in flight and the owner typing into the box the second one left
+  // behind. Re-adopting the first message's id here would remount the composer
+  // and take the typed text (and any attached-but-unsent image) with it. The
+  // live text is the owner's current intent and exists nowhere else, so it
+  // wins; the failed message's text is dropped rather than overwrite it.
+  let rejectFirst!: (error: Error) => void;
+  state.sendMessage
+    .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectFirst = reject; }))
+    .mockImplementationOnce(() => Promise.resolve());
+  compose();
+
+  const firstId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("first"));
+  let firstSend!: Promise<void>;
+  act(() => { firstSend = Promise.resolve(panel.composer.onSubmit({
+    clientMessageId: firstId, text: "first", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  })).catch(() => {}); });
+
+  const secondId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("second"));
+  await act(async () => { await Promise.resolve(panel.composer.onSubmit({
+    clientMessageId: secondId, text: "second", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  })); });
+
+  // The owner is now typing a third message into a composer that has rotated
+  // twice since the first send left.
+  act(() => panel.composer.onTextChange("third draft, still being written"));
+  const liveId = panel.composer.clientMessageId;
+
+  await act(async () => { rejectFirst(new Error("network")); await firstSend; });
+
+  expect(panel.composer.text).toBe("third draft, still being written");
+  expect(panel.composer.clientMessageId).toBe(liveId);
+  // And the live text was not overwritten in storage by the failed one either.
+  expect(JSON.parse(localStorage.getItem(draftKey("org", "room-1", null))!).text)
+    .toBe("third draft, still being written");
 });
 
 it("clears the sending room's stored draft when the owner switches rooms mid-send", async () => {

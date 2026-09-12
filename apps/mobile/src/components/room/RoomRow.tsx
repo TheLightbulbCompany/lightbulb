@@ -1,4 +1,4 @@
-import { roomDisplayName, type RoomDetail, type RoomMember, type RoomSummary } from "@lightbulb/shared";
+import { roomDisplayName, type RoomMember, type RoomSummary } from "@lightbulb/shared";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { Avatar } from "./Avatar";
@@ -13,7 +13,7 @@ export type RowParticipant = Pick<RoomMember, "kind" | "displayName">;
  * and a group DM after the others in order.
  */
 export function otherMembers(
-  detail: RoomDetail | undefined,
+  detail: RoomSummary | undefined,
   userId: string | null | undefined,
 ): RowParticipant[] {
   return (detail?.members ?? []).filter(

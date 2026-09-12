@@ -14,7 +14,7 @@ const openManageSections = async () => {
   await userEvent.click(screen.getByRole("button", { name: "Sidebar options" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Manage sections" }));
 };
-const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch", roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null, participants: [] };
+const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch", roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0, participants: [] };
 
 it("creates through a centered portal with member settings and closes on success", async () => {
   const onCreate = vi.fn().mockResolvedValue(true);

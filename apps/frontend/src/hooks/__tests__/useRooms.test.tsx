@@ -299,7 +299,11 @@ describe("useRooms canonical reconciliation", () => {
 
     await act(async () => result.current.upsertMember({ kind: "agent", id: "agent-atlas", role: "member", listenMode: "mentions" }));
 
-    expect(result.current.activeRoom).toEqual(updated);
+    // Not a deep equality: opening a room now marks it read locally instead of
+    // re-reading it, so `lastReadSeq`/`unreadCount` move on their own.
+    expect(result.current.activeRoom).toMatchObject({
+      roomId: updated.roomId, roomRevision: 2, members: updated.members,
+    });
   });
   it("waits for the room list before selecting an existing agent DM", async () => {
     const fridayDm = {
@@ -378,7 +382,7 @@ describe("useRooms canonical reconciliation", () => {
     expect(messaging.createRoom).not.toHaveBeenCalled();
   });
 
-  it("keeps partial directory identities visible and retries failed hydration", async () => {
+  it("names every direct message from the room list alone, with no per-room fetch", async () => {
     const fridayDm = {
       ...room,
       roomId: "11111111-1111-4111-8111-111111111117",
@@ -391,51 +395,30 @@ describe("useRooms canonical reconciliation", () => {
       roomId: "11111111-1111-4111-8111-111111111118",
       members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
     };
-    let atlasAttempts = 0;
     messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm], sections: [] });
-    messaging.getRoom.mockImplementation(async (roomId: string) => {
-      if (roomId === room.roomId) return room;
-      if (roomId === fridayDm.roomId) return fridayDm;
-      atlasAttempts += 1;
-      if (atlasAttempts === 1) throw new Error("Atlas is temporarily unavailable");
-      return atlasDm;
-    });
 
     const { result } = renderHook(() => useRooms(), { wrapper });
-    await waitFor(() => expect(result.current.directoryError).toBeInstanceOf(Error));
+    await waitFor(() => expect(result.current.directoryRoomDetails.size).toBe(3));
+
+    expect(result.current.directoryRoomDetails.get(fridayDm.roomId)?.members).toEqual(fridayDm.members);
+    expect(result.current.directoryRoomDetails.get(atlasDm.roomId)?.members).toEqual(atlasDm.members);
+    expect(result.current.directoryError).toBeUndefined();
     expect(result.current.directoryLoading).toBe(false);
-    expect(result.current.directoryRoomDetails.get(fridayDm.roomId)).toEqual(fridayDm);
-
-    await act(async () => { await result.current.refreshRooms(); });
-
-    await waitFor(() => expect(result.current.directoryError).toBeUndefined());
-    expect(result.current.directoryRoomDetails.size).toBe(2);
-    expect(atlasAttempts).toBeGreaterThanOrEqual(2);
+    // The point of the change: the sidebar IS the room list. Only the active
+    // room is fetched on its own, for its delivery key.
+    expect(messaging.getRoom).not.toHaveBeenCalledWith(fridayDm.roomId);
+    expect(messaging.getRoom).not.toHaveBeenCalledWith(atlasDm.roomId);
   });
 
-  it("does not create a DM when incomplete hydration cannot rule out an existing agent", async () => {
-    const fridayDm = {
-      ...room,
-      roomId: "11111111-1111-4111-8111-111111111119",
-      kind: "dm" as const,
-      name: null,
-      members: [room.members[0], { ...room.members[1], id: "agent-friday" }],
-    };
-    const atlasDm = {
-      ...fridayDm,
-      roomId: "11111111-1111-4111-8111-111111111120",
-      members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
-    };
-    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm], sections: [] });
-    messaging.getRoom.mockImplementation(async (roomId: string) => {
-      if (roomId === room.roomId) return room;
-      if (roomId === fridayDm.roomId) return fridayDm;
-      throw new Error("Atlas is temporarily unavailable");
-    });
+  it("does not create a DM when the room list cannot be read", async () => {
+    // Ruling out an existing DM means reading the room list. If that fails we
+    // cannot know whether one already exists, and creating another would leave
+    // the owner with a duplicate conversation.
+    messaging.listRooms.mockRejectedValue(new Error("Conversations are unavailable"));
     const { result } = renderHook(() => useRooms(), { wrapper });
-    await waitFor(() => expect(result.current.directoryError).toBeInstanceOf(Error));
+    await waitFor(() => expect(result.current.roomsError).toBeInstanceOf(Error));
 
-    await expect(result.current.selectAgentDm("agent-atlas")).rejects.toThrow("Atlas is temporarily unavailable");
+    await expect(result.current.selectAgentDm("agent-atlas")).rejects.toThrow();
 
     expect(messaging.createRoom).not.toHaveBeenCalled();
   });
@@ -493,25 +476,22 @@ describe("useRooms canonical reconciliation", () => {
       name: null,
       members: [room.members[0], { ...room.members[1], id: "agent-friday", displayName: "Friday" }],
     };
-    const resolveFridayDetails: Array<(detail: RoomDetail) => void> = [];
-    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm], sections: [] });
-    messaging.getRoom.mockImplementation(async (roomId: string) => {
-      if (roomId === room.roomId) return room;
-      return new Promise<RoomDetail>((resolve) => resolveFridayDetails.push(resolve));
-    });
+    // Resolving an agent to a DM awaits the room list when it is not yet
+    // loaded. A selection made during that window must win over the answer.
+    let resolveRooms!: (value: RoomListResponse) => void;
+    messaging.listRooms.mockReturnValue(new Promise<RoomListResponse>((resolve) => { resolveRooms = resolve; }));
 
     const { result } = renderHook(() => useRooms(), { wrapper });
-    await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
-
     const selectingFriday = result.current.selectAgentDm("agent-friday");
-    await waitFor(() => expect(resolveFridayDetails).toHaveLength(2));
     act(() => result.current.selectRoom(room.roomId));
+
     await act(async () => {
-      for (const resolve of resolveFridayDetails) resolve(fridayDm);
-      await selectingFriday;
+      resolveRooms({ rooms: [room, fridayDm], sections: [] });
+      await selectingFriday.catch(() => {});
     });
 
     expect(result.current.activeRoomId).toBe(room.roomId);
+    expect(messaging.createRoom).not.toHaveBeenCalled();
   });
 
   it("does not let a rejected initial DM selection override a newer room selection", async () => {
@@ -528,16 +508,20 @@ describe("useRooms canonical reconciliation", () => {
     expect(result.current.activeRoomId).toBe(otherChannel.roomId);
   });
 
-  it("subscribes before history, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {
+  it("loads history without waiting for the channel, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {
     const { result, rerender } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
     expect(live.claimActiveRoomSubscription).toHaveBeenCalledWith({ roomId: room.roomId, deliveryKey: room.deliveryKey });
-    expect(messaging.listMessages).not.toHaveBeenCalled();
+
+    // History does NOT wait for the subscription to be acknowledged. That
+    // channel only ever delivered future messages, and any gap is closed by the
+    // afterSeq reconciliation exercised further down this test.
+    await waitFor(() => expect(result.current.messages.map((message) => message.messageSeq)).toEqual([1]));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
 
     live.liveConnected = true;
     live.liveChannels = [`/users/private`, `/rooms/${room.roomId}/${room.deliveryKey}`];
     rerender();
-    await waitFor(() => expect(result.current.messages.map((message) => message.messageSeq)).toEqual([1]));
 
     const third = { ...firstMessage, messageId: "66666666-6666-4666-8666-666666666666", messageSeq: 3, text: "Third" };
     const second = { ...firstMessage, messageId: "77777777-7777-4777-8777-777777777777", messageSeq: 2, text: "Second" };

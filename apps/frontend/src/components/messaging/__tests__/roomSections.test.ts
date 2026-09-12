@@ -5,7 +5,7 @@ import type { DirectoryRoom } from "../types";
 const base: DirectoryRoom = {
   roomId: "r", kind: "channel", name: "Launch", roomRevision: 1, lastMessageSeq: 0,
   lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null,
-  starred: false, muted: false, sectionId: null, participants: [],
+  starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0, participants: [],
 };
 const room = (id: string, extra: Partial<DirectoryRoom> = {}): DirectoryRoom => ({ ...base, roomId: id, name: id, ...extra });
 const nameOf = (value: DirectoryRoom) => value.name ?? value.roomId;

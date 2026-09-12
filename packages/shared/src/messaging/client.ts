@@ -29,6 +29,14 @@ import type {
   LocalSessionEnrollment,
 } from "./types";
 
+/**
+ * A file for multipart upload. The DOM half is `Blob` (web `File` extends it);
+ * the react-native half is the {uri,name,type} descriptor RN's fetch streams
+ * from disk — RN has no File, and the cast below is the standard shim
+ * (same one apps/mobile/src/lib/attachments.ts already uses).
+ */
+export type RoomAttachmentInput = Blob | { uri: string; name: string; type: string };
+
 const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
 const localSessionPath = (roomId: string, sessionId: string) => `${roomPath(roomId)}/local-sessions/${encodeURIComponent(sessionId)}`;
 
@@ -49,7 +57,7 @@ export interface MessagingClient {
   removeMember(roomId: string, kind: MemberKind, memberId: string): Promise<void>;
   listMessages(roomId: string, afterSeq: number, limit?: number): Promise<MessagePage>;
   sendMessage(roomId: string, request: CreateMessageRequest): Promise<CanonicalRoomMessage>;
-  uploadAttachment(roomId: string, image: File): Promise<ImageAttachment>;
+  uploadAttachment(roomId: string, image: RoomAttachmentInput): Promise<ImageAttachment>;
   downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
   markUnread(roomId: string, fromSeq?: number): Promise<ReadCursorResponse>;
@@ -89,7 +97,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     sendMessage: (roomId, request) => api.post(`${roomPath(roomId)}/messages`, request) as Promise<CanonicalRoomMessage>,
     uploadAttachment: (roomId, image) => {
       const body = new FormData();
-      body.append("image", image);
+      body.append("image", image as Blob);
       return api.upload(`${roomPath(roomId)}/attachments`, body) as Promise<ImageAttachment>;
     },
     downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),

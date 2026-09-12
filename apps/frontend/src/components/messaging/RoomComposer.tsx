@@ -2,14 +2,13 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import type { CreateMessageRequest, ImageAttachment, MemberRef, RoomKind } from "@lightbulb/shared";
+import { activeTrigger, applyCompletion, resolveTypedMentions, type CompletionTrigger, type CreateMessageRequest, type ImageAttachment, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
-import { activeTrigger, applyCompletion, wrapSelection, type CompletionTrigger, type MarkdownStyle } from "./composerText";
+import { wrapSelection, type MarkdownStyle } from "./composerText";
 import { searchEmoji } from "./emojiData";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
-import { resolveTypedMentions } from "./mentions";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { respondHint } from "./respondHint";
 import type { RoomParticipant } from "./types";

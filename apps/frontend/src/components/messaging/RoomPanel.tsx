@@ -22,14 +22,13 @@ import { openSessionPanel } from "@/components/workspace/workspaceController";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
 import { RoomHeader } from "./RoomHeader";
-import { linkifyMentions, parseMentionHref } from "./mentions";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
-import { buildTimeline } from "./timeline";
+import { buildTimeline, linkifyMentions, parseMentionHref } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import { roomDisplayName } from "./types";
 import type {

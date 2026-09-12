@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkifyMentions, parseMentionHref, resolveTypedMentions } from "../mentions";
+import { activeTrigger, applyCompletion, linkifyMentions, parseMentionHref, resolveTypedMentions } from "./mentions";
 
 const participants = [
   { kind: "agent" as const, id: "a1", displayName: "Friday", mentionHandle: "friday" },
@@ -66,6 +66,40 @@ describe("resolveTypedMentions", () => {
     expect(resolveTypedMentions("`@friday` and ```\n@friday\n``` and @nobody", participants)).toEqual([]);
   });
   it("returns an empty list when the room has no mentionable members", () => {
+    expect(resolveTypedMentions("@friday", [])).toEqual([]);
+  });
+});
+
+describe("activeTrigger", () => {
+  it("detects a mention query with up to two internal spaces", () => {
+    expect(activeTrigger("hi @Aden Kim", 12)).toEqual({ kind: "mention", start: 3, end: 12, query: "Aden Kim" });
+    expect(activeTrigger("hi @", 4)).toEqual({ kind: "mention", start: 3, end: 4, query: "" });
+  });
+  it("detects an emoji query only after two characters", () => {
+    expect(activeTrigger("nice :ta", 8)).toEqual({ kind: "emoji", start: 5, end: 8, query: "ta" });
+    expect(activeTrigger("nice :t", 7)).toBeNull();
+  });
+  it("returns null without a caret and for an email-shaped token", () => {
+    expect(activeTrigger("hi @friday", null)).toBeNull();
+    expect(activeTrigger("mail@friday", 11)).toBeNull();
+  });
+});
+
+describe("applyCompletion", () => {
+  it("replaces the token and leaves exactly one trailing space", () => {
+    const trigger = activeTrigger("hi @fri", 7)!;
+    expect(applyCompletion("hi @fri", trigger, "@friday")).toEqual({ text: "hi @friday ", caret: 11 });
+    const spaced = activeTrigger("hi @fri there", 7)!;
+    expect(applyCompletion("hi @fri there", spaced, "@friday")).toEqual({ text: "hi @friday there", caret: 10 });
+  });
+});
+
+describe("resolveTypedMentions parity", () => {
+  it("returns each member once regardless of how many tokens name them", () => {
+    expect(resolveTypedMentions("@friday @friday @Aden Kim", participants))
+      .toEqual([{ kind: "agent", id: "a1" }, { kind: "human", id: "u1" }]);
+  });
+  it("returns an empty list when the room has no addressable members", () => {
     expect(resolveTypedMentions("@friday", [])).toEqual([]);
   });
 });

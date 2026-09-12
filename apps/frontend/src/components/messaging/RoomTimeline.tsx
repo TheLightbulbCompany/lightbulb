@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { buildTimeline } from "./timeline";
+import { buildTimeline } from "@lightbulb/shared";
 import type { RoomMessage } from "./types";
 import "./messaging.css";
 

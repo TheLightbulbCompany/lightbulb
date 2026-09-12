@@ -106,6 +106,42 @@ export type {
 } from "./live/types";
 export { createMessagingClient } from "./messaging/client";
 export type { MessagingClient } from "./messaging/client";
+export {
+  GROUP_WINDOW_MS,
+  buildTimeline,
+  dateDividerLabel,
+  frameText,
+  lastSequence,
+  mergeCanonicalMessages,
+  roomDisplayName,
+  runView,
+} from "./messaging/timeline";
+export type {
+  LiveRoomRun,
+  RoomRunView,
+  RunToolCall,
+  TimelineItem,
+} from "./messaging/timeline";
+export {
+  MENTION_SCHEME,
+  activeTrigger,
+  applyCompletion,
+  linkifyMentions,
+  parseMentionHref,
+  resolveTypedMentions,
+} from "./messaging/mentions";
+export type { CompletionTrigger, MentionTarget, TriggerKind } from "./messaging/mentions";
+export { useRooms } from "./messaging/useRooms";
+export type {
+  OptimisticRoomMessage,
+  RoomsLiveSource,
+  RoomsPlatform,
+  SendState,
+  TypingMember,
+  UseRoomsOptions,
+  UseRoomsResult,
+} from "./messaging/useRooms";
+export type { RoomAttachmentInput } from "./messaging/client";
 export type {
   LocalDevice,
   LocalSession,

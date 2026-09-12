@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { activeTrigger, applyCompletion, wrapSelection } from "../composerText";
+import { activeTrigger, applyCompletion } from "@lightbulb/shared";
+import { wrapSelection } from "../composerText";
 
 describe("activeTrigger", () => {
   it("opens a mention trigger at the start of the field and after whitespace", () => {

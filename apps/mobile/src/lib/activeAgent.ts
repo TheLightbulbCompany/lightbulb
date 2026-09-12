@@ -30,21 +30,26 @@ export function getCurrentTarget(): CurrentTarget {
   return { ...target };
 }
 
+/** Monotonic id of the live claim. Identity, not value: two stacked screens can
+ * hold the SAME roomId (a push for the room you are already in pushes a second
+ * copy of it), and comparing by value would let the older one's blur clear the
+ * newer one's claim. */
+let claim = 0;
+
 /**
  * Claim the target for a room (or thread) screen and hand back its blur
  * cleanup.
  *
- * The cleanup clears only while this screen still owns the target: expo-router
- * does not order a blurring screen's cleanup against the newly focused
- * screen's claim, so an unconditional clear would wipe the thread's claim on
- * the way in — or the room's on the way back — and banner a message that is on
- * screen (or, worse, suppress one that is not).
+ * The cleanup clears only while this screen's claim is still the live one:
+ * expo-router does not order a blurring screen's cleanup against the newly
+ * focused screen's claim, so an unconditional clear would wipe the thread's
+ * claim on the way in — or the room's on the way back — and banner a message
+ * that is on screen (or, worse, suppress one that is not).
  */
 export function claimRoomTarget(roomId: string | null, threadId: string | null): () => void {
+  const token = ++claim;
   setCurrentTarget({ roomId, threadId });
   return () => {
-    if (target.roomId === roomId && target.threadId === threadId) {
-      setCurrentTarget({ roomId: null, threadId: null });
-    }
+    if (claim === token) setCurrentTarget({ roomId: null, threadId: null });
   };
 }

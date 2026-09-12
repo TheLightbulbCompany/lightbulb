@@ -32,8 +32,22 @@ export function badgeCount(
   }, 0);
 }
 
-/** Channel roomId → notifying messages seen live this session. */
-export function useChannelMentions(): ReadonlyMap<string, number> {
+/**
+ * roomId → notifying messages seen live this session.
+ *
+ * Every room's notifying messages are counted, not just a channel's — the event
+ * carries no kind and the rooms list is the only place that knows one. DM
+ * entries are inert: `badgeCount` reads this map for channels only, since a
+ * DM's own `unreadCount` already counts every message in it.
+ *
+ * `rooms` is how a count ends: once the server reports a room read
+ * (`unreadCount === 0`) its entry is DROPPED. The cap in `badgeCount` is not
+ * enough on its own — it hides a read mention only while the room stays read,
+ * and resurrects it the moment a plain message lifts `unreadCount` again.
+ */
+export function useChannelMentions(
+  rooms: readonly RoomSummary[],
+): ReadonlyMap<string, number> {
   const { onEvent } = useLiveEvents();
   const [mentions, setMentions] = useState<ReadonlyMap<string, number>>(new Map());
   useEffect(
@@ -49,5 +63,20 @@ export function useChannelMentions(): ReadonlyMap<string, number> {
       }),
     [onEvent],
   );
+  // `rooms` gets a fresh array identity on every list refresh, so this runs
+  // often and returns `current` unchanged when there is nothing to drop —
+  // React bails out on identical state, so no re-render.
+  useEffect(() => {
+    setMentions((current) => {
+      let next: Map<string, number> | null = null;
+      for (const room of rooms) {
+        if (room.unreadCount === 0 && current.has(room.roomId)) {
+          next ??= new Map(current);
+          next.delete(room.roomId);
+        }
+      }
+      return next ?? current;
+    });
+  }, [rooms]);
   return mentions;
 }

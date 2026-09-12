@@ -78,8 +78,29 @@ describe("useChannelMentions", () => {
 
   beforeEach(() => mockHandlers.clear());
 
+  it("forgets a channel's mentions once the server reports it read", async () => {
+    const channel = (unreadCount: number) => [
+      room({ roomId: "c1", kind: "channel", unreadCount }),
+    ];
+    const { result, rerender } = await renderHook(
+      ({ rooms }: { rooms: RoomSummary[] }) => useChannelMentions(rooms),
+      { initialProps: { rooms: channel(2) } },
+    );
+    await act(() => {
+      for (const handler of mockHandlers) handler(available("c1", true));
+    });
+    expect(badgeCount(channel(2), result.current)).toBe(1);
+
+    // The reader opens the channel; the server's unreadCount drops to 0.
+    await rerender({ rooms: channel(0) });
+    expect(result.current.get("c1")).toBeUndefined();
+
+    // Three plain messages arrive. The read mention must not come back.
+    expect(badgeCount(channel(3), result.current)).toBe(0);
+  });
+
   it("counts only notifying messages, per room", async () => {
-    const { result } = await renderHook(() => useChannelMentions());
+    const { result } = await renderHook(() => useChannelMentions([]));
     const emit = (event: LiveEvent) =>
       act(() => {
         for (const handler of mockHandlers) handler(event);

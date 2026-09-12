@@ -442,6 +442,17 @@ it("moves rooms on Alt+ArrowUp from inside the composer instead of editing the l
   expect(editLast).not.toHaveBeenCalled();
 });
 
+it("keeps a muted room's unread out of the browser-tab title", () => {
+  state.rooms = [{ ...room, unreadCount: 3, muted: true }];
+  const view = compose();
+  expect(document.title).not.toMatch(/^\(\d+\)/);
+  view.unmount();
+
+  state.rooms = [{ ...room, unreadCount: 3, muted: false }];
+  compose();
+  expect(document.title).toMatch(/^\(3\)/);
+});
+
 it("opens the shortcut sheet on Cmd+/", () => {
   compose();
   fireEvent.keyDown(window, { key: "/", metaKey: true });

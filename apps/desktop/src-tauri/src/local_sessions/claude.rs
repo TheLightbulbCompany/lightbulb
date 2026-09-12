@@ -376,12 +376,30 @@ pub(super) async fn send(
     .map_err(|_| "native admission unknown".into())
 }
 
-fn summary(name: &str, input: &Value) -> String {
+/// A path relative to `cwd`, else relative to `home` (as `~/...`), else just its basename --
+/// never the full home-directory path, matching what the TUI itself renders.
+fn display_path(path: &str, cwd: Option<&str>, home: Option<&str>) -> String {
+    if let Some(rest) = cwd
+        .and_then(|c| path.strip_prefix(c))
+        .and_then(|r| r.strip_prefix('/'))
+    {
+        return rest.to_owned();
+    }
+    if let Some(rest) = home
+        .and_then(|h| path.strip_prefix(h))
+        .and_then(|r| r.strip_prefix('/'))
+    {
+        return format!("~/{rest}");
+    }
+    basename(Some(path)).unwrap_or_else(|| path.to_owned())
+}
+
+fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
     match name {
         "Bash" => first(&["command"]).lines().next().unwrap_or("").to_owned(),
         "Read" | "Write" | "Edit" | "NotebookEdit" => {
-            first(&["file_path", "notebook_path"]).to_owned()
+            display_path(first(&["file_path", "notebook_path"]), cwd, home)
         }
         "Grep" | "Glob" => first(&["pattern"]).to_owned(),
         "Agent" => first(&["description"]).to_owned(),
@@ -395,7 +413,7 @@ fn summary(name: &str, input: &Value) -> String {
     }
 }
 
-fn tool_input(name: &str, input: &Value) -> Value {
+fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> Value {
     let pick = |keys: &[&str]| -> Value {
         Value::Object(
             keys.iter()
@@ -407,6 +425,11 @@ fn tool_input(name: &str, input: &Value) -> Value {
         "Bash" => pick(&["command", "description"]),
         "Read" | "Write" | "Edit" | "NotebookEdit" => {
             let mut v = pick(&["file_path", "notebook_path"]);
+            for key in ["file_path", "notebook_path"] {
+                if let Some(p) = v.get(key).and_then(Value::as_str).map(str::to_owned) {
+                    v[key] = json!(display_path(&p, cwd, home));
+                }
+            }
             if let Some(s) = input["old_string"].as_str() {
                 v["oldLength"] = json!(s.chars().count());
             }
@@ -418,7 +441,13 @@ fn tool_input(name: &str, input: &Value) -> Value {
             }
             v
         }
-        "Grep" | "Glob" => pick(&["pattern", "path", "glob"]),
+        "Grep" | "Glob" => {
+            let mut v = pick(&["pattern", "path", "glob"]);
+            if let Some(p) = v.get("path").and_then(Value::as_str).map(str::to_owned) {
+                v["path"] = json!(display_path(&p, cwd, home));
+            }
+            v
+        }
         "Agent" => pick(&["description", "subagent_type"]),
         "WebFetch" | "WebSearch" => pick(&["url", "query", "prompt"]),
         "TodoWrite" => pick(&["todos"]),
@@ -430,16 +459,18 @@ fn tool_input(name: &str, input: &Value) -> Value {
     }
 }
 
-fn tool_use(block: &Value, ts: Option<&str>) -> Value {
+fn tool_use(block: &Value, row: &Value, ts: Option<&str>) -> Value {
     let name = block["name"].as_str().unwrap_or("Tool");
+    let cwd = row["cwd"].as_str();
+    let home = std::env::var("HOME").ok();
     let mut e = event(
         "tool",
         "assistant",
-        &summary(name, &block["input"]),
+        &summary(name, &block["input"], cwd, home.as_deref()),
         ts,
         block["id"].as_str(),
     );
-    e["tool"] = json!({"name": name, "status": "running", "input": bound_json(tool_input(name, &block["input"]), MAX_TOOL_INPUT)});
+    e["tool"] = json!({"name": name, "status": "running", "input": bound_json(tool_input(name, &block["input"], cwd, home.as_deref()), MAX_TOOL_INPUT)});
     e
 }
 
@@ -481,10 +512,12 @@ fn user_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Vec<Value> {
     if text.starts_with("[Request interrupted") {
         return vec![lifecycle("turn_aborted", "", ts, id)];
     }
+    // A header found anywhere but the very start is a human merely mentioning it, not our own
+    // wrapper -- accepting it there misattributes an ordinary prompt and drops part of its text.
     let inner = text
         .strip_prefix(PEER_PREFIX)
         .and_then(|t| t.strip_suffix(PEER_SUFFIX))
-        .or_else(|| text.find(HEADER_PREFIX).map(|at| &text[at..]));
+        .or_else(|| text.starts_with(HEADER_PREFIX).then_some(text));
     if let Some((provenance, body)) = inner.and_then(teammate_contribution) {
         let mut e = event("text", "user", &body, ts, id);
         if let Some(actor) = actor_of(&provenance) {
@@ -554,7 +587,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
                     events.push(event("text", "assistant", text, ts, id));
                 }
             }
-            Some("tool_use") => events.push(tool_use(block, ts)),
+            Some("tool_use") => events.push(tool_use(block, row, ts)),
             Some("thinking") => events.push(event("thinking", "assistant", "", ts, id)),
             _ => {}
         }
@@ -1012,5 +1045,48 @@ mod tests {
             .is_none(),
             "a bare substring without the provenance header is not the sent text"
         );
+    }
+
+    #[test]
+    fn local_sessions_claude_user_text_only_unwraps_a_leading_header_not_a_mentioned_one() {
+        let text = "Note: the header looks like [Lightbulb teammate contribution from @x (X) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_x\"}]\nbody";
+        let row = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1","timestamp":"2026-09-12T10:00:00.000Z",
+            "message":{"role":"user","content":text}});
+        let events = normalize("s", &row).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], "text");
+        assert_eq!(events[0]["role"], "user");
+        assert_eq!(events[0]["text"], text);
+        assert!(events[0].get("actor").is_none());
+    }
+
+    #[test]
+    fn local_sessions_claude_display_path_prefers_cwd_then_home_then_basename() {
+        assert_eq!(
+            display_path(
+                "/Users/me/repo/src/a.ts",
+                Some("/Users/me/repo"),
+                Some("/Users/me")
+            ),
+            "src/a.ts"
+        );
+        assert_eq!(
+            display_path(
+                "/Users/me/repo/src/a.ts",
+                Some("/Users/me/other"),
+                Some("/Users/me")
+            ),
+            "~/repo/src/a.ts"
+        );
+        assert_eq!(display_path("/Users/me/repo/src/a.ts", None, None), "a.ts");
+    }
+
+    #[test]
+    fn local_sessions_claude_tool_use_redacts_file_paths_relative_to_cwd() {
+        let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a1","timestamp":"2026-09-12T10:00:00.000Z","cwd":"/Users/me/repo",
+            "message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/Users/me/repo/src/a.ts"}}]}});
+        let events = normalize("s", &call).unwrap();
+        assert_eq!(events[0]["text"], "src/a.ts");
+        assert_eq!(events[0]["tool"]["input"]["file_path"], "src/a.ts");
     }
 }

@@ -894,6 +894,22 @@ fn deadline_now(
 
 fn split_text(event: &Value) -> Vec<Value> {
     let text = event["text"].as_str().unwrap_or("");
+    // An empty-text event (a thinking marker, a lifecycle event, an empty tool result) still
+    // carries meaning; the loop below produces zero parts for it, which would silently drop it.
+    if text.is_empty() {
+        return vec![event.clone()];
+    }
+    // Tool events are keyed by itemId and rendered as one card; the frontend cannot merge split
+    // chunks (each would also clone the whole tool.result payload), so bound instead of splitting.
+    if event["kind"] == "tool" {
+        let (cut, truncated) = bounded(text, 8192);
+        let mut part = event.clone();
+        part["text"] = json!(cut);
+        if truncated {
+            part["truncated"] = json!(true);
+        }
+        return vec![part];
+    }
     let mut rest = text;
     let mut result = vec![];
     while !rest.is_empty() {
@@ -1444,6 +1460,83 @@ mod tests {
             "final before exit",
             "an enrolled transcript's anchored final records survive process exit"
         );
+    }
+
+    #[test]
+    fn local_sessions_split_text_preserves_empty_marker_events_and_bounds_tool_text_without_splitting(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let ts = "2026-09-12T10:00:00.000Z";
+        let turn = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a1","timestamp":ts,
+            "message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"","signature":"x"},{"type":"text","text":"All good."}]}});
+        let empty_result = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1","timestamp":ts,
+            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"","is_error":false}]}});
+        let big = "x".repeat(30 * 1024);
+        let big_result = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u2","timestamp":ts,
+            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":big,"is_error":false}]}});
+        fs::write(
+            &transcript,
+            format!("{turn}\n{empty_result}\n{big_result}\n"),
+        )
+        .unwrap();
+        let mut mirror = Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.269".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        };
+        mirror.next_batch().unwrap();
+        assert!(
+            mirror.queue.iter().any(|e| e["kind"] == "thinking"),
+            "thinking marker survived"
+        );
+        assert!(
+            mirror
+                .queue
+                .iter()
+                .any(|e| e["kind"] == "lifecycle" && e["lifecycle"] == "turn_end"),
+            "turn_end lifecycle survived"
+        );
+        assert!(
+            mirror
+                .queue
+                .iter()
+                .any(|e| e["role"] == "tool" && e["text"] == ""),
+            "empty tool result survived"
+        );
+        let big_events: Vec<_> = mirror
+            .queue
+            .iter()
+            .filter(|e| e["text"].as_str().is_some_and(|t| t.len() == 8192))
+            .collect();
+        assert_eq!(
+            big_events.len(),
+            1,
+            "the big tool result is bounded, not split into several chunks"
+        );
+        assert_eq!(big_events[0]["truncated"], true);
     }
 
     #[test]

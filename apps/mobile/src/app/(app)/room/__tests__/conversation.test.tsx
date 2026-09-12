@@ -37,6 +37,7 @@ jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333
 
 const mockRoom: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",
+  pinnedMessageIds: [], topic: null, starred: false, muted: false, sectionId: null,
   lastMessageSeq: 3, lastMessageAt: "2026-09-11T10:02:00Z", unreadCount: 1,
   updatedAt: "2026-09-11T10:02:00Z", lastReadSeq: 2, createdAt: "2026-09-11T09:00:00Z",
   members: [

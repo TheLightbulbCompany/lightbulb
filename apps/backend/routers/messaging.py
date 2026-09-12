@@ -166,6 +166,33 @@ async def get_local_session_command(
 
 _typing_last: dict[tuple[str, str], float] = {}
 
+# Presence: who has a tab open and in use in this workspace. Clients heartbeat
+# while the tab is visible and recently used; readers poll the snapshot. Kept
+# in-process on purpose -- the backend runs one task, and there is no room-wide
+# live channel to push it over (room events are per-room subscriptions).
+# ponytail: a backend restart shows everyone offline until their next heartbeat
+# (<= 45s); move to the ws-connections table if that ever matters.
+PRESENCE_TTL_SECONDS = 90.0
+_presence_last: dict[str, dict[str, float]] = {}
+
+
+def _online_user_ids(owner_id: str, now: float) -> list[str]:
+    seen = _presence_last.get(owner_id, {})
+    for stale in [user_id for user_id, ts in seen.items() if now - ts > PRESENCE_TTL_SECONDS]:
+        del seen[stale]
+    return sorted(seen)
+
+
+@router.post("/messaging/presence", status_code=204)
+async def presence_heartbeat(auth: AuthContext = Depends(get_current_user)):
+    _presence_last.setdefault(resolve_owner_id(auth), {})[auth.user_id] = time.monotonic()
+    return Response(status_code=204)
+
+
+@router.get("/messaging/presence")
+async def presence_snapshot(auth: AuthContext = Depends(get_current_user)) -> dict[str, list[str]]:
+    return {"online": _online_user_ids(resolve_owner_id(auth), time.monotonic())}
+
 
 async def _require_hook_token(owner_id: str, request: Request) -> dict:
     authorization = request.headers.get("Authorization", "")

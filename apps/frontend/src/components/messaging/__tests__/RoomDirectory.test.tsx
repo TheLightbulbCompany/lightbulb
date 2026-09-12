@@ -134,6 +134,17 @@ it("lists every person and agent under Direct messages, once each, and opens the
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 });
 
+it("marks people who are online with a presence dot, never agents", () => {
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    participants={[{ ...alice, online: true }, { ...alice, id: "bob", displayName: "Bob", online: false }, friday]} />);
+  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const aliceRow = directMessages.getByRole("button", { name: /^Alice/ });
+  expect(within(aliceRow).getByText("Online")).toBeInTheDocument();
+  expect(within(aliceRow).getByRole("img", { name: "Alice" }).parentElement).toHaveAttribute("data-presence", "online");
+  expect(within(directMessages.getByRole("button", { name: /^Bob/ })).queryByText("Online")).not.toBeInTheDocument();
+  expect(within(directMessages.getByRole("button", { name: /^Friday/ })).queryByText("Online")).not.toBeInTheDocument();
+});
+
 it("shows a participant-selection error under the heading", () => {
   render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice]} onSelectRoom={vi.fn()}
     onSelectParticipant={vi.fn()} creationError="Conversation could not be opened." />);

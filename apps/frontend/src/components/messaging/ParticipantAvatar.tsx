@@ -17,8 +17,10 @@ export function ParticipantAvatar({ participant, size = "default" }: Participant
   const label = activity && activity in ACTIVITY_LABEL
     ? ACTIVITY_LABEL[activity as keyof typeof ACTIVITY_LABEL]
     : undefined;
-  return <span className="participant-avatar" data-agent-state={label ? activity : undefined}>
+  const online = participant.kind === "human" && participant.online === true;
+  return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={online ? "online" : undefined}>
     <Identity name={participant.displayName} avatarOnly size={size} />
     {label && <span className="sr-only">{label}</span>}
+    {online && <span className="sr-only">Online</span>}
   </span>;
 }

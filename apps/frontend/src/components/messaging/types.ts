@@ -15,8 +15,9 @@ export const roomKindLabel = {
   "group-dm": "Group chat",
 } as const;
 
-export type RoomParticipant = RoomMember & { agentActivity?: RosterState };
-export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle"> & { agentActivity?: RosterState };
+/** `online` is presence for people (a recent heartbeat from a tab in use); agents carry `agentActivity` instead. */
+export type RoomParticipant = RoomMember & { agentActivity?: RosterState; online?: boolean };
+export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle"> & { agentActivity?: RosterState; online?: boolean };
 export type DirectoryRoom = RoomSummary & { participants: readonly DirectoryParticipant[] };
 export type RoomMessage = CanonicalRoomMessage;
 

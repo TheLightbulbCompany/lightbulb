@@ -14,6 +14,7 @@ import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
+import { usePresence } from "./usePresence";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
@@ -166,17 +167,18 @@ export function MessagingWorkspaceProvider({
     if (typingActive.current) void setRoomTyping(false);
   }, [setRoomTyping]);
 
+  const online = usePresence(rooms.httpReady);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-    : member) ?? [], [rooms.activeRoom, activityByAgentId]);
+    : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     participants: (rooms.directoryRoomDetails.get(room.roomId)?.members ?? [])
       .filter((member) => member.kind !== "human" || member.id !== userId)
       .map((member) => member.kind === "agent"
         ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-        : member),
-  })), [rooms.rooms, rooms.directoryRoomDetails, activityByAgentId, userId]);
+        : { ...member, online: online.has(member.id) }),
+  })), [rooms.rooms, rooms.directoryRoomDetails, activityByAgentId, userId, online]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
@@ -185,6 +187,7 @@ export function MessagingWorkspaceProvider({
       id: member.userId,
       displayName: member.name || member.email || "Workspace member",
       mentionHandle: null,
+      online: online.has(member.userId),
     }));
     const agents = (agentRoster?.agents ?? []).map((agent) => ({
       kind: "agent" as const,
@@ -193,7 +196,7 @@ export function MessagingWorkspaceProvider({
       mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
-  }, [humanRoster, agentRoster, rooms.activeRoom, userId]);
+  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online]);
 
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);

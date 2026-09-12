@@ -168,6 +168,7 @@
   /* The one accent in the neutral shell: links, mentions, unread badges. */
   --info: #1e52cc;
   --on-info: #ffffff;
+  --presence: #1fa463;
 }
 .dark:has(.workspace-shell), .dark .workspace-shell {
   --cream: #1c1c20;
@@ -182,6 +183,7 @@
   --midnight-faint: #92929d;
   --info: #8fb0ff;
   --on-info: #1c1c20;
+  --presence: #3fbf7f;
 }
 
 :root {

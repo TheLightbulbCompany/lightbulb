@@ -20,10 +20,10 @@ async def test_growth_route_wraps_envelope():
     )  # match the real ctor
     with patch(
         "core.services.ops.growth.compute",
-        AsyncMock(return_value=({"x": 1}, "partial", [{"domain": "aurora", "reason": "x"}])),
+        AsyncMock(return_value=({"x": 1}, "partial", [{"domain": "messaging", "reason": "x"}])),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.get("/api/v1/ops/growth")
     assert r.status_code == 200
     body = r.json()
-    assert body["data"] == {"x": 1} and body["source_state"] == "partial" and body["errors"][0]["domain"] == "aurora"
+    assert body["data"] == {"x": 1} and body["source_state"] == "partial" and body["errors"][0]["domain"] == "messaging"

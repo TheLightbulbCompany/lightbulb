@@ -207,6 +207,48 @@ async def _get(pk: str, sk: str) -> dict | None:
     return _plain(item) if item else None
 
 
+async def scan_growth_rows() -> tuple[list[dict], list[dict]]:
+    """``(messages, rooms)`` — every ``MSG#`` row and every room ``META`` row.
+
+    Fleet aggregates only (the admin growth read, ``core/services/ops/growth.py``).
+    The projection deliberately omits ``text`` and ``mentions``: message bodies
+    never leave this table for a metrics read. ``pk`` is projected because
+    ``STREAM#<key>`` rows also carry ``sk = "META"`` — only ``ROOM#`` ones are rooms.
+
+    ponytail: full scan, fine at 10^3 rows; move to a GSI or PostHog when rooms
+    pass 10^4.
+    """
+    table = _table()
+    kwargs: dict = {
+        "FilterExpression": "begins_with(#sk, :msg) OR #sk = :meta",
+        "ProjectionExpression": "#pk, #sk, #ownerId, #roomId, #author, #createdAt, #dispatchTargets",
+        "ExpressionAttributeNames": {
+            "#pk": "pk",
+            "#sk": "sk",
+            "#ownerId": "ownerId",
+            "#roomId": "roomId",
+            "#author": "author",
+            "#createdAt": "createdAt",
+            "#dispatchTargets": "dispatchTargets",
+        },
+        "ExpressionAttributeValues": {":msg": "MSG#", ":meta": "META"},
+    }
+    messages: list[dict] = []
+    rooms: list[dict] = []
+    while True:
+        page = await run_in_thread(table.scan, **kwargs)
+        for item in page.get("Items", []):
+            pk, sk = str(item.get("pk") or ""), str(item.get("sk") or "")
+            if sk.startswith("MSG#"):
+                messages.append(_plain(item))
+            elif pk.startswith("ROOM#"):
+                rooms.append(_plain(item))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return messages, rooms
+        kwargs["ExclusiveStartKey"] = last
+
+
 async def _transact(items: list[dict]) -> None:
     """Run one TransactWriteItems. Raises ``ClientError`` on cancellation so the
     caller can triage the reasons."""

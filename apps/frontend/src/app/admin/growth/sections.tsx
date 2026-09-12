@@ -1,30 +1,25 @@
-import Link from "next/link";
-
 import { Card } from "@/components/admin/Card";
 import { MetricStat } from "@/components/admin/MetricStat";
-import { planLabel } from "@/lib/planLabel";
-import type { GrowthData, GrowthSegment, GrowthOwnerStage } from "../_lib/api";
+import { Tile } from "@/components/admin/Tile";
+import type { GrowthData, GrowthSegment } from "../_lib/api";
 
-// Exported so charts.tsx can reuse the exact same ladder-stage copy for the
-// Activation gate chart's row labels — one source of truth, no copy drift.
-export const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
-  signed_up: "signed up",
-  subscribed: "subscribed",
-  container_ready: "container ready",
-  onboarding_complete: "Onboarding complete",
-  automation_armed: "automation armed",
-  first_autonomous_success: "activated",
-};
+// Exported so charts.tsx formats a share exactly the same way — one source of
+// truth, and `null` (nothing to divide by, or a messaging read that failed) is
+// an em dash everywhere, never 0%.
+export function pct(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : `${Math.round(value * 100)}%`;
+}
 
-// Labels for the order-independent flag row (F8) — distinct wording from
-// STAGE_LABEL's "activated" so the two panels don't just parrot each other.
-const FLAG_LABEL: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, string> = {
-  subscribed: "subscribed",
-  container_ready: "container ready",
-  onboarding_complete: "Onboarding complete",
-  automation_armed: "automation armed",
-  first_autonomous_success: "first autonomous success",
-};
+/** A count, or an em dash when the source that feeds it is unavailable. */
+export function num(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : String(value);
+}
+
+/** `ok` reads as "this is going well", which zero is not — neutral at 0 and at
+ * an unknown, `ok` only above it. */
+function countTone(value: number | null | undefined): "ok" | "unknown" {
+  return value ? "ok" : "unknown";
+}
 
 export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
   if (rows.length === 0) return <div className="text-xs text-muted-foreground">none</div>;
@@ -52,191 +47,153 @@ export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][
   );
 }
 
-function owner(o: { owner_id: string; name: string }) {
-  return (
-    <Link href={`/admin/users/${encodeURIComponent(o.owner_id)}`} className="text-foreground underline-offset-2 hover:underline">
-      {o.name}
-    </Link>
-  );
-}
+const secs = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${v}s`);
 
-export function Headline({ seg, audience }: { seg: GrowthSegment; audience: string }) {
-  const h = seg.headline;
+/** The messaging card: what the room layer is doing right now, plus the one
+ * counter that says replies are being lost (audit §6 metric 3). */
+export function Messaging({ seg, data }: { seg: GrowthSegment; data: GrowthData }) {
+  const a = seg.answered;
+  const dlq = data.dlq_depth;
   return (
-    <Card title={`${audience} with automations firing ${h.weeks.length} consecutive weeks`}>
-      <div className="flex items-baseline gap-6">
-        <MetricStat label={`of ${h.bar} (the PMF bar)`} value={h.count} tone={h.count === 0 ? "unknown" : "default"} />
-        <div className="text-xs text-muted-foreground">
-          weeks {h.weeks[0]} → {h.weeks[h.weeks.length - 1]} · {h.owners.length ? h.owners.join(", ") : "nobody yet"}
-        </div>
+    <Card title="Messaging">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+        <MetricStat label="rooms" value={num(seg.messaging.rooms)} />
+        <MetricStat label="human messages this week" value={num(seg.messaging.human_messages_this_week)} />
+        <MetricStat
+          label="answered within 2 min"
+          value={pct(a.rate)}
+          hint={`${num(a.answered)} of ${num(a.dispatched)} addressed, last 8 weeks`}
+          tone={a.rate !== null && a.rate < 0.95 ? "error" : "default"}
+        />
+        <MetricStat label="p50 reply" value={secs(a.p50_reply_s)} />
+        <MetricStat
+          label="work DLQ"
+          value={dlq === null ? "—" : dlq}
+          hint={dlq === null ? "CloudWatch read failed" : "replies that will never arrive"}
+          tone={dlq === null ? "unknown" : dlq > 0 ? "error" : "default"}
+        />
       </div>
     </Card>
   );
 }
 
-export function Owners({ seg }: { seg: GrowthSegment }) {
-  const o = seg.owners;
+/** The five §6 metrics as one row of headline tiles — the weekly-review shape. */
+export function Headline({ seg, audience }: { seg: GrowthSegment; audience: string }) {
+  const thisWeek = seg.weekly_active[seg.weekly_active.length - 1];
+  const a = seg.activation;
+  const r = seg.retention_w4;
+  return (
+    <Card title={audience}>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <Tile title="Activated rate" label={pct(a.rate)} sub={`${num(a.activated)} of ${num(a.measurable)} measurable`} tone={a.rate ? "ok" : "unknown"} />
+        <Tile title="Weekly active" label={num(thisWeek?.workspaces)} sub={`multiplayer ${pct(thisWeek?.multiplayer_share)}`} tone={countTone(thisWeek?.workspaces)} />
+        <Tile
+          title="Answered rate"
+          label={pct(seg.answered.rate)}
+          sub={`p50 ${secs(seg.answered.p50_reply_s)}`}
+          tone={seg.answered.rate === null ? "unknown" : seg.answered.rate < 0.95 ? "error" : "ok"}
+        />
+        <Tile title="Paying" label={String(seg.workspaces.paying)} sub={`of ${seg.workspaces.total} workspaces`} tone={countTone(seg.workspaces.paying)} />
+        <Tile title="W4 retention" label={pct(r.rate)} sub={`${num(r.retained)} of ${num(r.eligible)} eligible`} tone={r.rate ? "ok" : "unknown"} />
+      </div>
+    </Card>
+  );
+}
+
+export function Workspaces({ seg }: { seg: GrowthSegment }) {
+  const w = seg.workspaces;
   const fmt = (m: Record<string, number>) => Object.entries(m).map(([k, v]) => `${k} ${v}`).join(" · ") || "—";
   return (
     <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-      <MetricStat label="owners" value={o.total} />
-      <MetricStat label="paying" value={o.paid} hint={fmt(o.paid_by_plan)} />
-      <MetricStat label="paid by provider" value={fmt(o.paid_by_provider)} />
-      <MetricStat label="trials active" value={o.trial_active} />
-      <MetricStat label="trials expired" value={o.trial_expired} tone={o.trial_expired ? "unknown" : "default"} />
+      <MetricStat label="workspaces" value={w.total} />
+      <MetricStat label="paying" value={w.paying} hint={fmt(w.paying_by_plan)} />
+      <MetricStat label="paying by provider" value={fmt(w.paying_by_provider)} />
+      <MetricStat label="trials active" value={w.trial_active} />
+      <MetricStat label="trials expired" value={w.trial_expired} tone={w.trial_expired ? "unknown" : "default"} />
     </div>
   );
 }
 
-export function Activation({ seg }: { seg: GrowthSegment }) {
-  const a = seg.activation;
-  return (
-    <>
-      <div className="grid grid-cols-3 gap-4 md:grid-cols-6">
-        {(Object.keys(STAGE_LABEL) as GrowthOwnerStage["stage"][]).map((s) => (
-          <MetricStat key={s} label={STAGE_LABEL[s]} value={a.stages[s]} />
-        ))}
-      </div>
-      <div className="mt-2 text-xs text-muted-foreground">
-        regardless of order:{" "}
-        {(Object.keys(FLAG_LABEL) as (keyof typeof FLAG_LABEL)[])
-          .map((s) => `${FLAG_LABEL[s]} ${a.flags[s]}`)
-          .join(" · ")}
-      </div>
-      <div className="mt-4">
-        <Table
-          head={["owner", "stage", "status", "plan", "Onboarding", "first autonomous success"]}
-          rows={a.owners.map((o) => [
-            owner(o),
-            STAGE_LABEL[o.stage],
-            o.status ? planLabel(o.status) : "—",
-            o.plan ?? "—",
-            o.onboarding_state,
-            o.first_autonomous_at ?? "—",
-          ])}
-        />
-      </div>
-    </>
-  );
-}
-
-export function NorthStar({ seg }: { seg: GrowthSegment }) {
+export function WeeklyActive({ seg }: { seg: GrowthSegment }) {
   return (
     <>
       <Table
-        head={[
-          "week",
-          "owners w/ autonomous run",
-          "autonomous ok",
-          "human ok",
-          "share dispatched by schedule/webhook",
-          "nightly CEO ok",
-        ]}
-        rows={seg.north_star.weeks.map((w) => [
-          w.week,
-          w.owners_active,
-          w.autonomous_ok,
-          w.human_ok,
-          w.autonomous_share === null ? "—" : `${Math.round(w.autonomous_share * 100)}%`,
-          w.nightly_ok,
+        head={["week", "active workspaces", "≥2 human senders", "multiplayer share"]}
+        rows={seg.weekly_active.map((w) => [w.week, num(w.workspaces), num(w.multiplayer), pct(w.multiplayer_share)])}
+      />
+      <div className="mt-2 text-xs text-muted-foreground">
+        Active = at least one human room message in that ISO week. Distinct senders, not members: a workspace with two
+        humans where only one speaks is not multiplayer.
+      </div>
+    </>
+  );
+}
+
+export function Cohorts({ seg }: { seg: GrowthSegment }) {
+  return (
+    <>
+      <Table
+        head={["signup week", "signups", "measurable", "activated", "activated rate", "paying now", "trial → paid"]}
+        rows={seg.cohorts.map((c) => [
+          c.week,
+          c.signups,
+          num(c.measurable),
+          num(c.activated),
+          pct(c.measurable && c.activated !== null ? c.activated / c.measurable : null),
+          c.paying,
+          pct(c.signups ? c.paying / c.signups : null),
         ])}
       />
       <div className="mt-2 text-xs text-muted-foreground">
-        human = every run not dispatched by a schedule or webhook — issue assignments, run-now, and the nightly
-        CEO&apos;s follow-on work included
+        Activated = within 7 days of the trial start, one human sent ≥5 room messages on ≥2 distinct UTC days AND the
+        workspace received ≥1 agent message. &ldquo;Measurable&rdquo; excludes cohorts whose 7-day window is still open.
+        &ldquo;Paying now&rdquo; is the cohort&apos;s CURRENT status, not a recorded trial→paid transition: a workspace
+        that converted and then cancelled reads here as never converted.
       </div>
     </>
   );
-}
-
-export function RetentionDepth({ seg }: { seg: GrowthSegment }) {
-  const s = seg.retention.automation_survival;
-  return (
-    <>
-      <div className="grid grid-cols-4 gap-4">
-        <MetricStat label="still armed" value={s.armed} />
-        <MetricStat label="paused by owner" value={s.paused_manual} />
-        <MetricStat label="auto-paused (circuit breaker)" value={s.auto_paused} tone={s.auto_paused ? "error" : "default"} />
-        <MetricStat label="archived" value={s.archived} />
-      </div>
-      <div className="mt-4 grid gap-6 md:grid-cols-2">
-        <Table head={["owner", "armed automations", "trigger kinds"]} rows={seg.depth.armed_per_owner.map((o) => [owner(o), o.armed, o.trigger_kinds.join(", ")])} />
-        <Table head={["owner", "connected providers"]} rows={seg.depth.providers_per_owner.map((o) => [owner(o), o.providers.join(", ")])} />
-      </div>
-    </>
-  );
-}
-
-export function Counters({ seg, data }: { seg: GrowthSegment; data: GrowthData }) {
-  return (
-    <div className="grid gap-6 md:grid-cols-3">
-      <div>
-        <div className="mb-1 text-xs text-muted-foreground">auto-paused automations</div>
-        <Table head={["owner", "routine", "since"]} rows={seg.counters.auto_paused.map((r) => [owner(r), r.title, r.since ?? "—"])} />
-      </div>
-      <div>
-        <div className="mb-1 text-xs text-muted-foreground">archived within 7 days of creation</div>
-        <Table head={["owner", "routine"]} rows={seg.counters.archived_within_7d.map((r) => [owner(r), r.title])} />
-      </div>
-      <div>
-        <div className="mb-1 text-xs text-muted-foreground">provision.gate.blocked, last 7d (CloudWatch, all owners)</div>
-        <Table head={["code", "count"]} rows={data.gate_blocked_7d.map((g) => [g.code, g.n])} />
-        <div className="mt-3 text-xs text-muted-foreground">
-          nightly CEO (paid owners): {seg.nightly_ceo.armed} armed · {seg.nightly_ceo.opted_out} opted out ·{" "}
-          <span className={seg.nightly_ceo.never_armed ? "text-err" : ""}>{seg.nightly_ceo.never_armed} never armed</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const FUNNEL_EVENTS = [
-  "landing_viewed",
-  "signup_cta_clicked",
-  "signup_started",
-  "trial_started",
-  "first_run_brief_submitted",
-  "trial_first_agent_response",
-  "chat_completed",
-  "trial_converted",
-  "subscription_activated",
-  "automation_armed",
-  "subscription_cancelled",
-];
-
-function funnelByWeek(data: GrowthData) {
-  const funnel = new Map<string, Record<string, number>>();
-  for (const r of data.posthog.funnel) funnel.set(r.week, { ...(funnel.get(r.week) ?? {}), [r.event]: r.owners });
-  return funnel;
 }
 
 export function Acquisition({ seg, data }: { seg: GrowthSegment; data: GrowthData }) {
-  const funnel = funnelByWeek(data);
+  const funnel = new Map<string, Record<string, number>>();
+  for (const r of data.posthog.funnel) funnel.set(r.week, { ...(funnel.get(r.week) ?? {}), [r.event]: r.owners });
+  const events = ["landing_viewed", "signup_started", "trial_started"];
+  const activatedByWeek = new Map(seg.cohorts.map((c) => [c.week, c.activated]));
   return (
     <>
-      <div className="grid gap-6 md:grid-cols-[1fr_auto_auto]">
-        <Table head={["week", ...FUNNEL_EVENTS]} rows={data.weeks.map((w) => [w, ...FUNNEL_EVENTS.map((e) => funnel.get(w)?.[e] ?? 0)])} />
-        <Table head={["week", "signups"]} rows={seg.owners.signups_by_week.map((w) => [w.week, w.n])} />
+      <div className="grid gap-6 md:grid-cols-[1fr_auto]">
+        <Table
+          head={["week", ...events, "activated (server)"]}
+          rows={data.weeks.map((w) => [
+            w,
+            ...events.map((e) => funnel.get(w)?.[e] ?? 0),
+            num(activatedByWeek.get(w)),
+          ])}
+        />
         <div>
           <div className="mb-1 text-xs text-muted-foreground">signup_started by first touch</div>
           <Table head={["source", "owners"]} rows={data.posthog.signup_sources.map((s) => [s.source, s.owners])} />
         </div>
       </div>
       <div className="mt-2 text-xs text-muted-foreground">
-        trial → first agent response is the SEO plan&apos;s old activation read; it is a trial-stage signal only — trials cannot arm automations.
-        Churn/NRR are not built (no cancel reason is stored); activated vs cancelled per week is the stand-in.
+        &ldquo;activated (server)&rdquo; is the §6 definition for that week&apos;s signup cohort, not a PostHog event —
+        the three client stages count both environments, it counts this one.
       </div>
     </>
   );
 }
 
-export function PosthogCrosscheck({ data }: { data: GrowthData }) {
-  const byWeek = new Map<string, Record<string, number>>();
-  for (const r of data.posthog.runs) byWeek.set(r.week, { ...(byWeek.get(r.week) ?? {}), [r.kind]: r.n });
+export function Counters({ data }: { data: GrowthData }) {
   return (
-    <Table
-      head={["week", "autonomous", "human", "unknown"]}
-      rows={data.weeks.map((w) => [w, byWeek.get(w)?.autonomous ?? 0, byWeek.get(w)?.human ?? 0, byWeek.get(w)?.unknown ?? 0])}
-    />
+    <div className="grid gap-6 md:grid-cols-2">
+      <div>
+        <div className="mb-1 text-xs text-muted-foreground">provision.gate.blocked, last 7d (CloudWatch, all workspaces)</div>
+        <Table head={["code", "count"]} rows={data.gate_blocked_7d.map((g) => [g.code, g.n])} />
+      </div>
+      <div>
+        <div className="mb-1 text-xs text-muted-foreground">source freshness</div>
+        <Table head={["source", "state"]} rows={Object.entries(data.sources).map(([k, v]) => [k, v])} />
+      </div>
+    </div>
   );
 }

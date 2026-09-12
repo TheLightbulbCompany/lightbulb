@@ -79,8 +79,8 @@ class BootstrapUserProtectedError(Exception):
     """Raised when a wipe targets a bootstrap Paperclip admin identity."""
 
 
-# Shared with core/services/ops/growth.py — the private names are kept so the
-# existing tests' patch targets keep working.
+# Addressing lives in paperclip_sql, which this module is now the only consumer
+# of; the private aliases are kept so the existing tests' patch targets work.
 from core.services.paperclip_sql import (  # noqa: E402
     cluster_arn as _cluster_arn,
     find_secret_arn as _find_secret_arn,

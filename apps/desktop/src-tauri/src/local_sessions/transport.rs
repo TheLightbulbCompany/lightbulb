@@ -615,10 +615,15 @@ impl Host {
                         },
                         Some("local.session.events.ack") => {
                             let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
-                            mirror.acknowledge(body["batchId"].as_str().ok_or("missing batch ID")?,body["afterSeq"].as_u64().ok_or("missing cursor")?)?;
-                            if mirror.advance() {registered.remove(key);}
-                            mirror.persist(&self.dir.join(format!("{key}.json")))?;
-                            sent_batches.remove(key);
+                            let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
+                            let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
+                            if mirror.acknowledge(batch_id, after)? {
+                                if mirror.advance() {registered.remove(key);}
+                                mirror.persist(&self.dir.join(format!("{key}.json")))?;
+                                sent_batches.remove(key);
+                            } else {
+                                relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
+                            }
                         },
                         Some("local.session.error") => {
                             let code = body["code"].as_str().unwrap_or("?").to_owned();
@@ -1841,6 +1846,95 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 1);
         assert!(stored.pending.is_none());
+    }
+    #[tokio::test]
+    async fn local_sessions_stale_duplicate_upload_ack_does_not_drop_the_connection() {
+        // Reproduces the prod incident of 2026-09-12: B1 goes unacked past the 2s
+        // resend window and is re-sent; the relay's real ack for B1 arrives and the
+        // desktop moves on to B2; then the relay's OWN duplicate ack for B1 (its
+        // second reply, to the resend) arrives while B2 is the outstanding pending
+        // batch. The old code compared the duplicate's batchId against the now-different
+        // pending batch and treated it as an unrecoverable conflict, tearing the
+        // connection down. It must instead be recognised as an already-applied stale
+        // ack and ignored.
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g1",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+
+            // B1: the oversized first event alone -- the second event cannot fit
+            // alongside it, so next_batch is forced to split them into B1 and B2.
+            let batch1 = next_frame(&mut socket).await;
+            assert_eq!(batch1["type"], "local.session.events");
+            assert_eq!(batch1["events"].as_array().unwrap().len(), 1);
+
+            // Withhold the ack past the 2s pending-resend window.
+            let frame = tokio::time::timeout(Duration::from_millis(3500), socket.next())
+                .await
+                .expect("B1 retries within 3.5s")
+                .expect("stream open")
+                .expect("frame ok");
+            let retry: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_eq!(retry["type"], "local.session.events");
+            assert_eq!(retry["batchId"], batch1["batchId"], "the same pending batch retries");
+
+            // Ack B1 for real: cursor advances, pending clears, and the remaining
+            // queued event becomes the next batch (B2).
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":batch1["batchId"],"afterSeq":1})).await;
+            let batch2 = next_frame(&mut socket).await;
+            assert_eq!(batch2["type"], "local.session.events");
+            assert_ne!(batch2["batchId"], batch1["batchId"]);
+            assert_eq!(batch2["events"][0]["text"], "second event");
+
+            // The relay's second reply to the RESENT B1 arrives now: a duplicate ack
+            // for an already-applied batch, while B2 is genuinely outstanding.
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":batch1["batchId"],"afterSeq":1})).await;
+
+            // Only a loop that is still polling socket.next() answers a ping; the old
+            // code returned Err out of connection() and never polled again.
+            socket.send(Message::Ping(b"still-there".to_vec().into())).await.unwrap();
+            let pong = tokio::time::timeout(Duration::from_millis(1500), socket.next()).await;
+            assert!(matches!(pong, Ok(Some(Ok(Message::Pong(_))))),
+                "a stale duplicate ack for an already-applied batch must not drop the connection: {pong:?}");
+            socket.close(None).await.unwrap();
+            batch2["batchId"].as_str().unwrap().to_owned()
+        });
+
+        // Build a first event just under the 16 KiB envelope budget so the second
+        // event can never join it in the same batch.
+        let placeholder_id = "00000000-0000-4000-8000-000000000000";
+        let envelope_len = |events: &[Value]| {
+            ascii_wire_len(&json!({"type":"local.session.events","sessionId":SID,"generation":"g1",
+                "batchId":placeholder_id,"afterSeq":0,"events":events}))
+                .unwrap()
+        };
+        let base_len = envelope_len(&[json!({"kind":"text","role":"assistant","text":"","truncated":false})]);
+        let big_event = json!({"kind":"text","role":"assistant","text":"x".repeat(16384 - base_len - 5),"truncated":false});
+        let second_event = json!({"kind":"text","role":"assistant","text":"second event","truncated":false});
+        assert!(envelope_len(&[big_event.clone()]) <= 16384, "test setup: the first event alone must fit");
+        assert!(envelope_len(&[big_event.clone(), second_event.clone()]) > 16384,
+            "test setup: both events together must overflow one batch");
+
+        let mut mirror = test_mirror("native", "g1");
+        mirror.queue = vec![big_event, second_event];
+        let mut host = test_host(dir.path(), vec![("local", mirror)]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        let batch2_id = server.await.unwrap();
+
+        let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
+        assert_eq!(stored.after_seq, 1, "B1's real ack must still apply");
+        let pending = stored.pending.expect("B2 remains outstanding, untouched by the stale duplicate");
+        assert_eq!(pending["batchId"], batch2_id);
     }
     #[tokio::test]
     async fn local_sessions_named_error_without_an_outstanding_batch_frees_the_rpc_slot() {

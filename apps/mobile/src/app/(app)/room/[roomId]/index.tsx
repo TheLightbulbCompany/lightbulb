@@ -28,7 +28,7 @@ import { MessageActionsSheet } from "../../../../components/room/MessageActionsS
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../components/room/RunBlock";
-import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
+import { colors, fonts, radii, spacing } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { useMobileRooms, useSendDrafts } from "../../../../lib/rooms";
 
@@ -310,7 +310,7 @@ function Conversation() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.cream },
-  list: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.xl },
+  list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
   listEmpty: { flexGrow: 1 },
   headerTitle: { alignItems: "center" },
   headerName: { fontFamily: fonts.sansSemiBold, fontSize: 17, lineHeight: 22, color: colors.ink },
@@ -319,17 +319,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    marginTop: spacing.xl,
+    marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
   rule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.edge },
-  dividerLabel: type.overline,
-  newRule: { backgroundColor: colors.danger },
-  newLabel: {
+  dividerLabel: {
     fontFamily: fonts.sansMedium,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.danger,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.mute,
+  },
+  newRule: { backgroundColor: colors.info },
+  newLabel: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.info,
   },
   errorCard: {
     backgroundColor: colors.errorBg,

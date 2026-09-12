@@ -115,15 +115,22 @@ describe("Home", () => {
 
   it("groups rooms under Channels and Direct messages, newest first in each", async () => {
     await render(<Home />);
-    await waitFor(() => expect(screen.getByText("CHANNELS")).toBeTruthy());
-    expect(screen.getByText("DIRECT MESSAGES")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("Channels")).toBeTruthy());
+    expect(screen.getByText("Direct messages")).toBeTruthy();
     const channels = screen.getAllByTestId(/^room-row-r[13]$/).map((n) => n.props.testID);
     expect(channels).toEqual(["room-row-r3", "room-row-r1"]);
   });
 
+  it("renders the section headers with the web's exact wording", async () => {
+    await render(<Home />);
+    await waitFor(() => expect(screen.getByText("Starred")).toBeTruthy());
+    expect(screen.getByText("Channels")).toBeTruthy();
+    expect(screen.getByText("Direct messages")).toBeTruthy();
+  });
+
   it("puts a starred room in its own section, out of Channels", async () => {
     await render(<Home />);
-    await waitFor(() => expect(screen.getByText("STARRED")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Starred")).toBeTruthy());
     // #ops is the second-OLDEST room and still renders first: Starred outranks
     // recency, which is the whole point of the section.
     const rows = screen.getAllByTestId(/^room-row-/).map((n) => n.props.testID);
@@ -139,7 +146,7 @@ describe("Home", () => {
 
   it("dims a muted room and gives it no badge", async () => {
     await render(<Home />);
-    await waitFor(() => expect(screen.getByText("DIRECT MESSAGES")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Direct messages")).toBeTruthy());
     const row = screen.getByTestId("room-row-r5");
     expect(StyleSheet.flatten(row.props.style).opacity).toBe(0.55);
     expect(screen.queryByText("2")).toBeNull();
@@ -172,7 +179,7 @@ describe("Home", () => {
   it("collapses a section and remembers nothing beyond the screen", async () => {
     await render(<Home />);
     await waitFor(() => expect(screen.getByText("random")).toBeTruthy());
-    await fireEvent.press(screen.getByText("CHANNELS"));
+    await fireEvent.press(screen.getByText("Channels"));
     expect(screen.queryByText("random")).toBeNull();
   });
 

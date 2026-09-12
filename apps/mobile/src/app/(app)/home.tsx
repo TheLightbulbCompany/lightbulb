@@ -23,7 +23,7 @@ import { useMobileRooms } from "../../lib/rooms";
 /** One flattened list entry — a section header, or a conversation. */
 type Row = { kind: "header"; title: string } | { kind: "room"; room: RoomSummary };
 
-const SECTION_ORDER = ["STARRED", "CHANNELS", "DIRECT MESSAGES"] as const;
+const SECTION_ORDER = ["Starred", "Channels", "Direct messages"] as const;
 
 /**
  * Home's three sections, newest activity first inside each. A starred room
@@ -95,9 +95,9 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
     }
     const sections = sectionRooms(visible);
     const byTitle = {
-      STARRED: sections.starred,
-      CHANNELS: sections.channels,
-      "DIRECT MESSAGES": sections.direct,
+      Starred: sections.starred,
+      Channels: sections.channels,
+      "Direct messages": sections.direct,
     };
     return SECTION_ORDER.flatMap((title): Row[] => {
       const list = byTitle[title];
@@ -272,7 +272,13 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xs,
   },
   sectionPressed: { backgroundColor: colors.rowPressed },
-  sectionLabel: { ...type.overline },
+  sectionLabel: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 11,
+    lineHeight: 15,
+    letterSpacing: 0.22,
+    color: colors.mute,
+  },
 
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.sm },
   dim: { ...type.body, color: colors.mute, textAlign: "center" },

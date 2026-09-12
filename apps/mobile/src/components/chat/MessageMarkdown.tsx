@@ -50,8 +50,8 @@ const rules: RenderRules = {
 const markdownStyles = {
   body: {
     fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 28,
+    fontSize: 15,
+    lineHeight: 22,
     color: colors.assistantInk,
   },
   heading1: {

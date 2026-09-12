@@ -2,7 +2,7 @@ import { roomDisplayName, type RoomDetail, type RoomMember, type RoomSummary } f
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { Avatar } from "./Avatar";
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { colors, fonts, spacing, type } from "../../config/theme";
 import { relativeTime } from "../../lib/relativeTime";
 
 /** Everything a row needs of a member: the name it shows, the tile it draws. */
@@ -101,7 +101,8 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
+    minHeight: 44,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
   },
@@ -111,21 +112,21 @@ const styles = StyleSheet.create({
   stack: { flexDirection: "row" },
   stackSecond: { marginLeft: -8 },
   hash: { fontFamily: fonts.sansMedium, fontSize: 18, color: colors.mute },
-  label: { ...type.body, flex: 1, color: colors.inkSoft },
+  label: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, flex: 1, color: colors.inkSoft },
   labelUnread: { fontFamily: fonts.sansSemiBold, color: colors.ink },
   time: { ...type.caption },
   badge: {
-    minWidth: 20,
-    paddingHorizontal: spacing.xs,
+    minWidth: 18,
+    paddingHorizontal: 6,
     paddingVertical: 1,
-    borderRadius: radii.sm,
-    backgroundColor: colors.forest,
+    borderRadius: 999,
+    backgroundColor: colors.info,
     alignItems: "center",
   },
   badgeLabel: {
     fontFamily: fonts.sansSemiBold,
     fontSize: 11,
-    lineHeight: 16,
+    lineHeight: 18,
     color: colors.cream,
   },
 });

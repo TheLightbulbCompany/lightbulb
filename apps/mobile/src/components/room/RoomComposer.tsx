@@ -337,7 +337,7 @@ export function RoomComposer({
 
 const styles = StyleSheet.create({
   outer: {
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.sm,
     backgroundColor: colors.cream,
   },
   strip: {
@@ -373,7 +373,7 @@ const styles = StyleSheet.create({
   glyph: { fontSize: 18, lineHeight: 22 },
   card: {
     backgroundColor: colors.white,
-    borderRadius: radii.xl,
+    borderRadius: radii.md,
     borderWidth: 1,
     borderColor: colors.edge,
     shadowColor: colors.ink,
@@ -397,11 +397,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-  inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  inputZone: { paddingHorizontal: spacing.sm, paddingTop: spacing.sm },
   input: {
     fontFamily: fonts.sans,
-    fontSize: 15,
-    lineHeight: 24,
+    fontSize: 16,
+    lineHeight: 22,
     maxHeight: 200,
     color: colors.ink,
     paddingTop: 0,

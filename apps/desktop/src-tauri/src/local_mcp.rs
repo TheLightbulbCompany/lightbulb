@@ -17,7 +17,8 @@
 //!
 //! 1. **Read-modify-write, never wholesale rewrite.** The file may already
 //!    carry (or later gain) `browser`, `gateway`, `agents`, … blocks that
-//!    openclaw itself wrote. We touch exactly `nodeHost.mcp.servers`.
+//!    openclaw itself wrote. MCP edits touch `nodeHost.mcp.servers`; startup
+//!    disables only the two unapproved node integrations below.
 //! 2. **Validate before writing.** openclaw 8.1's schema is strict and a
 //!    rejected config does not degrade — the node host refuses to start.
 //!    A settings UI that can brick the sidecar is worse than one that
@@ -30,6 +31,7 @@
 //! effect only on the next launch. The callers hold
 //! `AuthState::node_host_mutation` across both the write and that restart.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -89,7 +91,25 @@ fn write_config(state_dir: &Path, config: &Map<String, Value>) -> Result<(), Str
     let p = config_path(state_dir);
     let tmp = p.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(config).map_err(|e| format!("serialize config: {e}"))?;
-    std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(&tmp)
+        .map_err(|e| format!("open {}: {e}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Also restrict a temporary file left behind by an earlier write.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("protect {}: {e}", tmp.display()))?;
+    }
+    file.write_all(&bytes)
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &p).map_err(|e| format!("rename into {}: {e}", p.display()))?;
     Ok(())
 }
@@ -294,6 +314,18 @@ mod tests {
         expected["plugins"]["entries"]["ollama"]["config"]["nodeInference"]["enabled"] =
             json!(false);
         assert_eq!(Value::Object(read_config(d.path()).unwrap()), expected);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(config_path(d.path()))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         let bytes = std::fs::read(config_path(d.path())).unwrap();
         restrict_node_integrations(d.path()).unwrap();
         assert_eq!(std::fs::read(config_path(d.path())).unwrap(), bytes);
@@ -321,6 +353,32 @@ mod tests {
             assert!(restrict_node_integrations(d.path()).is_err());
             assert_eq!(std::fs::read_to_string(config_path(d.path())).unwrap(), bad);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_write_protects_leftover_temp_and_rejects_symlink() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let d = dir();
+        let tmp = config_path(d.path()).with_extension("json.tmp");
+        std::fs::write(&tmp, "leftover").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        restrict_node_integrations(d.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(config_path(d.path()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let before = std::fs::read(config_path(d.path())).unwrap();
+        let target = d.path().join("untouched");
+        std::fs::write(&target, "keep").unwrap();
+        symlink(&target, &tmp).unwrap();
+        assert!(set_servers(d.path(), json!({})).is_err());
+        assert_eq!(std::fs::read(config_path(d.path())).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "keep");
     }
 
     #[test]

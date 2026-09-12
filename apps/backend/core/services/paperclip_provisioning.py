@@ -69,27 +69,6 @@ from core.services.paperclip_admin_client import PaperclipAdminClient, Paperclip
 
 logger = logging.getLogger(__name__)
 
-# Roster metadata for the seed team. The roster (GET /companies/{id}/agents)
-# is Friday's source of truth for delegation — these strings are what stops
-# her from assigning Atlas domain work. Also used by
-# scripts/backfill_seed_team_roster.py for pre-existing companies.
-FRIDAY_TITLE = "CEO"
-FRIDAY_CAPABILITIES = (
-    "Orchestrator and single point of contact for the owner. Decomposes "
-    "goals, delegates to specialist agents, triages what comes back, and "
-    "reports up. Does not execute specialist work itself; when no "
-    "specialist fits, it hires one via Atlas or recommends the marketplace."
-)
-ATLAS_TITLE = "Agent Recruiter"
-ATLAS_CAPABILITIES = (
-    "Builds new specialist agents on request: researches the role, "
-    "architects the agent, generates its workspace, and registers it into "
-    "the company roster. Assign Atlas a role spec (what the new hire must "
-    "do) — not domain work. Atlas does not do research tasks, prototypes, "
-    "or general work itself, and never publishes to the marketplace (the "
-    "owner publishes via the seller wizard)."
-)
-
 STARTER_ROSTER = (
     ("ceo", "CEO", "ceo", "CEO", None),
     ("engineering", "Engineering", "engineer", "Engineering", "ceo"),
@@ -658,77 +637,45 @@ class PaperclipProvisioning:
                 service_token=svc_token,
                 user_id=owner_user_id,
             )
-            legacy_seed = reconciling_company and existing.starter_agent_ids is None and bool(existing.seeded_agent_ids)
-
-            if legacy_seed:
-                seeded_agent_ids = list(existing.seeded_agent_ids or [])
-                friday_agent_id: str | None = None
+            starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
+            for starter_key, name, role, title, parent_key in STARTER_ROSTER:
+                if starter_agent_ids.get(starter_key):
+                    continue
+                reports_to = starter_agent_ids.get(parent_key) if parent_key else None
+                if parent_key and not reports_to:
+                    continue
                 try:
-                    friday = await self._admin.create_agent(
+                    agent = await self._admin.create_agent(
                         company_id=company_id,
-                        name="Friday",
-                        role="ceo",
-                        title=FRIDAY_TITLE,
-                        capabilities=FRIDAY_CAPABILITIES,
+                        name=name,
+                        role=role,
+                        title=title,
+                        reports_to=reports_to,
                         adapter_type=OPENCLAW_GATEWAY_TYPE,
                         adapter_config=adapter_config,
                         session_cookie=new_user_session_cookie,
-                        idempotency_key="seed:friday:v1",
+                        idempotency_key=f"seed:starter:{starter_key}:v1",
                     )
-                    if isinstance(friday, dict) and friday.get("id"):
-                        friday_agent_id = friday["id"]
-                        seeded_agent_ids.insert(0, friday_agent_id)
+                    if isinstance(agent, dict) and agent.get("id"):
+                        starter_agent_ids[starter_key] = agent["id"]
                 except PaperclipApiError as e:
                     logger.warning(
-                        "paperclip_provisioning.provision_org: legacy Friday seed failed for %s: %s",
+                        "paperclip_provisioning.provision_org: starter %s seed failed for %s: %s",
+                        starter_key,
                         owner_user_id,
                         e,
                     )
-                seed_ok = friday_agent_id is not None
-                starter_agent_ids = None
-                missing_starter_keys: list[str] = []
-                keep_agent_ids = seeded_agent_ids
-            else:
-                seeded_agent_ids = []
-                starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
-                for starter_key, name, role, title, parent_key in STARTER_ROSTER:
-                    if starter_agent_ids.get(starter_key):
-                        continue
-                    reports_to = starter_agent_ids.get(parent_key) if parent_key else None
-                    if parent_key and not reports_to:
-                        continue
-                    try:
-                        agent = await self._admin.create_agent(
-                            company_id=company_id,
-                            name=name,
-                            role=role,
-                            title=title,
-                            reports_to=reports_to,
-                            adapter_type=OPENCLAW_GATEWAY_TYPE,
-                            adapter_config=adapter_config,
-                            session_cookie=new_user_session_cookie,
-                            idempotency_key=f"seed:starter:{starter_key}:v1",
-                        )
-                        if isinstance(agent, dict) and agent.get("id"):
-                            starter_agent_ids[starter_key] = agent["id"]
-                    except PaperclipApiError as e:
-                        logger.warning(
-                            "paperclip_provisioning.provision_org: starter %s seed failed for %s: %s",
-                            starter_key,
-                            owner_user_id,
-                            e,
-                        )
-                    except httpx.RequestError:
-                        logger.warning(
-                            "paperclip_provisioning.provision_org: starter %s seed transport failed for %s",
-                            starter_key,
-                            owner_user_id,
-                        )
-                missing_starter_keys = [
-                    starter_key for starter_key, *_ in STARTER_ROSTER if not starter_agent_ids.get(starter_key)
-                ]
-                seed_ok = not missing_starter_keys
-                keep_agent_ids = list(starter_agent_ids.values())
+                except httpx.RequestError:
+                    logger.warning(
+                        "paperclip_provisioning.provision_org: starter %s seed transport failed for %s",
+                        starter_key,
+                        owner_user_id,
+                    )
+            missing_starter_keys = [
+                starter_key for starter_key, *_ in STARTER_ROSTER if not starter_agent_ids.get(starter_key)
+            ]
+            seed_ok = not missing_starter_keys
+            keep_agent_ids = list(starter_agent_ids.values())
 
             # Paperclip's built-ins are purged only after the selected seed
             # contract is complete. A later normal reconciliation retries any
@@ -785,16 +732,15 @@ class PaperclipProvisioning:
                 status="active" if seed_ok else "failed",
                 created_at=now,
                 updated_at=now,
-                seeded_agent_ids=seeded_agent_ids or None,
+                # Never minted any more (the Friday/Atlas seed is retired), but
+                # this is a whole-item put: carry a legacy row's ids forward so a
+                # reconcile does not silently wipe them before the owner migrates.
+                seeded_agent_ids=(existing.seeded_agent_ids if reconciling_company else None),
                 starter_agent_ids=starter_agent_ids,
                 last_error=(
                     None
                     if seed_ok
-                    else (
-                        "provision_org: required legacy CEO seed (Friday) did not land"
-                        if legacy_seed
-                        else "provision_org: missing required starter agents: " + ", ".join(missing_starter_keys)
-                    )
+                    else "provision_org: missing required starter agents: " + ", ".join(missing_starter_keys)
                 ),
                 **onboarding_fields,
             )

@@ -1,18 +1,30 @@
-"""The one credential rule every seeded agent playbook must carry.
+"""The one credential rule appended to agent playbooks the platform writes.
 
-Friday's ``_AGENTS_TEMPLATE`` states this inline as part of its fuller identity
-section. Atlas and company/marketplace specialists author their own bodies —
-Atlas's is a tracked file, a specialist's is model-written — so neither would
-otherwise say anything about credentials at all, and both are woken by
+Company and marketplace specialists author their own bodies — a specialist's is
+model-written, a marketplace seller's is whatever they shipped — so neither
+would otherwise say anything about credentials at all, and both are woken by
 Paperclip with text that still tells them to load the key from a file
 (``claimedApiKeyPath``, generated fork-side; see
-``paperclip_adapter_config.claimed_api_key_path``). Without this appended,
-a freshly provisioned specialist follows that instruction and prints a live
-key into its visible reasoning — the exact leak observed on 2026-08-14.
+``paperclip_adapter_config.claimed_api_key_path``). Without this appended, such
+an agent follows that instruction and prints a live key into its visible
+reasoning — the exact leak observed on 2026-08-14.
 
-Kept in its own module so all three seed paths import one string rather than
-paraphrasing it three ways; ``test_paperclip_credential_rule`` asserts every
-seeded playbook carries the prohibition.
+Two live enforcement points import this string rather than paraphrasing it:
+
+- ``company_agent_materializer.materialize_agent`` appends it to the planner's
+  body unconditionally.
+- ``catalog_service`` appends it to a marketplace hire's ``AGENTS.md`` unless
+  ``PAPERCLIP_CREDENTIAL_PROHIBITION`` is already present, best-effort.
+
+**The starter-roster role contracts (``core/services/starter_roster/files/``)
+do NOT carry this rule** — they are short, hand-written files and nothing
+appends to them. That is a known gap, not an oversight of this module: the
+seeded playbooks that used to carry it inline (Friday's template, the Atlas
+bundle) were retired with the Friday/Atlas seeding path.
+
+``test_paperclip_credential_rule`` pins the rule's own wording and the
+materializer's append; it can no longer assert anything about a seeded roster
+playbook, because none carries it.
 """
 
 # Leading blank line so appending to an existing body yields a clean separator.

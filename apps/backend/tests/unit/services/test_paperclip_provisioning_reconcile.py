@@ -100,6 +100,55 @@ async def test_active_legacy_seed_row_short_circuits_unchanged(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_failed_legacy_row_reconciles_to_starters_and_keeps_seeded_agent_ids(monkeypatch):
+    """A non-active legacy row DOES get reconciled (unlike the active one
+    above), and that reconcile is a whole-item put.
+
+    ``seeded_agent_ids`` is never minted any more, so the naive write is
+    ``None`` — which would silently erase the only record of which agents a
+    legacy owner was seeded with, on a reconcile the owner never asked for.
+    The field is carried forward instead; it is dropped only when the owner is
+    deliberately reprovisioned.
+    """
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    now = datetime.now(timezone.utc)
+    failed_legacy = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_legacy",
+        paperclip_user_id="pc_legacy",
+        # Adoption signs IN with the stored credential, so this must decrypt.
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted="",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["legacy-friday-id", "legacy-atlas-id"],
+    )
+    repo.get = AsyncMock(return_value=failed_legacy)
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_legacy"}, "_session_cookie": "cookie_reconcile"})
+
+    result = await PaperclipProvisioning(admin, repo, "dev").provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # It really did reconcile onto the starter contract...
+    assert result.status == "active"
+    assert set(result.starter_agent_ids) == {key for key, *_ in EXPECTED_ROSTER}
+    # ...and the legacy ids survived the whole-item put unchanged.
+    assert result.seeded_agent_ids == ["legacy-friday-id", "legacy-atlas-id"]
+    assert repo.put.await_args.args[0].seeded_agent_ids == ["legacy-friday-id", "legacy-atlas-id"]
+
+
+@pytest.mark.asyncio
 async def test_transport_failure_persists_progress_and_reconciles_same_company(monkeypatch):
     """A timed-out create follows the ordinary missing-starter retry path."""
     from core.services.paperclip_provisioning import PaperclipProvisioning

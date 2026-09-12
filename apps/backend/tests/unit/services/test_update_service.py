@@ -317,13 +317,11 @@ async def test_apply_update_regenerates_config_before_image_roll():
     ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
     regen = AsyncMock(side_effect=lambda *a, **k: order.append("regen"))
     migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
-    heal = AsyncMock(side_effect=lambda *a, **k: order.append("heal"))
 
     with (
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "reapply_owner_config", regen),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
-        patch.object(update_service, "heal_seeded_files", heal),
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
@@ -338,12 +336,8 @@ async def test_apply_update_regenerates_config_before_image_roll():
     regen.assert_awaited_once_with(owner_id, deployed_tag="2026.5.28-abc")
     # The strip is now only the legacy-row fallback, not the normal path.
     migrate.assert_not_awaited()
-    # An image roll also heals seeded workspace files — the only routine
-    # fleet-wide touch-point for already-provisioned Fridays.
-    heal.assert_awaited_once()
-    assert heal.await_args.kwargs["owner_id"] == owner_id
     ecs.resize_user_container.assert_awaited_once()
-    assert order == ["regen", "heal", "resize"]
+    assert order == ["regen", "resize"]
 
 
 @pytest.mark.asyncio
@@ -376,7 +370,6 @@ async def test_apply_update_carries_memory_wiki_bridge_keys_onto_existing_owners
         patch.object(update_service, "update_repo", _claimed_repo(update_item)),
         patch.object(update_service, "reapply_owner_config", AsyncMock()),
         patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
-        patch.object(update_service, "heal_seeded_files", AsyncMock()),
         patch("core.services.config_patcher.ensure_plugin_config_keys", fill),
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_workspace", return_value=MagicMock()),
@@ -416,7 +409,6 @@ async def test_apply_update_falls_back_to_strip_for_legacy_rows():
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "reapply_owner_config", regen),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
-        patch.object(update_service, "heal_seeded_files", AsyncMock()),
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
@@ -448,7 +440,6 @@ async def _apply_image_only_update(owner_id, update_id, size):
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "reapply_owner_config", AsyncMock()),
         patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
-        patch.object(update_service, "heal_seeded_files", AsyncMock()),
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
@@ -496,19 +487,16 @@ async def test_apply_update_skips_migration_for_resize_only_update():
     ecs = MagicMock()
     ecs.resize_user_container = AsyncMock()
     migrate = AsyncMock()
-    heal = AsyncMock()
 
     with (
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
-        patch.object(update_service, "heal_seeded_files", heal),
         patch("core.containers.get_ecs_manager", return_value=ecs),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
     migrate.assert_not_awaited()
-    heal.assert_not_awaited()
     ecs.resize_user_container.assert_awaited_once()
 
 

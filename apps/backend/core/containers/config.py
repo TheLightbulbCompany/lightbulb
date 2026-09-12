@@ -1883,9 +1883,9 @@ def build_openclaw_config_dict(
                     if _emit_81_shape or provider_choice not in BEDROCK_PROVIDER_CHOICES
                     else {"contextTokens": BEDROCK_CONTEXT_TOKENS}
                 ),
-                # Isol8 pre-seeds every agent workspace (IDENTITY/SOUL/USER via
-                # friday_identity) — skip OpenClaw's first-run bootstrap so an
-                # under-seeded workspace (Atlas-recruited agent, partial
+                # Lightbulb pre-seeds agent workspaces (the starter roster's
+                # role contracts) — skip OpenClaw's first-run bootstrap so an
+                # under-seeded workspace (scaffolded agent, partial
                 # marketplace deploy) never autonomously runs the BOOTSTRAP.md
                 # "pick your name" identity ritual headless. Upstream's own
                 # docstring names pre-configured deployments as the use case.
@@ -2808,8 +2808,7 @@ def build_openclaw_config_dict(
     # with its OWN key via the bundled `paperclip` skill (curl), loading its
     # identity from a per-agent file in its workspace
     # (``friday_identity.pre_stage_paperclip_identities`` +
-    # ``paperclip_adapter_config.claimed_api_key_path``). See the seed prompt
-    # in ``friday_identity._AGENTS_TEMPLATE``.
+    # ``paperclip_adapter_config.claimed_api_key_path``).
 
     # Merge the owner's connected integration MCP servers (Stripe, …) into the
     # mcp.servers map. A reprovision does a full overwrite of openclaw.json, so

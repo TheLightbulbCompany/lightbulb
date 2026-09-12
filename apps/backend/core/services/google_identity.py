@@ -11,8 +11,8 @@ later disconnected, since an unassigned agent has no row to drive a cleanup.
 The instruction lives in IDENTITY.md because OpenClaw auto-loads IDENTITY.md
 into the agent's chat context — so the agent reads "use this account" without
 us threading it through a tool. But IDENTITY.md is otherwise seeded
-write-once (``pre_stage_friday_identity`` / ``pre_stage_atlas`` use
-write-if-missing so an evolved persona is never clobbered). To keep the
+write-once (the roster seeders use write-if-missing so an evolved persona
+is never clobbered). To keep the
 account instruction *updateable* on reassignment without disturbing the rest
 of the file, we carve out a delimited managed block and rewrite only that
 region in place:

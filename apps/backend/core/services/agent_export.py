@@ -50,11 +50,12 @@ _PERSONA_FILES = frozenset({"IDENTITY.md", "SOUL.md", "USER.md", "BOOTSTRAP.md",
 
 logger = logging.getLogger(__name__)
 
-# Friday is the per-owner CEO agent seeded by friday_identity.py — its
-# IDENTITY/SOUL/USER files name the owner and its bootstrap is wired into
-# Paperclip's CEO slot. Publishing it would (a) leak owner-keyed seeding
+# The owner's default agent holds the CEO slot in Paperclip and its workspace
+# files name the owner. Publishing it would (a) leak owner-keyed seeding
 # content and (b) hand a buyer a clone of someone else's CEO. The router
-# 400s when this guard returns True.
+# 400s when this guard returns True. (Named FRIDAY_* for the era that seeded
+# a per-owner "Friday" into that slot; the guard is about the slot, not the
+# name.)
 FRIDAY_PUBLISH_ERROR_MSG = "cannot publish your default agent; only custom agents can be listed in the marketplace"
 
 

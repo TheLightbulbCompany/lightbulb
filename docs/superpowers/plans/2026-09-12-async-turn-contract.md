@@ -2778,30 +2778,35 @@ Set `dev.tag` and `prod.tag` to the Task 5 tag with its `artifactDigest`/`runtim
 
 1. `cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging uv run python scripts/backfill_workspace_ids.py` (dry run by default), then the same with `--apply`.
 2. Merge the cutover PR; watch the dev deploy (`gh run watch`).
-3. Roll the dev fleet from a signed-in `dev.flickmeon.ai` admin tab:
+3. Re-run the backfill (dry run) and assert it reports 0 stale rows — rooms/streams created by the old task during the rolling window carry no `workspaceId`; if it is non-zero, run `--apply` again.
+4. Roll the dev fleet from a signed-in `dev.flickmeon.ai` admin tab:
 
 ```js
 await fetch('https://api-dev.flickmeon.ai/api/v1/container/updates', { method: 'POST', headers: { Authorization: 'Bearer ' + await Clerk.session.getToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ owner_id: 'all', update_type: 'task_definition_refresh' }) }).then(r => r.json())
 ```
 
-4. Verify (spec §8):
+5. Verify (spec §8):
    - One turn end to end: frames arrive on `/ws/{ws}/rooms/…` (the room streams text); `aws dynamodb get-item` on `OWNER#{owner}` / `RUN#{runId}` shows `started` then `ended/completed` with `usage`; `messaging.run.ended {outcome: completed}` increments; `messaging.ingress.latency` p99 < 1 s.
    - Kill mid-turn: `aws ecs update-service --desired-count 0` on the owner's service during a long turn, then back to 1. Within 90 s: one `error` + `run_ended` pair in the room, ledger `ended/error(agent_stopped_responding)`, no duplicate reply after restart, any redelivered pointer answered `replayed`.
    - Backend roll mid-turn: `aws ecs update-service --force-new-deployment` on the backend service during a turn. Frames keep flowing, the callbacks land on the new instance, the reply persists once.
    - Rotate a delivery key mid-turn: remove and re-add a human member. The tail of the stream is lost; the reply and the ledger close normally.
-5. `aws sqs get-queue-attributes` on the dev DLQ; if anything dead-lettered during the roll, `uv run python scripts/openclaw_work_redrive.py` (dev).
+   - Tenancy gate: with the dev owner task role's credentials (or a dev container's `aws` via `ecs execute-command`), publish one event to another workspace's room channel and assert AppSync refuses it; subscribe with a rotated (stale) delivery key and assert refusal.
+6. `aws sqs get-queue-attributes` on the dev DLQ; if anything dead-lettered during the roll, `uv run python scripts/openclaw_work_redrive.py` (dev).
 
 - [ ] **Step 3: Prod (owner runs the dispatch and the roll)**
 
 1. Backfill against `lightbulb-prod-messaging` (dry run by default, then `--apply`).
 2. `gh workflow run deploy.yml --ref main` when `gh run list --workflow deploy.yml --json status --jq '[.[]|select(.status!="completed")]|length'` reads 0; watch it.
-3. Roll the prod fleet immediately (same call against `api.flickmeon.ai` from a `flickmeon.ai` admin tab), then confirm every running task is on the new task definition:
+3. Re-run the backfill (dry run) and assert it reports 0 stale rows — rooms/streams created by the old task during the rolling window carry no `workspaceId`; if it is non-zero, run `--apply` again.
+4. Roll the prod fleet immediately (same call against `api.flickmeon.ai` from a `flickmeon.ai` admin tab), then confirm every running task is on the new task definition:
 
 ```bash
 aws ecs list-services --cluster lightbulb-prod-openclaw --profile isol8-admin --query 'serviceArns' --output text | tr '\t' '\n' | xargs -I{} aws ecs describe-services --cluster lightbulb-prod-openclaw --services {} --profile isol8-admin --query 'services[0].[serviceName,taskDefinition]' --output text
 ```
 
-4. Redrive the prod DLQ if the roll dead-lettered anything.
+5. Redrive the prod DLQ if the roll dead-lettered anything.
+
+P22 (`messaging-ingress-4xx`) will page during the roll for dispatches to not-yet-rolled containers; expected. The post-roll DLQ redrive replays pointers whose ledger rows the sweeper already closed: the turn runs and replies, the callbacks answer `replayed`, usage for those runs is not recorded (analytics only).
 
 - [ ] **Step 4: Cleanup**
 

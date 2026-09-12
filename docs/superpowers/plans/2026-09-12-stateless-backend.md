@@ -998,7 +998,7 @@ git commit -m "refactor(backend): every gateway RPC goes through container_rpc"
 
 **Interfaces:**
 - Consumes: `record_usage(owner_id, user_id, model, input_tokens, output_tokens, cache_read, cache_write, raw_cost_microcents, room_turn, event_kind)`; `run_analytics.schedule_run_completed(*, owner_id, parsed, payload, phase)`; `session_keys.parse_session_key`, `parse_lightbulb_session_key`; `RunUsage`; `_require_hook_token`.
-- Produces: `messaging_repo.claim_usage_receipt(owner_id, run_id) -> bool`, `messaging_repo.has_open_runs(owner_id) -> bool`, `UsageReportRequest`, `UsageReportResponse`, `handle_usage_report(owner_id, body)`, route `POST /internal/messaging/usage/{owner_id}`.
+- Produces: `messaging_repo.claim_usage_receipt(owner_id, run_id) -> bool`, `UsageReportRequest`, `UsageReportResponse`, `handle_usage_report(owner_id, body)`, route `POST /internal/messaging/usage/{owner_id}`. (`messaging_repo.has_open_runs` already exists — A's final fix round added it with its test; do not re-add it.)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1080,13 +1080,6 @@ async def test_claim_usage_receipt_is_first_writer_wins():
         assert await messaging_repo.claim_usage_receipt("org_1", "run-1") is False
 
 
-@pytest.mark.asyncio
-async def test_has_open_runs_reads_the_sweep_marker():
-    with patch("core.repositories.messaging_repo._query", new_callable=AsyncMock, return_value=[{"sk": "RUN#a", "status": "ended"}, {"sk": "RUN#b", "sweep": "open"}]) as query:
-        assert await messaging_repo.has_open_runs("org_1") is True
-    query.assert_awaited_once_with("OWNER#org_1", begins_with="RUN#")
-    with patch("core.repositories.messaging_repo._query", new_callable=AsyncMock, return_value=[{"sk": "RUN#a", "status": "ended"}]):
-        assert await messaging_repo.has_open_runs("org_1") is False
 ```
 
 Check `owner_pk("org_1")` really is `OWNER#org_1` (`messaging_repo.py:100`) and `run_in_thread` is the name the repo uses for its thread hop; adjust the patch targets if the module names differ.
@@ -1115,12 +1108,6 @@ async def claim_usage_receipt(owner_id: str, run_id: str) -> bool:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return False
         raise
-
-
-async def has_open_runs(owner_id: str) -> bool:
-    """Any ledger row still carrying the sweep marker (removed by ``end_run``)."""
-    rows = await _query(owner_pk(owner_id), begins_with="RUN#")
-    return any("sweep" in row for row in rows)
 ```
 
 `messaging.py` (imports: `from core.services import run_analytics`, `from core.services.session_keys import parse_session_key, parse_lightbulb_session_key`; `record_usage` is already imported for `_after_run_ended`):
@@ -1210,7 +1197,7 @@ git commit -m "feat(messaging): usage callback for non-room runs; delete the cro
 **Files:**
 - Modify: `apps/backend/core/services/readiness_state.py:176-180,229-232`, `apps/backend/routers/container.py:15-16,55-80,553-575,595-640,777-812`, `apps/backend/core/services/connection_service.py:35-63,333-580,598-606`, `apps/backend/core/services/durable_activity.py:9,36,48-58,74-80`
 - Delete: `apps/backend/tests/unit/routers/test_container_status_selfheal_dial.py`, `apps/backend/tests/unit/services/test_connection_service_liveness.py`
-- Test: `apps/backend/tests/unit/services/test_readiness_state.py`, `tests/unit/routers/test_container_status.py`, `tests/unit/routers/test_container_status_wake_gate.py` (patch target changes), `apps/backend/tests/unit/services/test_durable_activity.py` (new)
+- Test: `apps/backend/tests/unit/services/test_readiness_state.py`, `tests/unit/routers/test_container_status.py`, `tests/unit/routers/test_container_status_wake_gate.py` (patch target changes), `apps/backend/tests/unit/services/test_durable_activity.py` (exists since A's final fix round; the Step 1 snippet below is its target shape — reconcile rather than overwrite)
 
 **Interfaces:**
 - Consumes: `container_rpc.call`; `messaging_repo.has_open_runs`; `wake_policy.is_parked_trial` (unchanged).
@@ -1293,7 +1280,7 @@ and in the not-parked branch: `runtime_phase = resolve_runtime_phase(container, 
 
 `connection_service.py`: delete `_LIVENESS_STALE_SECONDS`, `_GATEWAY_LIVENESS_PREFIX`, `_gateway_liveness_key`, `mark_gateway_connected`, `mark_gateway_disconnected`, `refresh_gateway_liveness`, `get_live_gateway_conn_token`, `is_gateway_connected` (method and module wrapper), and the comment block that explains them (`:40-63`).
 
-`durable_activity.py`: replace `from core.containers import get_ecs_manager, get_gateway_pool` with `from core.containers import get_ecs_manager`, add `from core.repositories import billing_repo, container_repo, messaging_repo`, delete `pool = get_gateway_pool()`, replace each `if pool.has_active_runs(owner_id) or pool.is_parked(owner_id): continue` with `if await messaging_repo.has_open_runs(owner_id): continue`, delete the `if not await pool.close_idle_user(owner_id): continue` lines and both `get_live_gateway_conn_token` checks with their comments.
+`durable_activity.py` (A's final fix round already added the ledger veto next to the pool terms): replace `from core.containers import get_ecs_manager, get_gateway_pool` with `from core.containers import get_ecs_manager`, delete `pool = get_gateway_pool()`, reduce each `if await messaging_repo.has_open_runs(owner_id) or pool.has_active_runs(owner_id) or pool.is_parked(owner_id): continue` to `if await messaging_repo.has_open_runs(owner_id): continue`, delete the `if not await pool.close_idle_user(owner_id): continue` lines and both `get_live_gateway_conn_token` checks with their comments. `tests/unit/services/test_durable_activity.py` already exists (A): drop its `get_gateway_pool` patch and the `get_live_gateway_conn_token` stub; keep both cases.
 
 - [ ] **Step 4: Run the tests**
 

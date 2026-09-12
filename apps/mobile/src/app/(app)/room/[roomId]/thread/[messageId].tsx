@@ -20,7 +20,10 @@ import {
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
-import { RoomComposer } from "../../../../../components/room/RoomComposer";
+import {
+  RoomComposer,
+  useComposerKeyboardOffset,
+} from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
@@ -111,7 +114,7 @@ export default function ThreadScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={90}
+      keyboardVerticalOffset={useComposerKeyboardOffset()}
     >
       <Stack.Screen options={{ title: "Thread" }} />
       <View style={styles.subtitleRow}>

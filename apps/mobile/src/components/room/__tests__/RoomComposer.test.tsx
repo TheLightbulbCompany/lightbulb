@@ -1,9 +1,17 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import type { RoomMember } from "@lightbulb/shared";
-import { RoomComposer } from "../RoomComposer";
+import { RoomComposer, useComposerKeyboardOffset } from "../RoomComposer";
 
 // `attachments.ts` → `adapter.ts` reaches expo-crypto at import time.
 jest.mock("expo-crypto", () => ({ randomUUID: () => "77777777-7777-4777-8777-777777777777" }));
+
+// Mutable so each test can drive a different device's insets, the same
+// pattern ProvisionGate.test.tsx uses for its own useSafeAreaInsets mock.
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => mockInsets,
+}));
 
 const members: RoomMember[] = [
   {
@@ -52,6 +60,10 @@ const caretAt = (position: number) =>
   });
 
 describe("RoomComposer", () => {
+  beforeEach(() => {
+    mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+  });
+
   it("opens the mention typeahead on @ and completes the picked handle", async () => {
     await setup();
     await caretAt(4);
@@ -138,5 +150,46 @@ describe("RoomComposer", () => {
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     await waitFor(() => expect(screen.getByText("big.png exceeds the 10MB limit")).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
+  });
+});
+
+describe("useComposerKeyboardOffset", () => {
+  beforeEach(() => {
+    mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+  });
+
+  it("adds the iOS header height to the top inset on an iPhone SE (no home indicator)", async () => {
+    mockInsets = { top: 20, bottom: 0, left: 0, right: 0 };
+    const { result } = await renderHook(() => useComposerKeyboardOffset());
+    // 20 (status-bar inset) + 44 (iOS compact header) - 0 (no bottom inset) = 64.
+    expect(result.current).toBe(64);
+  });
+
+  it("subtracts the home-indicator inset back out on a notched device", async () => {
+    mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
+    const { result } = await renderHook(() => useComposerKeyboardOffset());
+    // 59 (Dynamic Island inset) + 44 (iOS compact header) - 34 (home indicator) = 69.
+    expect(result.current).toBe(69);
+  });
+});
+
+describe("RoomComposer outer padding", () => {
+  beforeEach(() => {
+    mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+  });
+
+  const outerPadding = () =>
+    StyleSheet.flatten(screen.getByTestId("composer-outer").props.style).paddingBottom;
+
+  it("floors the outer padding at 8 (spacing.sm) when there is no bottom inset", async () => {
+    mockInsets = { top: 20, bottom: 0, left: 0, right: 0 };
+    await setup();
+    expect(outerPadding()).toBe(8);
+  });
+
+  it("uses the bottom inset itself once it exceeds the floor", async () => {
+    mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
+    await setup();
+    expect(outerPadding()).toBe(34);
   });
 });

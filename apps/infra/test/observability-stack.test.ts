@@ -212,11 +212,11 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // core/services/openclaw_work.py — the work-queue worker.
   "messaging.worker.alive": [[]],
   "messaging.work.queue_wait": [["kind"]],
-  "messaging.worker.message": [["kind", "outcome"], ["error", "kind", "outcome"]],
+  "messaging.worker.message": [["error", "kind", "outcome"]],
   "messaging.ingress.post": [["event_kind", "status_class"]],
   "messaging.wake.outcome": [["outcome"]],
   // core/services/live_events.py
-  "messaging.live.publish": [["outcome"], ["outcome", "status_class"]],
+  "messaging.live.publish": [["outcome", "status_class"]],
   // core/gateway/connection_pool.py
   "messaging.room_session.subscribe": [["outcome"]],
   "messaging.room_frame.publish": [["frame_type", "outcome"]],

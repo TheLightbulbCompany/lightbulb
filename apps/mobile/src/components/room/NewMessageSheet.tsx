@@ -30,6 +30,16 @@ type SheetMode = "channel" | "direct";
 // than the backend allows, and this sheet matches the web, not the backend.
 const CHANNEL_NAME_MAX_CHARS = 80;
 
+// Mirrors the web dialog's own participant cap (`RoomDirectory.tsx`'s
+// `canCreate`'s `selected.size <= 31`, and the picker checkbox's
+// `disabled={!selection && selected.size >= 31}`), which itself mirrors a
+// real backend constraint: `MAX_ROOM_MEMBERS = 32` in
+// `core/repositories/messaging_repo.py` (32 total room members = the 31
+// picked here + the creator, added automatically), enforced as a 409
+// `MEMBER_LIMIT` in `core/services/messaging.py`. A field that accepts more
+// than the backend will take is exactly the defect this cap exists to close.
+const MAX_ROOM_MEMBERS = 31;
+
 const SEGMENTS: readonly { key: SheetMode; label: string }[] = [
   { key: "channel", label: "Channel" },
   { key: "direct", label: "Direct message" },
@@ -80,6 +90,12 @@ export function NewMessageSheet({
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Defaults to "direct", not "channel" — deliberately NOT matching the web
+  // dialog's own default. This sheet is opened from the pencil next to search
+  // (Slack's compose affordance: it starts a message, same as Slack's own
+  // pencil), while the web's "+" sits atop a sidebar whose first section is
+  // Channels. Two different entry points, two different defaults; do not
+  // "fix" this to match web.
   const [mode, setMode] = useState<SheetMode>("direct");
   const [channelName, setChannelName] = useState("");
 
@@ -131,11 +147,17 @@ export function NewMessageSheet({
   }, [agents, people, query]);
 
   const toggle = useCallback((ref: MemberRef) => {
-    setPicked((current) =>
-      current.some((entry) => same(entry, ref))
+    setPicked((current) => {
+      const alreadyPicked = current.some((entry) => same(entry, ref));
+      // A new pick past the cap is a no-op — mirrors the web dialog's
+      // checkbox `disabled={!selection && selected.size >= 31}`. Enforced
+      // here (not just via the row's `disabled` prop below) so the cap holds
+      // regardless of how the press reached this callback.
+      if (!alreadyPicked && current.length >= MAX_ROOM_MEMBERS) return current;
+      return alreadyPicked
         ? current.filter((entry) => !same(entry, ref))
-        : [...current, { kind: ref.kind, id: ref.id }],
-    );
+        : [...current, { kind: ref.kind, id: ref.id }];
+    });
   }, []);
 
   // Matches the web dialog's own kind-select `onChange`: switching modes
@@ -152,7 +174,14 @@ export function NewMessageSheet({
   // yet). `validCount` there is `true` unconditionally for channels.
   const validChannelName =
     trimmedChannelName.length >= 1 && trimmedChannelName.length <= CHANNEL_NAME_MAX_CHARS;
-  const canStart = !busy && (mode === "channel" ? validChannelName : picked.length > 0);
+  // `picked.length <= MAX_ROOM_MEMBERS` is defensive — `toggle` already
+  // refuses a pick past the cap — the same belt-and-suspenders shape as the
+  // web dialog's `canCreate`, which checks `selected.size <= 31` even though
+  // its own checkbox is also disabled past that count.
+  const canStart =
+    !busy &&
+    picked.length <= MAX_ROOM_MEMBERS &&
+    (mode === "channel" ? validChannelName : picked.length > 0);
   const actionLabel =
     mode === "channel"
       ? busy
@@ -267,6 +296,10 @@ export function NewMessageSheet({
           keyExtractor={(candidate) => `${candidate.kind}:${candidate.id}`}
           contentContainerStyle={styles.list}
           keyboardShouldPersistTaps="handled"
+          // A workspace roster is small enough that virtualizing it away
+          // trades a real cost (blank rows mid-scroll) for a saving that
+          // doesn't matter at this size.
+          initialNumToRender={50}
           ListEmptyComponent={
             <Text style={styles.dim}>
               {query.trim() ? "Nobody matches that." : "No one to message yet."}
@@ -274,12 +307,22 @@ export function NewMessageSheet({
           }
           renderItem={({ item }) => {
             const chosen = picked.some((entry) => same(entry, item));
+            // Mirrors the web dialog's checkbox `disabled={!selection &&
+            // selected.size >= 31}` — an already-picked row stays togglable
+            // (you can still deselect it), only a NEW pick past the cap is
+            // blocked.
+            const atCap = !chosen && picked.length >= MAX_ROOM_MEMBERS;
             return (
               <Pressable
                 onPress={() => toggle(item)}
+                disabled={atCap}
                 accessibilityRole="button"
-                accessibilityState={{ selected: chosen }}
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                accessibilityState={{ selected: chosen, disabled: atCap }}
+                style={({ pressed }) => [
+                  styles.row,
+                  atCap && styles.rowDisabled,
+                  pressed && styles.rowPressed,
+                ]}
               >
                 <Avatar name={item.displayName} kind={item.kind} emoji={item.emoji} />
                 <Text style={styles.name} numberOfLines={1}>
@@ -413,6 +456,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   rowPressed: { backgroundColor: colors.rowPressed },
+  rowDisabled: { opacity: 0.5 },
   name: {
     flex: 1,
     fontFamily: fonts.sansMedium,

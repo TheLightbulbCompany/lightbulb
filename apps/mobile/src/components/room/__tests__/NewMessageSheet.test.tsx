@@ -64,7 +64,13 @@ describe("NewMessageSheet", () => {
     mockSelectDm.mockClear();
     mockCreateRoom.mockClear();
     mockSelectDm.mockImplementation(async () => "room-dm");
-
+    // Reset every test to the two-person default roster — the cap test below
+    // overrides this for its own run, and without a reset here that override
+    // would leak into whichever test runs next.
+    mockFetchMembers.mockImplementation(async () => [
+      { userId: "user-a", name: "Alice" },
+      { userId: "user-b", name: "Bob" },
+    ]);
   });
 
   it("lists people and agents, and never the signed-in user", async () => {
@@ -135,6 +141,38 @@ describe("NewMessageSheet", () => {
     await fireEvent.changeText(screen.getByPlaceholderText("Search people and agents"), "fri");
     expect(screen.getByText("Friday")).toBeTruthy();
     expect(screen.queryByText("Bob")).toBeNull();
+  });
+
+  // Mirrors the web dialog's own participant cap (`RoomDirectory.tsx`'s
+  // `canCreate`'s `selected.size <= 31` and its checkbox's
+  // `disabled={!selection && selected.size >= 31}`), which itself mirrors
+  // the backend's `MAX_ROOM_MEMBERS = 32` (31 picked here + the creator).
+  // Applies regardless of mode; exercised here in the sheet's default
+  // "direct" mode.
+  it("caps member selection at 31 and never lets a 32nd pick land", async () => {
+    const many = Array.from({ length: 32 }, (_, index) => ({
+      userId: `user-${index}`,
+      name: `Person ${index}`,
+    }));
+    mockFetchMembers.mockImplementation(async () => many);
+    await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Person 0")).toBeTruthy());
+
+    for (let index = 0; index < 31; index += 1) {
+      await fireEvent.press(screen.getByText(`Person ${index}`));
+    }
+    expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      false,
+    );
+
+    // Person 31 would be the 32nd pick — the row is disabled past the cap,
+    // so this press is a no-op.
+    await fireEvent.press(screen.getByText("Person 31"));
+    await fireEvent.press(screen.getByLabelText("Start conversation"));
+    await waitFor(() => expect(mockCreateRoom).toHaveBeenCalled());
+    const members = mockCreateRoom.mock.calls[0][0].members as { id: string }[];
+    expect(members).toHaveLength(31);
+    expect(members.some((member) => member.id === "user-31")).toBe(false);
   });
 
   it("says so when the conversation cannot be opened", async () => {

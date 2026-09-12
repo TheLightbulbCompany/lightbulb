@@ -202,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     prefix = "" if args.apply else "[dry-run] "
 
     for message in messages:
+        deletable = True
         attributes = message.get("Attributes") or {}
         pointer = parse_pointer(message.get("Body", ""))
         owner = room_owner(table, pointer["roomId"]) if pointer.get("roomId") else pointer.get("ownerId", "<none>")
@@ -234,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
             repo = CliRepo(table)
             if args.apply:
                 outcome = repair_cursor(repo, room_id, agent_id, through)
+                # A lost CAS means the cursor moved under us and the repair did
+                # NOT happen; deleting now would strand the room for good.
+                # no_cursor is different — the agent is gone, nothing to strand.
+                deletable = outcome != "cas_conflict"
             else:
                 cursor = repo.get_agent_delivery(room_id, agent_id)
                 outcome = f"would advance from {cursor['lastSeq']} to {through}" if cursor else "no_cursor"
@@ -241,9 +246,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"{prefix}  cursor: not applicable ({pointer.get('kind', 'unknown')})")
 
-        if args.apply:
+        if args.apply and deletable:
             aws("sqs", "delete-message", "--queue-url", dlq_url, "--receipt-handle", message["ReceiptHandle"])
             print("  deleted from the DLQ")
+        elif args.apply:
+            print("  kept on the DLQ — cursor unrepaired, re-run to retry")
 
     print(f"{prefix}{len(messages)} message(s) handled")
     return 0

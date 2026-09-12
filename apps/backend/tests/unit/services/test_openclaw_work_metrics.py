@@ -1,6 +1,7 @@
 """Worker/queue/ingress observability: the signals that were missing while the
 prod FIFO silently stalled behind a poisoned pointer."""
 
+import asyncio
 import time
 
 import httpx
@@ -99,7 +100,7 @@ async def test_poll_failures_back_off_while_the_liveness_gauge_keeps_beating(mon
     monkeypatch.setattr(settings, "OPENCLAW_WORK_QUEUE_URL", "https://sqs.test/q.fifo")
     metrics = _capture_metrics(monkeypatch)
     receives: list[dict] = []
-    sleeps: list[float] = []
+    waits: list[float] = []
 
     class FailingSqs:
         def receive_message(self, **kwargs):
@@ -111,14 +112,16 @@ async def test_poll_failures_back_off_while_the_liveness_gauge_keeps_beating(mon
 
     worker = OpenClawWorkWorker(sqs_client=FailingSqs())
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
+    async def fake_wait_for(awaitable, timeout):
+        waits.append(timeout)
+        awaitable.close()
+        raise asyncio.TimeoutError
 
-    monkeypatch.setattr(work.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(work.asyncio, "wait_for", fake_wait_for)
 
     await worker.run()
 
-    assert sleeps == [2, 4, 8]
+    assert waits == [2, 4, 8]
     assert [name for name, _ in metrics] == [
         "messaging.worker.alive",
         "messaging.worker.poll",
@@ -130,6 +133,30 @@ async def test_poll_failures_back_off_while_the_liveness_gauge_keeps_beating(mon
     ]
     # SentTimestamp is not returned unless it is asked for.
     assert receives[0]["AttributeNames"] == ["MessageGroupId", "SentTimestamp"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_backoff_is_not_slept_through(monkeypatch):
+    """The backoff can reach 30s and main.py's graceful drain is ~20s, so the
+    wait has to end on the stop signal rather than on the clock."""
+    monkeypatch.setattr(settings, "OPENCLAW_WORK_QUEUE_URL", "https://sqs.test/q.fifo")
+    _capture_metrics(monkeypatch)
+    receives: list[dict] = []
+
+    class FailingSqs:
+        def receive_message(self, **kwargs):
+            receives.append(kwargs)
+            # Shutdown arrives while the queue is unreachable.
+            worker.request_stop()
+            raise RuntimeError("throttled")
+
+    worker = OpenClawWorkWorker(sqs_client=FailingSqs())
+    started = time.perf_counter()
+
+    await asyncio.wait_for(worker.run(), 2)
+
+    assert len(receives) == 1
+    assert time.perf_counter() - started < 1
 
 
 @pytest.mark.asyncio
@@ -226,7 +253,7 @@ async def test_accepted_ingress_reports_status_class_latency_and_outcome(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("status_code", "status_class"), [(500, "5xx"), (400, "4xx")])
+@pytest.mark.parametrize(("status_code", "status_class"), [(500, "5xx"), (400, "4xx"), (200, "other")])
 async def test_plugin_error_status_is_classified(monkeypatch, status_code, status_class):
     metrics = _capture_metrics(monkeypatch)
 
@@ -268,7 +295,16 @@ async def test_no_answer_is_counted_without_a_latency_sample(monkeypatch, error,
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("wake_result", "expected"),
-    [("dispatched", "dispatched"), ("operator_stopped", "operator_stopped"), ("already_running", "unknown")],
+    [
+        ("dispatched", "dispatched"),
+        ("operator_stopped", "operator_stopped"),
+        # A benign race with another waker is a real outcome, not "unknown".
+        ("already_running", "already_running"),
+        ("in_flight", "in_flight"),
+        ("converting", "converting"),
+        # Only a value container_wake.py does not return folds into unknown.
+        ("something_new", "unknown"),
+    ],
 )
 async def test_wake_outcome_is_recorded_when_the_runtime_is_down(monkeypatch, wake_result, expected):
     metrics = _capture_metrics(monkeypatch)

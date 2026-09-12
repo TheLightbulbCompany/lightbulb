@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -39,9 +40,22 @@ _VISIBILITY_REFRESH_SECONDS = 120
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
-# request_wake_silent answers with a wider vocabulary than the fleet needs on
-# a dimension; anything outside this set is folded into "unknown".
-_WAKE_OUTCOMES = frozenset({"dispatched", "blocked", "operator_stopped", "no_row", "error"})
+# Every value request_wake_silent can return (container_wake.py). The
+# allowlist is the point: an unmapped string becomes "unknown" rather than
+# opening an unbounded dimension, and a new return value shows up as
+# "unknown" instead of silently inflating a real bucket.
+_WAKE_OUTCOMES = frozenset(
+    {
+        "dispatched",
+        "blocked",
+        "operator_stopped",
+        "no_row",
+        "error",
+        "already_running",
+        "in_flight",
+        "converting",
+    }
+)
 
 
 class WorkRetry(RuntimeError):
@@ -93,11 +107,14 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
 
 
 def _ingress_status_class(status_code: int) -> str:
-    """202/409 are the plugin's two contractual answers; everything else is an
-    error class. A non-202 success is a contract violation, so it counts as 4xx."""
+    """202/409 are the plugin's two contractual answers; 4xx/5xx are the error
+    classes. A non-202 success or a redirect is a contract violation that is
+    neither, and folding it into 4xx would poison the client-error count."""
     if status_code in (202, 409):
         return str(status_code)
-    return "5xx" if status_code >= 500 else "4xx"
+    if status_code >= 500:
+        return "5xx"
+    return "4xx" if status_code >= 400 else "other"
 
 
 def _emit_queue_wait(message: dict, kind: str) -> None:
@@ -207,11 +224,14 @@ class OpenClawWorkWorker:
                 put_metric("messaging.worker.poll", dimensions={"outcome": "error"})
                 logger.warning("OpenClaw FIFO poll failed", exc_info=True)
                 # A failing receive returns immediately, so an unslept retry
-                # spins a hot loop against throttled/unreachable SQS.
+                # spins a hot loop against throttled/unreachable SQS. Waiting on
+                # the stop event rather than sleeping keeps the backoff inside
+                # main.py's ~20s graceful drain — a bare sleep(30) would burn it.
                 # ponytail: plain exponential backoff, no jitter — one worker
                 # per environment, so there is no herd to spread.
                 consecutive_failures = min(consecutive_failures + 1, 5)  # 2**5 already exceeds the cap
-                await asyncio.sleep(min(30, 2**consecutive_failures))
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), min(30, 2**consecutive_failures))
                 continue
             consecutive_failures = 0
             messages = response.get("Messages") or []

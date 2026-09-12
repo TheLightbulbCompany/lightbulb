@@ -2,6 +2,7 @@
 message queued behind it, so the arithmetic here is the load-bearing part."""
 
 import json
+import subprocess
 
 import pytest
 
@@ -85,11 +86,15 @@ def test_pointers_without_a_repairable_cursor_are_skipped(payload):
     assert mod.cursor_target(mod.parse_pointer(_stream_body(payload))) is None
 
 
-def _fake_aws(commands, *, pointer):
+def _fake_aws(commands, *, pointer, cursor_conflict=False):
     """Stand in for the `aws` CLI, recording every command it is handed."""
 
     def run(*args):
         commands.append(args)
+        if args[:2] == ("dynamodb", "update-item") and cursor_conflict:
+            raise subprocess.CalledProcessError(
+                254, "aws", stderr="An error occurred (ConditionalCheckFailedException)"
+            )
         if args[:2] == ("sqs", "get-queue-url"):
             return {"QueueUrl": f"https://sqs.test/{args[3]}"}
         if args[:2] == ("sqs", "receive-message"):
@@ -149,6 +154,20 @@ def test_drop_with_apply_repairs_the_cursor_then_deletes(monkeypatch, capsys):
     verbs = [args[:2] for args in commands]
     assert verbs.index(("dynamodb", "update-item")) < verbs.index(("sqs", "delete-message"))
     assert "advanced 7->11" in capsys.readouterr().out
+
+
+def test_drop_keeps_the_pointer_when_the_cursor_repair_loses_the_cas(monkeypatch, capsys):
+    """The cursor did NOT move, so deleting the pointer would strand the room
+    permanently. Leave it on the DLQ and let the operator re-run."""
+    commands: list[tuple] = []
+    monkeypatch.setattr(mod, "aws", _fake_aws(commands, pointer=_ROOM_POINTER, cursor_conflict=True))
+
+    assert mod.main(["--env", "prod", "--drop", "--apply"]) == 0
+
+    assert ("sqs", "delete-message") not in [args[:2] for args in commands]
+    output = capsys.readouterr().out
+    assert "cas_conflict" in output
+    assert "kept on the DLQ" in output
 
 
 def test_redrive_with_apply_keeps_the_group_and_mints_a_new_dedup_id(monkeypatch):

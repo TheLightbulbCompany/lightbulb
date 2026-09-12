@@ -192,6 +192,11 @@
 .room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; min-width: 0; }
 .room-directory-row .room-directory-entry { min-width: 0; }
 .room-directory-actions { flex: none; opacity: 0; }
+/* Roster rows (someone with no DM yet) have no overflow trigger to hide, so
+   without this their content stretches into the width every real row reserves
+   for one -- the two kinds of row then disagree on where a label ends. Matches
+   .room-directory-actions' size-9 button, and the 44px touch floor below. */
+.room-directory-row--roster::after { content: ""; flex: none; width: 2.25rem; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
 @media (hover: none) { .room-directory-actions { opacity: 1; } }
 .room-directory-group { font-size: .6875rem; font-weight: 600; letter-spacing: .02em; color: var(--muted-foreground); margin: 0 4px 4px 0; }
@@ -263,6 +268,7 @@
      target too. */
   .room-directory-heading-actions button, .room-directory-group-header button,
   .room-directory-actions, .room-directory-grip { min-width: 44px; }
+  .room-directory-row--roster::after { width: 44px; }
   .room-directory select { min-height: 44px; }
   /* The section dialogs are portalled out of .room-directory, so they need the
      touch floor stated again. */

@@ -58,7 +58,7 @@ const room: RoomDetail = {
 };
 const state = {
   resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 },
-  rooms: [room], roomsError: undefined, roomsLoading: false,
+  rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
@@ -76,6 +76,7 @@ beforeEach(() => {
   state.rooms = [room];
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
+  state.roomsError = undefined;
   state.directoryError = undefined;
   state.directoryLoading = false;
   state.accessRemoved = false;
@@ -255,8 +256,10 @@ it.each(["owner", "admin"] as const)("connects channel %s management to existing
   expect(state.removeMember).toHaveBeenCalledWith({ kind: "agent", id: "agent-friday" });
 });
 
-it("surfaces directory hydration failures through the existing retry control while retaining available rooms", () => {
-  state.directoryError = new Error("Directory hydration failed");
+it("surfaces a failed room list through the existing retry control while retaining available rooms", () => {
+  // There is no separate directory hydration any more — the room list IS the
+  // directory, so its own error is the only one the sidebar can report.
+  state.roomsError = new Error("Conversations could not be loaded");
   compose();
   expect(directory.state).toBe("error");
   expect(directory.rooms[0]).toMatchObject({ roomId: room.roomId, participants: [expect.objectContaining({ displayName: "Friday" })] });

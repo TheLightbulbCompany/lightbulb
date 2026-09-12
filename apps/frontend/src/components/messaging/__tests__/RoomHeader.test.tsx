@@ -10,7 +10,7 @@ import type { RoomParticipant } from "../types";
 const room: RoomSummary = {
   roomId: "room-1", name: "Roadmap", kind: "channel", roomRevision: 3, lastMessageSeq: 9,
   lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-11T10:00:00Z",
-  topic: "Ship v2", starred: false, muted: false, sectionId: null,
+  topic: "Ship v2", starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0,
 };
 const people: RoomParticipant[] = ["Aden", "Bo", "Cy", "Dee", "Eve"].map((name, index) => ({
   kind: "human", id: `u${index}`, displayName: name, mentionHandle: null, role: "member",

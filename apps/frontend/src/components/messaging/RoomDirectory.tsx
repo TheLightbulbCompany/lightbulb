@@ -41,6 +41,9 @@ export interface RoomDirectoryProps {
   onSaveSections?: (sections: RoomSection[]) => Promise<void>;
   onLeaveRoom?: (roomId: string) => Promise<void>;
   creationBusy?: boolean;
+  /** `kind:id` of the roster row currently being opened, if any. Only that row
+   *  goes busy — opening one conversation must not freeze the whole list. */
+  openingParticipant?: string | null;
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
@@ -84,6 +87,7 @@ function DirectoryContent({
   currentRoomId,
   onSelectRoom,
   onSelectParticipant,
+  openingParticipant,
   onCreate,
   onMarkUnread,
   onSetPrefs,
@@ -368,8 +372,15 @@ function DirectoryContent({
           {collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>}
         </div>
         <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
-          if (!room) return <li key={key} className="room-directory-row">
-            <button type="button" className="room-directory-entry" disabled={creationBusy} onClick={() => onSelectParticipant(participant!)}>
+          // A roster row is someone with no DM yet. It carries no overflow menu
+          // (star, mute, mark-unread and copy-link all need a room), but it
+          // must still reserve that control's width -- see
+          // .room-directory-row--roster. Without it the label and the "Agent"
+          // tag sit ~36px further right than every real row's, and jump left
+          // the instant a first click creates the room.
+          if (!room) return <li key={key} className="room-directory-row room-directory-row--roster">
+            <button type="button" className="room-directory-entry" aria-busy={openingParticipant === key}
+              disabled={openingParticipant === key} onClick={() => onSelectParticipant(participant!)}>
               <ParticipantAvatar participant={participant!} size="xs" />
               <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
               {participant!.kind === "agent" && <span className="room-directory-tag">Agent</span>}

@@ -14,6 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 
+from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
@@ -346,8 +347,14 @@ async def upload_room_attachment(
     await service.require_room_member(owner_id, auth.user_id, room_id)
     data = await image.read(service.IMAGE_MAX_BYTES + 1)
     try:
-        return service.store_image_attachment(
-            owner_id, room_id, image.filename or "image", image.content_type or "", data
+        # Off the event loop: this writes the image to EFS (NFS).
+        return await run_in_thread(
+            service.store_image_attachment,
+            owner_id,
+            room_id,
+            image.filename or "image",
+            image.content_type or "",
+            data,
         )
     except ValueError as exc:
         raise service.ApiProblem("INVALID_REQUEST", str(exc)) from exc
@@ -361,7 +368,7 @@ async def get_room_attachment(
 ):
     owner_id = resolve_owner_id(auth)
     await service.require_room_member(owner_id, auth.user_id, room_id)
-    attachment, data = service.load_image_attachment(owner_id, room_id, attachment_id)
+    attachment, data = await run_in_thread(service.load_image_attachment, owner_id, room_id, attachment_id)
     return Response(
         content=data,
         media_type=attachment.content_type,

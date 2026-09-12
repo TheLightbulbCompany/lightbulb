@@ -23,8 +23,10 @@ const message: CanonicalRoomMessage = {
 const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
   listRooms: vi.fn(async () => ({ rooms: [room], sections: [] as RoomSection[] })),
-  getRoom: vi.fn(async () => room),
-  listMessages: vi.fn(async () => ({ messages: [message], nextAfterSeq: null as number | null })),
+  getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
+  listMessages: vi.fn<(roomId: string, afterSeq: number, limit?: number) => Promise<{ messages: CanonicalRoomMessage[]; nextAfterSeq: number | null }>>(
+    async () => ({ messages: [message], nextAfterSeq: null }),
+  ),
   markRead: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 1 })),
   uploadAttachment: vi.fn(async () => ({ id: "att-1", fileName: "a.png", contentType: "image/png" as const, size: 1 })),
   getRunStatus: vi.fn(async () => ({ runId: "run-1", state: "terminal" as const })),
@@ -44,8 +46,8 @@ const live: RoomsLiveSource = {
   messaging: messaging as never,
   onEvent: (handler) => { handlers.add(handler); return () => handlers.delete(handler); },
   claimActiveRoomSubscription: vi.fn(() => vi.fn()),
-  // History only reconciles once the room's own channel is live — the same
-  // path the web suite feeds its fixture.
+  // History does not wait on this; it is here because the contract still
+  // provides it, and because `liveConnected` drives reconnect catch-up.
   liveChannels: [`/rooms/${room.roomId}/${room.deliveryKey}`],
   connectionRevision: 1, liveConnected: false, httpReady: true,
 };
@@ -235,5 +237,49 @@ describe("useRooms platform seams", () => {
     rerender({ userId: "user-a" });
     await waitFor(() => expect(result.current.roomsLoading).toBe(false));
     expect(result.current.rooms).toHaveLength(1);
+  });
+
+  it("paints a revisited room from cache and asks only for the delta", async () => {
+    const other: RoomDetail = { ...room, roomId: "room-2", name: "Second", deliveryKey: "key-2" };
+    const otherMessage: CanonicalRoomMessage = { ...message, messageId: "msg-2", roomId: other.roomId, text: "elsewhere" };
+    messaging.listRooms.mockResolvedValue({ rooms: [room, other], sections: [] });
+    messaging.getRoom.mockImplementation(async (id: string) => (id === other.roomId ? other : room));
+    messaging.listMessages.mockImplementation(async (roomId: string) => ({
+      messages: roomId === other.roomId ? [otherMessage] : [message],
+      nextAfterSeq: null,
+    }));
+
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
+
+    await act(async () => { result.current.selectRoom(other.roomId); });
+    await waitFor(() => expect(result.current.messages.map((m) => m.messageId)).toEqual(["msg-2"]));
+
+    messaging.listMessages.mockClear();
+    await act(async () => { result.current.selectRoom(room.roomId); });
+
+    // Back where we started: the cached page is what renders, so there is no
+    // window in which the timeline is empty, and the refetch is a delta rather
+    // than a replay of the room from sequence zero.
+    expect(result.current.messages.map((m) => m.messageId)).toEqual(["msg-1"]);
+    await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100));
+    expect(messaging.listMessages).not.toHaveBeenCalledWith(room.roomId, 0, 100);
+  });
+
+  it("forgets cached history when the signed-in scope changes", async () => {
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) => useRooms(platform({ userId })),
+      { wrapper, initialProps: { userId: "user-a" } },
+    );
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+    messaging.listMessages.mockClear();
+    rerender({ userId: "user-b" });
+
+    // A different person must never be shown the previous one's messages, even
+    // for the frame before their own history arrives.
+    expect(result.current.messages).toHaveLength(0);
+    await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100));
   });
 });

@@ -155,6 +155,20 @@ function cadenceFor(ready: boolean, windowStartedAt: number, now: number): numbe
   return now - windowStartedAt < FAST_WINDOW_MS ? FAST_POLL_MS : SLOW_POLL_MS;
 }
 
+/** Last fetch attempt per SWR key, shared across every hook instance. */
+const lastAttemptByKey = new Map<string, { current: number }>();
+
+function useSharedAttemptClock(key: string | null): { current: number } {
+  const fallback = useRef(0);
+  if (key === null) return fallback;
+  let clock = lastAttemptByKey.get(key);
+  if (!clock) {
+    clock = { current: 0 };
+    lastAttemptByKey.set(key, clock);
+  }
+  return clock;
+}
+
 export function useOnboardingStatus(
   options: UseOnboardingStatusOptions,
 ): UseOnboardingStatusResult {
@@ -162,7 +176,14 @@ export function useOnboardingStatus(
 
   // Timestamp of the most recent fetch ATTEMPT (not completion) — read by
   // the backstop to decide whether the SWR chain looks stalled.
-  const lastAttemptRef = useRef<number>(0);
+  //
+  // Keyed by the SWR key, NOT held per hook instance. SWR dedupes the request
+  // across every mount of the same key, so only the instance whose fetcher
+  // actually ran would ever update a private ref — and `/chat` mounts this four
+  // times (ProvisioningStepper, useChatReady, LaunchJoinModal, useSystemHealth).
+  // The other three saw a ref frozen at 0, concluded the chain was stalled on
+  // every tick, and called `mutate()` every 5 seconds forever.
+  const lastAttemptRef = useSharedAttemptClock(enabled ? (scope === undefined ? swrKey : `${swrKey}|${scope}`) : null);
   // Start of the CURRENT unsettled streak, for the 60s fast->slow cadence
   // step. Reset on mount, on a ready->not-ready regression, and on refresh().
   const windowStartRef = useRef<number>(Date.now());

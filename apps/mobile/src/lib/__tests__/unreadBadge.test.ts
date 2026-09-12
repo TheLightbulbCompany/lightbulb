@@ -29,6 +29,8 @@ const room = (over: Partial<RoomSummary>): RoomSummary => ({
   starred: false,
   muted: false,
   sectionId: null,
+  members: [],
+  lastReadSeq: 0,
   ...over,
 });
 

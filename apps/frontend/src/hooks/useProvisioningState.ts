@@ -102,6 +102,19 @@ export interface ProvisioningStateResult {
  * Inactive-row admins (canceled, unpaid, paused) still get 402 with a
  * /settings/billing action.
  */
+/** In-flight forced-fresh org-token mints, shared across hook instances. */
+const freshTokenRequests = new Map<string, Promise<string | null>>();
+
+function sharedFreshToken(orgId: string, mint: () => Promise<string | null>): Promise<string | null> {
+  const existing = freshTokenRequests.get(orgId);
+  if (existing) return existing;
+  const request = mint().finally(() => {
+    if (freshTokenRequests.get(orgId) === request) freshTokenRequests.delete(orgId);
+  });
+  freshTokenRequests.set(orgId, request);
+  return request;
+}
+
 export function useProvisioningState(
   options: ProvisioningStateOptions = {},
 ): ProvisioningStateResult {
@@ -132,10 +145,14 @@ export function useProvisioningState(
     if (activeScope.current !== scope || !scope.eligible || !scope.orgId) return null;
     let token: string | null = null;
     try {
-      const candidate = await getToken({
-        organizationId: scope.orgId,
-        ...(skipCache ? { skipCache: true } : {}),
-      });
+      // A forced-fresh mint is a real round trip to Clerk, and `/chat` mounts
+      // this hook four times against the same org — so without sharing the
+      // in-flight promise, one page load paid for four identical mints before
+      // the first `/container/status` could go out. Cached mints already
+      // collapse inside Clerk; only the uncached ones need this.
+      const candidate = skipCache
+        ? await sharedFreshToken(scope.orgId, () => getToken({ organizationId: scope.orgId!, skipCache: true }))
+        : await getToken({ organizationId: scope.orgId });
       if (candidate) {
         // Enablement check only; the backend verifies the JWT signature/claims.
         const payload = JSON.parse(atob(candidate.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
@@ -153,13 +170,20 @@ export function useProvisioningState(
     if (!scope.eligible || verifiedScope === scope) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    // Backs off instead of hammering. This retried every 500ms with no ceiling
+    // and no end, so a scope whose token never verifies (a revoked membership,
+    // a Clerk outage) pinned a request loop for the life of the tab — times the
+    // four places `/chat` mounts this hook.
+    let delay = 500;
     async function verify() {
       // Force fresh once at the scope boundary, not for propagation retries
       // or steady status polls. Every returned token still has its org checked.
       const forceFresh = freshlyRequestedScope.current !== scope;
       freshlyRequestedScope.current = scope;
       const token = await getWorkspaceToken(forceFresh);
-      if (!cancelled && !token) timer = setTimeout(verify, 500);
+      if (cancelled || token) return;
+      timer = setTimeout(verify, delay);
+      delay = Math.min(delay * 2, 8_000);
     }
     void verify();
     return () => { cancelled = true; clearTimeout(timer); };

@@ -5,7 +5,7 @@
  * identity, the live-events context value, visibility, uuid minting — arrives
  * through `RoomsPlatform`; there is no DOM global in here.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { ApiError } from "../api/error";
 import { accumulateStreamText } from "../live/streamText";
@@ -22,7 +22,7 @@ import type {
   MemberRef,
   PatchRoomRequest,
   RoomMember,
-  RoomDetail,
+  RoomSummary,
   RoomSection,
   UpsertRoomMemberRequest,
 } from "./types";
@@ -62,7 +62,7 @@ export interface RoomsPlatform {
   /**
    * The live-events context value. MUST be referentially stable across
    * renders, and so must everything on it: `messaging`, `onEvent`,
-   * `claimActiveRoomSubscription`, `liveChannels`. Each is a dependency of an
+   * `claimActiveRoomSubscription`. Each is a dependency of an
    * effect inside the hook; a fresh object per render does not error, it
    * re-fires the history reconcile into "Maximum update depth exceeded".
    * Both apps' providers memoize their context value; a platform adapter
@@ -102,7 +102,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     messaging,
     claimActiveRoomSubscription,
     onEvent,
-    liveChannels,
     connectionRevision,
     liveConnected,
     httpReady,
@@ -120,44 +119,23 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   }, [connectionRevision, liveConnected, mutateRooms]);
   const rooms = roomsData?.rooms ?? NO_ROOMS;
   const sections = roomsData?.sections ?? NO_SECTIONS;
-  const directoryDetailCache = useRef(new Map<string, RoomDetail>());
-  const getCachedDirectoryRoomDetails = useCallback(() => {
-    const details = new Map<string, RoomDetail>();
-    for (const room of rooms) {
-      if (room.kind === "channel") continue;
-      const detail = directoryDetailCache.current.get(`${room.roomId}:${room.roomRevision}`);
-      if (detail) details.set(detail.roomId, detail);
-    }
-    return details;
-  }, [rooms]);
-  const directRoomSignature = rooms
-    .filter((room) => room.kind !== "channel")
-    .map((room) => `${room.roomId}:${room.roomRevision}`)
-    .join("|");
-  const loadDirectoryRoomDetails = useCallback(async (): Promise<Map<string, RoomDetail>> => {
-    // A cold agent shortcut must await the list, not interpret loading as no DMs.
-    const listed = roomsData ?? await mutateRooms();
-    if (!listed) throw new Error("Conversations are not ready.");
-    const directRooms = listed.rooms.filter((room) => room.kind !== "channel");
-    const results = await Promise.allSettled(directRooms.map((room) => messaging.getRoom(room.roomId)));
-    const details = new Map<string, RoomDetail>();
-    results.forEach((result, index) => {
-      if (result.status !== "fulfilled") return;
-      const room = directRooms[index];
-      directoryDetailCache.current.set(`${room.roomId}:${room.roomRevision}`, result.value);
-      details.set(result.value.roomId, result.value);
-    });
-    const failed = results.find((result) => result.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
-    return details;
-  }, [messaging, roomsData, mutateRooms]);
-  const directoryDetailsResponse = useSWR(
-    scope && roomsData ? ["messaging-room-directory", scope, directRoomSignature] : null,
-    loadDirectoryRoomDetails,
-    { revalidateOnFocus: false, shouldRetryOnError: false },
+  /**
+   * Members per room, for the sidebar.
+   *
+   * This used to be an SWR-backed fan-out: one `getRoom` per non-channel room,
+   * all of which had to settle before the directory left its loading state, and
+   * whose cache key included every room's `roomRevision` — so a rename or a
+   * delivery-key rotation anywhere re-ran the whole fan-out and dropped the
+   * sidebar back to "Loading conversations…". The room LIST now carries
+   * `members`, so there is nothing to fetch and nothing to invalidate.
+   *
+   * Kept as a Map (rather than letting callers read `room.members`) only
+   * because both apps already consume it in that shape.
+   */
+  const directoryRoomDetails: ReadonlyMap<string, RoomSummary> = useMemo(
+    () => new Map(rooms.map((room) => [room.roomId, { ...room, members: room.members ?? [] }])),
+    [rooms],
   );
-  const directoryRoomDetails: ReadonlyMap<string, RoomDetail> = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
-  const directoryError = directoryDetailsResponse.error as Error | undefined;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const manuallyUnreadRoom = useRef<string | null>(null);
   const pendingRead = useRef<Promise<void> | null>(null);
@@ -206,13 +184,41 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
   const reconciliation = useRef<Promise<void> | null>(null);
+  /**
+   * Messages already fetched, per room.
+   *
+   * Room history is not SWR-backed, so before this cache every room switch
+   * emptied the timeline and re-fetched from sequence 0 — including a switch
+   * back to a room left seconds earlier. Re-opening a cached room now paints
+   * its messages on the same frame as the click and reconciles only the delta
+   * behind them.
+   *
+   * Cleared wholesale when `scope` changes: a different user or workspace must
+   * never see another's messages, however briefly.
+   */
+  const historyCache = useRef(new Map<string, { messages: CanonicalRoomMessage[]; complete: boolean }>());
+  const cacheRoom = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
+    const previous = historyCache.current.get(roomId);
+    historyCache.current.set(roomId, { messages: next, complete: complete ?? previous?.complete ?? false });
+  }, []);
+  /** The ref, the rendered state and the cache always move together. */
+  const applyMessages = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
+    messagesRef.current = next;
+    setMessages(next);
+    cacheRoom(roomId, next, complete);
+  }, [cacheRoom]);
+
+  useEffect(() => {
+    historyCache.current.clear();
+  }, [scope]);
 
   useEffect(() => {
     generation.current += 1;
-    messagesRef.current = [];
-    setMessages([]);
+    const cached = activeRoomId ? historyCache.current.get(activeRoomId) : undefined;
+    messagesRef.current = cached?.messages ?? [];
+    setMessages(cached?.messages ?? []);
     setHistoryLoading(false);
-    setHistoryComplete(false);
+    setHistoryComplete(cached?.complete ?? false);
     setHistoryErrorMessage(null);
     setOptimistic([]);
     setAttempts(new Map());
@@ -229,14 +235,14 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     const error = roomError;
     if (!(error instanceof ApiError) || (error.status !== 403 && error.status !== 404)) return;
     setAccessRemoved(true);
+    if (activeRoomId) historyCache.current.delete(activeRoomId);
     messagesRef.current = [];
     setMessages([]);
-  }, [roomError]);
+  }, [roomError, activeRoomId]);
 
   const subscription = activeRoom && deliveryOverride?.roomId === activeRoom.roomId && deliveryOverride.roomRevision >= activeRoom.roomRevision
     ? { roomId: activeRoom.roomId, deliveryKey: deliveryOverride.deliveryKey }
     : activeRoom ? { roomId: activeRoom.roomId, deliveryKey: activeRoom.deliveryKey } : null;
-  const subscriptionPath = subscription ? `/rooms/${subscription.roomId}/${subscription.deliveryKey}` : null;
   const subscriptionRoomId = subscription?.roomId ?? null;
   const subscriptionDeliveryKey = subscription?.deliveryKey ?? null;
 
@@ -247,6 +253,26 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       deliveryKey: subscriptionDeliveryKey,
     });
   }, [claimActiveRoomSubscription, subscriptionRoomId, subscriptionDeliveryKey, accessRemoved, subscribeToRoom]);
+
+  /**
+   * Coalesced room-list refresh.
+   *
+   * Nearly every live event asked for the whole room list, one request per
+   * event — so a burst of inbound messages became a burst of full list reads.
+   * The list is not latency-critical (it backs unread counts and ordering), so
+   * trailing-edge coalescing costs nothing a viewer can perceive.
+   */
+  const roomsRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshRoomsSoon = useCallback(() => {
+    if (roomsRefresh.current) return;
+    roomsRefresh.current = setTimeout(() => {
+      roomsRefresh.current = null;
+      void mutateRooms();
+    }, 400);
+  }, [mutateRooms]);
+  useEffect(() => () => {
+    if (roomsRefresh.current) clearTimeout(roomsRefresh.current);
+  }, []);
 
   const reconcile = useCallback((afterSeq: number) => {
     if (!activeRoomId || accessRemoved) return Promise.resolve();
@@ -266,12 +292,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
           if (generation.current !== runGeneration) return;
           const valid = page.messages.filter((message) => message.roomId === roomId);
           const merged = mergeCanonicalMessages(messagesRef.current, valid);
-          messagesRef.current = merged;
-          setMessages(merged);
           if (page.nextAfterSeq === null) {
             if (completeHistory) setHistoryComplete(true);
+            applyMessages(roomId, merged, completeHistory ? true : undefined);
             break;
           }
+          applyMessages(roomId, merged);
           cursor = page.nextAfterSeq;
         }
       }
@@ -289,7 +315,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       if (requestedAfter.current !== null) void reconcile(requestedAfter.current).catch(() => {});
     });
     return reconciliation.current;
-  }, [activeRoomId, accessRemoved, messaging]);
+  }, [activeRoomId, accessRemoved, messaging, applyMessages]);
 
   // `room.run.frame` (carrying the terminal `run_ended`) is EPHEMERAL over the
   // live channel, unlike `room.message.created` -- it has no `afterSeq` gap
@@ -316,11 +342,52 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
   }, [messaging]);
 
+  /**
+   * Load history as soon as there IS a room — not when its live channel is
+   * acknowledged.
+   *
+   * This used to wait for `liveChannels.includes(subscriptionPath)`, which put
+   * two serial round trips in front of every room open: the room-detail GET
+   * (needed only to learn the delivery key) and then a Clerk template-token
+   * mint plus a subscribe acknowledgement. None of that is a precondition for
+   * reading history — the subscription only ever delivered FUTURE messages, and
+   * gaps are closed by `afterSeq` reconciliation, which is what the
+   * `room.message.created` sequence check below already relies on.
+   *
+   * It was also a correctness problem: `liveChannels` is rebuilt as a fresh
+   * array on every status emission (including acks for unrelated channels and
+   * no-op channel diffs), so as an identity dependency it re-ran a FULL history
+   * refetch of the open room on events that had nothing to do with it.
+   *
+   * A cached room asks only for what it is missing; a cold one asks for
+   * everything.
+   */
   useEffect(() => {
-    if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
-    void reconcile(0).catch(() => {});
+    if (!activeRoomId || accessRemoved) return;
+    const cached = historyCache.current.get(activeRoomId);
+    void reconcile(cached?.messages.length ? lastSequence(cached.messages) : 0).catch(() => {});
+    // `scope` is a dependency even though nothing here reads it: a signed-in
+    // user or workspace change empties the cache above, and without re-running
+    // this the timeline would stay empty until some unrelated event happened to
+    // re-trigger it.
+  }, [scope, activeRoomId, accessRemoved, reconcile]);
+
+  /**
+   * Catch up after a gap in live delivery.
+   *
+   * `liveConnected` is false whenever any desired channel is unacknowledged, so
+   * it goes false→true both on a socket reconnect and on each room switch, once
+   * that room's channel is actually live. Either way we may have been deaf for
+   * a moment, so re-read from the last sequence we hold and re-check any run
+   * still marked running. Unlike `liveChannels` this is a boolean, so it cannot
+   * churn on identity, and unlike the old effect it asks for the delta rather
+   * than replaying the room from sequence zero.
+   */
+  useEffect(() => {
+    if (!liveConnected || !activeRoomId || accessRemoved) return;
+    void reconcile(lastSequence(messagesRef.current)).catch(() => {});
     reconcileRuns();
-  }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile, reconcileRuns]);
+  }, [connectionRevision, liveConnected, activeRoomId, accessRemoved, reconcile, reconcileRuns]);
 
   useEffect(() => onEvent((event) => {
     if (event.type === "room.message.updated" && event.payload.roomId === activeRoomId) {
@@ -329,11 +396,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       return;
     }
     if (event.type === "room.message.available") {
-      void mutateRooms();
+      refreshRoomsSoon();
       return;
     }
     if (event.type === "room.access.removed" && event.payload.roomId === activeRoomId) {
       setAccessRemoved(true);
+      historyCache.current.delete(event.payload.roomId);
       messagesRef.current = [];
       setMessages([]);
       setOptimistic([]);
@@ -349,20 +417,16 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       void mutateRoom();
       return;
     }
-    if (event.type === "room.member.updated") { void mutateRooms(); return; }
+    if (event.type === "room.member.updated") { refreshRoomsSoon(); return; }
     if (event.type === "room.message.reactions.changed" && event.payload.roomId === activeRoomId) {
-      const merged = mergeCanonicalMessages(messagesRef.current, [event.payload]);
-      messagesRef.current = merged;
-      setMessages(merged);
+      applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [event.payload]));
       return;
     }
     if (event.type === "room.message.created" && event.payload.roomId === activeRoomId) {
       const previous = lastSequence(messagesRef.current);
-      const merged = mergeCanonicalMessages(messagesRef.current, [event.payload]);
-      messagesRef.current = merged;
-      setMessages(merged);
+      applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [event.payload]));
       if (event.payload.messageSeq > previous + 1) void reconcile(previous).catch(() => {});
-      void mutateRooms();
+      refreshRoomsSoon();
       return;
     }
     if (event.type === "room.typing.changed" && event.payload.roomId === activeRoomId) {
@@ -396,7 +460,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, onEvent, mutateRoom, mutateRooms, reconcile]);
+  }), [activeRoomId, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon]);
 
   useEffect(() => {
     if (typing.size === 0) return;
@@ -414,9 +478,18 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     if (!subscribeToRoom || !isVisible() ||
         !activeRoom || manuallyUnreadRoom.current === activeRoom.roomId ||
         sequence <= activeRoom.lastReadSeq || accessRemoved) return;
-    const request = messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
-        void mutateRoom();
-        void mutateRooms();
+    // Marking read used to be followed by a full room-detail GET *and* a full
+    // room-list GET, purely to learn an unread count we already know is zero.
+    // Both are applied locally instead; the next natural revalidation confirms.
+    const roomId = activeRoom.roomId;
+    const request = messaging.markRead(roomId, { lastReadSeq: sequence }).then(() => {
+        void mutateRoom((current) => current && (current.roomId === roomId
+          ? { ...current, lastReadSeq: sequence, unreadCount: 0 } : current), false);
+        void mutateRooms((current) => current && {
+          ...current,
+          rooms: current.rooms.map((room) => room.roomId === roomId
+            ? { ...room, lastReadSeq: sequence, unreadCount: 0 } : room),
+        }, false);
       }).catch(() => {});
     const operation = pendingRead.current
       ? Promise.all([pendingRead.current, request]).then(() => {})
@@ -427,10 +500,19 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     });
   }, [messages, activeRoom, accessRemoved, subscribeToRoom, isVisible, messaging, mutateRoom, mutateRooms]);
 
+  // `markVisibleRead` closes over `messages`, so its identity changes on every
+  // message. Reading it through a ref keeps the visibility subscription from
+  // being torn down and re-attached each time, and — more importantly — lets
+  // `selectRoom` be referentially stable, which callers rely on to avoid
+  // re-running room-selection effects on unrelated traffic.
+  const markVisibleReadRef = useRef(markVisibleRead);
+  markVisibleReadRef.current = markVisibleRead;
+
   useEffect(() => {
-    markVisibleRead();
-    return onVisibilityChange(markVisibleRead);
-  }, [markVisibleRead, onVisibilityChange]);
+    const run = () => markVisibleReadRef.current();
+    run();
+    return onVisibilityChange(run);
+  }, [messages, activeRoom, onVisibilityChange]);
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
@@ -447,9 +529,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         void mutateRooms();
         return canonical;
       }
-      const merged = mergeCanonicalMessages(messagesRef.current, [canonical]);
-      messagesRef.current = merged;
-      setMessages(merged);
+      applyMessages(roomId, mergeCanonicalMessages(messagesRef.current, [canonical]));
       setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
       setAttempts((current) => new Map(current).set(request.clientMessageId, "persisted"));
       void mutateRooms();
@@ -469,9 +549,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     try {
       const message = await messaging.updateMessage(activeRoomId, messageId, request);
       if (generation.current !== runGeneration || message.roomId !== activeRoomId) return;
-      const merged = mergeCanonicalMessages(messagesRef.current, [message]);
-      messagesRef.current = merged;
-      setMessages(merged);
+      applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [message]));
     } catch (error) {
       if (generation.current === runGeneration) void reconcile(0).catch(() => {});
       throw error;
@@ -483,9 +561,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     const runGeneration = generation.current;
     const message = await messaging.setReaction(activeRoomId, messageId, emoji, active);
     if (generation.current !== runGeneration || message.roomId !== activeRoomId) return;
-    const merged = mergeCanonicalMessages(messagesRef.current, [message]);
-    messagesRef.current = merged;
-    setMessages(merged);
+    applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [message]));
   }, [activeRoomId, accessRemoved, messaging]);
 
   const reconcileSend = useCallback(async (clientMessageId: string) => {
@@ -504,10 +580,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     selectionRequest.current += 1;
     if (manuallyUnreadRoom.current === roomId) {
       manuallyUnreadRoom.current = null;
-      markVisibleRead();
+      markVisibleReadRef.current();
     }
     setActiveRoomId(roomId);
-  }, [markVisibleRead]);
+  }, []);
 
   const markUnread = useCallback(async (roomId: string, fromSeq?: number) => {
     if (activeRoomId === roomId) manuallyUnreadRoom.current = roomId;
@@ -545,19 +621,16 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     { activate = true }: { activate?: boolean } = {},
   ): Promise<string | null> => {
     const requestId = ++selectionRequest.current;
-    let details = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
-    let hydrationError = directoryDetailsResponse.error;
-    if (!directoryDetailsResponse.data && !hydrationError) {
-      try {
-        details = await loadDirectoryRoomDetails();
-      } catch (error) {
-        details = getCachedDirectoryRoomDetails();
-        hydrationError = error;
-      }
-    }
+    // A cold agent shortcut must await the list, not read an empty one as "no
+    // DMs" and create a duplicate room. The list carries members, so this is
+    // the only round trip between clicking a person and opening their DM.
+    const listed = roomsData ?? await mutateRooms();
+    if (!listed) throw new Error("Conversations are not ready.");
     if (requestId !== selectionRequest.current) return null;
-    const existing = [...details.values()].find(
-      (detail) => detail.kind === "dm" && detail.members.some(
+    const existing = listed.rooms.find(
+      // `members ?? []`: a client can still be holding a room list cached from
+      // before the field existed on the summary.
+      (room) => room.kind === "dm" && (room.members ?? []).some(
         (member) => member.kind === participant.kind && member.id === participant.id,
       ),
     );
@@ -566,7 +639,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       if (activate) setActiveRoomId(existing.roomId);
       return existing.roomId;
     }
-    if (hydrationError) throw hydrationError;
     const key = `${participant.kind}:${participant.id}`;
     const clientRoomId = dmRequests.current.get(key) ?? uuid();
     dmRequests.current.set(key, clientRoomId);
@@ -578,7 +650,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }, { requestId, activate });
     dmRequests.current.delete(key);
     return requestId === selectionRequest.current ? created.roomId : null;
-  }, [createRoom, directoryDetailsResponse.data, directoryDetailsResponse.error, getCachedDirectoryRoomDetails, loadDirectoryRoomDetails, uuid]);
+  }, [createRoom, roomsData, mutateRooms, uuid]);
 
   const selectDm = useCallback(async (
     participant: MemberRef,
@@ -691,6 +763,22 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       throw error;
     });
   }, [activeRoomId, messaging]);
+  /**
+   * Runs still worth showing as a live card.
+   *
+   * A run whose text was already persisted as a message (same runId, or — when
+   * the persisted reply's runId doesn't match the run's — the same agent
+   * posting identical trimmed text) is done double-duty; drop it so the
+   * completed run card doesn't render again below the real message.
+   *
+   * Memoised: this is O(runs x messages) with a `trim()` per comparison, and it
+   * was re-running on every render of the surface, including every keystroke in
+   * the composer and every streamed chunk.
+   */
+  const visibleRuns = useMemo(() => [...runs.values()].filter((run) => !messages.some((message) =>
+    message.runId === run.runId ||
+    (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))),
+  [runs, messages]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
 
@@ -698,9 +786,15 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     rooms,
     sections,
     roomsError: roomsResponse.error as Error | undefined,
+    // `|| !scope` is load-bearing and matters MORE now, not less: the sidebar's
+    // loading state used to be `roomsLoading || directoryLoading`, and with the
+    // directory fan-out gone this is the only thing left standing between a
+    // cold mount and a false "No conversations yet".
     roomsLoading: roomsResponse.isLoading || !scope,
-    directoryError,
-    directoryLoading: directoryDetailsResponse.isLoading,
+    // Nothing is fetched for the directory any more — the room list is the
+    // whole sidebar. Both are retained so consumers need not change at once.
+    directoryError: undefined as Error | undefined,
+    directoryLoading: false,
     activeRoomId,
     activeRoom,
     roomError: detailResponse.error as Error | undefined,
@@ -715,13 +809,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     loadHistory: () => { void reconcile(0).catch(() => {}); },
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],
-    // A run whose text was already persisted as a message (same runId, or --
-    // when the persisted reply's runId doesn't match the run's -- the same
-    // agent posting identical trimmed text) is done double-duty; drop it so
-    // the completed run card doesn't render again below the real message.
-    runs: [...runs.values()].filter((run) => !messages.some((message) =>
-      message.runId === run.runId ||
-      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))),
+    runs: visibleRuns,
     liveConnected,
     httpReady,
     selectRoom,
@@ -729,7 +817,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     selectDm,
     selectAgentDm,
     directoryRoomDetails,
-    refreshRooms: () => Promise.all([mutateRooms(), directoryDetailsResponse.mutate()]),
+    refreshRooms: () => mutateRooms(),
     refreshRoom: () => mutateRoom(),
     createRoom,
     updateRoom,

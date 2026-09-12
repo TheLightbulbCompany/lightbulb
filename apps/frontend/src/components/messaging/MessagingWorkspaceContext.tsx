@@ -133,6 +133,7 @@ export function MessagingWorkspaceProvider({
   clientMessageIdRef.current = clientMessageId;
   threadClientMessageIdRef.current = threadClientMessageId;
   const [creationBusy, setCreationBusy] = useState(false);
+  const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
   const [creationError, setCreationError] = useState<string>();
   // A failed DM resolve-or-create (rooms.selectRoomError) otherwise vanishes:
   // the caller rethrows but nobody renders it. Dismissal is local — the hook
@@ -180,12 +181,14 @@ export function MessagingWorkspaceProvider({
     : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
-    participants: (rooms.directoryRoomDetails.get(room.roomId)?.members ?? [])
+    // Straight off the room summary — this used to come from a per-DM
+    // `getRoom` fan-out, so until it settled every DM row read "Direct message".
+    participants: (room.members ?? [])
       .filter((member) => member.kind !== "human" || member.id !== userId)
       .map((member) => member.kind === "agent"
         ? { ...member, agentActivity: activityByAgentId.get(member.id) }
         : { ...member, online: online.has(member.id) }),
-  })), [rooms.rooms, rooms.directoryRoomDetails, activityByAgentId, userId, online]);
+  })), [rooms.rooms, activityByAgentId, userId, online]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
@@ -237,27 +240,40 @@ export function MessagingWorkspaceProvider({
     // Read before the await: this is the room the message was sent FROM, even
     // if the owner switches rooms while it is in flight.
     const roomId = rooms.activeRoomId;
-    await sendRoomMessage(request);
-    // Clearing the SENDING room's stored row is always correct once the send
-    // succeeded — so it happens before the attempt-id guards, which a room
-    // switch mid-send trips and which only protect the NEW room's in-memory
-    // draft state below.
+    // Empty the box NOW, before the round trip — not after it.
+    //
+    // This used to await the POST first, and because `sendState` is "sending"
+    // for that whole flight the textarea was also disabled, so a sender watched
+    // their own text sit frozen in the composer while an optimistic copy of it
+    // rendered in the timeline below. Clearing on the keystroke is what makes
+    // sending feel instant; the optimistic row already carries the pending,
+    // failed and uncertain states, and `reconcileSend` still holds the request
+    // by its client id, so nothing is lost if the send does not land.
     if (thread) {
       if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
-      if (threadClientMessageIdRef.current !== request.clientMessageId) return;
-      setThreadDraft("");
-      setThreadClientMessageId(crypto.randomUUID());
+      if (threadClientMessageIdRef.current === request.clientMessageId) {
+        setThreadDraft("");
+        setThreadClientMessageId(crypto.randomUUID());
+      }
     } else {
       if (roomId) clearDraft(draftKey(scope, roomId, null));
-      if (clientMessageIdRef.current !== request.clientMessageId) return;
-      setDraft("");
-      setClientMessageId(crypto.randomUUID());
+      if (clientMessageIdRef.current === request.clientMessageId) {
+        setDraft("");
+        setClientMessageId(crypto.randomUUID());
+      }
     }
+    await sendRoomMessage(request);
   }, [sendRoomMessage, rooms.activeRoomId, scope]);
 
-  // Read every render: localStorage is the source, so no prop dependency
-  // could describe when this changes.
-  const draftRoomIds = listDraftRoomIds(scope);
+  // localStorage is the source, so no prop dependency truly describes when this
+  // changes — but it walks every key in the store and JSON.parses each hit, and
+  // the only writer is this component's own draft effects. Recomputing when a
+  // draft or the room actually moves is enough, and keeps it off the keystroke
+  // path for every OTHER room's row.
+  const draftRoomIds = useMemo(
+    () => listDraftRoomIds(scope),
+    [scope, draft, threadDraft, rooms.activeRoomId],
+  );
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
@@ -314,14 +330,17 @@ export function MessagingWorkspaceProvider({
   }
 
   async function selectParticipant(participant: DirectoryParticipant) {
-    setCreationBusy(true);
+    // Only the row being opened goes busy. This used to set `creationBusy`,
+    // which disables EVERY roster row, so opening one conversation froze the
+    // whole list for the duration of the round trip.
+    setOpeningParticipant(`${participant.kind}:${participant.id}`);
     setCreationError(undefined);
     try {
       await rooms.selectDm(participant);
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
     } finally {
-      setCreationBusy(false);
+      setOpeningParticipant(null);
     }
   }
 
@@ -372,8 +391,16 @@ export function MessagingWorkspaceProvider({
   const readSeqAtOpen = useRef<{ roomId: string; seq: number | null } | null>(null);
   if (rooms.activeRoom && readSeqAtOpen.current?.roomId !== rooms.activeRoom.roomId) readSeqAtOpen.current = { roomId: rooms.activeRoom.roomId, seq: rooms.activeRoom.lastReadSeq ?? null };
 
-  const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
-  const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
+  // `directoryLoading` is gone with the fan-out that produced it: the room list
+  // is now the whole sidebar, so there is nothing else to wait for.
+  const directoryState = rooms.roomsLoading ? "loading" : rooms.roomsError ? "error" : "ready";
+  // Messages in hand beat a pending room-detail read. The detail GET only adds
+  // the delivery key and pinned ids; blocking the whole panel on it meant a
+  // room you opened a moment ago still showed "Loading conversation…".
+  const roomState = rooms.roomLoading && rooms.messages.length === 0 ? "loading"
+    : rooms.accessRemoved ? "access-removed"
+    : rooms.roomError ? "unavailable"
+    : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
   const canManageResponses = ["owner", "admin"].includes(viewerRole);
@@ -387,6 +414,7 @@ export function MessagingWorkspaceProvider({
     currentRoomId: rooms.activeRoomId ?? undefined,
     onSelectRoom: rooms.selectRoom,
     onSelectParticipant: selectParticipant,
+    openingParticipant,
     onMarkUnread: rooms.markUnread,
     onSetPrefs: rooms.setRoomPrefs,
     onSaveSections: rooms.saveSections,

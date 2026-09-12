@@ -425,6 +425,35 @@ it("creates a section, renames it, and deletes it from the manage dialog", async
   expect(onSaveSections).toHaveBeenLastCalledWith([]);
 });
 
+// Regression: the row menu's "Move to <section>" item used to stay missing
+// until a full reload after creating that section in the same session (a
+// useRooms cache bug, since fixed) -- this exercises the RoomDirectory half
+// of that contract: once `sections` includes the new entry (whatever handed
+// it that -- the real hook, or here, a rerender standing in for it), the row
+// menu offers it immediately, with no remount.
+it("offers Move to <name> in the row menu right after that section is created, without a remount", async () => {
+  const onSaveSections = vi.fn().mockResolvedValue(undefined);
+  const onSetPrefs = vi.fn().mockResolvedValue(undefined);
+  const props = { ...sectionProps, onSaveSections, onSetPrefs };
+  const { rerender } = render(<RoomDirectory {...props} sections={[]} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.type(within(dialog).getByLabelText("New section name"), "Ops");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));
+  expect(onSaveSections).toHaveBeenCalledWith([{ id: expect.any(String), name: "Ops" }]);
+  const savedSectionId: string = onSaveSections.mock.calls[0][0][0].id;
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  // Stands in for the corrected hook handing back the new section on the
+  // very next render, in the same session -- not a remount/reload.
+  rerender(<RoomDirectory {...props} sections={[{ id: savedSectionId, name: "Ops" }]} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Move to Ops" }));
+  expect(onSetPrefs).toHaveBeenCalledWith("plain", { sectionId: savedSectionId });
+});
+
 it("moves a room into a section and back out from the row menu", async () => {
   const onSetPrefs = vi.fn().mockResolvedValue(undefined);
   const props = { ...sectionProps, onSetPrefs, sections: [{ id: "s-1", name: "Ship" }] };
@@ -477,6 +506,32 @@ it("keeps the section drag grip usable on touch and above the 44px touch floor",
   // treat it as a scroll of `.room-directory` first.
   expect(css).toMatch(/\.room-directory-grip\s*\{[^}]*touch-action:\s*none;/);
   expect(css).toMatch(/\.room-directory-actions,\s*\.room-directory-grip\s*\{\s*min-width:\s*44px;\s*\}/);
+});
+
+// The heading's title is a direct <h2> child of .room-directory-heading (the
+// CSS ellipsis selector below targets it structurally) -- jsdom won't apply
+// the stylesheet, so this pairs a DOM-structure assertion with a source-text
+// assertion of the rules instead of a computed-style one.
+it("keeps the sidebar heading from forcing the directory wider than its box", () => {
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={vi.fn()} onSaveSections={vi.fn()} />);
+  const heading = screen.getByText("Conversations");
+  expect(heading.tagName).toBe("H2");
+  expect(heading.parentElement).toHaveClass("room-directory-heading");
+  const actions = heading.nextElementSibling;
+  expect(actions).toHaveClass("room-directory-heading-actions");
+
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/\.room-directory\s*\{[^}]*overflow-x:\s*hidden;/);
+  expect(css).toMatch(/\.room-directory-heading\s*\{[^}]*flex-wrap:\s*wrap;/);
+  expect(css).toMatch(/\.room-directory-heading\s*>\s*h2\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/);
+  expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*flex-shrink:\s*0;/);
+  // When the actions cluster wraps onto its own line it's the lone flex item
+  // there, so .room-directory-heading's space-between has nothing left to
+  // space and collapses flush-left. margin-left: auto (not justify-content,
+  // which would only distribute space among the cluster's OWN children) is
+  // what pushes a flex item to the end of its own flex line.
+  expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*margin-left:\s*auto;/);
+  expect(css).toMatch(/\.room-directory-heading-actions,\s*\.room-directory-row\s*\{[^}]*min-width:\s*0;/);
 });
 
 it("reorders sections with the keyboard and persists the new order", async () => {

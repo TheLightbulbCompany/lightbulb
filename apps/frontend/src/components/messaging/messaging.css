@@ -137,9 +137,20 @@
 @keyframes agent-activity-halo {
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--brass) 20%, transparent); }
 }
-.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--muted); }
-.room-directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; }
+.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; overflow-x: hidden; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--muted); }
+.room-directory-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+/* The title shrinks and ellipsizes before the sidebar is forced wider than its
+   box; the actions cluster never shrinks, and only wraps to a second line
+   (via the container's flex-wrap above) once it alone can't fit. */
+.room-directory-heading > h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Once the actions cluster wraps onto its own line, it's the lone flex item
+   on that line -- .room-directory-heading's space-between has nothing to
+   space, so it collapses flush-left. justify-content on the cluster itself
+   would distribute space among ITS OWN children, not position the cluster on
+   its parent's line -- margin-left: auto is what pushes a flex item to the
+   end of its own flex line. */
+.room-directory-heading-actions { flex-shrink: 0; margin-left: auto; }
+.room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; min-width: 0; }
 .room-directory-row .room-directory-entry { min-width: 0; }
 .room-directory-actions { flex: none; opacity: 0; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
@@ -201,6 +212,10 @@
   .room-context { border-left: 0; }
   .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
   .room-panel button, .room-directory button, .room-run summary { min-height: 44px; }
+  /* The header's icon buttons (Star/Mute/Conversation options) are 36px
+     square and Search is 42px wide -- both under the touch floor even though
+     min-height above already clears 44. */
+  .room-audience button { min-width: 44px; min-height: 44px; }
   /* Icon-only sidebar controls (collapse chevron, next unread, new conversation,
      the row overflow trigger — which carries .room-directory-actions on the
      button itself) need the 44px in both axes; the sort select is a touch

@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
-import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomListResponse, RoomSummary, RunStatusResponse } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomListResponse, RoomSection, RoomSummary, RunStatusResponse } from "@lightbulb/shared";
 
 const room: RoomDetail = {
   roomId: "11111111-1111-4111-8111-111111111111",
@@ -704,6 +704,36 @@ describe("useRooms canonical reconciliation", () => {
 
     expect(messaging.setMemberPrefs).toHaveBeenCalledWith(room.roomId, { starred: true });
     await waitFor(() => expect(result.current.rooms[0].starred).toBe(true));
+  });
+
+  // Regression for the row menu's "Move to <section>" item not appearing
+  // until a full reload: saveSections used to write the server's response
+  // into the cache with a wholesale replace and no trailing revalidate, so a
+  // slower background revalidate (fired by any live event, undebounced) that
+  // started before this save could resolve afterward and silently clobber
+  // the section back out of the cache the row menu reads from.
+  it("makes a newly saved section available through the cache immediately, before the trailing revalidate settles", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    expect(result.current.sections).toEqual([]);
+
+    const saved: RoomSection = { id: "s-1", name: "Ops" };
+    messaging.putSections.mockResolvedValueOnce({ rooms: [room], sections: [saved] });
+    let resolveRevalidate!: (value: RoomListResponse) => void;
+    messaging.listRooms.mockImplementationOnce(() => new Promise((resolve) => { resolveRevalidate = resolve; }));
+
+    let saving!: Promise<void>;
+    act(() => { saving = result.current.saveSections([saved]); });
+    expect(messaging.putSections).toHaveBeenCalledWith({ sections: [saved] });
+
+    // The section is already in the cache from the response-driven write --
+    // this is what a row's "Move to Ops" item reads -- well before the
+    // trailing `mutateRooms()` revalidate below is allowed to resolve.
+    await waitFor(() => expect(result.current.sections).toEqual([saved]));
+    expect(result.current.rooms).toEqual([room]);
+
+    await act(async () => { resolveRevalidate({ rooms: [room], sections: [saved] }); await saving; });
+    expect(result.current.sections).toEqual([saved]);
   });
 
   it("passes fromSeq through to mark unread", async () => {

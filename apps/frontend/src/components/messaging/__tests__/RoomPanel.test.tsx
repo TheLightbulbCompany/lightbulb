@@ -239,6 +239,47 @@ it("opens and closes the real room context on a narrow viewport", async () => {
   expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
 });
 
+it("closes the room details panel and restores its trigger on Escape", async () => {
+  render(<RoomPanel {...props} narrow />);
+  const history = screen.getByRole("region", { name: "Messages" });
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = screen.getByRole("complementary", { name: "Room details" });
+  expect(history).not.toBeVisible();
+  fireEvent.keyDown(details, { key: "Escape" });
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(history).toBeVisible();
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
+});
+
+it("returns focus to the Details trigger, not <body>, when Escape closes the room details panel at wide width", async () => {
+  // No `narrow` prop and the default matchMedia stub (tests/setup.ts) matches
+  // nothing, so this renders as the docked (>=1180px) layout -- the restore
+  // effect used to gate its close branch on `isNarrow` and dropped focus to
+  // <body> here.
+  render(<RoomPanel {...props} />);
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = screen.getByRole("complementary", { name: "Room details" });
+  fireEvent.keyDown(details, { key: "Escape" });
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  const trigger = screen.getByRole("button", { name: /^Details/ });
+  expect(document.activeElement).toBe(trigger);
+  expect(trigger).toHaveFocus();
+});
+
+it("leaves focus on the Conversation tab, not the Details trigger, when it closes an open details panel", async () => {
+  // Same [contextCollapsed]-effect race as the Escape/Jump/search paths --
+  // this tab also closes the room-details panel, so clicking it must not get
+  // yanked back onto the Details trigger.
+  render(<RoomPanel {...props} />);
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  expect(screen.getByRole("complementary", { name: "Room details" })).toBeInTheDocument();
+  const conversationTab = screen.getByRole("button", { name: "Conversation" });
+  await userEvent.click(conversationTab);
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(document.activeElement).toBe(conversationTab);
+  expect(conversationTab).toHaveFocus();
+});
+
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
   render(<RoomPanel {...props} messages={[{ ...message, author: { kind, id: "friday", displayName: "Announcement" } }]} />);
   const article = screen.getByRole("article", { name: "Message from Announcement" });

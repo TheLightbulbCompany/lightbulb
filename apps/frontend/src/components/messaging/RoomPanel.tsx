@@ -389,8 +389,14 @@ function RoomContent({
   }, [id, searchTarget, selection]);
 
   useEffect(() => {
+    // Opening only steals focus into the panel on narrow layouts (it docks
+    // beside the conversation at wider widths, so nothing forces focus off
+    // whatever the viewer was already doing). Closing always has to put
+    // focus somewhere, though: the <aside> unmounts unconditionally at every
+    // width, and with no explicit target here the browser drops focus to
+    // <body> -- so the trigger gets it back regardless of viewport.
     if (!contextCollapsed && isNarrow && !selection) contextHeading.current?.focus({ preventScroll: true });
-    else if (contextCollapsed && contextWasOpen.current && isNarrow && !selection) contextTrigger.current?.focus({ preventScroll: true });
+    else if (contextCollapsed && contextWasOpen.current && !selection) contextTrigger.current?.focus({ preventScroll: true });
     contextWasOpen.current = !contextCollapsed;
   }, [contextCollapsed, isNarrow, selection]);
 
@@ -528,6 +534,10 @@ function RoomContent({
             // (e.g. a "Reply in thread" button) once selection clears below, racing
             // RoomTimeline's own focus of the newly targeted main message.
             trigger.current = null;
+            // Same race against the [contextCollapsed] effect below: if the room
+            // details panel happens to be open, closing it here must not steal
+            // focus back to the Details tab once RoomTimeline focuses this result.
+            contextWasOpen.current = false;
             onSelectThread?.(root);
             setSelection(root ? { kind: "thread", id: root } : null);
             setContextCollapsed(true);
@@ -536,7 +546,16 @@ function RoomContent({
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom} />
       <nav className="room-tabs" aria-label="Conversation views">
-        <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
+        <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined}
+          onClick={() => {
+            closeDetail();
+            // Same [contextCollapsed]-effect race as the search/Jump call
+            // sites above: this button closes the room details panel too,
+            // and the click itself should keep this button focused, not get
+            // yanked back onto the Details trigger.
+            contextWasOpen.current = false;
+            setContextCollapsed(true);
+          }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
         <button ref={contextTrigger} type="button" className="room-tab"
           aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
@@ -571,7 +590,8 @@ function RoomContent({
         disabled={!actionable || composer.disabled}
         dropTargetRef={historyRef} />
     </div>
-    {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
+    {showContext && !showDetail && <aside className="room-context" aria-label="Room details"
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
         participants={participants} actionable={actionable}
@@ -580,6 +600,10 @@ function RoomContent({
         onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined}
         // Reuses the shipped search scroll/highlight path rather than adding a second one.
         onOpenMessage={(messageId) => {
+          // Jumping here always closes this very panel -- skip the generic
+          // [contextCollapsed] close-focus-restore (below) so it doesn't fight
+          // RoomTimeline's own focus of the message just jumped to.
+          contextWasOpen.current = false;
           setContextCollapsed(true);
           setSearchTarget({ messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
         }}

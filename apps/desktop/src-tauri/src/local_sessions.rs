@@ -1043,6 +1043,8 @@ fn unsendable(original: &Value) -> Value {
         original["itemId"].as_str(),
     );
     marker["truncated"] = json!(true);
+    // The ids are inherited, and a queue restored from an older build never saw admissible.
+    admissible(&mut marker);
     marker
 }
 

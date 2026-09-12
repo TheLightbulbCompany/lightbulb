@@ -1,6 +1,12 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import { buildTimeline, roomDisplayName, runView, type TimelineItem } from "@lightbulb/shared";
+import {
+  buildTimeline,
+  roomDisplayName,
+  runView,
+  type CanonicalRoomMessage,
+  type TimelineItem,
+} from "@lightbulb/shared";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -17,6 +23,7 @@ import {
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
+import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../components/room/RunBlock";
@@ -104,6 +111,9 @@ function Conversation() {
     authorName: viewer?.displayName ?? "You",
     threadRootMessageId: null,
   });
+
+  // The message a long press is acting on; dropping it dismisses the sheet.
+  const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const atBottomRef = useRef(true);
@@ -216,6 +226,7 @@ function Conversation() {
               message={item.message}
               collapsed={item.collapsed}
               replyCount={replyCounts.get(item.message.messageId) ?? 0}
+              onLongPress={() => setActionTarget(item.message)}
               onOpenThread={() =>
                 router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
               }
@@ -233,6 +244,23 @@ function Conversation() {
         >
           <Feather name="arrow-down" size={16} color={colors.white} />
         </Pressable>
+      )}
+      {actionTarget && (
+        <MessageActionsSheet
+          message={actionTarget}
+          currentUserId={userId ?? ""}
+          roomId={roomId}
+          onClose={() => setActionTarget(null)}
+          onReact={(emoji, active) =>
+            void rooms.setReaction(actionTarget.messageId, emoji, active).catch(() => {})
+          }
+          onReplyInThread={() =>
+            router.push(`/(app)/room/${roomId}/thread/${actionTarget.messageId}`)
+          }
+          onMarkUnread={() =>
+            void rooms.markUnread(roomId, actionTarget.messageSeq).catch(() => {})
+          }
+        />
       )}
       <RoomComposer
         placeholder="Message"

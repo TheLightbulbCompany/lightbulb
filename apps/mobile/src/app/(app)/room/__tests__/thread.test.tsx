@@ -60,6 +60,7 @@ const mockBase = [
 let mockMessages: CanonicalRoomMessage[] = [...mockBase];
 
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 4 }));
+const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m5", messageSeq: 5, text: "on it", threadRootMessageId: "m1" }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
@@ -71,7 +72,7 @@ const mockLive = {
     markRead: mockMarkRead,
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
-    downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
+    downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
     updateMessage: jest.fn(), setReaction: jest.fn(), getLiveConfig: jest.fn(), listResources: jest.fn(),
@@ -101,6 +102,7 @@ describe("thread screen", () => {
     mockPush.mockClear();
     mockMarkRead.mockClear();
     mockSendMessage.mockClear();
+    mockMarkUnread.mockClear();
     mockMessages = [...mockBase];
   });
 
@@ -137,6 +139,18 @@ describe("thread screen", () => {
     await render(<Thread />);
     await waitFor(() => expect(screen.getByText("first")).toBeTruthy());
     expect(mockMarkRead).not.toHaveBeenCalled();
+  });
+
+  // The shared machine's read cursor is per ROOM, so this is the only unread a
+  // thread can express: the room, from this reply on. Per-thread unread is
+  // Phase B (it needs a backend field).
+  it("marks the room unread from a reply, and offers no nested thread", async () => {
+    await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent(screen.getByText("second"), "longPress");
+    expect(screen.queryByText("Reply in thread")).toBeNull();
+    await fireEvent.press(screen.getByText("Mark unread"));
+    await waitFor(() => expect(mockMarkUnread).toHaveBeenCalledWith("room-1", 2));
   });
 
   it("labels a reply that failed to send and retries it", async () => {

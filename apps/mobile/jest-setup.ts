@@ -41,3 +41,9 @@ jest.mock(
   }),
   { virtual: true },
 );
+
+// Clipboard: a real dep, mocked so no suite reaches the native module. Suites
+// that assert WHAT was copied re-mock it with their own spy.
+jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }), {
+  virtual: true,
+});

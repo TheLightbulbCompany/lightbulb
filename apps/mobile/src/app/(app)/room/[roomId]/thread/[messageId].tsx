@@ -1,5 +1,10 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { buildTimeline, roomDisplayName, runView } from "@lightbulb/shared";
+import {
+  buildTimeline,
+  roomDisplayName,
+  runView,
+  type CanonicalRoomMessage,
+} from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -13,6 +18,7 @@ import {
 } from "react-native";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
+import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
@@ -82,6 +88,9 @@ export default function ThreadScreen() {
     threadRootMessageId: messageId ?? null,
   });
 
+  // The message a long press is acting on; dropping it dismisses the sheet.
+  const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
+
   const runningRun = runs.find((run) => run.state === "running");
   const agentName = useCallback(
     (agentId: string) =>
@@ -116,6 +125,7 @@ export default function ThreadScreen() {
                 message={root}
                 collapsed={false}
                 replyCount={0}
+                onLongPress={() => setActionTarget(root)}
                 downloadAttachment={rooms.downloadAttachment}
               />
               <View style={styles.hairline} />
@@ -167,11 +177,34 @@ export default function ThreadScreen() {
               message={item.message}
               collapsed={item.collapsed}
               replyCount={0}
+              onLongPress={() => setActionTarget(item.message)}
               downloadAttachment={rooms.downloadAttachment}
             />
           );
         }}
       />
+      {actionTarget && (
+        <MessageActionsSheet
+          message={actionTarget}
+          currentUserId={userId ?? ""}
+          roomId={roomId}
+          onClose={() => setActionTarget(null)}
+          onReact={(emoji, active) =>
+            void rooms.setReaction(actionTarget.messageId, emoji, active).catch(() => {})
+          }
+          // No Reply in thread: this IS the thread, the composer below is the
+          // reply box, and Paperclip threads are one level deep.
+          //
+          // Mark unread marks the ROOM from this message's sequence — the read
+          // cursor is per room, so that is the only unread a thread can express.
+          // ponytail: per-thread unread is Phase B (a backend field), and
+          // popping back to the conversation re-marks the room read, so this
+          // sticks only when the user leaves the room from here.
+          onMarkUnread={() =>
+            void rooms.markUnread(roomId, actionTarget.messageSeq).catch(() => {})
+          }
+        />
+      )}
       <RoomComposer
         placeholder="Reply…"
         disabled={!canSend}

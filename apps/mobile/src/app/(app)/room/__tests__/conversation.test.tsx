@@ -74,6 +74,8 @@ const mockBase = [
 let mockMessages: CanonicalRoomMessage[] = [...mockBase];
 
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
+const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
+const mockSetReaction = jest.fn(async () => mockMsg({ messageId: "m2", messageSeq: 2, text: "second", reactions: { "🎉": ["user-a"] } }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
@@ -85,10 +87,10 @@ const mockLive = {
     markRead: mockMarkRead,
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
-    downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
+    downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
-    updateMessage: jest.fn(), setReaction: jest.fn(), getLiveConfig: jest.fn(), listResources: jest.fn(),
+    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
   onEvent: () => () => {}, onChatMessage: () => () => {},
@@ -116,6 +118,8 @@ describe("conversation screen", () => {
     mockPush.mockClear();
     mockMarkRead.mockClear();
     mockSendMessage.mockClear();
+    mockMarkUnread.mockClear();
+    mockSetReaction.mockClear();
     mockMessages = [...mockBase];
   });
 
@@ -194,6 +198,31 @@ describe("conversation screen", () => {
     const list = screen.getByTestId("room-timeline");
     expect(list.props.keyboardDismissMode).toBe("interactive");
     expect(list.props.keyboardShouldPersistTaps).toBe("handled");
+  });
+
+  it("opens the actions sheet on a long press and acts on the message pressed", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.queryByText("Mark unread")).toBeNull();
+    await fireEvent(screen.getByText("second"), "longPress");
+    await fireEvent.press(screen.getByLabelText("React with 🎉"));
+    await waitFor(() =>
+      expect(mockSetReaction).toHaveBeenCalledWith("room-1", "m2", "🎉", true),
+    );
+    // Acting dismisses the sheet, the way Slack's does.
+    expect(screen.queryByText("Mark unread")).toBeNull();
+    // Mark unread FROM that message's sequence, not the whole room from zero.
+    await fireEvent(screen.getByText("second"), "longPress");
+    await fireEvent.press(screen.getByText("Mark unread"));
+    await waitFor(() => expect(mockMarkUnread).toHaveBeenCalledWith("room-1", 2));
+  });
+
+  it("opens the thread from the sheet's Reply in thread", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent(screen.getByText("second"), "longPress");
+    await fireEvent.press(screen.getByText("Reply in thread"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/thread/m2");
   });
 
   it("shows a jump-to-latest pill only after scrolling away from the bottom", async () => {

@@ -600,6 +600,30 @@ class MetricsTests(unittest.TestCase):
             _, lines = capture_stdout(index._project_message, old)
         self.assertEqual(metric_lines(lines, "messaging.projector.notify.latency"), [])
 
+    def test_notify_latency_parses_production_shaped_created_at(self):
+        # core.dynamodb.utc_now_iso() writes "+00:00" with microseconds and no
+        # "Z" -- confirm _parse_rfc3339 (shared with _require_timestamp) and
+        # the latency metric both handle that shape, not just the "Z" one.
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm"}}
+        )
+        message = message_item()
+        message["createdAt"] = "2020-01-01T00:00:00.123456+00:00"
+        with patch.object(index, "_publish"):
+            _, lines = capture_stdout(index._project_message, message)
+        latency_lines = metric_lines(lines, "messaging.projector.notify.latency")
+        self.assertEqual(len(latency_lines), 1)
+        self.assertGreater(latency_lines[0]["messaging.projector.notify.latency"], 0)
+
+    def test_emit_metric_never_raises_on_a_non_serializable_dimension(self):
+        class Unserializable:
+            pass
+
+        _, lines = capture_stdout(
+            index._emit_metric, "messaging.projector.push", 1, "Count", {"outcome": Unserializable()}
+        )
+        self.assertEqual(lines, [])
+
 
 class ReplayTests(unittest.TestCase):
     def test_replay_reads_one_s3_object_and_reports_ids_only(self):

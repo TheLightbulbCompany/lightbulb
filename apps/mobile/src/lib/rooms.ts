@@ -1,7 +1,7 @@
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
 import { useRooms, type RoomsPlatform, type UseRoomsOptions, type UseRoomsResult } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AppState } from "react-native";
 
 import { useLiveEvents } from "../providers/live-events";
@@ -24,10 +24,23 @@ export function useRoomsPlatform(visible = true): RoomsPlatform {
     () => visibleRef.current && AppState.currentState === "active",
     [],
   );
+  const listeners = useRef(new Set<() => void>());
   const onVisibilityChange = useCallback((listener: () => void) => {
+    listeners.current.add(listener);
     const subscription = AppState.addEventListener("change", () => listener());
-    return () => subscription.remove();
+    return () => {
+      listeners.current.delete(listener);
+      subscription.remove();
+    };
   }, []);
+  // The screen's own focus is the other half of isVisible(), so a change in it
+  // has to notify too — AppState alone leaves a room that was blurred by a
+  // pushed thread screen never re-marking read on the way back. Firing on
+  // mount is a no-op: the shared hook subscribes in a later effect and calls
+  // markVisibleRead() itself there, so the set is still empty here.
+  useEffect(() => {
+    for (const listener of listeners.current) listener();
+  }, [visible]);
   return useMemo(() => ({
     userId: userId ?? null,
     orgId: organization?.id ?? null,

@@ -24,6 +24,13 @@ jest.mock("../../providers/live-events", () => ({ useLiveEvents: () => mockLive 
 import { blobToDataUri, useRoomsPlatform } from "../rooms";
 
 describe("useRoomsPlatform", () => {
+  // jest-expo's AppState.addEventListener returns undefined, not a subscription;
+  // stub it so `.remove()` on unsubscribe is exercised the way a device behaves.
+  beforeEach(() => {
+    jest.spyOn(AppState, "addEventListener").mockReturnValue({ remove: () => {} } as never);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
   it("reports identity, org and a native uuid", async () => {
     const { result } = await renderHook(() => useRoomsPlatform());
     expect(result.current.userId).toBe("user-a");
@@ -60,6 +67,26 @@ describe("useRoomsPlatform", () => {
     stop();
     expect(remove).toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  it("fires visibility listeners when the screen's own visible prop changes", async () => {
+    const { result, rerender } = await renderHook(({ v }: { v: boolean }) => useRoomsPlatform(v), { initialProps: { v: false } });
+    const seen = jest.fn();
+    const stop = result.current.onVisibilityChange(seen);
+    const platform = result.current;
+    await rerender({ v: true });
+    expect(seen).toHaveBeenCalledTimes(1);
+    // visible lives on a ref, so the platform object itself does not churn.
+    expect(result.current).toBe(platform);
+    stop();
+  });
+
+  it("fires nothing on a later visible change once the listener has unsubscribed", async () => {
+    const { result, rerender } = await renderHook(({ v }: { v: boolean }) => useRoomsPlatform(v), { initialProps: { v: false } });
+    const seen = jest.fn();
+    result.current.onVisibilityChange(seen)();
+    await rerender({ v: true });
+    expect(seen).not.toHaveBeenCalled();
   });
 
   it("keeps onVisibilityChange referentially stable across renders", async () => {

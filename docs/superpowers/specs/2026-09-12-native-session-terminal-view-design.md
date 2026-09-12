@@ -370,11 +370,20 @@ stay excluded (their `source` is `vscode`).
   transition. The pending `tool_use` row is already in the transcript, so the
   panel shows `⏺ Bash(rm -rf build)` + `waiting for approval on Prasiddha's
   Mac`. Codex exposes no equivalent and stays as today.
-- **Version pinning:** Claude documents its transcript format as internal and
-  unstable, which is why every mapping above is gated by the existing exact
-  `supported_version` list and a Claude upgrade reads `unsupported-version`
-  until re-qualified. The new rows extend that qualification; they do not
-  loosen it.
+- **Version range (owner decision 2026-09-12, "as old as we can"):** the
+  exact 2.1.268/2.1.269 pin becomes a range on the 2.1 line. Observation
+  (discovery, transcript mirror, status) from **2.1.145**, where
+  `claude agents --json` shipped; follow-ups from **2.1.224**, where the
+  per-session inbox socket shipped (changelog facts in plan Task 8b). Below
+  the send floor a session registers `unsupported-version` and stays
+  observe-only; off the 2.1 line nothing is captured. 2.1.224–2.1.267 are
+  range-qualified, not live-verified, so two things fail closed rather than
+  stick: admission correlation matches the full sent text (whose provenance
+  header carries the request id) inside whatever wrapper the harness wrote,
+  and socket discovery accepts both `/tmp/cc-socks/` and `/tmp/cc-socks-<uid>/`.
+  Codex stays exact at 0.149.0. The backend keeps no version list at all;
+  the desktop's `controlUnavailableReason` is the only gate (shipped
+  separately as `fix/relay-trusts-desktop-verification`).
 - **Attribution on send (§2.4):** `transport::command` composes the header
   from the frame's `actor` (fallback `teammate` / no name when absent);
   `claude::send` passes the handle as `from`, sanitized to `[a-z0-9-]{1,32}`;

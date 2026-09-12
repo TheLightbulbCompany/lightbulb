@@ -14,7 +14,7 @@
 
 - Envelope: every desktop→backend frame ≤ 16 KiB serialized (`ascii_wire_len` on the desktop, `check_envelope` on the backend); ≤ 32 events per `local.session.events` batch; text batches ≤ 2 per second per session (`nextTextAt`). Unchanged.
 - Bounds (spec §4.1): `text` ≤ 12 KiB per event; `tool.input` ≤ 4 KiB; `tool.result` ≤ 12 KiB; output previews show the first 20 lines; `title` ≤ 120 chars; `cwdName` ≤ 128 chars. Constants: `MAX_TEXT = 12 * 1024`, `MAX_TOOL_INPUT = 4 * 1024`, `MAX_TOOL_RESULT = 12 * 1024`, `PREVIEW_LINES = 20`.
-- Qualified versions stay exact: Claude `"2.1.268" | "2.1.269"` (`claude::supported_version`), Codex `"0.149.0"`. The backend `_COMPATIBLE` set must list the same Claude versions.
+- Version qualification (owner decision 2026-09-12, "a range, as old as we can"): Claude is a range on the `2.1.x` line: **observe from 2.1.145** (`claude agents --json` shipped there) and **send from 2.1.224** (the per-session inbox socket shipped there); anything not `2.1.N` is unsupported. Codex stays exact `"0.149.0"`. The backend keeps no version list at all (PR `fix/relay-trusts-desktop-verification`); the desktop's `controlUnavailableReason` is the only gate.
 - No full filesystem paths leave the Mac in new fields: `cwdName` and `filePath` are basenames. Text the harness itself wrote (commands, diffs) is forwarded as-is, bounded and redacted.
 - Every new wire field is optional. Old desktops (text-only events, no title, no `actor`) and old web builds must keep working. Backend ships before desktop; desktop before web.
 - Timestamps travel as the native row's ISO-8601 string (`ts?: string`), not milliseconds: the desktop crate has no date parser and the browser has `Date.parse`.
@@ -62,52 +62,68 @@
 
 ## Phase A — backend (ships first)
 
-### Task 1: Qualify Claude 2.1.269 on the relay
+### Task 1: The relay trusts the desktop's runtime verification
 
-The desktop accepts Claude 2.1.268 and 2.1.269; the relay's `_COMPATIBLE` lists only 2.1.268, so a 2.1.269 session registers with `capabilitiesVerified=False` and the panel says "Sending is unavailable". This is live on the machine being tested.
+The desktop is the only component that can verify a native runtime (live process, transcript rows, inbox socket) and it already fails closed: an unqualified version registers with `controlUnavailableReason: "unsupported-version"`, a mismatched one with `"runtime-unverified"`. The relay then applies a second, hand-maintained allowlist of version strings (`_COMPATIBLE`) that verifies nothing and drifted: the desktop learned Claude 2.1.269 on 2026-09-11, the relay did not, so 2.1.269 sessions register send-disabled. Delete the list; capabilities follow the desktop's signal.
+
+Shipped ahead of the rest as its own PR (owner decision 2026-09-12); tick it here when that PR merges.
 
 **Files:**
-- Modify: `apps/backend/core/services/local_session_relay.py:29`
-- Test: `apps/backend/tests/unit/services/test_local_session_relay.py`
+- Modify: `apps/backend/core/services/local_session_relay.py:29, 215-218`
+- Test: `apps/backend/tests/unit/services/test_local_session_relay.py:355-366` (rewrite) and a new test
 
 **Interfaces:**
-- Produces: `_COMPATIBLE` containing `("claude", "2.1.269")`.
+- Produces: registration sets `capabilitiesVerified = descriptor.control_unavailable_reason is None` and `sendMode = "queue"` iff verified, for both providers, regardless of `providerVersion`. `_COMPATIBLE` no longer exists.
 
 - [ ] **Step 1: Write the failing test** (append to `test_local_session_relay.py`)
 
 ```python
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", ["2.1.268", "2.1.269"])
-async def test_every_desktop_qualified_claude_version_is_relay_compatible(transport, version):
+@pytest.mark.parametrize(
+    ("provider", "version", "reason", "verified"),
+    [
+        ("claude", "2.1.269", None, True),
+        ("claude", "2.1.300", None, True),
+        ("codex", "0.160.0", None, True),
+        ("claude", "2.1.269", "unsupported-version", False),
+        ("codex", "0.149.0", "runtime-unverified", False),
+    ],
+)
+async def test_relay_capabilities_follow_the_desktop_verification_not_a_version_list(transport, provider, version, reason, verified):
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
     connect(transport)
     response = await relay(transport).handle_message(
-        "conn-1", registration(provider="claude", providerVersion=version)
+        "conn-1", registration(provider=provider, providerVersion=version, controlUnavailableReason=reason)
     )
     row = await repo.get_session(OWNER, response["sessionId"])
-    assert row["capabilitiesVerified"] is True
-    assert row["capabilities"]["sendMode"] == "queue"
+    assert row["capabilitiesVerified"] is verified
+    assert row["capabilities"]["sendMode"] == ("queue" if verified else "none")
 ```
 
-- [ ] **Step 2: Run it, expect the 2.1.269 case to fail**
+- [ ] **Step 2: Run it, expect the unlisted-version cases to fail**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_local_session_relay.py -q -k qualified_claude`
-Expected: `[2.1.268]` PASS, `[2.1.269]` FAIL on `capabilitiesVerified is True`.
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_local_session_relay.py -q -k follow_the_desktop`
+Expected: `claude-2.1.269-None-True`, `claude-2.1.300-None-True`, `codex-0.160.0-None-True` FAIL; the two `False` cases PASS.
 
-- [ ] **Step 3: Fix**
+- [ ] **Step 3: Fix** — delete the `_COMPATIBLE = {…}` line and replace the `compatible = (…) in _COMPATIBLE and …` expression with
 
 ```python
-# Must list every version claude::supported_version accepts (apps/desktop/src-tauri/src/local_sessions/claude.rs).
-_COMPATIBLE = {("claude", "2.1.268"), ("claude", "2.1.269"), ("codex", "0.149.0")}
+                    # The desktop verifies the runtime and fails closed with a controlUnavailableReason;
+                    # a backend version list could only drift from it (it did: 2.1.269).
+                    compatible = descriptor.control_unavailable_reason is None
 ```
 
-- [ ] **Step 4: Run, expect PASS** (same command).
+- [ ] **Step 4: Rewrite the one test that pinned the list** — at `test_local_session_relay.py:355-366` the re-registration with `providerVersion="unproven"` asserts `not row["capabilitiesVerified"]`. Change that registration to carry `controlUnavailableReason="unsupported-version"` (keep `providerVersion="unproven"` if you like; it no longer matters) so the assertion still holds for the right reason.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run the whole relay file, expect PASS**
+
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_local_session_relay.py -q`
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add apps/backend/core/services/local_session_relay.py apps/backend/tests/unit/services/test_local_session_relay.py
-git commit -m "fix(sessions): relay qualifies Claude 2.1.269 like the desktop does"
+git commit -m "fix(sessions): relay trusts the desktop's runtime verification instead of a version list"
 ```
 
 ### Task 2: Rich event contract on the backend
@@ -1096,6 +1112,120 @@ Run: `TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --m
 ```bash
 git add apps/desktop/src-tauri/src/local_sessions.rs apps/desktop/src-tauri/src/local_sessions/claude.rs apps/desktop/src-tauri/src/local_sessions/transport.rs apps/desktop/src-tauri/examples/local_session_probe.rs
 git commit -m "feat(desktop): Claude adapter forwards tool calls, results, thinking and turn boundaries"
+```
+
+#### Task 8b: Claude version range, as old as we can
+
+Owner decision 2026-09-12. Facts from the Claude Code changelog (`anthropics/claude-code` CHANGELOG.md): `claude agents` shipped in 2.1.139 and `--json` in 2.1.145; `waitingFor` in 2.1.162; cross-session messaging with the per-session inbox socket in 2.1.224, hardened in 2.1.232 (socket-directory hardening, `crossSessionInbound` settings) and 2.1.238 (refusals reported to sender); the TUI's `Message from @<sender>` preview in 2.1.247. Transcript changes in range: 2.1.208 pruned file-history backups, 2.1.212 added `effort` to assistant rows; neither touches the rows we read. So: observation needs the listing (≥ 2.1.145); sending needs the socket (≥ 2.1.224). Versions 2.1.224–2.1.267 are range-qualified, not live-verified: two changes below keep them fail-closed rather than stuck.
+
+**Files:**
+- Modify: `apps/desktop/src-tauri/src/local_sessions/claude.rs` (`supported_version`, new `send_supported_version`, `capture` restriction and socket match, `correlated_user_uuid`)
+- Test: `claude.rs` `mod tests`
+
+**Interfaces:**
+- Produces: `claude::supported_version(v) -> bool` = `2.1.N` with `N >= 145` (observation floor; used by `normalize`, `verify_current_generation`); `claude::send_supported_version(v) -> bool` = `2.1.N` with `N >= 224` (used by `capture` for the `unsupported-version` restriction and by `correlated_user_uuid`). `local_sessions.rs` re-exports both.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+    #[test]
+    fn local_sessions_claude_versions_are_a_range_on_the_2_1_line() {
+        for (version, observe, send) in [
+            ("2.1.144", false, false),
+            ("2.1.145", true, false),
+            ("2.1.223", true, false),
+            ("2.1.224", true, true),
+            ("2.1.268", true, true),
+            ("2.1.269", true, true),
+            ("2.1.999", true, true),
+            ("2.2.0", false, false),
+            ("3.0.1", false, false),
+            ("2.1", false, false),
+            ("2.1.224.1", false, false),
+            ("2.1.abc", false, false),
+        ] {
+            assert_eq!(supported_version(version), observe, "{version} observe");
+            assert_eq!(send_supported_version(version), send, "{version} send");
+        }
+    }
+
+    #[test]
+    fn local_sessions_claude_correlation_matches_the_sent_text_inside_any_native_wrapper() {
+        let sent = "[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"7f3e\",\"actorUserId\":\"user_a\"}]\nHello";
+        let row = |content: String, version: &str| json!({"type":"user","sessionId":"s","version":version,"uuid":"aaaabbbb-cccc-4ddd-8eee-ffff00001111",
+            "message":{"role":"user","content":content}});
+        assert!(correlated_user_uuid(&row(format!("{PEER_PREFIX}{sent}{PEER_SUFFIX}"), "2.1.269"), "s", "2.1.269", sent).is_some());
+        assert!(correlated_user_uuid(&row(format!("Peer message:\n{sent}\n(some other 2.1.230 wording)"), "2.1.230"), "s", "2.1.230", sent).is_some(),
+            "an older wrapper still correlates on the unique sent text");
+        assert!(correlated_user_uuid(&row(sent.to_owned(), "2.1.223"), "s", "2.1.223", sent).is_none(), "below the send floor nothing correlates");
+        assert!(correlated_user_uuid(&row(format!("{PEER_PREFIX}{sent}{PEER_SUFFIX}"), "2.1.269"), "s", "2.1.269", "Hello").is_none(),
+            "a bare substring without the provenance header is not the sent text");
+    }
+```
+
+- [ ] **Step 2: Run, expect FAIL** (`supported_version("2.1.999")` is false today; `send_supported_version` missing).
+
+- [ ] **Step 3: Implement**
+
+```rust
+fn patch_level(version: &str) -> Option<u32> {
+    let mut parts = version.split('.');
+    if parts.next()? != "2" || parts.next()? != "1" {
+        return None;
+    }
+    let level = parts.next()?.parse::<u32>().ok()?;
+    parts.next().is_none().then_some(level)
+}
+
+/// Observation floor: `claude agents --json` exists from 2.1.145. Anything off the 2.1 line is unknown.
+pub fn supported_version(version: &str) -> bool {
+    patch_level(version).is_some_and(|n| n >= 145)
+}
+
+/// Send floor: the per-session inbox socket shipped in 2.1.224. Live-verified on 2.1.268 and 2.1.269;
+/// 2.1.224–2.1.267 are range-qualified and rely on fail-closed correlation and socket discovery.
+pub fn send_supported_version(version: &str) -> bool {
+    patch_level(version).is_some_and(|n| n >= 224)
+}
+```
+
+In `capture`: `let mut restriction = if send_supported_version(&installed_version) { None } else { Some("unsupported-version".into()) };` (was `supported_version`). The socket match accepts both directory layouts Anthropic has shipped:
+
+```rust
+    let socket = open_files(pid).await?.into_iter().find(|path| {
+        let text = path.to_string_lossy();
+        let in_socket_dir = ["/tmp/cc-socks/", "/private/tmp/cc-socks/"].iter().any(|p| text.starts_with(p))
+            || ["/tmp/cc-socks-", "/private/tmp/cc-socks-"].iter().any(|p| text.starts_with(p));
+        in_socket_dir && path.file_name().is_some_and(|n| n == format!("{pid}.sock").as_str())
+    });
+```
+
+In `verify_current_generation` the `if !supported_version(runtime)` check stays (observation floor). In `correlated_user_uuid` replace `!supported_version(version)` with `!send_supported_version(version)` and replace the exact-content comparison with a contains check on the full sent text (its provenance header carries the unique request id, so a substring match is still one-to-one):
+
+```rust
+        || !row["message"]["content"].as_str().is_some_and(|content| content.contains(sent))
+```
+`normalize`'s `user_text` still strips the known 2.1.268/269 wrapper when present; for other wrappers it falls back to `teammate_contribution` on the substring starting at `HEADER_PREFIX`:
+
+```rust
+    let inner = text
+        .strip_prefix(PEER_PREFIX)
+        .and_then(|t| t.strip_suffix(PEER_SUFFIX))
+        .or_else(|| text.find(HEADER_PREFIX).map(|at| &text[at..]));
+```
+(`teammate_contribution` only reads up to the header and the following body; any trailing native suffix on an unknown version becomes part of the body text, which is visible and honest rather than hidden.)
+
+Update the existing `local_sessions_claude_runtime_is_one_current_generation_version` test: the `row("2.1.270", since)` case is now supported (in range), so change that vector to a version off the line, `row("2.2.0", since)`; likewise the `unknown["version"] = json!("2.1.270")` assertion in `local_sessions_claude_269_public_output_and_exact_peer_receipt` becomes `"2.2.0"`.
+
+- [ ] **Step 4: Run desktop tests, expect PASS.**
+
+- [ ] **Step 5: Update the consent copy floor** — in `apps/frontend/src/components/desktop/LocalSessions.tsx:90` (Task 13 edits the same paragraph; whichever lands second keeps both changes) replace `Claude Code 2.1.268/2.1.269 and Codex 0.149.0` with `Claude Code 2.1.145 or newer on the 2.1 line (follow-ups from 2.1.224; verified on 2.1.268 and 2.1.269) and Codex 0.149.0`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/desktop/src-tauri/src/local_sessions/claude.rs apps/frontend/src/components/desktop/LocalSessions.tsx
+git commit -m "feat(desktop): qualify Claude 2.1.145+ for observation and 2.1.224+ for follow-ups"
 ```
 
 ### Task 9: Codex adapter reads the thread items the TUI renders

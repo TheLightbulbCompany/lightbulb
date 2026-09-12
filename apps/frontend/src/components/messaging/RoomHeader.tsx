@@ -67,6 +67,13 @@ export function RoomHeader({
 
   function restoreOptionsFocus() { optionsTrigger.current?.focus(); }
 
+  function cancelTopicEdit() {
+    reset();
+    setEditingTopic(false);
+    setTopicDraft(room?.topic ?? "");
+    topicTrigger.current?.focus();
+  }
+
   const Icon = room?.kind === "channel" ? Hash : room?.kind === "group-dm" ? Users : MessageCircle;
   const faces = counterparts.slice(0, FACES);
   const overflow = Math.max(0, participantCount - faces.length);
@@ -84,7 +91,9 @@ export function RoomHeader({
         <label className="sr-only" htmlFor={`${id}-topic`}>Topic</label>
         <input id={`${id}-topic`} className="room-input" autoFocus maxLength={250} value={topicDraft} disabled={pending}
           onChange={(event) => setTopicDraft(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); reset(); setEditingTopic(false); setTopicDraft(room?.topic ?? ""); topicTrigger.current?.focus(); } }} />
+          onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelTopicEdit(); } }} />
+        <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
+        <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={cancelTopicEdit}>Cancel</Button>
       </form> : ((onSetTopic && canEditRoom) || room?.topic) ? <>
         <span aria-hidden="true" className="room-topic-dot">·</span>
         {onSetTopic && canEditRoom

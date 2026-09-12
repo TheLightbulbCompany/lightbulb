@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
-import type { CanonicalRoomMessage } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, RoomMember } from "@lightbulb/shared";
 
+import { colors } from "../../../config/theme";
 import { MessageGroup } from "../MessageGroup";
 
 const downloadAttachment = jest.fn(async () => new Blob());
@@ -97,5 +98,106 @@ describe("MessageGroup reactions", () => {
     );
     const alert = screen.getByText("Could not update reaction. Try again.");
     expect(alert.props.accessibilityRole).toBe("alert");
+  });
+});
+
+const members: RoomMember[] = [
+  {
+    kind: "agent",
+    id: "agent-1",
+    displayName: "Friday",
+    mentionHandle: "friday",
+    role: "member",
+    listenMode: "active",
+    joinedAt: "x",
+    joinedSeq: 0,
+  },
+  {
+    kind: "human",
+    id: "user-a",
+    displayName: "Aden Kim",
+    mentionHandle: null,
+    role: "owner",
+    listenMode: null,
+    joinedAt: "x",
+    joinedSeq: 0,
+  },
+];
+
+const baseMessage: CanonicalRoomMessage = {
+  messageId: "m1",
+  roomId: "room-1",
+  messageSeq: 1,
+  roomRevision: 1,
+  author: { kind: "human", id: "user-b", displayName: "Someone Else" },
+  text: "hey @Friday can you ship this",
+  mentions: [{ kind: "agent", id: "agent-1" }],
+  replyToMessageId: null,
+  threadRootMessageId: null,
+  createdAt: "2026-09-12T10:00:00Z",
+  runId: null,
+};
+
+describe("MessageGroup mentions", () => {
+  it("renders a mention of another member as a chip, and leaves the row untinted for a viewer it doesn't name", async () => {
+    await render(
+      <MessageGroup
+        message={baseMessage}
+        collapsed={false}
+        replyCount={0}
+        downloadAttachment={downloadAttachment}
+        members={members}
+        currentUserId="user-a"
+      />,
+    );
+    const chip = screen.getByText("@Friday");
+    expect(chip).toHaveStyle({ color: colors.info, backgroundColor: colors.mentionBg });
+    expect(screen.getByTestId("message-group")).not.toHaveStyle({
+      backgroundColor: colors.mentionRowBg,
+    });
+  });
+
+  it("tints the whole row when the message mentions the viewer", async () => {
+    const message: CanonicalRoomMessage = {
+      ...baseMessage,
+      text: "hey @Aden Kim can you take a look",
+      mentions: [{ kind: "human", id: "user-a" }],
+    };
+    await render(
+      <MessageGroup
+        message={message}
+        collapsed={false}
+        replyCount={0}
+        downloadAttachment={downloadAttachment}
+        members={members}
+        currentUserId="user-a"
+      />,
+    );
+    expect(screen.getByText("@Aden Kim")).toBeTruthy();
+    expect(screen.getByTestId("message-group")).toHaveStyle({
+      backgroundColor: colors.mentionRowBg,
+    });
+  });
+
+  it("leaves plain text with no mentions untouched", async () => {
+    const message: CanonicalRoomMessage = {
+      ...baseMessage,
+      text: "just chatting, no mentions here",
+      mentions: [],
+    };
+    await render(
+      <MessageGroup
+        message={message}
+        collapsed={false}
+        replyCount={0}
+        downloadAttachment={downloadAttachment}
+        members={members}
+        currentUserId="user-a"
+      />,
+    );
+    expect(screen.getByText("just chatting, no mentions here")).toBeTruthy();
+    expect(screen.getByTestId("message-group")).not.toHaveStyle({
+      backgroundColor: colors.mentionRowBg,
+    });
   });
 });

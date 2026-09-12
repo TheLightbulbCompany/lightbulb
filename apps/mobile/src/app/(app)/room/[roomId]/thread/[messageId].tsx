@@ -194,6 +194,8 @@ export default function ThreadScreen() {
                 onToggleReaction={(emoji, active) => reactToMessage(root.messageId, emoji, active)}
                 onLongPress={() => setActionTarget(root)}
                 downloadAttachment={rooms.downloadAttachment}
+                members={members ?? []}
+                currentUserId={userId ?? ""}
               />
               <View style={styles.hairline} />
               <Text style={styles.count}>
@@ -221,6 +223,8 @@ export default function ThreadScreen() {
               rows={rows}
               onRetry={(clientMessageId) => void retry(clientMessageId)}
               downloadAttachment={rooms.downloadAttachment}
+              members={members ?? []}
+              currentUserId={userId ?? ""}
             />
             {runs.map((run) => (
               <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
@@ -251,6 +255,8 @@ export default function ThreadScreen() {
               }
               onLongPress={() => setActionTarget(item.message)}
               downloadAttachment={rooms.downloadAttachment}
+              members={members ?? []}
+              currentUserId={userId ?? ""}
             />
           );
         }}

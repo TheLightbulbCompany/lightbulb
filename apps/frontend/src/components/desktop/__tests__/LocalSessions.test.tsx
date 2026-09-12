@@ -4,10 +4,84 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { LocalSessions } from "../LocalSessions";
+import { DesktopPermissionsGate } from "../DesktopPermissionsGate";
+import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/desktopPermissions";
+vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
 
 const auth = vi.hoisted(()=>({userId:"alice",orgId:"org",getToken:vi.fn()}));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 const invoke = vi.fn();
+it("offers sharing with the other permissions once and sends nothing until Continue", async () => {
+  invoke.mockImplementation(async (command) => {
+    if (command === "local_sessions_set") return 1;
+    return { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
+  });
+  render(<DesktopPermissionsGate />);
+  expect(await screen.findByRole("button", {name:/Share Claude & Codex sessions/})).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("alertdialog", {name:"Connect this Mac"})).toBeInTheDocument();
+  expect(screen.getByRole("button", {name:/Browser/})).toBeInTheDocument();
+  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status")).toBe(true);
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+});
+it("keeps an initial off choice off after reopening without requesting a token", async () => {
+  invoke.mockResolvedValue({ enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  const view = render(<DesktopPermissionsGate />);
+  await userEvent.click(await screen.findByRole("button", {name:/Share Claude & Codex sessions/}));
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
+  expect(auth.getToken).not.toHaveBeenCalled();
+  expect(invoke.mock.calls.some(([command]) => command === "local_sessions_revoke")).toBe(false);
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  view.unmount();
+  await act(async () => { render(<DesktopPermissionsGate />); });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+it("preserves an enrolled session when the Mac permission screen is shown again", async () => {
+  invoke.mockResolvedValue({ enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected" });
+  render(<DesktopPermissionsGate />);
+  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status")).toBe(true);
+});
+it("keeps failed remote-history disable visible instead of silently completing setup", async () => {
+  invoke.mockImplementation(async command => command === "local_sessions_set" ? 1 : {
+    enrollment:{ownerId:"other",humanUserId:"bob",enabled:false,paused:true,recoveryPending:true},pairedWorkspaceId:null,status:"paused",
+  });
+  render(<DesktopPermissionsGate />);
+  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", {name:"Basic only"}));
+  expect(await screen.findByRole("alert")).toBeInTheDocument();
+  expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
+});
+it("stops sharing on retry even when failed enrollment status has not arrived", async () => {
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "local_sessions_set" && args.enabled) throw new Error("Enrollment unavailable");
+    return {enrollment:null,pairedWorkspaceId:"org",status:"paused"};
+  });
+  render(<DesktopPermissionsGate />);
+  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Enrollment unavailable");
+  expect(screen.getByRole("button", {name:/Browser/})).toBeDisabled();
+  expect(screen.queryByRole("button", {name:"Basic only"})).toBeNull();
+  await userEvent.click(screen.getByRole("button", {name:"Continue without sharing"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
+});
+it.each([true, false])("does not re-prompt or change saved enrollment on relaunch (enabled=%s)", async (enabled) => {
+  invoke.mockResolvedValue({ enrollment:{ownerId:"org",humanUserId:"alice",enabled,paused:false}, pairedWorkspaceId:"org", status:"connected" });
+  writeDesktopPermissionGrant(DEFAULT_DESKTOP_PERMISSIONS);
+  render(<DesktopPermissionsGate />);
+  await waitFor(() => expect(invoke).toHaveBeenCalled());
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByRole("button", {name:"Continue"})).toBeNull();
+  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status")).toBe(true);
+});
 beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";Object.assign(window,{__TAURI__:{core:{invoke}}}); });
 it("explains the full audience and requires an already connected Mac", async () => {
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:null,status:""});

@@ -1,13 +1,14 @@
-import type { MemberRef } from "@lightbulb/shared";
-import type { RoomParticipant } from "./types";
+import type { MemberRef, RoomMember } from "./types";
 
 export const MENTION_SCHEME = "mention:";
-type Target = Pick<RoomParticipant, "kind" | "id" | "displayName" | "mentionHandle">;
+
+/** Anything addressable by `@`: a room member, or a directory candidate. */
+export type MentionTarget = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle">;
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 interface TokenEntry {
-  participant: Target;
+  participant: MentionTarget;
   token: string;
   isHandle: boolean;
 }
@@ -18,7 +19,7 @@ interface TokenEntry {
 // A human answers to their handle AND their display name: rows that predate
 // server-side human handles carry mentionHandle: null and are still addressed
 // by name.
-function tokenEntries(participants: readonly Target[]): TokenEntry[] {
+function tokenEntries(participants: readonly MentionTarget[]): TokenEntry[] {
   return participants
     .flatMap((participant) =>
       [participant.mentionHandle, participant.kind === "human" ? participant.displayName : null]
@@ -50,7 +51,7 @@ export function linkifyMentions(
   // send. This rewrite links any member token found in the text regardless of
   // whether it is also present here as a structured mention.
   mentions: readonly MemberRef[],
-  participants: readonly Target[],
+  participants: readonly MentionTarget[],
 ): string {
   const entries = tokenEntries(participants);
   if (entries.length === 0) return text;
@@ -67,7 +68,7 @@ export function linkifyMentions(
 }
 
 /** Every room member named by a plain `@token` in the prose of `text`. */
-export function resolveTypedMentions(text: string, participants: readonly Target[]): MemberRef[] {
+export function resolveTypedMentions(text: string, participants: readonly MentionTarget[]): MemberRef[] {
   const entries = tokenEntries(participants);
   if (entries.length === 0) return [];
   const pattern = tokenPattern(entries);
@@ -82,4 +83,44 @@ export function resolveTypedMentions(text: string, participants: readonly Target
     }
   });
   return found;
+}
+
+export type TriggerKind = "mention" | "emoji";
+
+export interface CompletionTrigger {
+  /** "mention" for `@`, "emoji" for `:`. */
+  kind: TriggerKind;
+  /** Index of the sigil itself. */
+  start: number;
+  /** The caret. */
+  end: number;
+  /** Everything typed after the sigil. */
+  query: string;
+}
+
+// A mention query may carry up to two internal spaces so `@Aden Kim` is
+// reachable (Open decision 1: the human token in text is `@Display Name`).
+// Nothing here rejects prose — the caller closes the list when no member
+// matches, which is the only rule that generalises to every display name.
+const MENTION_RE = /(?:^|\s)@([^\s@:]*(?: [^\s@:]*){0,2})$/;
+// Two characters minimum, per the spec's "`:` emoji typeahead after two characters".
+const EMOJI_RE = /(?:^|\s):([a-z0-9_+-]{2,})$/i;
+
+export function activeTrigger(value: string, caret: number | null): CompletionTrigger | null {
+  if (caret === null) return null;
+  const head = value.slice(0, caret);
+  const emoji = EMOJI_RE.exec(head);
+  if (emoji) return { kind: "emoji", start: caret - emoji[1].length - 1, end: caret, query: emoji[1] };
+  const mention = MENTION_RE.exec(head);
+  if (mention) return { kind: "mention", start: caret - mention[1].length - 1, end: caret, query: mention[1] };
+  return null;
+}
+
+export function applyCompletion(value: string, trigger: CompletionTrigger, token: string): { text: string; caret: number } {
+  const tail = value.slice(trigger.end);
+  const separator = tail.startsWith(" ") ? "" : " ";
+  return {
+    text: `${value.slice(0, trigger.start)}${token}${separator}${tail}`,
+    caret: trigger.start + token.length + separator.length,
+  };
 }

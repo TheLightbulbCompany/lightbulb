@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { runView, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
@@ -13,7 +13,6 @@ import { MessageNotifications } from "@/components/notifications/MessageNotifica
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
-import { resolveTypedMentions } from "./mentions";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";

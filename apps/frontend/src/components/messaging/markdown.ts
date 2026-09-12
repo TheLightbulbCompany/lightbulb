@@ -1,6 +1,6 @@
 import { defaultUrlTransform } from "react-markdown";
 import type { UrlTransform } from "react-markdown";
-import { MENTION_SCHEME } from "./mentions";
+import { MENTION_SCHEME } from "@lightbulb/shared";
 
 // react-markdown's default urlTransform blanks any href whose scheme it doesn't
 // recognize (http/https/mailto/relative/…), so a `mention:` link never reaches

@@ -122,6 +122,15 @@ export type {
   RunToolCall,
   TimelineItem,
 } from "./messaging/timeline";
+export {
+  MENTION_SCHEME,
+  activeTrigger,
+  applyCompletion,
+  linkifyMentions,
+  parseMentionHref,
+  resolveTypedMentions,
+} from "./messaging/mentions";
+export type { CompletionTrigger, MentionTarget, TriggerKind } from "./messaging/mentions";
 export type {
   LocalDevice,
   LocalSession,

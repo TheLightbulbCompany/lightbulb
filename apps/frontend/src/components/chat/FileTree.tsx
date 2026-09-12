@@ -24,26 +24,35 @@ function renderFileIcon(name: string, className: string): React.ReactElement {
   return <Icon className={className} />;
 }
 
+export type LoadChildren = (dirPath: string) => Promise<FileEntry[]>;
+
 interface FileTreeNodeProps {
   entry: FileEntry;
-  allEntries: FileEntry[];
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  /** Lists one folder; fetched the first time the folder is expanded. */
+  loadChildren?: LoadChildren;
 }
 
-function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNodeProps) {
+function FileTreeNode({ entry, selectedPath, onSelect, loadChildren }: FileTreeNodeProps) {
   const [expanded, setExpanded] = React.useState(false);
+  const [children, setChildren] = React.useState<FileEntry[] | null>(null);
+  const [loadError, setLoadError] = React.useState(false);
 
   if (entry.type === "dir") {
-    const children = allEntries.filter((e) => {
-      const parentPath = entry.path + "/";
-      return e.path.startsWith(parentPath) && !e.path.slice(parentPath.length).includes("/");
-    });
+    const toggle = () => {
+      const next = !expanded;
+      setExpanded(next);
+      if (next && children === null && loadChildren) {
+        setLoadError(false);
+        loadChildren(entry.path).then(setChildren, () => setLoadError(true));
+      }
+    };
 
     return (
       <div>
         <button
-          onClick={() => setExpanded(!expanded)}
+          onClick={toggle}
           className="w-full flex items-center gap-1.5 px-2 py-1 text-sm text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded-sm transition-colors"
         >
           {expanded ? <ChevronDown className="h-3 w-3 text-[var(--midnight-muted)] shrink-0" /> : <ChevronRight className="h-3 w-3 text-[var(--midnight-muted)] shrink-0" />}
@@ -52,15 +61,21 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
         </button>
         {expanded && (
           <div className="pl-4">
-            {children.map((child) => (
-              <FileTreeNode
-                key={child.path}
-                entry={child}
-                allEntries={allEntries}
-                selectedPath={selectedPath}
-                onSelect={onSelect}
-              />
-            ))}
+            {loadError ? (
+              <div className="px-2 py-1 text-xs text-[var(--midnight-muted)]">Couldn&apos;t load this folder.</div>
+            ) : children === null ? (
+              <div className="px-2 py-1 text-xs text-[var(--midnight-muted)]">Loading…</div>
+            ) : (
+              children.map((child) => (
+                <FileTreeNode
+                  key={child.path}
+                  entry={child}
+                  selectedPath={selectedPath}
+                  onSelect={onSelect}
+                  loadChildren={loadChildren}
+                />
+              ))
+            )}
           </div>
         )}
       </div>
@@ -107,6 +122,11 @@ interface FileTreeProps {
    * the tree also filters `files` down to only names in the allowlist.
    */
   allowlist?: string[];
+  /**
+   * Lists one folder's entries (Workspace tab). Folders are fetched when
+   * expanded, never all at once — see useWorkspaceTree.
+   */
+  loadChildren?: LoadChildren;
 }
 
 export function FileTree({
@@ -117,7 +137,10 @@ export function FileTree({
   isLoading,
   emptyMessage,
   allowlist,
+  loadChildren,
 }: FileTreeProps) {
+  // Bumped on refresh so expanded folders collapse and refetch on next expand.
+  const [generation, setGeneration] = React.useState(0);
   // When an allowlist is provided, we're in "curated" mode (Config tab):
   //   - filter `files` down to only names in the allowlist
   //   - synthesize ghost entries for allowlisted names that aren't present
@@ -143,16 +166,9 @@ export function FileTree({
     );
   }, [files, allowlist]);
 
-  const rootEntries = React.useMemo(() => {
-    if (allowlist) {
-      // In curated mode, every entry is a root entry — no tree nesting.
-      return displayEntries;
-    }
-    if (displayEntries.length === 0) return [];
-    const depths = displayEntries.map((f) => f.path.split("/").length);
-    const minDepth = Math.min(...depths);
-    return displayEntries.filter((f) => f.path.split("/").length === minDepth);
-  }, [displayEntries, allowlist]);
+  // `files` is one directory level (or the curated config list), so every
+  // entry is a root entry; folders load their own children when expanded.
+  const rootEntries = displayEntries;
 
   return (
     <div className="h-full flex flex-col">
@@ -161,7 +177,10 @@ export function FileTree({
         <Tooltip>
           <TooltipTrigger asChild>
             <button
-              onClick={onRefresh}
+              onClick={() => {
+                setGeneration((g) => g + 1);
+                onRefresh();
+              }}
               aria-label="Refresh file tree"
               className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
             >
@@ -179,11 +198,11 @@ export function FileTree({
         ) : (
           rootEntries.map((entry) => (
             <FileTreeNode
-              key={entry.path}
+              key={`${generation}:${entry.path}`}
               entry={entry}
-              allEntries={displayEntries}
               selectedPath={selectedPath}
               onSelect={onSelect}
+              loadChildren={loadChildren}
             />
           ))
         )}

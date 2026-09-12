@@ -21,6 +21,30 @@ interface Candidate extends MemberRef {
 const same = (left: MemberRef, right: MemberRef) =>
   left.kind === right.kind && left.id === right.id;
 
+type SheetMode = "channel" | "direct";
+
+// Mirrors the web creation dialog's own channel-name bound
+// (`RoomDirectory.tsx`'s `validName` for kind === "channel"), which itself
+// mirrors the backend's limit (`ROOM_NAME_MAX_CHARS` in
+// `core/services/messaging.py`) — the web dialog just picks a tighter bound
+// than the backend allows, and this sheet matches the web, not the backend.
+const CHANNEL_NAME_MAX_CHARS = 80;
+
+// Mirrors the web dialog's own participant cap (`RoomDirectory.tsx`'s
+// `canCreate`'s `selected.size <= 31`, and the picker checkbox's
+// `disabled={!selection && selected.size >= 31}`), which itself mirrors a
+// real backend constraint: `MAX_ROOM_MEMBERS = 32` in
+// `core/repositories/messaging_repo.py` (32 total room members = the 31
+// picked here + the creator, added automatically), enforced as a 409
+// `MEMBER_LIMIT` in `core/services/messaging.py`. A field that accepts more
+// than the backend will take is exactly the defect this cap exists to close.
+const MAX_ROOM_MEMBERS = 31;
+
+const SEGMENTS: readonly { key: SheetMode; label: string }[] = [
+  { key: "channel", label: "Channel" },
+  { key: "direct", label: "Direct message" },
+];
+
 /**
  * The pencil's sheet: pick people AND agents. One pick opens that
  * counterpart's canonical DM (`selectDm` reuses the existing room rather than
@@ -66,15 +90,25 @@ export function NewMessageSheet({
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Defaults to "direct", not "channel" — deliberately NOT matching the web
+  // dialog's own default. This sheet is opened from the pencil next to search
+  // (Slack's compose affordance: it starts a message, same as Slack's own
+  // pencil), while the web's "+" sits atop a sidebar whose first section is
+  // Channels. Two different entry points, two different defaults; do not
+  // "fix" this to match web.
+  const [mode, setMode] = useState<SheetMode>("direct");
+  const [channelName, setChannelName] = useState("");
 
-  // Opening is what loads the roster and what clears the last visit's picks —
-  // a reopened sheet that remembered them would silently add someone to a
-  // conversation you never chose.
+  // Opening is what loads the roster and what clears the last visit's picks,
+  // mode and name — a reopened sheet that remembered them would silently add
+  // someone to a conversation you never chose, or resubmit a stale channel name.
   useEffect(() => {
     if (!visible) return;
     setPicked([]);
     setQuery("");
     setError(null);
+    setMode("direct");
+    setChannelName("");
     let alive = true;
     // ponytail: `fetchMembers` is best-effort and resolves to `[]` on failure,
     // so a members outage reads as a workspace with nobody in it while the
@@ -113,41 +147,91 @@ export function NewMessageSheet({
   }, [agents, people, query]);
 
   const toggle = useCallback((ref: MemberRef) => {
-    setPicked((current) =>
-      current.some((entry) => same(entry, ref))
+    setPicked((current) => {
+      const alreadyPicked = current.some((entry) => same(entry, ref));
+      // A new pick past the cap is a no-op — mirrors the web dialog's
+      // checkbox `disabled={!selection && selected.size >= 31}`. Enforced
+      // here (not just via the row's `disabled` prop below) so the cap holds
+      // regardless of how the press reached this callback.
+      if (!alreadyPicked && current.length >= MAX_ROOM_MEMBERS) return current;
+      return alreadyPicked
         ? current.filter((entry) => !same(entry, ref))
-        : [...current, { kind: ref.kind, id: ref.id }],
-    );
+        : [...current, { kind: ref.kind, id: ref.id }];
+    });
   }, []);
 
-  const canStart = picked.length > 0 && !busy;
+  // Matches the web dialog's own kind-select `onChange`: switching modes
+  // clears the picks, since a roster chosen for one conversation shape isn't
+  // necessarily what you want for the other.
+  const changeMode = useCallback((next: SheetMode) => {
+    setMode(next);
+    setPicked([]);
+  }, []);
+
+  const trimmedChannelName = channelName.trim();
+  // Mirrors `RoomDirectory.tsx`'s `validName` for kind === "channel": non-blank,
+  // and no member-count minimum (a channel can be created with nobody picked
+  // yet). `validCount` there is `true` unconditionally for channels.
+  const validChannelName =
+    trimmedChannelName.length >= 1 && trimmedChannelName.length <= CHANNEL_NAME_MAX_CHARS;
+  // `picked.length <= MAX_ROOM_MEMBERS` is defensive — `toggle` already
+  // refuses a pick past the cap — the same belt-and-suspenders shape as the
+  // web dialog's `canCreate`, which checks `selected.size <= 31` even though
+  // its own checkbox is also disabled past that count.
+  const canStart =
+    !busy &&
+    picked.length <= MAX_ROOM_MEMBERS &&
+    (mode === "channel" ? validChannelName : picked.length > 0);
+  const actionLabel =
+    mode === "channel"
+      ? busy
+        ? "Creating…"
+        : "Create channel"
+      : picked.length > 1
+        ? "Create group"
+        : "Message";
+
   const start = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      const roomId =
-        picked.length === 1
-          ? await selectDm(picked[0], { activate: false })
-          : (
-              await createRoom({
-                clientRoomId: randomUUID(),
-                kind: "group-dm",
-                name: null,
-                members: picked.map((ref) => ({
-                  kind: ref.kind,
-                  id: ref.id,
-                  role: "member" as const,
-                  listenMode: ref.kind === "agent" ? ("active" as const) : null,
-                })),
-              }, { activate: false })
-            ).roomId;
+      let roomId: string | null;
+      if (mode === "channel") {
+        const created = await createRoom({
+          clientRoomId: randomUUID(),
+          kind: "channel",
+          name: trimmedChannelName,
+          members: picked.map((ref) => ({
+            kind: ref.kind,
+            id: ref.id,
+            role: "member" as const,
+            listenMode: ref.kind === "agent" ? ("mentions" as const) : null,
+          })),
+        }, { activate: false });
+        roomId = created.roomId;
+      } else if (picked.length === 1) {
+        roomId = await selectDm(picked[0], { activate: false });
+      } else {
+        const created = await createRoom({
+          clientRoomId: randomUUID(),
+          kind: "group-dm",
+          name: null,
+          members: picked.map((ref) => ({
+            kind: ref.kind,
+            id: ref.id,
+            role: "member" as const,
+            listenMode: ref.kind === "agent" ? ("active" as const) : null,
+          })),
+        }, { activate: false });
+        roomId = created.roomId;
+      }
       if (roomId) onOpenRoom(roomId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Conversation could not be opened.");
     } finally {
       setBusy(false);
     }
-  }, [createRoom, onOpenRoom, picked, selectDm]);
+  }, [createRoom, mode, onOpenRoom, picked, selectDm, trimmedChannelName]);
 
   return (
     <BottomSheet
@@ -159,6 +243,41 @@ export function NewMessageSheet({
       <View style={styles.card}>
         <View style={styles.handle} />
         <Text style={styles.overline}>NEW MESSAGE</Text>
+        <View style={styles.toggle}>
+          {SEGMENTS.map((segment) => {
+            const active = mode === segment.key;
+            return (
+              <Pressable
+                key={segment.key}
+                onPress={() => changeMode(segment.key)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                style={[styles.segment, active && styles.segmentActive]}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                  {segment.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {mode === "channel" ? (
+          <>
+            <Text style={styles.fieldLabel}>Channel name</Text>
+            <TextInput
+              style={styles.nameInput}
+              value={channelName}
+              onChangeText={setChannelName}
+              maxLength={CHANNEL_NAME_MAX_CHARS}
+              accessibilityLabel="Channel name"
+              autoCorrect={false}
+              autoCapitalize="none"
+            />
+            <Text style={styles.helper}>
+              Only selected workspace members can read this conversation.
+            </Text>
+          </>
+        ) : null}
         <View style={styles.searchPill}>
           <Feather name="search" size={14} color={colors.placeholder} />
           <TextInput
@@ -177,6 +296,10 @@ export function NewMessageSheet({
           keyExtractor={(candidate) => `${candidate.kind}:${candidate.id}`}
           contentContainerStyle={styles.list}
           keyboardShouldPersistTaps="handled"
+          // A workspace roster is small enough that virtualizing it away
+          // trades a real cost (blank rows mid-scroll) for a saving that
+          // doesn't matter at this size.
+          initialNumToRender={50}
           ListEmptyComponent={
             <Text style={styles.dim}>
               {query.trim() ? "Nobody matches that." : "No one to message yet."}
@@ -184,12 +307,22 @@ export function NewMessageSheet({
           }
           renderItem={({ item }) => {
             const chosen = picked.some((entry) => same(entry, item));
+            // Mirrors the web dialog's checkbox `disabled={!selection &&
+            // selected.size >= 31}` — an already-picked row stays togglable
+            // (you can still deselect it), only a NEW pick past the cap is
+            // blocked.
+            const atCap = !chosen && picked.length >= MAX_ROOM_MEMBERS;
             return (
               <Pressable
                 onPress={() => toggle(item)}
+                disabled={atCap}
                 accessibilityRole="button"
-                accessibilityState={{ selected: chosen }}
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                accessibilityState={{ selected: chosen, disabled: atCap }}
+                style={({ pressed }) => [
+                  styles.row,
+                  atCap && styles.rowDisabled,
+                  pressed && styles.rowPressed,
+                ]}
               >
                 <Avatar name={item.displayName} kind={item.kind} emoji={item.emoji} />
                 <Text style={styles.name} numberOfLines={1}>
@@ -212,9 +345,7 @@ export function NewMessageSheet({
             pressed && styles.actionPressed,
           ]}
         >
-          <Text style={styles.actionLabel}>
-            {picked.length > 1 ? "Create group" : "Message"}
-          </Text>
+          <Text style={styles.actionLabel}>{actionLabel}</Text>
         </Pressable>
       </View>
     </BottomSheet>
@@ -241,6 +372,57 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
+  },
+  toggle: {
+    flexDirection: "row",
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    padding: spacing.xs,
+    gap: spacing.xs,
+    borderRadius: radii.md,
+    backgroundColor: colors.creamDeeper,
+  },
+  segment: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: spacing.sm,
+    borderRadius: radii.sm,
+  },
+  segmentActive: {
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.edge,
+  },
+  segmentText: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
+  },
+  segmentTextActive: { color: colors.ink },
+  fieldLabel: {
+    ...type.caption,
+    fontFamily: fonts.sansMedium,
+    color: colors.mute,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.xs,
+  },
+  nameInput: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    height: 36,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.creamDeeper,
+    fontFamily: fonts.sans,
+    fontSize: 15,
+    color: colors.ink,
+  },
+  helper: {
+    ...type.caption,
+    color: colors.mute,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
   },
   searchPill: {
     flexDirection: "row",
@@ -274,6 +456,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   rowPressed: { backgroundColor: colors.rowPressed },
+  rowDisabled: { opacity: 0.5 },
   name: {
     flex: 1,
     fontFamily: fonts.sansMedium,

@@ -64,7 +64,13 @@ describe("NewMessageSheet", () => {
     mockSelectDm.mockClear();
     mockCreateRoom.mockClear();
     mockSelectDm.mockImplementation(async () => "room-dm");
-
+    // Reset every test to the two-person default roster — the cap test below
+    // overrides this for its own run, and without a reset here that override
+    // would leak into whichever test runs next.
+    mockFetchMembers.mockImplementation(async () => [
+      { userId: "user-a", name: "Alice" },
+      { userId: "user-b", name: "Bob" },
+    ]);
   });
 
   it("lists people and agents, and never the signed-in user", async () => {
@@ -137,6 +143,38 @@ describe("NewMessageSheet", () => {
     expect(screen.queryByText("Bob")).toBeNull();
   });
 
+  // Mirrors the web dialog's own participant cap (`RoomDirectory.tsx`'s
+  // `canCreate`'s `selected.size <= 31` and its checkbox's
+  // `disabled={!selection && selected.size >= 31}`), which itself mirrors
+  // the backend's `MAX_ROOM_MEMBERS = 32` (31 picked here + the creator).
+  // Applies regardless of mode; exercised here in the sheet's default
+  // "direct" mode.
+  it("caps member selection at 31 and never lets a 32nd pick land", async () => {
+    const many = Array.from({ length: 32 }, (_, index) => ({
+      userId: `user-${index}`,
+      name: `Person ${index}`,
+    }));
+    mockFetchMembers.mockImplementation(async () => many);
+    await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Person 0")).toBeTruthy());
+
+    for (let index = 0; index < 31; index += 1) {
+      await fireEvent.press(screen.getByText(`Person ${index}`));
+    }
+    expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      false,
+    );
+
+    // Person 31 would be the 32nd pick — the row is disabled past the cap,
+    // so this press is a no-op.
+    await fireEvent.press(screen.getByText("Person 31"));
+    await fireEvent.press(screen.getByLabelText("Start conversation"));
+    await waitFor(() => expect(mockCreateRoom).toHaveBeenCalled());
+    const members = mockCreateRoom.mock.calls[0][0].members as { id: string }[];
+    expect(members).toHaveLength(31);
+    expect(members.some((member) => member.id === "user-31")).toBe(false);
+  });
+
   it("says so when the conversation cannot be opened", async () => {
     const onOpenRoom = jest.fn();
     mockSelectDm.mockImplementation(async () => {
@@ -148,5 +186,76 @@ describe("NewMessageSheet", () => {
     await fireEvent.press(screen.getByLabelText("Start conversation"));
     await waitFor(() => expect(screen.getByText("offline")).toBeTruthy());
     expect(onOpenRoom).not.toHaveBeenCalled();
+  });
+
+  describe("channel mode", () => {
+    it("creates a channel with a trimmed name and the picked members", async () => {
+      const onOpenRoom = jest.fn();
+      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={onOpenRoom} />);
+      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
+      await fireEvent.press(screen.getByText("Channel"));
+      await fireEvent.changeText(screen.getByLabelText("Channel name"), "  launch-room  ");
+      await fireEvent.press(screen.getByText("Bob"));
+      await fireEvent.press(screen.getByLabelText("Start conversation"));
+      await waitFor(() =>
+        expect(mockCreateRoom).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: "channel",
+            name: "launch-room",
+            members: [{ kind: "human", id: "user-b", role: "member", listenMode: null }],
+          }),
+          { activate: false },
+        ),
+      );
+      await waitFor(() => expect(onOpenRoom).toHaveBeenCalledWith("room-group"));
+      expect(mockSelectDm).not.toHaveBeenCalled();
+    });
+
+    it("allows creating a channel with nobody picked yet", async () => {
+      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
+      await fireEvent.press(screen.getByText("Channel"));
+      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+        true,
+      );
+      await fireEvent.changeText(screen.getByLabelText("Channel name"), "general-2");
+      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+        false,
+      );
+    });
+
+    // Mirrors `RoomDirectory.tsx`'s channel `validName`: 1..80 trimmed characters.
+    it("rejects a blank or over-limit channel name", async () => {
+      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
+      await fireEvent.press(screen.getByText("Channel"));
+      const nameField = screen.getByLabelText("Channel name");
+      const submit = () => screen.getByLabelText("Start conversation");
+
+      await fireEvent.changeText(nameField, "   ");
+      expect(submit().props.accessibilityState.disabled).toBe(true);
+
+      await fireEvent.changeText(nameField, "a".repeat(81));
+      expect(submit().props.accessibilityState.disabled).toBe(true);
+
+      await fireEvent.changeText(nameField, "a".repeat(80));
+      expect(submit().props.accessibilityState.disabled).toBe(false);
+    });
+
+    it("clears previously picked members when switching modes", async () => {
+      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
+      await fireEvent.press(screen.getByText("Bob"));
+      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+        false,
+      );
+      await fireEvent.press(screen.getByText("Channel"));
+      await fireEvent.press(screen.getByText("Direct message"));
+      // Bob's pick did not survive the round trip through channel mode, the
+      // same way the web dialog clears `selected` on its kind-select onChange.
+      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+        true,
+      );
+    });
   });
 });

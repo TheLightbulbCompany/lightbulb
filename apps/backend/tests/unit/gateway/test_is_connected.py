@@ -1,10 +1,8 @@
-# backend/tests/unit/core/test_chat_event_transform.py
-"""Unit tests for GatewayConnection's ``is_connected`` property.
+"""``GatewayConnection.is_connected`` across websockets versions.
 
-The agent-event transform this file used to cover went with the room-frame
-relay (turns are asynchronous now — the container publishes its own frames).
-``_handle_message``'s surviving event routing is exercised in
-tests/unit/gateway/.
+v16 exposes ``.state`` (a ``State`` enum); older releases exposed a ``.closed``
+bool, and the property still falls back to it. Distinct from ``is_alive``,
+which stays True for a parked connection with runs in flight.
 """
 
 from unittest.mock import MagicMock

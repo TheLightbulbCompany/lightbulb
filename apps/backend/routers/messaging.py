@@ -495,7 +495,16 @@ async def abort_run(run_id: str, auth: AuthContext = Depends(get_current_user)):
         status = await _run_control(owner_id, run_id, "abort", {})
     except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not abort the run.", retryable=True, retry_after=3) from exc
-    return AbortRunResponse(run_id=run_id, state="aborting" if status == 202 else "already-terminal")
+    if status == 202:
+        return AbortRunResponse(run_id=run_id, state="aborting")
+    # Only the plugin's own "this run is not active" (404) and "no container at
+    # all" (None) mean the run is over. Anything else -- a 401 from a rotated
+    # gateway token, a 5xx -- is the runtime being unreachable, and reporting
+    # that as terminal would tell the client the run ended while the agent
+    # keeps going.
+    if status in (404, None):
+        return AbortRunResponse(run_id=run_id, state="already-terminal")
+    raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not abort the run.", retryable=True, retry_after=3)
 
 
 @router.post("/messaging/runs/{run_id}/steer", response_model=SteerRunResponse)

@@ -803,8 +803,15 @@ class GatewayConnection:
         `sessions.subscribe` (fork src/gateway/server-methods/sessions.ts),
         and drops the subscription on disconnect. Sent on every connect; because
         `reopen()` calls `connect()`, this re-subscribes on reconnect too.
-        Fire-and-forget: the `{subscribed:true}` ack is not needed to proceed —
-        if it never lands we simply fall back to stream-derived busy state, so
+
+        Nothing reads the `sessions.changed` payload any more — the run-active
+        frame it used to drive went with the room-frame relay. Its one remaining
+        job is arriving at all: `_handle_message` calls `_touch_run` on every
+        inbound event before it branches, so these broadcasts keep an active
+        run's `last_event_at` fresh and stop the parked watchdog escalating a
+        live-but-quiet connection to dead.
+
+        Fire-and-forget: the `{subscribed:true}` ack carries nothing we need, so
         we don't block connect on it. The ack `res` is harmlessly ignored by
         `_handle_message` (no matching entry in `_pending_rpcs`).
         """

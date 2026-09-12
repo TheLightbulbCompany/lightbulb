@@ -62,7 +62,7 @@ const state = {
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
-  messages: [], optimisticMessages: [], typingMembers: [], runs: [] as LiveRoomRun[],
+  messages: [], optimisticMessages: [] as Array<{ clientMessageId: string; roomId: string; text: string; mentions: never[]; replyToMessageId: null; threadRootMessageId: string | null; createdAt: string }>, typingMembers: [], runs: [] as LiveRoomRun[],
   historyLoading: false, historyComplete: false, historyError: false, historyErrorMessage: null as string | null,
   loadHistory: vi.fn(), selectRoomError: null as string | null,
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
@@ -77,6 +77,7 @@ beforeEach(() => {
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
   state.roomsError = undefined;
+  state.optimisticMessages = [];
   state.directoryError = undefined;
   state.directoryLoading = false;
   state.accessRemoved = false;
@@ -395,6 +396,50 @@ it("does not clear the new room's draft when the old room's send finishes", asyn
   });
 
   expect(panel.composer.text).toBe("Keep this draft in B");
+});
+
+it("shows a message as pending while it is in flight, even though the composer has moved on", async () => {
+  // The composer empties and takes a fresh client id the instant a send leaves,
+  // so the optimistic row can no longer be found by asking the composer what it
+  // is holding. If it is, the bubble matches nothing and the message is
+  // invisible until the server answers — worse than the frozen box it replaced.
+  let resolveSend!: () => void;
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  const request = { clientMessageId: sentId, text: "In flight", mentions: [], replyToMessageId: null, threadRootMessageId: null };
+  // What useRooms.sendMessage does synchronously before it awaits.
+  state.sendMessage.mockImplementationOnce(() => {
+    state.optimisticMessages = [{ ...request, roomId: room.roomId, createdAt: "2026-09-10T00:00:00Z" }];
+    return new Promise<void>((resolve) => { resolveSend = resolve; });
+  });
+  act(() => panel.composer.onTextChange("In flight"));
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)); });
+
+  expect(panel.composer.text).toBe("");
+  expect(panel.composer.clientMessageId).not.toBe(sentId);
+  expect(panel.pendingMessages?.map((message) => message.clientMessageId)).toContain(sentId);
+
+  await act(async () => { resolveSend(); await sending; });
+});
+
+it("hands a failed send back its text and its identity so retry still reaches it", async () => {
+  // On failure `useRooms` drops the optimistic row and the draft has already
+  // been cleared, so unless the composer re-adopts the failed id the message is
+  // gone: nothing rendered, nothing to retry, and both "Retry message" and
+  // "Check message status" would act on an id that tracks no request.
+  state.sendMessage.mockImplementationOnce(() => Promise.reject(new Error("network")));
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("Please come back"));
+  const request = { clientMessageId: sentId, text: "Please come back", mentions: [], replyToMessageId: null, threadRootMessageId: null };
+
+  await act(async () => {
+    await Promise.resolve(panel.composer.onSubmit(request)).catch(() => {});
+  });
+
+  expect(panel.composer.text).toBe("Please come back");
+  expect(panel.composer.clientMessageId).toBe(sentId);
 });
 
 it("clears the sending room's stored draft when the owner switches rooms mid-send", async () => {

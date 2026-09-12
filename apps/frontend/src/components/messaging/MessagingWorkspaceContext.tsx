@@ -132,6 +132,12 @@ export function MessagingWorkspaceProvider({
   const threadClientMessageIdRef = useRef(threadClientMessageId);
   clientMessageIdRef.current = clientMessageId;
   threadClientMessageIdRef.current = threadClientMessageId;
+  // Read in the send failure path, which resolves long after its closure was
+  // built and must know where the owner actually is now.
+  const activeRoomIdRef = useRef(rooms.activeRoomId);
+  activeRoomIdRef.current = rooms.activeRoomId;
+  const threadIdRef = useRef<string | null>(threadId);
+  threadIdRef.current = threadId;
   const [creationBusy, setCreationBusy] = useState(false);
   const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
   const [creationError, setCreationError] = useState<string>();
@@ -262,7 +268,35 @@ export function MessagingWorkspaceProvider({
         setClientMessageId(crypto.randomUUID());
       }
     }
-    await sendRoomMessage(request);
+    try {
+      await sendRoomMessage(request);
+    } catch (error) {
+      // Give it back. The composer has already moved on to a fresh id, so
+      // without this the failed message has nowhere to live: its optimistic row
+      // is dropped by `useRooms` on failure, its text was cleared, and both
+      // "Retry message" and "Check message status" would act on an id that
+      // tracks nothing. Re-adopting the failed id is what makes `sendState`
+      // report rejected/uncertain again and points retry at the real request.
+      const sameRoom = activeRoomIdRef.current === roomId;
+      if (thread) {
+        if (sameRoom && threadIdRef.current === request.threadRootMessageId) {
+          setThreadDraft(request.text);
+          setThreadClientMessageId(request.clientMessageId);
+        } else if (roomId && request.threadRootMessageId) {
+          writeDraft(draftKey(scope, roomId, request.threadRootMessageId), { text: request.text, mentions: request.mentions });
+        }
+      } else if (sameRoom) {
+        setDraft(request.text);
+        setClientMessageId(request.clientMessageId);
+      } else if (roomId) {
+        // Switched away mid-send: the text cannot go back into a composer that
+        // is now showing another room, so it goes back to that room's draft.
+        writeDraft(draftKey(scope, roomId, null), { text: request.text, mentions: request.mentions });
+      }
+      // Rethrown: the composer's own submit() turns a rejection into its
+      // uncertain state, and that path must keep working.
+      throw error;
+    }
   }, [sendRoomMessage, rooms.activeRoomId, scope]);
 
   // localStorage is the source, so no prop dependency truly describes when this
@@ -401,7 +435,13 @@ export function MessagingWorkspaceProvider({
     : rooms.accessRemoved ? "access-removed"
     : rooms.roomError ? "unavailable"
     : rooms.liveConnected ? "ready" : "reconnecting";
-  const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
+  // Every message still in flight for this room, NOT just the one the composer
+  // happens to be pointing at. The composer rotates to a fresh id the moment a
+  // send leaves, so filtering by it here meant the "Sending…" bubble matched
+  // nothing and the message vanished until the server answered — the opposite
+  // of the point. `useRooms` already scopes these to the active room and clears
+  // them on a room change, and RoomPanel splits main-timeline from thread.
+  const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
   const canManageResponses = ["owner", "admin"].includes(viewerRole);
 

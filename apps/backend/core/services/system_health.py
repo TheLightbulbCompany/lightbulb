@@ -6,9 +6,9 @@ Composes:
   cached for 30s (CEO P2) so the health page doesn't block on slow
   upstreams every render.
 - Background-task state for the async tasks spawned in main.py lifespan
-  (UsagePoller, IdleChecker, scheduled worker, etc.). main.py registers
-  task references in the BACKGROUND_TASKS dict at startup; we read
-  their .done()/.exception() state here.
+  (scheduled_worker, openclaw_work, trial_idle_sweeper, running_gauges).
+  main.py registers those task references in the BACKGROUND_TASKS dict at
+  startup; we read their .done()/.exception() state here.
 - Recent fleet-wide errors via cloudwatch_logs.recent_errors_fleet.
 
 Read by routers/admin.py: GET /admin/system/health.
@@ -34,7 +34,7 @@ _PROBE_CACHE_TTL_S = 30
 _probe_cache: dict[str, Any] = {"ts": 0.0, "value": None}
 
 # Set by main.py lifespan to {task_name: asyncio.Task}.
-# Read here to surface "is the IdleChecker still running" on /admin/health.
+# Read here to surface "is the trial_idle_sweeper still running" on /admin/health.
 BACKGROUND_TASKS: dict[str, asyncio.Task] = {}
 
 

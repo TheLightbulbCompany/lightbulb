@@ -365,6 +365,59 @@ async def test_record_usage_none_override_falls_back_to_token_pricing(dynamodb_t
 
 
 @pytest.mark.asyncio
+async def test_room_turn_writes_an_event_kind_row_beside_the_rollups(dynamodb_tables):
+    """Ambient (room_event) and addressed (user_request) room spend have to be
+    readable apart; the owner/lifetime/member rollups still carry every turn."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    common = dict(
+        owner_id="org_room",
+        user_id="user_a",
+        model="anthropic.claude-sonnet-4-6",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read=0,
+        cache_write=0,
+        room_turn=True,
+    )
+    await record_usage(**common, event_kind="user_request")
+    await record_usage(**common, event_kind="room_event")
+    await record_usage(**common, event_kind="room_event")
+
+    period = _current_period()
+    addressed = await usage_repo.get_period_usage("org_room", f"room:user_request:{period}")
+    ambient = await usage_repo.get_period_usage("org_room", f"room:room_event:{period}")
+    owner = await usage_repo.get_period_usage("org_room", period)
+
+    assert addressed is not None and addressed["request_count"] == 1
+    assert ambient is not None and ambient["request_count"] == 2
+    assert owner is not None and owner["request_count"] == 3
+    # The split rows must not leak into the per-member breakdown.
+    assert [m["user_id"] for m in await usage_repo.get_member_usage("org_room", period)] == ["user_a"]
+
+
+@pytest.mark.asyncio
+async def test_non_room_turn_writes_no_extra_row(dynamodb_tables):
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_web",
+        user_id="user_a",
+        model="anthropic.claude-sonnet-4-6",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read=0,
+        cache_write=0,
+    )
+
+    period = _current_period()
+    assert await usage_repo.get_period_usage("org_web", f"room:unknown:{period}") is None
+    assert await usage_repo.count_for_owner("org_web") == 3
+
+
+@pytest.mark.asyncio
 async def test_get_usage_summary_returns_zeros_for_empty(dynamodb_tables):
     from core.services.usage_service import get_usage_summary
 

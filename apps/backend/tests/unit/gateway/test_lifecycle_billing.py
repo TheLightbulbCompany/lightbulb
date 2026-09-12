@@ -405,3 +405,80 @@ async def test_run_completed_scheduling_failure_never_breaks_reader_or_billing(c
         await asyncio.sleep(0)
 
     mock_fetch.assert_awaited_once()
+
+
+# --- room-turn attribution -------------------------------------------------
+#
+# A room session key carries no member at all, so every room turn's spend used
+# to land on the owner. The dispatching member is on the active-run entry
+# (mark_run_active), the same place the run-completion push reads it from.
+
+_ROOM_AGENT_ID = "11111111-1111-4111-8111-111111111111"
+_ROOM_ID = "22222222-2222-4222-8222-222222222222"
+_ROOM_SESSION_KEY = f"agent:{_ROOM_AGENT_ID}:lightbulb:channel:{_ROOM_ID}"
+
+
+def _room_lifecycle_end(run_id: str = "run-room") -> dict:
+    return {
+        "runId": run_id,
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": _ROOM_SESSION_KEY,
+    }
+
+
+@pytest.mark.asyncio
+async def test_room_turn_bills_the_dispatching_member_not_the_owner(conn):
+    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, member_id="user_Bob", event_kind="user_request")
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        await conn._handle_message({"type": "event", "event": "agent", "payload": _room_lifecycle_end()})
+        await asyncio.sleep(0)
+
+    assert mock_fetch.call_args[0][1] == "user_Bob"
+    assert mock_fetch.call_args.kwargs == {"room_turn": True, "event_kind": "user_request"}
+
+
+@pytest.mark.asyncio
+async def test_room_turn_without_a_dispatching_member_still_falls_back_to_owner(conn):
+    """An ambient room_event has no human behind it."""
+    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, event_kind="room_event")
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        await conn._handle_message({"type": "event", "event": "agent", "payload": _room_lifecycle_end()})
+        await asyncio.sleep(0)
+
+    assert mock_fetch.call_args[0][1] == "org_1"
+    assert mock_fetch.call_args.kwargs == {"room_turn": True, "event_kind": "room_event"}
+
+
+@pytest.mark.asyncio
+async def test_active_run_is_read_before_the_terminal_can_clear_it(conn):
+    """The chat terminal clears _active_runs on the same reader loop, so the
+    carried member has to be captured synchronously — reading it inside the
+    spawned billing task races the clear and silently reverts to the owner."""
+    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, member_id="user_Bob")
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        conn._record_usage_from_session(_room_lifecycle_end())
+        conn._clear_active_run(_ROOM_SESSION_KEY, "run-room")
+        await asyncio.sleep(0)
+
+    assert mock_fetch.call_args[0][1] == "user_Bob"
+
+
+@pytest.mark.asyncio
+async def test_webchat_turn_is_not_marked_as_a_room_turn(conn):
+    payload = {
+        "runId": "run-web",
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:user_bob",
+    }
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await asyncio.sleep(0)
+
+    assert mock_fetch.call_args[0][1] == "user_bob"
+    assert mock_fetch.call_args.kwargs == {"room_turn": False, "event_kind": None}

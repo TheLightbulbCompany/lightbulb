@@ -105,14 +105,16 @@ function AgentChat() {
     accessRemoved,
     messages,
     optimisticMessages,
-    historyError,
+    historyErrorMessage,
     roomsError,
     directoryError,
     roomError,
+    selectRoomError,
     httpReady,
     liveConnected,
     loadHistory,
     refreshRooms,
+    selectAgentDm,
     sendMessage,
     reconcileSend,
     sendState,
@@ -446,12 +448,14 @@ function AgentChat() {
     ...items,
   ], [messages, optimisticMessages, items, userId]);
   // Once a room is open only its own detail error matters; before that, the
-  // resolve-or-create errors do. `accessRemoved` is not an error the user can
-  // retry past, so it leaves an empty transcript, as it always has.
-  const loadError = accessRemoved
-    ? undefined
-    : roomError ?? (activeRoom ? undefined : roomsError ?? directoryError);
-  const roomLoading = !activeRoom && !loadError;
+  // resolve-or-create errors do — `selectRoomError` last, since it reports the
+  // failed create rather than the more specific fetch that caused it.
+  // `accessRemoved` is not an error the user can retry past, so it leaves an
+  // empty transcript, as it always has.
+  const openError = roomError?.message
+    ?? (activeRoom ? undefined : roomsError?.message ?? directoryError?.message ?? selectRoomError);
+  const errorMessage = accessRemoved ? null : openError ?? historyErrorMessage;
+  const roomLoading = !activeRoom && !errorMessage;
   let lastUserIndex = -1;
   for (let index = allItems.length - 1; index >= 0; index -= 1) {
     if (allItems[index].role === "user") {
@@ -504,14 +508,15 @@ function AgentChat() {
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
-        ListHeaderComponent={loadError || historyError ? (
+        ListHeaderComponent={errorMessage ? (
           <View style={[styles.errorCard, styles.historyErrorCard]}>
-            <Text style={styles.errorText}>
-              {loadError ? `Couldn’t load history — ${loadError.message}` : "Couldn’t load history."}
-            </Text>
+            <Text style={styles.errorText}>Couldn’t load history — {errorMessage}</Text>
             <Pressable
               onPress={() => {
                 void refreshRooms().catch(() => {});
+                // `initialAgentId` is one-shot per agent inside the hook, so a
+                // failed resolve-or-create only retries if we re-drive it.
+                if (agentId) void selectAgentDm(agentId).catch(() => {});
                 loadHistory();
               }}
               accessibilityRole="button"

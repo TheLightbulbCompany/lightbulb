@@ -577,8 +577,17 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
   const saveSections = useCallback(async (next: readonly RoomSection[]) => {
-    const response = await messaging.putSections({ sections: [...next] });
-    await mutateRooms(response, false);
+    try {
+      const response = await messaging.putSections({ sections: [...next] });
+      // Merge like setRoomPrefs does, rather than replacing the cache entry
+      // outright: an in-flight background revalidate (the live-event and
+      // reconnect effects above call `mutateRooms()` with no debounce) can
+      // resolve after this write and, with a wholesale replace, silently
+      // clobber the section this call just saved back to the pre-save list.
+      await mutateRooms((current) => current && { ...current, sections: response.sections, rooms: response.rooms }, false);
+    } finally {
+      await mutateRooms();
+    }
   }, [messaging, mutateRooms]);
 
   const leaveRoom = useCallback(async (roomId: string) => {

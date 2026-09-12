@@ -425,6 +425,35 @@ it("creates a section, renames it, and deletes it from the manage dialog", async
   expect(onSaveSections).toHaveBeenLastCalledWith([]);
 });
 
+// Regression: the row menu's "Move to <section>" item used to stay missing
+// until a full reload after creating that section in the same session (a
+// useRooms cache bug, since fixed) -- this exercises the RoomDirectory half
+// of that contract: once `sections` includes the new entry (whatever handed
+// it that -- the real hook, or here, a rerender standing in for it), the row
+// menu offers it immediately, with no remount.
+it("offers Move to <name> in the row menu right after that section is created, without a remount", async () => {
+  const onSaveSections = vi.fn().mockResolvedValue(undefined);
+  const onSetPrefs = vi.fn().mockResolvedValue(undefined);
+  const props = { ...sectionProps, onSaveSections, onSetPrefs };
+  const { rerender } = render(<RoomDirectory {...props} sections={[]} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.type(within(dialog).getByLabelText("New section name"), "Ops");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));
+  expect(onSaveSections).toHaveBeenCalledWith([{ id: expect.any(String), name: "Ops" }]);
+  const savedSectionId: string = onSaveSections.mock.calls[0][0][0].id;
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  // Stands in for the corrected hook handing back the new section on the
+  // very next render, in the same session -- not a remount/reload.
+  rerender(<RoomDirectory {...props} sections={[{ id: savedSectionId, name: "Ops" }]} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Move to Ops" }));
+  expect(onSetPrefs).toHaveBeenCalledWith("plain", { sectionId: savedSectionId });
+});
+
 it("moves a room into a section and back out from the row menu", async () => {
   const onSetPrefs = vi.fn().mockResolvedValue(undefined);
   const props = { ...sectionProps, onSetPrefs, sections: [{ id: "s-1", name: "Ship" }] };

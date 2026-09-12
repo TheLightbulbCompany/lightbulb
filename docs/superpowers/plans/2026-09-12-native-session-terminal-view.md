@@ -1622,6 +1622,9 @@ git commit -m "feat(desktop): pack transcript events per envelope; report title,
         assert_eq!(cmd.provenance()["actorHandle"], "aden");
         let (provenance, body) = teammate_contribution(&format!("{header}hello")).unwrap();
         assert_eq!((provenance["actorUserId"].as_str(), body.as_str()), (Some("alice"), "hello"));
+        cmd.label = Some(ActorLabel { kind: "human".into(), handle: Some("aden".into()), display_name: Some("Aden {Kim]\n".into()) });
+        assert!(cmd.header().starts_with("[Lightbulb teammate contribution from @aden (Aden Kim) {"), "delimiters never come from a label");
+        assert!(teammate_contribution(&format!("{}hello", cmd.header())).is_some());
     }
 ```
 
@@ -1673,11 +1676,16 @@ Add to `Command`: `#[serde(skip)] pub(crate) label: Option<ActorLabel>,` and ext
         value
     }
     /// Byte-exact header both adapters strip again on the way back (`teammate_contribution`).
+    /// Labels are display text: braces, brackets and newlines are dropped so they can never
+    /// be mistaken for the header's own delimiters or the provenance JSON.
     pub(crate) fn header(&self) -> String {
+        let clean = |s: &str| -> String {
+            s.chars().filter(|c| !matches!(c, '{' | '}' | '[' | ']' | '\n' | '\r')).collect()
+        };
         let who = match &self.label {
             Some(ActorLabel { handle: Some(handle), display_name, .. }) => match display_name {
-                Some(name) => format!(" from @{handle} ({name})"),
-                None => format!(" from @{handle}"),
+                Some(name) => format!(" from @{} ({})", clean(handle), clean(name)),
+                None => format!(" from @{}", clean(handle)),
             },
             _ => String::new(),
         };

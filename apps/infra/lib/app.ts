@@ -228,7 +228,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
         {
           name: "Deploy to Vercel (Preview)",
           id: "vercel-deploy-dev",
-          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
           env: vercelEnv,
         },
         {
@@ -248,7 +248,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
     new GitHubActionStep("DeployCompanyDev", {
       jobSteps: [
         ...companyVercelSteps(false),
-        { name: "Deploy to Vercel (Preview)", run: "vercel deploy --prebuilt --token=$VERCEL_TOKEN", env: companyVercelEnv },
+        { name: "Deploy to Vercel (Preview)", run: "vercel deploy --prebuilt --archive=tgz --token=$VERCEL_TOKEN", env: companyVercelEnv },
       ],
     }),
   ],
@@ -320,7 +320,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         {
           name: "Deploy to Vercel (Production)",
           id: "vercel-deploy-prod",
-          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
           env: vercelEnv,
         },
         {
@@ -363,7 +363,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         {
           name: "Deploy to Vercel (Production)",
           id: "company-deploy-prod",
-          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
           env: companyVercelEnv,
         },
         // Register before aliasing — the same SSO-wall trap as the product apex.

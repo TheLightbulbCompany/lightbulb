@@ -87,6 +87,7 @@ export function RoomComposer({
   onSend,
   onUploadAttachment,
   onAbort,
+  onTypingChange,
 }: {
   members: readonly RoomMember[];
   placeholder: string;
@@ -104,6 +105,13 @@ export function RoomComposer({
    * the draft is empty, which is exactly when Send would be disabled anyway.
    */
   onAbort?: (() => void) | null;
+  /**
+   * Whether the draft is non-empty, reported as it changes — web parity
+   * (`RoomComposer.tsx`'s `onTypingChange`). The composer is shared by the
+   * room and thread screens and cannot know which timeline it reports into,
+   * so the caller supplies the reporting itself (same split as `useSendDrafts`).
+   */
+  onTypingChange?: (typing: boolean) => void;
 }) {
   const insets = useSafeAreaInsets();
   const [text, setText] = useState("");
@@ -201,6 +209,7 @@ export function RoomComposer({
   const submit = useCallback(async () => {
     if (!hasContent || busy || disabled) return;
     setSending(true);
+    onTypingChange?.(false);
     const draft: ComposedMessage = {
       text: body,
       mentions: resolveTypedMentions(body, members),
@@ -217,7 +226,7 @@ export function RoomComposer({
     } finally {
       setSending(false);
     }
-  }, [hasContent, busy, disabled, body, members, pending, onSend]);
+  }, [hasContent, busy, disabled, body, members, pending, onSend, onTypingChange]);
 
   return (
     <View
@@ -282,12 +291,18 @@ export function RoomComposer({
             placeholder={placeholder}
             placeholderTextColor={colors.placeholder}
             value={text}
-            onChangeText={setText}
+            onChangeText={(next) => {
+              setText(next);
+              onTypingChange?.(!!next.trim());
+            }}
             onSelectionChange={onSelectionChange}
             multiline
             editable={!disabled && !sending}
             onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
+            onBlur={() => {
+              setFocused(false);
+              onTypingChange?.(false);
+            }}
           />
         </View>
         <View style={styles.rail}>

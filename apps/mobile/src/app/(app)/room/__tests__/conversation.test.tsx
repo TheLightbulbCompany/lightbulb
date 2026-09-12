@@ -1,5 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { ApiError, dateDividerLabel, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
+import {
+  ApiError,
+  dateDividerLabel,
+  type CanonicalRoomMessage,
+  type LiveEvent,
+  type RoomDetail,
+} from "@lightbulb/shared";
 import { AppState } from "react-native";
 
 // The real @lightbulb/shared room machine runs here (that is the point of the
@@ -85,6 +91,10 @@ const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }))
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
 const mockSetReaction = jest.fn(async () => mockMsg({ messageId: "m2", messageSeq: 2, text: "second", reactions: { "🎉": ["user-a"] } }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" }));
+const mockSetTyping = jest.fn(async () => {});
+// Live events this suite dispatches by hand (typing changes only so far);
+// everything else stays the fixed no-op the rest of the suite never drives.
+const typingHandlers = new Set<(event: LiveEvent) => void>();
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
   // room-unavailable is the blocked-states suite's own room id (its Try again
@@ -105,12 +115,16 @@ const mockLive = {
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
-    setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
+    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
     updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
-  onEvent: () => () => {}, onChatMessage: () => () => {},
+  onEvent: (handler: (event: LiveEvent) => void) => {
+    typingHandlers.add(handler);
+    return () => typingHandlers.delete(handler);
+  },
+  onChatMessage: () => () => {},
   runtime: {}, rpc: jest.fn(), getOperation: jest.fn(),
 };
 // One hoisted object, never a fresh literal per call: RoomsPlatform requires a
@@ -138,6 +152,8 @@ describe("conversation screen", () => {
     mockSendMessage.mockClear();
     mockMarkUnread.mockClear();
     mockSetReaction.mockClear();
+    mockSetTyping.mockClear();
+    typingHandlers.clear();
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
   });
@@ -329,5 +345,35 @@ describe("conversation screen", () => {
       await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
       expect(screen.getByPlaceholderText("Message")).toBeTruthy();
     });
+  });
+
+  it("reports typing to the room as the draft changes, and stops on blur", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent.changeText(screen.getByPlaceholderText("Message"), "typing now");
+    await waitFor(() =>
+      expect(mockSetTyping).toHaveBeenCalledWith({ roomId: "room-1", isTyping: true }),
+    );
+    mockSetTyping.mockClear();
+    await fireEvent(screen.getByPlaceholderText("Message"), "blur");
+    await waitFor(() =>
+      expect(mockSetTyping).toHaveBeenCalledWith({ roomId: "room-1", isTyping: false }),
+    );
+  });
+
+  it("shows another member's typing line with the web's exact wording", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.queryByText(/typing…/)).toBeNull();
+    const expiresAt = new Date(Date.now() + 5_000).toISOString();
+    await act(async () => {
+      for (const handler of typingHandlers) {
+        handler({
+          type: "room.typing.changed",
+          payload: { roomId: "room-1", userId: "user-b", displayName: "Bob", expiresAt },
+        } as LiveEvent);
+      }
+    });
+    await waitFor(() => expect(screen.getByText("Bob is typing…")).toBeTruthy());
   });
 });

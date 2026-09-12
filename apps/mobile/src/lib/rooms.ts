@@ -81,6 +81,70 @@ export type ComposedMessage = Omit<
 >;
 
 /**
+ * Reports typing to `rooms.setTyping`, mirroring the web's
+ * `MessagingWorkspaceContext.handleTyping` cadence exactly: report once when
+ * typing starts (not on every keystroke — `rooms.setTyping` itself also
+ * throttles the network call to 1/s), auto-stop after 3s of no further
+ * keystroke, and report stopped right away when told to. `rooms.setTyping`
+ * already resolves to a no-op with no active room.
+ *
+ * `focused` is the screen's own focus (the same flag each room screen already
+ * tracks via `useFocusEffect`) ANDed against AppState here — a phone locked or
+ * backgrounded mid-draft must not leave "typing…" showing forever for
+ * everyone else, and a blurred screen (a pushed thread) must stop just as fast.
+ */
+const TYPING_STOP_MS = 3_000;
+
+export function useTypingReport(
+  setTyping: (isTyping: boolean) => void,
+  focused: boolean,
+): (typing: boolean) => void {
+  const active = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stop = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    if (active.current) setTyping(false);
+    active.current = false;
+  }, [setTyping]);
+
+  const report = useCallback(
+    (typing: boolean) => {
+      if (timer.current) clearTimeout(timer.current);
+      if (!typing) {
+        if (active.current) setTyping(false);
+        active.current = false;
+        return;
+      }
+      if (!active.current) setTyping(true);
+      active.current = true;
+      timer.current = setTimeout(() => {
+        active.current = false;
+        setTyping(false);
+      }, TYPING_STOP_MS);
+    },
+    [setTyping],
+  );
+
+  useEffect(() => {
+    if (!focused) {
+      stop();
+      return;
+    }
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") stop();
+    });
+    return () => {
+      subscription.remove();
+      stop();
+    };
+  }, [focused, stop]);
+
+  return report;
+}
+
+/**
  * Sending from one room screen, with failed sends kept on screen.
  *
  * The shared machine DROPS its optimistic row when a send fails (useRooms'

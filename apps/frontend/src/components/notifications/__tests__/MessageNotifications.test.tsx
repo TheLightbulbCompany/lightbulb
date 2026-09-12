@@ -66,6 +66,20 @@ it("does not show content after access is denied or for self messages", async ()
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
 });
 
+it("stays silent for a muted room but notifies for an unmuted one", async () => {
+  mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 0, muted: true });
+  const view = render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+  await act(async () => { emit(); });
+  expect(mocks.notifySuccess).not.toHaveBeenCalled();
+  expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  view.unmount();
+  mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 0, muted: false });
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+  await act(async () => { emit(); });
+  expect(mocks.notifySuccess).toHaveBeenCalledTimes(1);
+  expect(mocks.nativeNotify).toHaveBeenCalledTimes(1);
+});
+
 it("suppresses delayed hints for a message already read on another client", async () => {
   mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 2 });
   render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);

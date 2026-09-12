@@ -1647,6 +1647,73 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_mirror_next_batch_stops_at_wire_budget_and_preserves_the_rest() {
+        // Six ~5 KiB ASCII rows: only 3 fit inside a 16 KiB envelope (15406 bytes at
+        // 3, 20488 at 4), forcing next_batch's push -> check -> pop -> re-clone branch.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let row_text = |i: usize| format!("row{i}-{}", "y".repeat(4990));
+        let row = |i: usize| {
+            json!({"type":"assistant","sessionId":"s","version":"2.1.268","uuid":format!("m{i}"),
+                "message":{"role":"assistant","content":[{"type":"text","text":row_text(i)}]}})
+            .to_string()
+        };
+        fs::write(
+            &transcript,
+            (0..6).map(row).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let mut mirror = Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.268".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        };
+        let first = mirror.next_batch().unwrap().unwrap();
+        let n = first["events"].as_array().unwrap().len();
+        assert!(ascii_wire_len(&first).unwrap() <= 16384);
+        assert!(
+            n < 6,
+            "six ~5 KiB rows must not all fit in one 16 KiB envelope"
+        );
+        assert_eq!(
+            mirror.queue.len(),
+            6,
+            "next_batch must not drop the events it declined to pack"
+        );
+        // The event the loop pushed then popped for overflowing must be untouched
+        // in the queue, ready for the next envelope.
+        let popped_text = mirror.queue[n]["text"].as_str().unwrap().to_string();
+        mirror
+            .acknowledge(first["batchId"].as_str().unwrap(), n as u64)
+            .unwrap();
+        assert_eq!(mirror.queue.len(), 6 - n);
+        let second = mirror.next_batch().unwrap().unwrap();
+        assert_eq!(second["events"][0]["text"], popped_text);
+    }
+
+    #[test]
     fn local_sessions_helpers_bound_preview_and_redact() {
         assert_eq!(bounded("héllo", 3), ("hé".into(), true));
         assert_eq!(preview("a\nb\nc", 2), ("a\nb".into(), 3));

@@ -1189,6 +1189,19 @@ impl Mirror {
         self.pending = None;
         Ok(())
     }
+    /// Adopt the relay's cursor when neither "nothing applied" nor "the pending batch was
+    /// applied" explains it. The local backlog is dropped; one system marker tells viewers.
+    fn resync(&mut self, after: u64) {
+        self.after_seq = after;
+        self.pending = None;
+        self.queue.clear();
+        self.queue.push(json!({
+            "kind": "text",
+            "role": "system",
+            "text": "[Lightbulb could not mirror some output: this Mac and the relay disagreed about the transcript cursor]",
+            "truncated": false
+        }));
+    }
 }
 
 fn ascii_wire_len(value: &Value) -> Result<usize> {

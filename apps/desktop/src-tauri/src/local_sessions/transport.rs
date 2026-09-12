@@ -481,7 +481,18 @@ impl Host {
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             if mirror.session_id.as_ref().is_some_and(|known|known != sid) {return Err("session identity changed".into());}
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
-                            if after != mirror.after_seq && !(mirror.pending.is_some() && after == mirror.after_seq + 1) {return Err("upload cursor conflict".into());}
+                            let pending_id = mirror.pending.as_ref().and_then(|p| p["batchId"].as_str()).unwrap_or("").to_owned();
+                            let pending_count = mirror.pending.as_ref().and_then(|p| p["events"].as_array()).map(|e| e.len() as u64).unwrap_or(0);
+                            if after == mirror.after_seq {
+                                // Nothing was applied since the last ACK.
+                            } else if pending_count > 0 && after == mirror.after_seq + pending_count {
+                                // The relay applied the in-flight batch; its ACK never reached this Mac.
+                                mirror.acknowledge(&pending_id, after)?;
+                                relay_log(&format!("{} reconciled a lost ack: cursor {after}", short(&key)));
+                            } else {
+                                relay_log(&format!("{} cursor resync: local {} (+{pending_count} pending) relay {after}", short(&key), mirror.after_seq));
+                                mirror.resync(after);
+                            }
                             mirror.session_id = Some(sid.into());
                             if is_register {mirror.registered();}
                             let advanced=mirror.advance();
@@ -745,6 +756,14 @@ fn registration(mirror: &Mirror) -> Value {
     body
 }
 
+pub(super) fn relay_log(msg: &str) {
+    crate::log(&format!("[local-sessions] {msg}"));
+}
+
+fn short(id: &str) -> &str {
+    &id[..id.len().min(8)]
+}
+
 async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
     if ascii_wire_len(body)? > 16384 {
         return Err("session frame exceeds limit".into());
@@ -761,6 +780,68 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
+    const SID_B: &str = "bbbbcccc-dddd-4eee-8fff-000011112222";
+
+    fn test_native(conversation: &str) -> NativeSession {
+        NativeSession {
+            provider: "codex".into(),
+            conversation: conversation.into(),
+            profile: "f".repeat(64),
+            process: process(std::process::id()).unwrap(),
+            transcript: None,
+            socket: None,
+            socket_inode: None,
+            version: "0.149.0".into(),
+            restriction: None,
+            status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
+        }
+    }
+
+    fn test_mirror(conversation: &str, generation: &str) -> Mirror {
+        Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: test_native(conversation),
+            generation: generation.into(),
+            previous_generation: None,
+            session_id: None,
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        }
+    }
+
+    fn test_host(dir: &Path, mirrors: Vec<(&str, Mirror)>) -> Host {
+        Host {
+            workspace_at: Instant::now(),
+            workspace_key: None,
+            dir: dir.into(),
+            home: dir.into(),
+            mirrors: mirrors.into_iter().map(|(k, m)| (k.to_string(), m)).collect(),
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    async fn next_frame(socket: &mut WebSocketStream<tokio::net::TcpStream>) -> Value {
+        let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await
+            .expect("frame within 2s")
+            .expect("stream open")
+            .expect("frame ok");
+        serde_json::from_str(frame.to_text().unwrap()).unwrap()
+    }
+
+    async fn reply(socket: &mut WebSocketStream<tokio::net::TcpStream>, body: Value) {
+        socket.send(Message::Text(body.to_string().into())).await.unwrap();
+    }
+
     #[test]
     fn local_sessions_failed_registration_write_retries_before_send_and_survives_lost_ack() {
         let dir = tempfile::tempdir().unwrap();
@@ -1389,5 +1470,98 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 1);
         assert!(stored.pending.is_none());
+    }
+    #[tokio::test]
+    async fn local_sessions_registration_ack_reconciles_a_lost_batch_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            // The relay applied the 5-event batch whose ACK never reached this Mac.
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g1",
+                "afterSeq":383,"serverTime":100,"reconcile":null})).await;
+            let next = tokio::time::timeout(Duration::from_millis(1500), socket.next()).await;
+            assert!(next.is_err(), "an already-applied batch must not be re-sent: {next:?}");
+            socket.close(None).await.unwrap();
+        });
+        let events: Vec<Value> = (0..5)
+            .map(|i| json!({"kind":"text","role":"assistant","text":format!("line {i}"),"truncated":false}))
+            .collect();
+        let mut mirror = test_mirror("native", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("g1".into());
+        mirror.after_seq = 378;
+        mirror.queue = events.clone();
+        mirror.pending = Some(json!({"type":"local.session.events","sessionId":SID,"generation":"g1",
+            "batchId":"b1","afterSeq":378,"events":events}));
+        let mut host = test_host(dir.path(), vec![("local", mirror)]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
+        assert_eq!(stored.after_seq, 383);
+        assert!(stored.pending.is_none());
+        assert!(stored.queue.is_empty());
+        assert_eq!(stored.registration.acknowledged.as_deref(), Some("g1"));
+    }
+    #[tokio::test]
+    async fn local_sessions_irreconcilable_cursor_resyncs_and_mirrors_a_gap_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let persisted = dir.path().join("local.json");
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            // Neither 378 nor 383: something else wrote this session's history.
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g1",
+                "afterSeq":400,"serverTime":100,"reconcile":null})).await;
+            let batch = next_frame(&mut socket).await;
+            assert_eq!(batch["type"], "local.session.events");
+            assert_eq!(batch["afterSeq"], 400);
+            assert_eq!(batch["events"].as_array().unwrap().len(), 1);
+            assert_eq!(batch["events"][0]["role"], "system");
+            assert!(batch["events"][0]["text"].as_str().unwrap().contains("could not mirror"));
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":batch["batchId"],"afterSeq":401})).await;
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    tick.tick().await;
+                    let m: Mirror = private_read(&persisted).unwrap();
+                    if m.after_seq == 401 && m.pending.is_none() {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            socket.close(None).await.unwrap();
+        });
+        let events: Vec<Value> = (0..5)
+            .map(|i| json!({"kind":"text","role":"assistant","text":format!("line {i}"),"truncated":false}))
+            .collect();
+        let mut mirror = test_mirror("native", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("g1".into());
+        mirror.after_seq = 378;
+        mirror.queue = events.clone();
+        mirror.pending = Some(json!({"type":"local.session.events","sessionId":SID,"generation":"g1",
+            "batchId":"b1","afterSeq":378,"events":events}));
+        let mut host = test_host(dir.path(), vec![("local", mirror)]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
+        assert_eq!(stored.after_seq, 401);
+        assert!(stored.pending.is_none() && stored.queue.is_empty());
     }
 }

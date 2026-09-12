@@ -1,11 +1,11 @@
 /**
  * Fenced code blocks run through the PrismLight build with an explicit set of
  * registered grammars (the barrel export bundles all ~300 refractor grammars).
- * Two things must hold: registered languages — including their aliases — still
- * highlight, and a fence naming anything else degrades to plain text instead
- * of reaching refractor, which throws on an unregistered grammar. Both are
- * asserted through the rendered output — `resolveHighlightLanguage` is
- * module-private.
+ * Three things must hold: registered languages — including their aliases and
+ * whatever case the model emitted — still highlight, and a fence naming
+ * anything else degrades to plain text instead of reaching refractor, which
+ * throws on an unregistered grammar. All are asserted through the rendered
+ * output — `resolveHighlightLanguage` is module-private.
  */
 
 import { describe, it, expect } from "vitest";
@@ -54,6 +54,17 @@ describe("MessageList code fences", () => {
     const { container } = renderFence("py", "import os");
 
     expect(container.querySelectorAll("span.token").length).toBeGreaterThan(0);
+  });
+
+  it("highlights a registered language the fence spelled in another case", () => {
+    // The grammar set is keyed lowercase, so resolveHighlightLanguage
+    // normalizes before the lookup. Without that, "Python" misses and falls
+    // back to plain text — the same outcome as an unregistered grammar
+    // below, which is why this asserts tokens rather than absence of throw.
+    const { container } = renderFence("Python", "def hello():\n    return 1");
+
+    expect(container.querySelectorAll("span.token").length).toBeGreaterThan(0);
+    expect(container.textContent).toContain("def hello():");
   });
 
   it("renders an unregistered language as plain text without throwing", () => {

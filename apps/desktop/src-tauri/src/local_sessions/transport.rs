@@ -331,6 +331,7 @@ impl Host {
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
     ) -> Result<()> {
         let mut registered = BTreeMap::<String, Instant>::new();
+        let mut quarantined = std::collections::BTreeSet::<String>::new();
         let mut pending_rpc: Option<(String, bool, Instant, SystemTime, Value)> = None;
         let mut anchor: Option<ClockAnchor> = None;
         let mut deferred = std::collections::VecDeque::<Command>::new();
@@ -389,7 +390,7 @@ impl Host {
                 if let Some(key) = self
                     .mirrors
                     .keys()
-                    .find(|key| !registered.contains_key(*key))
+                    .find(|key| !registered.contains_key(*key) && !quarantined.contains(*key))
                     .cloned()
                 {
                     let sent = Instant::now();
@@ -475,12 +476,23 @@ impl Host {
                         Some("local.session.registered" | "local.session.heartbeat.ack") => {
                             let (key,is_register,sent,wall,metadata) = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             if is_register != (body["type"] == "local.session.registered") {return Err("mismatched session acknowledgment".into());}
+                            let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
+                            let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
+                            let server = body["serverTime"].as_u64().ok_or("missing server time")?;
+                            let mirror = self.mirrors.get(&key).ok_or("unknown local session")?;
+                            let verdict = if body["generation"] != mirror.generation {
+                                Some("stale generation acknowledgment")
+                            } else if mirror.session_id.as_ref().is_some_and(|known| known != sid) {
+                                Some("session identity changed")
+                            } else {
+                                None
+                            };
+                            if let Some(reason) = verdict {
+                                quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, reason);
+                                continue;
+                            }
                             let mirror = self.mirrors.get_mut(&key).ok_or("unknown local session")?;
                             let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
-                            if body["generation"] != mirror.generation {return Err("stale generation acknowledgment".into());}
-                            let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
-                            if mirror.session_id.as_ref().is_some_and(|known|known != sid) {return Err("session identity changed".into());}
-                            let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let pending_id = mirror.pending.as_ref().and_then(|p| p["batchId"].as_str()).unwrap_or("").to_owned();
                             let pending_count = mirror.pending.as_ref().and_then(|p| p["events"].as_array()).map(|e| e.len() as u64).unwrap_or(0);
                             if after == mirror.after_seq {
@@ -503,7 +515,6 @@ impl Host {
                                 registered.insert(key.clone(),Instant::now());
                             } else {registered.remove(&key);}
                             let rtt = sent.elapsed().as_secs_f64();
-                            let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
                                 .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
                             anchor = Some(ClockAnchor {server,round_trip:rtt,at:Instant::now(),wall:SystemTime::now()});
@@ -527,7 +538,21 @@ impl Host {
                             mirror.persist(&self.dir.join(format!("{key}.json")))?;
                             sent_batches.remove(key);
                         },
-                        Some("local.session.error") => return Err("local session relay rejected the frame".into()),
+                        Some("local.session.error") => {
+                            let code = body["code"].as_str().unwrap_or("?").to_owned();
+                            let named = body["sessionId"].as_str().and_then(|sid| {
+                                self.mirrors.iter().find(|(_, m)| m.session_id.as_deref() == Some(sid)).map(|(k, _)| k.clone())
+                            });
+                            let inflight = pending_rpc.as_ref().map(|(k, ..)| k.clone());
+                            let Some(key) = named.or(inflight) else {
+                                relay_log(&format!("relay rejected an unattributable frame: {code}"));
+                                return Err("local session relay rejected the frame".into());
+                            };
+                            if pending_rpc.as_ref().is_some_and(|(k, ..)| *k == key) {
+                                pending_rpc = None;
+                            }
+                            quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, &format!("relay rejected a frame: {code}"));
+                        },
                         Some("local.session.command") => {
                             let command = parse_command(&body)?;
                             if deferred.len() >= 32 {return Err("too many deferred commands".into());}
@@ -762,6 +787,19 @@ pub(super) fn relay_log(msg: &str) {
 
 fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+fn quarantine(
+    quarantined: &mut std::collections::BTreeSet<String>,
+    registered: &mut BTreeMap<String, Instant>,
+    sent_batches: &mut BTreeMap<String, Instant>,
+    key: &str,
+    reason: &str,
+) {
+    relay_log(&format!("{} quarantined for this connection: {reason}", short(key)));
+    quarantined.insert(key.to_owned());
+    registered.remove(key);
+    sent_batches.remove(key);
 }
 
 async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
@@ -1563,5 +1601,100 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 401);
         assert!(stored.pending.is_none() && stored.queue.is_empty());
+    }
+    #[tokio::test]
+    async fn local_sessions_one_rejected_session_does_not_block_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["session"]["generation"], "g-a", "keys register in order");
+            // A generation this Mac never sent: a per-session verdict, not a broken peer.
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"other",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(second["type"], "local.session.register");
+            assert_eq!(second["session"]["generation"], "g-b", "the next session must still register on this connection");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID_B,"generation":"g-b",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            let quiet = tokio::time::timeout(Duration::from_millis(1200), socket.next()).await;
+            assert!(quiet.is_err(), "the quarantined session must not be retried on this connection: {quiet:?}");
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![
+            ("a-session", test_mirror("native-a", "g-a")),
+            ("b-session", test_mirror("native-b", "g-b")),
+        ]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let a: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
+        let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
+        assert!(a.session_id.is_none() && a.registration.acknowledged.is_none());
+        assert_eq!(b.session_id.as_deref(), Some(SID_B));
+    }
+    #[tokio::test]
+    async fn local_sessions_error_frame_for_the_inflight_registration_quarantines_only_that_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["session"]["generation"], "g-a");
+            // Old backends send no sessionId; the in-flight RPC identifies the session.
+            reply(&mut socket, json!({"type":"local.session.error","code":"LOCAL_SESSION_CONFLICT"})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(second["session"]["generation"], "g-b");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID_B,"generation":"g-b",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![
+            ("a-session", test_mirror("native-a", "g-a")),
+            ("b-session", test_mirror("native-b", "g-b")),
+        ]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
+        assert_eq!(b.session_id.as_deref(), Some(SID_B));
+    }
+    #[tokio::test]
+    async fn local_sessions_rejected_batch_keeps_the_connection_and_the_pending_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g1",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            let batch = next_frame(&mut socket).await;
+            assert_eq!(batch["type"], "local.session.events");
+            reply(&mut socket, json!({"type":"local.session.error","code":"LOCAL_SESSION_CONFLICT","sessionId":SID})).await;
+            // The client must not close the socket in response.
+            let quiet = tokio::time::timeout(Duration::from_millis(1200), socket.next()).await;
+            assert!(quiet.is_err(), "a rejected batch must not drop the connection: {quiet:?}");
+            socket.close(None).await.unwrap();
+        });
+        let mut mirror = test_mirror("native", "g1");
+        mirror.queue = vec![json!({"kind":"text","role":"assistant","text":"public output","truncated":false})];
+        let mut host = test_host(dir.path(), vec![("local", mirror)]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
+        assert!(stored.pending.is_some(), "the rejected batch stays pending for the next connection's reconciliation");
+        assert_eq!(stored.after_seq, 0);
     }
 }

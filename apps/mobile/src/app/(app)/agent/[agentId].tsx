@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
 import { colors } from "../../../config/theme";
@@ -13,21 +13,33 @@ import { useMobileRooms } from "../../../lib/rooms";
 export default function AgentRedirect() {
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const { selectAgentDm } = rooms;
+  // Through a ref, and keyed on agentId alone: selectAgentDm's identity changes
+  // with the room directory, and a second call supersedes the first, which then
+  // resolves null — a re-fire would race its own fallback.
+  const selectAgentDmRef = useRef(rooms.selectAgentDm);
+  selectAgentDmRef.current = rooms.selectAgentDm;
   useEffect(() => {
     if (!agentId) return;
     let cancelled = false;
-    void selectAgentDm(agentId)
+    // ponytail: /(app)/chat is the roster route that exists today; Task 7
+    // replaces it with /(app)/home and sweeps this file.
+    const giveUp = () => {
+      if (!cancelled) router.replace("/(app)/chat");
+    };
+    void selectAgentDmRef
+      .current(agentId)
       .then((roomId) => {
-        if (!cancelled && roomId) router.replace(`/(app)/room/${roomId}`);
+        if (cancelled) return;
+        // null = a newer selection superseded this one. Navigating somewhere is
+        // the only exit; an unresolved spinner is forever.
+        if (roomId) router.replace(`/(app)/room/${roomId}`);
+        else giveUp();
       })
-      .catch(() => {
-        if (!cancelled) router.replace("/(app)/home");
-      });
+      .catch(giveUp);
     return () => {
       cancelled = true;
     };
-  }, [agentId, selectAgentDm]);
+  }, [agentId]);
   return (
     <View style={styles.wrap}>
       <ActivityIndicator color={colors.forest} />

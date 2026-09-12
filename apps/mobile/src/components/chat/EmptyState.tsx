@@ -4,17 +4,24 @@ import { colors, fonts, spacing } from "../../config/theme";
 import { LogoMark } from "../LogoMark";
 
 /**
- * Empty-chat hero (spec §7): the centred bulb mark, agent name in Lora, and a
- * one-line prompt. Rendered while the transcript has no items.
+ * Empty-conversation hero (spec §7): the centred bulb mark, the conversation's
+ * name in Lora, and a one-line prompt. The default prompt reads as an agent DM;
+ * a channel or group DM passes its own.
  */
-export function EmptyState({ agentName }: { agentName: string }) {
+export function EmptyState({
+  agentName,
+  subtitle = "Start a conversation with your agent",
+}: {
+  agentName: string;
+  subtitle?: string;
+}) {
   return (
     <View style={styles.wrap}>
       <LogoMark size={57} />
       <Text style={styles.name} numberOfLines={2}>
         {agentName}
       </Text>
-      <Text style={styles.sub}>Start a conversation with your agent</Text>
+      <Text style={styles.sub}>{subtitle}</Text>
     </View>
   );
 }

@@ -6,6 +6,7 @@ import {
   roomDisplayName,
   runView,
   type CanonicalRoomMessage,
+  type OptimisticRoomMessage,
   type RoomRunView,
   type TimelineItem,
 } from "@lightbulb/shared";
@@ -33,7 +34,7 @@ import { MessageMarkdown } from "../../../../components/chat/MessageMarkdown";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
 import { ToolPill } from "../../../../components/chat/ToolPill";
 import { usePulse } from "../../../../components/chat/usePulse";
-import { MessageGroup } from "../../../../components/room/MessageGroup";
+import { MESSAGE_BODY_INDENT, MessageGroup } from "../../../../components/room/MessageGroup";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { useMobileRooms } from "../../../../lib/rooms";
 
@@ -139,35 +140,36 @@ function Conversation() {
     (member) => !(member.kind === "human" && member.id === userId),
   );
   const isChannel = rooms.activeRoom?.kind === "channel";
+  const dmWithAgent = rooms.activeRoom?.kind === "dm" && others[0]?.kind === "agent";
   // ponytail: Phase A's RoomSummary carries no private flag, so every channel
   // gets `#`; swap in a lock glyph once the backend ships one.
   const title = `${isChannel ? "#" : ""}${roomDisplayName(rooms.activeRoom, others)}`;
 
-  // The server answers before the optimistic row would otherwise be visible on
-  // a fast network; on a slow one this is the difference between "sent" and
-  // "nothing happened". The hook keeps the row (with its sendState) on failure.
-  const pending = useMemo<CanonicalRoomMessage[]>(
+  // A not-yet-canonical message, rendered through the same MessageGroup as a
+  // real one. The server answers before this is visible on a fast network; on a
+  // slow one it is the difference between "sent" and "nothing happened".
+  const localMessage = useCallback(
+    (message: OptimisticRoomMessage): CanonicalRoomMessage => ({
+      messageId: message.clientMessageId,
+      roomId: message.roomId,
+      messageSeq: 0,
+      roomRevision: 0,
+      author: { kind: "human", id: userId ?? "", displayName: viewer?.displayName ?? "You" },
+      text: message.text,
+      mentions: message.mentions,
+      replyToMessageId: message.replyToMessageId,
+      threadRootMessageId: message.threadRootMessageId,
+      createdAt: message.createdAt,
+      runId: null,
+    }),
+    [userId, viewer?.displayName],
+  );
+  const pending = useMemo(
     () =>
       rooms.optimisticMessages
         .filter((message) => message.threadRootMessageId === null)
-        .map((message) => ({
-          messageId: message.clientMessageId,
-          roomId: message.roomId,
-          messageSeq: 0,
-          roomRevision: 0,
-          author: {
-            kind: "human" as const,
-            id: userId ?? "",
-            displayName: viewer?.displayName ?? "You",
-          },
-          text: message.text,
-          mentions: message.mentions,
-          replyToMessageId: message.replyToMessageId,
-          threadRootMessageId: message.threadRootMessageId,
-          createdAt: message.createdAt,
-          runId: null,
-        })),
-    [rooms.optimisticMessages, userId, viewer?.displayName],
+        .map(localMessage),
+    [rooms.optimisticMessages, localMessage],
   );
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
@@ -183,27 +185,62 @@ function Conversation() {
   const [input, setInput] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [sending, setSending] = useState(false);
-  const { sendMessage, activeRoomId, httpReady } = rooms;
+  // Drafts sent from this screen, kept until they persist. The shared machine
+  // DROPS its optimistic row when a send fails (useRooms' catch) and records the
+  // outcome in sendState only — so without this a failed send would clear the
+  // input and vanish silently, which is worse than the row it replaces.
+  const [drafts, setDrafts] = useState<OptimisticRoomMessage[]>([]);
+  const { sendMessage, reconcileSend, sendState, activeRoomId, httpReady } = rooms;
+  const settled = useCallback(
+    (clientMessageId: string) =>
+      setDrafts((current) => current.filter((draft) => draft.clientMessageId !== clientMessageId)),
+    [],
+  );
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || sending || !activeRoomId || !httpReady) return;
+    const request = {
+      clientMessageId: randomUUID(),
+      text,
+      mentions: [],
+      replyToMessageId: null,
+      threadRootMessageId: null,
+    };
     setSending(true);
     setInput("");
+    setDrafts((current) =>
+      current.some((draft) => draft.clientMessageId === request.clientMessageId)
+        ? current
+        : [...current, { ...request, roomId: activeRoomId, createdAt: new Date().toISOString() }],
+    );
     try {
-      await sendMessage({
-        clientMessageId: randomUUID(),
-        text,
-        mentions: [],
-        replyToMessageId: null,
-        threadRootMessageId: null,
-      });
+      await sendMessage(request);
+      settled(request.clientMessageId);
     } catch {
-      // The hook keeps the optimistic row and its sendState; Task 10's composer
-      // owns the retry affordance.
+      // sendState now reads rejected/uncertain, which is what draws the row.
     } finally {
       setSending(false);
     }
-  }, [input, sending, activeRoomId, httpReady, sendMessage]);
+  }, [input, sending, activeRoomId, httpReady, sendMessage, settled]);
+  const retry = useCallback(
+    async (clientMessageId: string) => {
+      try {
+        await reconcileSend(clientMessageId);
+        settled(clientMessageId);
+      } catch {
+        // sendState flips back and the row returns.
+      }
+    },
+    [reconcileSend, settled],
+  );
+  // sendState is a fresh closure over the attempts map every render, so this is
+  // a plain derivation rather than a memo that would never hit.
+  const unsent = drafts
+    .filter((draft) => {
+      const state = sendState(draft.clientMessageId);
+      return state === "rejected" || state === "uncertain";
+    })
+    .map(localMessage);
 
   const runningRun = runs.find((run) => run.state === "running");
   const agentName = useCallback(
@@ -264,18 +301,33 @@ function Conversation() {
           ) : null
         }
         ListEmptyComponent={
-          rooms.historyLoading ? <TimelineSkeleton /> : <EmptyState agentName={title} />
+          rooms.historyLoading ? (
+            <TimelineSkeleton />
+          ) : (
+            <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
+          )
         }
         ListFooterComponent={
           <View>
-            {pending.map((message) => (
-              <MessageGroup
-                key={message.messageId}
-                message={message}
-                collapsed={false}
-                replyCount={0}
-                downloadAttachment={rooms.downloadAttachment}
-              />
+            {[...pending, ...unsent].map((message) => (
+              <View key={message.messageId}>
+                <MessageGroup
+                  message={message}
+                  collapsed={false}
+                  replyCount={0}
+                  downloadAttachment={rooms.downloadAttachment}
+                />
+                {unsent.some((draft) => draft.messageId === message.messageId) ? (
+                  <Pressable
+                    style={styles.unsent}
+                    onPress={() => void retry(message.messageId)}
+                    accessibilityRole="button"
+                  >
+                    <Feather name="alert-circle" size={12} color={colors.errorText} />
+                    <Text style={styles.unsentText}>Not sent · tap to retry</Text>
+                  </Pressable>
+                ) : null}
+              </View>
             ))}
             {runs.map((run) => (
               <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
@@ -399,6 +451,14 @@ const styles = StyleSheet.create({
     color: colors.danger,
   },
   run: { marginTop: spacing.lg },
+  unsent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+    paddingLeft: MESSAGE_BODY_INDENT,
+  },
+  unsentText: { fontFamily: fonts.sansMedium, fontSize: 12, lineHeight: 16, color: colors.errorText },
   pillGap: { marginTop: spacing.sm },
   errorCard: {
     backgroundColor: colors.errorBg,

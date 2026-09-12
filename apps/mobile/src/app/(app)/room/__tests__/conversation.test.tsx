@@ -58,6 +58,7 @@ const mockBase = [
 let mockMessages: CanonicalRoomMessage[] = [...mockBase];
 
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
+const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
   liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
@@ -66,7 +67,7 @@ const mockLive = {
     getRoom: jest.fn(async () => mockRoom),
     listMessages: jest.fn(async () => ({ messages: mockMessages, nextAfterSeq: null })),
     markRead: mockMarkRead,
-    sendMessage: jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" })),
+    sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
@@ -98,6 +99,7 @@ describe("conversation screen", () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockMarkRead.mockClear();
+    mockSendMessage.mockClear();
     mockMessages = [...mockBase];
   });
 
@@ -137,6 +139,27 @@ describe("conversation screen", () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
     expect(screen.queryByText("1 reply")).toBeNull();
+  });
+
+  it("labels a send that failed, keeps its text, and retries it", async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error("offline"));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent.changeText(screen.getByPlaceholderText("Message"), "will fail");
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() => expect(screen.getByText("Not sent · tap to retry")).toBeTruthy());
+    // The text the user typed must survive the failure — the input is already cleared.
+    expect(screen.getByText("will fail")).toBeTruthy();
+    await fireEvent.press(screen.getByText("Not sent · tap to retry"));
+    await waitFor(() => expect(screen.queryByText("Not sent · tap to retry")).toBeNull());
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("says only that a channel has no messages yet, never the agent line", async () => {
+    mockMessages = [];
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("No messages yet")).toBeTruthy());
+    expect(screen.queryByText("Start a conversation with your agent")).toBeNull();
   });
 
   it("keeps the keyboard dismissable by drag and taps landing on controls", async () => {

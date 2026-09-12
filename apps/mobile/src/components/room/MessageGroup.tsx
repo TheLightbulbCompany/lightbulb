@@ -8,8 +8,9 @@ import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { Avatar } from "./Avatar";
 
 const AVATAR = 28;
-/** Body indent under a collapsed run, so text lines up with the run above. */
-const INDENT = AVATAR + spacing.sm;
+/** Body indent under a collapsed run, so text lines up with the run above.
+ *  Exported so anything drawing beneath a group lines up with its body. */
+export const MESSAGE_BODY_INDENT = AVATAR + spacing.sm;
 
 function formatTime(createdAt: string): string {
   const at = new Date(createdAt);
@@ -123,12 +124,12 @@ export function MessageGroup({
 
 const styles = StyleSheet.create({
   group: { marginTop: spacing.lg },
-  collapsed: { marginTop: spacing.xs, paddingLeft: INDENT },
+  collapsed: { marginTop: spacing.xs, paddingLeft: MESSAGE_BODY_INDENT },
   head: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   author: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, color: colors.ink },
   time: { fontFamily: fonts.sans, fontSize: 11, lineHeight: 16, color: colors.mute },
   collapsedTime: { marginBottom: 2 },
-  body: { paddingLeft: INDENT, marginTop: 2 },
+  body: { paddingLeft: MESSAGE_BODY_INDENT, marginTop: 2 },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute, fontStyle: "italic" },
   replies: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest, marginTop: spacing.xs },
   image: { width: 220, height: 220, borderRadius: radii.md, marginTop: spacing.sm },

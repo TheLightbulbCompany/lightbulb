@@ -1,6 +1,6 @@
 """Synchronous credits gate over the Metronome fast-gate projection.
 
-The chat gate (``connection_pool.gate_chat``) and the provision gate both
+The chat gate (``chat_gate.gate_chat``) and the provision gate both
 ask one question — "is this Bedrock-managed owner out of credits?" — and
 must answer it without a synchronous Metronome round-trip on every message
 (Metronome's balance read has no low-latency SLA). Both read THIS helper so

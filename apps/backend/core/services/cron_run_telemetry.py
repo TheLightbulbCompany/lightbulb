@@ -172,9 +172,9 @@ def _parsed_for(entry: dict) -> dict:
     human-initiated. The origin is not in doubt here — it came out of
     ``cron.runs``.
     """
-    from core.gateway.connection_pool import _parse_session_key  # local: heavy module
+    from core.services.session_keys import parse_session_key
 
-    parsed = _parse_session_key(entry.get("sessionKey") or "")
+    parsed = parse_session_key(entry.get("sessionKey") or "")
     return {"agent_id": parsed.get("agent_id"), "source": "cron", "cron_id": entry.get("jobId")}
 
 

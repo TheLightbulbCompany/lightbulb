@@ -28,18 +28,18 @@ def _auth():
 def _common(row=ROW, control_status=202, member_error=None, member={"id": AGENT_ID}):
     manager = MagicMock()
     manager.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw"}, "10.0.0.9"))
-    pool = MagicMock()
-    pool.gate_chat = AsyncMock(return_value={"blocked": False})
     with (
         patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=row),
         patch("routers.messaging.service.require_room_member", new_callable=AsyncMock, side_effect=member_error),
         patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=member),
         patch("routers.messaging.get_ecs_manager", return_value=manager),
-        patch("routers.messaging.get_gateway_pool", return_value=pool),
+        patch(
+            "routers.messaging.chat_gate.gate_chat", new_callable=AsyncMock, return_value={"blocked": False}
+        ) as gate_chat_mock,
         patch("routers.messaging.container_repo.touch_last_interactive", new_callable=AsyncMock),
         patch("routers.messaging._post_run_control", new_callable=AsyncMock, return_value=control_status) as post,
     ):
-        yield post, pool
+        yield post, gate_chat_mock
 
 
 @pytest.mark.asyncio
@@ -102,12 +102,12 @@ async def test_abort_refuses_a_run_whose_agent_left_the_room():
 async def test_steer_gates_then_posts_text():
     from routers.messaging import steer_run
 
-    with _common() as (post, pool):
+    with _common() as (post, gate_chat_mock):
         assert await steer_run("run-1", SteerRunRequest(text="focus"), auth=_auth()) == SteerRunResponse(run_id="run-1")
     post.assert_awaited_once_with(
         "http://10.0.0.9:18789/plugins/lightbulb-channel/runs/run-1/steer", "gw", {"text": "focus"}
     )
-    assert pool.gate_chat.await_args.kwargs["session_key"] == f"agent:{AGENT_ID}:lightbulb:channel:{ROOM_ID}"
+    assert gate_chat_mock.await_args.kwargs["session_key"] == f"agent:{AGENT_ID}:lightbulb:channel:{ROOM_ID}"
 
 
 @pytest.mark.asyncio

@@ -10,8 +10,8 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response
 
 from core.config import settings
-from core.containers import get_gateway_pool
 from core.observability.metrics import put_metric
+from core.services import chat_gate
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.node_proxy import (
@@ -231,7 +231,7 @@ async def _admit_operator_wake(*, user_id: str, owner_id: str, body: dict[str, A
     params = body.get("params")
     session_key = params.get("sessionKey") if isinstance(params, dict) else ""
     try:
-        gate = await get_gateway_pool().gate_chat(user_id=user_id, owner_id=owner_id, session_key=session_key or "")
+        gate = await chat_gate.gate_chat(user_id=user_id, owner_id=owner_id, session_key=session_key or "")
     except Exception:
         # Paperclip work must not be lost on a transient UX-gate read; the
         # Bedrock gate remains the inference fence.

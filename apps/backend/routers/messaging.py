@@ -17,8 +17,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
 from core.repositories import container_repo, messaging_repo
+from core.services import chat_gate
 from core.services import messaging as service
 from core.services import local_sessions
 from core.services import local_session_grants
@@ -519,7 +520,7 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
     if row.get("status") == "ended":
         raise ApiProblem("RUN_NOT_ACTIVE", "Run is already terminal.")
     session_key = f"agent:{row['agentId']}:lightbulb:channel:{row['roomId']}"
-    gate = await get_gateway_pool().gate_chat(user_id=auth.user_id, owner_id=owner_id, session_key=session_key)
+    gate = await chat_gate.gate_chat(user_id=auth.user_id, owner_id=owner_id, session_key=session_key)
     if gate.get("blocked"):
         raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "Steering is blocked."))
     await container_repo.touch_last_interactive(owner_id)

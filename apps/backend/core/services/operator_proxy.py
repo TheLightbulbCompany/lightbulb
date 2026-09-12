@@ -93,13 +93,12 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
         phase = data.get("phase") if isinstance(data, dict) else None
         if phase not in ("end", "error"):
             return
-        # Local imports: connection_pool is heavy and this keeps the import
-        # graph acyclic (it, in turn, imports services); run_analytics is
-        # deferred the same way the chat path defers it.
-        from core.gateway.connection_pool import _parse_session_key
+        # Local import: run_analytics is deferred the same way the chat path
+        # defers it.
         from core.services import run_analytics
+        from core.services.session_keys import parse_session_key
 
-        parsed = _parse_session_key(ev.get("sessionKey", "") or "")
+        parsed = parse_session_key(ev.get("sessionKey", "") or "")
         task = run_analytics.schedule_run_completed(owner_id=owner_id, parsed=parsed, payload=ev, phase=phase)
         if task is not None:
             _run_telemetry_tasks.add(task)

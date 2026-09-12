@@ -119,7 +119,7 @@ The machine WebSocket door and its relays: `routers/websocket_chat.py` (except i
 `gate_chat` import), the `ws-*` Lambdas and authorizer, `node_proxy.py` (except its RPC
 call), `operator_proxy.py` (except its `parse_session_key` import; its
 `_tap_run_completion_telemetry` stays),
-`core/gateway/node_connection.py`, `frame_sender.py`, and
+`core/gateway/node_connection.py`, and
 `operator_rpc.perform_signed_connect` with its one caller
 `paperclip_openclaw_pairing._probe_pairing_request` (it connects *as the agent's operator
 device* to open a pairing window; that is the operator-device identity D redesigns). Their

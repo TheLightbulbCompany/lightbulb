@@ -397,6 +397,7 @@ pub async fn local_sessions_set(
             {
                 claude::configure_hooks(&settings, &installed, false)?;
             }
+            remove_skill(&dir, &home()?)?;
             Ok(())
         })?;
         if !cleaned {
@@ -497,6 +498,10 @@ pub async fn local_sessions_set(
         |prepared, active| state.publish(Some(&path), active, prepared, revision),
     )
     .await?;
+    if let Err(reason) = install_skill(&dir, &home()?) {
+        *state.status.lock().map_err(|_| "sharing state unavailable")? =
+            format!("Sharing enabled; the lightbulb-session-sharing skill was not installed ({reason}). Claude/Codex still receive labelled teammate messages.");
+    }
     Ok(revision)
 }
 
@@ -556,6 +561,60 @@ fn disable_body(enrollment: &Enrollment) -> Value {
         body["previousRevision"] = json!(attempt.previous_revision);
     }
     body
+}
+
+pub(crate) const SKILL_MD: &str = include_str!("../../skills/lightbulb-session-sharing/SKILL.md");
+const SKILL_DIR: &str = "lightbulb-session-sharing";
+
+/// Bundled skill into each installed harness's user skill root. Only directories this desktop creates are recorded.
+pub(crate) fn install_skill(state_dir: &Path, home: &Path) -> Result<Vec<PathBuf>> {
+    let record = state_dir.join("skill-paths.json");
+    let mut created: Vec<PathBuf> = if record.try_exists().map_err(|_| "skill state unavailable")? {
+        private_read(&record)?
+    } else {
+        vec![]
+    };
+    for root in [".claude", ".codex"] {
+        if !home.join(root).is_dir() {
+            continue;
+        }
+        let dir = home.join(root).join("skills").join(SKILL_DIR);
+        let file = dir.join("SKILL.md");
+        let ours = created.contains(&dir);
+        // A pre-existing directory we did not create (or any symlink) is someone else's; leave it.
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_symlink() => continue,
+            Ok(_) if !ours => continue,
+            _ => {}
+        }
+        fs::create_dir_all(&dir).map_err(|_| "skill directory unavailable")?;
+        if fs::read_to_string(&file).ok().as_deref() != Some(SKILL_MD) {
+            // Skill text is not a secret; a plain write with the default mode is what the harness expects.
+            fs::write(&file, SKILL_MD).map_err(|_| "skill write failed")?;
+        }
+        if !ours {
+            created.push(dir);
+        }
+    }
+    private_write(&record, &created)?;
+    Ok(created)
+}
+
+pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
+    let record = state_dir.join("skill-paths.json");
+    if !record.try_exists().map_err(|_| "skill state unavailable")? {
+        return Ok(());
+    }
+    let created: Vec<PathBuf> = private_read(&record)?;
+    for dir in created {
+        let file = dir.join("SKILL.md");
+        if fs::read_to_string(&file).ok().as_deref() == Some(SKILL_MD) {
+            let _ = fs::remove_file(&file);
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+    fs::remove_file(&record).map_err(|_| "skill state cleanup failed")?;
+    Ok(())
 }
 
 async fn enroll_remote(token: &str, body: Value) -> Result<Value> {
@@ -932,5 +991,42 @@ mod tests {
             &crate::keychain::generate_keypair().public_key_pem
         )
         .is_err());
+    }
+    #[test]
+    fn local_sessions_skill_install_is_recorded_reversible_and_never_clobbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, state) = (dir.path().join("home"), dir.path().join("state"));
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::create_dir_all(home.join(".codex/skills/lightbulb-session-sharing")).unwrap();
+        fs::write(
+            home.join(".codex/skills/lightbulb-session-sharing/SKILL.md"),
+            "user's own file",
+        )
+        .unwrap();
+        private_dir(&state).unwrap();
+        let created = install_skill(&state, &home).unwrap();
+        assert_eq!(
+            created,
+            vec![home.join(".claude/skills/lightbulb-session-sharing")]
+        );
+        assert_eq!(
+            fs::read_to_string(home.join(".claude/skills/lightbulb-session-sharing/SKILL.md"))
+                .unwrap(),
+            SKILL_MD
+        );
+        assert_eq!(
+            fs::read_to_string(home.join(".codex/skills/lightbulb-session-sharing/SKILL.md"))
+                .unwrap(),
+            "user's own file"
+        );
+        assert_eq!(install_skill(&state, &home).unwrap(), created, "idempotent");
+        remove_skill(&state, &home).unwrap();
+        assert!(!home
+            .join(".claude/skills/lightbulb-session-sharing")
+            .exists());
+        assert!(home
+            .join(".codex/skills/lightbulb-session-sharing/SKILL.md")
+            .exists());
+        assert!(!state.join("skill-paths.json").exists());
     }
 }

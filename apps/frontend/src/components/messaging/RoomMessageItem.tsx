@@ -6,6 +6,7 @@ import type { Components, UrlTransform } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
@@ -27,6 +28,8 @@ export interface RoomMessageItemProps {
   startEditing?: boolean;
   onEditingClosed?: () => void;
   replyCount: number;
+  /** The newest reply's `createdAt`, for "N replies · last reply {relative}". */
+  lastReplyAt?: string;
   highlighted: boolean;
   mentionsViewer: boolean;
   markdown: Partial<Components>;
@@ -44,7 +47,7 @@ export interface RoomMessageItemProps {
   menuExtras?: ReactNode;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, highlighted, mentionsViewer, markdown, urlTransform, workStatus, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, highlighted, mentionsViewer, markdown, urlTransform, workStatus, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -88,8 +91,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
       </div>}
       {!inThread && replyCount > 0 && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
-        aria-label={`Reply in thread, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}
-        onClick={(event) => onOpenThread(event.currentTarget)}>{replyCount} {replyCount === 1 ? "reply" : "replies"}</Button>}
+        aria-label={`Reply in thread, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}${lastReplyAt ? ` · last reply ${timeAgo(lastReplyAt)}` : ""}`}
+        onClick={(event) => onOpenThread(event.currentTarget)}>{replyCount} {replyCount === 1 ? "reply" : "replies"}{lastReplyAt && ` · last reply ${timeAgo(lastReplyAt)}`}</Button>}
     </div>
   </article>;
 }

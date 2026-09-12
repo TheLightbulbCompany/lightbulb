@@ -131,6 +131,17 @@ export {
   resolveTypedMentions,
 } from "./messaging/mentions";
 export type { CompletionTrigger, MentionTarget, TriggerKind } from "./messaging/mentions";
+export { useRooms } from "./messaging/useRooms";
+export type {
+  OptimisticRoomMessage,
+  RoomsLiveSource,
+  RoomsPlatform,
+  SendState,
+  TypingMember,
+  UseRoomsOptions,
+  UseRoomsResult,
+} from "./messaging/useRooms";
+export type { RoomAttachmentInput } from "./messaging/client";
 export type {
   LocalDevice,
   LocalSession,

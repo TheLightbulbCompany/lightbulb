@@ -167,12 +167,16 @@ it("hides the pinned count when nothing is pinned", () => {
 // true` here, so the media-query rule can't be observed via computed style;
 // assert the DOM structure the selector needs (the buttons live inside
 // .room-audience) plus the rule's source text instead.
-it("puts Star, Mute and Conversation options inside .room-audience for the mobile touch-floor rule", () => {
-  render(<RoomHeader {...props} onSetPrefs={vi.fn()} />);
+it("puts Star, Mute, Conversation options and Search inside .room-audience for the mobile touch-floor rule", () => {
+  // The default `search` prop is a bare <span /> -- stand in a real Search
+  // trigger (same accessible name RoomMessageSearch renders) so the fourth
+  // element the mobile audit flagged is actually exercised here too.
+  render(<RoomHeader {...props} onSetPrefs={vi.fn()} search={<button type="button" aria-label="Search this conversation">Search</button>} />);
   const audience = screen.getByRole("button", { name: "Star this conversation" }).closest(".room-audience");
   expect(audience).not.toBeNull();
   expect(within(audience as HTMLElement).getByRole("button", { name: "Mute this conversation" })).toBeInTheDocument();
   expect(within(audience as HTMLElement).getByRole("button", { name: "Conversation options" })).toBeInTheDocument();
+  expect(within(audience as HTMLElement).getByRole("button", { name: "Search this conversation" })).toBeInTheDocument();
 
   const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
   expect(css).toMatch(/@media \(max-width: 859px\) \{[\s\S]*\.room-audience button \{ min-width: 44px; min-height: 44px; \}/);

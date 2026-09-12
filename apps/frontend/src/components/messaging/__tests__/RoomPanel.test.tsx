@@ -251,6 +251,21 @@ it("closes the room details panel and restores its trigger on Escape", async () 
   expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
 });
 
+it("returns focus to the Details trigger, not <body>, when Escape closes the room details panel at wide width", async () => {
+  // No `narrow` prop and the default matchMedia stub (tests/setup.ts) matches
+  // nothing, so this renders as the docked (>=1180px) layout -- the restore
+  // effect used to gate its close branch on `isNarrow` and dropped focus to
+  // <body> here.
+  render(<RoomPanel {...props} />);
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = screen.getByRole("complementary", { name: "Room details" });
+  fireEvent.keyDown(details, { key: "Escape" });
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  const trigger = screen.getByRole("button", { name: /^Details/ });
+  expect(document.activeElement).toBe(trigger);
+  expect(trigger).toHaveFocus();
+});
+
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
   render(<RoomPanel {...props} messages={[{ ...message, author: { kind, id: "friday", displayName: "Announcement" } }]} />);
   const article = screen.getByRole("article", { name: "Message from Announcement" });

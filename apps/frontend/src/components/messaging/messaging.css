@@ -143,7 +143,10 @@
    box; the actions cluster never shrinks, and only wraps to a second line
    (via the container's flex-wrap above) once it alone can't fit. */
 .room-directory-heading > h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.room-directory-heading-actions { flex-shrink: 0; }
+/* Once the actions cluster wraps onto its own line, it's the lone flex item
+   on that line -- .room-directory-heading's space-between has nothing to
+   space, so it collapses flush-left without its own alignment. */
+.room-directory-heading-actions { flex-shrink: 0; justify-content: flex-end; }
 .room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; min-width: 0; }
 .room-directory-row .room-directory-entry { min-width: 0; }
 .room-directory-actions { flex: none; opacity: 0; }

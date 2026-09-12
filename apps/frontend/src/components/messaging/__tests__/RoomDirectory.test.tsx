@@ -524,7 +524,11 @@ it("keeps the sidebar heading from forcing the directory wider than its box", ()
   expect(css).toMatch(/\.room-directory\s*\{[^}]*overflow-x:\s*hidden;/);
   expect(css).toMatch(/\.room-directory-heading\s*\{[^}]*flex-wrap:\s*wrap;/);
   expect(css).toMatch(/\.room-directory-heading\s*>\s*h2\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/);
-  expect(css).toMatch(/\.room-directory-heading-actions\s*\{\s*flex-shrink:\s*0;\s*\}/);
+  expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*flex-shrink:\s*0;/);
+  // When the actions cluster wraps onto its own line it's the lone flex item
+  // there, so .room-directory-heading's space-between has nothing left to
+  // space and collapses flush-left without its own right-alignment.
+  expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*justify-content:\s*flex-end;/);
   expect(css).toMatch(/\.room-directory-heading-actions,\s*\.room-directory-row\s*\{[^}]*min-width:\s*0;/);
 });
 

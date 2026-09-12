@@ -39,6 +39,11 @@ const MAX_PHOTOS = 4;
 // this is the measured default for the header room/_layout.tsx configures.
 // ponytail: a magic constant; it only moves if that header grows a large
 // title or a subtitle row.
+// The Android branch is currently inert: both call sites pass
+// `behavior={Platform.OS === "ios" ? "padding" : undefined}`, and an
+// `undefined` behavior applies no padding at all, so `keyboardVerticalOffset`
+// (and this constant) has no effect off iOS today — same as the `90` this
+// replaces. Kept for whichever screen adds real Android KAV behavior next.
 const HEADER_BASE = Platform.OS === "ios" ? 44 : 56;
 
 /**

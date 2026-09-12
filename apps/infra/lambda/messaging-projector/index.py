@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid5
@@ -71,6 +72,42 @@ def _ddb():
     return _ddb_client
 
 
+def _env_dimension() -> str:
+    # MESSAGING_TABLE is "lightbulb-{env}-messaging" (table-names.ts); no
+    # separate env var exists on this Lambda, so derive it from the one it
+    # already reads instead of adding one.
+    parts = MESSAGING_TABLE.split("-")
+    return parts[1] if len(parts) >= 3 else "unknown"
+
+
+def _emit_metric(name: str, value: float, unit: str, dimensions: dict[str, str]) -> None:
+    """Print one EMF line. Never raises: a metrics bug must never fail the record.
+
+    Dimensions never carry owner/user/room/member ids.
+    """
+    try:
+        dims = {"env": _env_dimension(), "service": "messaging-projector", **dimensions}
+        print(json.dumps({
+            "_aws": {
+                "Timestamp": int(time.time() * 1000),
+                "CloudWatchMetrics": [{
+                    "Namespace": "LightbulbAI",
+                    "Dimensions": [list(dims.keys())],
+                    "Metrics": [{"Name": name, "Unit": unit}],
+                }],
+            },
+            **dims,
+            name: value,
+        }))
+    except Exception as exc:  # noqa: BLE001 - metrics are best-effort
+        logger.warning("projector metric emit failed name=%s error_type=%s", name, type(exc).__name__)
+
+
+def _notify_latency_ms(created_at: str) -> float:
+    created = _parse_rfc3339(created_at)
+    return (datetime.now(timezone.utc) - created).total_seconds() * 1000
+
+
 def _normalise(value: Any) -> Any:
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
@@ -99,11 +136,15 @@ def _require_uuid(value: Any, field: str) -> str:
     return value
 
 
+def _parse_rfc3339(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def _require_timestamp(value: Any, field: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be an RFC-3339 timestamp")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = _parse_rfc3339(value)
     except ValueError as exc:
         raise ValueError(f"{field} must be an RFC-3339 timestamp") from exc
     if parsed.tzinfo is None:
@@ -275,6 +316,7 @@ def _push_tokens(user_id: str) -> list[str]:
         ]
     except Exception as exc:  # noqa: BLE001 - push is best-effort
         logger.warning("projector push token read failed error_type=%s", type(exc).__name__)
+        _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "token_read_error"})
         return []
 
 
@@ -294,6 +336,7 @@ def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any])
             logger.warning(
                 "projector push capped tokens=%d sent=%d", len(tokens), MAX_PUSH_TOKENS
             )
+            _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "capped"})
             tokens = tokens[:MAX_PUSH_TOKENS]
         author = message["author"]["displayName"]
         # Every room kind may be nameless (CreateRoomRequest.name is optional).
@@ -325,10 +368,12 @@ def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any])
         # A non-2xx arrives as HTTPError, so the one except below covers it.
         with urllib.request.urlopen(request, timeout=5):
             pass
+        _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "ok"})
     except Exception as exc:  # noqa: BLE001 - push is best-effort
         logger.warning(
             "projector push send failed tokens=%d error_type=%s", len(tokens), type(exc).__name__
         )
+        _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "send_error"})
 
 
 def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
@@ -367,8 +412,11 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
         )
         # Mute is client-side everywhere else; push is server-side by nature,
         # so it is the one surface that has to honour it here.
-        if notify and member.get("muted") is not True:
-            tokens.extend(_push_tokens(user_id))
+        if notify:
+            if member.get("muted") is True:
+                _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})
+            else:
+                tokens.extend(_push_tokens(user_id))
         # Content stays behind an authenticated HTTP read, even if access is
         # removed between this membership check and the user's delivery.
         _publish(f"/users/{key}", {
@@ -474,6 +522,15 @@ def _project_message(item: dict[str, Any]) -> None:
     }
     tokens = _notify_members(message, meta)
     _publish(f"/rooms/{message['roomId']}/{delivery_key}", event)
+    try:
+        _emit_metric(
+            "messaging.projector.notify.latency",
+            _notify_latency_ms(message["createdAt"]),
+            "Milliseconds",
+            {"room_kind": meta.get("kind", "unknown")},
+        )
+    except Exception as exc:  # noqa: BLE001 - metrics are best-effort, never fail the record
+        logger.warning("projector notify latency failed error_type=%s", type(exc).__name__)
     # Push LAST: a raising publish replays the whole record, and Expo has no
     # eventId dedupe, so an earlier send would banner every member twice.
     # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.

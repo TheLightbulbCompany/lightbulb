@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, update_repo
+from core import openclaw_version
 from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services import config_schema
@@ -366,6 +367,13 @@ async def reapply_owner_config(owner_id: str, *, deployed_tag: str | None = None
     # runtime-only subtrees the fresh render drops can be recovered.
     existing = await container_config.read_openclaw_config_from_efs(owner_id)
 
+    # The image the regenerated config will RUN on, for the lightbulb-channel
+    # guard below. An explicit roll target wins; otherwise it is the owner's
+    # registered task definition — the same accessor and the same fallback
+    # ``write_user_configs`` applies to its own ``deployed_tag=None``, so both
+    # reason about the same image without changing the writer's contract.
+    target_tag = deployed_tag if deployed_tag is not None else await get_ecs_manager()._deployed_image_tag(owner_id)
+
     await get_ecs_manager().write_user_configs(
         owner_id,
         gateway_token,
@@ -387,6 +395,33 @@ async def reapply_owner_config(owner_id: str, *, deployed_tag: str | None = None
     if provider_choice == container_config.BEDROCK_TRIAL_CHOICE:
         restore_patch.pop("channels", None)
         restore_patch.pop("bindings", None)
+
+    # Same class, same fix: when the target image does not bake the
+    # lightbulb-channel plugin the generator deliberately omitted
+    # channels.lightbulb + its bindings, and restoring them from the pre-regen
+    # snapshot would put the crash-loop key ("unknown channel id: lightbulb")
+    # straight back. prune_schema_rejected below cannot catch it — `channels`
+    # is an OPEN map in the vendored schema, so the block validates fine and
+    # only the running gateway rejects it. This is what lets a reapply HEAL a
+    # container lagging behind the pin, and it is the only guard on an image
+    # ROLLBACK, where the regen and the restore disagree by construction.
+    if not openclaw_version.bakes_lightbulb_channel(target_tag):
+        channels = restore_patch.get("channels")
+        if isinstance(channels, dict):
+            channels.pop("lightbulb", None)
+            if not channels:
+                restore_patch.pop("channels", None)
+        bindings = restore_patch.get("bindings")
+        if isinstance(bindings, list):
+            kept = [
+                b
+                for b in bindings
+                if not (isinstance(b, dict) and (b.get("match") or {}).get("channel") == "lightbulb")
+            ]
+            if kept:
+                restore_patch["bindings"] = kept
+            else:
+                restore_patch.pop("bindings", None)
 
     # _runtime_only_delta preserves whatever the regen did not emit. Within one
     # upstream version that is exactly right — anything the generator skips is

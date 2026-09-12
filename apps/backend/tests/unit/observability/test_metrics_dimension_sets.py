@@ -38,11 +38,59 @@ def test_status_metric_publishes_full_status_and_fleet_sets(capsys):
     ]
 
 
-def test_no_status_dimension_means_no_status_rollup(capsys):
+def test_no_rollup_dimension_means_no_qualifier_rollup(capsys):
     put_metric("container.lifecycle.latency", dimensions={"op": "start"})
 
     assert _sets(capsys) == [
         ["env", "service", "op"],
+        ["env", "service"],
+    ]
+
+
+def test_outcome_metric_with_a_second_dimension_publishes_the_outcome_rollup(capsys):
+    """`messaging.worker.message{outcome, error}` is the shape that broke: an
+    alarm binding {env, service, outcome} matched nothing, because the only
+    published identities were the full set and the bare fleet rollup."""
+    put_metric("messaging.worker.message", dimensions={"kind": "room_dispatch", "outcome": "retry", "error": "Work"})
+
+    assert _sets(capsys) == [
+        ["env", "service", "kind", "outcome", "error"],
+        ["env", "service", "outcome"],
+        ["env", "service"],
+    ]
+
+
+def test_status_class_metric_with_a_second_dimension_publishes_the_status_class_rollup(capsys):
+    put_metric("messaging.ingress.post", dimensions={"status_class": "5xx", "event_kind": "user_request"})
+
+    assert _sets(capsys) == [
+        ["env", "service", "status_class", "event_kind"],
+        ["env", "service", "status_class"],
+        ["env", "service"],
+    ]
+
+
+def test_only_allowlisted_qualifiers_get_their_own_rollup(capsys):
+    """Every published set costs money and CloudWatch caps a metric at 30
+    dimensions, so this is an allowlist, not "one rollup per dimension"."""
+    put_metric("chat.error", dimensions={"reason": "timeout", "outcome": "error"})
+
+    assert _sets(capsys) == [
+        ["env", "service", "reason", "outcome"],
+        ["env", "service", "outcome"],
+        ["env", "service"],
+    ]
+
+
+def test_every_allowlisted_qualifier_present_gets_a_rollup(capsys):
+    """`chat.error{reason, reclassified, source}` carries one allowlisted
+    qualifier among three dimensions; the {env, service, source} alarm binds
+    the rollup, not the full set."""
+    put_metric("chat.error", dimensions={"reason": "timeout", "reclassified": "false", "source": "webchat"})
+
+    assert _sets(capsys) == [
+        ["env", "service", "reason", "reclassified", "source"],
+        ["env", "service", "source"],
         ["env", "service"],
     ]
 

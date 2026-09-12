@@ -3,7 +3,6 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import { resourcePrefix } from "../table-names";
 import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
-import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 // GuardDuty + Access Analyzer already enabled at account level — not managed by CDK
 import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as events from "aws-cdk-lib/aws-events";
@@ -77,13 +76,68 @@ export interface ObservabilityStackProps extends cdk.StackProps {
     channelLinksTable: string;
     companySlugsTable: string;
     agentEmailAddressesTable: string;
+    /**
+     * The canonical messaging store and the machine-relay connection map.
+     * Both live in `api-stack.ts`, not `database-stack.ts` — they are still
+     * just dimension strings here, so the same names-not-constructs rule
+     * above applies. The messaging table is now the product's hottest table
+     * (every room message, member and work row) and had no throttle, capacity
+     * or SystemErrors alarm at all.
+     */
+    messagingTable: string;
+    wsConnectionsTable: string;
   };
-  connectionsTableName: string;
   // Lambda authorizer function name (for Lambda alarms)
   authorizerFunctionName: string;
+  /**
+   * Messaging-plane names for the dashboard's Messaging block. All owned by
+   * ApiStack.
+   *
+   * The three names are LITERALS on the ApiStack side, not `queue.queueName` /
+   * `fn.functionName` — a token consumed across stacks becomes a
+   * CloudFormation Export, and an export cannot be changed while anything
+   * imports it (the deadlock documented on `databaseTables` above).
+   *
+   * `appsyncEventApiId` is the single exception and the only import this stack
+   * takes from ApiStack: AppSync assigns the id at create time, so there is no
+   * literal to write. See its declaration in `api-stack.ts` for the
+   * consequence (replacing the Event API needs these widgets removed first).
+   */
+  messaging: {
+    workQueueName: string;
+    workDlqName: string;
+    projectorFunctionName: string;
+    appsyncEventApiId: string;
+  };
   // Paperclip tier references (for Aurora + Paperclip-service alarms)
   paperclipDbCluster: rds.IDatabaseCluster;
   paperclipService: ecs.IBaseService;
+}
+
+/**
+ * The one table set P8, W40, W41, W42 and the Row 8 dashboard widget cover.
+ *
+ * It was four hand-maintained lists (two of eight tables, one of four in the
+ * widget), which is why the messaging table — now the busiest table we own —
+ * had no DynamoDB alarm on it at all. One list, one place to add a table.
+ * Short names are kebab because they land in alarm names; P8 underscores them
+ * for metric-math ids.
+ */
+function alarmedTables(
+  tables: ObservabilityStackProps["databaseTables"],
+): [string, string][] {
+  return [
+    ["users", tables.usersTable],
+    ["containers", tables.containersTable],
+    ["billing", tables.billingTable],
+    ["usage-counters", tables.usageCountersTable],
+    ["pending-updates", tables.pendingUpdatesTable],
+    ["channel-links", tables.channelLinksTable],
+    ["company-slugs", tables.companySlugsTable],
+    ["agent-email-addresses", tables.agentEmailAddressesTable],
+    ["messaging", tables.messagingTable],
+    ["ws-connections", tables.wsConnectionsTable],
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,13 +202,13 @@ export class ObservabilityStack extends cdk.Stack {
     // Page tier: fires on customer-impacting events.
     this.pageTopic = new sns.Topic(this, "AlertsPage", {
       topicName: `${resourcePrefix(props.envName)}alerts-page`,
-      displayName: "Isol8 Page",
+      displayName: "Lightbulb Page",
     });
 
     // Warn tier.
     this.warnTopic = new sns.Topic(this, "AlertsWarn", {
       topicName: `${resourcePrefix(props.envName)}alerts-warn`,
-      displayName: "Isol8 Warn",
+      displayName: "Lightbulb Warn",
     });
 
     // A CloudWatch alarm action publishes as the CloudWatch SERVICE principal,
@@ -201,10 +255,34 @@ export class ObservabilityStack extends cdk.Stack {
     //
     // A subscription is only real when that command shows a SubscriptionArn
     // that is not the literal string "PendingConfirmation".
+    //
+    // ⚠️ RECREATED 2026-09-12 (the `…V2` ids). The prod subscriptions CFN
+    // believed it owned were gone: SNS deleted all three after the three-day
+    // unconfirmed window, and CloudFormation still reported them
+    // CREATE_COMPLETE — so no ordinary deploy would ever put them back. New
+    // construct ids are the ONLY way to make CDK create fresh ones.
+    //
+    // ⚠️ THE DEPLOY IS HALF THE JOB. A human must open the confirmation mail
+    // at the address below and click the link WITHIN 3 DAYS of the deploy, or
+    // SNS deletes these subscriptions again and both tiers go silent again.
+    // The `SubscriptionsConfirmed` monitor further down is what tells you it
+    // happened (or didn't) instead of leaving it to be noticed weeks later.
+    //
+    // sns.Subscription directly, not `addSubscription(new EmailSubscription)`:
+    // that helper derives the construct id from the address, so the id cannot
+    // be bumped without also changing where the mail goes.
     const alertEmail = this.alertEmail;
 
-    this.pageTopic.addSubscription(new subs.EmailSubscription(alertEmail));
-    this.warnTopic.addSubscription(new subs.EmailSubscription(alertEmail));
+    new sns.Subscription(this, "AlertsPageEmailV2", {
+      topic: this.pageTopic,
+      endpoint: alertEmail,
+      protocol: sns.SubscriptionProtocol.EMAIL,
+    });
+    new sns.Subscription(this, "AlertsWarnEmailV2", {
+      topic: this.warnTopic,
+      endpoint: alertEmail,
+      protocol: sns.SubscriptionProtocol.EMAIL,
+    });
 
     // NOTE: there is deliberately no SMS subscription. SNS cannot send SMS
     // from this account — it has no registered US origination identity and
@@ -233,7 +311,11 @@ export class ObservabilityStack extends cdk.Stack {
       // the URL string, and the URL here is an unresolved token — that would
       // put `${Token[TOKEN.nnn]}` in the construct id, which shifts between
       // synths and churns the resource. This spells the id out instead.
-      new sns.Subscription(this, "PagerDutyPage", {
+      //
+      // `…V2` for the same reason as the email subscriptions above: the
+      // original was deleted out from under a CloudFormation record that
+      // still says CREATE_COMPLETE, and only a new construct id recreates it.
+      new sns.Subscription(this, "PagerDutyPageV2", {
         topic: this.pageTopic,
         endpoint: pagerDutyUrl,
         protocol: sns.SubscriptionProtocol.HTTPS,
@@ -248,10 +330,13 @@ export class ObservabilityStack extends cdk.Stack {
     // PagerDuty would create an incident per blip and train you to ignore the
     // thing whose entire job is to be impossible to ignore.
 
+    this.createSubscriptionMonitor();
+
     // -----------------------------------------------------------------------
     // Alarms
     // -----------------------------------------------------------------------
     this.createPageAlarms(props);
+    this.createMessagingAlarms();
     this.createWarnCustomMetricAlarms();
     this.createWarnAwsNativeAlarms(props);
     this.createPaperclipTierAlarms(props);
@@ -312,6 +397,109 @@ export class ObservabilityStack extends cdk.Stack {
         },
       }),
     );
+  }
+
+  /**
+   * Watch the alert topics' own subscriptions, because nothing else does.
+   *
+   * SNS deletes an email subscription nobody confirms within three days, and
+   * CloudFormation keeps reporting CREATE_COMPLETE against the corpse — that
+   * is how both tiers ran with ZERO destinations while ~105 alarms fired into
+   * the void and a real prod alarm sat unnoticed for four weeks. There is no
+   * AWS-native metric for "this topic has a live subscriber", so poll for it.
+   *
+   * An hourly Lambda counts subscriptions whose `SubscriptionArn` is not the
+   * literal `PendingConfirmation` and emits the count per tier via EMF. The
+   * alarm is BREACHING on missing data on purpose: the monitor not running is
+   * indistinguishable from the destinations being gone, and both mean nobody
+   * is being paged. Both alarms page — a warn-tier alarm about a dead warn
+   * topic would deliver to the topic it is reporting on.
+   */
+  private createSubscriptionMonitor(): void {
+    const topics: { tier: "page" | "warn"; topic: sns.Topic }[] = [
+      { tier: "page", topic: this.pageTopic },
+      { tier: "warn", topic: this.warnTopic },
+    ];
+
+    const monitor = new lambda.Function(this, "AlertSubscriptionMonitor", {
+      functionName: `${resourcePrefix(this.envName)}alert-subscription-monitor`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        PAGE_TOPIC_ARN: this.pageTopic.topicArn,
+        WARN_TOPIC_ARN: this.warnTopic.topicArn,
+      },
+      code: lambda.Code.fromInline(`
+import boto3
+import json
+import os
+import time
+
+sns = boto3.client("sns")
+
+
+def handler(event, context):
+    del event, context
+    paginator = sns.get_paginator("list_subscriptions_by_topic")
+    for tier in ("page", "warn"):
+        arn = os.environ[tier.upper() + "_TOPIC_ARN"]
+        confirmed = 0
+        for page in paginator.paginate(TopicArn=arn):
+            for sub in page.get("Subscriptions", []):
+                # SNS reports an unconfirmed subscription with this literal in
+                # place of an ARN. It is not a destination until it is gone.
+                if sub.get("SubscriptionArn") != "PendingConfirmation":
+                    confirmed += 1
+        print(json.dumps({
+            "_aws": {
+                "Timestamp": int(time.time() * 1000),
+                "CloudWatchMetrics": [{
+                    "Namespace": "LightbulbAI/Alerting",
+                    "Dimensions": [["topic"]],
+                    "Metrics": [{"Name": "SubscriptionsConfirmed", "Unit": "Count"}],
+                }],
+            },
+            "topic": tier,
+            "SubscriptionsConfirmed": confirmed,
+        }))
+`),
+    });
+    monitor.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["sns:ListSubscriptionsByTopic"],
+        resources: topics.map((t) => t.topic.topicArn),
+      }),
+    );
+    new events.Rule(this, "AlertSubscriptionMonitorSchedule", {
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+      targets: [new events_targets.LambdaFunction(monitor)],
+    });
+
+    for (const { tier } of topics) {
+      // Prod's page tier alone has two destinations (the alert mailbox AND
+      // PagerDuty); every other tier/env combination has just the mailbox.
+      const expected = this.envName === "prod" && tier === "page" ? 2 : 1;
+      this.createAlarm({
+        id: tier === "page" ? "P17" : "P18",
+        name: `alert-subscriptions-${tier}-topic`,
+        description:
+          `PAGE: the ${tier} topic has fewer than ${expected} CONFIRMED ` +
+          "subscriptions. Nobody is receiving its alarms. Usually means the " +
+          "confirmation mail was never clicked and SNS deleted the " +
+          "subscription after three days.",
+        namespace: "LightbulbAI/Alerting",
+        metricName: "SubscriptionsConfirmed",
+        statistic: "Minimum",
+        dimensions: { topic: tier },
+        threshold: expected,
+        periodMinutes: 60,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        severity: "page",
+      });
+    }
   }
 
   // =========================================================================
@@ -546,19 +734,11 @@ export class ObservabilityStack extends cdk.Stack {
     // without any backend change. ThrottledRequests is per-table, so we sum
     // across the same table set W40/W41/W42 enumerate (account-wide math sum is
     // the acceptable fallback when a table set isn't available).
-    const ddbThrottleTables: [string, string][] = [
-      ["users", props.databaseTables.usersTable],
-      ["containers", props.databaseTables.containersTable],
-      ["billing", props.databaseTables.billingTable],
-      ["usageCounters", props.databaseTables.usageCountersTable],
-      ["pendingUpdates", props.databaseTables.pendingUpdatesTable],
-      ["channelLinks", props.databaseTables.channelLinksTable],
-      ["companySlugs", props.databaseTables.companySlugsTable],
-      ["agentEmailAddresses", props.databaseTables.agentEmailAddressesTable],
-    ];
     const ddbThrottlePerTable: Record<string, cloudwatch.IMetric> = {};
-    for (const [key, table] of ddbThrottleTables) {
-      ddbThrottlePerTable[key] = new cloudwatch.Metric({
+    for (const [shortName, table] of alarmedTables(props.databaseTables)) {
+      // Metric-math ids are [a-z][a-zA-Z0-9_]*, so the kebab short name has to
+      // be underscored before it can be an operand.
+      ddbThrottlePerTable[shortName.replace(/-/g, "_")] = new cloudwatch.Metric({
         namespace: "AWS/DynamoDB",
         metricName: "ThrottledRequests",
         statistic: "Sum",
@@ -690,7 +870,7 @@ export class ObservabilityStack extends cdk.Stack {
       dimensionsMap: reaperDims,
     });
 
-    const heartbeatAlarm = new cloudwatch.Alarm(this, "ReaperHeartbeatAlarm", {
+    const heartbeatAlarm = new cloudwatch.Alarm(this, "BackendLivenessAlarm", {
       alarmName: `${resourcePrefix(this.envName)}P12-backend-liveness`,
       alarmDescription:
         "PAGE: backend metrics loop has emitted no heartbeat in 10 minutes. " +
@@ -705,6 +885,23 @@ export class ObservabilityStack extends cdk.Stack {
     });
     heartbeatAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
+    );
+    // The construct id says BackendLiveness (the reaper is long gone), but the
+    // LOGICAL id must stay exactly as deployed. A CloudWatch alarm's physical
+    // id is its AlarmName, and AlarmName is unchanged here — so a new logical
+    // id would make CloudFormation create the "new" alarm (an upsert onto the
+    // same name) and then DELETE it again in the cleanup phase when it removes
+    // the old logical resource. The result is a page-tier alarm silently gone.
+    // Pinning the logical id renames the code with no template diff at all.
+    //
+    // The hash suffix is LOAD-BEARING and is NOT decoration: CDK derives the
+    // logical id as <construct id><hash of the construct path>, so the
+    // deployed id is `ReaperHeartbeatAlarm31FA055D`, not `ReaperHeartbeatAlarm`
+    // (verified by synthesizing with the override removed). Pinning the
+    // unhashed string would have caused the exact deletion this override
+    // exists to prevent. The test below asserts this literal key.
+    (heartbeatAlarm.node.defaultChild as cloudwatch.CfnAlarm).overrideLogicalId(
+      "ReaperHeartbeatAlarm31FA055D",
     );
 
     // -------------------------------------------------------------------
@@ -769,6 +966,308 @@ export class ObservabilityStack extends cdk.Stack {
       description:
         "A company Stripe Express account was minted via the live " +
         "create door - first real usage signal, not an outage.",
+    });
+  }
+
+  // =========================================================================
+  // Messaging platform alarms (P19-P23, W68-W76)
+  // =========================================================================
+
+  /**
+   * Rooms, DMs and agent dispatch — the product's main path, and until now
+   * watched only from the infrastructure side (`api-stack.ts` alarms the work
+   * queue, the Pipe and the projector Lambda). Nothing alarmed on the parts a
+   * user actually feels: a dead worker, a message that reaches no agent, a
+   * reply that never comes.
+   *
+   * ⚠️ EVERY metric below is emitted by a backend change shipping in parallel
+   * (see the 2026-09-12 observability tasks). Until that image is deployed the
+   * alarms below have no data — which is why all of them are `notBreaching`
+   * except the worker heartbeat, where absence IS the failure being detected
+   * and which therefore sits in ALARM until the backend lands.
+   *
+   * ⚠️ EVERY single-dimension filter below names `outcome`, `status_class` or
+   * `count_bucket` — and that is a hard constraint, not a coincidence.
+   * CloudWatch has no filtered view of a metric, so an alarm can only bind an
+   * identity the emitter actually publishes: the full dimension set, the
+   * [env, service] rollup, or an [env, service, d] rollup for exactly `status`,
+   * `outcome`, `status_class`, `count_bucket` and `source` (`metrics.py`).
+   * Filtering on `event_kind`, `kind`, `frame_type`, `error_kind` or
+   * `room_kind` here would bind nothing and sit green forever. The
+   * dimension-contract test enforces it.
+   */
+  private createMessagingAlarms(): void {
+    // -- P19: the work-queue worker is dead --
+    // The worker gauges `messaging.worker.alive` on EVERY poll iteration,
+    // including empty ones, so samples are unconditional and their absence is
+    // unambiguous: no worker, no agent ever answers a room message.
+    this.createAlarm({
+      id: "P19",
+      name: "messaging-worker-dead",
+      metricName: "messaging.worker.alive",
+      statistic: "SampleCount",
+      threshold: 1,
+      periodMinutes: 1,
+      evaluationPeriods: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      // Liveness check: missing data IS the failure signal. This alarm sits
+      // BREACHING until the backend emitting the metric is deployed.
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "page",
+      description:
+        "PAGE: the OpenClaw work-queue worker has emitted no liveness sample " +
+        "for 5 minutes. Nothing is draining openclaw-work.fifo, so no agent " +
+        "is being woken for any room message.",
+    });
+
+    // -- P20: work sits in the queue --
+    // Distinct from `openclaw-work-oldest-age` (api-stack), which measures the
+    // oldest message INCLUDING the in-flight one an agent is still answering —
+    // it has to tolerate hour-long turns. This measures how long a message
+    // waited BEFORE the worker picked it up, which has no such excuse.
+    this.createAlarm({
+      id: "P20",
+      name: "messaging-queue-wait-p99",
+      metricName: "messaging.work.queue_wait",
+      statistic: "p99",
+      threshold: 60_000,
+      periodMinutes: 5,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
+      severity: "page",
+      description:
+        "PAGE: p99 wait before the worker picks work up exceeds 60s - the " +
+        "worker is falling behind the queue.",
+    });
+
+    // -- P21: agents stop replying --
+    // Time from the human message to the agent message that answers it. The
+    // one number a user would recognise as "is this thing working".
+    this.createAlarm({
+      id: "P21",
+      name: "messaging-reply-latency-p95",
+      metricName: "messaging.reply.latency",
+      statistic: "p95",
+      threshold: 300_000,
+      periodMinutes: 5,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
+      severity: "page",
+      description:
+        "PAGE: p95 agent reply latency exceeds 5 minutes (the stated SLO).",
+    });
+
+    // -- P22: the container refuses our ingress --
+    // A 4xx from the container's channel plugin is OUR bug (bad agent id,
+    // wrong auth, malformed body), not a transient — it will not self-heal and
+    // every affected message is silently dropped. Any occurrence pages.
+    this.createAlarm({
+      id: "P22",
+      name: "messaging-ingress-4xx",
+      metricName: "messaging.ingress.post",
+      dimensions: { status_class: "4xx" },
+      threshold: 0,
+      periodMinutes: 5,
+      severity: "page",
+      description:
+        "PAGE: the container's lightbulb-channel ingress rejected a dispatch " +
+        "with a 4xx. Non-transient: those messages never reach the agent.",
+    });
+
+    // -- P23: room run frames cannot be subscribed --
+    // Without the session subscription the backend never sees the agent's run
+    // events, so the UI shows nothing happening even when the agent is working.
+    this.createAlarm({
+      id: "P23",
+      name: "messaging-room-subscribe-error",
+      metricName: "messaging.room_session.subscribe",
+      dimensions: { outcome: "error" },
+      threshold: 0,
+      periodMinutes: 5,
+      severity: "page",
+      description:
+        "PAGE: subscribing to a room's agent session failed - run frames for " +
+        "that room never reach the UI.",
+    });
+
+    // -- W68: messages that mention an agent and reach nobody --
+    // `count_bucket=0` means select_dispatch_targets returned no targets: the
+    // user addressed an agent and nothing was woken. Sustained across a full
+    // 15 minutes (3 of 3) so a single quiet-room blip stays quiet.
+    this.createAlarm({
+      id: "W68",
+      name: "messaging-dispatch-zero-targets",
+      metricName: "messaging.dispatch.targets",
+      dimensions: { count_bucket: "0" },
+      threshold: 5,
+      periodMinutes: 5,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 3,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+      description:
+        "Messages are selecting zero dispatch targets - agents are being " +
+        "addressed and nothing is running.",
+    });
+
+    // -- W69: @handles that resolve to nothing --
+    this.createAlarm({
+      id: "W69",
+      name: "messaging-mention-unresolved",
+      metricName: "messaging.mention.unresolved",
+      threshold: 5,
+      periodMinutes: 5,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+      description:
+        "@mentions are failing to resolve to an agent (ambiguous or no " +
+        "match) - the user believes they addressed someone.",
+    });
+
+    // -- W70: the container is unreachable --
+    // Timeouts and transport failures together: both mean the POST never got
+    // an answer, as opposed to getting a bad one (that is P22 / the 5xx path).
+    // FILL(...,0) on both operands because an error metric publishes nothing
+    // when there are no errors, and CloudWatch arithmetic yields NO datapoint
+    // for a period unless every operand has data in it.
+    const ingressUnreachable = new cloudwatch.MathExpression({
+      expression: "FILL(timeouts, 0) + FILL(transport, 0)",
+      usingMetrics: {
+        timeouts: this.messagingMetric("messaging.ingress.post", {
+          status_class: "timeout",
+        }),
+        transport: this.messagingMetric("messaging.ingress.post", {
+          status_class: "transport",
+        }),
+      },
+      period: cdk.Duration.minutes(5),
+    });
+    this.createAlarm({
+      id: "W70",
+      name: "messaging-ingress-unreachable",
+      metric: ingressUnreachable,
+      threshold: 10,
+      severity: "warn",
+      description:
+        "Dispatch POSTs to owner containers are timing out or failing at the " +
+        "transport layer - containers unreachable, not rejecting.",
+    });
+
+    // -- W71: work retrying in a loop --
+    this.createAlarm({
+      id: "W71",
+      name: "messaging-worker-retry-storm",
+      metricName: "messaging.worker.message",
+      dimensions: { outcome: "retry" },
+      threshold: 20,
+      periodMinutes: 5,
+      severity: "warn",
+      description:
+        "Work items are retrying in bulk - a poison pointer or a fleet-wide " +
+        "wake failure, ahead of anything reaching the DLQ.",
+    });
+
+    // -- W72: run frames not reaching AppSync --
+    this.createAlarm({
+      id: "W72",
+      name: "messaging-room-frame-publish-error",
+      metricName: "messaging.room_frame.publish",
+      dimensions: { outcome: "error" },
+      threshold: 5,
+      periodMinutes: 5,
+      severity: "warn",
+      description:
+        "Room run frames are failing to publish - agents appear frozen " +
+        "mid-run in the UI even though the run is progressing.",
+    });
+
+    // -- W73: live events not reaching AppSync --
+    this.createAlarm({
+      id: "W73",
+      name: "messaging-live-publish-error",
+      metricName: "messaging.live.publish",
+      dimensions: { outcome: "error" },
+      threshold: 5,
+      periodMinutes: 5,
+      severity: "warn",
+      description:
+        "Live event publishes to AppSync are failing - clients fall back to " +
+        "polling and see stale rooms.",
+    });
+
+    // -- W74: wakes refused --
+    // `blocked` (gated by billing/trial) and `operator_stopped` (deliberately
+    // stopped) are both legitimate individually; in bulk they mean a cohort of
+    // owners is sending messages nothing will ever answer.
+    const wakeSuppressed = new cloudwatch.MathExpression({
+      expression: "FILL(blocked, 0) + FILL(stopped, 0)",
+      usingMetrics: {
+        blocked: this.messagingMetric("messaging.wake.outcome", {
+          outcome: "blocked",
+        }),
+        stopped: this.messagingMetric("messaging.wake.outcome", {
+          outcome: "operator_stopped",
+        }),
+      },
+      period: cdk.Duration.minutes(5),
+    });
+    this.createAlarm({
+      id: "W74",
+      name: "messaging-wake-suppressed",
+      metric: wakeSuppressed,
+      threshold: 5,
+      severity: "warn",
+      description:
+        "Container wakes are being refused (blocked or operator-stopped) - " +
+        "those owners' messages will never be answered.",
+    });
+
+    // -- W75: mobile push failing at the projector --
+    // NOTE the `service` override: the projector Lambda emits its own EMF with
+    // service="messaging-projector", not the backend's "lightbulb-backend".
+    this.createAlarm({
+      id: "W75",
+      name: "messaging-projector-push-send-error",
+      metricName: "messaging.projector.push",
+      dimensions: { service: "messaging-projector", outcome: "send_error" },
+      threshold: 10,
+      periodMinutes: 5,
+      severity: "warn",
+      description:
+        "The projector is failing to hand notifications to Expo - mobile " +
+        "users get no banner for new room messages.",
+    });
+
+    // -- W76: backend push failing --
+    this.createAlarm({
+      id: "W76",
+      name: "push-send-error",
+      metricName: "push.send",
+      dimensions: { outcome: "error" },
+      threshold: 10,
+      periodMinutes: 5,
+      severity: "warn",
+      description: "Backend push sends to Expo are failing.",
+    });
+  }
+
+  /** A 5-minute Sum on a backend-emitted messaging metric, for metric math. */
+  private messagingMetric(
+    metricName: string,
+    dimensions: Record<string, string>,
+  ): cloudwatch.Metric {
+    return new cloudwatch.Metric({
+      namespace: "LightbulbAI",
+      metricName,
+      statistic: "Sum",
+      period: cdk.Duration.minutes(5),
+      dimensionsMap: {
+        env: this.envName,
+        service: "lightbulb-backend",
+        ...dimensions,
+      },
     });
   }
 
@@ -980,10 +1479,17 @@ export class ObservabilityStack extends cdk.Stack {
     // prod signal. 3-of-5 over 5-min periods (a 25-min window) requires the p99
     // to actually sit above the 20s SLO before warning. Missing data = no chats
     // = NOT_BREACHING (helper default): quiet windows never fire.
+    //
+    // SCOPED to source=webchat. `chat.*` now covers three entry points, and
+    // room traffic has its own latency SLO (P21, on messaging.reply.latency);
+    // folding them together made this alarm's 20s threshold meaningless. The
+    // full set for chat.e2e.latency is [env, service, source], so this binds a
+    // published identity directly.
     this.createAlarm({
       id: "W9",
       name: "chat-e2e-latency-p99",
       metricName: "chat.e2e.latency",
+      dimensions: { source: "webchat" },
       statistic: "p99",
       threshold: 20000,
       evaluationPeriods: 5,
@@ -992,23 +1498,28 @@ export class ObservabilityStack extends cdk.Stack {
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
-      description: "Chat p99 latency exceeds 20s SLO target",
+      description: "Webchat p99 latency exceeds 20s SLO target",
     });
 
     // W10: chat-error-rate (metric math)
+    // BOTH legs scoped to source=webchat, never one: a webchat numerator over
+    // a whole-fleet denominator (or the reverse) is not a narrower alarm, it is
+    // a wrong number. `source` is in the emitter's single-dimension rollup
+    // allowlist, so { env, service, source } is a published identity for both.
+    const webchat = { ...dims, source: "webchat" };
     const chatErrors = new cloudwatch.Metric({
       namespace: "LightbulbAI",
       metricName: "chat.error",
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
+      dimensionsMap: webchat,
     });
     const chatTotal = new cloudwatch.Metric({
       namespace: "LightbulbAI",
       metricName: "chat.message.count",
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
+      dimensionsMap: webchat,
     });
     const chatErrorRate = new cloudwatch.MathExpression({
       expression: "100 * errors / IF(total > 0, total, 1)",
@@ -1017,7 +1528,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
     const w10 = new cloudwatch.Alarm(this, "W10", {
       alarmName: `${resourcePrefix(this.envName)}W10-chat-error-rate`,
-      alarmDescription: "Chat error rate exceeds 1%",
+      alarmDescription: "Webchat error rate exceeds 1%",
       metric: chatErrorRate,
       threshold: 1,
       evaluationPeriods: 1,
@@ -1847,16 +2358,7 @@ def handler(event, _ctx):
 
     // -- DynamoDB (W40-W42) --
     // Create alarms for each table
-    const allTables: [string, string][] = [
-      ["users", props.databaseTables.usersTable],
-      ["containers", props.databaseTables.containersTable],
-      ["billing", props.databaseTables.billingTable],
-      ["usage-counters", props.databaseTables.usageCountersTable],
-      ["pending-updates", props.databaseTables.pendingUpdatesTable],
-      ["channel-links", props.databaseTables.channelLinksTable],
-      ["company-slugs", props.databaseTables.companySlugsTable],
-      ["agent-email-addresses", props.databaseTables.agentEmailAddressesTable],
-    ];
+    const allTables = alarmedTables(props.databaseTables);
 
     // W40: ConsumedReadCapacityUnits anomaly (on-demand tables)
     // For on-demand tables we alarm when read consumption spikes
@@ -2047,7 +2549,7 @@ def handler(event, _ctx):
 
     // -- Network (W48) --
 
-    // W48: NLB / Cloud Map healthy host count drop
+    // W48: ALB healthy host count drop
     // Monitor ALB healthy host count as proxy for backend availability
     this.createAlarm({
       id: "W48",
@@ -2519,6 +3021,228 @@ def handler(event, _ctx):
     }
   }
 
+  /**
+   * The Messaging block — rooms, dispatch, the work queue, live delivery.
+   *
+   * The messaging platform is the product, and none of it was on this
+   * dashboard: `api-stack.ts` alarms its queue and projector, but there was
+   * nowhere to LOOK when something felt slow. Sits right after the runtime
+   * gauges, before the older channel/billing rows.
+   *
+   * Splits by `outcome` / `status_class` / `count_bucket` bind the emitter's
+   * per-dimension rollups (see `metrics.py`). The one split on a dimension
+   * with no rollup — `author_kind` — uses a SEARCH expression, which is
+   * allowed on a widget even though CloudWatch rejects it on an alarm.
+   */
+  private addMessagingDashboardRows(
+    dashboard: cloudwatch.Dashboard,
+    props: ObservabilityStackProps,
+    dims: Record<string, string>,
+  ): void {
+    const sum = (
+      metricName: string,
+      extra: Record<string, string> = {},
+      label?: string,
+    ) =>
+      new cloudwatch.Metric({
+        namespace: "LightbulbAI",
+        metricName,
+        statistic: "Sum",
+        dimensionsMap: { ...dims, ...extra },
+        label: label ?? Object.values(extra).join(" ") ?? "total",
+      });
+    const splitBy = (
+      metricName: string,
+      key: string,
+      values: string[],
+    ): cloudwatch.IMetric[] =>
+      values.map((value) => sum(metricName, { [key]: value }));
+
+    const appsync = (metricName: string) =>
+      new cloudwatch.Metric({
+        namespace: "AWS/AppSync",
+        metricName,
+        statistic: "Sum",
+        // Event APIs publish under EventAPIId, not GraphQLAPIId.
+        dimensionsMap: { EventAPIId: props.messaging.appsyncEventApiId },
+        label: metricName,
+      });
+    const sqsVisible = (queueName: string, label: string) =>
+      new cloudwatch.Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        statistic: "Maximum",
+        dimensionsMap: { QueueName: queueName },
+        label,
+      });
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        // `author_kind` has no per-dimension rollup — its only published
+        // identity is the emitter's full set {author_kind, room_kind,
+        // has_targets}, which would mean enumerating every combination. SEARCH
+        // returns one line per published set instead; it is rejected on alarms
+        // but fine on a widget. The schema is spelled in CloudWatch's
+        // alphabetical dimension order, which is what it matches on.
+        title: "Messages created by author",
+        left: [
+          new cloudwatch.SearchExpression({
+            expression:
+              "SEARCH('{LightbulbAI,author_kind,env,has_targets,room_kind,service} " +
+              `MetricName="messaging.message.created" env="${this.envName}"', 'Sum')`,
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Dispatch targets per message",
+        left: splitBy("messaging.dispatch.targets", "count_bucket", [
+          "0",
+          "1",
+          "many",
+        ]),
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Work queue depth & wait",
+        left: [
+          sqsVisible(props.messaging.workQueueName, "work queue"),
+          sqsVisible(props.messaging.workDlqName, "DLQ"),
+        ],
+        right: [
+          new cloudwatch.Metric({
+            namespace: "LightbulbAI",
+            metricName: "messaging.work.queue_wait",
+            statistic: "p99",
+            dimensionsMap: dims,
+            label: "queue wait p99",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Ingress & reply latency",
+        left: (["p50", "p99"] as const).map(
+          (statistic) =>
+            new cloudwatch.Metric({
+              namespace: "LightbulbAI",
+              metricName: "messaging.ingress.latency",
+              statistic,
+              dimensionsMap: dims,
+              label: `ingress ${statistic}`,
+            }),
+        ),
+        right: (["p50", "p95"] as const).map(
+          (statistic) =>
+            new cloudwatch.Metric({
+              namespace: "LightbulbAI",
+              metricName: "messaging.reply.latency",
+              statistic,
+              dimensionsMap: dims,
+              label: `reply ${statistic}`,
+            }),
+        ),
+        width: 6,
+        height: 6,
+      }),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Container ingress by status class",
+        left: splitBy("messaging.ingress.post", "status_class", [
+          "202",
+          "409",
+          "4xx",
+          "5xx",
+          "timeout",
+          "transport",
+          "other",
+        ]),
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Work items by outcome",
+        left: splitBy("messaging.worker.message", "outcome", ["ok", "retry"]),
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "AppSync live delivery",
+        left: [
+          appsync("BroadcastDroppedEvents"),
+          appsync("FailedEvents"),
+        ],
+        right: [appsync("ActiveConnections")],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Projector push & lag",
+        // service=messaging-projector: the Lambda emits its own EMF and is not
+        // the backend. Its only extra dimension is `outcome`, so unlike the
+        // widgets above this one binds a set that really is published.
+        left: ["ok", "send_error", "token_read_error", "capped", "muted"].map(
+          (outcome) =>
+            sum(
+              "messaging.projector.push",
+              { service: "messaging-projector", outcome },
+              outcome,
+            ),
+        ),
+        right: [
+          new cloudwatch.Metric({
+            namespace: "AWS/Lambda",
+            metricName: "IteratorAge",
+            statistic: "Maximum",
+            dimensionsMap: {
+              FunctionName: props.messaging.projectorFunctionName,
+            },
+            label: "iterator age",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Ambient gate outcomes",
+        left: splitBy("messaging.ambient_gate", "outcome", [
+          "dispatched",
+          "ignored",
+          "replayed",
+          "not_admitted",
+          "gate_error",
+          "unknown",
+        ]),
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Container wake outcomes",
+        left: splitBy("messaging.wake.outcome", "outcome", [
+          "dispatched",
+          "already_running",
+          "in_flight",
+          "converting",
+          "blocked",
+          "operator_stopped",
+          "no_row",
+          "error",
+          "unknown",
+        ]),
+        width: 6,
+        height: 6,
+      }),
+    );
+  }
+
   // =========================================================================
   // Dashboard (~30 widgets)
   // =========================================================================
@@ -2532,18 +3256,34 @@ def handler(event, _ctx):
     });
 
     // ----- Row 1: SLOs (2 widgets) -----
-    const chatSuccessRate = new cloudwatch.MathExpression({
-      expression: "100 * (1 - errors / IF(total > 0, total, 1))",
+    //
+    // REPOINTED at the messaging product. The headline used to be webchat
+    // success rate + webchat p99 — a surface that is now one entry point among
+    // rooms, DMs and channels, and one that says nothing about whether an
+    // agent actually answered anybody. The two questions that matter at the
+    // top of the ORR dashboard are: did the message reach an agent, and how
+    // long did the human wait for the reply. Both chat widgets are still on
+    // the dashboard, in Row 3 with the rest of the chat pipeline.
+    const agentAnsweredRate = new cloudwatch.MathExpression({
+      // FILL(zero, 0): a period in which NO message missed its targets
+      // publishes no `count_bucket=0` datapoint at all, and CloudWatch
+      // arithmetic yields nothing for a period unless every operand has data —
+      // so without FILL the widget goes blank exactly when things are healthy.
+      expression: "100 * (1 - FILL(zero, 0) / IF(total > 0, total, 1))",
       usingMetrics: {
-        errors: new cloudwatch.Metric({
+        // count_bucket=0 is "select_dispatch_targets returned nothing", i.e.
+        // the message was addressed to an agent and woke none.
+        zero: new cloudwatch.Metric({
           namespace: "LightbulbAI",
-          metricName: "chat.error",
+          metricName: "messaging.dispatch.targets",
           statistic: "Sum",
-          dimensionsMap: dims,
+          dimensionsMap: { ...dims, count_bucket: "0" },
         }),
+        // The [env, service] rollup — every dispatch decision, whatever its
+        // bucket, room kind or source.
         total: new cloudwatch.Metric({
           namespace: "LightbulbAI",
-          metricName: "chat.message.count",
+          metricName: "messaging.dispatch.targets",
           statistic: "Sum",
           dimensionsMap: dims,
         }),
@@ -2551,24 +3291,25 @@ def handler(event, _ctx):
       period: cdk.Duration.hours(1),
     });
 
-    const chatP99Latency = new cloudwatch.Metric({
+    const replyLatencyP95 = new cloudwatch.Metric({
       namespace: "LightbulbAI",
-      metricName: "chat.e2e.latency",
-      statistic: "p99",
+      metricName: "messaging.reply.latency",
+      statistic: "p95",
       period: cdk.Duration.hours(1),
       dimensionsMap: dims,
     });
 
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: "Chat success rate (SLO: 99.5%)",
-        left: [chatSuccessRate],
+        title:
+          "Agent answered (share of mentioning messages with >=1 dispatch target)",
+        left: [agentAnsweredRate],
         width: 12,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: "Chat p99 latency (SLO: <20s)",
-        left: [chatP99Latency],
+        title: "Agent reply latency p95 (SLO < 5 min)",
+        left: [replyLatencyP95],
         width: 12,
         height: 6,
       }),
@@ -2657,27 +3398,60 @@ def handler(event, _ctx):
         width: 8,
         height: 6,
       }),
+      // "Bedrock throttles" widget removed — chat.bedrock.throttle is never
+      // emitted; AWS-native Bedrock throttles are on the W46 alarm.
+      //
+      // The two former Row-1 SLO widgets, moved here now that the headline is
+      // the messaging product. Both are scoped to source=webchat (the
+      // dimension the backend adds alongside `room`/`other`), matching W9/W10
+      // — room traffic has its own SLO in Row 1. The p50 line is what the
+      // unscoped "Chat E2E latency" widget used to carry; that widget is gone
+      // rather than sitting next to this one plotting the same p99 twice.
       new cloudwatch.GraphWidget({
-        title: "Chat E2E latency",
+        title: "Webchat E2E latency (SLO: p99 < 20s)",
+        left: (["p50", "p99"] as const).map(
+          (statistic) =>
+            new cloudwatch.Metric({
+              namespace: "LightbulbAI",
+              metricName: "chat.e2e.latency",
+              statistic,
+              period: cdk.Duration.hours(1),
+              dimensionsMap: { ...dims, source: "webchat" },
+              label: statistic,
+            }),
+        ),
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        // Both legs scoped to webchat, matching W10 — one leg scoped and the
+        // other not would plot a plausible-looking wrong number.
+        title: "Webchat success rate (SLO: 99.5%)",
         left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.e2e.latency",
-            statistic: "p50",
-            dimensionsMap: dims,
-          }),
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.e2e.latency",
-            statistic: "p99",
-            dimensionsMap: dims,
+          new cloudwatch.MathExpression({
+            // FILL(errors, 0) for the same reason as Row 1: no errors means
+            // no datapoint, which would blank the widget when it is healthy.
+            expression: "100 * (1 - FILL(errors, 0) / IF(total > 0, total, 1))",
+            usingMetrics: {
+              errors: new cloudwatch.Metric({
+                namespace: "LightbulbAI",
+                metricName: "chat.error",
+                statistic: "Sum",
+                dimensionsMap: { ...dims, source: "webchat" },
+              }),
+              total: new cloudwatch.Metric({
+                namespace: "LightbulbAI",
+                metricName: "chat.message.count",
+                statistic: "Sum",
+                dimensionsMap: { ...dims, source: "webchat" },
+              }),
+            },
+            period: cdk.Duration.hours(1),
           }),
         ],
         width: 8,
         height: 6,
       }),
-      // "Bedrock throttles" widget removed — chat.bedrock.throttle is never
-      // emitted; AWS-native Bedrock throttles are on the W46 alarm.
     );
 
     // ----- Row 3.5: Runtime gauges (2 widgets) -----
@@ -2739,6 +3513,8 @@ def handler(event, _ctx):
         height: 6,
       }),
     );
+
+    this.addMessagingDashboardRows(dashboard, props, dims);
 
     // ----- Row 4: Channels & Billing (4 widgets) -----
     dashboard.addWidgets(
@@ -2997,44 +3773,16 @@ def handler(event, _ctx):
         // AWS-native AWS/DynamoDB ThrottledRequests (summed across our tables),
         // matching the P8 alarm.
         title: "DynamoDB throttled requests (AWS-native)",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/DynamoDB",
-            metricName: "ThrottledRequests",
-            statistic: "Sum",
-            dimensionsMap: {
-              TableName: props.databaseTables.usersTable,
-            },
-            label: "users",
-          }),
-          new cloudwatch.Metric({
-            namespace: "AWS/DynamoDB",
-            metricName: "ThrottledRequests",
-            statistic: "Sum",
-            dimensionsMap: {
-              TableName: props.databaseTables.containersTable,
-            },
-            label: "containers",
-          }),
-          new cloudwatch.Metric({
-            namespace: "AWS/DynamoDB",
-            metricName: "ThrottledRequests",
-            statistic: "Sum",
-            dimensionsMap: {
-              TableName: props.databaseTables.billingTable,
-            },
-            label: "billing",
-          }),
-          new cloudwatch.Metric({
-            namespace: "AWS/DynamoDB",
-            metricName: "ThrottledRequests",
-            statistic: "Sum",
-            dimensionsMap: {
-              TableName: props.databaseTables.usageCountersTable,
-            },
-            label: "usage-counters",
-          }),
-        ],
+        left: alarmedTables(props.databaseTables).map(
+          ([label, table]) =>
+            new cloudwatch.Metric({
+              namespace: "AWS/DynamoDB",
+              metricName: "ThrottledRequests",
+              statistic: "Sum",
+              dimensionsMap: { TableName: table },
+              label,
+            }),
+        ),
         width: 6,
         height: 6,
       }),

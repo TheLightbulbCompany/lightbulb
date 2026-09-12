@@ -4,12 +4,13 @@ import type { LiveEvent } from "@lightbulb/shared";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Set<(event: LiveEvent) => void>(),
-  getRoom: vi.fn(), listMessages: vi.fn(), nativeNotify: vi.fn(), notifySuccess: vi.fn(),
+  getRoom: vi.fn(), listMessages: vi.fn(), nativeNotify: vi.fn(), notifySuccess: vi.fn(), capture: vi.fn(),
 }));
 const messaging = { getRoom: mocks.getRoom, listMessages: mocks.listMessages };
 const onEvent = (handler: (event: LiveEvent) => void) => { mocks.handlers.add(handler); return () => mocks.handlers.delete(handler); };
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "me", orgId: "org" }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ onEvent, messaging }) }));
+vi.mock("@/lib/analytics", () => ({ capture: mocks.capture }));
 vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: mocks.nativeNotify }));
 vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess }));
 import { MessageNotifications } from "../MessageNotifications";
@@ -36,11 +37,21 @@ it("notifies background DMs once and exposes a conversation action", async () =>
   expect(title).toBe("Alice");
   expect(body).toBe("Hello");
   expect(opts).toMatchObject({ tag: "message" });
+  expect(mocks.capture).toHaveBeenCalledWith("notification_shown", { channel: "web", room_kind: "dm" });
   mocks.notifySuccess.mock.calls[0][1].action.onClick();
   expect(onOpen).toHaveBeenCalledWith("room", null);
+  expect(mocks.capture).toHaveBeenCalledWith("notification_clicked", { channel: "web", room_kind: "dm" });
   onOpen.mockClear();
   opts.onClick();
   expect(onOpen).toHaveBeenCalledWith("room", null);
+  expect(mocks.capture.mock.calls.filter((c) => c[0] === "notification_clicked")).toHaveLength(2);
+});
+
+it("tags notification_shown with the room's kind, not just dm", async () => {
+  mocks.getRoom.mockResolvedValue({ kind: "channel", name: "general", lastReadSeq: 0 });
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+  await act(async () => { emit(); });
+  expect(mocks.capture).toHaveBeenCalledWith("notification_shown", { channel: "web", room_kind: "channel" });
 });
 
 it("suppresses a focused conversation but not an unopened thread in it", async () => {
@@ -72,6 +83,7 @@ it("stays silent for a muted room but notifies for an unmuted one", async () => 
   await act(async () => { emit(); });
   expect(mocks.notifySuccess).not.toHaveBeenCalled();
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  expect(mocks.capture).not.toHaveBeenCalled();
   view.unmount();
   mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 0, muted: false });
   render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);

@@ -13,10 +13,10 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomMessageContent } from "./RoomMessageContent";
-import type { RoomMessage, RoomParticipant, WorkState } from "./types";
+import type { RoomMessage, RoomParticipant } from "./types";
 import type { RoomPanelProps } from "./RoomPanel";
 
-export interface RoomMessageItemProps {
+interface RoomMessageItemProps {
   id: string;
   message: RoomMessage;
   text: string;
@@ -34,7 +34,6 @@ export interface RoomMessageItemProps {
   mentionsViewer: boolean;
   markdown: Partial<Components>;
   urlTransform: UrlTransform;
-  workStatus: (state: WorkState) => ReactNode;
   quickReactions: readonly string[];
   reactionPending: boolean;
   reactionError: boolean;
@@ -47,7 +46,7 @@ export interface RoomMessageItemProps {
   menuExtras?: ReactNode;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, highlighted, mentionsViewer, markdown, urlTransform, workStatus, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -87,9 +86,6 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
-      {message.run && <div className="room-run">{workStatus(message.run.state)}
-        {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
-      </div>}
       {!inThread && replyCount > 0 && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
         aria-label={`Reply in thread, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}${lastReplyAt ? ` · last reply ${timeAgo(lastReplyAt)}` : ""}`}
         onClick={(event) => onOpenThread(event.currentTarget)}>{replyCount} {replyCount === 1 ? "reply" : "replies"}{lastReplyAt && ` · last reply ${timeAgo(lastReplyAt)}`}</Button>}

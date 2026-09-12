@@ -162,9 +162,12 @@
   --edge-soft: #f0f0f2;
   --midnight: #242428;
   --midnight-soft: #45454b;
-  --midnight-muted: #66666e;
-  --midnight-label: #66666e;
-  --midnight-faint: #85858d;
+  --midnight-muted: #6b6b73;
+  --midnight-label: #6b6b73;
+  --midnight-faint: #8e8e94;
+  /* The one accent in the neutral shell: links, mentions, unread badges. */
+  --info: #1e52cc;
+  --on-info: #ffffff;
 }
 .dark:has(.workspace-shell), .dark .workspace-shell {
   --cream: #1c1c20;
@@ -177,6 +180,8 @@
   --midnight-muted: #b0b0ba;
   --midnight-label: #b0b0ba;
   --midnight-faint: #92929d;
+  --info: #8fb0ff;
+  --on-info: #1c1c20;
 }
 
 :root {

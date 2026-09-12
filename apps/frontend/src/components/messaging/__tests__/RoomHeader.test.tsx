@@ -4,7 +4,8 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { RoomHeader } from "../RoomHeader";
-import type { RoomParticipant, RoomSummary } from "../types";
+import type { RoomSummary } from "@lightbulb/shared";
+import type { RoomParticipant } from "../types";
 
 const room: RoomSummary = {
   roomId: "room-1", name: "Roadmap", kind: "channel", roomRevision: 3, lastMessageSeq: 9,

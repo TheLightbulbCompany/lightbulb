@@ -25,8 +25,6 @@ import type {
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
-  LocalSessionEnrollmentRequest,
-  LocalSessionEnrollment,
 } from "./types";
 
 /**
@@ -45,7 +43,6 @@ export interface MessagingClient {
   listLocalSessionEvents(roomId: string, sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(roomId: string, sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(roomId: string, sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
-  setLocalSessionEnrollment(request: LocalSessionEnrollmentRequest): Promise<LocalSessionEnrollment>;
   updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
@@ -79,7 +76,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     ) as Promise<LocalSessionEventPage>,
     submitLocalSessionCommand: (roomId, sessionId, request) => api.post(`${localSessionPath(roomId, sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
     getLocalSessionCommand: (roomId, sessionId, requestId) => api.get(`${localSessionPath(roomId, sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
-    setLocalSessionEnrollment: (request) => api.put("/desktop/local-sessions/enrollment", request) as Promise<LocalSessionEnrollment>,
     updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,

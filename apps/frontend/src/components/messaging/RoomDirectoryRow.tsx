@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { roomKindLabel, type DirectoryRoom } from "./types";
 
-export interface RoomDirectoryRowProps {
+interface RoomDirectoryRowProps {
   room: DirectoryRoom;
   label: string;
   active: boolean;

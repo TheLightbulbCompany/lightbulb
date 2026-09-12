@@ -142,12 +142,11 @@ async def test_set_public_flips_the_flag(table):
     assert await table.get("ghost") is None
 
 
-async def test_list_count_count_with_key_delete(table):
+async def test_list_count_delete(table):
     await table.join("user_1", display_name="A", public=True, waitlist_position=None)
     await table.join("org_2", display_name="B", public=False, waitlist_position=3)
     await table.set_key_connected("org_2", currency="eur", baseline_cents=5, baseline_at="t")
     assert await table.count() == 2
-    assert await table.count_with_key() == 1
     assert {r["owner_id"] for r in await table.list_all()} == {"user_1", "org_2"}
     await table.delete("user_1")
     assert await table.get("user_1") is None

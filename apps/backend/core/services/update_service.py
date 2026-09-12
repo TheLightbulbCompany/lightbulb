@@ -89,13 +89,6 @@ def request_worker_stop() -> None:
         _worker_stop.set()
 
 
-def reset_worker_stop() -> None:
-    """Clear the stop signal (test isolation). The next run_scheduled_worker
-    creates a fresh, loop-bound Event."""
-    global _worker_stop
-    _worker_stop = None
-
-
 async def queue_image_update(owner_id: str, new_image: str, description: str | None = None) -> dict:
     """Queue a container image update for a single owner."""
     desc = description or f"Image update to {new_image}"

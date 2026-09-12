@@ -30,19 +30,6 @@ async def get_by_owner_id(owner_id: str, *, consistent_read: bool = False) -> di
     return response.get("Item")
 
 
-async def get_by_stripe_customer_id(stripe_customer_id: str) -> dict | None:
-    """Return the first billing row for ``stripe_customer_id``.
-
-    Stripe customers are now keyed by email and can be shared across
-    multiple billing rows (one human → personal + org rows reusing the same
-    Stripe customer). For ambiguous cases prefer
-    :func:`list_by_stripe_customer_id` so callers can disambiguate
-    explicitly.
-    """
-    items = await list_by_stripe_customer_id(stripe_customer_id)
-    return items[0] if items else None
-
-
 async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
     """Return all billing rows pointing at ``stripe_customer_id``.
 

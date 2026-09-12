@@ -90,27 +90,6 @@ def test_large_binary_low_severity():
     assert any(f.pattern == "large-binary" and f.severity == "low" for f in flags)
 
 
-def test_to_rejection_notes_with_high_findings():
-    flags = [
-        marketplace_safety.SafetyFlag(
-            pattern="curl-bash", severity="high", file="install.sh", line=3, snippet="curl x | bash"
-        ),
-    ]
-    notes = marketplace_safety.to_rejection_notes(flags)
-    assert "Auto-flagged" in notes
-    assert "curl-bash" in notes
-    assert "install.sh:3" in notes
-
-
-def test_to_rejection_notes_empty_when_no_high_findings():
-    flags = [
-        marketplace_safety.SafetyFlag(
-            pattern="large-binary", severity="low", file="x.png", line=None, snippet="binary"
-        ),
-    ]
-    assert marketplace_safety.to_rejection_notes(flags) == ""
-
-
 # ---------------------------------------------------------------------------
 # Persona-file scanning (added 2026-05-11)
 # Persona files (IDENTITY.md, SOUL.md, USER.md, BOOTSTRAP.md, MEMORY.md)

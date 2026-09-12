@@ -968,13 +968,15 @@ new event bus are needed for that split.
 
 ## 13. Parallel PR packets and merge order
 
-The following self-contained implementation plans share this contract:
+The following self-contained implementation plans shared this contract. **All five
+shipped; the plan files were deleted under the disposable-plans rule** — git
+history and the PRs are the durable record:
 
-1. `2026-09-09-native-multiplayer-aws-foundation.md`
-2. `2026-09-09-native-multiplayer-openclaw-channel.md`
-3. `2026-09-09-native-multiplayer-backend.md`
-4. `2026-09-09-native-multiplayer-frontend.md`
-5. `2026-09-09-native-multiplayer-rollout.md`
+1. `2026-09-09-native-multiplayer-aws-foundation.md` — shipped as #2423
+2. `2026-09-09-native-multiplayer-openclaw-channel.md` — shipped as #2425
+3. `2026-09-09-native-multiplayer-backend.md` — shipped as #2424
+4. `2026-09-09-native-multiplayer-frontend.md` — shipped as #2426
+5. `2026-09-09-native-multiplayer-rollout.md` — shipped as #2427
 
 Packets 1–4 can be developed in parallel. The merge sequence is infrastructure
 (A), OpenClaw plugin/image (B), immutable image promotion (E), backend/config and

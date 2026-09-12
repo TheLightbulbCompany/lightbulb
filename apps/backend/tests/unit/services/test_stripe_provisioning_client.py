@@ -253,14 +253,8 @@ async def test_max_amount_goes_over_the_wire_as_a_string():
     raw = MagicMock(return_value={"status": "checkout_initiated", "checkout_session_url": "https://c"})
     with patch.object(mod, "_raw", raw):
         await mod.create_payment_method_request("acct_1", max_amount=1000, currency="usd", recurring_interval="month")
-        await mod.update_payment_limit(
-            "acct_1", max_amount=2500, currency="usd", recurring_interval="month", provider="prvdr_1"
-        )
-    first = raw.call_args_list[0].args[3]["usage_limits"]
-    second = raw.call_args_list[1].args[3]["usage_limits"]
-    assert first["max_amount"] == "1000" and isinstance(first["max_amount"], str)
-    assert second["max_amount"] == "2500" and isinstance(second["max_amount"], str)
-    assert raw.call_args_list[1].args[3]["provider"] == "prvdr_1"
+    limits = raw.call_args_list[0].args[3]["usage_limits"]
+    assert limits["max_amount"] == "1000" and isinstance(limits["max_amount"], str)
 
 
 @pytest.mark.asyncio

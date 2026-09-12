@@ -515,7 +515,7 @@ function RoomContent({
         <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
           <ParticipantAvatar participant={participant} size="sm" /><ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1" />
           {participant.kind === "agent" ? <><span className="text-sm text-muted-foreground">{participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent"}</span>
-            <AgentResponse participant={participant} selectId={`${id}-${participant.id}-mode`} onChange={onListenModeChange} />
+            <AgentResponse participant={participant} selectId={`${id}-${participant.id}-mode`} onChange={isRoomAdmin ? onListenModeChange : undefined} />
             </> : <span className="text-sm text-muted-foreground">Person</span>}
         </li>)}</ul>
       </section>}
@@ -566,7 +566,7 @@ function RoomContent({
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManageMembers && onRemoveMember && participant.role !== "owner" && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
+            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={isRoomAdmin ? onListenModeChange : undefined} />}
           </li>)}</ul>
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
             {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>

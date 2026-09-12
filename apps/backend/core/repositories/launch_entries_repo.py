@@ -204,22 +204,5 @@ async def count() -> int:
         kwargs["ExclusiveStartKey"] = last
 
 
-async def count_with_key() -> int:
-    total = 0
-    kwargs: dict = {
-        "Select": "COUNT",
-        "FilterExpression": "#hk = :t",
-        "ExpressionAttributeNames": {"#hk": "has_key"},
-        "ExpressionAttributeValues": {":t": True},
-    }
-    while True:
-        page = await run_in_thread(_table().scan, **kwargs)
-        total += int(page.get("Count", 0))
-        last = page.get("LastEvaluatedKey")
-        if not last:
-            return total
-        kwargs["ExclusiveStartKey"] = last
-
-
 async def delete(owner_id: str) -> None:
     await run_in_thread(_table().delete_item, Key={"owner_id": owner_id})

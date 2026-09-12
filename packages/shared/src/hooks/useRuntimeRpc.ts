@@ -36,14 +36,14 @@ export interface RpcResult<T = unknown> {
   mutate: () => Promise<T | undefined>;
 }
 
-export function runtimeRpcKey(method: string, params?: Record<string, unknown>): string {
+function runtimeRpcKey(method: string, params?: Record<string, unknown>): string {
   return `rpc|${method}|${params ? JSON.stringify(params) : ""}`;
 }
 
 const PUSH_REVALIDATE_MIN_MS = 10_000;
 const lastPushRevalidateAt = new Map<string, number>();
 
-export function pushRevalidate(key: string, mutate: () => unknown): void {
+function pushRevalidate(key: string, mutate: () => unknown): void {
   const now = Date.now();
   if (now - (lastPushRevalidateAt.get(key) ?? 0) < PUSH_REVALIDATE_MIN_MS) return;
   lastPushRevalidateAt.set(key, now);

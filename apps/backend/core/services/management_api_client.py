@@ -175,10 +175,12 @@ class ManagementApiClient:
 
         ``send_message`` is a blocking boto3 HTTPS round trip; calling it
         inline from an async handler stalls every coroutine on the loop for
-        the duration of the POST. Use this from async code unless per-
-        connection ordering with the streaming path matters — ordered
-        streaming frames go through ``core.gateway.frame_sender.FrameSender``
-        instead.
+        the duration of the POST. Use this from async code.
+
+        There is no longer a sibling ordered-streaming path here: agent run
+        frames left the API Gateway WebSocket for HTTP + AppSync, and
+        ``core.gateway.frame_sender`` went with them. This client now serves
+        the remaining non-streaming pushes over the WS API.
         """
         return await asyncio.to_thread(self.send_message, connection_id, payload)
 
@@ -187,7 +189,7 @@ class ManagementApiClient:
         the connection as genuinely dead.
 
         Callers that destroy connection state on ``send_message() is False``
-        (frame-sender prune, teams-broker unsubscribe) must gate on this:
+        (teams-broker unsubscribe) must gate on this:
         a lone GoneException can be a spurious API Gateway response for a
         live connection, and pruning on it orphans a healthy client — its
         pings 401 forever while its socket stays open. Returns True only

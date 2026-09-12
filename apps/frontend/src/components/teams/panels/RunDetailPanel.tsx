@@ -270,7 +270,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               // Decorative: the status text right next to it already reads
               // "running" / "queued" / "scheduled retry" — the dot would
               // double-announce the same state to a screen reader. Mirrors
-              // ActiveAgentsPanel's own live-dot-next-to-status-text case.
+              // the same live-dot-next-to-status-text pattern used elsewhere.
               <LiveRunDot
                 state={liveRunActivity(run)}
                 title={liveRunTitle(run)}

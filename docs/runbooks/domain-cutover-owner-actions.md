@@ -135,8 +135,12 @@ anyway — a hook that has never fired is not a hook that never will.
    deleted as an SES identity until each tenant is dissociated**
    (`DeleteTenantResourceAssociation`, one call per tenant). Fine for now — the
    identity has to stay verified anyway while alias rows route.
-5. **Run `scripts/rekey_agent_email_domain.py --env prod --dry-run` first.** As
-   of the sweep it plans 18 moves, 0 collisions, 1 stale-sender warning.
+5. ~~**Run `scripts/rekey_agent_email_domain.py --env prod --dry-run` first.**~~
+   **DONE 2026-08-27.** The script ran against both envs (18 prod + 6 dev moved,
+   0 collisions), superseded alias rows were deleted, and all three SES tenants
+   were re-associated onto `identity/thelightbulb.company` — see
+   `apps/infra/lib/domains.ts` (`LEGACY_MAIL_DOMAIN = ""`). Zero addresses remain
+   on the old domain, so this step is spent and the script can be deleted.
 6. **Add the new redirect URIs to the provider app registrations** (GitHub,
    Google, OpenAI/ChatGPT) alongside the old ones, before the flip.
 7. **Cut a new desktop release from the new domain** and have the download live

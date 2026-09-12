@@ -9,19 +9,26 @@ const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\
 interface TokenEntry {
   participant: Target;
   token: string;
+  isHandle: boolean;
 }
 
 // ONE grammar for both readers: what renders as a chip is exactly what
 // resolves to a structured mention on send. Split them and a typed token can
 // look mentioned and notify nobody.
+// A human answers to their handle AND their display name: rows that predate
+// server-side human handles carry mentionHandle: null and are still addressed
+// by name.
 function tokenEntries(participants: readonly Target[]): TokenEntry[] {
   return participants
-    .map((participant) => ({
-      participant,
-      token: participant.kind === "agent" ? participant.mentionHandle : participant.displayName,
-    }))
+    .flatMap((participant) =>
+      [participant.mentionHandle, participant.kind === "human" ? participant.displayName : null]
+        .map((token, index) => ({ participant, token, isHandle: index === 0 })))
     .filter((entry): entry is TokenEntry => !!entry.token)
-    .sort((left, right) => right.token.length - left.token.length);
+    // Longest token first so @Aden Kim beats @Aden; on a tie the handle wins,
+    // because one person's handle can be another's display name and the owner
+    // of the handle is who the sender meant.
+    .sort((left, right) => right.token.length - left.token.length
+      || Number(right.isHandle) - Number(left.isHandle));
 }
 
 const tokenPattern = (entries: readonly TokenEntry[]) =>

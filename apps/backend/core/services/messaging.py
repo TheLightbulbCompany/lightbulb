@@ -1450,6 +1450,13 @@ _REPLY_SCAN_LIMIT = 20
 # ``parse_agent_mentions`` — handles themselves are only [a-z0-9-].
 _MENTION_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])")
 
+# Fenced blocks and inline code spans, stripped before counting unresolved
+# mentions: a pasted traceback or `@pytest.mark.asyncio` is not someone failing
+# to address a teammate. Fences are tried first so an inline rule cannot eat
+# half of one. This does NOT change who gets dispatched — the resolver is
+# deliberately untouched, so `@friday` in a code block still wakes Friday.
+_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
+
 
 def _room_kind(meta: dict) -> str:
     """Room kind as a bounded metric dimension."""
@@ -1483,8 +1490,9 @@ def _unresolved_mention_reasons(text: str, members: list[dict]) -> list[str]:
         handle = member.get("mentionHandle")
         if member.get("kind") in {"agent", "human"} and isinstance(handle, str) and handle:
             by_handle[handle.lower()] = by_handle.get(handle.lower(), 0) + 1
+    prose = _CODE_SPAN_RE.sub(" ", text)
     reasons = []
-    for named in sorted({token.lower() for token in _MENTION_TOKEN_RE.findall(text)}):
+    for named in sorted({token.lower() for token in _MENTION_TOKEN_RE.findall(prose)}):
         matches = by_handle.get(named, 0)
         if matches == 0:
             reasons.append("no_match")
@@ -1578,7 +1586,6 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)
-    _emit_dispatch_targets(targets, room_kind, "human")
     attachments = [
         load_image_attachment(owner_id, room_id, str(value))[0].model_dump(mode="json", by_alias=True)
         for value in request.attachment_ids
@@ -1591,7 +1598,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
     try:
-        item = await messaging_repo.create_message(
+        item, replayed = await messaging_repo.create_message(
             room_id=room_id,
             owner_id=owner_id,
             idemp_pk=messaging_repo.room_pk(room_id),
@@ -1610,33 +1617,38 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         )
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "clientMessageId was already used with a different request.") from exc
-    agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
-    put_metric(
-        "messaging.message.created",
-        dimensions={"author_kind": "human", "room_kind": room_kind, "has_targets": "true" if targets else "false"},
-    )
-    _product_event(
-        distinct_id=auth.user_id,
-        event="room_message_sent",
-        owner_id=owner_id,
-        props={
-            "room_kind": room_kind,
-            "mentions_agents": agent_mentions,
-            "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
-            "has_attachment": bool(attachments),
-            "first_in_room": int(item.get("messageSeq") or 0) == 1,
-            "sender_is_owner": sender.get("role") == "owner",
-        },
-    )
-    # The gap this whole task exists to close: someone addressed an agent and
-    # nothing ran. Invisible before — no metric, no log, no event.
-    if agent_mentions and not targets:
+    # Telemetry counts MESSAGES, not attempts — a replay wrote nothing, so
+    # emitting here would inflate every counter by the client's retry rate.
+    # This is also why the dispatch metric is not adjacent to its selector.
+    if not replayed:
+        agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
+        _emit_dispatch_targets(targets, room_kind, "human")
+        put_metric(
+            "messaging.message.created",
+            dimensions={"author_kind": "human", "room_kind": room_kind, "has_targets": "true" if targets else "false"},
+        )
         _product_event(
             distinct_id=auth.user_id,
-            event="agent_dispatch_missed",
+            event="room_message_sent",
             owner_id=owner_id,
-            props={"reason": "no_targets", "room_kind": room_kind},
+            props={
+                "room_kind": room_kind,
+                "mentions_agents": agent_mentions,
+                "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
+                "has_attachment": bool(attachments),
+                "first_in_room": int(item.get("messageSeq") or 0) == 1,
+                "sender_is_owner": sender.get("role") == "owner",
+            },
         )
+        # The gap this whole task exists to close: someone addressed an agent
+        # and nothing ran. Invisible before — no metric, no log, no event.
+        if agent_mentions and not targets:
+            _product_event(
+                distinct_id=auth.user_id,
+                event="agent_dispatch_missed",
+                owner_id=owner_id,
+                props={"reason": "no_targets", "room_kind": room_kind},
+            )
     await container_repo.touch_last_interactive(owner_id)
     from core.services.onboarding_brief import capture_first_workspace_message
 
@@ -1644,11 +1656,16 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     return canonical_message(item)
 
 
-def parse_agent_mentions(text: str, members: list[dict]) -> list[dict]:
-    """Structured mentions for every member handle named in agent-authored text.
+def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], list[str]]:
+    """Structured mentions for every member handle named in agent-authored text,
+    plus the reasons the other @handles in it resolved to nobody.
 
     Callers pass members through :func:`with_human_handles` so humans are
     addressable by the same ``@handle`` grammar agents use.
+
+    The reasons ride along rather than being emitted here so the one caller can
+    scan the text once AND report them only after the message actually
+    committed — an idempotent replay writes nothing and must count nothing.
     """
     by_handle: dict[str, list[tuple[str, str]]] = {}
     for member in members:
@@ -1661,9 +1678,8 @@ def parse_agent_mentions(text: str, members: list[dict]) -> list[dict]:
             continue
         if re.search(rf"(?<![A-Za-z0-9_-])@{re.escape(handle)}(?![A-Za-z0-9_-])", text, re.IGNORECASE):
             found.add(refs[0])
-    for reason in _unresolved_mention_reasons(text, members):
-        put_metric("messaging.mention.unresolved", dimensions={"reason": reason})
-    return [{"kind": kind, "id": member_id} for kind, member_id in sorted(found)]
+    mentions = [{"kind": kind, "id": member_id} for kind, member_id in sorted(found)]
+    return mentions, _unresolved_mention_reasons(text, members)
 
 
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
@@ -1685,11 +1701,9 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
     members = with_human_handles(await messaging_repo.list_members(room_id))
-    mentions = parse_agent_mentions(request.text, members)
-    unresolved = _unresolved_mention_reasons(request.text, members)
+    mentions, unresolved = parse_agent_mentions(request.text, members)
     targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)
-    _emit_dispatch_targets(targets, room_kind, "agent")
     req_hash = messaging_repo.request_hash(
         room_id,
         agent_id,
@@ -1698,7 +1712,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
     try:
-        item = await messaging_repo.create_message(
+        item, replayed = await messaging_repo.create_message(
             room_id=room_id,
             owner_id=owner_id,
             idemp_pk=messaging_repo.owner_pk(owner_id),
@@ -1717,18 +1731,25 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         )
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "eventId was already used with a different request.") from exc
-    put_metric(
-        "messaging.message.created",
-        dimensions={"author_kind": "agent", "room_kind": room_kind, "has_targets": "true" if targets else "false"},
-    )
-    if unresolved:
-        _product_event(
-            distinct_id=owner_id,
-            event="agent_dispatch_missed",
-            owner_id=owner_id,
-            props={"reason": "unresolved_mention", "room_kind": room_kind},
+    # Replays write nothing, and this path is BUILT around retries — the
+    # receipt is the container's confirmation. Counting here would inflate
+    # every counter and, worse, report retry delay as reply latency.
+    if not replayed:
+        _emit_dispatch_targets(targets, room_kind, "agent")
+        put_metric(
+            "messaging.message.created",
+            dimensions={"author_kind": "agent", "room_kind": room_kind, "has_targets": "true" if targets else "false"},
         )
-    await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
+        for reason in unresolved:
+            put_metric("messaging.mention.unresolved", dimensions={"reason": reason})
+        if unresolved:
+            _product_event(
+                distinct_id=owner_id,
+                event="agent_dispatch_missed",
+                owner_id=owner_id,
+                props={"reason": "unresolved_mention", "room_kind": room_kind},
+            )
+        await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
     return AgentMessageReceiptResponse(message_id=item["messageId"], room_id=room_id, created_at=item["createdAt"])
 
 
@@ -1743,39 +1764,38 @@ async def _emit_reply_telemetry(
     """
     try:
         matched = await _answered_human_message(room_id, agent_id, item, links)
-    except Exception:
-        logger.warning("messaging: reply-latency lookup failed for room %s", room_id, exc_info=True)
-        return
-
-    event_kind = "unknown"
-    latency_ms: int | None = None
-    answered_by: str | None = None
-    if matched is not None:
-        row, how = matched
-        event_kind = _dispatched_event_kind(row, agent_id)
-        answered_by = (row.get("author") or {}).get("id")
-        age_ms = _age_ms(row.get("createdAt"))
-        if age_ms is not None:
-            latency_ms = int(age_ms)
-            put_metric(
-                "messaging.reply.latency",
-                value=age_ms,
-                unit="Milliseconds",
-                dimensions={"room_kind": room_kind, "event_kind": event_kind, "matched": how},
+        latency_ms: int | None = None
+        if matched is not None:
+            row, how = matched
+            event_kind = _dispatched_event_kind(row, agent_id)
+            age_ms = _age_ms(row.get("createdAt"))
+            if age_ms is not None:
+                latency_ms = int(age_ms)
+                put_metric(
+                    "messaging.reply.latency",
+                    value=age_ms,
+                    unit="Milliseconds",
+                    dimensions={"room_kind": room_kind, "event_kind": event_kind, "matched": how},
+                )
+            # Keyed on the human who asked. Never on the owner id — that is a
+            # Clerk ORG, and using it as a distinct_id mints org-shaped
+            # "people" in PostHog. The unmatched counter covers that case.
+            props: dict[str, Any] = {"room_kind": room_kind, "event_kind": event_kind, "agent_id": agent_id}
+            if latency_ms is not None:
+                props["latency_ms"] = latency_ms
+            _product_event(
+                distinct_id=(row.get("author") or {}).get("id"),
+                event="agent_reply_delivered",
+                owner_id=owner_id,
+                props=props,
             )
-    if latency_ms is None:
-        put_metric("messaging.reply.unmatched")
-
-    props: dict[str, Any] = {"room_kind": room_kind, "event_kind": event_kind, "agent_id": agent_id}
-    if latency_ms is not None:
-        props["latency_ms"] = latency_ms
-    _product_event(distinct_id=answered_by or owner_id, event="agent_reply_delivered", owner_id=owner_id, props=props)
-    # Second door for the once-ever trial activation signal: a room reply is a
-    # first agent response just as much as a webchat run terminal is.
-    try:
+        if latency_ms is None:
+            put_metric("messaging.reply.unmatched")
+        # Second door for the once-ever trial activation signal: a room reply
+        # is a first agent response just as much as a webchat run terminal is.
         schedule_trial_first_agent_response(owner_id)
     except Exception:
-        logger.warning("messaging: trial_first_agent_response scheduling failed", exc_info=True)
+        logger.warning("messaging: reply telemetry failed for room %s", room_id, exc_info=True)
 
 
 async def get_agent_receipt(owner_id: str, event_id: str) -> AgentMessageReceiptResponse:

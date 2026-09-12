@@ -63,12 +63,25 @@ def _message(seq: int, author: dict, *, targets: list[dict] | None = None, creat
 
 
 def _metrics(mock: MagicMock, name: str) -> list[dict]:
-    """The dimensions (plus value/unit) of every emission of one metric."""
-    return [
-        {"value": call.kwargs.get("value", 1.0), "unit": call.kwargs.get("unit", "Count"), **call.kwargs}
-        for call in mock.call_args_list
-        if call.args and call.args[0] == name
-    ]
+    """Value, unit and dimensions of every emission of one metric.
+
+    ``put_metric(name, value, unit, dimensions)`` is positional-friendly, so
+    read both forms — a caller switching to positional args must not silently
+    empty these assertions.
+    """
+    out = []
+    for call in mock.call_args_list:
+        if not call.args or call.args[0] != name:
+            continue
+        args = call.args
+        out.append(
+            {
+                "value": args[1] if len(args) > 1 else call.kwargs.get("value", 1.0),
+                "unit": args[2] if len(args) > 2 else call.kwargs.get("unit", "Count"),
+                "dimensions": args[3] if len(args) > 3 else call.kwargs.get("dimensions"),
+            }
+        )
+    return out
 
 
 def _events(mock: MagicMock, name: str) -> list[dict]:
@@ -85,13 +98,15 @@ def telemetry(monkeypatch):
     return put_metric, capture
 
 
-def _wire_human_message(monkeypatch, members: list[dict], created: dict, room_kind: str = "channel") -> MagicMock:
+def _wire_human_message(
+    monkeypatch, members: list[dict], created: dict, room_kind: str = "channel", *, replayed: bool = False
+) -> MagicMock:
     monkeypatch.setattr(
         messaging, "require_room_member", AsyncMock(return_value=({"kind": room_kind}, _human_member()))
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(side_effect=lambda *a, **k: members[-1]))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
-    create = AsyncMock(return_value=created)
+    create = AsyncMock(return_value=(created, replayed))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
     monkeypatch.setattr(messaging.container_repo, "touch_last_interactive", AsyncMock())
@@ -120,6 +135,7 @@ def _wire_agent_message(
     *,
     before: list[dict] | None = None,
     links: dict | None = None,
+    replayed: bool = False,
 ) -> MagicMock:
     monkeypatch.setattr(
         messaging.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": OWNER, "kind": "channel"})
@@ -132,7 +148,7 @@ def _wire_agent_message(
         AsyncMock(side_effect=lambda _room, message_id: (links or {}).get(message_id)),
     )
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(messaging.messaging_repo, "create_message", AsyncMock(return_value=created))
+    monkeypatch.setattr(messaging.messaging_repo, "create_message", AsyncMock(return_value=(created, replayed)))
     scan = AsyncMock(return_value=before or [])
     monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", scan)
     return scan
@@ -225,28 +241,33 @@ async def test_an_unmentioned_human_message_reports_no_miss(monkeypatch, telemet
 # ---------------------------------------------------------------------------
 
 
-def test_unresolved_mentions_split_no_match_from_ambiguous(monkeypatch, telemetry):
-    put_metric, _ = telemetry
+def test_unresolved_mentions_split_no_match_from_ambiguous():
     members = [
         _agent_member(AGENT, handle="dup"),
         _agent_member(OTHER_AGENT, handle="dup"),
         _agent_member(str(uuid.UUID(int=3)), handle="friday"),
     ]
 
-    assert messaging.parse_agent_mentions("@friday @dup @ghost", members) == [
-        {"kind": "agent", "id": str(uuid.UUID(int=3))}
-    ]
+    mentions, reasons = messaging.parse_agent_mentions("@friday @dup @ghost", members)
 
-    assert sorted(m["dimensions"]["reason"] for m in _metrics(put_metric, "messaging.mention.unresolved")) == [
-        "ambiguous",
-        "no_match",
-    ]
+    assert mentions == [{"kind": "agent", "id": str(uuid.UUID(int=3))}]
+    assert sorted(reasons) == ["ambiguous", "no_match"]
 
 
-def test_a_fully_resolved_mention_reports_nothing(monkeypatch, telemetry):
-    put_metric, _ = telemetry
-    assert messaging.parse_agent_mentions("@friday ship it", [_agent_member()]) == [{"kind": "agent", "id": AGENT}]
-    assert _metrics(put_metric, "messaging.mention.unresolved") == []
+def test_a_fully_resolved_mention_reports_nothing():
+    assert messaging.parse_agent_mentions("@friday ship it", [_agent_member()]) == (
+        [{"kind": "agent", "id": AGENT}],
+        [],
+    )
+
+
+def test_handles_inside_code_are_not_counted_as_unresolved():
+    # A pasted decorator or traceback is not someone failing to address a
+    # teammate; an ordinary email address already never matched.
+    text = "see `@pytest.mark.asyncio` and\n```\n@ghost_helper()\n```\nmail ops@example.com"
+    assert messaging.parse_agent_mentions(text, [_agent_member()]) == ([], [])
+    # …but the same handle in prose still counts.
+    assert messaging.parse_agent_mentions("@ghost are you there", [_agent_member()]) == ([], ["no_match"])
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +349,10 @@ async def test_an_unprompted_agent_message_counts_as_unmatched(monkeypatch, tele
     await _send_agent()
 
     assert _metrics(put_metric, "messaging.reply.latency") == []
-    assert _metrics(put_metric, "messaging.reply.unmatched") == [{"value": 1.0, "unit": "Count"}]
-    delivered = _events(capture, "agent_reply_delivered")
-    assert delivered[0]["distinct_id"] == OWNER  # nobody to attribute it to
-    assert "latency_ms" not in delivered[0]["properties"]
-    assert delivered[0]["properties"]["event_kind"] == "unknown"
+    assert _metrics(put_metric, "messaging.reply.unmatched") == [{"value": 1.0, "unit": "Count", "dimensions": None}]
+    # No human to attribute it to, and the owner id is a Clerk ORG — keying a
+    # person event on it would mint org-shaped people in PostHog.
+    assert _events(capture, "agent_reply_delivered") == []
 
 
 @pytest.mark.asyncio
@@ -376,8 +396,111 @@ async def test_a_failing_reply_lookup_still_returns_the_receipt(monkeypatch, tel
 
 
 # ---------------------------------------------------------------------------
+# idempotent replays
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_human_message_reports_nothing(monkeypatch, telemetry):
+    put_metric, capture = telemetry
+    created = _message(1, {"kind": "human", "id": USER, "displayName": "Owner"})
+    _wire_human_message(monkeypatch, [_human_member(), _agent_member(listen_mode="observe")], created, replayed=True)
+
+    message = await _send_human()
+
+    assert str(message.message_id) == created["messageId"]  # the receipt still replays
+    assert put_metric.call_args_list == []
+    assert capture.call_args_list == []
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_agent_message_reports_nothing(monkeypatch, telemetry):
+    put_metric, capture = telemetry
+    # Old enough that re-measuring would report the retry delay as reply latency.
+    answered = _message(
+        3,
+        {"kind": "human", "id": USER, "displayName": "Owner"},
+        targets=[{"agentId": AGENT, "eventKind": "user_request"}],
+        created_at=(messaging.utc_now() - timedelta(hours=2)).isoformat(),
+    )
+    created = _message(4, {"kind": "agent", "id": AGENT, "displayName": "Friday"})
+    scan = _wire_agent_message(
+        monkeypatch, [_human_member(), _agent_member()], created, before=[answered], replayed=True
+    )
+
+    receipt = await _send_agent(text="@ghost done")
+
+    assert str(receipt.message_id) == created["messageId"]
+    scan.assert_not_awaited()
+    assert put_metric.call_args_list == []
+    assert capture.call_args_list == []
+
+
+# ---------------------------------------------------------------------------
 # rooms, members, reactions — and the blast radius of an analytics outage
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_creating_a_room_reports_the_room_and_each_member(monkeypatch, telemetry):
+    _, capture = telemetry
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": AGENT, "name": "Friday"}]))
+    monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(side_effect=[_agent_member(), _human_member("u2")]))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", AsyncMock(return_value={"kind": "group-dm"}))
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
+
+    await messaging.create_room(
+        AuthContext(user_id=USER, org_id=OWNER),
+        messaging.CreateRoomRequest(
+            clientRoomId=uuid.uuid4(),
+            name="planning",
+            kind="group-dm",
+            members=[
+                messaging.CreateRoomMember(kind="agent", id=AGENT, role="member", listenMode="mentions"),
+                messaging.CreateRoomMember(kind="human", id="u2", role="member", listenMode=None),
+            ],
+        ),
+    )
+
+    created = _events(capture, "room_created")
+    assert len(created) == 1 and created[0]["distinct_id"] == USER
+    assert created[0]["properties"] == {"workspace_id": OWNER, "kind": "group-dm"}
+    # The creator is not "added"; the two invitees are, by the room owner.
+    assert [event["properties"] for event in _events(capture, "room_member_added")] == [
+        {"workspace_id": OWNER, "member_kind": "agent", "by": "owner"},
+        {"workspace_id": OWNER, "member_kind": "human", "by": "owner"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_seeded_starter_room_reports_system_membership(monkeypatch, telemetry):
+    _, capture = telemetry
+    starter_ids = {key: str(uuid.UUID(int=index + 20)) for index, key in enumerate(messaging._STARTER_KEYS)}
+    company = MagicMock(status="active", starter_agent_ids=starter_ids)
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=company)
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        messaging,
+        "load_agent_roster",
+        AsyncMock(return_value=[{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]),
+    )
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", AsyncMock(return_value={"kind": "channel"}))
+    monkeypatch.setattr(messaging.messaging_repo, "create_message", AsyncMock(return_value=({}, False)))
+
+    assert await messaging.ensure_default_room(OWNER, USER) is not None
+
+    assert [event["properties"] for event in _events(capture, "room_created")] == [
+        {"workspace_id": OWNER, "kind": "channel"}
+    ]
+    added = _events(capture, "room_member_added")
+    assert len(added) == len(messaging._STARTER_KEYS)  # the owner is not "added"
+    assert {(event["properties"]["member_kind"], event["properties"]["by"]) for event in added} == {("agent", "system")}
 
 
 @pytest.mark.asyncio

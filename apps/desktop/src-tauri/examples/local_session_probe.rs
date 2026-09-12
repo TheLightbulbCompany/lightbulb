@@ -496,13 +496,13 @@ mod tests {
         assert!(validate(&id, &id).is_ok()); // Supported PATH binary, not proof of runtime version.
         let since = "2026-09-11T03:00:00.500Z";
         let history = "{\"type\":\"assistant\",\"sessionId\":\"synthetic-session\",\"timestamp\":\"2026-09-10T03:00:00.000Z\",\"version\":\"2.1.268\"}\n";
-        let running = "{\"type\":\"user\",\"sessionId\":\"synthetic-session\",\"timestamp\":\"2026-09-11T03:00:01.000Z\",\"version\":\"2.1.200\"}\n";
+        let running = "{\"type\":\"user\",\"sessionId\":\"synthetic-session\",\"timestamp\":\"2026-09-11T03:00:01.000Z\",\"version\":\"2.1.100\"}\n";
         assert!(
             verify_running_claude(&id, since, format!("{history}{running}").as_bytes()).is_err()
         );
         assert!(verify_running_claude(&id, since, history.as_bytes()).is_err());
         assert!(verify_running_claude(&id, since, b"".as_slice()).is_err());
-        let supported = running.replace("2.1.200", "2.1.268");
+        let supported = running.replace("2.1.100", "2.1.268");
         assert!(verify_running_claude(&id, since, supported.as_bytes()).is_ok());
         let wrong_session = supported.replace("synthetic-session", "other");
         assert!(verify_running_claude(&id, since, wrong_session.as_bytes()).is_err());

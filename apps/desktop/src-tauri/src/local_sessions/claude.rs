@@ -1,7 +1,23 @@
 use super::*;
 
+fn patch_level(version: &str) -> Option<u32> {
+    let mut parts = version.split('.');
+    if parts.next()? != "2" || parts.next()? != "1" {
+        return None;
+    }
+    let level = parts.next()?.parse::<u32>().ok()?;
+    parts.next().is_none().then_some(level)
+}
+
+/// Observation floor: `claude agents --json` exists from 2.1.145. Anything off the 2.1 line is unknown.
 pub fn supported_version(version: &str) -> bool {
-    matches!(version, "2.1.268" | "2.1.269")
+    patch_level(version).is_some_and(|n| n >= 145)
+}
+
+/// Send floor: the per-session inbox socket shipped in 2.1.224. Live-verified on 2.1.268 and 2.1.269;
+/// 2.1.224–2.1.267 are range-qualified and rely on fail-closed correlation and socket discovery.
+pub fn send_supported_version(version: &str) -> bool {
+    patch_level(version).is_some_and(|n| n >= 224)
 }
 
 pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<NativeSession> {
@@ -34,7 +50,13 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .unwrap_or_else(|_| "unverified".into());
     let socket = open_files(pid).await?.into_iter().find(|path| {
         let text = path.to_string_lossy();
-        (text.starts_with("/tmp/cc-socks/") || text.starts_with("/private/tmp/cc-socks/"))
+        let in_socket_dir = ["/tmp/cc-socks/", "/private/tmp/cc-socks/"]
+            .iter()
+            .any(|p| text.starts_with(p))
+            || ["/tmp/cc-socks-", "/private/tmp/cc-socks-"]
+                .iter()
+                .any(|p| text.starts_with(p));
+        in_socket_dir
             && path
                 .file_name()
                 .is_some_and(|n| n == format!("{pid}.sock").as_str())
@@ -45,7 +67,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .filter(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::geteuid() })
         .map(|m| m.ino());
     let mut version = "unverified".to_owned();
-    let mut restriction = if supported_version(&installed_version) {
+    let mut restriction = if send_supported_version(&installed_version) {
         None
     } else {
         Some("unsupported-version".into())
@@ -227,17 +249,29 @@ fn basename(path: Option<&str>) -> Option<String> {
         .map(|n| n.to_string_lossy().chars().take(128).collect())
 }
 
+/// `content` may wrap `sent` in the peer envelope, an older wording, or nothing at all. But if
+/// `content` carries a recognizable teammate-contribution header, the real sent text can only
+/// start there — a bare trailing substring of our own payload (like "Hello") is not the sent text.
+fn contains_sent(content: &str, sent: &str) -> bool {
+    match content.find(HEADER_PREFIX) {
+        Some(at) => content[at..].starts_with(sent),
+        None => content.contains(sent),
+    }
+}
+
 fn correlated_user_uuid(row: &Value, session: &str, version: &str, sent: &str) -> Option<String> {
     if row["type"] != "user"
         || row["message"]["role"] != "user"
         || row["sessionId"] != session
-        || !supported_version(version)
+        || !send_supported_version(version)
         || row["version"] != version
         || row.get("channel").is_some()
         || row.get("phase").is_some()
         || row["message"].get("channel").is_some()
         || row["message"].get("phase").is_some()
-        || row["message"]["content"] != format!("{PEER_PREFIX}{sent}{PEER_SUFFIX}")
+        || !row["message"]["content"]
+            .as_str()
+            .is_some_and(|content| contains_sent(content, sent))
     {
         return None;
     }
@@ -449,7 +483,8 @@ fn user_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Vec<Value> {
     }
     let inner = text
         .strip_prefix(PEER_PREFIX)
-        .and_then(|t| t.strip_suffix(PEER_SUFFIX));
+        .and_then(|t| t.strip_suffix(PEER_SUFFIX))
+        .or_else(|| text.find(HEADER_PREFIX).map(|at| &text[at..]));
     if let Some((provenance, body)) = inner.and_then(teammate_contribution) {
         let mut e = event("text", "user", &body, ts, id);
         if let Some(actor) = actor_of(&provenance) {
@@ -623,7 +658,7 @@ mod tests {
         for rows in [
             vec![],
             vec![row("2.1.269", "2026-09-10T00:00:00.000Z")],
-            vec![row("2.1.270", since)],
+            vec![row("2.2.0", since)],
             vec![row("2.1.268", since), row("2.1.269", since)],
             vec![row("2.1.269", since), row("2.1.268", since)],
             vec![row("2.1.269", since), row("", since)],
@@ -682,7 +717,7 @@ mod tests {
             assert!(correlated_user_uuid(&changed, "s", "2.1.269", sent).is_none());
         }
         let mut unknown = row;
-        unknown["version"] = json!("2.1.270");
+        unknown["version"] = json!("2.2.0");
         assert!(normalize("s", &unknown).is_err());
     }
     #[test]
@@ -744,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_claude_receipt_needs_exact_public_user_ingress_not_echo_or_substring() {
+    fn local_sessions_claude_receipt_needs_the_full_sent_text_not_a_substring() {
         let sent = "[Lightbulb request abc from alice]\nHello";
         let row = json!({"type":"user","sessionId":"s","version":"2.1.268","uuid":"aaaabbbb-cccc-4ddd-8eee-ffff00001111",
             "message":{"role":"user","content":format!("Another Claude session sent a message:\n{sent}{PEER_SUFFIX}")}});
@@ -757,13 +792,6 @@ mod tests {
             ("/type", json!("assistant")),
             ("/message/role", json!("assistant")),
             ("/uuid", json!(null)),
-            ("/message/content", json!(sent)),
-            (
-                "/message/content",
-                json!(format!(
-                    "Another Claude session sent a message:\n{sent}{PEER_SUFFIX} extra"
-                )),
-            ),
         ] {
             let mut changed = row.clone();
             *changed.pointer_mut(pointer).unwrap() = value;
@@ -919,6 +947,70 @@ mod tests {
         assert_eq!(
             latest_title(&path).as_deref(),
             Some("Desktop and mobile notifications")
+        );
+    }
+
+    #[test]
+    fn local_sessions_claude_versions_are_a_range_on_the_2_1_line() {
+        for (version, observe, send) in [
+            ("2.1.144", false, false),
+            ("2.1.145", true, false),
+            ("2.1.223", true, false),
+            ("2.1.224", true, true),
+            ("2.1.268", true, true),
+            ("2.1.269", true, true),
+            ("2.1.999", true, true),
+            ("2.2.0", false, false),
+            ("3.0.1", false, false),
+            ("2.1", false, false),
+            ("2.1.224.1", false, false),
+            ("2.1.abc", false, false),
+        ] {
+            assert_eq!(supported_version(version), observe, "{version} observe");
+            assert_eq!(send_supported_version(version), send, "{version} send");
+        }
+    }
+
+    #[test]
+    fn local_sessions_claude_correlation_matches_the_sent_text_inside_any_native_wrapper() {
+        let sent = "[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"7f3e\",\"actorUserId\":\"user_a\"}]\nHello";
+        let row = |content: String, version: &str| {
+            json!({"type":"user","sessionId":"s","version":version,"uuid":"aaaabbbb-cccc-4ddd-8eee-ffff00001111",
+            "message":{"role":"user","content":content}})
+        };
+        assert!(correlated_user_uuid(
+            &row(format!("{PEER_PREFIX}{sent}{PEER_SUFFIX}"), "2.1.269"),
+            "s",
+            "2.1.269",
+            sent
+        )
+        .is_some());
+        assert!(
+            correlated_user_uuid(
+                &row(
+                    format!("Peer message:\n{sent}\n(some other 2.1.230 wording)"),
+                    "2.1.230"
+                ),
+                "s",
+                "2.1.230",
+                sent
+            )
+            .is_some(),
+            "an older wrapper still correlates on the unique sent text"
+        );
+        assert!(
+            correlated_user_uuid(&row(sent.to_owned(), "2.1.223"), "s", "2.1.223", sent).is_none(),
+            "below the send floor nothing correlates"
+        );
+        assert!(
+            correlated_user_uuid(
+                &row(format!("{PEER_PREFIX}{sent}{PEER_SUFFIX}"), "2.1.269"),
+                "s",
+                "2.1.269",
+                "Hello"
+            )
+            .is_none(),
+            "a bare substring without the provenance header is not the sent text"
         );
     }
 }

@@ -8,7 +8,7 @@ import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { Avatar } from "./Avatar";
 
-const AVATAR = 28;
+const AVATAR = 36;
 /** Body indent under a collapsed run, so text lines up with the run above.
  *  Exported so anything drawing beneath a group lines up with its body. */
 export const MESSAGE_BODY_INDENT = AVATAR + spacing.sm;

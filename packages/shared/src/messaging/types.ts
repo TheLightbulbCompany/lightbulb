@@ -184,6 +184,7 @@ export interface LiveConfig {
   realtimeEndpoint: string;
   region: string;
   userChannelKey: string;
+  workspaceId: string;
 }
 
 /** Resources belong to human members; they are never company/room members. */

@@ -128,9 +128,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const userChannel = config ? `/users/${config.userChannelKey}` : null;
-  const roomChannel = activeRoom
-    ? `/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}`
+  const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
+  const roomChannel = config && activeRoom
+    ? `/ws/${config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}`
     : null;
   const live = useSharedLiveEvents({
     config: config ?? null,

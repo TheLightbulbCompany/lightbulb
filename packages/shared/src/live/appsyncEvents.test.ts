@@ -63,8 +63,9 @@ class FakeSocket {
 
 const HTTP = "https://abc123.appsync-api.us-east-1.amazonaws.com/event";
 const RT = "wss://abc123.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime";
-const USER = "/users/11111111-1111-4111-8111-111111111111";
-const ROOM = "/rooms/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333";
+const WS = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const USER = `/ws/${WS}/users/11111111-1111-4111-8111-111111111111`;
+const ROOM = `/ws/${WS}/rooms/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333`;
 
 function liveEvent(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -228,7 +229,7 @@ describe("subscriptions", () => {
     ws.ack();
     await flush();
     const oldId = ws.ackSubscribe(ROOM);
-    const nextRoom = "/rooms/44444444-4444-4444-8444-444444444444/55555555-5555-4555-8555-555555555555";
+    const nextRoom = `/ws/${WS}/rooms/44444444-4444-4444-8444-444444444444/55555555-5555-4555-8555-555555555555`;
     client.setChannels([USER, nextRoom]);
     await flush();
     expect(ws.sentOf("unsubscribe")).toEqual([{ type: "unsubscribe", id: oldId }]);

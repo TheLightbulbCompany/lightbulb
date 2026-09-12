@@ -14,12 +14,14 @@ vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ user }),
 }));
 
+const WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const get = vi.fn(async () => ({
   schemaVersion: 1,
   httpEndpoint: "https://events.appsync-api.us-east-1.amazonaws.com/event",
   realtimeEndpoint: "wss://events.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime",
   region: "us-east-1",
   userChannelKey: "11111111-1111-4111-8111-111111111111",
+  workspaceId: WORKSPACE_ID,
 }));
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get, post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() }),
@@ -115,12 +117,12 @@ describe("LiveEventsProvider", () => {
     render(<LiveEventsProvider><RoomClaimProbe /></LiveEventsProvider>);
 
     fireEvent.click(screen.getByRole("button", { name: "claim first" }));
-    await waitFor(() => expect(shared.roomChannel).toBe("/rooms/room-a/key-a"));
+    await waitFor(() => expect(shared.roomChannel).toBe(`/ws/${WORKSPACE_ID}/rooms/room-a/key-a`));
     fireEvent.click(screen.getByRole("button", { name: "claim second" }));
-    await waitFor(() => expect(shared.roomChannel).toBe("/rooms/room-b/key-b"));
+    await waitFor(() => expect(shared.roomChannel).toBe(`/ws/${WORKSPACE_ID}/rooms/room-b/key-b`));
 
     fireEvent.click(screen.getByRole("button", { name: "release first" }));
-    expect(shared.roomChannel).toBe("/rooms/room-b/key-b");
+    expect(shared.roomChannel).toBe(`/ws/${WORKSPACE_ID}/rooms/room-b/key-b`);
     fireEvent.click(screen.getByRole("button", { name: "release second" }));
     await waitFor(() => expect(shared.roomChannel).toBeNull());
   });

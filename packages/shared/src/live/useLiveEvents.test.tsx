@@ -50,16 +50,18 @@ class FakeSocket {
   }
 }
 
+const WS = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const config: LiveConfig = {
   schemaVersion: 1,
   httpEndpoint: "https://events.appsync-api.us-east-1.amazonaws.com/event",
   realtimeEndpoint: "wss://events.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime",
   region: "us-east-1",
   userChannelKey: "11111111-1111-4111-8111-111111111111",
+  workspaceId: WS,
 };
-const userChannel = `/users/${config.userChannelKey}`;
-const roomA = "/rooms/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333";
-const roomB = "/rooms/44444444-4444-4444-8444-444444444444/55555555-5555-4555-8555-555555555555";
+const userChannel = `/ws/${WS}/users/${config.userChannelKey}`;
+const roomA = `/ws/${WS}/rooms/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333`;
+const roomB = `/ws/${WS}/rooms/44444444-4444-4444-8444-444444444444/55555555-5555-4555-8555-555555555555`;
 
 async function flush() {
   await act(async () => {

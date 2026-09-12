@@ -1080,9 +1080,6 @@ export type GatewayDeps = {
   runControlHandler: ReturnType<typeof createRunControlHandler>;
 };
 
-/** The run-control route is shared by every account, so it is claimed once per process. */
-let controlsRegistered = false;
-
 /** Own one exact gateway-auth route for one configured agent account. */
 export async function startGatewayAccount(
   ctx: ChannelGatewayContext<LightbulbAccount>,
@@ -1131,19 +1128,19 @@ export async function startGatewayAccount(
       throwOnFailure: true,
       handler,
     });
-    if (!controlsRegistered) {
-      deps.registerPluginHttpRoute({
-        path: RUNS_ROUTE_PREFIX,
-        auth: "gateway",
-        match: "prefix",
-        pluginId: PLUGIN_ID,
-        source: "lightbulb-channel-runs",
-        replaceExisting: true,
-        throwOnFailure: true,
-        handler: deps.runControlHandler,
-      });
-      controlsRegistered = true;
-    }
+    // The run-control route is shared by every account, so every account start claims
+    // it again — `replaceExisting` makes that idempotent, and it is deliberately never
+    // unregistered: a stopping account must not take abort/steer down with it.
+    deps.registerPluginHttpRoute({
+      path: RUNS_ROUTE_PREFIX,
+      auth: "gateway",
+      match: "prefix",
+      pluginId: PLUGIN_ID,
+      source: "lightbulb-channel-runs",
+      replaceExisting: true,
+      throwOnFailure: true,
+      handler: deps.runControlHandler,
+    });
     ctx.setStatus(deps.channelReadyPatch({ accountId: account.accountId }));
     await deps.waitUntilAbort(ctx.abortSignal);
   } finally {

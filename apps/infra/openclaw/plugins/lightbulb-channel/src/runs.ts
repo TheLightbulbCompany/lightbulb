@@ -90,22 +90,30 @@ export function transformAgentEvent(stream: string, data: Record<string, unknown
 
 export function createRunCallbacks(deps: { fetch: FetchLike; env: () => RawEnv; log?: (message: string) => void }): RunCallbacks {
   return {
+    // Never rejects: a lost callback is reported to the sweeper by silence, and a
+    // throwing send would take the run's own terminal report down with it.
     async send(event) {
-      const resolved = resolveEnv(deps.env());
-      const url = `${resolved.base}/api/v1/internal/messaging/runs/${encodeURIComponent(resolved.ownerId)}/events`;
       for (let attempt = 0; attempt < CALLBACK_ATTEMPTS; attempt++) {
         try {
-          const res = await deps.fetch(url, {
-            method: "POST",
-            headers: { "content-type": "application/json", Authorization: `Bearer ${resolved.token}` },
-            body: JSON.stringify(event),
-            signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
-          });
+          // Inside the try: an unset ISOL8_API_URL/ISOL8_OWNER_ID/OPENCLAW_HOOK_TOKEN
+          // throws LightbulbConfigurationError, which must not escape either.
+          const resolved = resolveEnv(deps.env());
+          const res = await deps.fetch(
+            `${resolved.base}/api/v1/internal/messaging/runs/${encodeURIComponent(resolved.ownerId)}/events`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json", Authorization: `Bearer ${resolved.token}` },
+              body: JSON.stringify(event),
+              signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
+            },
+          );
           if (res.status < 500) return; // 200 applied/replayed and 404 unknown are both final
         } catch {
-          // network failure: retry below
+          // configuration or network failure: retry below
         }
-        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        if (attempt + 1 < CALLBACK_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        }
       }
       deps.log?.(`lightbulb: run callback ${event.type} undelivered for ${event.runId}`);
     },
@@ -127,6 +135,13 @@ export function createRunSupervisor(deps: {
   let unsubscribe: (() => void) | undefined;
 
   const iso = () => deps.now().toISOString();
+  /** Error name and run id only — a callback body carries room text. */
+  const logFailure = (runId: string, error: unknown) =>
+    deps.log?.(`lightbulb: run ${runId} callback failed (${error instanceof Error ? error.name : "error"})`);
+  /** Fire-and-forget: an unhandled rejection here would kill the gateway process. */
+  const notify = (event: RunEvent): void => {
+    void deps.callbacks.send(event).catch((error) => logFailure(event.runId, error));
+  };
   function frame(run: ActiveRun, body: Frame): void {
     const payload: { frame: Frame } & Record<string, unknown> = {
       roomId: run.roomId,
@@ -141,9 +156,9 @@ export function createRunSupervisor(deps: {
   function markStarted(run: ActiveRun): void {
     if (run.started) return;
     run.started = true;
-    void deps.callbacks.send({ runId: run.runId, type: "run.started", at: iso(), sessionKey: run.sessionKey });
+    notify({ runId: run.runId, type: "run.started", at: iso(), sessionKey: run.sessionKey });
     frame(run, { type: "run_active", active: true });
-    run.heartbeat = setInterval(() => void deps.callbacks.send({ runId: run.runId, type: "run.heartbeat", at: iso() }), HEARTBEAT_MS);
+    run.heartbeat = setInterval(() => notify({ runId: run.runId, type: "run.heartbeat", at: iso() }), HEARTBEAT_MS);
   }
   function trackText(run: ActiveRun, data: Record<string, unknown>): void {
     // Upstream clears `text` at every message start, so a text that no longer extends
@@ -193,6 +208,10 @@ export function createRunSupervisor(deps: {
   }
   async function finish(run: ActiveRun, gate?: "ignored" | "gate_error", failure?: unknown): Promise<void> {
     if (run.heartbeat) clearInterval(run.heartbeat);
+    // Retire the run before the terminal frames: a late event must not be framed after
+    // run_ended, and a throw below must not strand the entry in either map.
+    runs.delete(run.runId);
+    if (bySession.get(run.sessionKey) === run.runId) bySession.delete(run.sessionKey);
     let outcome: RunOutcome;
     let errorKind: string | undefined;
     let message = "Agent run failed";
@@ -217,8 +236,6 @@ export function createRunSupervisor(deps: {
       frame(run, { type: "run_active", active: false });
       await deps.frames.flush(run.frameChannel);
     }
-    runs.delete(run.runId);
-    if (bySession.get(run.sessionKey) === run.runId) bySession.delete(run.sessionKey);
     await deps.callbacks.send({
       runId: run.runId,
       type: "run.ended",
@@ -240,10 +257,14 @@ export function createRunSupervisor(deps: {
       const run: ActiveRun = { ...spec, started: false, text: { done: "", current: "" } };
       runs.set(spec.runId, run);
       bySession.set(spec.sessionKey, spec.runId);
-      void turn().then(
-        (gate) => finish(run, gate === "dispatched" ? undefined : gate),
-        (failure) => finish(run, undefined, failure),
-      );
+      // finish() can still throw (a frame flush, or getSessionEntry reading a torn row);
+      // nothing is left to report it to, so it is logged and never rethrown.
+      void turn()
+        .then(
+          (gate) => finish(run, gate === "dispatched" ? undefined : gate),
+          (failure) => finish(run, undefined, failure),
+        )
+        .catch((error) => logFailure(spec.runId, error));
     },
     abort(runId: string): "aborting" | "not_found" {
       const sessionId = sessionIdFor(runId);

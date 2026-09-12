@@ -1443,10 +1443,23 @@ describe("per-agent gateway lifecycle", () => {
         throwOnFailure: true,
       });
     }
-    // The run-control route is shared by every account, so it is registered once per process.
-    expect(registrations.filter((row) => row.source === "lightbulb-channel-runs")).toMatchObject([
-      { path: RUNS_ROUTE_PREFIX, auth: "gateway", match: "prefix", pluginId: "lightbulb", handler: deps.runControlHandler },
-    ]);
+    // Every account start re-claims the shared run-control route; `replaceExisting` keeps
+    // exactly one live route, so a config reload that drops an account's routes cannot
+    // leave abort/steer unreachable until the process restarts.
+    const control = registrations.filter((row) => row.source === "lightbulb-channel-runs");
+    expect(control).toHaveLength(2);
+    for (const row of control) {
+      expect(row).toMatchObject({
+        path: RUNS_ROUTE_PREFIX,
+        auth: "gateway",
+        match: "prefix",
+        pluginId: "lightbulb",
+        replaceExisting: true,
+        throwOnFailure: true,
+        handler: deps.runControlHandler,
+      });
+    }
+    expect(new Set(control.map((row) => row.path)).size).toBe(1);
     expect(fridayStatuses.map((status) => status.lifecycle)).toEqual(["starting", "ready"]);
     expect(gaugeStatuses.map((status) => status.lifecycle)).toEqual(["starting", "ready"]);
 
@@ -1454,6 +1467,7 @@ describe("per-agent gateway lifecycle", () => {
     gaugeAbort.abort();
     await Promise.all([friday, gauge]);
     expect(inbound.every((row) => row.unregistered)).toBe(true);
+    expect(control.some((row) => row.unregistered)).toBe(false);
     expect(fridayStatuses.at(-1).lifecycle).toBe("stopped");
     expect(gaugeStatuses.at(-1).lifecycle).toBe("stopped");
   });

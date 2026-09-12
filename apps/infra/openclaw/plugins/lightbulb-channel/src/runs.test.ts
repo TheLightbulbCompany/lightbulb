@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { HEARTBEAT_MS, createRunSupervisor, transformAgentEvent } from "./runs.js";
+import { HEARTBEAT_MS, createRunCallbacks, createRunSupervisor, transformAgentEvent } from "./runs.js";
+
+const ENV = {
+  ISOL8_API_URL: "https://api.flickmeon.ai/",
+  ISOL8_OWNER_ID: "owner_123",
+  OPENCLAW_HOOK_TOKEN: "hook-token",
+};
+const ENDED = { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", type: "run.ended" as const, at: "2026-09-12T03:15:00.000Z", outcome: "completed" as const };
 
 const RUN = {
   runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -96,6 +103,59 @@ describe("run supervisor", () => {
     expect(h.runs.steer(RUN.runId, "focus on tests")).toBe("accepted");
     expect(h.sdk.queueAgentHarnessMessage).toHaveBeenCalledWith("session-1", "focus on tests");
     expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN.runId);
+  });
+});
+
+describe("createRunCallbacks", () => {
+  /** Drives the back-off sleeps without waiting for them, then awaits the send. */
+  async function send(fetch: ReturnType<typeof vi.fn>, env = ENV, log?: (message: string) => void) {
+    vi.useFakeTimers();
+    try {
+      const sent = createRunCallbacks({ fetch: fetch as any, env: () => env, log }).send(ENDED);
+      await vi.runAllTimersAsync();
+      await expect(sent).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("posts the event to the owner's run-events route with the hook token", async () => {
+    const fetch = vi.fn(async () => ({ status: 200 }));
+    await send(fetch);
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0] as any[];
+    expect(url).toBe("https://api.flickmeon.ai/api/v1/internal/messaging/runs/owner_123/events");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "content-type": "application/json", Authorization: "Bearer hook-token" });
+    expect(JSON.parse(init.body)).toEqual(ENDED);
+  });
+
+  it("retries a 5xx and a network failure, and treats any status below 500 as final", async () => {
+    const flaky = vi.fn()
+      .mockRejectedValueOnce(new Error("socket hang up"))
+      .mockResolvedValueOnce({ status: 502 })
+      .mockResolvedValueOnce({ status: 200 });
+    await send(flaky);
+    expect(flaky).toHaveBeenCalledTimes(3);
+
+    const unknownRun = vi.fn(async () => ({ status: 404 }));
+    await send(unknownRun);
+    expect(unknownRun).toHaveBeenCalledOnce();
+  });
+
+  it("gives up after three attempts and reports a misconfigured container without rejecting", async () => {
+    const down = vi.fn(async () => ({ status: 503 }));
+    const logged: string[] = [];
+    await send(down, ENV, (message) => logged.push(message));
+    expect(down).toHaveBeenCalledTimes(3);
+
+    const unsent = vi.fn();
+    await send(unsent, {}, (message) => logged.push(message));
+    expect(unsent).not.toHaveBeenCalled();
+    expect(logged).toEqual([
+      "lightbulb: run callback run.ended undelivered for bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "lightbulb: run callback run.ended undelivered for bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ]);
   });
 });
 

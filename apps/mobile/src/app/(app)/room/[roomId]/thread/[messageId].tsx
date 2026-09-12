@@ -203,10 +203,12 @@ export default function ThreadScreen() {
         />
       )}
       <RoomComposer
+        members={members ?? []}
         placeholder="Reply…"
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}
         onSend={send}
+        onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
       />
     </KeyboardAvoidingView>

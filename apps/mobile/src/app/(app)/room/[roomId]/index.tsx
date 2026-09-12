@@ -266,10 +266,12 @@ function Conversation() {
         />
       )}
       <RoomComposer
+        members={members ?? []}
         placeholder="Message"
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}
         onSend={send}
+        onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
       />
     </KeyboardAvoidingView>

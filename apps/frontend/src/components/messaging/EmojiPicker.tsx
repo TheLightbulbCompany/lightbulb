@@ -4,7 +4,7 @@ import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactElement
 import { SmilePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji, type EmojiEntry } from "./emojiData";
+import { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji, type EmojiEntry } from "@lightbulb/shared";
 import "./emoji-picker.css";
 
 export const RECENT_EMOJI_KEY = "lightbulb.messaging.recentEmoji";

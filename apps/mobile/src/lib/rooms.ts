@@ -74,6 +74,12 @@ export interface LocalMessageRow {
   unsent: boolean;
 }
 
+/** What a composer produces: the message minus every id only the send rail knows. */
+export type ComposedMessage = Omit<
+  CreateMessageRequest,
+  "clientMessageId" | "replyToMessageId" | "threadRootMessageId"
+>;
+
 /**
  * Sending from one room screen, with failed sends kept on screen.
  *
@@ -102,7 +108,7 @@ export function useSendDrafts(
   }: { authorId: string; authorName: string; threadRootMessageId?: string | null },
 ): {
   canSend: boolean;
-  send: (text: string) => Promise<void>;
+  send: (draft: ComposedMessage) => Promise<void>;
   retry: (clientMessageId: string) => Promise<void>;
   rows: LocalMessageRow[];
 } {
@@ -115,13 +121,14 @@ export function useSendDrafts(
     [],
   );
   const send = useCallback(
-    async (text: string) => {
+    async (draft: ComposedMessage) => {
       if (!activeRoomId || !httpReady) return;
-      // ponytail: mentions are empty until Task 10's composer resolves them.
+      // The composer resolves text, mentions and attachment ids; WHICH timeline
+      // the message lands on is this hook's to say alone, because the composer
+      // is the same component on both screens and cannot know which mounted it.
       const request: CreateMessageRequest = {
+        ...draft,
         clientMessageId: randomUUID(),
-        text,
-        mentions: [],
         replyToMessageId: threadRootMessageId,
         threadRootMessageId,
       };

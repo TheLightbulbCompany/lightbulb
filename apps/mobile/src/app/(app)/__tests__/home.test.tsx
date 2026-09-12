@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 import type { RoomDetail, RoomMember, RoomSummary } from "@lightbulb/shared";
 
@@ -156,6 +156,14 @@ describe("Home", () => {
     expect(screen.getByLabelText("Direct message")).toBeTruthy();
   });
 
+  it("draws a channel's # once, as the glyph column and not as a prefix", async () => {
+    await render(<Home />);
+    await waitFor(() => expect(screen.getByText("launch")).toBeTruthy());
+    const row = screen.getByTestId("room-row-r1");
+    expect(within(row).getAllByText("#")).toHaveLength(1);
+    expect(within(row).getByText("launch")).toBeTruthy();
+  });
+
   it("stacks both other parties' avatars on a group DM", async () => {
     await render(<Home />);
     await waitFor(() => expect(screen.getByLabelText("Bob and Carol")).toBeTruthy());
@@ -166,24 +174,27 @@ describe("Home", () => {
 
   it("opens the room route when a row is pressed", async () => {
     await render(<Home />);
-    await waitFor(() => expect(screen.getByText("#random")).toBeTruthy());
-    await fireEvent.press(screen.getByText("#random"));
+    await waitFor(() => expect(screen.getByText("random")).toBeTruthy());
+    await fireEvent.press(screen.getByText("random"));
     expect(mockPush).toHaveBeenCalledWith("/(app)/room/r3");
   });
 
   it("collapses a section and remembers nothing beyond the screen", async () => {
     await render(<Home />);
-    await waitFor(() => expect(screen.getByText("#random")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("random")).toBeTruthy());
     await fireEvent.press(screen.getByText("CHANNELS"));
-    expect(screen.queryByText("#random")).toBeNull();
+    expect(screen.queryByText("random")).toBeNull();
   });
 
   it("filters the list by the header search field", async () => {
     await render(<Home />);
-    await waitFor(() => expect(screen.getByText("#random")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("random")).toBeTruthy());
     await fireEvent.changeText(screen.getByPlaceholderText("Search"), "laun");
-    expect(screen.getByText("#launch")).toBeTruthy();
-    expect(screen.queryByText("#random")).toBeNull();
+    expect(screen.getByText("launch")).toBeTruthy();
+    expect(screen.queryByText("random")).toBeNull();
+    // The # is a glyph, not part of the name — typing it must still match.
+    await fireEvent.changeText(screen.getByPlaceholderText("Search"), "#laun");
+    expect(screen.getByText("launch")).toBeTruthy();
   });
 
   it("opens the picked agent's DM room from the pencil", async () => {

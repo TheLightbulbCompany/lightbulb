@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import { useAgents, type RoomSummary } from "@lightbulb/shared";
+import { roomDisplayName, useAgents, type RoomSummary } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -17,7 +17,7 @@ import {
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { LogoMark } from "../../components/LogoMark";
-import { RoomRow, byRecency, otherMembers, roomLabel } from "../../components/room/RoomRow";
+import { RoomRow, byRecency, otherMembers } from "../../components/room/RoomRow";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { useMobileRooms } from "../../lib/rooms";
 import { useLiveEvents } from "../../providers/live-events";
@@ -85,14 +85,14 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   );
 
   const data = useMemo<Row[]>(() => {
-    const needle = query.trim().toLowerCase();
+    // A channel's `#` is a glyph, not part of its name, so a typed one is
+    // stripped rather than searched for.
+    const needle = query.trim().replace(/^#/, "").toLowerCase();
     const visible = rooms.rooms.filter(
       (room) =>
         (!direct || room.kind !== "channel") &&
         (needle === "" ||
-          roomLabel(room, otherMembers(details.get(room.roomId), userId))
-            .toLowerCase()
-            .includes(needle)),
+          roomDisplayName(room, participants(room)).toLowerCase().includes(needle)),
     );
     if (direct) {
       return [...visible].sort(byRecency).map((room) => ({ kind: "room", room }));
@@ -113,7 +113,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           : list.map((room): Row => ({ kind: "room", room }))),
       ];
     });
-  }, [collapsed, details, direct, query, rooms.rooms, userId]);
+  }, [collapsed, direct, participants, query, rooms.rooms]);
 
   const toggle = useCallback((title: string) => {
     setCollapsed((current) => {

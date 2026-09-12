@@ -21,20 +21,6 @@ export function otherMembers(
   );
 }
 
-/**
- * What the row shows and what search matches on. `#`-prefixed for channels,
- * exactly as the conversation screen's header does it.
- *
- * ponytail: every channel gets `#`; swap in a lock glyph when RoomSummary
- * carries a private flag.
- */
-export function roomLabel(
-  room: Pick<RoomSummary, "kind" | "name">,
-  participants: readonly RowParticipant[],
-): string {
-  return `${room.kind === "channel" ? "#" : ""}${roomDisplayName(room, participants)}`;
-}
-
 /** Newest activity first — a room with no message yet falls back to updatedAt. */
 export function byRecency(left: RoomSummary, right: RoomSummary): number {
   const at = (room: RoomSummary) => Date.parse(room.lastMessageAt ?? room.updatedAt) || 0;
@@ -42,10 +28,17 @@ export function byRecency(left: RoomSummary, right: RoomSummary): number {
 }
 
 /**
- * One Home/DMs list row, Slack's anatomy: leading `#` or avatar(s), the name
- * (bold while unread), the last-activity time, and an unread pill on direct
- * conversations. A muted room dims and never carries a badge, so it never
- * shouts from the list either.
+ * One Home/DMs list row, Slack's anatomy: a leading glyph COLUMN (`#`, or the
+ * avatar(s)), then the bare name — the `#` is never also a prefix on the label,
+ * or the row reads `# #launch`. The conversation screen's header is the other
+ * convention on purpose: one `#name` string, because it has no glyph column.
+ *
+ * The name goes bold while unread, the last-activity time trails it, and direct
+ * conversations carry an unread pill. A muted room dims and never carries a
+ * badge, so it never shouts from the list either.
+ *
+ * ponytail: every channel gets `#`; swap in a lock glyph when RoomSummary
+ * carries a private flag.
  */
 export function RoomRow({
   room,
@@ -60,7 +53,7 @@ export function RoomRow({
   muted: boolean;
   onPress: () => void;
 }) {
-  const label = roomLabel(room, participants);
+  const label = roomDisplayName(room, participants);
   const count = muted ? 0 : unread;
   const isChannel = room.kind === "channel";
   return (
@@ -88,7 +81,7 @@ export function RoomRow({
         </View>
       ) : (
         <View style={styles.lead}>
-          <Avatar name={roomDisplayName(room, participants)} kind={participants[0]?.kind ?? "human"} />
+          <Avatar name={label} kind={participants[0]?.kind ?? "human"} />
         </View>
       )}
       <Text style={[styles.label, count > 0 && styles.labelUnread]} numberOfLines={1}>

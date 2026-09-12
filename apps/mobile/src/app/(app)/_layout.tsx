@@ -65,37 +65,44 @@ export default function AppLayout() {
               tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: 11 },
             }}
           >
+            {/* Slack's four: Home · DMs · Activity · More. An iOS tab bar does
+                not fit more, so Teams, Control and Settings stay REGISTERED
+                below with `href: null` — hidden from the bar, but every route,
+                deep link and push target still resolves — and `more` is the
+                door to them. */}
             <Tabs.Screen
-              name="chat"
-              options={{ title: "Chat", tabBarIcon: tabIcon("message-circle") }}
+              name="home"
+              options={{ title: "Home", tabBarIcon: tabIcon("home") }}
+            />
+            <Tabs.Screen
+              name="dms"
+              options={{ title: "DMs", tabBarIcon: tabIcon("message-square") }}
+            />
+            <Tabs.Screen
+              name="activity"
+              options={{ title: "Activity", tabBarIcon: tabIcon("at-sign") }}
+            />
+            <Tabs.Screen
+              name="more"
+              options={{ title: "More", tabBarIcon: tabIcon("more-horizontal") }}
             />
             <Tabs.Screen
               name="teams"
               // The teams tab is a nested Stack (teams/_layout.tsx); it owns its
               // own inbox + pushed issue-detail headers, so suppress the Tabs
               // header to avoid stacking two.
-              options={{
-                title: "Teams",
-                tabBarIcon: tabIcon("inbox"),
-                headerShown: false,
-              }}
+              options={{ href: null, title: "Teams", headerShown: false }}
             />
             <Tabs.Screen
               name="control"
               // The control tab is a nested Stack (control/_layout.tsx); it owns
               // its own per-panel headers, so suppress the Tabs header to avoid
               // stacking two.
-              options={{
-                title: "Control",
-                tabBarIcon: tabIcon("sliders"),
-                headerShown: false,
-              }}
+              options={{ href: null, title: "Control", headerShown: false }}
             />
-            <Tabs.Screen
-              name="settings"
-              options={{ title: "Settings", tabBarIcon: tabIcon("settings") }}
-            />
-            {/* Chat detail — reachable by navigation only, not a tab. */}
+            <Tabs.Screen name="settings" options={{ href: null, title: "Settings" }} />
+            {/* Legacy agent route — resolves that agent's DM and replaces itself
+                with the room route. Navigation only, not a tab. */}
             <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
             {/* Conversations live in their own Stack (room/_layout.tsx) so a
                 thread pushes over the room; it owns its headers, and the tab

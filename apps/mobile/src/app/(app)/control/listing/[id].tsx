@@ -108,7 +108,7 @@ export default function ListingDetailScreen() {
       "Deployed",
       `${detail.listing.name} was added to your workspace.`,
       [
-        { text: "Open chat", onPress: () => router.navigate("/(app)/chat") },
+        { text: "Open Home", onPress: () => router.navigate("/(app)/home") },
         { text: "Done", style: "cancel" },
       ],
     );

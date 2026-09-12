@@ -21,10 +21,8 @@ export default function AgentRedirect() {
   useEffect(() => {
     if (!agentId) return;
     let cancelled = false;
-    // ponytail: /(app)/chat is the roster route that exists today; Task 7
-    // replaces it with /(app)/home and sweeps this file.
     const giveUp = () => {
-      if (!cancelled) router.replace("/(app)/chat");
+      if (!cancelled) router.replace("/(app)/home");
     };
     void selectAgentDmRef
       .current(agentId)

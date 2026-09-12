@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. EFS provides per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. EFS provides per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
 Every freshly provisioned workspace gets a six-agent Paperclip starter roster: **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. `paperclip_provisioning.provision_org` records their role-keyed UUIDs in `starter_agent_ids`; CEO is the initial root and the specialists report to it. Names are user-editable, so policy follows those UUIDs and roles rather than a display name. This applies only to fresh workspaces — existing/founder rosters are not migrated. **Friday** and **Atlas** are portable curated marketplace packages, not automatic seeds. The roster is Lightbulb-native: it has no GStack or ACP dependency.
 
-The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
+The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus four in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-channel,lightbulb-marketplace,paperclip-exec-creds}` — `lightbulb-channel` is the messaging ingress/outbound seam, see "Messaging"). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
 - `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/thelightbulbcompany/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
@@ -17,7 +17,7 @@ Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, 
 
 This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
 
-Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and streaming events back to the frontend.
+Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and consuming the container's native run/tool events. Those events reach browsers through AppSync, never over a browser socket.
 
 ## Rebrand — Isol8 → Lightbulb (SHIPPED; residue documented below)
 
@@ -61,7 +61,8 @@ every one of these:**
   `lightbulb/paperclip-extended` (no `isol8/*` repo exists), Cloud Map
   namespaces are `lightbulb-{env}.local`, and the deploy concurrency group is
   `lightbulb-deploy`. The rename WAS performed deliberately — see
-  `apps/backend/scripts/migrate_secret_prefix.py` (`OLD_PREFIX = "isol8/"`) —
+  `apps/backend/scripts/migrate_secret_prefix.py` (`OLD_PREFIX = "isol8/"`;
+  the spent script was deleted 2026-09-11, git history keeps it) —
   CLAUDE.md was simply never updated after it shipped. Do not trust any other
   doc or memory claiming these still live under `isol8-*`/`isol8/*`.
 - **The SSO access portal URL `isol8.awsapps.com`** — AWS allows exactly ONE
@@ -536,13 +537,16 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
 ### High-Level Data Flow
 
 ```
-Chat WS:   Client --> wss://ws-{env}.flickmeon.ai (API Gateway v2 WebSocket, Clerk JWT authorizer, ?token=)
-             --> ws-connect / ws-disconnect / ws-message Lambdas (connectionId map in lightbulb-{env}-ws-connections)
-             --> ws-message POSTs http://{ALB}/api/v1/ws/message (x-lightbulb-ws-internal shared secret)
-             --> FastAPI --> Cloud Map DiscoverInstances --> per-user OpenClaw container (ECS Fargate)
-             <-- FastAPI pushes frames via the Management API (HTTPS POST @connections/{id})
+Chat:      Client --> https://api-{env}.flickmeon.ai/api/v1/messaging/* (Clerk HTTP commands)
+             --> FastAPI --> lightbulb-{env}-messaging (DynamoDB; canonical, `seq`-ordered)
+             --> DDB Stream --> messaging-projector λ --> AppSync Events  --> browser/mobile (live)
+                           \-> EventBridge Pipe --> openclaw-work.fifo --> openclaw_work
+                                --> Cloud Map DiscoverInstances --> per-user OpenClaw container
+                                    (lightbulb-channel plugin ingress; native replies POST back)
 
 REST:      Client --> https://api-{env}.flickmeon.ai (API Gateway HTTP API) --> VPC Link V2 --> ALB --> FastAPI
+Machines:  Tauri node hosts / local sessions / Paperclip operators --> wss://ws-{env}.flickmeon.ai (API GW v2 WS;
+             machine-only authorizer, connectionId map in lightbulb-{env}-ws-connections)
 Browser:   Client --> wss://bv-{env}.flickmeon.ai (CloudFront VpcOrigin — raw WS the HTTP API can't carry)
              --> ALB browser-view listener (path-capped /api/v1/browser-view/*) --> routers/browser_view.py
                                                     |
@@ -602,7 +606,7 @@ Flat modules: `config.py` (Pydantic settings), `auth.py` (Clerk JWT via PyJWT;
 `get_current_user` → `AuthContext`, JWKS cache w/ 5-minute TTL + 15-min
 max-stale fail-closed), `dynamodb.py`, `encryption.py` (Fernet),
 `constants.py` (`SYSTEM_ACTOR_ID = "__system__"`), `openclaw_version.py`,
-`secrets_manager.py`, `tenancy_codes.py`.
+`secrets_manager.py`.
 
 Subpackages: `billing/` (Bedrock AIPs, pricing, gate URL — see the Billing
 section), `containers/`, `gateway/`, `repositories/`, `services/`, `crypto/`,
@@ -629,7 +633,7 @@ acct_…` + `Stripe-Version: unsafe-development`, a preview contract that can
 change under us); `provisioning_workflow.py` is the state machine and a
 `provisioning-workflows` row is the durable memory. Four invariants hold it up:
 
-- **No webhooks**, so workflows advance one step on every READ — Friday's
+- **No webhooks**, so workflows advance one step on every READ — the CEO agent's
   status route, the owner's page loads and clicks — under a short per-row
   claim. There is no background driver and nothing sweeps the table.
 - **No idempotency contract.** A state-changing POST that times out or 5xx's is
@@ -642,19 +646,19 @@ change under us); `provisioning_workflow.py` is the state machine and a
 - **The API refuses legacy test mode** (`v2_api_not_supported_in_testmode`), so
   dev verification needs a Stripe **Sandbox** key, not the legacy test key.
 
-Friday only ever sees `/api/v1/company/provisioning/u/{owner}/…`; `remove` — the
+The CEO agent only ever sees `/api/v1/company/provisioning/u/{owner}/…`; `remove` — the
 one call that deprovisions — is reachable from the owner's typed-confirmation
 route and nowhere else, and teardown never reaches it (spec §3.6, proved by
 `tests/unit/services/test_wipe_never_deprovisions.py`).
 
 **The rail is OFF by default** — `STRIPE_PROVISIONING_ENABLED` (CDK env, default
 `false` in both envs) refuses `start()`/`on_approved()`, freezes `advance()`,
-empties Friday's catalog with `reason: provisioning_unavailable`, and hides the
+empties the CEO agent's catalog with `reason: provisioning_unavailable`, and hides the
 Connect doors + the Domain & Site panel. It stays off until Stripe ships
 delegated connected-account creation + KYC (isol8, Inc. is the Connect
 platform and cannot connect to itself, and `POST /v2/provisioning/*` 500s for
 us). Everything else a company-Stripe binding powers — the Money tabs, the
-revenue rollup, card status, Friday's "Stripe connected" awareness — is plain
+revenue rollup, card status, the CEO agent's "Stripe connected" awareness — is plain
 v1 and runs on the **API-key path**: the owner pastes a restricted key
 (`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/
 Balance/Account; test-mode keys bind too and the card says "Test mode" —
@@ -680,8 +684,7 @@ a key with exactly those six permissions for an owner to paste — see its READM
 
 | File | Purpose |
 |------|---------|
-| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw **signed-device** handshake (receive `connect.challenge` nonce → sign canonical payload → connect; `minProtocol: 4`), RPC proxy, event forwarding, **trial-only** idle scale-to-zero (`_grace_close`/`_maybe_stop_trial_container` — the general idle reaper was removed at the flat-fee cutover), usage recording inline. |
-| `frame_sender.py` | Per-connection ordered frame queue over the Management API; shapes delta/append chunks and full-text resyncs. |
+| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw **signed-device** handshake (receive `connect.challenge` nonce → sign canonical payload → connect; `minProtocol: 4`), RPC proxy, **trial-only** idle scale-to-zero (`_grace_close`/`_maybe_stop_trial_container` — the general idle reaper was removed at the flat-fee cutover), usage recording inline. It fans nothing out to browsers: transformed run frames are published as `room.run.frame` via `_publish_room_frame` → AppSync. The `_full_content` accumulator widens cumulative frames — OpenClaw clears its text buffer at every `message_start`, so without it a resyncing client's run bubble would show only the text after the last tool call. |
 | `operator_rpc.py` | `perform_signed_connect` + `gateway_rpc_oneshot` (one-shot RPCs outside the pool). |
 | `node_connection.py` | Per-user node-host connection for desktop browser-proxy / exec-approval flows. |
 
@@ -766,23 +769,27 @@ literals as fixtures) —
 Lora (prose) / mono for code only.
 
 **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the framework-neutral
-API client (`createApiClient`), the gateway WS connection machine
-(`useGatewayConnection` — backoff, keepalive pings, RPC correlation, routing),
-shared data hooks (`useAgents`, `useOnboardingStatus`, `useChatGPTOAuth`, …)
-and protocol types are consumed verbatim by web AND mobile, with platform
-specifics injected via a `PlatformAdapter`. No `next/*`, no react-native, no
-DOM globals in that package.
+API client (`createApiClient`), the dependency-free AppSync live-event client
+(`AppSyncEventsClient` + the `useLiveEvents` hook — it implements AWS's Event API
+wire protocol, owns the single socket/reconnect loop, and has no publish method),
+the messaging and runtime command clients (`createMessagingClient`,
+`createRuntimeClient`), shared data hooks (`useAgents`, `useOnboardingStatus`,
+`useChatGPTOAuth`, …) and protocol types are consumed verbatim by web AND mobile,
+with platform specifics injected via a `PlatformAdapter`. No `next/*`, no
+react-native, no DOM globals in that package.
 
 ### Pages (`src/app/`)
 
 `find apps/frontend/src/app -name page.tsx` for the current routes. The two
 that will mislead you otherwise:
 
-- **`/chat`** is the whole app. Desktop renders the **dockable workspace shell**
+- **`/chat`** is the whole app. Both branches mount `LiveEventsProvider` and
+  render the messaging workspace: desktop the **dockable workspace shell**
   (`components/workspace/` — chat, teams, control, file-viewer, and browser
-  panels); mobile renders `ChatLayout` via `MobileChatShell`. Teams and control
-  are in-shell panels, **not routes** — the legacy `/teams/*` URL tree was
-  removed and 404s. The **browser** panel is a singleton live view of the
+  panels, where the `chat` panel is `panels/ChatPanel.tsx` → `MessagingConversation`);
+  mobile `ChatLayout` via `MobileChatShell`, wrapping `MessagingWorkspace`. Teams
+  and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
+  was removed and 404s. The **browser** panel is a singleton live view of the
   container's Chrome (one Xvfb display per container); its WS deliberately
   targets `bv[-env].flickmeon.ai` (CloudFront) because the API Gateway HTTP API
   cannot pass WebSocket upgrades (`workspace/panels/browserViewUrl.ts`).
@@ -801,9 +808,15 @@ touching. The load-bearing structure:
   control | file-viewer | browser`); `workspaceController.ts` +
   `layoutStorage.ts` own layout state. Start here for anything "where does X
   render on desktop".
-- `components/chat/` — chat surface + onboarding (`AgentChatWindow`,
-  `MessageList`, `ChatInput`, `ProvisioningStepper`, provider-setup steps).
-  `ChatLayout.tsx` is the **mobile-only** shell.
+- `components/messaging/` — **the live chat surface**: `MessagingWorkspace`
+  (+ `MessagingConversation`) over `RoomPanel` / `RoomComposer` / `RoomDirectory`
+  / `RoomTimeline`, with `MessagingWorkspaceContext` holding selection and draft
+  state. Mounted from `workspace/panels/ChatPanel.tsx` on desktop and from
+  `MobileChatShell` on mobile. Start here for anything room-shaped.
+- `components/chat/` — what the browser-gateway chat island left behind:
+  `MessageList` (now a read-only transcript renderer, used by the Teams run
+  detail), `SessionList`/`ArchivedSessions`, `ProvisioningStepper` and the
+  provider-setup steps. `ChatLayout.tsx` is the **mobile-only** shell.
 - `components/teams/` — Teams Inbox (panels routed by `TeamsPanelRouter.tsx`
   via `PANEL_LOADERS`/`DETAIL_LOADERS`; shared types in `shared/types.ts`;
   ported-from-upstream-Paperclip modules carry a header saying so).
@@ -813,19 +826,25 @@ touching. The load-bearing structure:
   `getstarted`, `landing`, `legal`, `marketplace`, `notifications`,
   `onboarding`, `settings`, `support`, `ui`) — what their names say; `ui/` is
   shadcn/ui.
-- `hooks/` — `useGateway.tsx` (the WEB wrapper around `@lightbulb/shared`'s
-  `useGatewayConnection`: React context, idle park / presence wake, realtime
-  status invalidation, Tauri IPC), `useAgentChat.ts` (chat state machine),
-  `useGatewayRpc.ts` (SWR-wrapped RPC), `useTeamsApi.ts` (Teams BFF fetch),
-  `useProvisioningState.ts` (stepper/blocked-state machine), plus ~27 more.
+- `hooks/` — `useLiveEvents.tsx` (`LiveEventsProvider`, the WEB wrapper around
+  `@lightbulb/shared`'s `useLiveEvents`: owns the messaging + runtime clients,
+  room-subscription claims, SWR invalidation from `runtime.resource.invalidated`,
+  and — because it is the one always-mounted provider — the Tauri node bridge
+  (`node:status` listen + `send_auth_token` invoke)), `useRooms.ts` (room list,
+  message pages, optimistic/uncertain send, live run state),
+  `useRuntimeRpc.ts` (HTTP runtime RPC), `useTeamsApi.ts` (Teams BFF fetch),
+  `useProvisioningState.ts` (stepper/blocked-state machine), plus ~30 more.
 - `lib/api.ts` — `useApi()`: wraps `@lightbulb/shared`'s `createApiClient`
   (`get`, `post`, `put`, `patch`, `del`, `upload`, `uploadFiles`, `syncUser`).
-  New data-fetching should go through this (or `useGatewayRpc` for WS RPC),
+  New data-fetching should go through this (or `useRuntimeRpc` for runtime RPC),
   not hand-rolled `fetch`.
 
-The chat WS URL is derived from `NEXT_PUBLIC_API_URL` by an api→ws hostname
-rewrite (`wss://ws[-env].flickmeon.ai`; override with `NEXT_PUBLIC_WS_URL`), and
-the Clerk JWT rides a `?token=` query param.
+Clients do **not** derive a chat socket URL. `GET /messaging/live-config` returns
+this environment's AppSync HTTP + realtime endpoints, region, and the caller's
+opaque user-channel key; `useLiveEvents` subscribes with a Clerk token minted
+from the `lightbulb-appsync` JWT template. There is no `NEXT_PUBLIC_WS_URL` any
+more: `wss://ws[-env].flickmeon.ai` is reached only by the desktop host
+(`LIGHTBULB_WS_URL`), and `bv[-env]` stays the browser-view raw-WS door.
 
 ### Middleware
 
@@ -833,51 +852,117 @@ the Clerk JWT rides a `?token=` query param.
 
 ---
 
-## Agent Message Flow
+## Messaging
+
+The product is a multiplayer messaging workspace: humans and AI employees share
+rooms (`channel` / `dm` / `group-dm`). The browser/mobile chat WebSocket protocol
+that used to carry this was removed — see
+`docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md`
+for the frozen contracts (it is the authority; this section is orientation).
 
 ```
-Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
-  |                  |                  |                       |
-  | WS message       |                  |                       |
-  | {type:"agent_chat|  $default route  |                       |
-  |  agent_id,       |  ws-message λ →  |                       |
-  |  message}        |  POST /ws/message|                       |
-  |----------------->|--(ALB, internal->|                       |
-  |                  |   secret header) | Cloud Map discover    |
-  |                  |                  | -> user container IP  |
-  |                  |                  | WebSocket RPC pool    |
-  |                  |                  | chat.send {message}   |
-  |                  |                  |---------------------->|
-  |                  |                  |                       | Bedrock (via gate)
-  |                  |                  |  agent events         |
-  |                  |  Management API  |<----------------------|
-  | WS push frames   |  (HTTPS POST @connections)               |
-  |<-----------------|<-----------------|                       |
+Browser/mobile --HTTP (Clerk)--> routers/messaging.py --> lightbulb-{env}-messaging (DynamoDB)
+                                                                     |  DDB Stream (NEW_IMAGE)
+                          two INDEPENDENT consumers, neither blocking the other
+                                   |                                       |
+                       messaging-projector λ                   EventBridge Pipe (SK begins WORK#)
+                                   |                                       |
+                          AppSync Events                            openclaw-work.fifo
+                    /rooms/<roomId>/<deliveryKey>                          |
+                    /users/<opaqueUserKey>                    core/services/openclaw_work.py
+                                   |                                       |
+                  browser/mobile (subscribe-only)      POST /plugins/lightbulb-channel/inbound/<agentId>
+                                                        on the per-owner container (gateway auth)
+                                                                           |
+                                            native reply --> POST /api/v1/internal/messaging/
+                                                             agent-messages/<ownerId> (hook token)
 ```
 
-**Event transformation** (`connection_pool.py` — `_transform_agent_event` +
-the chat-state handling in `_handle_message`):
-- `stream: "assistant"` text → `{type: "chunk", content, append: true}` (delta frames; a full-text authoritative chunk is re-sent at `final`)
-- thinking deltas → `{type: "thinking"}`
-- `stream: "tool"` `phase: "start"` → `tool_start`; `"update"` → `tool_progress`; `"result"` → `tool_end`, or `tool_error` when `isError`
-- command output → `command_output`; plan/patch/item/acp activity → `agent_activity`
-- `chat` state `"final"` → authoritative full-text `chunk`, then `{type: "done"}`, then a synthesized `run_ended`
-- `chat` state `"error"` → `{type: "error", message, code}` (errorKind + budget-refusal reclassification)
-- `chat` state `"aborted"` → `{type: "error", message: "Agent run was cancelled"}`
+**Canonical store.** One DynamoDB table (`lightbulb-{env}-messaging`, created in
+`api-stack.ts`, NOT `database-stack.ts`) holds rooms, members, immutable messages,
+idempotency receipts, read cursors, per-agent delivery cursors, the private
+user-stream keys, and the `WORK#`/`LIVE#` outbox rows (those two expire via TTL;
+canonical data does not). `META.lastSeq` defines order — arrival time never does.
+A message write is one conditional transaction: bump `lastSeq`, put the `MSG`,
+put the `IDEMP` receipt, put one `WORK#MESSAGE` row per dispatch target.
+
+**Command path.** `routers/messaging.py` under `/api/v1/messaging/*`, all Clerk
+bearer tokens; `core/services/messaging.py` is the single policy seam over
+`messaging_repo`. The browser never supplies an owner id, author id, OpenClaw
+session key, container address, fanout list, or publish credential — the backend
+derives all of them. Retries are safe because the durable `IDEMP` row, not
+DynamoDB's short-lived transaction token, is the receipt. Public JSON is camelCase.
+
+**Live delivery.** `core/services/live_events.py` (backend, IAM SigV4) and the
+`messaging-projector` Lambda publish to AppSync Events on two channels:
+`/rooms/<roomId>/<deliveryKey>` for room members and `/users/<opaqueKey>` for
+exactly one signed-in human. Clients are **subscribe-only** (OIDC, Clerk JWT
+template `lightbulb-appsync`) and reconcile from HTTP: AppSync stores no history,
+can duplicate or drop, so a gap means `GET …/messages?afterSeq=`. Revocation is
+the load-bearing part: an `onSubscribe` decision cannot close an already-open
+subscription, so every human membership removal **rotates the room's
+`deliveryKey`** in the same transaction and writes durable `LIVE` notices
+(`room.subscription.rotated` to the rest, `room.access.removed` to the removed
+member). The old channel goes permanently silent. This is a security boundary.
+
+**Agent dispatch.** The stream fans out twice, independently: the projector for
+live UI, and an EventBridge Pipe filtering `WORK#` inserts into
+`openclaw-work.fifo`. The projector also fans mobile push out to Expo for every
+member it notified, and it sends that push **last** — a raising publish replays
+the whole stream record and Expo has no `eventId` dedupe, so an earlier send
+would banner every member twice. That push is also the one place **mute is
+enforced server-side**: mute is client-side on every other surface, so
+`member.muted` is checked there and nowhere else in the fanout.
+
+`core/services/openclaw_work.py` drains the work queue as a **wake
+signal only** — it re-reads canonical messages through `throughSeq`, rechecks
+membership, wakes the owner's container, and calls the baked `lightbulb-channel`
+plugin's gateway-authenticated private ingress once per targeted message, keyed
+by the canonical `messageId`. The FIFO `MessageGroupId` is per room+agent, so
+agents run concurrently while one agent's room stays serialized. Native replies
+come back over HTTP (`POST /api/v1/internal/messaging/agent-messages/{ownerId}`,
+hook token) through the same canonical writer humans use. Execution is
+at-least-once, not exactly-once.
+
+**Backend↔container transport is unchanged.** `core/gateway/connection_pool.py`
+still holds the persistent OpenClaw gateway WebSocket, subscribes per room
+session (`sessions.messages.subscribe`), and transforms native events into the
+run frames (`run_active` → `chunk` / `thinking` / `tool_*` → `done` →
+`run_ended`) — they now leave as ephemeral `room.run.frame` AppSync events
+instead of browser socket pushes.
+
+**Listen modes.** Every agent member carries `active` / `mentions` / `observe`
+(humans carry none). `select_dispatch_targets` is the one place that reads them:
+`observe` never runs, an `@mention` or **any DM** is a `user_request`, plain
+traffic wakes only `active` members as a `room_event`, and the source agent is
+always skipped. Only those targets get `WORK#` rows — everyone else just sees the
+message as history on their next turn. A fresh workspace is seeded with a
+`#general` channel holding the whole starter roster, CEO `active` and the
+specialists `mentions`, plus one welcome message from the CEO.
+
+**The rule that governs changes here: no second event bus.** SQS is the durable
+wakeup and nothing else; AppSync is the fanout; DynamoDB is the truth. No Kafka,
+Redis, per-tenant queue, room-commands queue, or room-fanout queue.
 
 ---
 
 ## WebSocket Architecture
 
-**Why WebSocket?** API Gateway HTTP API buffers SSE responses, breaking streaming. WebSocket API Gateway supports true real-time bidirectional communication.
+**No browser or mobile client opens `wss://ws[-env].flickmeon.ai` any more.** Human
+commands are HTTP and human delivery is AppSync (see "Messaging"). "Remove
+WebSockets" never meant every protocol that happens to use one — these remain,
+because events are not a substitute for them:
 
-**Current design (the old VPC Link V1 → NLB chain is GONE):**
-1. **Chat WS door:** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC.
-2. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected.
-3. Responses are pushed via the Management API (HTTPS POST to `@connections/{id}`), sequenced per-connection by `core/gateway/frame_sender.py`.
-4. Lambda Authorizer validates the Clerk JWT (`?token=` query param); DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → user.
+1. **Machine relay:** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for machine relays only** (its docstring still says "node/operator"; the code admits a third). Its three client kinds are Tauri node hosts (bidirectional `node.invoke`), the desktop local-session relay (`clientId=lightbulb-local-sessions`, enrollment-gated), and Paperclip operators (signed operator RPC).
+2. The `websocket-authorizer` Lambda accepts exactly two credential kinds — paired-device JWTs (EdDSA, `kind=device`) and Paperclip service tokens (HS256) — and **deliberately refuses Clerk browser sessions**. DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → owner; no `chat`/`native_human` rows exist.
+3. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected. Relay replies go out over the Management API (HTTPS POST to `@connections/{id}`).
+4. **Backend → container:** `core/gateway/connection_pool.py` holds OpenClaw's own native authenticated gateway socket. Unrelated to the door above, and unchanged.
 5. **Raw WS door:** the browser live-view panel needs an unbuffered WS the HTTP API can't carry, so `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener (path-capped to `/api/v1/browser-view/*`); the Clerk JWT rides the `Sec-WebSocket-Protocol` offer.
-6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`).
+6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`). (The old VPC Link V1 → NLB chain is GONE.)
+
+⚠️ AppSync has **no application disconnect callback**, and an open subscription is
+not proof that compute is needed — so container park/wake is driven by durable
+timestamps and the trial-idle sweep, never by UI connectivity.
 
 ---
 
@@ -1138,10 +1223,10 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, security groups. (No NLB — the old WS chain is gone.) |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Three tables live elsewhere: `ws-connections` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
+| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Four tables live elsewhere: `ws-connections` AND `messaging` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **NOT autoscaled** — `desiredCount: 1` in both envs, with no scalable target, and that is deliberate: per-owner container WebSockets, `_pending_rpcs`, `_active_runs` and several other maps live in-process, so a second instance would not simply share load (see #1196). Note rolling deploys run at `maxHealthyPercent: 200`, so N is transiently 2 on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
-| `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the Clerk-JWT Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. |
+| `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the machine-only Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. **Also the whole messaging plane** (it grew here, not in `database-stack.ts`): the `messaging` table + stream, the AppSync **Event API** with its `rooms`/`users` channel namespaces and OIDC-subscribe/IAM-publish split, the `messaging-projector` Lambda, and `openclaw-work.fifo` + the EventBridge Pipe that feeds it. |
 | `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
 | `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
@@ -1173,8 +1258,8 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 
 Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is `co.isol8.mobile` and is staying** (decided 2026-09-07 — see the Rebrand section; it is bound to App Store record 6788944100 and a rename strands the app). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
 
-- **Reuses the web protocol via `@lightbulb/shared`** — the same `useGatewayConnection` WS machine and `createApiClient`, with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.flickmeon.ai).
-- Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).
+- **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.flickmeon.ai).
+- Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]` (a room conversation over the messaging client, NOT a gateway socket), `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.
 - **Apple subscriptions:** no new StoreKit purchase/restore/link surface or SKU. Personal/no-workspace billing gates open `flickmeon.ai/onboarding` so the user creates or selects the billed workspace first; subscription purchase then uses the web app's sole `POST /billing/checkout` route. `expo-iap` remains only for `deepLinkToSubscriptions` so a hypothetical historical Apple subscriber can manage cancellation.

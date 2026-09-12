@@ -261,28 +261,19 @@ def manager(mock_settings, mock_ecs_client, mock_efs_client, mock_servicediscove
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("starter_agent_ids", "seeded_agent_ids", "uses_starter_seeder"),
-    [
-        ({"ceo": "agent-ceo", "finance": "agent-finance"}, None, True),
-        (None, ["legacy-friday", "legacy-atlas"], False),
-    ],
-    ids=["starter-row", "legacy-row"],
-)
-async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
+async def test_write_user_configs_seeds_role_contracts_from_authoritative_row(
     manager,
     mock_settings,
     monkeypatch,
     tmp_path,
-    starter_agent_ids,
-    seeded_agent_ids,
-    uses_starter_seeder,
 ):
-    """Starter rows get role contracts; legacy rows retain Friday and Atlas."""
+    """The starter ids on the owner row are what the role-contract seeder
+    is handed — the agents' live (possibly renamed) roster is not."""
     mock_settings.EFS_MOUNT_PATH = str(tmp_path)
     mock_settings.PAPERCLIP_INTERNAL_URL = "http://paperclip.test"
+    starter_agent_ids = {"ceo": "agent-ceo", "finance": "agent-finance"}
     agents = [{"id": "agent-ceo", "name": "Renamed"}, {"id": "agent-finance", "name": "Also renamed"}]
-    row = MagicMock(starter_agent_ids=starter_agent_ids, seeded_agent_ids=seeded_agent_ids)
+    row = MagicMock(starter_agent_ids=starter_agent_ids)
     repo = MagicMock(resolve_owner_row=AsyncMock(return_value=row))
     repo_factory = MagicMock(return_value=repo)
 
@@ -295,8 +286,6 @@ async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
     http = MagicMock(aclose=AsyncMock())
     workspace = MagicMock()
     starter_seeder = AsyncMock()
-    friday_seeder = AsyncMock()
-    atlas_seeder = AsyncMock()
     identity_seeder = AsyncMock()
 
     monkeypatch.setattr("httpx.AsyncClient", MagicMock(return_value=http))
@@ -318,9 +307,7 @@ async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
         "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)
     )
     monkeypatch.setattr("core.services.starter_roster.pre_stage_starter_roster", starter_seeder)
-    monkeypatch.setattr("core.services.friday_identity.pre_stage_friday_identity", friday_seeder)
     monkeypatch.setattr("core.services.friday_identity.pre_stage_paperclip_identities", identity_seeder)
-    monkeypatch.setattr("core.services.atlas_seed.pre_stage_atlas", atlas_seeder)
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr(manager, "_deployed_image_tag", AsyncMock(return_value=""))
     monkeypatch.setattr(manager, "ensure_device_identities", AsyncMock())
@@ -335,19 +322,12 @@ async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
     repo_factory.assert_called_once_with(table_name="paperclip-companies")
     repo.resolve_owner_row.assert_awaited_once_with("owner-1")
     identity_seeder.assert_awaited_once()
-    if uses_starter_seeder:
-        starter_seeder.assert_awaited_once_with(
-            owner_id="owner-1",
-            paperclip_agents=agents,
-            starter_agent_ids=starter_agent_ids,
-            workspace=workspace,
-        )
-        friday_seeder.assert_not_awaited()
-        atlas_seeder.assert_not_awaited()
-    else:
-        starter_seeder.assert_not_awaited()
-        friday_seeder.assert_awaited_once()
-        atlas_seeder.assert_awaited_once()
+    starter_seeder.assert_awaited_once_with(
+        owner_id="owner-1",
+        paperclip_agents=agents,
+        starter_agent_ids=starter_agent_ids,
+        workspace=workspace,
+    )
 
 
 def _make_container_dict(

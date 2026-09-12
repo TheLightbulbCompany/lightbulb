@@ -1,32 +1,24 @@
-"""Every seeded playbook must forbid printing the Paperclip key.
+"""The credential rule must forbid printing the Paperclip key.
 
-Three independent seed paths write agent playbooks — Friday's template, the
-Atlas seed, and the company-agent materializer — and each is woken by
-Paperclip with fork-side text that still says to load the key from a file
-(``claimed_api_key_path``). A path that omits the prohibition produces an
-agent that follows that instruction and prints a live key into its visible
-reasoning, which is the 2026-08-14 leak.
+Paperclip wakes an agent with fork-side text that still says to load the key
+from a file (``claimed_api_key_path``). A playbook that omits the prohibition
+produces an agent that follows that instruction and prints a live key into its
+visible reasoning, which is the 2026-08-14 leak. The company-agent materializer
+writes a model-authored body, so the rule cannot be left to the planner -- it
+appends it.
 
-Nothing structurally couples the three, so this test does.
+The starter-roster role contracts do NOT carry this rule and nothing appends to
+them, so there is no seeded playbook left to assert against here; see
+``core/services/paperclip_credential_rule``'s module docstring.
 """
 
 from unittest.mock import MagicMock
 
-from core.services import company_agent_materializer, friday_identity
+from core.services import company_agent_materializer
 from core.services.paperclip_credential_rule import (
     PAPERCLIP_CREDENTIAL_PROHIBITION,
     PAPERCLIP_CREDENTIAL_RULE,
 )
-
-
-def _personal_profile():
-    return {
-        "kind": "personal",
-        "owner_display": "Sam",
-        "first_name_or_fallback": "Sam",
-        "full_name": "Sam Rivers",
-        "email": "sam@example.com",
-    }
 
 
 def test_the_rule_itself_names_the_vars_but_forbids_printing_the_key():
@@ -37,31 +29,16 @@ def test_the_rule_itself_names_the_vars_but_forbids_printing_the_key():
     assert "PAPERCLIP_API_KEY" in PAPERCLIP_CREDENTIAL_RULE
     assert "$PAPERCLIP_API_URL" in PAPERCLIP_CREDENTIAL_RULE
     assert "Authorization: Bearer $" not in PAPERCLIP_CREDENTIAL_RULE
+    # A written-out `Authorization: Bearer $...` is the exact substring that
+    # triggers OpenClaw's transcript redaction (masked to `Bearer ***`, var name
+    # truncated), which the next turn copies verbatim and 401s forever. The rule
+    # must route through the helper script instead of ever spelling it out.
+    assert "paperclip-api.sh" in PAPERCLIP_CREDENTIAL_RULE
     # And must be told to ignore the stale fork-side wake instruction.
     assert "ignore" in PAPERCLIP_CREDENTIAL_RULE
     # It must never itself demonstrate reading the file.
     assert "jq -r .token" not in PAPERCLIP_CREDENTIAL_RULE
     assert "paperclip-claimed-api-key.json" not in PAPERCLIP_CREDENTIAL_RULE
-
-
-def test_fridays_playbook_carries_the_prohibition():
-    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
-    assert PAPERCLIP_CREDENTIAL_PROHIBITION in agents_md
-
-
-def test_atlas_playbook_carries_the_prohibition():
-    """Atlas's vendored AGENTS.md says nothing about credentials on its own —
-    the seed appends the rule, exactly as it appends the ACP section."""
-    from pathlib import Path
-
-    import core.services.atlas_seed as atlas_seed
-
-    vendored = (Path(atlas_seed.__file__).parent / "files" / "AGENTS.md").read_text(encoding="utf-8")
-    # Guard the premise: if the vendored file ever grows its own credential
-    # section, this test should be revisited rather than silently passing.
-    assert PAPERCLIP_CREDENTIAL_PROHIBITION not in vendored
-    seeded = vendored + atlas_seed._ACP_DELEGATION_SECTION + PAPERCLIP_CREDENTIAL_RULE
-    assert PAPERCLIP_CREDENTIAL_PROHIBITION in seeded
 
 
 async def test_company_agent_body_gets_the_prohibition_appended():
@@ -93,22 +70,3 @@ async def test_company_agent_body_gets_the_prohibition_appended():
     body = written["workspace-agent_x/AGENTS.md"]
     assert "Model-authored body" in body  # the planner's content survives
     assert PAPERCLIP_CREDENTIAL_PROHIBITION in body
-
-
-def test_no_seeded_playbook_hand_types_the_auth_header():
-    """A written-out `Authorization: Bearer $...` is the exact substring that
-    triggers OpenClaw's transcript redaction (masked to `Bearer ***`, with the
-    var name itself truncated), which the next turn copies verbatim and 401s
-    forever. Every seeded playbook must route through `paperclip-api.sh`
-    instead of ever spelling the header out."""
-    from pathlib import Path
-
-    import core.services.atlas_seed as atlas_seed
-
-    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
-    vendored = (Path(atlas_seed.__file__).parent / "files" / "AGENTS.md").read_text(encoding="utf-8")
-    atlas_seeded = vendored + atlas_seed._ACP_DELEGATION_SECTION + PAPERCLIP_CREDENTIAL_RULE
-
-    for playbook in (agents_md, atlas_seeded, PAPERCLIP_CREDENTIAL_RULE):
-        assert "Authorization: Bearer $" not in playbook
-        assert "paperclip-api.sh" in playbook

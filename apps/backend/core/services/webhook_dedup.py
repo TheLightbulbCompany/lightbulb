@@ -121,29 +121,6 @@ async def has_event(event_id: str) -> bool:
     return response.get("Item") is not None
 
 
-async def record_permanent_marker(event_id: str, *, source: str) -> None:
-    """Create a no-TTL terminal marker, idempotently.
-
-    This is for deny-state whose safety lifetime is not a provider retry window
-    (for example a deleted Clerk subject). The conditional put prevents an
-    accidental replay from rewriting marker metadata.
-    """
-    try:
-        await run_in_thread(
-            _table().put_item,
-            Item={
-                "event_id": event_id,
-                "source": source,
-                "state": "completed",
-                "recorded_at": int(time.time()),
-            },
-            ConditionExpression="attribute_not_exists(event_id)",
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
 async def _read_event(event_id: str) -> dict:
     return (await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)).get("Item", {})
 
@@ -731,28 +708,6 @@ async def complete_membership_lifecycle(owner_id: str, alias: str, claim_id: str
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         raise MembershipLifecycleSuperseded("membership lifecycle lease was lost") from exc
-
-
-async def get_membership_lifecycle(owner_id: str, alias: str) -> dict | None:
-    """Read the central membership authority with strong consistency."""
-    item = await _read_event(membership_lifecycle_key(owner_id, alias))
-    if not item:
-        return None
-    marker = {
-        "event_id": item.get("lifecycle_event_id"),
-        "sequence": item.get("sequence"),
-        "state": item.get("access_state"),
-    }
-    if not (
-        item.get("kind") == "human-membership"
-        and isinstance(marker["event_id"], str)
-        and marker["event_id"]
-        and isinstance(marker["sequence"], str)
-        and marker["sequence"]
-        and marker["state"] in {"allowed", "revoked"}
-    ):
-        raise RuntimeError("membership lifecycle state unavailable")
-    return marker
 
 
 async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int | None = None) -> WebhookDedupResult:

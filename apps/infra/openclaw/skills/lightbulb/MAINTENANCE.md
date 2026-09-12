@@ -89,7 +89,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Agent-started connect ... references/integrations.md
                               <- apps/backend/routers/connections.py (authorize_from_container — hook-token sibling of authorize;
-                                 ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP);
+                                 ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py);
                                  /app/skills/lightbulb/scripts/lightbulb-connect.sh (the mint door — never an inline header, see the redaction note)
   - Paperclip org model ..... references/company-and-plans.md
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,

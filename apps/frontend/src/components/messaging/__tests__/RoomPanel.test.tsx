@@ -83,10 +83,13 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
 
 it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
-    participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
+    participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "View members" }));
+  expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
 
 it("never offers renaming for a direct message", async () => {

@@ -23,7 +23,9 @@ async def test_worker_exits_cleanly_on_stop_without_cancel(monkeypatch):
     monkeypatch.setattr(us, "_rollup_pass", AsyncMock(), raising=False)
     monkeypatch.setattr(us.update_repo, "get_due_scheduled", AsyncMock(return_value=[]))
 
-    us.reset_worker_stop()
+    # Clear any Event left bound to a previous test's loop; run_scheduled_worker
+    # creates a fresh, loop-bound one.
+    us._worker_stop = None
     task = asyncio.create_task(us.run_scheduled_worker())
     await asyncio.sleep(0.12)
     us.request_worker_stop()

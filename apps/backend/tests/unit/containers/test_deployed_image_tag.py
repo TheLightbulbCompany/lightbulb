@@ -102,8 +102,6 @@ def _write_user_configs_patches(manager, write_oc_mock):
         ),
         patch("core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner", AsyncMock(return_value=[])),
         patch("core.containers.ecs_manager.write_openclaw_config", write_oc_mock),
-        patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
-        patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
         patch("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None)),
         patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)),
         patch("core.containers.ecs_manager._provision_mcp_servers", AsyncMock(return_value={})),

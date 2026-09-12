@@ -13,7 +13,6 @@ from core.services.agent_routine_provisioning import (
     create_agent_routines,
     create_enabled_schedule_routine,
 )
-from core.services.friday_identity import _render_templates
 
 
 def test_dormant_trigger_body_is_always_disabled():
@@ -182,26 +181,13 @@ async def test_duplicate_spec_in_same_batch_creates_once():
 # ---------------------------------------------------------------------------
 
 
-def test_fresh_friday_identity_and_routine_share_company_control_contract():
-    """The two prompts land in the same run context. Pin their shared outcome
-    so one cannot regress to arbitrary specialist execution independently."""
-    agents_md = _render_templates(
-        {
-            "kind": "personal",
-            "owner_display": "Sam",
-            "first_name_or_fallback": "Sam",
-            "full_name": "Sam Rivers",
-            "email": "sam@example.com",
-        }
-    )["AGENTS.md"]
-
+def test_nightly_routine_description_keeps_the_company_control_contract():
+    """The nightly wake authorizes ONE company-control action, never arbitrary
+    specialist execution — pin that so the prompt cannot regress."""
     assert "Advance ONE actionable constraint" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
     assert "Never self-assign or execute specialist work" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
     # V3: the wake ALWAYS emails the owner instead of the old silent no-op marker.
     assert "ALWAYS end by emailing the owner" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
-    assert "A constraint is actionable" in agents_md
-    assert "delegation is the action" in agents_md
-    assert "ALWAYS email the owner" in agents_md
 
     contradictory_phrases = (
         "review the company backlog and self-assign ONE task",
@@ -210,7 +196,6 @@ def test_fresh_friday_identity_and_routine_share_company_control_contract():
     )
     for phrase in contradictory_phrases:
         assert phrase not in NIGHTLY_CEO_ROUTINE_DESCRIPTION
-        assert phrase not in agents_md
 
 
 def test_enabled_trigger_body_is_enabled():

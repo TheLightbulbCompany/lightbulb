@@ -15,14 +15,12 @@ import re
 import secrets
 import socket
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from core import openclaw_version
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
@@ -104,16 +102,6 @@ SINGLE_WRITER_DEPLOYMENT_CONFIG = {
     "minimumHealthyPercent": 0,
     "maximumPercent": 100,
 }
-
-
-@dataclass(frozen=True)
-class LiveOpenClawRuntimeEvidence:
-    """Identity-bound address of one observed running OpenClaw task."""
-
-    task_arn: str
-    task_definition_arn: str
-    private_ip: str
-    gateway_build_id: str
 
 
 def _tagged_image_tag(image: object) -> str:
@@ -2604,93 +2592,6 @@ class EcsManager:
         except Exception:
             return False
 
-    async def live_runtime_evidence(self, owner_id: str) -> LiveOpenClawRuntimeEvidence | None:
-        """Prove the owner's current running task matches the immutable pin.
-
-        Every value is read fresh. The task ARN from the strongly consistent
-        owner row anchors one ECS task snapshot; its service, task definition,
-        configured image tag, observed runtime digest, and ENI address must all
-        agree. Any missing or conflicting observation fails closed.
-
-        This is identity evidence only: it neither mutates container state nor
-        qualifies or advertises native-room behavior.
-        """
-        try:
-            pinned = openclaw_version.pinned_release_identity()
-            if pinned is None:
-                return None
-
-            container = await container_repo.get_by_owner_id(owner_id, consistent=True)
-            if not container or container.get("status") != "running":
-                return None
-
-            service_name = container.get("service_name")
-            task_arn = container.get("task_arn")
-            task_definition_arn = container.get("task_definition_arn")
-            if not all(isinstance(value, str) and value for value in (service_name, task_arn, task_definition_arn)):
-                return None
-
-            tasks_response = await asyncio.to_thread(
-                self._ecs.describe_tasks,
-                cluster=self._cluster,
-                tasks=[task_arn],
-            )
-            tasks = tasks_response.get("tasks") or []
-            if tasks_response.get("failures") or len(tasks) != 1:
-                return None
-            task = tasks[0]
-            if (
-                task.get("taskArn") != task_arn
-                or task.get("taskDefinitionArn") != task_definition_arn
-                or task.get("lastStatus") != "RUNNING"
-                or task.get("desiredStatus") != "RUNNING"
-                or task.get("group") != f"service:{service_name}"
-            ):
-                return None
-
-            task_definition_response = await asyncio.to_thread(
-                self._ecs.describe_task_definition,
-                taskDefinition=task_definition_arn,
-            )
-            task_definition = task_definition_response.get("taskDefinition") or {}
-            if task_definition.get("taskDefinitionArn") != task_definition_arn:
-                return None
-
-            definitions = [
-                definition
-                for definition in task_definition.get("containerDefinitions") or []
-                if definition.get("name") == "openclaw"
-            ]
-            running_containers = [
-                running for running in task.get("containers") or [] if running.get("name") == "openclaw"
-            ]
-            if len(definitions) != 1 or len(running_containers) != 1:
-                return None
-
-            configured_image = definitions[0].get("image")
-            running = running_containers[0]
-            if (
-                _tagged_image_tag(configured_image) != pinned.extended_tag
-                or running.get("lastStatus") != "RUNNING"
-                or running.get("image") != configured_image
-                or running.get("imageDigest") != pinned.runtime_manifest_digest
-            ):
-                return None
-
-            private_ip = _task_private_ip(task)
-            if not private_ip:
-                return None
-
-            return LiveOpenClawRuntimeEvidence(
-                task_arn=task_arn,
-                task_definition_arn=task_definition_arn,
-                private_ip=private_ip,
-                gateway_build_id=pinned.gateway_build_id,
-            )
-        except Exception:
-            logger.warning("Could not prove live OpenClaw runtime identity for owner %s", owner_id, exc_info=True)
-            return None
-
     async def resolve_running_container(self, user_id: str) -> tuple[dict | None, str | None]:
         """Look up a user's container and discover its task IP.
 
@@ -3154,11 +3055,9 @@ class EcsManager:
         # Give the container a base URL to curl the public platform-info catalog
         # ($ISOL8_API_URL/api/v1/platform-info). The lightbulb skill reads the live
         # connectable integrations/channels from there instead of a stale baked
-        # list. Reuse atlas_seed._api_base_url so the per-env host convention has
-        # exactly one definition. Public route -> no auth, no owner_id.
-        from core.services import atlas_seed
-
-        environment_for_task.append({"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url()})
+        # list. PUBLIC_API_BASE is the public origin of THIS API, wired by CDK per
+        # environment. Public route -> no auth, no owner_id.
+        environment_for_task.append({"name": "ISOL8_API_URL", "value": settings.PUBLIC_API_BASE.rstrip("/")})
         # Owner id for the BAKED marketplace plugin. Unlike Atlas's per-owner
         # seed files (which substitute {{ISOL8_BRIDGE_URL}} at stage time), a
         # baked plugin is byte-identical in every container and cannot carry
@@ -4290,7 +4189,6 @@ class EcsManager:
         paperclip_agent_keys: dict[str, str] = {}
         paperclip_company_id: str | None = None
         starter_agent_ids: dict[str, str] = {}
-        legacy_seeded_agent_ids: list[str] = []
         try:
             repo = PaperclipRepo(table_name="paperclip-companies")
             admin_client = PaperclipAdminClient(http_client=http)
@@ -4302,7 +4200,6 @@ class EcsManager:
             owner_row = await repo.resolve_owner_row(owner_id)
             if owner_row is not None:
                 starter_agent_ids = dict(owner_row.starter_agent_ids or {})
-                legacy_seeded_agent_ids = list(owner_row.seeded_agent_ids or [])
             # Mint (or read) a per-agent Paperclip API key for EACH agent so
             # actions in Paperclip's audit log attribute to the acting agent,
             # not to Friday or the global admin service account. Self-healing:
@@ -4408,13 +4305,10 @@ class EcsManager:
             deployed_tag=deployed_tag,
         )
 
-        # Seed the workspace role contract selected by authoritative row state.
-        # New starter rows are UUID-keyed; legacy rows retain Friday/Atlas.
+        # Seed the workspace role contract for each starter agent the
+        # authoritative row names.
         from core.services.starter_roster import pre_stage_starter_roster
-        from core.services.friday_identity import (
-            pre_stage_friday_identity,
-            pre_stage_paperclip_identities,
-        )
+        from core.services.friday_identity import pre_stage_paperclip_identities
 
         if starter_agent_ids:
             try:
@@ -4427,20 +4321,6 @@ class EcsManager:
             except Exception as exc:  # noqa: BLE001 — best-effort.
                 logger.warning(
                     "write_user_configs: pre_stage_starter_roster failed for owner=%s: %s",
-                    owner_id,
-                    exc,
-                )
-        elif legacy_seeded_agent_ids:
-            try:
-                await pre_stage_friday_identity(
-                    owner_id=owner_id,
-                    paperclip_agents=paperclip_agents,
-                    workspace=get_workspace(),
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort.
-                put_metric("friday_identity.seed.error")
-                logger.warning(
-                    "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
                     owner_id,
                     exc,
                 )
@@ -4466,29 +4346,6 @@ class EcsManager:
                 owner_id,
                 exc,
             )
-
-        # Seed Atlas's recruiter workspace (files + skill bundles) on EFS,
-        # mirroring Friday. Best-effort — an Atlas failure MUST NOT block
-        # provision; Atlas boots with an empty workspace if this fails.
-        from core.services.atlas_seed import pre_stage_atlas
-
-        if legacy_seeded_agent_ids:
-            try:
-                await pre_stage_atlas(
-                    owner_id=owner_id,
-                    paperclip_agents=paperclip_agents,
-                    workspace=get_workspace(),
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort.
-                # Distinct from the seeder's per-file `atlas_seed.error`: this fires
-                # only on a catastrophic failure (e.g. import error) where the seeder
-                # never ran, vs a single bad file the seeder logged and skipped.
-                put_metric("atlas_seed.invoke_error")
-                logger.warning(
-                    "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
-                    owner_id,
-                    exc,
-                )
 
         # Stage the container-global credentials/oauth.json after the config
         # write, so it's present for any reprovision / config-rewrite path that

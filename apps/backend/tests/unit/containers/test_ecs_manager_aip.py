@@ -591,21 +591,16 @@ class TestBedrockGateTokenProvision:
         single URL builder — a refactor of provision_user_container must not
         silently drop it.
 
-        The builder reads ``settings.PUBLIC_API_BASE`` (wired by CDK per env),
-        NOT the env name, so this pins that setting the way CDK does. Note the
-        ``mock_settings`` fixture patches ``ecs_manager.settings`` only; the
-        builder lives in ``atlas_seed`` and holds its own settings reference,
-        which is why it needs its own patch here."""
+        The value reads ``settings.PUBLIC_API_BASE`` (wired by CDK per env),
+        NOT the env name, so this pins that setting the way CDK does — and a
+        trailing slash is stripped, so the skill's
+        ``$ISOL8_API_URL/api/v1/platform-info`` never doubles up."""
         self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr(
             "core.repositories.container_repo.get_by_owner_id",
             AsyncMock(return_value={"owner_id": "user_x"}),
         )
-        monkeypatch.setattr(
-            "core.services.atlas_seed.settings.PUBLIC_API_BASE",
-            "https://api-dev.flickmeon.ai",
-            raising=False,
-        )
+        mock_settings.PUBLIC_API_BASE = "https://api-dev.flickmeon.ai/"
 
         await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
 

@@ -291,8 +291,7 @@ def _copy_tree(src: Path, dst: Path) -> None:
 def _merge_user_memory(content: str, user_md: Path) -> None:
     """Replace-or-append the marker-fenced block in ``USER.md``.
 
-    USER.md is a platform-managed persona file (seeded write-if-missing by
-    friday_identity); heal migrations anchor to specific seed lines, so a
+    USER.md is a platform-managed persona file (write-if-missing), so a
     marker-fenced block survives reprovision. Keep the markers exactly as-is.
     """
     if content and not content.endswith("\n"):

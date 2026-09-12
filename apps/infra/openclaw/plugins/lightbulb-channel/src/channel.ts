@@ -333,6 +333,15 @@ export type LightbulbRoomIngress = {
     listenMode?: "active" | "mentions" | "observe";
   }>;
   recentHistory: CanonicalRoomMessage[];
+  /** The async turn contract (spec §4). */
+  run: RunContract;
+};
+
+export type RunContract = {
+  runId: string;
+  workspaceId: string;
+  frameChannel: string;
+  frameEndpoint: string;
 };
 
 class Invalid extends Error {}
@@ -457,7 +466,7 @@ export function parseIngress(
   try {
     const r = obj(value, "body", [
       "version", "eventId", "targetAgentId", "eventKind", "room", "sender", "message",
-      "mentions", "participants", "recentHistory",
+      "mentions", "participants", "recentHistory", "run",
     ]);
     if (r.version !== 1) throw new Invalid("body.version: expected 1");
     const roomRaw = obj(r.room, "body.room", ["id", "name", "kind", "revision"]);
@@ -471,6 +480,17 @@ export function parseIngress(
       kind: oneOf(roomRaw.kind, "body.room.kind", ["channel", "dm", "group-dm"]),
       revision: int(roomRaw.revision, "body.room.revision"),
     } as const;
+    const runRaw = obj(r.run, "body.run", ["runId", "workspaceId", "frameChannel", "frameEndpoint"]);
+    const runId = uuid(runRaw.runId, "body.run.runId");
+    const workspaceId = uuid(runRaw.workspaceId, "body.run.workspaceId");
+    const frameChannel = str(runRaw.frameChannel, "body.run.frameChannel");
+    const framePrefix = `/ws/${workspaceId}/rooms/${room.id}/`;
+    if (!frameChannel.startsWith(framePrefix) || !UUID_RE.test(frameChannel.slice(framePrefix.length))) {
+      throw new Invalid("body.run.frameChannel: must be /ws/{workspaceId}/rooms/{room.id}/{deliveryKey}");
+    }
+    const frameEndpoint = str(runRaw.frameEndpoint, "body.run.frameEndpoint");
+    if (!frameEndpoint.startsWith("https://")) throw new Invalid("body.run.frameEndpoint: expected https URL");
+    const run: RunContract = { runId, workspaceId, frameChannel, frameEndpoint };
     const sender = {
       kind: oneOf(senderRaw.kind, "body.sender.kind", ["human", "agent", "system"]),
       id: nonEmpty(senderRaw.id, "body.sender.id"),
@@ -547,6 +567,7 @@ export function parseIngress(
         mentions,
         participants,
         recentHistory,
+        run,
       },
     };
   } catch (error) {
@@ -625,7 +646,7 @@ export class IngressRejected extends Error {
   }
 }
 
-type AmbientGateOutcome = "dispatched" | "ignored" | "gate_error";
+export type AmbientGateOutcome = "dispatched" | "ignored" | "gate_error";
 
 function boundedText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim()
@@ -707,9 +728,18 @@ function json(res: ServerResponse, status: number, body: Record<string, unknown>
   return true;
 }
 
-export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomIngress, invocation?: string): Promise<AmbientGateOutcome> {
-  const { sdk, cfg, accountId, channelRuntime } = deps;
-  const { room, sender, message, eventKind } = event;
+export type AdmittedRoomEvent = {
+  route: ReturnType<typeof resolveChannelInboundRouteEnvelope>["route"];
+  buildEnvelope: ReturnType<typeof resolveChannelInboundRouteEnvelope>["buildEnvelope"];
+  ingress: Awaited<ReturnType<typeof resolveStableChannelMessageIngress>>;
+  wasMentioned: boolean;
+  commandAuthorized: boolean;
+};
+
+/** Route + structural admission. Throws IngressRejected(409|500); never runs a model. */
+export async function admitRoomEvent(deps: InboundDeps, event: LightbulbRoomIngress): Promise<AdmittedRoomEvent> {
+  const { sdk, cfg, accountId } = deps;
+  const { room, sender, eventKind } = event;
 
   const { route, buildEnvelope } = sdk.resolveChannelInboundRouteEnvelope({
     cfg,
@@ -752,6 +782,19 @@ export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomI
       admission: ingress.ingress.admission,
     });
   }
+  return { route, buildEnvelope, ingress, wasMentioned, commandAuthorized };
+}
+
+/** Ambient gate + context + native dispatch. Resolves when the whole turn is over. */
+export async function runRoomTurn(
+  deps: InboundDeps,
+  event: LightbulbRoomIngress,
+  admitted: AdmittedRoomEvent,
+  invocation?: string,
+): Promise<AmbientGateOutcome> {
+  const { sdk, cfg, accountId, channelRuntime } = deps;
+  const { room, sender, message, eventKind } = event;
+  const { route, buildEnvelope, ingress, wasMentioned, commandAuthorized } = admitted;
 
   if (eventKind === "room_event") {
     const gateOutcome = await gateAmbientTurn(deps, event);
@@ -930,7 +973,7 @@ export function createInboundHandler(deps: InboundDeps) {
         effect: "dispatch",
         run: async () => {
           try {
-            return await dispatchRoomEvent(deps, event, invocation);
+            return await runRoomTurn(deps, event, await admitRoomEvent(deps, event), invocation);
           } catch (error) {
             if (error instanceof IngressRejected && error.status === 409) return "not_admitted";
             throw error;

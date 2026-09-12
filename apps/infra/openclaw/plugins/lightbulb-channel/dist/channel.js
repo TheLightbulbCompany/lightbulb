@@ -327,7 +327,7 @@ export function parseIngress(value) {
     try {
         const r = obj(value, "body", [
             "version", "eventId", "targetAgentId", "eventKind", "room", "sender", "message",
-            "mentions", "participants", "recentHistory",
+            "mentions", "participants", "recentHistory", "run",
         ]);
         if (r.version !== 1)
             throw new Invalid("body.version: expected 1");
@@ -342,6 +342,18 @@ export function parseIngress(value) {
             kind: oneOf(roomRaw.kind, "body.room.kind", ["channel", "dm", "group-dm"]),
             revision: int(roomRaw.revision, "body.room.revision"),
         };
+        const runRaw = obj(r.run, "body.run", ["runId", "workspaceId", "frameChannel", "frameEndpoint"]);
+        const runId = uuid(runRaw.runId, "body.run.runId");
+        const workspaceId = uuid(runRaw.workspaceId, "body.run.workspaceId");
+        const frameChannel = str(runRaw.frameChannel, "body.run.frameChannel");
+        const framePrefix = `/ws/${workspaceId}/rooms/${room.id}/`;
+        if (!frameChannel.startsWith(framePrefix) || !UUID_RE.test(frameChannel.slice(framePrefix.length))) {
+            throw new Invalid("body.run.frameChannel: must be /ws/{workspaceId}/rooms/{room.id}/{deliveryKey}");
+        }
+        const frameEndpoint = str(runRaw.frameEndpoint, "body.run.frameEndpoint");
+        if (!frameEndpoint.startsWith("https://"))
+            throw new Invalid("body.run.frameEndpoint: expected https URL");
+        const run = { runId, workspaceId, frameChannel, frameEndpoint };
         const sender = {
             kind: oneOf(senderRaw.kind, "body.sender.kind", ["human", "agent", "system"]),
             id: nonEmpty(senderRaw.id, "body.sender.id"),
@@ -409,6 +421,7 @@ export function parseIngress(value) {
                 mentions,
                 participants,
                 recentHistory,
+                run,
             },
         };
     }
@@ -515,9 +528,10 @@ function json(res, status, body) {
     res.end(JSON.stringify(body));
     return true;
 }
-export async function dispatchRoomEvent(deps, event, invocation) {
-    const { sdk, cfg, accountId, channelRuntime } = deps;
-    const { room, sender, message, eventKind } = event;
+/** Route + structural admission. Throws IngressRejected(409|500); never runs a model. */
+export async function admitRoomEvent(deps, event) {
+    const { sdk, cfg, accountId } = deps;
+    const { room, sender, eventKind } = event;
     const { route, buildEnvelope } = sdk.resolveChannelInboundRouteEnvelope({
         cfg,
         channel: CHANNEL_ID,
@@ -558,6 +572,13 @@ export async function dispatchRoomEvent(deps, event, invocation) {
             admission: ingress.ingress.admission,
         });
     }
+    return { route, buildEnvelope, ingress, wasMentioned, commandAuthorized };
+}
+/** Ambient gate + context + native dispatch. Resolves when the whole turn is over. */
+export async function runRoomTurn(deps, event, admitted, invocation) {
+    const { sdk, cfg, accountId, channelRuntime } = deps;
+    const { room, sender, message, eventKind } = event;
+    const { route, buildEnvelope, ingress, wasMentioned, commandAuthorized } = admitted;
     if (eventKind === "room_event") {
         const gateOutcome = await gateAmbientTurn(deps, event);
         if (gateOutcome !== "dispatched")
@@ -730,7 +751,7 @@ export function createInboundHandler(deps) {
                 effect: "dispatch",
                 run: async () => {
                     try {
-                        return await dispatchRoomEvent(deps, event, invocation);
+                        return await runRoomTurn(deps, event, await admitRoomEvent(deps, event), invocation);
                     }
                     catch (error) {
                         if (error instanceof IngressRejected && error.status === 409)

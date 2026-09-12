@@ -1,5 +1,4 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import ts from "typescript";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,16 +18,17 @@ import {
   MAX_TEXT_BYTES,
   ROUTE_PREFIX,
   UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS,
+  admitRoomEvent,
   buildOutboundBody,
   createInboundHandler,
   createOutbound,
-  dispatchRoomEvent,
   listAccountIds,
   normalizeTarget,
   parseIngress,
   resolveAccount,
   resolveEnv,
   resolveOutboundEventId,
+  runRoomTurn,
   sessionKeyFor,
   startGatewayAccount,
   toHistoryEntries,
@@ -53,22 +53,29 @@ const HISTORY_ATTACHMENT = "77777777-7777-4777-8777-777777777777";
 const WEBP_ATTACHMENT = "88888888-8888-4888-8888-888888888888";
 const GIF_ATTACHMENT = "99999999-9999-4999-8999-999999999999";
 const CREATED_AT = "2026-09-10T12:34:56.000Z";
+const WORKSPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const RUN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const DELIVERY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const RUN = {
+  runId: RUN_ID,
+  workspaceId: WORKSPACE,
+  frameChannel: `/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY}`,
+  frameEndpoint: "https://abc123.appsync-api.us-east-1.amazonaws.com/event",
+};
 const ENV = {
   ISOL8_API_URL: "https://api.flickmeon.ai/",
   ISOL8_OWNER_ID: "owner_123",
   OPENCLAW_HOOK_TOKEN: "hook-token",
 };
 
-it("keeps the actual pre-adapter strict parser compatible with new backend canonical JSON", async () => {
-  const previous = await readFile(new URL("./fixtures/legacy-ingress-a45e6de.ts.fixture", import.meta.url), "utf8");
-  const compiled = ts.transpileModule(previous, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-  const old: Record<string, any> = {};
-  new Function("exports", compiled)(old);
-  const canonical = ingress();
-  expect(old.parseIngress(canonical).ok).toBe(true);
-  expect(old.parseIngress({ ...canonical, invocation: { grant: "unsupported" } }).ok).toBe(false);
-  expect(parseIngress(canonical)).toEqual(old.parseIngress(canonical));
-});
+/** One-line replacement for the retired `dispatchRoomEvent`: admit, then run the turn. */
+async function dispatchTurn(
+  deps: Parameters<typeof admitRoomEvent>[0],
+  event: LightbulbRoomIngress,
+  invocation?: string,
+) {
+  return runRoomTurn(deps, event, await admitRoomEvent(deps, event), invocation);
+}
 
 it("carries invocation sentinel only in the actual SDK runtime binding, never prompt fields or another ingress", async () => {
   const now = Math.floor(Date.now() / 1000);
@@ -80,13 +87,13 @@ it("carries invocation sentinel only in the actual SDK runtime binding, never pr
   expect(parseIngress({ ...event, invocation: { grant: token } }).ok).toBe(false);
   const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
   const deps = { sdk: inboundSdk({ buildChannelInboundEventContext }), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV };
-  await dispatchRoomEvent(deps, event, token);
+  await dispatchTurn(deps, event, token);
   const first = dispatch.mock.calls[0][0].ctxPayload;
   expect(first.GatewayRunToolBindings.lightbulbLocalSessions.grant).toBe(token);
   expect(first.NativeChannelId).toBe(ROOM);
   const { GatewayRunToolBindings: _private, ...publicContext } = first;
   expect(JSON.stringify(publicContext)).not.toContain(token);
-  await dispatchRoomEvent(deps, ingress());
+  await dispatchTurn(deps, ingress());
   expect(dispatch.mock.calls[1][0].ctxPayload.GatewayRunToolBindings).toBeUndefined();
   expect(redactSensitiveText(`X-Lightbulb-Local-Session-Token: ${token}`)).not.toContain(token);
 
@@ -212,6 +219,7 @@ function ingress(overrides: Record<string, unknown> = {}): LightbulbRoomIngress 
         mentions: [],
       }),
     ],
+    run: RUN,
     ...overrides,
   } as LightbulbRoomIngress;
 }
@@ -763,6 +771,17 @@ describe("strict LightbulbRoomIngress", () => {
     const attachment = { id: ATTACHMENT, fileName: "launch.png", contentType: "image/png", size: 1 };
     expect(parseIngress(ingress({ message: canonicalMessage({ attachments: Array(5).fill(attachment) }) })).ok).toBe(false);
   });
+
+  it("requires a whole run contract consistent with the room", () => {
+    const parsed = parseIngress(ingress());
+    expect(parsed.ok && parsed.value.run).toEqual(RUN);
+    const { run: _run, ...withoutRun } = ingress();
+    expect(parseIngress(withoutRun).ok).toBe(false);
+    expect(parseIngress(ingress({ run: { ...RUN, frameChannel: `/ws/${WORKSPACE}/rooms/${WORKSPACE}/${DELIVERY}` } })).ok).toBe(false);
+    expect(parseIngress(ingress({ run: { ...RUN, frameEndpoint: "http://insecure/event" } })).ok).toBe(false);
+    expect(parseIngress(ingress({ run: { runId: RUN_ID } })).ok).toBe(false);
+    expect(parseIngress(ingress({ run: { ...RUN, extra: 1 } })).ok).toBe(false);
+  });
 });
 
 describe("native inbound context and delivery", () => {
@@ -784,7 +803,7 @@ describe("native inbound context and delivery", () => {
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
     const message = canonicalMessage({ mentions: [], text: "Lunch arrived in the kitchen." });
 
-    const outcome = await dispatchRoomEvent(
+    const outcome = await dispatchTurn(
       { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress({ eventKind: "room_event", message, mentions: [] }),
     );
@@ -820,7 +839,7 @@ describe("native inbound context and delivery", () => {
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
     const message = canonicalMessage({ mentions: [], text: "Ambient update." });
 
-    const outcome = await dispatchRoomEvent(
+    const outcome = await dispatchTurn(
       { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress({ eventKind: "room_event", message, mentions: [] }),
     );
@@ -836,7 +855,7 @@ describe("native inbound context and delivery", () => {
     const cfg = config();
     delete cfg.agents.defaults.utilityModel;
 
-    const outcome = await dispatchRoomEvent(
+    const outcome = await dispatchTurn(
       { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress({ eventKind: "room_event", message: canonicalMessage({ mentions: [] }), mentions: [] }),
     );
@@ -853,7 +872,7 @@ describe("native inbound context and delivery", () => {
     const cfg = config();
     cfg.agents.entries[FRIDAY].utilityModel = "";
 
-    const outcome = await dispatchRoomEvent(
+    const outcome = await dispatchTurn(
       { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress({ eventKind: "room_event", message: canonicalMessage({ mentions: [] }), mentions: [] }),
     );
@@ -881,7 +900,7 @@ describe("native inbound context and delivery", () => {
       })],
     });
 
-    await dispatchRoomEvent(
+    await dispatchTurn(
       { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
       event,
     );
@@ -902,7 +921,7 @@ describe("native inbound context and delivery", () => {
   it("passes explicit open admission, event kind, mentions, and structured context", async () => {
     const sdk = inboundSdk();
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
-    await dispatchRoomEvent(
+    await dispatchTurn(
       { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress(),
     );
@@ -955,7 +974,7 @@ describe("native inbound context and delivery", () => {
       message: peerMessage,
       mentions: [],
     });
-    await dispatchRoomEvent(
+    await dispatchTurn(
       { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       event,
     );
@@ -984,7 +1003,7 @@ describe("native inbound context and delivery", () => {
       author: { kind: "agent", id: FRIDAY, displayName: "Friday" },
       mentions: [],
     });
-    await dispatchRoomEvent(
+    await dispatchTurn(
       { sdk: inboundSdk(), cfg: config(), accountId: GAUGE, channelRuntime: runtime(reverseDispatch), env: () => ENV },
       ingress({ targetAgentId: GAUGE, sender: reverseMessage.author, message: reverseMessage, mentions: [] }),
     );
@@ -1012,7 +1031,7 @@ describe("native inbound context and delivery", () => {
       );
       return { admission: { kind: "dispatch" }, dispatched: true };
     });
-    await dispatchRoomEvent(
+    await dispatchTurn(
       { sdk: inboundSdk(), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress(),
     );
@@ -1034,7 +1053,7 @@ describe("native inbound context and delivery", () => {
       });
       return { admission: { kind: "dispatch" }, dispatched: true };
     });
-    await dispatchRoomEvent(
+    await dispatchTurn(
       { sdk: inboundSdk(), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
       ingress({ eventKind: "room_event" }),
     );
@@ -1050,7 +1069,7 @@ describe("native inbound context and delivery", () => {
       })) as any,
     });
     await expect(
-      dispatchRoomEvent(
+      dispatchTurn(
         { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
         ingress(),
       ),
@@ -1065,7 +1084,7 @@ describe("native inbound context and delivery", () => {
       })) as any,
     });
     await expect(
-      dispatchRoomEvent(
+      dispatchTurn(
         { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
         ingress(),
       ),

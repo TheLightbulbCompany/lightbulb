@@ -147,26 +147,36 @@ async def test_message_edits_keep_identity_work_and_receipts_and_delete_to_tombs
 
 
 @pytest.mark.asyncio
-async def test_message_edit_author_tenant_membership_and_concurrent_revision_fences(table):
+async def test_message_edit_author_tenant_membership_and_concurrent_revision_fences(table, monkeypatch):
     room_id, _ = await _room([_member("human", USER_A, "owner"), _member("human", USER_B, "admin")])
     await _post(room_id)
     for tenant, user in [("org_other", USER_A), (OWNER, USER_B), (OWNER, "removed")]:
         with pytest.raises(repo.MessageForbidden):
             await repo.update_message(tenant, room_id, 1, user, "edit", 0, "denied")
-    results = await asyncio.gather(
-        repo.update_message(OWNER, room_id, 1, USER_A, "one", 0, "one"),
-        repo.update_message(OWNER, room_id, 1, USER_A, "two", 0, "two"),
-        return_exceptions=True,
-    )
-    assert sum(isinstance(result, dict) for result in results) == 1
-    assert sum(isinstance(result, repo.MessageConflict) for result in results) == 1
+    # Moto does not serialize racing conditional transactions like DynamoDB.
+    # Commit the competing edit first, then submit this caller's stale real
+    # transaction. Moto does enforce its revision condition in this sequence.
+    real_transact = repo._transact
+    conflict_once = True
+
+    async def transact_after_competing_commit(items):
+        nonlocal conflict_once
+        if conflict_once:
+            conflict_once = False
+            await repo.update_message(OWNER, room_id, 1, USER_A, "two", 0, "two")
+        await real_transact(items)
+
+    monkeypatch.setattr(repo, "_transact", transact_after_competing_commit)
+    with pytest.raises(repo.MessageConflict):
+        await repo.update_message(OWNER, room_id, 1, USER_A, "one", 0, "one")
+    assert (await repo.get_message(room_id, 1))["editedText"] == "two"
     table.delete_item(Key={"pk": repo.room_pk(room_id), "sk": repo.member_sk("human", USER_A)})
     with pytest.raises(repo.MessageForbidden):
         await repo.update_message(OWNER, room_id, 1, USER_A, "retry", 1, None)
 
 
 @pytest.mark.asyncio
-async def test_reactions_persist_idempotently_and_enforce_membership_and_owner(table):
+async def test_reactions_persist_idempotently_and_enforce_membership_and_owner(table, monkeypatch):
     room_id, _ = await _room([_member("human", USER_A, "owner"), _member("human", USER_B)])
     message = await _post(room_id)
     seq = message["messageSeq"]
@@ -183,10 +193,23 @@ async def test_reactions_persist_idempotently_and_enforce_membership_and_owner(t
     updated = await repo.set_reaction(OWNER, room_id, seq, USER_B, "👍", False)
     assert updated["reactions"] == {}
     assert updated["messageSeq"] == seq
-    await asyncio.gather(
-        repo.set_reaction(OWNER, room_id, seq, USER_A, "❤️", True),
-        repo.set_reaction(OWNER, room_id, seq, USER_B, "❤️", True),
-    )
+    # Do not race these callers against Moto: unlike DynamoDB, Moto does not
+    # serialize concurrent conditional transactions. Commit the competing
+    # reaction first, then submit this caller's stale real transaction. Moto
+    # enforces the stale revision condition in that sequence; the retry must
+    # reload the committed reaction and merge it.
+    real_transact = repo._transact
+    conflict_once = True
+
+    async def transact_with_competing_commit(items):
+        nonlocal conflict_once
+        if conflict_once:
+            conflict_once = False
+            await repo.set_reaction(OWNER, room_id, seq, USER_A, "❤️", True)
+        await real_transact(items)
+
+    monkeypatch.setattr(repo, "_transact", transact_with_competing_commit)
+    await repo.set_reaction(OWNER, room_id, seq, USER_B, "❤️", True)
     assert (await repo.get_message(room_id, seq))["reactions"] == {"❤️": [USER_A, USER_B]}
 
 

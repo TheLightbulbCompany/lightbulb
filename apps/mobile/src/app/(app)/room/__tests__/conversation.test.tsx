@@ -49,6 +49,9 @@ jest.mock("@clerk/clerk-expo", () => ({
   useOrganization: () => ({ organization: null }),
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 const mockRoom: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",

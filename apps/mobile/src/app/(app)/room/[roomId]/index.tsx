@@ -26,7 +26,7 @@ import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
 import { HeaderBack } from "../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
-import { RoomComposer } from "../../../../components/room/RoomComposer";
+import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
@@ -147,7 +147,7 @@ function Conversation() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={90}
+      keyboardVerticalOffset={useComposerKeyboardOffset()}
     >
       <Stack.Screen
         options={{

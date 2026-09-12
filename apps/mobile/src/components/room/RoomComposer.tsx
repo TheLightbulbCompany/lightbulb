@@ -11,6 +11,7 @@ import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +21,7 @@ import {
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { filterOversized, type PendingAttachment } from "../../lib/attachments";
@@ -30,6 +32,33 @@ import { Avatar } from "./Avatar";
 
 /** Web composer parity: at most four images on one message. */
 const MAX_PHOTOS = 4;
+
+// iOS's compact navigation-bar height / Android's default toolbar height.
+// expo-router 57 vendors react-navigation and exports no useHeaderHeight,
+// and @react-navigation/elements is not resolvable from apps/mobile — so
+// this is the measured default for the header room/_layout.tsx configures.
+// ponytail: a magic constant; it only moves if that header grows a large
+// title or a subtitle row.
+// The Android branch is currently inert: both call sites pass
+// `behavior={Platform.OS === "ios" ? "padding" : undefined}`, and an
+// `undefined` behavior applies no padding at all, so `keyboardVerticalOffset`
+// (and this constant) has no effect off iOS today — same as the `90` this
+// replaces. Kept for whichever screen adds real Android KAV behavior next.
+const HEADER_BASE = Platform.OS === "ios" ? 44 : 56;
+
+/**
+ * `KeyboardAvoidingView`'s `behavior="padding"` pads by
+ * `keyboardHeight - viewTop + keyboardVerticalOffset`, and the view's frame
+ * is measured BELOW the navigation header — so the offset adds the header
+ * height back, plus the top safe-area inset the header itself sits under.
+ * `- insets.bottom` is paired with the composer's own bottom padding (below):
+ * the KAV lands the composer box `insets.bottom` INTO the keyboard, and the
+ * padding lifts the visible card back to sit flush on it.
+ */
+export function useComposerKeyboardOffset(): number {
+  const insets = useSafeAreaInsets();
+  return insets.top + HEADER_BASE - insets.bottom;
+}
 
 function ReconnectingBanner() {
   const pulse = usePulse(true, 0.3, 700);
@@ -76,6 +105,7 @@ export function RoomComposer({
    */
   onAbort?: (() => void) | null;
 }) {
+  const insets = useSafeAreaInsets();
   const [text, setText] = useState("");
   // Null until the field reports a collapsed caret: no caret, no typeahead.
   const [caret, setCaret] = useState<number | null>(null);
@@ -190,7 +220,10 @@ export function RoomComposer({
   }, [hasContent, busy, disabled, body, members, pending, onSend]);
 
   return (
-    <View style={styles.outer}>
+    <View
+      testID="composer-outer"
+      style={[styles.outer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}
+    >
       {reconnecting && <ReconnectingBanner />}
       {(mentionOptions.length > 0 || emojiOptions.length > 0) && (
         // A strip above the card, not an overlay: the keyboard owns the bottom
@@ -305,7 +338,6 @@ export function RoomComposer({
 const styles = StyleSheet.create({
   outer: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
     backgroundColor: colors.cream,
   },
   strip: {

@@ -535,6 +535,30 @@ async def test_text_rate_is_shared_and_lifecycle_flush_is_not_delayed(transport)
 
 
 @pytest.mark.asyncio
+async def test_event_ingestion_publishes_a_hint_at_most_once_per_second(transport):
+    sid = await start(transport)
+    transport[4].clear()
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "b1",
+        "afterSeq": 0,
+        "events": [{"kind": "text", "role": "assistant", "text": "one"}],
+    }
+    lifecycle = {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"}
+    with patch("time.time", return_value=2000000000.0):
+        await relay(transport).handle_message("conn-1", body)
+        first = [h for h in transport[4] if ROOM in h["channel"]]
+        assert len(first) == 1
+        await relay(transport).handle_message("conn-1", {**body, "batchId": "b2", "afterSeq": 1, "events": [lifecycle]})
+        assert len([h for h in transport[4] if ROOM in h["channel"]]) == 1
+    with patch("time.time", return_value=2000000002.0):
+        await relay(transport).handle_message("conn-1", {**body, "batchId": "b3", "afterSeq": 2, "events": [lifecycle]})
+    assert len([h for h in transport[4] if ROOM in h["channel"]]) == 2
+
+
+@pytest.mark.asyncio
 async def test_router_dispatches_post_but_receipt_get_is_read_only(transport):
     from core.auth import get_current_user
     from routers.messaging import router

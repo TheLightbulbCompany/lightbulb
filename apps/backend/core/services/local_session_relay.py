@@ -252,6 +252,9 @@ class LocalSessionRelay:
                     )
                     if isinstance(message, Events):
                         response = await self._events(cid, connection, enrollment, row, message)
+                        # _events throttles and publishes its own hint; the
+                        # generic post-loop publish below must not double it.
+                        notify_resources = False
                     elif isinstance(message, Heartbeat):
                         labels = {
                             key: value
@@ -371,8 +374,16 @@ class LocalSessionRelay:
                     }
                 }
             )
-        updated = _revised(row, eventSeq=end, nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0))
+        hint = now >= row.get("nextHintAt", 0)
+        updated = _revised(
+            row,
+            eventSeq=end,
+            nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0),
+            **({"nextHintAt": now + 1000} if hint else {}),
+        )
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        if hint:
+            await publish_resources_changed(row["ownerId"], row["humanUserId"])
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],

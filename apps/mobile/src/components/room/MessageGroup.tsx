@@ -6,6 +6,7 @@ import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+import { AttachmentViewerModal } from "./AttachmentViewerModal";
 import { Avatar } from "./Avatar";
 
 const AVATAR = 36;
@@ -19,18 +20,29 @@ function formatTime(createdAt: string): string {
   return at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-/** One attachment, fetched with the caller's authenticated reader. */
-function AttachmentImage({
+/**
+ * One attachment thumbnail: an image preview (fetched with the caller's
+ * authenticated reader), or — for anything else the schema someday carries
+ * (PDF, video, ...) — a compact file row. Either way, tapping it opens the
+ * full-screen viewer at this attachment. The `Pressable` here claims only its
+ * own `onPress`, so it doesn't interfere with the message group's own
+ * `onLongPress` (MessageActionsSheet) above it.
+ */
+function AttachmentThumbnail({
   roomId,
   attachment,
   downloadAttachment,
+  onPress,
 }: {
   roomId: string;
   attachment: MessageAttachment;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  onPress: () => void;
 }) {
+  const isImage = attachment.contentType.startsWith("image/");
   const [uri, setUri] = useState<string | null>(null);
   useEffect(() => {
+    if (!isImage) return;
     let cancelled = false;
     void downloadAttachment(roomId, attachment.id)
       .then(blobToDataUri)
@@ -41,16 +53,32 @@ function AttachmentImage({
     return () => {
       cancelled = true;
     };
-  }, [roomId, attachment.id, downloadAttachment]);
-  return uri ? (
-    <Image
-      source={{ uri }}
-      style={styles.image}
-      resizeMode="cover"
-      accessibilityLabel={attachment.fileName}
-    />
-  ) : (
-    <View style={[styles.image, styles.imagePending]} />
+  }, [isImage, roomId, attachment.id, downloadAttachment]);
+
+  const label = `Open ${attachment.fileName}`;
+  if (!isImage) {
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        style={({ pressed }) => [styles.fileRow, pressed && styles.fileRowPressed]}
+      >
+        <Feather name="file" size={16} color={colors.mute} />
+        <Text style={styles.fileRowName} numberOfLines={1}>
+          {attachment.fileName}
+        </Text>
+      </Pressable>
+    );
+  }
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
+      {uri ? (
+        <Image source={{ uri }} style={styles.image} resizeMode="cover" />
+      ) : (
+        <View style={[styles.image, styles.imagePending]} />
+      )}
+    </Pressable>
   );
 }
 
@@ -130,6 +158,7 @@ export function MessageGroup({
   members?: readonly RoomMember[];
 }) {
   const [timeShown, setTimeShown] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const time = formatTime(message.createdAt);
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(
     ([, users]) => users.length > 0,
@@ -140,61 +169,73 @@ export function MessageGroup({
     (mention) => mention.kind === "human" && mention.id === currentUserId,
   );
   return (
-    <Pressable
-      testID="message-group"
-      style={[collapsed ? styles.collapsed : styles.group, mentionsMe && styles.mentionsMe]}
-      onLongPress={() => {
-        setTimeShown(true);
-        onLongPress?.();
-      }}
-      delayLongPress={300}
-    >
-      {collapsed ? (
-        timeShown && time ? <Text style={[styles.time, styles.collapsedTime]}>{time}</Text> : null
-      ) : (
-        <View style={styles.head}>
-          <Avatar name={message.author.displayName} kind={message.author.kind} size={AVATAR} />
-          <Text style={styles.author} numberOfLines={1}>
-            {message.author.displayName}
-          </Text>
-          {time ? <Text style={styles.time}>{time}</Text> : null}
-        </View>
-      )}
-      <View style={collapsed ? undefined : styles.body}>
-        {message.deletedAt ? (
-          <Text style={styles.deleted}>Message deleted</Text>
+    <>
+      <Pressable
+        testID="message-group"
+        style={[collapsed ? styles.collapsed : styles.group, mentionsMe && styles.mentionsMe]}
+        onLongPress={() => {
+          setTimeShown(true);
+          onLongPress?.();
+        }}
+        delayLongPress={300}
+      >
+        {collapsed ? (
+          timeShown && time ? <Text style={[styles.time, styles.collapsedTime]}>{time}</Text> : null
         ) : (
-          <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} />
-        )}
-        {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 ? (
-          <MessageReactions
-            reactions={appliedReactions}
-            currentUserId={currentUserId}
-            onToggle={onToggleReaction}
-          />
-        ) : null}
-        {reactionError ? (
-          <Text accessibilityRole="alert" style={styles.reactionError}>
-            Could not update reaction. Try again.
-          </Text>
-        ) : null}
-        {(message.attachments ?? []).map((attachment) => (
-          <AttachmentImage
-            key={attachment.id}
-            roomId={message.roomId}
-            attachment={attachment}
-            downloadAttachment={downloadAttachment}
-          />
-        ))}
-        {replyCount > 0 ? (
-          <Pressable onPress={onOpenThread} accessibilityRole="button" hitSlop={6}>
-            <Text style={styles.replies}>
-              {replyCount} {replyCount === 1 ? "reply" : "replies"}
+          <View style={styles.head}>
+            <Avatar name={message.author.displayName} kind={message.author.kind} size={AVATAR} />
+            <Text style={styles.author} numberOfLines={1}>
+              {message.author.displayName}
             </Text>
-          </Pressable>
-        ) : null}
-      </View>
-    </Pressable>
+            {time ? <Text style={styles.time}>{time}</Text> : null}
+          </View>
+        )}
+        <View style={collapsed ? undefined : styles.body}>
+          {message.deletedAt ? (
+            <Text style={styles.deleted}>Message deleted</Text>
+          ) : (
+            <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} />
+          )}
+          {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 ? (
+            <MessageReactions
+              reactions={appliedReactions}
+              currentUserId={currentUserId}
+              onToggle={onToggleReaction}
+            />
+          ) : null}
+          {reactionError ? (
+            <Text accessibilityRole="alert" style={styles.reactionError}>
+              Could not update reaction. Try again.
+            </Text>
+          ) : null}
+          {(message.attachments ?? []).map((attachment, attachmentIndex) => (
+            <AttachmentThumbnail
+              key={attachment.id}
+              roomId={message.roomId}
+              attachment={attachment}
+              downloadAttachment={downloadAttachment}
+              onPress={() => setViewerIndex(attachmentIndex)}
+            />
+          ))}
+          {replyCount > 0 ? (
+            <Pressable onPress={onOpenThread} accessibilityRole="button" hitSlop={6}>
+              <Text style={styles.replies}>
+                {replyCount} {replyCount === 1 ? "reply" : "replies"}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </Pressable>
+      {viewerIndex !== null && message.attachments && message.attachments.length > 0 ? (
+        <AttachmentViewerModal
+          attachments={message.attachments}
+          initialIndex={viewerIndex}
+          roomId={message.roomId}
+          downloadAttachment={downloadAttachment}
+          onClose={() => setViewerIndex(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -285,4 +326,20 @@ const styles = StyleSheet.create({
   unsentText: { fontFamily: fonts.sansMedium, fontSize: 12, lineHeight: 16, color: colors.errorText },
   image: { width: 220, height: 220, borderRadius: radii.md, marginTop: spacing.sm },
   imagePending: { backgroundColor: colors.skeleton },
+  // Non-image attachment thumbnail (PDF, video, ...): a compact tappable row,
+  // same chip language as AttachmentChips' pending-upload row.
+  fileRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: 44,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.lg,
+    backgroundColor: colors.chip,
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+  },
+  fileRowPressed: { backgroundColor: colors.rowPressed },
+  fileRowName: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.ink, flexShrink: 1 },
 });

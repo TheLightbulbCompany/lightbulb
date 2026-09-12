@@ -1,3 +1,98 @@
+// react-native's own FileReader (used by blobToDataUri, which the attachment
+// viewer's file-caching also goes through) isn't polyfilled by this jest
+// environment — jest-expo's preset runs on Node, not jsdom, so `Blob` is
+// global here but `FileReader` isn't. A minimal readAsDataURL is enough for
+// every current caller (they all just want the base64 payload back out).
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = "";
+  for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+class FakeFileReader {
+  result: string | null = null;
+  onloadend: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  readAsDataURL(blob: Blob) {
+    void blob
+      .arrayBuffer()
+      .then((buffer) => {
+        const base64 = arrayBufferToBase64(buffer);
+        this.result = `data:${blob.type || "application/octet-stream"};base64,${base64}`;
+        this.onloadend?.();
+      })
+      .catch(() => this.onerror?.());
+  }
+}
+(globalThis as { FileReader?: unknown }).FileReader = FakeFileReader;
+
+// expo-file-system: a real dep (the attachment viewer caches a downloaded
+// attachment on disk before rendering/sharing it). Mocked with a minimal
+// in-memory-ish stand-in for File/Directory/Paths so tests never touch the
+// native filesystem.
+jest.mock(
+  "expo-file-system",
+  () => {
+    const joinUri = (parts: unknown[]) =>
+      `file:///fake/${parts
+        .map((part) => (typeof part === "string" ? part : ((part as { uri?: string })?.uri ?? "")))
+        .join("/")}`;
+    class FakeDirectory {
+      uri: string;
+      constructor(...parts: unknown[]) {
+        this.uri = joinUri(parts);
+      }
+    }
+    class FakeFile {
+      uri: string;
+      exists = false;
+      constructor(...parts: unknown[]) {
+        this.uri = joinUri(parts);
+      }
+      create() {
+        this.exists = true;
+      }
+      write() {}
+      delete() {
+        this.exists = false;
+      }
+    }
+    return { File: FakeFile, Directory: FakeDirectory, Paths: { cache: new FakeDirectory("cache") } };
+  },
+  { virtual: true },
+);
+
+// expo-sharing: a real dep, mocked so the "share/download" chrome action and
+// the fallback card's "Open" button never reach the native share sheet.
+jest.mock(
+  "expo-sharing",
+  () => ({
+    isAvailableAsync: jest.fn(async () => true),
+    shareAsync: jest.fn(async () => {}),
+  }),
+  { virtual: true },
+);
+
+// react-native-webview: a real dep, used only to render a cached PDF. Mocked
+// as a bare View carrying the source uri as its accessibility label, so tests
+// can assert a PDF page rendered without a native WKWebView.
+jest.mock(
+  "react-native-webview",
+  () => {
+    // Required inside the factory: jest hoists jest.mock calls above imports,
+    // so the factory can't close over the module-level `React` import.
+    const react = require("react");
+    const { View } = require("react-native");
+    return {
+      WebView: (props: { source?: { uri?: string } }) =>
+        react.createElement(View, {
+          testID: "mock-webview",
+          accessibilityLabel: props.source?.uri,
+        }),
+    };
+  },
+  { virtual: true },
+);
+
 jest.mock("expo-secure-store", () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),

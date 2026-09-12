@@ -1,10 +1,21 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
-import type { CanonicalRoomMessage, RoomMember } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, MessageAttachment, RoomMember } from "@lightbulb/shared";
 
 import { colors } from "../../../config/theme";
 import { MessageGroup } from "../MessageGroup";
 
-const downloadAttachment = jest.fn(async () => new Blob());
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
+const downloadAttachment = jest.fn(async () => new Blob(["fake-bytes"], { type: "image/png" }));
+
+const photoAttachment: MessageAttachment = {
+  id: "att-1",
+  fileName: "sunset.png",
+  contentType: "image/png",
+  size: 2048,
+};
 
 const message: CanonicalRoomMessage = {
   messageId: "m1",
@@ -227,5 +238,122 @@ describe("MessageGroup mentions", () => {
     expect(screen.getByTestId("message-group")).not.toHaveStyle({
       backgroundColor: colors.mentionRowBg,
     });
+  });
+});
+
+describe("MessageGroup attachments", () => {
+  it("opens the full-screen viewer when an attachment is tapped", async () => {
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [photoAttachment] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Open sunset.png"));
+    expect(await screen.findByLabelText("Close")).toBeTruthy();
+    expect(screen.getByText("sunset.png")).toBeTruthy();
+  });
+
+  it("does not open the viewer on a plain long-press, and still calls onLongPress", async () => {
+    const onLongPress = jest.fn();
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [photoAttachment] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        onLongPress={onLongPress}
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+    // The author name is a plain Text node (unlike the markdown body), so this
+    // long-press bubbles to the group's own Pressable without depending on the
+    // markdown renderer's internal tree shape.
+    await fireEvent(screen.getByText("Friday"), "longPress");
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("Close")).toBeNull();
+  });
+
+  it("pages between several attachments with an n of m indicator", async () => {
+    const second: MessageAttachment = { ...photoAttachment, id: "att-2", fileName: "beach.png" };
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [photoAttachment, second] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Open sunset.png"));
+    expect(screen.getByText("1 of 2")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Next attachment"));
+    expect(screen.getByText("2 of 2")).toBeTruthy();
+    expect(screen.getByText("beach.png")).toBeTruthy();
+  });
+
+  it("falls back to a share card for a non-image, non-PDF attachment", async () => {
+    const video: MessageAttachment = {
+      ...photoAttachment,
+      id: "att-3",
+      fileName: "demo.mov",
+      // Cast: MessageAttachment's contentType union is images + PDF only; the
+      // viewer reads contentType at runtime so it can't actually mistype this
+      // at runtime, only past the shared type.
+      contentType: "video/quicktime" as MessageAttachment["contentType"],
+    };
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [video] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Open demo.mov"));
+    // The share-card action carries its own, differently-worded label so this
+    // assertion can't accidentally match the still-mounted list row's tap target.
+    expect(await screen.findByLabelText("Open demo.mov in another app")).toBeTruthy();
+    expect(screen.getByText("2.0 KB · video/quicktime")).toBeTruthy();
+  });
+
+  it("renders a PDF attachment in the WebView page", async () => {
+    const pdf: MessageAttachment = {
+      ...photoAttachment,
+      id: "att-4",
+      fileName: "invoice.pdf",
+      contentType: "application/pdf",
+    };
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [pdf] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Open invoice.pdf"));
+    expect(await screen.findByTestId("mock-webview")).toBeTruthy();
+  });
+
+  it("closes the viewer", async () => {
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [photoAttachment] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Open sunset.png"));
+    expect(screen.queryByLabelText("Close")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Close"));
+    expect(screen.queryByLabelText("Close")).toBeNull();
   });
 });

@@ -250,7 +250,7 @@ export interface LocalSessionEvent {
   role: "user" | "assistant" | "system" | "tool";
   text: string;               // prose, tool summary/preview, or lifecycle label
   truncated: boolean;
-  ts?: number;                // native row timestamp, ms since epoch
+  ts?: string;                // native row timestamp, ISO-8601 as the harness wrote it (no date parser in the desktop crate)
   itemId?: string;            // native uuid / item id; merges chunks, keys React rows
   parentId?: string;          // tool result → its tool_use / call id
   actor?: { userId: string } | { agentId: string };   // teammate-attributed prompt
@@ -277,6 +277,10 @@ Live hint: `_events` publishes the existing content-free
 `room.resources.changed` at most once per second per session
 (`nextHintAt` on the session row, same shape as `nextTextAt`). The panel
 reacts by loading newer events directly, not by re-listing resources first.
+The web live client holds one room subscription at a time (the active
+Messages room), so a docked session whose room is not the active one hears no
+hint; it tails history itself at 1 s while the session is busy and 5 s when
+idle, and the hint is a bonus when it does arrive.
 
 Command frame: `dispatch_session` adds a sibling `actor` to the
 `local.session.command` envelope, next to `command`, not inside it:

@@ -15,19 +15,6 @@ jest.mock("@clerk/clerk-expo", () => ({
   useOrganization: () => ({ organization: null }),
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "55555555-5555-4555-8555-555555555555" }));
-// The roster the pencil picks from reads through the live-events runtime, which
-// throws outside its provider.
-jest.mock("../../../providers/live-events", () => ({
-  useLiveEvents: () => ({
-    httpReady: true,
-    liveConnected: true,
-    liveError: null,
-    connectionRevision: 1,
-    rpc: jest.fn(),
-    getOperation: jest.fn(),
-    onEvent: () => () => {},
-  }),
-}));
 
 const mockSummary = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1",
@@ -89,7 +76,6 @@ const mockDetails = new Map<string, RoomDetail>([
 ]);
 
 const mockRefreshRooms = jest.fn();
-const mockSelectAgentDm = jest.fn(async (_agentId: string): Promise<string | null> => "room-9");
 let mockRoomsState: Record<string, unknown> = {};
 jest.mock("../../../lib/rooms", () => ({
   useMobileRooms: () => ({
@@ -99,19 +85,24 @@ jest.mock("../../../lib/rooms", () => ({
     roomsError: undefined,
     directoryError: undefined,
     refreshRooms: mockRefreshRooms,
-    selectAgentDm: mockSelectAgentDm,
     ...mockRoomsState,
   }),
 }));
-jest.mock("@lightbulb/shared", () => ({
-  ...jest.requireActual("@lightbulb/shared"),
-  useAgents: () => ({
-    agents: [{ id: "agent-1", name: "Friday" }],
-    isLoading: false,
-    isSettled: true,
-    refresh: jest.fn(),
-  }),
-}));
+jest.mock("../../../components/room/NewMessageSheet", () => {
+  const { Text: RNText } = require("react-native");
+  return {
+    NewMessageSheet: ({
+      visible,
+      onOpenRoom,
+    }: {
+      visible: boolean;
+      onOpenRoom: (roomId: string) => void;
+    }) =>
+      visible ? (
+        <RNText onPress={() => onOpenRoom("room-9")}>MOCK_NEW_MESSAGE_SHEET</RNText>
+      ) : null,
+  };
+});
 
 import Home, { sectionRooms } from "../home";
 
@@ -119,7 +110,6 @@ describe("Home", () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockRefreshRooms.mockClear();
-    mockSelectAgentDm.mockClear();
     mockRoomsState = {};
   });
 
@@ -197,12 +187,14 @@ describe("Home", () => {
     expect(screen.getByText("launch")).toBeTruthy();
   });
 
-  it("opens the picked agent's DM room from the pencil", async () => {
+  it("opens the new-message sheet from the pencil and routes to the room it picks", async () => {
     await render(<Home />);
+    expect(screen.queryByText("MOCK_NEW_MESSAGE_SHEET")).toBeNull();
     await fireEvent.press(screen.getByLabelText("New message"));
-    await fireEvent.press(await screen.findByLabelText("Friday"));
-    await waitFor(() => expect(mockSelectAgentDm).toHaveBeenCalledWith("agent-1"));
+    await fireEvent.press(await screen.findByText("MOCK_NEW_MESSAGE_SHEET"));
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-9"));
+    // The sheet closes behind the push, so coming back does not land on it.
+    expect(screen.queryByText("MOCK_NEW_MESSAGE_SHEET")).toBeNull();
   });
 
   it("offers a retry when the conversation list fails to load", async () => {

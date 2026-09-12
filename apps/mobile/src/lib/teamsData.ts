@@ -365,7 +365,7 @@ function fetchAgents(config: PlatformAdapter): Promise<TeamsAgent[]> {
  * best-effort posture as {@link fetchAgents}: a members-fetch failure must NOT
  * blank the board/detail — it just degrades human names to their id fallback.
  */
-function fetchMembers(config: PlatformAdapter): Promise<CompanyMember[]> {
+export function fetchMembers(config: PlatformAdapter): Promise<CompanyMember[]> {
   return fetchJsonWithStatus(config, "/teams/members")
     .then((r) => {
       const list = (r.body as { members?: unknown } | null)?.members;

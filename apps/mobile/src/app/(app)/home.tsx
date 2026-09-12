@@ -1,10 +1,9 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import { roomDisplayName, useAgents, type RoomSummary } from "@lightbulb/shared";
+import { roomDisplayName, type RoomSummary } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
-  Alert,
   Animated,
   FlatList,
   Pressable,
@@ -14,13 +13,12 @@ import {
   View,
 } from "react-native";
 
-import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { LogoMark } from "../../components/LogoMark";
+import { NewMessageSheet } from "../../components/room/NewMessageSheet";
 import { RoomRow, byRecency, otherMembers } from "../../components/room/RoomRow";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { useMobileRooms } from "../../lib/rooms";
-import { useLiveEvents } from "../../providers/live-events";
 
 /** One flattened list entry — a section header, or a conversation. */
 type Row = { kind: "header"; title: string } | { kind: "room"; room: RoomSummary };
@@ -70,9 +68,7 @@ function ListSkeleton() {
  */
 export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const { userId } = useAuth();
-  const live = useLiveEvents();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const { agents } = useAgents(live);
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -122,27 +118,6 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
       return next;
     });
   }, []);
-
-  // ponytail: Task 8 swaps this for the people+agents sheet the spec's pencil
-  // wants; until then the pencil starts an agent DM, which is what the retired
-  // roster's "New task" did.
-  const openAgentDm = useCallback(
-    (agentId: string) => {
-      setPickerOpen(false);
-      rooms
-        .selectAgentDm(agentId)
-        .then((roomId) => {
-          if (roomId) router.push(`/(app)/room/${roomId}`);
-        })
-        .catch((error: unknown) => {
-          Alert.alert(
-            "Couldn’t open that conversation",
-            error instanceof Error ? error.message : "Please try again.",
-          );
-        });
-    },
-    [rooms],
-  );
 
   return (
     <View style={styles.page}>
@@ -234,11 +209,13 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           )
         }
       />
-      <AgentPickerSheet
+      <NewMessageSheet
         visible={pickerOpen}
-        agents={agents}
         onClose={() => setPickerOpen(false)}
-        onPick={(agent) => openAgentDm(agent.id)}
+        onOpenRoom={(roomId) => {
+          setPickerOpen(false);
+          router.push(`/(app)/room/${roomId}`);
+        }}
       />
     </View>
   );

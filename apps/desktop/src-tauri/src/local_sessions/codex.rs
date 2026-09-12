@@ -165,7 +165,7 @@ pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<S
                     .join(" ");
                 let first = text.lines().next().unwrap_or("").trim();
                 if !first.is_empty() && !first.starts_with(HEADER_PREFIX) {
-                    title = Some(first.chars().take(60).collect());
+                    title = Some(redact(first).chars().take(60).collect());
                 }
             }
             _ => {}
@@ -270,7 +270,7 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
         "Extension" => {
             let query = item["query"].as_str().unwrap_or("");
             let mut e = event("tool", "assistant", query, ts, id);
-            e["tool"] = json!({"name": item["kind"].as_str().unwrap_or("Extension"), "status": "done", "input": {"query": query}});
+            e["tool"] = json!({"name": item["kind"].as_str().unwrap_or("Extension"), "status": "done", "input": bound_json(json!({"query": query}), MAX_TOOL_INPUT)});
             e
         }
         "SubAgentActivity" | "CollabAgentToolCall" => {
@@ -368,6 +368,14 @@ mod tests {
             ),
             (Some("web.search"), Some("k6 timeout"))
         );
+        let secret_search = normalize(
+            "s",
+            &ev(json!({"type":"Extension","kind":"web.search","id":"w2","query":"find AKIAIOSFODNN7EXAMPLE"})),
+        )
+        .unwrap();
+        let query = secret_search[0]["tool"]["input"]["query"].as_str().unwrap();
+        assert!(query.contains("[redacted]"));
+        assert!(!query.contains("AKIAIOSFODNN7EXAMPLE"));
         let final_answer = normalize("s", &ev(json!({"type":"AgentMessage","id":"a1","phase":"final_answer","content":[{"type":"Text","text":"Done."}]}))).unwrap();
         assert_eq!(
             (
@@ -416,6 +424,15 @@ mod tests {
         assert_eq!(tail_state(&path).0, "idle");
         fs::write(&path, "{}\n").unwrap();
         assert_eq!(tail_state(&path), ("unknown", None, None));
+        let secret_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"use sk-abcdefghijklmnopqrstuvwxyz12 please"}]}}});
+        fs::write(&path, format!("{secret_user}\n")).unwrap();
+        let title = tail_state(&path).2.unwrap();
+        assert!(title.contains("[redacted]"));
+        assert!(!title.contains("sk-abcdefghijklmnopqrstuvwxyz12"));
+        let header_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\"}]\nrun it"}]}}});
+        let later_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"plain later prompt"}]}}});
+        fs::write(&path, format!("{header_user}\n{later_user}\n")).unwrap();
+        assert_eq!(tail_state(&path).2.as_deref(), Some("plain later prompt"));
     }
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {

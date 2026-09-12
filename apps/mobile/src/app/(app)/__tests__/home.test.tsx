@@ -15,6 +15,10 @@ jest.mock("@clerk/clerk-expo", () => ({
   useOrganization: () => ({ organization: null }),
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "55555555-5555-4555-8555-555555555555" }));
+const mockSetStringAsync = jest.fn(async (_text: string) => true);
+jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }), {
+  virtual: true,
+});
 
 const mockSummary = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1",
@@ -76,6 +80,8 @@ const mockDetails = new Map<string, RoomDetail>([
 ]);
 
 const mockRefreshRooms = jest.fn();
+const mockSetRoomPrefs = jest.fn(async (_roomId: string, _prefs: unknown) => {});
+const mockMarkUnread = jest.fn(async (_roomId: string) => {});
 let mockRoomsState: Record<string, unknown> = {};
 jest.mock("../../../lib/rooms", () => ({
   useMobileRooms: () => ({
@@ -85,6 +91,8 @@ jest.mock("../../../lib/rooms", () => ({
     roomsError: undefined,
     directoryError: undefined,
     refreshRooms: mockRefreshRooms,
+    setRoomPrefs: mockSetRoomPrefs,
+    markUnread: mockMarkUnread,
     ...mockRoomsState,
   }),
 }));
@@ -110,6 +118,10 @@ describe("Home", () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockRefreshRooms.mockClear();
+    mockSetRoomPrefs.mockClear();
+    mockSetRoomPrefs.mockImplementation(async () => {});
+    mockMarkUnread.mockClear();
+    mockSetStringAsync.mockClear();
     mockRoomsState = {};
   });
 
@@ -209,6 +221,53 @@ describe("Home", () => {
     await render(<Home />);
     await fireEvent.press(await screen.findByLabelText("Retry loading conversations"));
     expect(mockRefreshRooms).toHaveBeenCalled();
+  });
+
+  it("shows a Muted text tag on a muted room, not just the dimming", async () => {
+    await render(<Home />);
+    await waitFor(() => expect(screen.getByText("Direct messages")).toBeTruthy());
+    expect(within(screen.getByTestId("room-row-r5")).getByText("Muted")).toBeTruthy();
+    // The unstarred, unmuted rows above don't carry the tag.
+    expect(within(screen.getByTestId("room-row-r1")).queryByText("Muted")).toBeNull();
+  });
+
+  it("opens the conversation actions sheet on a long press, matching the room's own state", async () => {
+    await render(<Home />);
+    // r4 is starred and unmuted.
+    await fireEvent(await screen.findByTestId("room-row-r4"), "longPress");
+    expect(screen.getByText("Unstar conversation")).toBeTruthy();
+    expect(screen.getByText("Mute conversation")).toBeTruthy();
+    expect(screen.getByText("Mark unread")).toBeTruthy();
+    expect(screen.getByText("Copy link")).toBeTruthy();
+    expect(screen.queryByText("Leave channel")).toBeNull();
+  });
+
+  it("stars a room from the sheet, calling setRoomPrefs with the inverted value", async () => {
+    await render(<Home />);
+    await fireEvent(await screen.findByTestId("room-row-r1"), "longPress");
+    await fireEvent.press(screen.getByText("Star conversation"));
+    await waitFor(() => expect(mockSetRoomPrefs).toHaveBeenCalledWith("r1", { starred: true }));
+  });
+
+  it("shows the web's copy when a mute save fails, and marks unread and copies the link otherwise", async () => {
+    mockSetRoomPrefs.mockImplementationOnce(async () => {
+      throw new Error("offline");
+    });
+    await render(<Home />);
+    await fireEvent(await screen.findByTestId("room-row-r3"), "longPress");
+    await fireEvent.press(screen.getByText("Mute conversation"));
+    await waitFor(() =>
+      expect(screen.getByText("The notification setting could not be saved.")).toBeTruthy(),
+    );
+
+    await fireEvent.press(screen.getByText("Mark unread"));
+    expect(mockMarkUnread).toHaveBeenCalledWith("r3");
+
+    await fireEvent(await screen.findByTestId("room-row-r3"), "longPress");
+    await fireEvent.press(screen.getByText("Copy link"));
+    await waitFor(() =>
+      expect(mockSetStringAsync).toHaveBeenCalledWith(expect.stringContaining("room=r3")),
+    );
   });
 });
 

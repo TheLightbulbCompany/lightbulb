@@ -46,12 +46,15 @@ export function RoomRow({
   unread,
   muted,
   onPress,
+  onLongPress,
 }: {
   room: RoomSummary;
   participants: readonly RowParticipant[];
   unread: number;
   muted: boolean;
   onPress: () => void;
+  /** Long press opens the conversation actions sheet (star/mute/mark unread/copy link). */
+  onLongPress?: () => void;
 }) {
   const label = roomDisplayName(room, participants);
   const count = muted ? 0 : unread;
@@ -60,6 +63,7 @@ export function RoomRow({
     <Pressable
       testID={`room-row-${room.roomId}`}
       onPress={onPress}
+      onLongPress={onLongPress}
       accessibilityRole="button"
       accessibilityLabel={count > 0 ? `${label}, ${count} unread` : label}
       style={({ pressed }) => [
@@ -87,6 +91,8 @@ export function RoomRow({
       <Text style={[styles.label, count > 0 && styles.labelUnread]} numberOfLines={1}>
         {label}
       </Text>
+      {/* Colour (the dimmed row) is never the only signal — the word too. */}
+      {muted && <Text style={styles.mutedTag}>Muted</Text>}
       <Text style={styles.time}>{relativeTime(Date.parse(room.lastMessageAt ?? ""))}</Text>
       {!isChannel && count > 0 ? (
         <View style={styles.badge}>
@@ -114,6 +120,7 @@ const styles = StyleSheet.create({
   hash: { fontFamily: fonts.sansMedium, fontSize: 18, color: colors.mute },
   label: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, flex: 1, color: colors.inkSoft },
   labelUnread: { fontFamily: fonts.sansSemiBold, color: colors.ink },
+  mutedTag: { ...type.caption },
   time: { ...type.caption },
   badge: {
     minWidth: 18,

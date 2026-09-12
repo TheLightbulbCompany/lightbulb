@@ -6,7 +6,7 @@
  * page for real users, and nothing in CI noticed.
  */
 
-import { messageUrl, teamsDetailUrl, teamsPanelUrl, workspaceUrl } from "../webLinks";
+import { messageUrl, roomUrl, teamsDetailUrl, teamsPanelUrl, workspaceUrl } from "../webLinks";
 
 describe("web deep links", () => {
   it("never points at the removed /teams route tree", () => {
@@ -63,5 +63,9 @@ describe("web deep links", () => {
 
   it("percent-encodes ids so a crafted id cannot inject query keys", () => {
     expect(messageUrl("a&b=c", "m1")).toContain("room=a%26b%3Dc");
+  });
+
+  it("builds a bare room permalink, no message key", () => {
+    expect(roomUrl("room-1")).toBe("https://flickmeon.ai/chat?panel=chat&room=room-1");
   });
 });

@@ -6,6 +6,7 @@ import {
   type LiveEvent,
   type RoomDetail,
 } from "@lightbulb/shared";
+import type { ReactNode } from "react";
 import { AppState } from "react-native";
 
 // The real @lightbulb/shared room machine runs here (that is the point of the
@@ -39,7 +40,13 @@ jest.mock("expo-router", () => {
       canGoBack: () => true,
       replace: jest.fn(),
     },
-    Stack: { Screen: () => null },
+    // Real react-navigation renders `options.headerRight` inside the native
+    // header; this mock is the whole navigator here, so it has to do that
+    // itself or the header's star/mute buttons would never mount at all.
+    Stack: {
+      Screen: ({ options }: { options?: { headerRight?: () => ReactNode } }) =>
+        options?.headerRight ? options.headerRight() : null,
+    },
     useFocusEffect: (cb: () => undefined | (() => void)) =>
       useEffect(() => {
         let cleanup = cb();
@@ -89,6 +96,11 @@ let mockMessages: CanonicalRoomMessage[] = [...mockBase];
 
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
+const mockSetMemberPrefs = jest.fn(async (roomId: string, prefs: Partial<RoomDetail>) => ({
+  ...mockRoom,
+  roomId,
+  ...prefs,
+}));
 const mockSetReaction = jest.fn(async () => mockMsg({ messageId: "m2", messageSeq: 2, text: "second", reactions: { "🎉": ["user-a"] } }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" }));
 const mockSetTyping = jest.fn(async () => {});
@@ -118,6 +130,7 @@ const mockLive = {
     setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
     updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: jest.fn(),
+    setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
   onEvent: (handler: (event: LiveEvent) => void) => {
@@ -154,6 +167,7 @@ describe("conversation screen", () => {
     mockSetReaction.mockClear();
     mockSetTyping.mockClear();
     typingHandlers.clear();
+    mockSetMemberPrefs.mockClear();
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
   });
@@ -375,5 +389,22 @@ describe("conversation screen", () => {
       }
     });
     await waitFor(() => expect(screen.getByText("Bob is typing…")).toBeTruthy());
+  });
+
+  it("stars and mutes the room from the header, inverting the room's current state", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Star this conversation"));
+    await waitFor(() => expect(mockSetMemberPrefs).toHaveBeenCalledWith("room-1", { starred: true }));
+    await fireEvent.press(screen.getByLabelText("Mute this conversation"));
+    await waitFor(() => expect(mockSetMemberPrefs).toHaveBeenCalledWith("room-1", { muted: true }));
+  });
+
+  it("shows the web's copy when the header's star save fails", async () => {
+    mockSetMemberPrefs.mockRejectedValueOnce(new Error("offline"));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Star this conversation"));
+    await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
   });
 });

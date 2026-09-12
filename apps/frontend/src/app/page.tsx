@@ -6,6 +6,7 @@ import { Hero } from "@/components/landing/Hero";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
+import { AskAI } from "@/components/landing/AskAI";
 import { Footer } from "@/components/landing/Footer";
 import { JsonLd, organizationJsonLd, pageMetadata, softwareApplicationJsonLd, websiteJsonLd } from "@/lib/seo";
 
@@ -38,6 +39,7 @@ export default function LandingPage() {
       <HowItWorks />
       <WorkspaceBand />
       <Pricing />
+      <AskAI />
       <Footer />
     </main>
   );

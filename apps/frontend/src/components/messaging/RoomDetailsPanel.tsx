@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Paperclip, PinOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -73,7 +73,13 @@ export function RoomDetailsPanel({
   const id = useId();
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [unpinning, setUnpinning] = useState<string | null>(null);
+  const leaveCancel = useRef<HTMLButtonElement>(null);
   const { pending, error, run, reset } = useAsyncAction();
+  // Focus moves to Cancel as the confirm row appears -- the trigger it replaced
+  // is gone, so focus would otherwise fall to <body> and the warning go unread.
+  // An effect, not an inline callback ref: that re-attaches every render and
+  // would steal focus back from whatever the viewer moved to.
+  useEffect(() => { if (confirmLeave) leaveCancel.current?.focus(); }, [confirmLeave]);
   const authorName = (message: RoomMessage) =>
     participants.find((participant) => participant.kind === message.author.kind && participant.id === message.author.id)?.displayName
       ?? message.author.displayName;
@@ -184,9 +190,7 @@ export function RoomDetailsPanel({
         {onLeaveRoom && (confirmLeave
           ? <div className="room-details-row" role="alert">
             <p className="flex-1">Leave {roomName}? You will lose access to this conversation and its messages.</p>
-            {/* Focus moves to Cancel as the row appears -- the trigger it replaced is gone,
-                so focus would otherwise fall to <body> and the warning go unread. */}
-            <Button ref={(node) => { node?.focus(); }} type="button" variant="outline" disabled={pending}
+            <Button ref={leaveCancel} type="button" variant="outline" disabled={pending}
               onClick={() => setConfirmLeave(false)}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={!actionable || pending}
               onClick={() => void run(onLeaveRoom, "The channel could not be left.")}>{pending ? "Leaving…" : "Leave channel"}</Button>

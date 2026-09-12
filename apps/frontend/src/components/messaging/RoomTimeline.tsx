@@ -20,6 +20,8 @@ export interface RoomTimelineProps {
   renderMessage: (message: RoomMessage, collapsed: boolean) => ReactNode;
   children?: ReactNode;
   empty: ReactNode;
+  /** Sits above the oldest message once history is complete — the channel intro. */
+  leading?: ReactNode;
 }
 
 const BOTTOM_THRESHOLD_PX = 48;
@@ -27,7 +29,7 @@ const HIGHLIGHT_MS = 2000;
 
 const escapeSelector = (value: string) => typeof CSS !== "undefined" && "escape" in CSS ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 
-export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty }: RoomTimelineProps): ReactElement {
+export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading }: RoomTimelineProps): ReactElement {
   const region = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
@@ -90,6 +92,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
 
   return <div className="room-timeline">
     <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
+      {leading}
       {items.length === 0 ? empty : items.map((item) => {
         if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
         if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;

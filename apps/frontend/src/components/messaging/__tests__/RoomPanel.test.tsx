@@ -223,7 +223,7 @@ it("opens profiles before the real DM action for human and agent authors and dis
     await userEvent.click(within(profile).getByRole("button", { name: "Message" }));
     expect(onSelectParticipant).toHaveBeenLastCalledWith(participant);
   }
-  const timestamp = within(screen.getByRole("article", { name: "Message from Friday" })).getByText(new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  const timestamp = within(screen.getByRole("article", { name: "Message from Friday" })).getByText(new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
   expect(timestamp).toHaveAttribute("datetime", message.createdAt);
 });
 
@@ -612,7 +612,7 @@ it("collapses consecutive messages from the same author and reveals the time in 
   expect(articles).toHaveLength(2);
   expect(within(articles[0]).getByText("Friday")).toBeInTheDocument();
   expect(within(articles[1]).queryByText("Friday")).not.toBeInTheDocument();
-  const time = new Date(second.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = new Date(second.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   expect(within(articles[1]).getByText(time, { selector: ".room-message-gutter" })).toBeInTheDocument();
   expect(within(articles[1]).getByText(time, { selector: "time.sr-only" })).toBeInTheDocument();
 });

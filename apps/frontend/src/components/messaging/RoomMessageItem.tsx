@@ -50,7 +50,7 @@ export interface RoomMessageItemProps {
 export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, highlighted, mentionsViewer, markdown, urlTransform, workStatus, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
-  const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
   const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
     {!message.deletedAt && onToggleReaction && <>

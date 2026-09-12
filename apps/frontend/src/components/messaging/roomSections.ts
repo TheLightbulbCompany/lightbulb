@@ -13,12 +13,13 @@ export interface RoomGroup {
  * The sidebar's groups, in display order: Starred · the owner's custom
  * sections · Channels · Direct messages (both `dm` and `group-dm` — the spec
  * has no separate "Group chats" section). Every room lands in exactly one
- * group, and empty groups are dropped.
+ * group, and empty groups are dropped unless named in `alwaysShow` (the
+ * sidebar keeps Direct messages for the roster even before any DM exists).
  */
 export function groupRooms(
   rooms: readonly DirectoryRoom[],
   sections: readonly RoomSection[],
-  options: { sort: SidebarSort; nameOf: (room: DirectoryRoom) => string },
+  options: { sort: SidebarSort; nameOf: (room: DirectoryRoom) => string; alwaysShow?: readonly string[] },
 ): RoomGroup[] {
   const known = new Set(sections.map((section) => section.id));
   const bucket = (room: DirectoryRoom) => room.starred ? "starred"
@@ -39,5 +40,5 @@ export function groupRooms(
       ? unread(right) - unread(left)
       : options.nameOf(left).localeCompare(options.nameOf(right))));
   }
-  return order.filter((group) => group.rooms.length > 0);
+  return order.filter((group) => group.rooms.length > 0 || options.alwaysShow?.includes(group.id));
 }

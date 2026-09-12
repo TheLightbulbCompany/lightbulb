@@ -518,7 +518,7 @@ impl Host {
                         },
                         Some("local.session.error") => return Err("local session relay rejected the frame".into()),
                         Some("local.session.command") => {
-                            let command: Command = serde_json::from_value(body["command"].clone()).map_err(|_|"invalid native command")?;
+                            let command = parse_command(&body)?;
                             if deferred.len() >= 32 {return Err("too many deferred commands".into());}
                             if anchor.is_none() && pending_rpc.is_none() {return Err("command without authenticated time".into());}
                             deferred.push_back(command);
@@ -663,8 +663,8 @@ impl Host {
         }
         // Provenance is server-owned. JSON escaping keeps IDs from spoofing this boundary.
         let text = format!(
-            "[Lightbulb teammate contribution {}]\n{}{}",
-            cmd.provenance(),
+            "{}{}{}",
+            cmd.header(),
             mirror.workspace.notice(),
             cmd.text.as_deref().unwrap_or("")
         );
@@ -685,13 +685,21 @@ impl Host {
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         if let Some(socket) = &mut socket {
-            let _ = claude::send(socket, &text, "lightbulb-teammate").await;
+            let from = claude::sender_handle(cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
+            let _ = claude::send(socket, &text, &from).await;
         } else if let Ok(Some(id)) = codex::send(&native, &text).await {
             return journal.finish(&cmd.session_id, &cmd.request_id, Some(id), true);
         }
         self.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)
             .await
     }
+}
+
+fn parse_command(body: &Value) -> Result<Command> {
+    let mut command: Command =
+        serde_json::from_value(body["command"].clone()).map_err(|_| "invalid native command")?;
+    command.label = serde_json::from_value::<ActorLabel>(body["actor"].clone()).ok();
+    Ok(command)
 }
 
 fn receipt_wire(session: &str, request: &str, receipt: &Receipt) -> Value {
@@ -812,6 +820,24 @@ mod tests {
         let next = restarted.begin_registration(&key).unwrap();
         assert_ne!(next["session"]["generation"], server_generation);
         assert_eq!(next["previousGeneration"], server_generation);
+    }
+    #[test]
+    fn local_sessions_command_frame_label_is_optional_and_never_trusted_for_identity() {
+        let frame = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":"s1","roomId":"room","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null},
+            "actor":{"kind":"human","handle":"aden","displayName":"Aden Kim"}});
+        let cmd = parse_command(&frame).unwrap();
+        assert_eq!(
+            cmd.label.as_ref().and_then(|l| l.handle.as_deref()),
+            Some("aden")
+        );
+        assert_eq!(cmd.actor_user_id.as_deref(), Some("alice"));
+        let mut bare = frame.clone();
+        bare.as_object_mut().unwrap().remove("actor");
+        assert!(parse_command(&bare).unwrap().label.is_none());
+        let mut forged = frame;
+        forged["actor"] = json!("not-an-object");
+        assert!(parse_command(&forged).unwrap().label.is_none());
     }
     #[test]
     fn local_sessions_failed_observation_write_retries_identical_snapshot() {

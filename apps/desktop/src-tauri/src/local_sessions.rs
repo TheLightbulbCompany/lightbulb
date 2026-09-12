@@ -242,6 +242,14 @@ struct AgentActor {
     id: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActorLabel {
+    pub kind: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Command {
@@ -264,6 +272,8 @@ pub struct Command {
     deliver_by: u64,
     held: bool,
     provider_message_id: Option<String>,
+    #[serde(skip)]
+    pub(crate) label: Option<ActorLabel>,
 }
 
 impl Command {
@@ -284,7 +294,37 @@ impl Command {
         } else {
             value["actorUserId"] = json!(self.actor_user_id);
         }
+        if let Some(label) = &self.label {
+            if let Some(handle) = &label.handle {
+                value["actorHandle"] = json!(handle);
+            }
+            if let Some(name) = &label.display_name {
+                value["actorDisplayName"] = json!(name);
+            }
+        }
         value
+    }
+    /// Byte-exact header both adapters strip again on the way back (`teammate_contribution`).
+    /// Labels are display text: braces, brackets and newlines are dropped so they can never
+    /// be mistaken for the header's own delimiters or the provenance JSON.
+    pub(crate) fn header(&self) -> String {
+        let clean = |s: &str| -> String {
+            s.chars()
+                .filter(|c| !matches!(c, '{' | '}' | '[' | ']' | '\n' | '\r'))
+                .collect()
+        };
+        let who = match &self.label {
+            Some(ActorLabel {
+                handle: Some(handle),
+                display_name,
+                ..
+            }) => match display_name {
+                Some(name) => format!(" from @{} ({})", clean(handle), clean(name)),
+                None => format!(" from @{}", clean(handle)),
+            },
+            _ => String::new(),
+        };
+        format!("{HEADER_PREFIX}{who} {}]\n", self.provenance())
     }
 }
 
@@ -1773,5 +1813,44 @@ mod tests {
         );
         assert!(teammate_contribution("ordinary prompt").is_none());
         assert!(teammate_contribution("[Lightbulb teammate contribution not-json]\nx").is_none());
+    }
+
+    #[test]
+    fn local_sessions_command_header_names_the_sender_and_keeps_the_hash_stable() {
+        let mut cmd = command();
+        let unlabelled = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(
+            cmd.header(),
+            format!("[Lightbulb teammate contribution {}]\n", cmd.provenance())
+        );
+        cmd.label = Some(ActorLabel {
+            kind: "human".into(),
+            handle: Some("aden".into()),
+            display_name: Some("Aden Kim".into()),
+        });
+        assert_eq!(
+            serde_json::to_string(&cmd).unwrap(),
+            unlabelled,
+            "label never enters the idempotency hash"
+        );
+        let header = cmd.header();
+        assert!(header.starts_with("[Lightbulb teammate contribution from @aden (Aden Kim) {"));
+        assert_eq!(cmd.provenance()["actorHandle"], "aden");
+        let (provenance, body) = teammate_contribution(&format!("{header}hello")).unwrap();
+        assert_eq!(
+            (provenance["actorUserId"].as_str(), body.as_str()),
+            (Some("alice"), "hello")
+        );
+        cmd.label = Some(ActorLabel {
+            kind: "human".into(),
+            handle: Some("aden".into()),
+            display_name: Some("Aden {Kim]\n".into()),
+        });
+        assert!(
+            cmd.header()
+                .starts_with("[Lightbulb teammate contribution from @aden (Aden Kim) {"),
+            "delimiters never come from a label"
+        );
+        assert!(teammate_contribution(&format!("{}hello", cmd.header())).is_some());
     }
 }

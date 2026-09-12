@@ -206,6 +206,10 @@
   .room-context { border-left: 0; }
   .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
   .room-panel button, .room-directory button, .room-run summary { min-height: 44px; }
+  /* The header's icon buttons (Star/Mute/Conversation options) are 36px
+     square and Search is 42px wide -- both under the touch floor even though
+     min-height above already clears 44. */
+  .room-audience button { min-width: 44px; min-height: 44px; }
   /* Icon-only sidebar controls (collapse chevron, next unread, new conversation,
      the row overflow trigger — which carries .room-directory-actions on the
      button itself) need the 44px in both axes; the sort select is a touch

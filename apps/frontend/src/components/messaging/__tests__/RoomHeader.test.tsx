@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
@@ -158,4 +160,20 @@ it("opens the pins tab of the details panel from the pinned count", async () => 
 it("hides the pinned count when nothing is pinned", () => {
   render(<RoomHeader {...props} pinnedCount={0} />);
   expect(screen.queryByRole("button", { name: /pinned/ })).not.toBeInTheDocument();
+});
+
+// Star/Mute/Options are 36px-square (size-9) and Search is 42px wide (h-9
+// px-4) -- both under the 44px touch floor at <=859px. jsdom has no `css:
+// true` here, so the media-query rule can't be observed via computed style;
+// assert the DOM structure the selector needs (the buttons live inside
+// .room-audience) plus the rule's source text instead.
+it("puts Star, Mute and Conversation options inside .room-audience for the mobile touch-floor rule", () => {
+  render(<RoomHeader {...props} onSetPrefs={vi.fn()} />);
+  const audience = screen.getByRole("button", { name: "Star this conversation" }).closest(".room-audience");
+  expect(audience).not.toBeNull();
+  expect(within(audience as HTMLElement).getByRole("button", { name: "Mute this conversation" })).toBeInTheDocument();
+  expect(within(audience as HTMLElement).getByRole("button", { name: "Conversation options" })).toBeInTheDocument();
+
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/@media \(max-width: 859px\) \{[\s\S]*\.room-audience button \{ min-width: 44px; min-height: 44px; \}/);
 });

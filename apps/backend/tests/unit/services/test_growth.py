@@ -154,6 +154,31 @@ def test_activation_needs_both_conditions():
     assert ext == {"activated": 1, "measurable": 3, "rate": 1 / 3}
 
 
+def test_activation_is_workspace_scoped_not_per_sender():
+    """Controller ruling: the workspace's humans count TOGETHER. Two people
+    sending three messages each across two days activates it; one person
+    sending four does not, however the messages are spread."""
+    fx = _fixture()
+    fx["billing"] = [
+        {"owner_id": "ext_two", "subscription_status": "trial_local", "created_at": _ts(SIGNUP_DAYS_BACK)},
+        {"owner_id": "ext_one", "subscription_status": "trial_local", "created_at": _ts(SIGNUP_DAYS_BACK)},
+    ]
+    day_a, day_b = SIGNUP_DAYS_BACK - 1, SIGNUP_DAYS_BACK - 2
+    fx["messages"] = [
+        # ext_two: 3 + 3 from two humans, over two distinct UTC days.
+        *(_msg("ext_two", "r2", "human", "u_1", _ts(d)) for d in (day_a, day_a, day_b)),
+        *(_msg("ext_two", "r2", "human", "u_2", _ts(d)) for d in (day_a, day_b, day_b)),
+        _msg("ext_two", "r2", "agent", "ag1", _ts(day_b)),
+        # ext_one: a single human, four messages, two days — one short.
+        *(_msg("ext_one", "r1", "human", "u_3", _ts(d)) for d in (day_a, day_a, day_b, day_b)),
+        _msg("ext_one", "r1", "agent", "ag1", _ts(day_b)),
+    ]
+    seg = growth.derive(**fx)["segments"]["external"]
+    assert seg["activation"] == {"activated": 1, "measurable": 2, "rate": 0.5}
+    by_week = {c["week"]: c for c in seg["cohorts"]}
+    assert by_week[_week(6)]["activated"] == 1
+
+
 def test_activation_ignores_messages_outside_the_seven_day_window():
     fx = _fixture()
     # Push ext_b's agent reply 10 days past signup: the human side still fails
@@ -225,6 +250,52 @@ def test_answered_rate_and_p50_over_the_120s_window():
     ]
     ext = growth.derive(**fx)["segments"]["external"]["answered"]
     assert ext == {"dispatched": 4, "answered": 2, "rate": 0.5, "p50_reply_s": 75.0}
+
+
+def test_answered_ignores_an_agent_message_that_precedes_the_human():
+    """An agent turn already in the room before the request is not its reply."""
+    fx = _fixture()
+    base = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+
+    def at(seconds):
+        return (base + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    fx["messages"] = [
+        _msg("ext_a", "r1", "agent", "ag1", at(-30)),
+        _msg("ext_a", "r1", "human", "u_a", at(0), dispatched=True),
+    ]
+    assert growth.derive(**fx)["segments"]["external"]["answered"] == {
+        "dispatched": 1,
+        "answered": 0,
+        "rate": 0.0,
+        "p50_reply_s": None,
+    }
+
+
+def test_answered_measures_the_next_agent_message_not_a_later_one():
+    """Two agent turns follow the request: the latency is the FIRST one's. A
+    later reply must not be able to rescue a request the next one already missed."""
+    fx = _fixture()
+    base = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+
+    def at(seconds):
+        return (base + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    fx["messages"] = [
+        _msg("ext_a", "r1", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r1", "agent", "ag1", at(20)),
+        _msg("ext_a", "r1", "agent", "ag1", at(300)),
+        # r2: the next agent message is late, and a much later one cannot save it.
+        _msg("ext_a", "r2", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r2", "agent", "ag1", at(200)),
+        _msg("ext_a", "r2", "agent", "ag1", at(400)),
+    ]
+    assert growth.derive(**fx)["segments"]["external"]["answered"] == {
+        "dispatched": 2,
+        "answered": 1,
+        "rate": 0.5,
+        "p50_reply_s": 20.0,
+    }
 
 
 def test_answered_is_zero_not_none_when_nothing_was_dispatched():
@@ -369,7 +440,26 @@ async def test_compute_partial_when_the_messaging_scan_fails():
     data, state, errors = await _compute_with(_fixture(), **{"core.repositories.messaging_repo.scan_growth_rows": boom})
     assert state == "partial" and [e["domain"] for e in errors] == ["messaging"]
     assert data["sources"]["messaging"] == "unavailable"
-    assert data["segments"]["external"]["activation"] == {"activated": 0, "measurable": 3, "rate": 0.0}
+
+    ext = data["segments"]["external"]
+    # Every messaging-fed figure is None so the page renders an em dash / a gap.
+    # A green 0% here would claim "nobody activated", which we do not know.
+    assert ext["activation"] == {"activated": None, "measurable": None, "rate": None}
+    assert ext["answered"] == {"dispatched": None, "answered": None, "rate": None, "p50_reply_s": None}
+    assert ext["retention_w4"] == {"eligible": None, "retained": None, "rate": None}
+    assert ext["messaging"] == {"rooms": None, "human_messages_this_week": None}
+    assert all(
+        w["workspaces"] is None and w["multiplayer"] is None and w["multiplayer_share"] is None
+        for w in ext["weekly_active"]
+    )
+    assert all(c["measurable"] is None and c["activated"] is None for c in ext["cohorts"])
+    assert all(d["n"] is None for d in ext["daily"]["human_messages"] + ext["daily"]["activated"])
+    # Billing-fed figures survive — that read succeeded. (compute() derives on the
+    # real clock, so the fixture's 6-week-old signups fall outside today's axis;
+    # what matters is that these stay numbers rather than being blanked too.)
+    assert ext["workspaces"]["total"] == 3 and ext["workspaces"]["paying"] == 1
+    assert all(isinstance(c["signups"], int) and isinstance(c["paying"], int) for c in ext["cohorts"])
+    assert all(isinstance(d["n"], int) for d in ext["daily"]["signups"])
 
 
 @pytest.mark.asyncio

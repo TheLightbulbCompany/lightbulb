@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { GrowthData, GrowthSegment } from "../../_lib/api";
-import { Cohorts, Messaging, pct } from "../sections";
+import { Cohorts, Headline, Messaging, num, pct } from "../sections";
 
 const SEG: GrowthSegment = {
   workspaces: {
@@ -53,5 +53,35 @@ describe("growth sections", () => {
   it("shows a cohort whose 7-day window is still open as — rather than 0% activated", () => {
     render(<Cohorts seg={SEG} />);
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("renders a blanked (messaging-read-failed) segment as em dashes, not zeros", () => {
+    const blanked: GrowthSegment = {
+      ...SEG,
+      activation: { activated: null, measurable: null, rate: null },
+      weekly_active: [{ week: "2026-08-24", workspaces: null, multiplayer: null, multiplayer_share: null }],
+      answered: { dispatched: null, answered: null, rate: null, p50_reply_s: null },
+      retention_w4: { eligible: null, retained: null, rate: null },
+      messaging: { rooms: null, human_messages_this_week: null },
+    };
+    const { container } = render(<Messaging seg={blanked} data={{ ...DATA, dlq_depth: null }} />);
+    expect(num(null)).toBe("—");
+    expect(container.querySelectorAll(".text-err")).toHaveLength(0);
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4);
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.queryByText("0")).toBeNull();
+  });
+
+  it("does not paint a zero count as a healthy tone on the headline tiles", () => {
+    const zeroed: GrowthSegment = {
+      ...SEG,
+      workspaces: { ...SEG.workspaces, paying: 0 },
+      weekly_active: [{ week: "2026-08-24", workspaces: 0, multiplayer: 0, multiplayer_share: null }],
+    };
+    render(<Headline seg={zeroed} audience="External" />);
+    const toneOf = (title: string) => screen.getByTitle(title).closest("div.rounded-lg")?.className ?? "";
+    expect(toneOf("Weekly active")).toContain("border-border");
+    expect(toneOf("Paying")).toContain("border-border");
+    expect(toneOf("Activated rate")).toContain("border-ok"); // a real rate still reads healthy
   });
 });

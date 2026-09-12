@@ -6,7 +6,7 @@ import { Card } from "@/components/admin/Card";
 import { ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
 import type { GrowthData, GrowthSegment } from "../_lib/api";
-import { pct } from "./sections";
+import { num, pct } from "./sections";
 
 // Growth-dashboard series. globals.css maps --chart-1..5 to ok, info, warn, err,
 // NEUTRAL in BOTH grounds. Single-meaning series:
@@ -143,9 +143,9 @@ function NoSparkline() {
  * answered + p50, paying, W4 retention. */
 export function KpiStrip({ seg }: { seg: GrowthSegment }) {
   const cumulativeWorkspaces = cumulativeOffsetToTotal(seg.daily.signups, seg.workspaces.total);
-  const activeByWeek = seg.weekly_active.map((w) => w.workspaces);
+  const activeByWeek = seg.weekly_active.map((w) => w.workspaces ?? 0);
   const thisWeek = seg.weekly_active[seg.weekly_active.length - 1];
-  const messagesByDay = seg.daily.human_messages.map((d) => d.n);
+  const messagesByDay = seg.daily.human_messages.map((d) => d.n ?? 0);
 
   return (
     <Card>
@@ -154,18 +154,18 @@ export function KpiStrip({ seg }: { seg: GrowthSegment }) {
         <KpiTile label="Paying" value={seg.workspaces.paying} sparkline={<NoSparkline />} />
         <KpiTile
           label="Weekly active workspaces"
-          value={thisWeek?.workspaces ?? 0}
+          value={num(thisWeek?.workspaces)}
           sparkline={<Sparkline values={activeByWeek} color={CHART_1} />}
         />
         <KpiTile
           label="Multiplayer share (this week)"
-          value={pct(thisWeek?.multiplayer_share ?? null)}
+          value={pct(thisWeek?.multiplayer_share)}
           sparkline={<Sparkline values={seg.weekly_active.map((w) => Math.round((w.multiplayer_share ?? 0) * 100))} color={CHART_1} />}
         />
         <KpiTile
           label="Activated rate"
           value={pct(seg.activation.rate)}
-          sparkline={<Sparkline values={seg.daily.activated.map((d) => d.n)} color={CHART_1} />}
+          sparkline={<Sparkline values={seg.daily.activated.map((d) => d.n ?? 0)} color={CHART_1} />}
         />
         <KpiTile
           label="Answered rate"
@@ -233,8 +233,10 @@ const WEEKLY_ACTIVE_CONFIG: ChartConfig = {
 export function WeeklyActiveChart({ seg }: { seg: GrowthSegment }) {
   const rows = seg.weekly_active.map((w) => ({
     week: w.week,
+    // null (messaging read failed) leaves a gap in the bar; 0 would read as
+    // "nobody was active", which is a different and false claim.
     multiplayer: w.multiplayer,
-    single: w.workspaces - w.multiplayer,
+    single: w.workspaces === null || w.multiplayer === null ? null : w.workspaces - w.multiplayer,
   }));
   return (
     <Card title="Weekly active workspaces (≥1 human room message) — multiplayer split">
@@ -359,7 +361,10 @@ const RETENTION_ROWS: { key: "retained" | "lapsed"; label: string; color: string
 /** 6. Week-4 retention of activated workspaces — two bars, so the denominator is visible. */
 export function RetentionChart({ seg }: { seg: GrowthSegment }) {
   const r = seg.retention_w4;
-  const values = { retained: r.retained, lapsed: r.eligible - r.retained };
+  const values = {
+    retained: r.retained,
+    lapsed: r.eligible === null || r.retained === null ? null : r.eligible - r.retained,
+  };
   const rows = RETENTION_ROWS.map((row) => ({ label: row.label, value: values[row.key], color: row.color }));
   return (
     <Card title={`Week-4 retention of activated workspaces — ${pct(r.rate)}`}>

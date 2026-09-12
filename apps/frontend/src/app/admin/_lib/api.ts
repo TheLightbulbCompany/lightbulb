@@ -169,20 +169,24 @@ export interface FleetData {
   grid: FleetGridItem[] | null;
 }
 
-/** One ISO week of activity, from the messaging table (audit §6 metric 2). */
+/** One ISO week of activity, from the messaging table (audit §6 metric 2).
+ * Every field is `null` when the messaging scan failed — the page renders that
+ * as an em dash / a gap, never as a zero. */
 export interface GrowthWeeklyActive {
   week: string;
-  workspaces: number;
-  multiplayer: number;
+  workspaces: number | null;
+  multiplayer: number | null;
   multiplayer_share: number | null;
 }
-/** One signup-week cohort: how many became measurable, activated, and pay (§6 metrics 1 + 4). */
+/** One signup-week cohort: how many became measurable, activated, and pay (§6 metrics 1 + 4).
+ * `signups`/`paying` are billing-fed and survive a failed messaging scan; the
+ * other two go `null` with it. */
 export interface GrowthCohort {
   week: string;
   signups: number;
   /** Cohort members whose 7-day activation window has closed (or that already activated). */
-  measurable: number;
-  activated: number;
+  measurable: number | null;
+  activated: number | null;
   paying: number;
 }
 export interface GrowthSegment {
@@ -195,17 +199,24 @@ export interface GrowthSegment {
     trial_expired: number;
     signups_by_week: { week: string; n: number }[];
   };
-  activation: { activated: number; measurable: number; rate: number | null };
+  /** Messaging-fed; every field is `null` when `sources.messaging` is not "ok". */
+  activation: { activated: number | null; measurable: number | null; rate: number | null };
   weekly_active: GrowthWeeklyActive[];
-  answered: { dispatched: number; answered: number; rate: number | null; p50_reply_s: number | null };
+  answered: {
+    dispatched: number | null;
+    answered: number | null;
+    rate: number | null;
+    p50_reply_s: number | null;
+  };
   cohorts: GrowthCohort[];
-  retention_w4: { eligible: number; retained: number; rate: number | null };
-  messaging: { rooms: number; human_messages_this_week: number };
-  /** Daily-resolution series for the charts — 56 rows each, zeros included. */
+  retention_w4: { eligible: number | null; retained: number | null; rate: number | null };
+  messaging: { rooms: number | null; human_messages_this_week: number | null };
+  /** Daily-resolution series for the charts — 56 rows each, zeros included.
+   * `human_messages` and `activated` carry `null` when the messaging scan failed. */
   daily: {
     signups: { day: string; n: number }[];
-    human_messages: { day: string; n: number }[];
-    activated: { day: string; n: number }[];
+    human_messages: { day: string; n: number | null }[];
+    activated: { day: string; n: number | null }[];
   };
 }
 export interface GrowthData {

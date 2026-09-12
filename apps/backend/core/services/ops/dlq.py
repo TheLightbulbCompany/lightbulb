@@ -24,7 +24,19 @@ _LOOKBACK_S = 3600
 
 
 def queue_name() -> str:
-    """``lightbulb-{env}-openclaw-work-dlq.fifo`` — resourcePrefix(env) in api-stack.ts."""
+    """The DLQ's name, derived from the deployed work-queue URL.
+
+    ``OPENCLAW_WORK_QUEUE_URL`` is what CDK actually wired into the task
+    (service-stack.ts), and both queues are created together in api-stack.ts as
+    ``<prefix>openclaw-work.fifo`` / ``<prefix>openclaw-work-dlq.fifo``. Deriving
+    from it means a renamed or re-prefixed queue cannot leave this reader
+    silently pointed at a name nothing publishes. The literal is the fallback for
+    a local/unset environment only.
+    """
+    url = (settings.OPENCLAW_WORK_QUEUE_URL or "").rstrip("/")
+    name = url.rsplit("/", 1)[-1] if url else ""
+    if name.endswith(".fifo"):
+        return f"{name[: -len('.fifo')]}-dlq.fifo"
     return f"lightbulb-{(settings.ENVIRONMENT or 'dev').lower()}-openclaw-work-dlq.fifo"
 
 

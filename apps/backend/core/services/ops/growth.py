@@ -13,9 +13,9 @@ with the Paperclip routine/run reads that fed them (§6 explicitly ignores
 ``agent_run_completed`` volume: routines and the nightly CEO inflate it and it
 rewards automation churn, not humans coming back). Five metrics:
 
-1. **Activated workspace rate** — within 7 days of the workspace's trial start, a
-   human sent ≥5 room messages on ≥2 distinct UTC days AND the workspace
-   received ≥1 agent message in a room.
+1. **Activated workspace rate** — within 7 days of the workspace's trial start,
+   its humans TOGETHER sent ≥5 room messages on ≥2 distinct UTC days AND ≥1 agent
+   message was posted in one of its rooms.
 2. **Weekly active workspaces** (≥1 human room message in the ISO week) and the
    **multiplayer share** (those with ≥2 distinct human senders).
 3. **Answered rate + p50 reply time** — human messages with ≥1 dispatch target
@@ -182,28 +182,26 @@ def _normalize_messages(messages: list[dict]) -> dict[str, list[dict]]:
 def _activated_at(owner_messages: list[dict], start: datetime) -> datetime | None:
     """The instant BOTH activation conditions hold, or None.
 
-    Inside the 7-day window opening at `start`: one human must have sent
-    ``ACTIVATION_MIN_MESSAGES`` messages spanning ``ACTIVATION_MIN_DAYS`` distinct
-    UTC days, AND the workspace must have received an agent message. Returning
-    the instant (not a bool) is what makes week-4 retention measurable.
+    Scope is the WORKSPACE, not one person: inside the 7-day window opening at
+    `start`, the workspace's humans TOGETHER must have sent
+    ``ACTIVATION_MIN_MESSAGES`` room messages spanning ``ACTIVATION_MIN_DAYS``
+    distinct UTC days, AND an agent must have posted in one of its rooms.
+    Two humans sending three messages each over two days activates the
+    workspace; one human sending four does not. Returning the instant (not a
+    bool) is what makes week-4 retention measurable.
     """
     end = start + timedelta(days=ACTIVATION_WINDOW_DAYS)
-    window = [m for m in owner_messages if start <= m["at"] <= end]
+    window = [m for m in owner_messages if start <= m["at"] <= end]  # time-ordered
     agent_at = next((m["at"] for m in window if m["kind"] == "agent"), None)
     if agent_at is None:
         return None
-    by_sender: dict[str, list[dict]] = defaultdict(list)
-    for m in window:
-        if m["kind"] == "human":
-            by_sender[m["sender"]].append(m)
+    days: set[date] = set()
     human_at: datetime | None = None
-    for sent in by_sender.values():  # `window` is time-ordered, so each list is too
-        days: set[date] = set()
-        for n, m in enumerate(sent, start=1):
-            days.add(_utc_date(m["at"]))
-            if n >= ACTIVATION_MIN_MESSAGES and len(days) >= ACTIVATION_MIN_DAYS:
-                human_at = m["at"] if human_at is None else min(human_at, m["at"])
-                break
+    for n, m in enumerate((h for h in window if h["kind"] == "human"), start=1):
+        days.add(_utc_date(m["at"]))
+        if n >= ACTIVATION_MIN_MESSAGES and len(days) >= ACTIVATION_MIN_DAYS:
+            human_at = m["at"]
+            break
     return None if human_at is None else max(human_at, agent_at)
 
 
@@ -242,6 +240,31 @@ def _answered(messages: list[dict], since: datetime) -> dict:
     }
 
 
+def _blank_messaging(seg: dict) -> dict:
+    """The messaging scan failed: every figure it feeds renders EMPTY, never a
+    green zero — that is the promise the page's own error banner makes.
+
+    Billing-fed figures survive (workspace totals, signups, paying), because the
+    DDB read that produced them succeeded. `None` is what the client turns into
+    an em dash and what a chart leaves as a gap.
+    """
+    seg["activation"] = {"activated": None, "measurable": None, "rate": None}
+    seg["weekly_active"] = [
+        {"week": w["week"], "workspaces": None, "multiplayer": None, "multiplayer_share": None}
+        for w in seg["weekly_active"]
+    ]
+    seg["answered"] = {"dispatched": None, "answered": None, "rate": None, "p50_reply_s": None}
+    seg["cohorts"] = [{**c, "measurable": None, "activated": None} for c in seg["cohorts"]]
+    seg["retention_w4"] = {"eligible": None, "retained": None, "rate": None}
+    seg["messaging"] = {"rooms": None, "human_messages_this_week": None}
+    seg["daily"] = {
+        **seg["daily"],
+        "human_messages": [{"day": d["day"], "n": None} for d in seg["daily"]["human_messages"]],
+        "activated": [{"day": d["day"], "n": None} for d in seg["daily"]["activated"]],
+    }
+    return seg
+
+
 def derive(
     *,
     billing: list[dict],
@@ -255,6 +278,7 @@ def derive(
     internal: set[str],
     now: datetime,
     weeks: int = WINDOW_WEEKS,
+    messaging_ok: bool = True,
 ) -> dict:
     by_owner = _normalize_messages(messages)
     rooms_by_owner = Counter(str(r.get("ownerId")) for r in rooms if r.get("ownerId"))
@@ -381,6 +405,11 @@ def derive(
             },
         }
 
+    def _segment(rows: list[dict]) -> dict:
+        """One segment, blanked where the messaging scan could not supply it."""
+        seg = segment(rows)
+        return seg if messaging_ok else _blank_messaging(seg)
+
     ext_rows = [b for b in billing if b["owner_id"] not in internal]
     int_rows = [b for b in billing if b["owner_id"] in internal]
     # HOGQL_FUNNEL_DAILY's query window is deliberately wider than the days axis -- the axis is what the payload promises.
@@ -390,7 +419,7 @@ def derive(
         "window_weeks": weeks,
         "weeks": week_list,
         "days": day_list,
-        "segments": {"external": segment(ext_rows), "internal": segment(int_rows)},
+        "segments": {"external": _segment(ext_rows), "internal": _segment(int_rows)},
         "internal_owner_ids": sorted(internal),
         "gate_blocked_7d": (gate_blocked or {}).get("totals", []),
         "gate_blocked_daily": (gate_blocked or {}).get("daily", []),
@@ -508,6 +537,7 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
             posthog_funnel_daily=ph["funnel_daily"],
             internal=internal,
             now=datetime.now(timezone.utc),
+            messaging_ok=not msg_err,
         )
         data["sources"] = {
             "ddb": ddb_state,

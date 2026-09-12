@@ -4,9 +4,21 @@ import { Tile } from "@/components/admin/Tile";
 import type { GrowthData, GrowthSegment } from "../_lib/api";
 
 // Exported so charts.tsx formats a share exactly the same way — one source of
-// truth, and `null` (nothing to divide by) is an em dash everywhere, never 0%.
+// truth, and `null` (nothing to divide by, or a messaging read that failed) is
+// an em dash everywhere, never 0%.
 export function pct(value: number | null | undefined): string {
   return value === null || value === undefined ? "—" : `${Math.round(value * 100)}%`;
+}
+
+/** A count, or an em dash when the source that feeds it is unavailable. */
+export function num(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : String(value);
+}
+
+/** `ok` reads as "this is going well", which zero is not — neutral at 0 and at
+ * an unknown, `ok` only above it. */
+function countTone(value: number | null | undefined): "ok" | "unknown" {
+  return value ? "ok" : "unknown";
 }
 
 export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
@@ -35,7 +47,7 @@ export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][
   );
 }
 
-const secs = (v: number | null) => (v === null ? "—" : `${v}s`);
+const secs = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${v}s`);
 
 /** The messaging card: what the room layer is doing right now, plus the one
  * counter that says replies are being lost (audit §6 metric 3). */
@@ -45,12 +57,12 @@ export function Messaging({ seg, data }: { seg: GrowthSegment; data: GrowthData 
   return (
     <Card title="Messaging">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-        <MetricStat label="rooms" value={seg.messaging.rooms} />
-        <MetricStat label="human messages this week" value={seg.messaging.human_messages_this_week} />
+        <MetricStat label="rooms" value={num(seg.messaging.rooms)} />
+        <MetricStat label="human messages this week" value={num(seg.messaging.human_messages_this_week)} />
         <MetricStat
           label="answered within 2 min"
           value={pct(a.rate)}
-          hint={`${a.answered} of ${a.dispatched} addressed`}
+          hint={`${num(a.answered)} of ${num(a.dispatched)} addressed, last 8 weeks`}
           tone={a.rate !== null && a.rate < 0.95 ? "error" : "default"}
         />
         <MetricStat label="p50 reply" value={secs(a.p50_reply_s)} />
@@ -73,16 +85,16 @@ export function Headline({ seg, audience }: { seg: GrowthSegment; audience: stri
   return (
     <Card title={audience}>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <Tile title="Activated rate" label={pct(a.rate)} sub={`${a.activated} of ${a.measurable} measurable`} tone={a.rate === null ? "unknown" : "ok"} />
-        <Tile title="Weekly active" label={String(thisWeek?.workspaces ?? 0)} sub={`multiplayer ${pct(thisWeek?.multiplayer_share ?? null)}`} tone="ok" />
+        <Tile title="Activated rate" label={pct(a.rate)} sub={`${num(a.activated)} of ${num(a.measurable)} measurable`} tone={a.rate ? "ok" : "unknown"} />
+        <Tile title="Weekly active" label={num(thisWeek?.workspaces)} sub={`multiplayer ${pct(thisWeek?.multiplayer_share)}`} tone={countTone(thisWeek?.workspaces)} />
         <Tile
           title="Answered rate"
           label={pct(seg.answered.rate)}
           sub={`p50 ${secs(seg.answered.p50_reply_s)}`}
           tone={seg.answered.rate === null ? "unknown" : seg.answered.rate < 0.95 ? "error" : "ok"}
         />
-        <Tile title="Paying" label={String(seg.workspaces.paying)} sub={`of ${seg.workspaces.total} workspaces`} tone="ok" />
-        <Tile title="W4 retention" label={pct(r.rate)} sub={`${r.retained} of ${r.eligible} eligible`} tone={r.rate === null ? "unknown" : "ok"} />
+        <Tile title="Paying" label={String(seg.workspaces.paying)} sub={`of ${seg.workspaces.total} workspaces`} tone={countTone(seg.workspaces.paying)} />
+        <Tile title="W4 retention" label={pct(r.rate)} sub={`${num(r.retained)} of ${num(r.eligible)} eligible`} tone={r.rate ? "ok" : "unknown"} />
       </div>
     </Card>
   );
@@ -107,7 +119,7 @@ export function WeeklyActive({ seg }: { seg: GrowthSegment }) {
     <>
       <Table
         head={["week", "active workspaces", "≥2 human senders", "multiplayer share"]}
-        rows={seg.weekly_active.map((w) => [w.week, w.workspaces, w.multiplayer, pct(w.multiplayer_share)])}
+        rows={seg.weekly_active.map((w) => [w.week, num(w.workspaces), num(w.multiplayer), pct(w.multiplayer_share)])}
       />
       <div className="mt-2 text-xs text-muted-foreground">
         Active = at least one human room message in that ISO week. Distinct senders, not members: a workspace with two
@@ -125,9 +137,9 @@ export function Cohorts({ seg }: { seg: GrowthSegment }) {
         rows={seg.cohorts.map((c) => [
           c.week,
           c.signups,
-          c.measurable,
-          c.activated,
-          pct(c.measurable ? c.activated / c.measurable : null),
+          num(c.measurable),
+          num(c.activated),
+          pct(c.measurable && c.activated !== null ? c.activated / c.measurable : null),
           c.paying,
           pct(c.signups ? c.paying / c.signups : null),
         ])}
@@ -135,6 +147,8 @@ export function Cohorts({ seg }: { seg: GrowthSegment }) {
       <div className="mt-2 text-xs text-muted-foreground">
         Activated = within 7 days of the trial start, one human sent ≥5 room messages on ≥2 distinct UTC days AND the
         workspace received ≥1 agent message. &ldquo;Measurable&rdquo; excludes cohorts whose 7-day window is still open.
+        &ldquo;Paying now&rdquo; is the cohort&apos;s CURRENT status, not a recorded trial→paid transition: a workspace
+        that converted and then cancelled reads here as never converted.
       </div>
     </>
   );
@@ -150,7 +164,11 @@ export function Acquisition({ seg, data }: { seg: GrowthSegment; data: GrowthDat
       <div className="grid gap-6 md:grid-cols-[1fr_auto]">
         <Table
           head={["week", ...events, "activated (server)"]}
-          rows={data.weeks.map((w) => [w, ...events.map((e) => funnel.get(w)?.[e] ?? 0), activatedByWeek.get(w) ?? 0])}
+          rows={data.weeks.map((w) => [
+            w,
+            ...events.map((e) => funnel.get(w)?.[e] ?? 0),
+            num(activatedByWeek.get(w)),
+          ])}
         />
         <div>
           <div className="mb-1 text-xs text-muted-foreground">signup_started by first touch</div>

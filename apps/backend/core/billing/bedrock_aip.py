@@ -335,7 +335,8 @@ def _aip_name(owner_id: str, tier: str) -> str:
     provision mint fresh profiles, and repoint every place the OLD ARN was
     persisted — the containers row, the reverse table (whose PRIMARY KEY is the
     arn), the gate-token row's aip_tiers, the task-def model env, and
-    openclaw.json on EFS. scripts/migrate_aip_names.py drives that.
+    openclaw.json on EFS. Handled by the one-shot rename script (deleted
+    2026-09-11; see git history).
     """
     return f"lightbulb-{_env()}-{owner_id}-{tier}"
 

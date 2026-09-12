@@ -1,4 +1,4 @@
-"""API Gateway WebSocket HTTP integration for node/operator machine relays only."""
+"""API Gateway WebSocket HTTP integration for node/operator/local-session machine relays only."""
 
 from __future__ import annotations
 

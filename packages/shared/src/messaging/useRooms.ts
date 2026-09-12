@@ -482,13 +482,17 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     // room-list GET, purely to learn an unread count we already know is zero.
     // Both are applied locally instead; the next natural revalidation confirms.
     const roomId = activeRoom.roomId;
-    const request = messaging.markRead(roomId, { lastReadSeq: sequence }).then(() => {
+    const request = messaging.markRead(roomId, { lastReadSeq: sequence }).then((cursor) => {
+        // Apply the cursor the SERVER returned, not the one we asked for, so a
+        // clamped or already-advanced value is what the surface shows. Only on
+        // success: a failed mark leaves the room unread, as it should.
+        const applied = cursor.lastReadSeq;
         void mutateRoom((current) => current && (current.roomId === roomId
-          ? { ...current, lastReadSeq: sequence, unreadCount: 0 } : current), false);
+          ? { ...current, lastReadSeq: applied, unreadCount: 0 } : current), false);
         void mutateRooms((current) => current && {
           ...current,
           rooms: current.rooms.map((room) => room.roomId === roomId
-            ? { ...room, lastReadSeq: sequence, unreadCount: 0 } : room),
+            ? { ...room, lastReadSeq: applied, unreadCount: 0 } : room),
         }, false);
       }).catch(() => {});
     const operation = pendingRead.current

@@ -40,13 +40,13 @@ from core.services.paperclip_openclaw_pairing import (
 
 logger = logging.getLogger(__name__)
 
-_RUN_DISPATCH_METHODS = frozenset({"chat.send", "sessions.send", "sessions.steer", "agent"})
 _RUN_DISPATCH_USE = {
     "chat.send": "/api/v1/messaging/rooms/{roomId}/messages",
     "sessions.send": "/api/v1/messaging/rooms/{roomId}/messages",
     "sessions.steer": "/api/v1/messaging/runs/{runId}/steer",
     "agent": "/api/v1/messaging/rooms/{roomId}/messages",
 }
+_RUN_DISPATCH_METHODS = frozenset(_RUN_DISPATCH_USE)
 
 # Default deny: only methods used by the control/status surfaces. Room commands,
 # run control, approvals, and questions have dedicated product endpoints.
@@ -60,7 +60,6 @@ _PROXY_ALLOWED_METHODS = frozenset(
         "browser.request",
         "channels.status",
         "chat.history",
-        "chat.message.get",
         "commands.list",
         "config.get",
         "config.patch",
@@ -103,7 +102,6 @@ _SESSION_KEY_PARAM_BY_METHOD = {
     "sessions.rewind": "sessionKey",
     "sessions.branches.list": "sessionKey",
     "sessions.branches.switch": "sessionKey",
-    "chat.message.get": "sessionKey",
 }
 _SESSION_KEYS_LIST_PARAM_BY_METHOD = {"sessions.search": "sessionKeys"}
 _FORBIDDEN_PARAMS_BY_METHOD: dict[str, frozenset[str]] = {

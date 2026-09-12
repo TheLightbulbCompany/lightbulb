@@ -238,7 +238,7 @@ def test_rewind_and_branch_methods_allowed_on_own_key(method):
     _allows(method, {"sessionKey": f"agent:agentX:user_A:{_UUID}"})
 
 
-# --- OpenClaw 8.1 sessions.search / chat.message.get ------------------------
+# --- OpenClaw 8.1 sessions.search -------------------------------------------
 
 
 def test_search_rejected_when_any_listed_key_is_foreign():
@@ -263,11 +263,6 @@ def test_search_allowed_for_own_keys_and_keyless():
     )
     # Key-less search is scoped by the response post-filter, not refused.
     _allows("sessions.search", {"agentId": "agentX", "query": "q"})
-
-
-def test_chat_message_get_rejected_for_another_users_key():
-    err = _rejects("chat.message.get", {"sessionKey": f"agent:agentX:user_B:{_UUID}", "messageId": "m1"})
-    assert err.error.code == "ROOM_FORBIDDEN"
 
 
 def test_search_hits_are_scoped_to_the_caller():

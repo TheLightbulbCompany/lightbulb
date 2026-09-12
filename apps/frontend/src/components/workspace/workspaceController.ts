@@ -238,8 +238,20 @@ export function openMessagePanel(roomId: string, messageId?: string): void {
   if (descriptor && _api) addOrFocus(descriptor);
 }
 
+export function isDockAttached(): boolean {
+  return _api !== null;
+}
+
 let sessionIntent = 0;
+// Docks the session as its own panel when the workspace shell is attached
+// (task-16); falls back to the legacy in-Messages-pane intent otherwise —
+// e.g. mobile, or any caller before the dock API attaches.
 export function openSessionPanel(roomId: string, sessionId: string): void {
+  const dock = describePanel("session", { room: roomId, session: sessionId });
+  if (dock && _api) {
+    addOrFocus(dock);
+    return;
+  }
   const descriptor = describePanel("chat", { room: roomId, session: sessionId });
   if (descriptor && _api) addOrFocus(descriptor, { sessionIntent: String(++sessionIntent) });
 }

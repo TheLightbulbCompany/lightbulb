@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Laptop, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { isDockAttached, openSessionPanel } from "@/components/workspace/workspaceController";
 import { useRoomResources, type RoomResourceSource } from "@/hooks/useRoomResources";
 import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
@@ -67,7 +68,8 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
       {resources.data && <p>Showing the last successful snapshot; availability may be stale.</p>}
       <Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
     {selected ? <LocalSessionPanel key={`${selected.sessionId}:${selected.generation}:${resources.accessRevision}`}
-      session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare} />
+      session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare}
+      participants={participants} onEvent={source.onEvent} />
       : <div className="room-context-body">
         {unavailable && <p role="status">Session unavailable in this conversation.</p>}
         {resources.loading && <p role="status">Loading devices and sessions…</p>}
@@ -90,7 +92,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
                 <ul aria-label={`Sessions on Mac ${mac.slice(0, 8)}`}>
                   {sessions.map(session => <li key={session.sessionId}><button type="button" className="room-resource-session" aria-label={`Open ${sessionLabel(session)}`}
                     ref={button => { if (button) buttons.current.set(session.sessionId, button); else buttons.current.delete(session.sessionId); }}
-                    onClick={() => setSelection({ id: session.sessionId, accessRevision: resources.accessRevision })}>
+                    onClick={() => { if (isDockAttached()) openSessionPanel(roomId, session.sessionId); else setSelection({ id: session.sessionId, accessRevision: resources.accessRevision }); }}>
                     <span>{sessionLabel(session)}</span><span className="text-sm text-muted-foreground">{sessionStatus[session.status]}</span>
                   </button></li>)}
                 </ul>

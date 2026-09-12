@@ -24,7 +24,7 @@ import { CompanyNav } from "@/components/chat/CompanyNav";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
-import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteDialog } from "@/components/chat/AgentDialogs";
+import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
 import { AgentRoster } from "@/components/agents/AgentRoster";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
@@ -39,10 +39,6 @@ import { GetStarted } from "@/components/getstarted/GetStarted";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { pushSearchParams } from "@/lib/shellNav";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
-import { ArchivedSessions } from "@/components/chat/ArchivedSessions";
-import { SessionList } from "@/components/chat/SessionList";
-import { useActiveSession } from "@/hooks/useActiveSession";
-import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
@@ -93,7 +89,7 @@ export function ChatLayout({
   // user who was always meant to be an org member. The state machine +
   // the router.replace / setActive side effects live in the hook.
   const onboardingPhase = useOnboardingGate();
-  const { isSignedIn, userId: clerkUserId } = useAuth();
+  const { isSignedIn } = useAuth();
   const { user } = useUser();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { account, isSubscribed } = useBilling();
@@ -117,7 +113,6 @@ export function ChatLayout({
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
-  const [deleteSessionTarget, setDeleteSessionTarget] = useState<AgentSession | null>(null);
   // Captured once (not read directly in render — Date.now() is impure) so
   // the free-tier expiry check below is stable across re-renders. Same
   // pattern as settings/page.tsx's nowMs.
@@ -125,38 +120,6 @@ export function ChatLayout({
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
-
-  // Per-agent session state. `useActiveSession` is a shared module store so a
-  // selection here needs no prop drilling across subtrees; since the transcript
-  // moved to `components/messaging/*` this shell is its only reader.
-  //
-  // The list comes first because it decides the seed — see the same block in
-  // WorkspaceSidebar for why it is gated on an EMPTY list rather than on a
-  // null active session.
-  const {
-    sessions: agentSessions,
-    isLoading: sessionsLoading,
-    renameSession,
-    deleteSession,
-    setArchived,
-    setPinned,
-  } = useAgentSessions(currentAgentId, clerkUserId ?? null);
-  const { activeSessionId, newSession, selectSession } = useActiveSession(
-    currentAgentId,
-    !sessionsLoading && agentSessions.length === 0,
-  );
-
-  // Archive is the rail's removal action, so the owner can archive the session
-  // they are sitting in. The chat would then keep rendering a transcript the
-  // rail no longer lists — fall back to the legacy row, exactly as delete does.
-  // Gated on a patch that actually LANDED: the container refuses to archive a
-  // session with a run still in flight, and a refused archive must leave the
-  // owner where they were rather than silently moving them.
-  const handleArchiveSession = async (s: AgentSession): Promise<void> => {
-    const wasActive = s.sessionId === activeSessionId;
-    const ok = await setArchived(s.key, true);
-    if (ok && wasActive) selectSession(null);
-  };
 
   // Header agent-action cluster (next to the file-tree button): pause/resume +
   // inspector/work deep links for the active agent, so the user can act on the
@@ -378,41 +341,6 @@ export function ChatLayout({
                 onInspect={(id) => openAgentInspector?.(id)}
                 onRename={setRenameTarget}
                 onDelete={setDeleteTarget}
-                renderSessions={() => (
-                  <SessionList
-                    sessions={agentSessions}
-                    activeSessionId={activeSessionId}
-                    onSelect={(sid) => {
-                      selectSession(sid);
-                      // Like handleSelectAgent: the view is derived from
-                      // ?panel, so picking a session from a panel view
-                      // must drop ?panel to land back on the chat.
-                      onClearPanel?.();
-                      setSidebarOpen(false);
-                    }}
-                    onNew={() => {
-                      newSession();
-                      onClearPanel?.();
-                      setSidebarOpen(false);
-                    }}
-                    onRename={(s, label) => {
-                      void renameSession(s.key, label);
-                    }}
-                    onArchive={(s) => {
-                      void handleArchiveSession(s);
-                    }}
-                    onPin={(s, next) => {
-                      void setPinned(s.key, next);
-                    }}
-                    archivedSlot={
-                      <ArchivedSessions
-                        agentId={currentAgentId}
-                        userId={clerkUserId ?? null}
-                        onDelete={(s) => setDeleteSessionTarget(s)}
-                      />
-                    }
-                  />
-                )}
               />
               {/* CompanyNav (Home / Inbox / Work / Knowledge / Company) plus the
                   marketplace block (GallerySection) — Browse + Publish buttons
@@ -653,21 +581,6 @@ export function ChatLayout({
             await deleteAgent(deleteTarget.id);
             if (userSelectedId === deleteTarget.id) setUserSelectedId(null);
             setDeleteTarget(null);
-          }}
-        />
-
-        <SessionDeleteDialog
-          key={`delete-session-${deleteSessionTarget?.key ?? "closed"}`}
-          session={deleteSessionTarget}
-          onCancel={() => setDeleteSessionTarget(null)}
-          onDelete={async () => {
-            if (!deleteSessionTarget) return;
-            const wasActive = deleteSessionTarget.sessionId === activeSessionId;
-            await deleteSession(deleteSessionTarget.key);
-            // The displayed session no longer exists to stay selected — fall
-            // back to General, which always survives (it isn't deletable).
-            if (wasActive) selectSession(null);
-            setDeleteSessionTarget(null);
           }}
         />
       </div>

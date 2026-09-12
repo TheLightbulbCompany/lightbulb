@@ -1,5 +1,5 @@
 // Module-level singleton owning the DockviewApi. The repo's store pattern
-// (useActiveSession): module state + Set of listeners + useSyncExternalStore.
+// (useIsDesktop): module state + Set of listeners + useSyncExternalStore.
 // EVERY programmatic open/focus goes through openPanel/openChatPanel — a
 // future toast or agent event that bypasses this API silently loses URL
 // integration, so nothing else may call api.addPanel.
@@ -318,7 +318,7 @@ function subscribe(l: () => void): () => void {
 
 export function useWorkspaceState(): WorkspaceSnapshot {
   // `subscribe` is a module-level function (stable identity across renders —
-  // see useIsDesktop.ts / useActiveSession.ts for the same pattern), so no
+  // see useIsDesktop.ts for the same pattern), so no
   // useCallback wrapper is needed or wanted (react-hooks/exhaustive-deps
   // flags useCallback(namedFn, []) as suspicious).
   return useSyncExternalStore(

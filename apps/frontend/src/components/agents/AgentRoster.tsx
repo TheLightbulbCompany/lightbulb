@@ -36,7 +36,7 @@
 // already leads with "N needs you" / "N working", so a hidden agent that wants
 // attention still says so.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { Pencil, Trash2, ListTodo, SlidersHorizontal, Pin, PinOff, ChevronDown } from "lucide-react";
 
 import { Monogram } from "@/components/agents/AgentIdentity";
@@ -247,10 +247,6 @@ interface AgentRosterProps {
   onInspect: (agentId: string) => void;
   onRename: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
-  /** Per-agent session list, nested under the active row. Each host wires its
-   *  own selection side effects (the mobile shell also closes the drawer), so
-   *  the nest is injected rather than rebuilt here. */
-  renderSessions?: (agentId: string) => ReactNode;
 }
 
 export function AgentRoster({
@@ -264,7 +260,6 @@ export function AgentRoster({
   onInspect,
   onRename,
   onDelete,
-  renderSessions,
 }: AgentRosterProps): React.ReactElement {
   // Memoized as it was in both hosts before the extraction: the roster now
   // re-renders on every live run start/stop, and walking the model catalog on
@@ -512,8 +507,6 @@ export function AgentRoster({
                 <TooltipContent>{`Delete ${name}`}</TooltipContent>
               </Tooltip>
             </div>
-
-            {isActive && renderSessions?.(agent.id)}
           </div>
         );
       })}

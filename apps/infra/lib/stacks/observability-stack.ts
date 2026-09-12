@@ -970,7 +970,7 @@ def handler(event, context):
   }
 
   // =========================================================================
-  // Messaging platform alarms (P19-P23, W68-W76)
+  // Messaging platform alarms (P19-P22, W68-W76)
   // =========================================================================
 
   /**
@@ -1030,13 +1030,13 @@ def handler(event, context):
       name: "messaging-queue-wait-p99",
       metricName: "messaging.work.queue_wait",
       statistic: "p99",
-      threshold: 60_000,
+      threshold: 30_000,
       periodMinutes: 5,
       evaluationPeriods: 3,
       datapointsToAlarm: 2,
       severity: "page",
       description:
-        "PAGE: p99 wait before the worker picks work up exceeds 60s - the " +
+        "PAGE: p99 wait before the worker picks work up exceeds 30s - the " +
         "worker is falling behind the queue.",
     });
 
@@ -1072,22 +1072,6 @@ def handler(event, context):
       description:
         "PAGE: the container's lightbulb-channel ingress rejected a dispatch " +
         "with a 4xx. Non-transient: those messages never reach the agent.",
-    });
-
-    // -- P23: room run frames cannot be subscribed --
-    // Without the session subscription the backend never sees the agent's run
-    // events, so the UI shows nothing happening even when the agent is working.
-    this.createAlarm({
-      id: "P23",
-      name: "messaging-room-subscribe-error",
-      metricName: "messaging.room_session.subscribe",
-      dimensions: { outcome: "error" },
-      threshold: 0,
-      periodMinutes: 5,
-      severity: "page",
-      description:
-        "PAGE: subscribing to a room's agent session failed - run frames for " +
-        "that room never reach the UI.",
     });
 
     // -- W68: messages that mention an agent and reach nobody --
@@ -1167,20 +1151,6 @@ def handler(event, context):
       description:
         "Work items are retrying in bulk - a poison pointer or a fleet-wide " +
         "wake failure, ahead of anything reaching the DLQ.",
-    });
-
-    // -- W72: run frames not reaching AppSync --
-    this.createAlarm({
-      id: "W72",
-      name: "messaging-room-frame-publish-error",
-      metricName: "messaging.room_frame.publish",
-      dimensions: { outcome: "error" },
-      threshold: 5,
-      periodMinutes: 5,
-      severity: "warn",
-      description:
-        "Room run frames are failing to publish - agents appear frozen " +
-        "mid-run in the UI even though the run is progressing.",
     });
 
     // -- W73: live events not reaching AppSync --

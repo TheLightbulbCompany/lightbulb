@@ -79,8 +79,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     for (const handler of chatHandlers.current) handler(frame, event);
   }, []);
 
-  const userChannel = config ? `/users/${config.userChannelKey}` : null;
-  const roomChannel = activeRoom ? `/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;
+  const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
+  const roomChannel = config && activeRoom ? `/ws/${config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;
   const live = useSharedLiveEvents({
     config: config ?? null,
     getToken: () => getToken({ template: "lightbulb-appsync" }),

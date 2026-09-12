@@ -101,7 +101,11 @@ class LiveEventPublisher:
         if meta is None:
             return False
         key = _uuid(str(meta.get("deliveryKey", "")), "room delivery key")
-        await self._publish(f"/rooms/{room_id}/{key}", validated)
+        workspace = _uuid(
+            await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(room_id), "META", meta),
+            "room workspace id",
+        )
+        await self._publish(f"/ws/{workspace}/rooms/{room_id}/{key}", validated)
         return True
 
     async def publish_user(self, owner_id: str, user_id: str, event: dict[str, Any]) -> bool:
@@ -118,7 +122,11 @@ class LiveEventPublisher:
             or reverse.get("userId") != user_id
         ):
             return False
-        await self._publish(f"/users/{key}", validated)
+        workspace = _uuid(
+            await messaging_repo.workspace_id_for_meta(messaging_repo.stream_pk(key), "META", reverse),
+            "stream workspace id",
+        )
+        await self._publish(f"/ws/{workspace}/users/{key}", validated)
         return True
 
     async def _publish(self, channel: str, event: LiveEvent) -> None:

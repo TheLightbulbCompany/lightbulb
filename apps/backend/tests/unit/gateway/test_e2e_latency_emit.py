@@ -4,9 +4,10 @@ and chat.error).
 
 The span is no longer correlated by a bespoke run_id->start map. Instead the
 END is emitted from the pool's existing per-session active-run window: the
-dispatcher's ``mark_run_active`` stamps ``started_at`` (BEFORE the chat.send
-RPC is forwarded) and the chat-terminal handler in ``_handle_message`` reads it
-back at the clear site and emits ``chat.e2e.latency``.
+dispatcher stamps ``started_at`` on the ``_active_runs`` entry (BEFORE the
+chat.send RPC is forwarded) and the chat-terminal handler in
+``_handle_message`` reads it back at the clear site and emits
+``chat.e2e.latency``.
 
 Driven through the real ``_handle_message`` seam (same fixture/pattern as
 test_lifecycle_billing.py) so the emit is exercised in its true position —
@@ -50,9 +51,7 @@ def conn():
     c._active_runs = {}
     c._terminal_run_ids = {}
     c._analytics_tasks = set()
-    c._run_state = {}
     c._side_run_ids = {}
-    c._run_text = {}
     c._parked = False
     c._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -67,8 +66,8 @@ def conn():
 async def test_primary_terminal_emits_positive_latency(conn):
     """A primary-run final with a tracked started_at emits the SLO metric in ms."""
     session_key = "agent:main:main"
-    # mark_run_active stamps started_at BEFORE the chat.send RPC; simulate a
-    # turn that started ~10ms ago so elapsed is comfortably positive.
+    # started_at is stamped BEFORE the chat.send RPC; simulate a turn that
+    # started ~10ms ago so elapsed is comfortably positive.
     conn._active_runs[session_key] = {
         "started_at": time.monotonic() - 0.01,
         "last_event_at": time.monotonic(),
@@ -89,7 +88,6 @@ async def test_primary_terminal_emits_positive_latency(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
 
@@ -123,7 +121,6 @@ async def test_terminal_without_active_run_emits_nothing(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
 
@@ -165,7 +162,6 @@ async def test_side_run_terminal_emits_nothing(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
 
@@ -195,7 +191,6 @@ async def _drive_terminal(conn, session_key, payload_extra) -> list[tuple]:
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=capture),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message(
             {

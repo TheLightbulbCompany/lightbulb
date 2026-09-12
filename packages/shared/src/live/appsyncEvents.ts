@@ -110,8 +110,8 @@ export class AppSyncEventsClient {
   setChannels(channels: readonly string[]): void {
     if (this.closed) return;
     const unique = [...new Set(channels)];
-    const users = unique.filter((channel) => channel.startsWith("/users/"));
-    const rooms = unique.filter((channel) => channel.startsWith("/rooms/"));
+    const users = unique.filter((channel) => channel.includes("/users/"));
+    const rooms = unique.filter((channel) => channel.includes("/rooms/"));
     if (users.length > 1 || rooms.length > 1 || users.length + rooms.length !== unique.length) {
       this.opts.onError?.("protocol_error");
     }

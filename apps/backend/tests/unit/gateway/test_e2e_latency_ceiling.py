@@ -38,9 +38,7 @@ def conn():
     c._active_runs = {}
     c._terminal_run_ids = {}
     c._analytics_tasks = set()
-    c._run_state = {}
     c._side_run_ids = {}
-    c._run_text = {}
     c._parked = False
     c._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -78,7 +76,6 @@ async def test_normal_elapsed_emits_latency(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _payload(session_key, "run-ok")})
 
@@ -110,7 +107,6 @@ async def test_over_ceiling_elapsed_does_not_emit_latency(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _payload(session_key, "run-stale")})
 

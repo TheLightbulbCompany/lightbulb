@@ -86,7 +86,8 @@ arn:aws:sts::{account}:assumed-role/{roleName}/{session}.
    (`frameChannel` is the exact room channel path, `frameEndpoint` the AppSync Events
    HTTP endpoint). A body without `run` is a 400; there is no compatibility path.
 4. Delete the SQS message on 200/202/409. On timeout or 5xx, leave it for redelivery.
-   Visibility timeout 60 s, no extension, `maxReceiveCount` 5.
+   Visibility timeout 60 s, no extension, `maxReceiveCount` 30 (≈5 min at the
+   consumer's 10 s retry, sized to a cold start).
 
 ### Plugin ingress response
 
@@ -114,6 +115,11 @@ callback and never calls `sessions.list` on the turn path. An unknown `runId` is
 a replayed callback is a 200 no-op. A failed run pushes a notification to the
 triggering member from the same callback; a completed run's reply is already pushed by
 the projector.
+
+A turn accepted while the session already has an active run is queued inside the plugin
+(one running turn per session, FIFO); a queued run is reported `run.started` and
+heartbeats from acceptance, so the 120 s start deadline covers only a plugin that never
+took the turn, and the reply stamp for a session always names the one running turn.
 
 ### Frames (container → AppSync)
 

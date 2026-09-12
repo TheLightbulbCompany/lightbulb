@@ -258,6 +258,14 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
           ],
           Projection: { ProjectionType: "ALL" },
         }),
+        Match.objectLike({
+          IndexName: "by-run-deadline",
+          KeySchema: [
+            { AttributeName: "sweep", KeyType: "HASH" },
+            { AttributeName: "deadlineAt", KeyType: "RANGE" },
+          ],
+          Projection: { ProjectionType: "KEYS_ONLY" },
+        }),
       ]),
     });
   });
@@ -292,10 +300,10 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
         FifoQueue: true,
         ContentBasedDeduplication: false,
         MessageRetentionPeriod: 604800,
-        VisibilityTimeout: 300,
+        VisibilityTimeout: 60,
         ReceiveMessageWaitTimeSeconds: 20,
         KmsMasterKeyId: expect.anything(),
-        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 360 }),
+        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 30 }),
       }),
     );
     expect(byName["lightbulb-dev-openclaw-work-dlq.fifo"]).toEqual(
@@ -509,7 +517,7 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     expect(eventApi.Properties.EventConfig).not.toHaveProperty("LogConfig");
   });
 
-  test("one read-only DynamoDB data source backs both strong namespace handlers", () => {
+  test("one read-only DynamoDB data source backs the ws namespace handler", () => {
     API_TEMPLATE.resourceCountIs("AWS::AppSync::DataSource", 1);
     API_TEMPLATE.hasResourceProperties("AWS::AppSync::DataSource", {
       Type: "AMAZON_DYNAMODB",
@@ -536,23 +544,22 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     ]) {
       expect(dataSourceActions.has(forbidden)).toBe(false);
     }
-    for (const name of ["rooms", "users"]) {
-      API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
-        Name: name,
-        PublishAuthModes: [{ AuthType: "AWS_IAM" }],
-        SubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
-        HandlerConfigs: {
-          OnPublish: Match.objectLike({
-            Behavior: "CODE",
-            Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
-          }),
-          OnSubscribe: Match.objectLike({
-            Behavior: "CODE",
-            Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
-          }),
-        },
-      });
-    }
+    API_TEMPLATE.resourceCountIs("AWS::AppSync::ChannelNamespace", 1);
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
+      Name: "ws",
+      PublishAuthModes: [{ AuthType: "AWS_IAM" }],
+      SubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
+      HandlerConfigs: {
+        OnPublish: Match.objectLike({
+          Behavior: "CODE",
+          Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
+        }),
+        OnSubscribe: Match.objectLike({
+          Behavior: "CODE",
+          Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
+        }),
+      },
+    });
     const namespaces = Object.values(
       API_TEMPLATE.findResources("AWS::AppSync::ChannelNamespace"),
     ) as any[];
@@ -567,6 +574,13 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     // (@aws-appsync/no-regex); UUID segments must go through util.matches.
     expect(code).toContain("util.matches(UUID,");
     expect(code).not.toContain("= /^");
+    expect(code).toContain("'ws'");
+    expect(code).toContain("userArn");
+    expect(code).toContain("owner-bedrock-");
+    // A foreign environment's owner role (same AWS account) is refused, not trusted.
+    expect(code).toContain("'-owner-bedrock-'");
+    expect(code).toContain("indexOf('-owner-bedrock-') !== -1) util.unauthorized()");
+    expect(code).toContain("workspaceId");
   });
 
   test("outputs both endpoints, API ID, and API ARN without channel keys", () => {
@@ -620,8 +634,8 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
           ? statement.Resource
           : [statement.Resource],
       );
-    expect(JSON.stringify(publishResources)).toContain("channelNamespace/rooms");
-    expect(JSON.stringify(publishResources)).toContain("channelNamespace/users");
+    expect(JSON.stringify(publishResources)).toContain("channelNamespace/ws");
+    expect(JSON.stringify(publishResources)).not.toContain("channelNamespace/rooms");
   });
 
   test("Pipe state monitor polls the one Pipe every minute", () => {
@@ -699,7 +713,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
     const stopped = alarms.find(
       (alarm) => alarm.Properties.AlarmName === "lightbulb-dev-openclaw-work-pipe-stopped",
     );
-    expect(oldest.Properties.Threshold).toBe(3600);
+    expect(oldest.Properties.Threshold).toBe(300);
     expect(iterator.Properties.Threshold).toBe(300000);
     expect(stopped.Properties).toEqual(
       expect.objectContaining({

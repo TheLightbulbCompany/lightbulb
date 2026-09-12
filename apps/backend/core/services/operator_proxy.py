@@ -27,8 +27,8 @@ The relay:
      so its pending-request map matches), then
   5. relays every subsequent frame verbatim in both directions — raw
      ``event:"agent"`` frames included. The adapter consumes the native
-     OpenClaw event shape, so we deliberately do NOT run the webchat
-     ``_transform_agent_event`` transform here.
+     OpenClaw event shape, so we deliberately do NOT run the backend's former
+     webchat frame transform here.
 
 It intentionally skips the node-host machinery (cli/mac device buckets,
 exec/execNode session pinning, ``node_status`` UI broadcasts, ref-counted

@@ -34,9 +34,8 @@ logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 20
-_VISIBILITY_SECONDS = 300
+_VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
-_VISIBILITY_REFRESH_SECONDS = 120
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
@@ -107,10 +106,8 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
 
 
 def _ingress_status_class(status_code: int) -> str:
-    """202/409 are the plugin's two contractual answers; 4xx/5xx are the error
-    classes. A non-202 success or a redirect is a contract violation that is
-    neither, and folding it into 4xx would poison the client-error count."""
-    if status_code in (202, 409):
+    """200/202/409 are the plugin's contractual answers (replayed/accepted/not admitted)."""
+    if status_code in (200, 202, 409):
         return str(status_code)
     if status_code >= 500:
         return "5xx"
@@ -262,7 +259,6 @@ class OpenClawWorkWorker:
     async def _process_message(self, message: dict) -> None:
         completed = False
         kind = "unknown"
-        extender = asyncio.create_task(self._extend_visibility(message))
         try:
             try:
                 pointer = deserialize_pointer(message.get("Body", ""))
@@ -311,29 +307,8 @@ class OpenClawWorkWorker:
                 "".join(traceback.format_tb(exc.__traceback__)),
             )
         finally:
-            extender.cancel()
-            try:
-                await extender
-            except asyncio.CancelledError:
-                pass
             if not completed and self._stop.is_set():
                 await self._return_visibility(message)
-
-    async def _extend_visibility(self, message: dict) -> None:
-        try:
-            while True:
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=_VISIBILITY_REFRESH_SECONDS)
-                    return
-                except asyncio.TimeoutError:
-                    await asyncio.to_thread(
-                        self._sqs.change_message_visibility,
-                        QueueUrl=settings.OPENCLAW_WORK_QUEUE_URL,
-                        ReceiptHandle=message["ReceiptHandle"],
-                        VisibilityTimeout=_VISIBILITY_SECONDS,
-                    )
-        except asyncio.CancelledError:
-            raise
 
     async def _return_visibility(self, message: dict, timeout: int = 0) -> None:
         try:
@@ -415,34 +390,38 @@ class OpenClawWorkWorker:
         if not isinstance(token, str) or not token:
             raise WorkRetry("gateway token unavailable")
         pool = get_gateway_pool()
+        # Still the door for exec approvals and questions (sub-project B removes it);
+        # room run frames and usage no longer transit this connection.
         await pool.ensure_connection(owner_id, ip, token)
-        session_key = lightbulb_session_key(member["id"], meta["roomId"])
-        # Channel-initiated runs are hidden from the Control UI upstream, so the
-        # gateway only streams their agent/chat events to a client subscribed to
-        # the session. Without this the room sees no run frames at all.
-        await pool.subscribe_room_session(owner_id, session_key)
-        author = message.get("author") or {}
-        pool.mark_run_active(
-            owner_id,
-            session_key,
-            member["id"],
-            member_id=author.get("id") if author.get("kind") == "human" else None,
-            event_kind=event_kind,
-            thread_root_message_id=message.get("threadRootMessageId"),
-        )
         members = with_human_handles(await messaging_repo.list_members(meta["roomId"]))
         body = await build_ingress_body(
-            meta=meta,
-            target_agent_id=member["id"],
-            event_kind=event_kind,
-            message=message,
-            members=members,
+            meta=meta, target_agent_id=member["id"], event_kind=event_kind, message=message, members=members
         )
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
-            pool.clear_active_run(owner_id, session_key)
             return
+        run_id = messaging_repo.run_id_for(member["id"], message["messageId"])
+        workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
+        body["run"] = {
+            "runId": run_id,
+            "workspaceId": workspace_id,
+            "frameChannel": f"/ws/{workspace_id}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
+            "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+        }
+        created = await messaging_repo.create_run(
+            owner_id,
+            run_id,
+            room_id=meta["roomId"],
+            agent_id=member["id"],
+            workspace_id=workspace_id,
+            trigger_message_id=message["messageId"],
+            event_kind=event_kind,
+        )
+        put_metric(
+            "messaging.run.dispatched",
+            dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},
+        )
         from core.services import local_session_grants
         from core.services.messaging import ApiProblem
 
@@ -450,7 +429,6 @@ class OpenClawWorkWorker:
         try:
             invocation = local_session_grants.mint(owner_id, meta["roomId"], member["id"], message["messageId"])
         except (RuntimeError, ApiProblem):
-            # Optional local-session adapter must not break ordinary room delivery.
             logger.warning("Local session invocation unavailable")
         url = f"http://{ip}:18789/plugins/lightbulb-channel/inbound/{member['id']}"
         started = time.perf_counter()
@@ -460,8 +438,6 @@ class OpenClawWorkWorker:
                 "messaging.ingress.post",
                 dimensions={"status_class": _ingress_status_class(response.status_code), "event_kind": event_kind},
             )
-            # Latency only where the plugin actually answered: a timed-out or
-            # dropped POST measures our own deadline, not its service time.
             put_metric(
                 "messaging.ingress.latency",
                 value=(time.perf_counter() - started) * 1000,
@@ -469,32 +445,20 @@ class OpenClawWorkWorker:
                 dimensions={"event_kind": event_kind},
             )
             if response.status_code == 409:
-                # The plugin uses 409 only for permanent admission refusals
-                # (including the native agent-pair loop guard). Retrying after
-                # its cooldown would resurrect the causal chain.
-                pool.clear_active_run(owner_id, session_key)
-                put_metric(
-                    "messaging.ambient_gate",
-                    dimensions={"outcome": "not_admitted", "event_kind": event_kind},
-                )
+                # Permanent synchronous refusal (loop guard, non-member): the ledger
+                # closes here because the plugin will never call back for it.
+                await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
+                put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
                 return
-            if response.status_code != 202:
+            if response.status_code not in (200, 202):
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
             try:
-                outcome = response.json().get("status")
+                status = response.json().get("status")
             except (AttributeError, TypeError, ValueError):
-                outcome = "unknown"
-            if outcome not in {"dispatched", "ignored", "gate_error", "replayed"}:
-                outcome = "unknown"
-            if outcome == "replayed":
-                pool.clear_active_run(owner_id, session_key)
-            # Counted for both event kinds: a user_request the plugin ignores is
-            # the same silent drop, and was invisible before. Clearing the
-            # synthetic run stays room_event-only — that is delivery behaviour,
-            # not observability.
-            put_metric("messaging.ambient_gate", dimensions={"outcome": outcome, "event_kind": event_kind})
-            if event_kind == "room_event" and outcome in {"ignored", "gate_error"}:
-                pool.clear_active_run(owner_id, session_key)
+                status = "unknown"
+            if status not in {"accepted", "replayed"}:
+                status = "unknown"
+            put_metric("messaging.ingress.ack", dimensions={"status": status, "event_kind": event_kind})
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             put_metric(
                 "messaging.ingress.post",
@@ -503,14 +467,8 @@ class OpenClawWorkWorker:
                     "event_kind": event_kind,
                 },
             )
-            # The plugin dedupes ingress by eventId (effect-once), so a timed-out
-            # or dropped POST is safe to retry soon; holding the full 300s
-            # visibility stalls the whole FIFO group (prod, 2026-09-10 18:15Z).
-            pool.clear_active_run(owner_id, session_key, preserve_room_context=True)
+            # Effect-once on the plugin makes a retry safe; the ledger row is reused.
             raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
-        except Exception:
-            pool.clear_active_run(owner_id, session_key)
-            raise
 
     async def _post(self, url: str, body: dict[str, Any], token: str, invocation: str | None = None):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}

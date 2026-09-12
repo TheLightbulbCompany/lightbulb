@@ -3,10 +3,11 @@
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.repositories import messaging_repo as repo
@@ -30,6 +31,8 @@ def table():
                 {"AttributeName": "sk", "AttributeType": "S"},
                 {"AttributeName": "memberKey", "AttributeType": "S"},
                 {"AttributeName": "memberSort", "AttributeType": "S"},
+                {"AttributeName": "sweep", "AttributeType": "S"},
+                {"AttributeName": "deadlineAt", "AttributeType": "N"},
             ],
             GlobalSecondaryIndexes=[
                 {
@@ -39,7 +42,15 @@ def table():
                         {"AttributeName": "memberSort", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                }
+                },
+                {
+                    "IndexName": "by-run-deadline",
+                    "KeySchema": [
+                        {"AttributeName": "sweep", "KeyType": "HASH"},
+                        {"AttributeName": "deadlineAt", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "KEYS_ONLY"},
+                },
             ],
             BillingMode="PAY_PER_REQUEST",
         )
@@ -804,3 +815,123 @@ async def test_scan_growth_rows_returns_only_messages_and_rooms_without_bodies(t
     assert "text" not in messages[0] and "mentions" not in messages[0]
     assert [r["roomId"] for r in rooms] == [room_id]
     assert {r["sk"] for r in rooms} == {"META"}
+
+
+@pytest.mark.asyncio
+async def test_ensure_workspace_id_mints_once_and_is_stamped_on_rooms_and_streams(table):
+    first = await repo.ensure_workspace_id(OWNER)
+    assert first == await repo.ensure_workspace_id(OWNER)
+    assert first != await repo.ensure_workspace_id("owner_other")
+    room_id, meta = await _room()  # the file's existing helper around create_room
+    assert meta["workspaceId"] == first
+    assert (await repo.get_room(room_id))["workspaceId"] == first
+    key = await repo.ensure_user_stream(OWNER, USER_A)
+    assert (await repo.get_stream(key))["workspaceId"] == first
+
+
+@pytest.mark.asyncio
+async def test_workspace_id_for_meta_returns_the_existing_id_without_writing(table, monkeypatch):
+    ensure = AsyncMock()
+    monkeypatch.setattr(repo, "ensure_workspace_id", ensure)
+    meta = {"ownerId": OWNER, "workspaceId": "existing-ws"}
+    assert await repo.workspace_id_for_meta("ROOM#x", "META", meta) == "existing-ws"
+    ensure.assert_not_called()
+    assert (await repo._get("ROOM#x", "META")) is None
+
+
+@pytest.mark.asyncio
+async def test_workspace_id_for_meta_stamps_and_returns_the_ensured_id_when_missing(table, monkeypatch):
+    monkeypatch.setattr(repo, "ensure_workspace_id", AsyncMock(return_value="minted-ws"))
+    meta = {"ownerId": OWNER}
+    assert await repo.workspace_id_for_meta("ROOM#x", "META", meta) == "minted-ws"
+    assert meta["workspaceId"] == "minted-ws"
+    assert (await repo._get("ROOM#x", "META"))["workspaceId"] == "minted-ws"
+
+
+@pytest.mark.asyncio
+async def test_workspace_id_for_meta_ignores_a_conditional_check_failed_race(table, monkeypatch):
+    monkeypatch.setattr(repo, "ensure_workspace_id", AsyncMock(return_value="minted-ws"))
+    monkeypatch.setattr(
+        repo,
+        "run_in_thread",
+        AsyncMock(side_effect=ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")),
+    )
+    meta = {"ownerId": OWNER}
+    assert await repo.workspace_id_for_meta("ROOM#x", "META", meta) == "minted-ws"
+    assert meta["workspaceId"] == "minted-ws"
+
+
+RUN_ROOM = "22222222-2222-4222-8222-222222222222"
+USAGE = {
+    "model": "claude-sonnet-4-6",
+    "inputTokens": 1200,
+    "outputTokens": 300,
+    "cacheReadTokens": 5000,
+    "cacheWriteTokens": 100,
+    "estimatedCostUsd": 0.0123,
+}
+
+
+async def _dispatched(owner="owner_1", agent="a1", message="m1"):
+    run_id = repo.run_id_for(agent, message)
+    created = await repo.create_run(
+        owner,
+        run_id,
+        room_id=RUN_ROOM,
+        agent_id=agent,
+        workspace_id="ws",
+        trigger_message_id=message,
+        event_kind="user_request",
+    )
+    return run_id, created
+
+
+@pytest.mark.asyncio
+async def test_run_id_is_deterministic_and_the_row_is_created_once(table):
+    run_id, created = await _dispatched()
+    assert created and run_id == repo.run_id_for("a1", "m1")
+    assert (await _dispatched())[1] is False
+    row = await repo.get_run("owner_1", run_id)
+    assert row["status"] == "dispatched" and row["sweep"] == "open" and row["deadlineAt"] > int(time.time())
+
+
+@pytest.mark.asyncio
+async def test_transitions_are_conditional(table):
+    run_id, _ = await _dispatched()
+    assert await repo.start_run("owner_1", run_id, session_key="agent:a1:lightbulb:channel:x")
+    assert not await repo.start_run("owner_1", run_id, session_key="again")
+    before = (await repo.get_run("owner_1", run_id))["deadlineAt"]
+    assert await repo.heartbeat_run("owner_1", run_id)
+    assert (await repo.get_run("owner_1", run_id))["deadlineAt"] >= before
+    ended = await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert (
+        ended["status"] == "ended"
+        and ended["usage"]["inputTokens"] == 1200
+        and "sweep" not in ended
+        and "deadlineAt" not in ended
+    )
+    assert await repo.end_run("owner_1", run_id, outcome="error", error_kind="late") is None
+    assert not await repo.heartbeat_run("owner_1", run_id)
+    assert not await repo.start_run("owner_1", "unknown", session_key="k")
+
+
+@pytest.mark.asyncio
+async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
+    run_id, _ = await _dispatched()
+    now = int(time.time())
+    assert await repo.list_overdue_runs(now) == []
+    assert await repo.list_overdue_runs(now + repo.RUN_DISPATCH_TIMEOUT_S + 1) == [
+        {"ownerId": "owner_1", "runId": run_id}
+    ]
+    await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert await repo.list_overdue_runs(now + 10_000) == []
+
+
+@pytest.mark.asyncio
+async def test_has_open_runs_follows_the_sweep_marker(table):
+    assert not await repo.has_open_runs("owner_1")
+    run_id, _ = await _dispatched()
+    assert await repo.has_open_runs("owner_1")
+    assert not await repo.has_open_runs("owner_2")
+    await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert not await repo.has_open_runs("owner_1")

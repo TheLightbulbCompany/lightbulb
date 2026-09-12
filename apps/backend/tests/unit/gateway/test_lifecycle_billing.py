@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,9 +35,7 @@ def conn():
     # populate them by hand.
     c._active_runs = {}
     c._terminal_run_ids = {}
-    c._run_state = {}
     c._side_run_ids = {}
-    c._run_text = {}
     c._parked = False
     c._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -178,7 +177,7 @@ async def test_group_session_key_bills_under_owner_not_literal_channel(conn):
 
 @pytest.mark.asyncio
 async def test_chat_final_no_longer_calls_billing(conn):
-    """chat.final still fires UI signals but not billing (lifecycle is the new trigger)."""
+    """chat.final does not bill — lifecycle/end is the trigger."""
     payload = {
         "sessionKey": "agent:main:main",
         "state": "final",
@@ -186,18 +185,12 @@ async def test_chat_final_no_longer_calls_billing(conn):
         "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
     }
 
-    with (
-        patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
-        patch.object(conn, "_publish_room_frame", AsyncMock()) as mock_forward,
-    ):
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
         # Yield for consistency with the other tests
         await asyncio.sleep(0)
 
     mock_fetch.assert_not_awaited()
-    # But UI signal IS forwarded ({"type": "done"}) -- _publish_room_frame(session_key, frame)
-    any_done = any(isinstance(c[0][1], dict) and c[0][1].get("type") == "done" for c in mock_forward.call_args_list)
-    assert any_done
 
 
 # --- trial_first_agent_response rides a readable true-terminal chat.final ---
@@ -213,7 +206,6 @@ async def test_chat_final_with_text_schedules_trial_first_response(conn):
     sched = MagicMock(return_value=None)
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _final("hi")})
@@ -228,7 +220,6 @@ async def test_chat_final_without_assistant_text_does_not_schedule(conn):
     sched = MagicMock(return_value=None)
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _final(None)})
@@ -242,7 +233,6 @@ async def test_chat_error_does_not_schedule_trial_first_response(conn):
     payload = {"sessionKey": "agent:main:main", "state": "error", "runId": "run-1", "errorMessage": "boom"}
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -410,12 +400,30 @@ async def test_run_completed_scheduling_failure_never_breaks_reader_or_billing(c
 # --- room-turn attribution -------------------------------------------------
 #
 # A room session key carries no member at all, so every room turn's spend used
-# to land on the owner. The dispatching member is on the active-run entry
-# (mark_run_active), the same place the run-completion push reads it from.
+# to land on the owner. The dispatching member is on the active-run entry, the
+# same place the run-completion push reads it from.
 
 _ROOM_AGENT_ID = "11111111-1111-4111-8111-111111111111"
 _ROOM_ID = "22222222-2222-4222-8222-222222222222"
 _ROOM_SESSION_KEY = f"agent:{_ROOM_AGENT_ID}:lightbulb:channel:{_ROOM_ID}"
+
+
+def _open_room_run(conn, *, member_id=None, event_kind=None) -> None:
+    """Open the room's active-run window directly.
+
+    Nothing populates ``_active_runs`` in the backend today — room turns are
+    asynchronous and ledger-tracked — so the tests write the entry the
+    lifecycle handler reads.
+    """
+    conn._active_runs[_ROOM_SESSION_KEY.lower()] = {
+        "started_at": time.monotonic(),
+        "last_event_at": time.monotonic(),
+        "agent_id": _ROOM_AGENT_ID,
+        "run_id": None,
+        "member_id": member_id,
+        "event_kind": event_kind,
+        "awaiting_approval": False,
+    }
 
 
 def _room_lifecycle_end(run_id: str = "run-room") -> dict:
@@ -429,7 +437,7 @@ def _room_lifecycle_end(run_id: str = "run-room") -> dict:
 
 @pytest.mark.asyncio
 async def test_room_turn_bills_the_dispatching_member_not_the_owner(conn):
-    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, member_id="user_Bob", event_kind="user_request")
+    _open_room_run(conn, member_id="user_Bob", event_kind="user_request")
 
     with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
         await conn._handle_message({"type": "event", "event": "agent", "payload": _room_lifecycle_end()})
@@ -442,7 +450,7 @@ async def test_room_turn_bills_the_dispatching_member_not_the_owner(conn):
 @pytest.mark.asyncio
 async def test_room_turn_without_a_dispatching_member_still_falls_back_to_owner(conn):
     """An ambient room_event has no human behind it."""
-    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, event_kind="room_event")
+    _open_room_run(conn, event_kind="room_event")
 
     with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
         await conn._handle_message({"type": "event", "event": "agent", "payload": _room_lifecycle_end()})
@@ -456,7 +464,7 @@ async def test_room_turn_without_a_dispatching_member_still_falls_back_to_owner(
 async def test_room_turn_ignores_a_carried_member_that_is_not_a_clerk_id(conn):
     """Same shape guard the run-completion push applies: a non-Clerk id would
     mint a bogus `member:{id}:{period}` counter row the usage panel renders."""
-    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, member_id="agent_7")
+    _open_room_run(conn, member_id="agent_7")
 
     with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
         await conn._handle_message({"type": "event", "event": "agent", "payload": _room_lifecycle_end()})
@@ -470,7 +478,7 @@ async def test_active_run_is_read_before_the_terminal_can_clear_it(conn):
     """The chat terminal clears _active_runs on the same reader loop, so the
     carried member has to be captured synchronously — reading it inside the
     spawned billing task races the clear and silently reverts to the owner."""
-    conn.mark_run_active(_ROOM_SESSION_KEY, agent_id=_ROOM_AGENT_ID, member_id="user_Bob")
+    _open_room_run(conn, member_id="user_Bob")
 
     with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
         conn._record_usage_from_session(_room_lifecycle_end())

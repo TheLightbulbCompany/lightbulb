@@ -19,9 +19,12 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     STREAM#<key>    META                               reverse mapping AppSync onSubscribe reads
     OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
+    OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
+    OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
 
-Only ``WORK#`` and ``LIVE#`` rows carry ``expiresAt`` (7 days). Every read here is
-``ConsistentRead=True``; the GSI is queried by ``list_rooms_for_member`` and nowhere else.
+Only ``WORK#``, ``LIVE#`` and ``RUN#`` rows carry ``expiresAt`` (7 days). Every read
+here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
+(``by-member``) and ``list_overdue_runs`` (``by-run-deadline``) and nowhere else.
 """
 
 from __future__ import annotations
@@ -43,8 +46,13 @@ from core.dynamodb import plain as _plain
 logger = logging.getLogger(__name__)
 
 GSI_BY_MEMBER = "by-member"
+GSI_BY_RUN_DEADLINE = "by-run-deadline"
 MAX_ROOM_MEMBERS = 32
 OUTBOX_TTL_S = 7 * 24 * 3600
+RUN_NS = uuid.UUID("2b5f1c7e-9a3d-4e6f-8b1c-0d2e4f6a8c1e")
+RUN_DISPATCH_TIMEOUT_S = 120
+RUN_HEARTBEAT_TIMEOUT_S = 90
+RUN_OUTCOMES = frozenset({"completed", "error", "aborted", "ignored", "gate_error", "not_admitted"})
 # Room-create is 3 fixed actions (META, owner catalog, IDEMP) + members + agent
 # delivery rows. The 32-member worst case is 66; DynamoDB caps a transaction at 100.
 _FIXED_CREATE_ACTIONS = 3
@@ -149,6 +157,19 @@ def work_operation_sk(operation_id: str) -> str:
     return f"WORK#OPERATION#{operation_id}"
 
 
+def workspace_sk() -> str:
+    return "WORKSPACE"
+
+
+def run_sk(run_id: str) -> str:
+    return f"RUN#{run_id}"
+
+
+def run_id_for(agent_id: str, message_id: str) -> str:
+    """Deterministic per dispatch event so an SQS redelivery lands on the same row."""
+    return str(uuid.uuid5(RUN_NS, f"{agent_id}:{message_id}"))
+
+
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
@@ -205,6 +226,55 @@ async def _get(pk: str, sk: str) -> dict | None:
     response = await run_in_thread(table.get_item, Key={"pk": pk, "sk": sk}, ConsistentRead=True)
     item = response.get("Item")
     return _plain(item) if item else None
+
+
+async def ensure_workspace_id(owner_id: str) -> str:
+    """The owner's opaque channel-path segment, minted once (spec §3)."""
+    row = await _get(owner_pk(owner_id), workspace_sk())
+    if row is not None:
+        return row["workspaceId"]
+    candidate = str(uuid.uuid4())
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "pk": owner_pk(owner_id),
+                "sk": workspace_sk(),
+                "workspaceId": candidate,
+                "ownerId": owner_id,
+                "createdAt": utc_now_iso(),
+            },
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+        return candidate
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    row = await _get(owner_pk(owner_id), workspace_sk())
+    if row is None:
+        raise MessagingRepoError("workspace id allocation raced and no row exists")
+    return row["workspaceId"]
+
+
+async def workspace_id_for_meta(pk: str, sk: str, meta: dict) -> str:
+    """The row's workspaceId, stamped lazily for rows that predate the id (roll-window rows, fixtures)."""
+    workspace_id = meta.get("workspaceId")
+    if isinstance(workspace_id, str) and workspace_id:
+        return workspace_id
+    workspace_id = await ensure_workspace_id(meta["ownerId"])
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": pk, "sk": sk},
+            UpdateExpression="SET workspaceId = :ws",
+            ConditionExpression="attribute_not_exists(workspaceId)",
+            ExpressionAttributeValues={":ws": workspace_id},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    meta["workspaceId"] = workspace_id
+    return workspace_id
 
 
 async def scan_growth_rows() -> tuple[list[dict], list[dict]]:
@@ -448,6 +518,7 @@ async def create_room(
 
     now = utc_now_iso()
     table_name = _table().name
+    workspace_id = await ensure_workspace_id(owner_id)
     meta = {
         "pk": room_pk(room_id),
         "sk": "META",
@@ -459,6 +530,7 @@ async def create_room(
         "lastSeq": 0,
         "lastMessageAt": None,
         "deliveryKey": str(uuid.uuid4()),
+        "workspaceId": workspace_id,
         "createdAt": now,
         "updatedAt": now,
     }
@@ -1206,6 +1278,7 @@ async def ensure_user_stream(owner_id: str, user_id: str) -> str:
     table_name = _table().name
     now = utc_now_iso()
     key = str(uuid.uuid4())
+    workspace_id = await ensure_workspace_id(owner_id)
     mapping = {
         "pk": owner_pk(owner_id),
         "sk": userstream_sk(user_id),
@@ -1222,6 +1295,7 @@ async def ensure_user_stream(owner_id: str, user_id: str) -> str:
         "ownerId": owner_id,
         "userId": user_id,
         "active": True,
+        "workspaceId": workspace_id,
         "createdAt": now,
     }
     if current is None:
@@ -1466,6 +1540,156 @@ async def complete_operation(
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return None
         raise
+
+
+# ---------------------------------------------------------------------------
+# run ledger (async turn contract)
+# ---------------------------------------------------------------------------
+
+
+async def create_run(
+    owner_id: str,
+    run_id: str,
+    *,
+    room_id: str,
+    agent_id: str,
+    workspace_id: str,
+    trigger_message_id: str,
+    event_kind: str,
+) -> bool:
+    """Put the ledger row as ``dispatched``. False when it already exists (redelivery)."""
+    now = utc_now_iso()
+    item = {
+        "pk": owner_pk(owner_id),
+        "sk": run_sk(run_id),
+        "runId": run_id,
+        "ownerId": owner_id,
+        "roomId": room_id,
+        "agentId": agent_id,
+        "workspaceId": workspace_id,
+        "triggerMessageId": trigger_message_id,
+        "eventKind": event_kind,
+        "status": "dispatched",
+        "dispatchedAt": now,
+        "updatedAt": now,
+        "sweep": "open",
+        "deadlineAt": int(time.time()) + RUN_DISPATCH_TIMEOUT_S,
+        "expiresAt": _expires_at(),
+    }
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def get_run(owner_id: str, run_id: str) -> dict | None:
+    return await _get(owner_pk(owner_id), run_sk(run_id))
+
+
+async def has_open_runs(owner_id: str) -> bool:
+    """Any ledger row still carrying the sweep marker (removed by ``end_run``)."""
+    rows = await _query(owner_pk(owner_id), begins_with="RUN#")
+    return any("sweep" in row for row in rows)
+
+
+async def _run_update(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": run_sk(run_id)},
+            ReturnValues="ALL_NEW",
+            **kwargs,
+        )
+        return _plain(response["Attributes"])
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+async def start_run(owner_id: str, run_id: str, *, session_key: str) -> bool:
+    """dispatched -> started."""
+    now = utc_now_iso()
+    row = await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET #s = :started, sessionKey = :sk, startedAt = :now, lastHeartbeatAt = :now, deadlineAt = :deadline, updatedAt = :now",
+        ConditionExpression="attribute_exists(sk) AND #s = :dispatched",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":started": "started",
+            ":dispatched": "dispatched",
+            ":sk": session_key,
+            ":now": now,
+            ":deadline": int(time.time()) + RUN_HEARTBEAT_TIMEOUT_S,
+        },
+    )
+    return row is not None
+
+
+async def heartbeat_run(owner_id: str, run_id: str) -> bool:
+    """Extend the deadline while not ended (a heartbeat before ``run.started`` also starts the run)."""
+    now = utc_now_iso()
+    row = await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET #s = :started, lastHeartbeatAt = :now, deadlineAt = :deadline, updatedAt = :now, startedAt = if_not_exists(startedAt, :now)",
+        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":started": "started",
+            ":ended": "ended",
+            ":now": now,
+            ":deadline": int(time.time()) + RUN_HEARTBEAT_TIMEOUT_S,
+        },
+    )
+    return row is not None
+
+
+async def end_run(
+    owner_id: str,
+    run_id: str,
+    *,
+    outcome: str,
+    error_kind: str | None = None,
+    usage: dict | None = None,
+) -> dict | None:
+    """Close once. Returns the row when this call closed it, None on replay/unknown."""
+    if outcome not in RUN_OUTCOMES:
+        raise MessagingRepoError(f"unknown run outcome {outcome!r}")
+    now = utc_now_iso()
+    return await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET #s = :ended, outcome = :outcome, errorKind = :ek, #u = :usage, endedAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
+        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ExpressionAttributeNames={"#s": "status", "#u": "usage"},
+        ExpressionAttributeValues={
+            ":ended": "ended",
+            ":outcome": outcome,
+            ":ek": error_kind,
+            ":usage": _ddb_safe(usage),
+            ":now": now,
+        },
+    )
+
+
+async def list_overdue_runs(now_epoch: int, limit: int = 100) -> list[dict]:
+    """Open ledger rows whose deadline passed, via the sparse ``by-run-deadline`` GSI."""
+    response = await run_in_thread(
+        _table().query,
+        IndexName=GSI_BY_RUN_DEADLINE,
+        KeyConditionExpression="sweep = :open AND deadlineAt < :now",
+        ExpressionAttributeValues={":open": "open", ":now": int(now_epoch)},
+        Limit=limit,
+    )
+    return [
+        {"ownerId": item["pk"][len("OWNER#") :], "runId": item["sk"][len("RUN#") :]}
+        for item in response.get("Items", [])
+    ]
 
 
 # ---------------------------------------------------------------------------

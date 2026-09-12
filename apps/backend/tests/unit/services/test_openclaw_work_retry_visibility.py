@@ -9,6 +9,10 @@ from core.services.openclaw_work import (
     build_ingress_body,
 )
 
+_ROOM = "11111111-1111-4111-8111-111111111111"
+WS = "44444444-4444-4444-8444-444444444444"
+KEY = "55555555-5555-4555-8555-555555555555"
+
 
 @pytest.mark.asyncio
 async def test_canonical_ingress_mints_optional_room_grant_after_membership_check(monkeypatch):
@@ -16,10 +20,11 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     from core.services import local_session_grants
     from core.services import openclaw_work as work
 
-    room = "11111111-1111-4111-8111-111111111111"
+    room = _ROOM
     event = "22222222-2222-4222-8222-222222222222"
-    meta, member = {"ownerId": "owner_test", "roomId": room}, {"id": "friday"}
-    pool = Mock(ensure_connection=AsyncMock(), subscribe_room_session=AsyncMock())
+    meta = {"ownerId": "owner_test", "roomId": room, "workspaceId": WS, "deliveryKey": KEY}
+    member = {"id": "friday"}
+    pool = Mock(ensure_connection=AsyncMock())
     monkeypatch.setattr(work, "get_gateway_pool", lambda: pool)
     manager = Mock(resolve_running_container=AsyncMock(return_value=({"gateway_token": "dummy"}, "127.0.0.1")))
     monkeypatch.setattr(work, "get_ecs_manager", lambda: manager)
@@ -27,6 +32,8 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     membership = AsyncMock(return_value=member)
     monkeypatch.setattr(work.messaging_repo, "get_member", membership)
     monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=lambda **kw: {"eventId": event}))
+    monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=True))
+    monkeypatch.setattr(work.messaging_repo, "end_run", AsyncMock(return_value={"runId": "x"}))
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     post = AsyncMock(return_value=httpx.Response(202))
     monkeypatch.setattr(worker, "_post", post)
@@ -114,22 +121,10 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     """A slow plugin POST (prod: ReadTimeout on a long founder turn) must not
     hold the FIFO group for 300s — the plugin dedupes by eventId, so retry soon."""
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    cleared = []
-    subscribed = []
-    marked = []
 
     class FakePool:
         async def ensure_connection(self, *_args):
             return None
-
-        async def subscribe_room_session(self, owner_id, session_key):
-            subscribed.append((owner_id, session_key))
-
-        def mark_run_active(self, *args, **kwargs):
-            marked.append((args, kwargs))
-
-        def clear_active_run(self, owner_id, session_key, **kwargs):
-            cleared.append((owner_id, session_key, kwargs))
 
     class FakeManager:
         async def resolve_running_container(self, _owner):
@@ -151,11 +146,15 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     async def fake_body(**_kwargs):
         return {"version": 1}
 
+    async def fake_create_run(*_args, **_kwargs):
+        return True
+
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.list_members", fake_list_members)
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
     monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)
+    monkeypatch.setattr("core.services.openclaw_work.messaging_repo.create_run", fake_create_run)
 
-    meta = {"ownerId": "owner-1", "roomId": "11111111-1111-4111-8111-111111111111", "kind": "dm", "revision": 1}
+    meta = {"ownerId": "owner-1", "roomId": _ROOM, "kind": "dm", "revision": 1, "workspaceId": WS, "deliveryKey": KEY}
     member = {"kind": "agent", "id": "a1"}
     message = {
         "messageId": "m1",
@@ -166,13 +165,6 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
 
     with pytest.raises(WorkRetry, match="plugin ingress ReadTimeout"):
         await worker._dispatch_message(meta, member, message, "user_request")
-    session_key = "agent:a1:lightbulb:channel:11111111-1111-4111-8111-111111111111"
-    assert cleared == [("owner-1", session_key, {"preserve_room_context": True})]
-    # Channel-initiated runs are hidden from the Control UI upstream, so the
-    # gateway streams their agent/chat events only to a session-message
-    # subscriber. Dispatching without this leaves the room with zero run frames.
-    assert subscribed == [("owner-1", session_key)]
-    assert marked[0][1]["thread_root_message_id"] == "thread-1"
 
 
 @pytest.mark.asyncio
@@ -182,22 +174,15 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     Retrying it after the pair-loop cooldown turns suppression into a pause and
     can keep the agent-to-agent causal chain alive indefinitely.
     """
+    from core.repositories import messaging_repo as repo
+
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    cleared = []
+    ended = []
     metrics = []
 
     class FakePool:
         async def ensure_connection(self, *_args):
             return None
-
-        async def subscribe_room_session(self, *_args):
-            return None
-
-        def mark_run_active(self, *_args, **_kwargs):
-            return None
-
-        def clear_active_run(self, owner_id, session_key, **kwargs):
-            cleared.append((owner_id, session_key, kwargs))
 
     class FakeManager:
         async def resolve_running_container(self, _owner):
@@ -218,15 +203,31 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     async def fake_body(**_kwargs):
         return {"version": 1}
 
+    async def fake_create_run(*_args, **_kwargs):
+        return True
+
+    async def fake_end_run(owner_id, run_id, **fields):
+        ended.append((owner_id, run_id, fields))
+        return {"runId": run_id}
+
     monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
     monkeypatch.setattr("core.services.openclaw_work.get_gateway_pool", lambda: FakePool())
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.list_members", fake_list_members)
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
     monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)
+    monkeypatch.setattr("core.services.openclaw_work.messaging_repo.create_run", fake_create_run)
+    monkeypatch.setattr("core.services.openclaw_work.messaging_repo.end_run", fake_end_run)
     monkeypatch.setattr("core.services.openclaw_work.put_metric", lambda name, **kwargs: metrics.append((name, kwargs)))
     monkeypatch.setattr(worker, "_post", fake_post)
 
-    meta = {"ownerId": "owner-1", "roomId": "11111111-1111-4111-8111-111111111111", "kind": "channel", "revision": 1}
+    meta = {
+        "ownerId": "owner-1",
+        "roomId": _ROOM,
+        "kind": "channel",
+        "revision": 1,
+        "workspaceId": WS,
+        "deliveryKey": KEY,
+    }
     member = {"kind": "agent", "id": "a1"}
     message = {
         "messageId": "m1",
@@ -237,81 +238,14 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
 
     await worker._dispatch_message(meta, member, message, "room_event")
 
-    session_key = "agent:a1:lightbulb:channel:11111111-1111-4111-8111-111111111111"
-    assert cleared == [("owner-1", session_key, {})]
+    run_id = repo.run_id_for("a1", "m1")
+    assert ended == [("owner-1", run_id, {"outcome": "not_admitted"})]
     assert [(name, kwargs["dimensions"]) for name, kwargs in metrics] == [
+        ("messaging.run.dispatched", {"outcome": "new", "event_kind": "room_event"}),
         ("messaging.ingress.post", {"status_class": "409", "event_kind": "room_event"}),
         ("messaging.ingress.latency", {"event_kind": "room_event"}),
         ("messaging.ambient_gate", {"outcome": "not_admitted", "event_kind": "room_event"}),
     ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("event_kind", "outcome"),
-    [("room_event", "ignored"), ("room_event", "gate_error"), ("room_event", "replayed"), ("user_request", "replayed")],
-)
-async def test_consumed_outcome_clears_synthetic_run(monkeypatch, event_kind, outcome):
-    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    metrics = []
-    cleared = []
-
-    class FakePool:
-        async def ensure_connection(self, *_args):
-            return None
-
-        async def subscribe_room_session(self, *_args):
-            return None
-
-        def mark_run_active(self, *_args, **_kwargs):
-            return None
-
-        def clear_active_run(self, *args, **kwargs):
-            cleared.append((args, kwargs))
-
-    class FakeManager:
-        async def resolve_running_container(self, _owner):
-            return {"gateway_token": "gw"}, "10.0.0.9"
-
-    class ConsumedResponse:
-        status_code = 202
-
-        def json(self):
-            return {"eventId": "m1", "status": outcome}
-
-    async def fake_get_member(_room_id, _kind, _member_id):
-        return {"kind": "agent", "id": "a1"}
-
-    async def fake_list_members(_room_id):
-        return []
-
-    async def fake_body(**_kwargs):
-        return {"version": 1}
-
-    async def fake_post(*_args):
-        return ConsumedResponse()
-
-    monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
-    monkeypatch.setattr("core.services.openclaw_work.get_gateway_pool", lambda: FakePool())
-    monkeypatch.setattr("core.services.openclaw_work.messaging_repo.list_members", fake_list_members)
-    monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
-    monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)
-    monkeypatch.setattr("core.services.openclaw_work.put_metric", lambda name, **kwargs: metrics.append((name, kwargs)))
-    monkeypatch.setattr(worker, "_post", fake_post)
-
-    await worker._dispatch_message(
-        {"ownerId": "owner-1", "roomId": "11111111-1111-4111-8111-111111111111", "kind": "channel", "revision": 1},
-        {"kind": "agent", "id": "a1"},
-        {"messageId": "m1", "messageSeq": 1, "author": {"kind": "human", "id": "u1"}},
-        event_kind,
-    )
-
-    assert [(name, kwargs["dimensions"]) for name, kwargs in metrics] == [
-        ("messaging.ingress.post", {"status_class": "202", "event_kind": event_kind}),
-        ("messaging.ingress.latency", {"event_kind": event_kind}),
-        ("messaging.ambient_gate", {"outcome": outcome, "event_kind": event_kind}),
-    ]
-    assert len(cleared) == 1
 
 
 @pytest.mark.asyncio

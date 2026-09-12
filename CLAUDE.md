@@ -684,7 +684,7 @@ a key with exactly those six permissions for an owner to paste — see its READM
 
 | File | Purpose |
 |------|---------|
-| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw **signed-device** handshake (receive `connect.challenge` nonce → sign canonical payload → connect; `minProtocol: 4`), RPC proxy, **trial-only** idle scale-to-zero (`_grace_close`/`_maybe_stop_trial_container` — the general idle reaper was removed at the flat-fee cutover), usage recording inline. It fans nothing out to browsers: transformed run frames are published as `room.run.frame` via `_publish_room_frame` → AppSync. The `_full_content` accumulator widens cumulative frames — OpenClaw clears its text buffer at every `message_start`, so without it a resyncing client's run bubble would show only the text after the last tool call. |
+| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw **signed-device** handshake (receive `connect.challenge` nonce → sign canonical payload → connect; `minProtocol: 4`), RPC proxy, **trial-only** idle scale-to-zero (`_grace_close`/`_maybe_stop_trial_container` — the general idle reaper was removed at the flat-fee cutover), usage recording inline. |
 | `operator_rpc.py` | `perform_signed_connect` + `gateway_rpc_oneshot` (one-shot RPCs outside the pool). |
 | `node_connection.py` | Per-user node-host connection for desktop browser-proxy / exec-approval flows. |
 
@@ -868,8 +868,8 @@ Browser/mobile --HTTP (Clerk)--> routers/messaging.py --> lightbulb-{env}-messag
                        messaging-projector λ                   EventBridge Pipe (SK begins WORK#)
                                    |                                       |
                           AppSync Events                            openclaw-work.fifo
-                    /rooms/<roomId>/<deliveryKey>                          |
-                    /users/<opaqueUserKey>                    core/services/openclaw_work.py
+        /ws/<workspaceId>/rooms/<roomId>/<deliveryKey>                     |
+        /ws/<workspaceId>/users/<opaqueUserKey>           core/services/openclaw_work.py
                                    |                                       |
                   browser/mobile (subscribe-only)      POST /plugins/lightbulb-channel/inbound/<agentId>
                                                         on the per-owner container (gateway auth)
@@ -895,8 +895,8 @@ DynamoDB's short-lived transaction token, is the receipt. Public JSON is camelCa
 
 **Live delivery.** `core/services/live_events.py` (backend, IAM SigV4) and the
 `messaging-projector` Lambda publish to AppSync Events on two channels:
-`/rooms/<roomId>/<deliveryKey>` for room members and `/users/<opaqueKey>` for
-exactly one signed-in human. Clients are **subscribe-only** (OIDC, Clerk JWT
+`/ws/<workspaceId>/rooms/<roomId>/<deliveryKey>` for room members and
+`/ws/<workspaceId>/users/<opaqueUserKey>` for exactly one signed-in human. Clients are **subscribe-only** (OIDC, Clerk JWT
 template `lightbulb-appsync`) and reconcile from HTTP: AppSync stores no history,
 can duplicate or drop, so a gap means `GET …/messages?afterSeq=`. Revocation is
 the load-bearing part: an `onSubscribe` decision cannot close an already-open
@@ -924,12 +924,17 @@ come back over HTTP (`POST /api/v1/internal/messaging/agent-messages/{ownerId}`,
 hook token) through the same canonical writer humans use. Execution is
 at-least-once, not exactly-once.
 
-**Backend↔container transport is unchanged.** `core/gateway/connection_pool.py`
-still holds the persistent OpenClaw gateway WebSocket, subscribes per room
-session (`sessions.messages.subscribe`), and transforms native events into the
-run frames (`run_active` → `chunk` / `thinking` / `tool_*` → `done` →
-`run_ended`) — they now leave as ephemeral `room.run.frame` AppSync events
-instead of browser socket pushes.
+**Room turns are asynchronous (spec `2026-09-12-async-turn-contract-design.md`).** The
+consumer POSTs the ingress body with a `run` contract and gets `202 accepted` in
+milliseconds; the container runs the turn, publishes the run frames itself to
+`/ws/<workspaceId>/rooms/…` with its task role, and reports `run.started` /
+`run.heartbeat` / `run.ended {outcome, usage}` to
+`POST /api/v1/internal/messaging/runs/{ownerId}/events` (hook token). The ledger row
+`OWNER#<owner>/RUN#<runId>` is the only run state; a one-minute sweeper closes runs that
+never started (120 s) or stopped heartbeating (90 s) with an `error` + `run_ended` pair.
+Abort and steer are HTTP calls to `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`.
+`core/gateway/connection_pool.py` no longer subscribes to room sessions or relays frames;
+it still carries exec approvals, questions and personal-chat usage until sub-project B.
 
 **Listen modes.** Every agent member carries `active` / `mentions` / `observe`
 (humans carry none). `select_dispatch_targets` is the one place that reads them:

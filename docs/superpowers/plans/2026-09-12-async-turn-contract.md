@@ -1542,8 +1542,13 @@ async def test_publish_room_refuses_a_room_without_a_workspace_id(monkeypatch):
 Run once per environment before that environment's cutover deploy, then DELETE this
 file (CLAUDE.md: one-shot backfills do not accumulate; git history is the record).
 
+DRY RUN BY DEFAULT — prints the count and writes nothing.
+
     cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging \
-        uv run python scripts/backfill_workspace_ids.py --dry-run
+        uv run python scripts/backfill_workspace_ids.py
+    # …then, once the count looks right:
+    AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging \
+        uv run python scripts/backfill_workspace_ids.py --apply
 """
 
 import argparse
@@ -1586,14 +1591,14 @@ async def main(dry_run: bool) -> int:
         if "LastEvaluatedKey" not in page:
             break
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
-    print(f"{'would stamp' if dry_run else 'stamped'} {stamped} rows")
+    print(f"{'stamped' if not dry_run else 'would stamp'} {stamped} rows{'' if not dry_run else ' (dry run — pass --apply to write)'}")
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dry-run", action="store_true")
-    raise SystemExit(asyncio.run(main(parser.parse_args().dry_run)))
+    parser.add_argument("--apply", action="store_true", help="actually write (default: dry run)")
+    raise SystemExit(asyncio.run(main(dry_run=not parser.parse_args().apply)))
 ```
 
 - [ ] **Step 6: Run the tests**
@@ -1615,7 +1620,6 @@ git commit -m "feat(messaging): lazy workspace id stamped on rooms and streams; 
 **Files:**
 - Modify: `packages/shared/src/messaging/types.ts:172-178` (`LiveConfig`)
 - Modify: `packages/shared/src/live/appsyncEvents.ts:113-114`
-- Modify: `packages/shared/src/messaging/useRooms.ts:320`
 - Modify: `apps/frontend/src/hooks/useLiveEvents.tsx:82-83`
 - Modify: `apps/mobile/src/providers/live-events.tsx:131-134`
 - Test: `packages/shared/src/live/appsyncEvents.test.ts:66-67,231`, `packages/shared/src/live/useLiveEvents.test.tsx:55-62`, `apps/frontend/src/hooks/__tests__/useLiveEvents.test.tsx:100-125`
@@ -1656,8 +1660,9 @@ export interface LiveConfig {
 // appsyncEvents.ts:113-114
     const users = unique.filter((channel) => channel.includes("/users/"));
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
-// useRooms.ts:320 — subscriptionPath stays "/rooms/{id}/{key}"; the live channel carries the workspace prefix
-    if (!subscriptionPath || !liveChannels.some((channel) => channel.endsWith(subscriptionPath))) return;
+// useRooms.ts is NOT touched: the messaging-latency pass (another session) deletes the
+// `liveChannels.includes(subscriptionPath)` gate at :319-323 outright; history reconciles
+// off activeRoomId. Do not reintroduce a liveChannels dependency there.
 // apps/frontend/src/hooks/useLiveEvents.tsx:82-83
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
   const roomChannel = config && activeRoom ? `/ws/${config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;
@@ -2251,7 +2256,7 @@ git commit -m "feat(messaging): run event callback route with ledger transitions
 - Test: `apps/backend/tests/unit/services/test_run_ledger.py`
 
 **Interfaces:**
-- Consumes: Task 9 `list_overdue_runs`, `get_run`, `end_run`; `live_events.get_live_event_publisher().publish_room`; `messaging.make_live_event`.
+- Consumes: Task 9 `list_overdue_runs`, `get_run`, `end_run`; Task 10 `messaging.publish_run_error_frames(row, error_kind)` (the shared terminal `error` + `run_ended` publisher).
 - Produces: `sweep_runs_once() -> int`, `run_ledger_sweeper(stop: asyncio.Event)`; metric `messaging.run.swept {error}`.
 
 - [ ] **Step 1: Failing tests**
@@ -2276,18 +2281,16 @@ def _row(status, deadline):
 async def test_overdue_runs_close_as_error_with_an_error_and_run_ended_frame(monkeypatch, status, error_kind):
     monkeypatch.setattr(run_ledger, "put_metric", lambda *a, **k: None)
     monkeypatch.setattr(run_ledger.time, "time", lambda: 1_000)
-    publisher = AsyncMock()
+    ended_row = {**_row("ended", 900), "outcome": "error", "errorKind": error_kind}
     with (
         patch.object(run_ledger.messaging_repo, "list_overdue_runs", AsyncMock(return_value=[{"ownerId": "o", "runId": "r1"}])),
         patch.object(run_ledger.messaging_repo, "get_run", AsyncMock(return_value=_row(status, 900))),
-        patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value={**_row("ended", 900), "outcome": "error", "errorKind": error_kind})) as end,
-        patch.object(run_ledger, "get_live_event_publisher", lambda: publisher),
+        patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value=ended_row)) as end,
+        patch.object(run_ledger, "publish_run_error_frames", AsyncMock()) as frames,
     ):
         assert await run_ledger.sweep_runs_once() == 1
     end.assert_awaited_once_with("o", "r1", outcome="error", error_kind=error_kind)
-    frames = [call.args[1]["payload"]["frame"] for call in publisher.publish_room.await_args_list]
-    assert [f["type"] for f in frames] == ["error", "run_ended"]
-    assert frames[0]["code"] == error_kind and frames[1]["outcome"] == "error" and frames[1]["runId"] == "r1" and frames[1]["agentId"] == "a1"
+    frames.assert_awaited_once_with(ended_row, error_kind)
 
 
 @pytest.mark.asyncio
@@ -2322,16 +2325,11 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services.live_events import get_live_event_publisher
-from core.services.messaging import make_live_event
+from core.services.messaging import publish_run_error_frames
 
 logger = logging.getLogger(__name__)
 
 _SWEEP_SECONDS = 60
-_MESSAGES = {
-    "agent_did_not_start": "The agent did not start this run.",
-    "agent_stopped_responding": "The agent stopped responding.",
-}
 
 
 async def sweep_runs_once() -> int:
@@ -2349,21 +2347,10 @@ async def sweep_runs_once() -> int:
         put_metric("messaging.run.ended", dimensions={"outcome": "error", "event_kind": ended.get("eventKind") or "unknown"})
         put_metric("messaging.run.swept", dimensions={"error": error_kind})
         try:
-            await _publish_terminal_frames(ended, error_kind)
+            await publish_run_error_frames(ended, error_kind)
         except Exception:
             logger.warning("sweeper terminal frames failed (%s)", error_kind, exc_info=True)
     return closed
-
-
-async def _publish_terminal_frames(row: dict, error_kind: str) -> None:
-    publisher = get_live_event_publisher()
-    base = {"roomId": row["roomId"], "agentId": row["agentId"], "runId": row["runId"]}
-    stamp = {"runId": row["runId"], "agentId": row["agentId"]}
-    for frame in (
-        {"type": "error", "message": _MESSAGES[error_kind], "code": error_kind, **stamp},
-        {"type": "run_ended", "outcome": "error", **stamp},
-    ):
-        await publisher.publish_room(row["roomId"], make_live_event("room.run.frame", {**base, "frame": frame}, room_id=row["roomId"]))
 
 
 async def run_ledger_sweeper(stop: asyncio.Event) -> None:
@@ -2789,32 +2776,37 @@ Set `dev.tag` and `prod.tag` to the Task 5 tag with its `artifactDigest`/`runtim
 
 - [ ] **Step 2: Dev**
 
-1. `cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging uv run python scripts/backfill_workspace_ids.py --dry-run`, then without `--dry-run`.
+1. `cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging uv run python scripts/backfill_workspace_ids.py` (dry run by default), then the same with `--apply`.
 2. Merge the cutover PR; watch the dev deploy (`gh run watch`).
-3. Roll the dev fleet from a signed-in `dev.flickmeon.ai` admin tab:
+3. Re-run the backfill (dry run) and assert it reports 0 stale rows — rooms/streams created by the old task during the rolling window carry no `workspaceId`; if it is non-zero, run `--apply` again.
+4. Roll the dev fleet from a signed-in `dev.flickmeon.ai` admin tab:
 
 ```js
 await fetch('https://api-dev.flickmeon.ai/api/v1/container/updates', { method: 'POST', headers: { Authorization: 'Bearer ' + await Clerk.session.getToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ owner_id: 'all', update_type: 'task_definition_refresh' }) }).then(r => r.json())
 ```
 
-4. Verify (spec §8):
+5. Verify (spec §8):
    - One turn end to end: frames arrive on `/ws/{ws}/rooms/…` (the room streams text); `aws dynamodb get-item` on `OWNER#{owner}` / `RUN#{runId}` shows `started` then `ended/completed` with `usage`; `messaging.run.ended {outcome: completed}` increments; `messaging.ingress.latency` p99 < 1 s.
    - Kill mid-turn: `aws ecs update-service --desired-count 0` on the owner's service during a long turn, then back to 1. Within 90 s: one `error` + `run_ended` pair in the room, ledger `ended/error(agent_stopped_responding)`, no duplicate reply after restart, any redelivered pointer answered `replayed`.
    - Backend roll mid-turn: `aws ecs update-service --force-new-deployment` on the backend service during a turn. Frames keep flowing, the callbacks land on the new instance, the reply persists once.
    - Rotate a delivery key mid-turn: remove and re-add a human member. The tail of the stream is lost; the reply and the ledger close normally.
-5. `aws sqs get-queue-attributes` on the dev DLQ; if anything dead-lettered during the roll, `uv run python scripts/openclaw_work_redrive.py` (dev).
+   - Tenancy gate: with the dev owner task role's credentials (or a dev container's `aws` via `ecs execute-command`), publish one event to another workspace's room channel and assert AppSync refuses it; subscribe with a rotated (stale) delivery key and assert refusal.
+6. `aws sqs get-queue-attributes` on the dev DLQ; if anything dead-lettered during the roll, `uv run python scripts/openclaw_work_redrive.py` (dev).
 
 - [ ] **Step 3: Prod (owner runs the dispatch and the roll)**
 
-1. Backfill against `lightbulb-prod-messaging` (dry run, then real).
+1. Backfill against `lightbulb-prod-messaging` (dry run by default, then `--apply`).
 2. `gh workflow run deploy.yml --ref main` when `gh run list --workflow deploy.yml --json status --jq '[.[]|select(.status!="completed")]|length'` reads 0; watch it.
-3. Roll the prod fleet immediately (same call against `api.flickmeon.ai` from a `flickmeon.ai` admin tab), then confirm every running task is on the new task definition:
+3. Re-run the backfill (dry run) and assert it reports 0 stale rows — rooms/streams created by the old task during the rolling window carry no `workspaceId`; if it is non-zero, run `--apply` again.
+4. Roll the prod fleet immediately (same call against `api.flickmeon.ai` from a `flickmeon.ai` admin tab), then confirm every running task is on the new task definition:
 
 ```bash
 aws ecs list-services --cluster lightbulb-prod-openclaw --profile isol8-admin --query 'serviceArns' --output text | tr '\t' '\n' | xargs -I{} aws ecs describe-services --cluster lightbulb-prod-openclaw --services {} --profile isol8-admin --query 'services[0].[serviceName,taskDefinition]' --output text
 ```
 
-4. Redrive the prod DLQ if the roll dead-lettered anything.
+5. Redrive the prod DLQ if the roll dead-lettered anything.
+
+P22 (`messaging-ingress-4xx`) will page during the roll for dispatches to not-yet-rolled containers; expected. The post-roll DLQ redrive replays pointers whose ledger rows the sweeper already closed: the turn runs and replies, the callbacks answer `replayed`, usage for those runs is not recorded (analytics only).
 
 - [ ] **Step 4: Cleanup**
 

@@ -347,7 +347,7 @@ async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hin
     assert transport[4]
     for hint in transport[4]:
         event = json.loads(hint["events"][0])
-        assert hint["channel"].startswith("/rooms/")
+        assert "/rooms/" in hint["channel"]
         assert event["type"] == "room.resources.changed"
         assert event["payload"] == {"roomId": event["roomId"]}
         assert "private transcript" not in json.dumps(hint)

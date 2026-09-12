@@ -73,6 +73,7 @@ const wrapper = ({ children }: { children: ReactNode }) =>
 
 beforeEach(() => {
   visible = true;
+  live.liveChannels = [`/rooms/${room.roomId}/${room.deliveryKey}`];
   handlers.clear();
   visibilityListeners.clear();
   for (const fn of Object.values(messaging)) fn.mockClear();
@@ -92,6 +93,14 @@ describe("useRooms platform seams", () => {
     visible = true;
     act(() => { for (const listener of visibilityListeners) listener(); });
     await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 1 }));
+  });
+
+  it("reconciles history when the live channel carries the workspace prefix", async () => {
+    live.liveChannels = [`/ws/ws-1/rooms/${room.roomId}/${room.deliveryKey}`];
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
   });
 
   it("unsubscribes from visibility on unmount", () => {

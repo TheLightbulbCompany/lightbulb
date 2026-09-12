@@ -154,7 +154,7 @@ def _wire_agent_message(
     return scan
 
 
-async def _send_agent(text: str = "done", reply_to: str | None = None):
+async def _send_agent(text: str = "done", reply_to: str | None = None, run_id: str | None = None):
     return await messaging.create_agent_message(
         OWNER,
         messaging.AgentMessageRequest(
@@ -164,6 +164,7 @@ async def _send_agent(text: str = "done", reply_to: str | None = None):
             text=text,
             replyToMessageId=reply_to,
             threadRootMessageId=None,
+            runId=run_id,
         ),
     )
 
@@ -401,27 +402,26 @@ async def test_a_failing_reply_lookup_still_returns_the_receipt(monkeypatch, tel
 
 
 @pytest.mark.asyncio
-async def test_an_agent_message_carries_the_in_flight_run_id(monkeypatch, telemetry):
+async def test_an_agent_message_carries_a_verified_run_id(monkeypatch, telemetry):
     put_metric, _ = telemetry
     created = _message(4, {"kind": "agent", "id": AGENT, "displayName": "Friday"})
     _wire_agent_message(monkeypatch, [_human_member(), _agent_member()], created)
-    monkeypatch.setattr(messaging, "_receipt_run_id", lambda *args: "run-7")
+    run_id = str(uuid.UUID(int=7))
+    monkeypatch.setattr(messaging.messaging_repo, "get_run", AsyncMock(return_value={"roomId": ROOM, "agentId": AGENT}))
 
-    await _send_agent()
+    await _send_agent(run_id=run_id)
 
-    assert messaging.messaging_repo.create_message.call_args.kwargs["run_id"] == "run-7"
+    assert messaging.messaging_repo.create_message.call_args.kwargs["run_id"] == run_id
     assert _metrics(put_metric, "messaging.agent_message.run_id") == [
         {"value": 1.0, "unit": "Count", "dimensions": {"result": "stamped", "room_kind": "channel"}}
     ]
 
 
 @pytest.mark.asyncio
-async def test_an_agent_message_without_a_known_run_stays_unstamped(monkeypatch, telemetry):
+async def test_an_agent_message_without_a_run_id_stays_unstamped(monkeypatch, telemetry):
     put_metric, _ = telemetry
     created = _message(4, {"kind": "agent", "id": AGENT, "displayName": "Friday"})
     _wire_agent_message(monkeypatch, [_human_member(), _agent_member()], created)
-    # No pool connection in unit tests: the real lookup runs and misses.
-    assert messaging._receipt_run_id(OWNER, AGENT, ROOM) is None
 
     await _send_agent()
 
@@ -429,18 +429,6 @@ async def test_an_agent_message_without_a_known_run_stays_unstamped(monkeypatch,
     assert _metrics(put_metric, "messaging.agent_message.run_id") == [
         {"value": 1.0, "unit": "Count", "dimensions": {"result": "unset", "room_kind": "channel"}}
     ]
-
-
-@pytest.mark.asyncio
-async def test_a_failing_run_lookup_still_returns_the_receipt(monkeypatch, telemetry):
-    created = _message(4, {"kind": "agent", "id": AGENT, "displayName": "Friday"})
-    _wire_agent_message(monkeypatch, [_human_member(), _agent_member()], created)
-    monkeypatch.setattr(messaging, "get_gateway_pool_if_started", MagicMock(side_effect=RuntimeError("pool down")))
-
-    receipt = await _send_agent()
-
-    assert str(receipt.message_id) == created["messageId"]
-    assert messaging.messaging_repo.create_message.call_args.kwargs["run_id"] is None
 
 
 # ---------------------------------------------------------------------------

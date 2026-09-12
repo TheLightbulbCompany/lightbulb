@@ -27,7 +27,9 @@ const messaging = {
   listMessages: vi.fn<(roomId: string, afterSeq: number, limit?: number) => Promise<{ messages: CanonicalRoomMessage[]; nextAfterSeq: number | null }>>(
     async () => ({ messages: [message], nextAfterSeq: null }),
   ),
-  markRead: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 1 })),
+  markRead: vi.fn<(roomId: string, request: { lastReadSeq: number }) => Promise<{ roomId: string; lastReadSeq: number }>>(
+    async () => ({ roomId: room.roomId, lastReadSeq: 1 }),
+  ),
   uploadAttachment: vi.fn(async () => ({ id: "att-1", fileName: "a.png", contentType: "image/png" as const, size: 1 })),
   getRunStatus: vi.fn(async () => ({ runId: "run-1", state: "terminal" as const })),
   markUnread: vi.fn(), sendMessage: vi.fn(), setTyping: vi.fn(), createRoom: vi.fn(),
@@ -237,6 +239,23 @@ describe("useRooms platform seams", () => {
     rerender({ userId: "user-a" });
     await waitFor(() => expect(result.current.roomsLoading).toBe(false));
     expect(result.current.rooms).toHaveLength(1);
+  });
+
+  it("re-reads instead of claiming zero unread when the server returns a lower cursor", async () => {
+    // `set_read_cursor` clamps to the room's own `lastSeq`, and another device
+    // marking the room unread moves the cursor backwards — so the value that
+    // comes back can be LOWER than the one sent. Applying it in place while
+    // also declaring `unreadCount: 0` would state the room is caught up when it
+    // demonstrably is not. The ordinary case skips a room GET and a room-list
+    // GET; this case gives that up and re-reads, because the server is the
+    // source of truth and guessing here is visible as an unread that never
+    // clears or never appears.
+    messaging.markRead.mockResolvedValueOnce({ roomId: room.roomId, lastReadSeq: 0 });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalled());
+
+    await waitFor(() => expect(messaging.getRoom).toHaveBeenCalled());
+    expect(result.current.activeRoom?.unreadCount).not.toBe(0);
   });
 
   it("paints a revisited room from cache and asks only for the delta", async () => {

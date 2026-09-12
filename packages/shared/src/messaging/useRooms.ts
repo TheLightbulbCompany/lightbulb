@@ -483,10 +483,21 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     // Both are applied locally instead; the next natural revalidation confirms.
     const roomId = activeRoom.roomId;
     const request = messaging.markRead(roomId, { lastReadSeq: sequence }).then((cursor) => {
-        // Apply the cursor the SERVER returned, not the one we asked for, so a
-        // clamped or already-advanced value is what the surface shows. Only on
-        // success: a failed mark leaves the room unread, as it should.
+        // Apply the cursor the SERVER returned, not the one we asked for.
+        //
+        // It can come back LOWER than we sent: `set_read_cursor` clamps to the
+        // room's own `lastSeq`, and another device marking the room unread
+        // moves it backwards. In that case we are NOT caught up, so declaring
+        // `unreadCount: 0` would be a lie — re-read instead and let the server
+        // stay the source of truth. This used to re-read unconditionally; the
+        // point of applying in place is to skip a room GET and a room-list GET
+        // in the ordinary case, not to guess in the race.
         const applied = cursor.lastReadSeq;
+        if (applied < sequence) {
+          void mutateRoom();
+          void mutateRooms();
+          return;
+        }
         void mutateRoom((current) => current && (current.roomId === roomId
           ? { ...current, lastReadSeq: applied, unreadCount: 0 } : current), false);
         void mutateRooms((current) => current && {

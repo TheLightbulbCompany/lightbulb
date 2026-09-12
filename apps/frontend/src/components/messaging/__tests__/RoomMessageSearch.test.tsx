@@ -42,6 +42,12 @@ it("offers recovery instead of claiming no matches across missing history", asyn
   expect(onLoad).toHaveBeenCalledTimes(2);
 });
 
+it("names the failure when the server gives a history error reason", async () => {
+  render(<RoomMessageSearch roomId="room" messages={[]} participants={[]} error errorMessage="History is temporarily unavailable" onSelect={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  expect(screen.getByRole("status")).toHaveTextContent("Could not load all messages: History is temporarily unavailable");
+});
+
 it("captures message_search_used with a bucketed result count once the search is closed", async () => {
   render(<RoomMessageSearch roomId="room" messages={[message]} participants={[]} onSelect={vi.fn()} complete />);
   await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));

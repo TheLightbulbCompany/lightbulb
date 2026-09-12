@@ -57,6 +57,7 @@ export interface RoomPanelProps {
   historyLoading?: boolean;
   historyComplete?: boolean;
   historyError?: boolean;
+  historyErrorMessage?: string | null;
   onLoadHistory?: () => void;
   pendingMessages?: readonly PendingRoomMessage[];
   typingMembers?: readonly { userId: string; displayName: string }[];
@@ -208,6 +209,7 @@ function RoomContent({
   historyLoading,
   historyComplete,
   historyError,
+  historyErrorMessage,
   onLoadHistory,
   pendingMessages = [],
   typingMembers = [],
@@ -521,7 +523,8 @@ function RoomContent({
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
-          loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
+          loading={historyLoading} complete={historyComplete} error={historyError} errorMessage={historyErrorMessage}
+          onLoad={onLoadHistory}
           onSelect={(message) => {
             const root = message.threadRootMessageId;
             // Otherwise the [selection] effect's else-branch focuses this stale trigger

@@ -181,7 +181,7 @@ function Conversation() {
         ListHeaderComponent={
           rooms.historyError ? (
             <View style={styles.errorCard}>
-              <Text style={styles.errorText}>Couldn’t load history.</Text>
+              <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
               <Pressable
                 onPress={rooms.loadHistory}
                 accessibilityRole="button"

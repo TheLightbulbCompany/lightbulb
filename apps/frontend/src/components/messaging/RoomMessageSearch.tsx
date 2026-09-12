@@ -15,11 +15,12 @@ interface RoomMessageSearchProps {
   loading?: boolean;
   complete?: boolean;
   error?: boolean;
+  errorMessage?: string | null;
   onLoad?: () => void;
   onSelect: (message: RoomMessage) => void;
 }
 
-export function RoomMessageSearch({ roomId, messages, participants, loading = false, complete = false, error = false, onLoad, onSelect }: RoomMessageSearchProps) {
+export function RoomMessageSearch({ roomId, messages, participants, loading = false, complete = false, error = false, errorMessage = null, onLoad, onSelect }: RoomMessageSearchProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const selected = useRef<RoomMessage | null>(null);
@@ -55,7 +56,7 @@ export function RoomMessageSearch({ roomId, messages, participants, loading = fa
       <Input type="search" aria-label="Search messages" placeholder="Search messages…" value={query} onChange={(event) => setQuery(event.target.value)} />
       <div role="status" className="text-sm text-muted-foreground">
         {loading ? "Loading conversation history. Results may be incomplete."
-          : error ? "Could not load all messages. Results may be incomplete."
+          : error ? (errorMessage ? `Could not load all messages: ${errorMessage} Results may be incomplete.` : "Could not load all messages. Results may be incomplete.")
             : !complete ? "Conversation history is not fully loaded. Results may be incomplete."
               : term ? `${matches.length} ${matches.length === 1 ? "message" : "messages"} found` : "Search the message text, including thread replies."}
       </div>

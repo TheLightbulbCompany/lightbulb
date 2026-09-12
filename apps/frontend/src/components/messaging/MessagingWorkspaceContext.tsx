@@ -247,6 +247,27 @@ export function MessagingWorkspaceProvider({
     writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) });
   }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
 
+  /**
+   * Park a failed message's text in a room's stored draft — but never on top of
+   * something newer.
+   *
+   * There is one draft slot per room and, in this path, two possible claimants:
+   * the message that just failed and whatever the owner has typed since. The
+   * live text is the owner's current intent and exists nowhere else, so it
+   * wins; the failed text is dropped rather than allowed to overwrite it.
+   *
+   * ponytail: a failed message should live in the timeline as a failed row with
+   * its own retry, the way Slack does it, which removes the contention
+   * entirely. That needs a rejected state on the pending row in RoomPanel —
+   * `useRooms` currently drops the optimistic entry on failure — and is not
+   * this change.
+   */
+  const recoverDraft = useCallback((key: string, request: CreateMessageRequest) => {
+    if (readDraft(key).text.trim()) return;
+    writeDraft(key, { text: request.text, mentions: request.mentions });
+    setRecoveredDrafts((count) => count + 1);
+  }, []);
+
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
     // Read before the await: this is the room the message was sent FROM, even
     // if the owner switches rooms while it is in flight.
@@ -260,17 +281,26 @@ export function MessagingWorkspaceProvider({
     // sending feel instant; the optimistic row already carries the pending,
     // failed and uncertain states, and `reconcileSend` still holds the request
     // by its client id, so nothing is lost if the send does not land.
+    let rotatedTo: string | null = null;
     if (thread) {
       if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
       if (threadClientMessageIdRef.current === request.clientMessageId) {
+        rotatedTo = crypto.randomUUID();
+        // The ref mirrors the composer's CURRENT id, so it has to move now
+        // rather than at the next render — a send that rejects in the same
+        // microtask would otherwise read a stale ref and conclude the composer
+        // had moved on when it had not.
+        threadClientMessageIdRef.current = rotatedTo;
         setThreadDraft("");
-        setThreadClientMessageId(crypto.randomUUID());
+        setThreadClientMessageId(rotatedTo);
       }
     } else {
       if (roomId) clearDraft(draftKey(scope, roomId, null));
       if (clientMessageIdRef.current === request.clientMessageId) {
+        rotatedTo = crypto.randomUUID();
+        clientMessageIdRef.current = rotatedTo;   // see the thread branch above
         setDraft("");
-        setClientMessageId(crypto.randomUUID());
+        setClientMessageId(rotatedTo);
       }
     }
     try {
@@ -283,28 +313,34 @@ export function MessagingWorkspaceProvider({
       // tracks nothing. Re-adopting the failed id is what makes `sendState`
       // report rejected/uncertain again and points retry at the real request.
       const sameRoom = activeRoomIdRef.current === roomId;
+      // ...but only into the composer this send actually left behind. Sending a
+      // second message, or typing into the fresh box, rotates the id again —
+      // and re-adopting the failed one then remounts the composer and destroys
+      // that newer, unsent work (its text and any attached-but-unsent images).
+      // Newer work wins: it is the owner's live intent, and unlike the failed
+      // message it exists nowhere else.
+      const composerHeld = !thread && rotatedTo !== null && clientMessageIdRef.current === rotatedTo;
+      const threadComposerHeld = thread && rotatedTo !== null && threadClientMessageIdRef.current === rotatedTo;
       if (thread) {
-        if (sameRoom && threadIdRef.current === request.threadRootMessageId) {
+        if (sameRoom && threadComposerHeld && threadIdRef.current === request.threadRootMessageId) {
           setThreadDraft(request.text);
           setThreadClientMessageId(request.clientMessageId);
         } else if (roomId && request.threadRootMessageId) {
-          writeDraft(draftKey(scope, roomId, request.threadRootMessageId), { text: request.text, mentions: request.mentions });
-          setRecoveredDrafts((count) => count + 1);
+          recoverDraft(draftKey(scope, roomId, request.threadRootMessageId), request);
         }
-      } else if (sameRoom) {
+      } else if (sameRoom && composerHeld) {
         setDraft(request.text);
         setClientMessageId(request.clientMessageId);
       } else if (roomId) {
-        // Switched away mid-send: the text cannot go back into a composer that
-        // is now showing another room, so it goes back to that room's draft.
-        writeDraft(draftKey(scope, roomId, null), { text: request.text, mentions: request.mentions });
-        setRecoveredDrafts((count) => count + 1);
+        // Nowhere live to put it — the owner is in another room, or has moved
+        // the composer on. It goes to that room's stored draft instead.
+        recoverDraft(draftKey(scope, roomId, null), request);
       }
       // Rethrown: the composer's own submit() turns a rejection into its
       // uncertain state, and that path must keep working.
       throw error;
     }
-  }, [sendRoomMessage, rooms.activeRoomId, scope]);
+  }, [sendRoomMessage, rooms.activeRoomId, scope, recoverDraft]);
 
   // localStorage is the source, so no prop dependency truly describes when this
   // changes — but it walks every key in the store and JSON.parses each hit, and

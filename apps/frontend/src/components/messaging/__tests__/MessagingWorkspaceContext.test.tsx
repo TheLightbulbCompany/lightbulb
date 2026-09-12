@@ -478,6 +478,45 @@ it("recovers a failed send into the room it was sent from when the owner has mov
   expect(directory.draftRoomIds).toContain("room-1");
 });
 
+it("does not clobber newer unsent work when an earlier send fails", async () => {
+  // Two sends in flight and the owner typing into the box the second one left
+  // behind. Re-adopting the first message's id here would remount the composer
+  // and take the typed text (and any attached-but-unsent image) with it. The
+  // live text is the owner's current intent and exists nowhere else, so it
+  // wins; the failed message's text is dropped rather than overwrite it.
+  let rejectFirst!: (error: Error) => void;
+  state.sendMessage
+    .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectFirst = reject; }))
+    .mockImplementationOnce(() => Promise.resolve());
+  compose();
+
+  const firstId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("first"));
+  let firstSend!: Promise<void>;
+  act(() => { firstSend = Promise.resolve(panel.composer.onSubmit({
+    clientMessageId: firstId, text: "first", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  })).catch(() => {}); });
+
+  const secondId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("second"));
+  await act(async () => { await Promise.resolve(panel.composer.onSubmit({
+    clientMessageId: secondId, text: "second", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  })); });
+
+  // The owner is now typing a third message into a composer that has rotated
+  // twice since the first send left.
+  act(() => panel.composer.onTextChange("third draft, still being written"));
+  const liveId = panel.composer.clientMessageId;
+
+  await act(async () => { rejectFirst(new Error("network")); await firstSend; });
+
+  expect(panel.composer.text).toBe("third draft, still being written");
+  expect(panel.composer.clientMessageId).toBe(liveId);
+  // And the live text was not overwritten in storage by the failed one either.
+  expect(JSON.parse(localStorage.getItem(draftKey("org", "room-1", null))!).text)
+    .toBe("third draft, still being written");
+});
+
 it("clears the sending room's stored draft when the owner switches rooms mid-send", async () => {
   let resolveSend!: () => void;
   state.sendMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSend = resolve; }));

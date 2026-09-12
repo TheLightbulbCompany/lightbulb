@@ -94,6 +94,7 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
 export function useLocalSessionHistory(
   client: RoomResourceSource["client"], roomId: string, sessionId: string,
   latestEventSeq: number, revision: number, onAccessLost: () => void,
+  live?: { busy: boolean },
 ) {
   const [events, setEvents] = useState<LocalSessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -147,6 +148,14 @@ export function useLocalSessionHistory(
   useEffect(() => {
     if (initialized.current && follow.current) void load("newer");
   }, [revision, load]);
+  // Tail the session only while a turn runs. At idle the cadence is already
+  // useRoomResources' 5s poll -> `revision` -> the load("newer") effect above.
+  const tailBusy = live?.busy ?? false;
+  useEffect(() => {
+    if (!tailBusy) return;
+    const timer = setInterval(() => { if (initialized.current && follow.current) void load("newer"); }, 1000);
+    return () => clearInterval(timer);
+  }, [tailBusy, load]);
   return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
     hasNewer: more || latestEventSeq > (events.at(-1)?.seq ?? 0) };
 }

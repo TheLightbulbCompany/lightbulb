@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
@@ -39,6 +39,8 @@ class Descriptor(ContractModel):
     status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 class Register(ContractModel):
@@ -55,13 +57,11 @@ class Heartbeat(ContractModel):
     status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
-class Event(ContractModel):
-    kind: Literal["text", "tool", "lifecycle"]
-    role: Literal["user", "assistant", "system", "tool"]
-    text: str = Field(max_length=sessions.MAX_ENVELOPE_BYTES)
-    truncated: bool = False
+Event = sessions.LocalSessionEventBody
 
 
 class Events(ContractModel):
@@ -98,6 +98,22 @@ def _revised(row: dict, **changes) -> dict:
 
 def _conflict() -> ApiProblem:
     return ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed; reconcile before retrying.")
+
+
+async def _actor_label(command: dict) -> dict | None:
+    """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
+    from core.services.messaging import with_human_handles
+
+    kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
+    members = with_human_handles(await store.list_members(command["roomId"]))
+    member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
+    if member is None:
+        return None
+    return {
+        "kind": kind,
+        "handle": member.get("mentionHandle") or None,
+        "displayName": member.get("displayName") or None,
+    }
 
 
 async def publish_resources_changed(owner: str, human: str) -> None:
@@ -251,13 +267,22 @@ class LocalSessionRelay:
                     )
                     if isinstance(message, Events):
                         response = await self._events(cid, connection, enrollment, row, message)
+                        # _events throttles and publishes its own hint; the
+                        # generic post-loop publish below must not double it.
+                        notify_resources = False
                     elif isinstance(message, Heartbeat):
+                        labels = {
+                            key: value
+                            for key, value in (("title", message.title), ("cwdName", message.cwd_name))
+                            if value is not None
+                        }
                         updated = _revised(
                             row,
                             status=message.status,
                             activeTurnId=message.active_turn_id,
                             onlineUntil=int(time.time()) + LIVENESS_SECONDS,
                             workspace=message.workspace.model_dump(by_alias=True),
+                            **labels,
                         )
                         # Heartbeats may withdraw authority. A fresh registration
                         # is required to restore it after runtime revalidation.
@@ -279,6 +304,8 @@ class LocalSessionRelay:
                                 "capabilities",
                                 "capabilitiesVerified",
                                 "controlUnavailableReason",
+                                "title",
+                                "cwdName",
                             )
                         ) or (row["onlineUntil"] <= int(time.time()) and updated["status"] != "offline")
                         await repo.put_session(
@@ -347,7 +374,9 @@ class LocalSessionRelay:
         end = message.after_seq + len(message.events)
         updates = []
         for seq, event in enumerate(message.events, first_seq):
-            value = sessions.LocalSessionEvent(seq=seq, **event.model_dump()).model_dump(by_alias=True)
+            value = sessions.LocalSessionEvent(seq=seq, **event.model_dump(exclude_none=True)).model_dump(
+                by_alias=True, exclude_none=True
+            )
             value.update(pk=row["pk"], sk=f"EVENT#{seq:020d}", createdAt=int(time.time()))
             if seq == first_seq:
                 value.update(batchHash=digest, batchEndSeq=end)
@@ -360,8 +389,16 @@ class LocalSessionRelay:
                     }
                 }
             )
-        updated = _revised(row, eventSeq=end, nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0))
+        hint = now >= row.get("nextHintAt", 0)
+        updated = _revised(
+            row,
+            eventSeq=end,
+            nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0),
+            **({"nextHintAt": now + 1000} if hint else {}),
+        )
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        if hint:
+            await publish_resources_changed(row["ownerId"], row["humanUserId"])
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],
@@ -478,6 +515,9 @@ class LocalSessionRelay:
                 except ApiProblem:
                     await repo.replace_command(command, _revised(command, state="rejected", updatedAt=int(time.time())))
                     continue
+                # Resolved before the claim: a membership read inside the claim window
+                # can spend the lease and turn a dispatchable command into a rejection.
+                actor = await _actor_label(command)
                 claim = _revised(command, claimUntil=min(int(time.time()) + CLAIM_SECONDS, command["deliverBy"]))
                 await repo.replace_command(command, claim, checks=checks)
                 row = await repo.get_session(owner, sid)
@@ -490,7 +530,7 @@ class LocalSessionRelay:
                         continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
-                    envelope = {"type": "local.session.command", "command": public}
+                    envelope = {"type": "local.session.command", "command": public, "actor": actor}
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))

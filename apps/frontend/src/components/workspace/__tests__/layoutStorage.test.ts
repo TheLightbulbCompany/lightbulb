@@ -110,6 +110,19 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-artifacts"].title).toBe("Library");
   });
 
+  it("sanitizer derives the Session title for a session dock panel", () => {
+    const dirty = minimalLayout({
+      "session:s1": {
+        id: "session:s1",
+        contentComponent: "session",
+        title: "stale",
+        params: { roomId: "r", sessionId: "s" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["session:s1"].title).toBe("Session");
+  });
+
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {
     const dirty = minimalLayout({
       "agent-inspector": {

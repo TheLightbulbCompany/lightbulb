@@ -117,6 +117,32 @@
 .local-session-composer { max-height: 45%; overflow: auto; }
 .local-session-composer label { overflow-wrap: anywhere; }
 .local-session-composer textarea { flex-shrink: 0; }
+.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .875rem; line-height: 1.45; padding: 4px 0 12px; }
+.native-session-row { padding: 4px 0; overflow-wrap: anywhere; }
+.native-session-line { display: flex; gap: 8px; align-items: flex-start; }
+.native-session-glyph { flex: 0 0 1ch; color: var(--muted-foreground); }
+.native-session-row[data-status="done"] > .native-session-line > .native-session-glyph { color: var(--ok); }
+.native-session-row[data-status="error"] > .native-session-line > .native-session-glyph, .native-session-error { color: var(--err); }
+.native-session-prompt { background: var(--accent); border-radius: 4px; padding: 6px 8px; margin: 8px 0 4px; }
+.native-session-prompt-text { white-space: pre-wrap; }
+.native-session-meta { padding-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); }
+.native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font: inherit; max-height: 60vh; overflow: auto; }
+.native-session-more { margin-left: calc(2ch + 16px); font: inherit; font-size: .75rem; color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
+.native-session-diff span[data-diff="add"] { color: var(--ok); }
+.native-session-diff span[data-diff="del"] { color: var(--err); }
+.native-session-thinking, .native-session-thought { color: var(--muted-foreground); font-style: italic; }
+.native-session-codex-label { font-weight: 600; margin-top: 8px; }
+.native-session-working { color: var(--muted-foreground); }
+.native-session-muted { color: var(--muted-foreground); }
+.native-session-header { gap: 4px; }
+.native-session-title { display: flex; align-items: center; gap: 8px; }
+.native-session-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-foreground); }
+.native-session-dot-busy { background: var(--ok); }
+.native-session-dot-waiting-approval { background: var(--warn); }
+.native-session-dot-offline { background: var(--border); }
+.native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
+.native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
+.native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
 .room-thread-replies { border-top: 1px solid var(--border); margin-top: 8px; }
 .room-members { padding: 12px 20px; border-bottom: 1px solid var(--border); max-height: 280px; overflow: auto; }
 .room-member { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 0; }

@@ -207,6 +207,10 @@ export interface LocalSession {
   capabilitiesVerified: boolean;
   /** Canonical last ingested event; opens recent history without loading every page. */
   latestEventSeq: number;
+  /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
+  title?: string | null;
+  /** Basename only; never a full path. */
+  cwdName?: string | null;
 }
 
 export interface PairedNode {
@@ -223,12 +227,30 @@ export interface RoomResources {
   pairedNodes: PairedNode[];
 }
 
+export type LocalSessionEventActor = { userId: string } | { agentId: string };
+export type LocalSessionLifecycle = "turn_start" | "turn_end" | "turn_aborted" | "compaction" | "approval_pending";
+export interface LocalSessionEventTool {
+  /** Claude tool name, Codex item type, or "result" on a Claude tool_result row. */
+  name: string;
+  status: "running" | "done" | "error";
+  input?: unknown;
+  result?: unknown;
+  /** Total output lines when `text` is a preview. */
+  lines?: number;
+}
 export interface LocalSessionEvent {
   seq: number;
-  kind: "text" | "tool" | "lifecycle";
+  kind: "text" | "tool" | "thinking" | "lifecycle";
   text: string;
   role: "user" | "assistant" | "system" | "tool";
   truncated: boolean;
+  /** Native row timestamp, ISO-8601. */
+  ts?: string;
+  itemId?: string;
+  parentId?: string;
+  actor?: LocalSessionEventActor;
+  tool?: LocalSessionEventTool;
+  lifecycle?: LocalSessionLifecycle;
 }
 
 export interface LocalSessionEventPage {

@@ -78,11 +78,19 @@ board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
 # Shared local-session workspace notices
 
-Rooms' **Devices & sessions** panel shows human-shared Claude/Codex history and
-explicit follow-up controls, separately from the room composer and paired node
-directory. Desktop sharing is opt-in; disabling it stops local sharing. Native
-credentials and approvals remain on the owner's machine. Agent contributions
-carry an agent identity, never a human impersonation.
+Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
+opening one on desktop web docks a **session panel** that renders the native
+transcript with the harness's own grammar: prompts with the sender's name,
+tool calls with collapsed output previews, thinking markers, turn boundaries
+and a working line. Codex sessions read as `• Ran …` / `└ output`; Claude
+sessions as `⏺ Bash(…)` / `⎿ output`. Updates arrive block by block, not token
+by token. Desktop sharing is opt-in; disabling it stops local sharing. Native
+credentials and approvals remain on the owner's machine. Follow-ups reach the
+owner's terminal labelled with the sender's room handle (`Message from @aden`
+in Claude Code; a header line in Codex), and agent contributions carry an
+agent identity, never a human impersonation. Enabling sharing installs a
+`lightbulb-session-sharing` skill into the owner's Claude and Codex skill
+roots so the harness knows what a teammate contribution is.
 
 A selected session's **Copy session link** or **Add link to conversation draft**
 lets a human explicitly share that same session in a room message. Opening it

@@ -158,6 +158,32 @@ async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, db):
+    from core.services.messaging import with_human_handles
+
+    db[0].put_item(
+        Item={
+            "pk": f"ROOM#{ROOM}",
+            "sk": f"MEMBER#human#{BOB.user_id}",
+            "kind": "human",
+            "id": BOB.user_id,
+            "displayName": "Bob Example",
+            "joinedSeq": 2,
+            "memberKey": messaging_repo.member_key(OWNER, "human", BOB.user_id),
+            "roomId": ROOM,
+        }
+    )
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
+    expected = next(m for m in with_human_handles(await messaging_repo.list_members(ROOM)) if m["id"] == BOB.user_id)
+    assert commands[0]["actor"] == {"kind": "human", "handle": expected["mentionHandle"], "displayName": "Bob Example"}
+    assert commands[0]["command"]["actorUserId"] == BOB.user_id
+
+
+@pytest.mark.asyncio
 async def test_optional_cli_revocation_does_not_revoke_native_mac_sharing(transport, db):
     sid = await start(transport)
     db[1].update_item(
@@ -538,6 +564,30 @@ async def test_text_rate_is_shared_and_lifecycle_flush_is_not_delayed(transport)
 
 
 @pytest.mark.asyncio
+async def test_event_ingestion_publishes_a_hint_at_most_once_per_second(transport):
+    sid = await start(transport)
+    transport[4].clear()
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "b1",
+        "afterSeq": 0,
+        "events": [{"kind": "text", "role": "assistant", "text": "one"}],
+    }
+    lifecycle = {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"}
+    with patch("time.time", return_value=2000000000.0):
+        await relay(transport).handle_message("conn-1", body)
+        first = [h for h in transport[4] if ROOM in h["channel"]]
+        assert len(first) == 1
+        await relay(transport).handle_message("conn-1", {**body, "batchId": "b2", "afterSeq": 1, "events": [lifecycle]})
+        assert len([h for h in transport[4] if ROOM in h["channel"]]) == 1
+    with patch("time.time", return_value=2000000002.0):
+        await relay(transport).handle_message("conn-1", {**body, "batchId": "b3", "afterSeq": 2, "events": [lifecycle]})
+    assert len([h for h in transport[4] if ROOM in h["channel"]]) == 2
+
+
+@pytest.mark.asyncio
 async def test_router_dispatches_post_but_receipt_get_is_read_only(transport):
     from core.auth import get_current_user
     from routers.messaging import router
@@ -788,6 +838,46 @@ async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport
 
 
 @pytest.mark.asyncio
+async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_heartbeats(transport):
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    response = await relay(transport).handle_message(
+        "conn-1", registration(title="Desktop and mobile notifications", cwdName="lightbulb")
+    )
+    sid = response["sessionId"]
+    listed = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert (listed.title, listed.cwd_name) == ("Desktop and mobile notifications", "lightbulb")
+    transport[4].clear()
+    # activeTurnId matches the registered value: this heartbeat is silent about
+    # everything except title/cwdName, which is the one omission under test.
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.heartbeat",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "status": "busy",
+            "activeTurnId": "turn-1",
+        },
+    )
+    assert (await repo.get_session(OWNER, sid))["title"] == "Desktop and mobile notifications"
+    assert transport[4] == []
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.heartbeat",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "status": "busy",
+            "activeTurnId": "turn-1",
+            "title": "Renamed by the harness",
+        },
+    )
+    assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
+    assert any(ROOM in hint["channel"] for hint in transport[4])
+
+
+@pytest.mark.asyncio
 async def test_http_dispatch_failure_returns_durable_receipt_without_logging_text(transport, caplog):
     from core.auth import get_current_user
     from routers.messaging import router
@@ -866,6 +956,89 @@ async def test_session_revision_contention_retries_without_rejecting_authorized_
     assert second["state"] == "pending"
     assert [body["command"]["requestId"] for _, body in transport[3]] == ["request-1"]
     assert (await repo.get_session(OWNER, sid))["eventSeq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
+    sid = await start(transport)
+    call = {
+        "kind": "tool",
+        "role": "assistant",
+        "text": "git status",
+        "truncated": False,
+        "ts": "2026-09-12T10:00:00.000Z",
+        "itemId": "toolu_01",
+        "tool": {"name": "Bash", "status": "running", "input": {"command": "git status"}},
+    }
+    result = {
+        "kind": "tool",
+        "role": "tool",
+        "text": "On branch main",
+        "truncated": False,
+        "ts": "2026-09-12T10:00:01.000Z",
+        "itemId": "uuid-2",
+        "parentId": "toolu_01",
+        "tool": {"name": "result", "status": "done", "result": {"stdout": "On branch main\n"}, "lines": 1},
+    }
+    prompt = {"kind": "text", "role": "user", "text": "hi", "actor": {"userId": BOB.user_id}}
+    old = {"kind": "text", "role": "assistant", "text": "plain"}
+    agent_prompt = {"kind": "text", "role": "user", "text": "from the agent", "actor": {"agentId": "agent_1"}}
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "b1",
+        "afterSeq": 0,
+        "events": [
+            prompt,
+            call,
+            result,
+            old,
+            {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"},
+            agent_prompt,
+        ],
+    }
+    ack = await relay(transport).handle_message("conn-1", body)
+    assert ack["afterSeq"] == 6
+    page = await service.list_events(BOB, ROOM, sid)
+    events = page.model_dump(by_alias=True, exclude_none=True)["events"]
+    assert events[0]["actor"] == {"userId": BOB.user_id}
+    assert events[1]["tool"]["name"] == "Bash" and events[1]["ts"] == "2026-09-12T10:00:00.000Z"
+    assert events[2]["parentId"] == "toolu_01" and events[2]["tool"]["lines"] == 1
+    assert "tool" not in events[3] and "ts" not in events[3]
+    assert events[4]["lifecycle"] == "turn_end"
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message(
+            "conn-1",
+            {
+                **body,
+                "batchId": "b2",
+                "afterSeq": 6,
+                "events": [{"kind": "text", "role": "user", "text": "x", "actor": {"userId": "u", "agentId": "a"}}],
+            },
+        )
+    # The HTTP boundary is what the desktop and web renderer actually see: old-shape
+    # events must not gain the six new fields as explicit nulls, and the legitimately
+    # nullable page cursor must still come through as null, not absent.
+    from core.auth import get_current_user
+    from routers.messaging import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/messaging/rooms/{ROOM}/local-sessions/{sid}/events")
+    assert response.status_code == 200
+    wire = response.json()
+    assert "nextAfterSeq" in wire and wire["nextAfterSeq"] is None
+    wire_events = wire["events"]
+    assert not set(wire_events[3]) & {"ts", "itemId", "parentId", "actor", "tool", "lifecycle"}
+    assert wire_events[1]["tool"]["name"] == "Bash" and wire_events[1]["ts"] == "2026-09-12T10:00:00.000Z"
+    # Nested optionals must be absent too: a null userId makes the web read an agent
+    # follow-up as the Mac owner, and a null tool.lines makes a call's label render
+    # as its own output.
+    assert wire_events[5]["actor"] == {"agentId": "agent_1"}
+    assert set(wire_events[1]["tool"]) == {"name", "status", "input"}
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from botocore.exceptions import ClientError
 from pydantic import Field, model_serializer, model_validator
@@ -102,6 +102,8 @@ class SessionRegistration(ContractModel):
     # The adapter must verify THIS provider version; omitted never inherits trust.
     capabilities_verified: bool = False
     online_until: int = Field(default=0, ge=0)
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 class LocalSession(ContractModel):
@@ -118,6 +120,8 @@ class LocalSession(ContractModel):
     capabilities: Capabilities
     capabilities_verified: bool
     latest_event_seq: int = Field(default=0, ge=0)
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
 class PairedNode(ContractModel):
@@ -133,12 +137,72 @@ class RoomResources(ContractModel):
     paired_nodes: list[PairedNode]
 
 
-class LocalSessionEvent(ContractModel):
-    seq: int = Field(ge=1)
-    kind: Literal["text", "tool", "lifecycle"]
+def _drop_none(model, result: dict, info, names: tuple[str, ...]) -> dict:
+    """An unset optional field is absent from the wire, never an explicit null.
+
+    The web distinguishes the two: `"userId" in actor` is true for a null key, and
+    `tool.lines != undefined` is true for null, which renders a call's label as its
+    own output.
+    """
+    for name in names:
+        if getattr(model, name) is None:
+            result.pop(model.model_fields[name].alias if info.by_alias else name, None)
+    return result
+
+
+class EventActor(ContractModel):
+    user_id: OpaqueId | None = None
+    agent_id: OpaqueId | None = None
+
+    @model_validator(mode="after")
+    def one_identity(self):
+        if (self.user_id is None) == (self.agent_id is None):
+            raise ValueError("actor needs exactly one of userId or agentId")
+        return self
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("user_id", "agent_id"))
+
+
+class EventTool(ContractModel):
+    name: Annotated[str, Field(min_length=1, max_length=128)]
+    status: Literal["running", "done", "error"]
+    input: Any = None
+    result: Any = None
+    lines: int | None = Field(default=None, ge=0)
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("input", "result", "lines"))
+
+
+Lifecycle = Literal["turn_start", "turn_end", "turn_aborted", "compaction", "approval_pending"]
+
+
+class LocalSessionEventBody(ContractModel):
+    """One transcript item as the harness drew it. Every field past `truncated` is optional wire growth."""
+
+    kind: Literal["text", "tool", "thinking", "lifecycle"]
     text: str = Field(max_length=MAX_ENVELOPE_BYTES)
     role: Literal["user", "assistant", "system", "tool"]
     truncated: bool = False
+    ts: Annotated[str, Field(max_length=40)] | None = None
+    item_id: OpaqueId | None = None
+    parent_id: OpaqueId | None = None
+    actor: EventActor | None = None
+    tool: EventTool | None = None
+    lifecycle: Lifecycle | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        # Old-shape events stay byte-compatible (LocalSessionEventPage cannot use
+        # response_model_exclude_none -- next_after_seq's null is meaningful).
+        return _drop_none(self, handler(self), info, ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle"))
+
+
+class LocalSessionEvent(LocalSessionEventBody):
+    seq: int = Field(ge=1)
 
     @model_validator(mode="after")
     def validate_envelope(self):
@@ -202,12 +266,8 @@ class CommandReceipt(LocalSessionCommand):
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        result = handler(self)
         # Human wire stays byte-compatible with existing deny_unknown_fields clients.
-        for name in ("actor_user_id", "actor", "invocation_expires_at"):
-            if getattr(self, name) is None:
-                result.pop(self.model_fields[name].alias if info.by_alias else name, None)
-        return result
+        return _drop_none(self, handler(self), info, ("actor_user_id", "actor", "invocation_expires_at"))
 
 
 Caller = AuthContext | AgentInvocation

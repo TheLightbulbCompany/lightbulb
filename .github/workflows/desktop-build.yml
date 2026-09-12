@@ -31,6 +31,9 @@ name: desktop-build
     - apps/desktop/**
     - pnpm-lock.yaml
     - .github/workflows/desktop-build.yml
+  pull_request:
+    paths:
+    - apps/desktop/**
   workflow_dispatch: {}
 permissions:
   contents: write
@@ -38,8 +41,41 @@ concurrency:
   group: desktop-build
   cancel-in-progress: false
 jobs:
+  # The Rust unit tests ran nowhere in CI. Not a required check: the self-hosted
+  # runner can be offline, and a check nobody can turn green blocks every PR.
+  test-desktop:
+    name: TestDesktop
+    if: github.event_name == 'pull_request'
+    # Pull-request code runs on the persistent signing Mac; drop the workflow's
+    # `contents: write` token, which only the build/publish jobs need.
+    permissions:
+      contents: read
+    runs-on:
+    - self-hosted
+    - macos-desktop
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+    - name: Cache Rust target dir
+      uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      with:
+        workspaces: apps/desktop/src-tauri -> target
+        shared-key: desktop-test
+    # TAURI_CONFIG stubs the sidecar bundle so tauri-build does not demand binaries
+    # that only the signed build jobs vendor.
+    - name: Cargo test (lib)
+      run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
+        apps/desktop/src-tauri/Cargo.toml --lib local_sessions
+    # Run separately and unfiltered: a shared name filter matches none of the example's tests.
+    - name: Cargo test (probe example)
+      run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
+        apps/desktop/src-tauri/Cargo.toml --example local_session_probe
   build-desktop-dev:
     name: BuildDesktopDev
+    if: github.event_name != 'pull_request'
     runs-on:
     - self-hosted
     - macos-desktop

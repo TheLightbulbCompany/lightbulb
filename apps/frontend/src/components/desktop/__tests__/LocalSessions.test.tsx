@@ -97,7 +97,7 @@ it("explains the full audience and requires an already connected Mac", async () 
   render(<LocalSessions />);
   await waitFor(()=>expect(screen.getByText(/Connect this Mac first/)).toBeTruthy());
   expect(screen.getByText(/Contributions can be visible across conversations/)).toBeTruthy();
-  expect(screen.getByText(/Coverage:/)).toHaveTextContent("Claude Code 2.1.268/2.1.269 and Codex 0.149.0");
+  expect(screen.getByText(/Coverage:/)).toHaveTextContent("Claude Code 2.1.145 or newer on the 2.1 line (follow-ups from 2.1.224; verified on 2.1.268 and 2.1.269) and Codex 0.149.0");
   expect(screen.getByRole("button",{name:"Enable local-session sharing"}).hasAttribute("disabled")).toBe(true);
 });
 it("shows checking status until the native status resolves", async()=>{

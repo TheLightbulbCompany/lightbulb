@@ -111,10 +111,15 @@ let detach: () => void;
 function renderWorkspace(agentId = "agent-a", search?: string) {
   const api = dock();
   detach = attachDockviewApi(api, () => "agent-a");
+  // The dock is always attached in this harness, so a session command now
+  // opens its OWN "session:" dock panel (task-16) rather than retargeting
+  // Messages — openChatPanel must run regardless of `search` or
+  // MESSAGES_PANEL_ID never exists for the tests below to bind ChatPanel to.
+  openChatPanel(agentId);
   if (search) {
     const command = parseCommand(search)!;
     openSessionPanel(command.descriptor.params.roomId, command.descriptor.params.sessionId);
-  } else openChatPanel(agentId);
+  }
   const panel = api.getPanel(MESSAGES_PANEL_ID)!;
   const props = { api: panel.api, params: { ...panel.params } } as React.ComponentProps<typeof ChatPanel>;
   const tree = () => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -138,7 +143,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); detach?.(); });
 
 describe("Messages room/controller boundary", () => {
-  it("opens an explicitly posted session URL from canonical room Markdown in the same Messages pane", async () => {
+  it("opens an explicitly posted session URL from canonical room Markdown into its own session dock panel", async () => {
     live.liveChannels = ["/rooms/a-first/key-a-first", "/rooms/a-exact/key-a-exact"];
     messaging.listMessages.mockImplementation(async roomId => ({ messages: [{
       messageId: "link-message", roomId, messageSeq: 1, roomRevision: 1,
@@ -148,29 +153,31 @@ describe("Messages room/controller boundary", () => {
     }], nextAfterSeq: null }));
     const { api } = renderWorkspace();
     fireEvent.click(await screen.findByRole("link", { name: "Continue native session" }));
-    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
-    expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
+    // Dock attached (task-16): the link opens a SEPARATE session dock panel —
+    // it no longer retargets the Messages pane's own room selection.
+    await waitFor(() => expect(api.getPanel("session:native-one")).toBeDefined());
+    expect(api.getPanel("session:native-one")?.params).toEqual({ roomId: "a-exact", sessionId: "native-one" });
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
     expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
   });
-  it("opens a fresh session URL through registry, singleton, ChatPanel, provider and real resource selection", async () => {
+  it("opens a fresh session URL command as a singleton dock panel, leaving Messages untouched", async () => {
     const { api } = renderWorkspace("agent-a", "?panel=chat&room=a-exact&session=native-one");
-    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
-    expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
-    expect(messaging.listLocalSessionEvents).toHaveBeenCalledWith("a-exact", "native-one", 0, 50);
-    expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Back to devices & sessions" }));
-    expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
+    await waitFor(() => expect(api.getPanel("session:native-one")).toBeDefined());
+    expect(api.getPanel("session:native-one")?.params).toEqual({ roomId: "a-exact", sessionId: "native-one" });
+    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
     act(() => openSessionPanel("a-exact", "native-one"));
-    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(api.panels.filter(panel => panel.id === "session:native-one")).toHaveLength(1); // focused, not duplicated
     act(() => openMessagePanel("channel"));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
-    expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
-    act(() => openSessionPanel("a-exact", "native-one"));
-    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
     expect(messaging.createRoom).not.toHaveBeenCalled();
     expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
+  });
+  it("opens the current panel=session permalink grammar into its own dock panel", async () => {
+    const { api } = renderWorkspace("agent-a", "?panel=session&room=r1&session=s1");
+    await waitFor(() => expect(api.getPanel("session:s1")).toBeDefined());
+    expect(api.getPanel("session:s1")?.params).toEqual({ roomId: "r1", sessionId: "s1" });
+    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
   });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     const { api } = renderWorkspace();

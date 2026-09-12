@@ -25,16 +25,190 @@ pub type Result<T> = std::result::Result<T, String>;
 
 /// Shared with the retained, rerunnable native probe so privacy filtering has
 /// one implementation. Only version-bound completed public text is supported.
-pub fn normalize_public_message(
-    provider: &str,
-    session: &str,
-    row: &Value,
-) -> Result<Option<Value>> {
+pub fn normalize_public_message(provider: &str, session: &str, row: &Value) -> Result<Vec<Value>> {
     match provider {
         "claude" => claude::normalize(session, row),
         "codex" => codex::normalize(session, row),
         _ => Err("unsupported provider".into()),
     }
+}
+
+pub(crate) const MAX_TEXT: usize = 12 * 1024;
+pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
+pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
+pub(crate) const PREVIEW_LINES: usize = 20;
+pub(crate) const HEADER_PREFIX: &str = "[Lightbulb teammate contribution";
+pub(crate) const NOTICE_PREFIX: &str = "[Lightbulb workspace advisory: ";
+
+/// Cut `text` to at most `max` bytes on a char boundary.
+pub(crate) fn bounded(text: &str, max: usize) -> (String, bool) {
+    if text.len() <= max {
+        return (text.to_owned(), false);
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), true)
+}
+
+/// The first `lines` lines plus the total line count, as the TUI's collapsed output does.
+pub(crate) fn preview(text: &str, lines: usize) -> (String, u64) {
+    (
+        text.lines().take(lines).collect::<Vec<_>>().join("\n"),
+        text.lines().count() as u64,
+    )
+}
+
+fn looks_secret(word: &str) -> bool {
+    let tail_ok = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    };
+    (word.starts_with("AKIA")
+        && word.len() == 20
+        && word
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || (word.starts_with("sk-") && word.len() >= 24 && tail_ok(&word[3..]))
+        || ((word.starts_with("ghp_")
+            || word.starts_with("gho_")
+            || word.starts_with("github_pat_"))
+            && word.len() >= 30)
+        || ((word.starts_with("xoxb-") || word.starts_with("xoxp-") || word.starts_with("xoxa-"))
+            && word.len() >= 20)
+}
+
+fn redact_pem(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("-----BEGIN ") {
+        out.push_str(&rest[..start]);
+        out.push_str("[redacted]");
+        // A 20-line tool preview can cut a key between BEGIN and END. Fail closed:
+        // drop everything from the header on rather than ship the key body.
+        let Some(end) = rest[start..].find("-----END ") else {
+            return out;
+        };
+        let tail = &rest[start + end + 9..];
+        let close = tail.find("-----").map(|i| i + 5).unwrap_or(tail.len());
+        rest = &tail[close..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Credential-shaped tokens become "[redacted]". A backstop, never a guarantee.
+pub(crate) fn redact(text: &str) -> String {
+    fn flush(word: &mut String, previous: &mut String, out: &mut String) {
+        if word.is_empty() {
+            return;
+        }
+        let bearer = previous.eq_ignore_ascii_case("bearer") && word.len() >= 20;
+        out.push_str(if bearer || looks_secret(word) {
+            "[redacted]"
+        } else {
+            word
+        });
+        *previous = std::mem::take(word);
+    }
+    let text = redact_pem(text);
+    let mut out = String::with_capacity(text.len());
+    let (mut word, mut previous) = (String::new(), String::new());
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '/' | '.') {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut previous, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut previous, &mut out);
+    out
+}
+
+/// Redact every string leaf, then shrink string leaves until the JSON fits `max` bytes; Null if it
+/// cannot. The flag is true when anything was cut or nulled, so the caller can mark its event.
+pub(crate) fn bound_json(mut value: Value, max: usize) -> (Value, bool) {
+    fn walk(v: &mut Value, f: &dyn Fn(&mut String)) {
+        match v {
+            Value::String(s) => f(s),
+            Value::Array(a) => a.iter_mut().for_each(|x| walk(x, f)),
+            Value::Object(o) => o.values_mut().for_each(|x| walk(x, f)),
+            _ => {}
+        }
+    }
+    walk(&mut value, &|s| *s = redact(s));
+    let mut per = max;
+    let mut shrunk = false;
+    while serde_json::to_string(&value)
+        .map(|s| s.len() > max)
+        .unwrap_or(true)
+    {
+        if per < 64 {
+            return (Value::Null, true);
+        }
+        per /= 2;
+        shrunk = true;
+        walk(&mut value, &|s| {
+            let (cut, truncated) = bounded(s, per);
+            if truncated {
+                *s = format!("{cut}…");
+            }
+        });
+    }
+    (value, shrunk)
+}
+
+pub(crate) fn event(
+    kind: &str,
+    role: &str,
+    text: &str,
+    ts: Option<&str>,
+    item_id: Option<&str>,
+) -> Value {
+    let (text, truncated) = bounded(&redact(text), MAX_TEXT);
+    let mut value = json!({"kind": kind, "role": role, "text": text, "truncated": truncated});
+    if let Some(ts) = ts {
+        value["ts"] = json!(ts);
+    }
+    if let Some(id) = item_id {
+        value["itemId"] = json!(id);
+    }
+    value
+}
+
+pub(crate) fn lifecycle(name: &str, text: &str, ts: Option<&str>, item_id: Option<&str>) -> Value {
+    let mut value = event("lifecycle", "system", text, ts, item_id);
+    value["lifecycle"] = json!(name);
+    value
+}
+
+/// Split a Lightbulb-authored ingress text into (provenance, teammate text). None for ordinary native input.
+pub(crate) fn teammate_contribution(text: &str) -> Option<(Value, String)> {
+    let rest = text.strip_prefix(HEADER_PREFIX)?;
+    let header_end = rest.find("}]\n")?;
+    let header = &rest[..header_end + 1];
+    let provenance: Value = serde_json::from_str(&header[header.find("{\"")?..]).ok()?;
+    if !provenance.is_object() {
+        return None;
+    }
+    let mut body = &rest[header_end + 3..];
+    if body.starts_with(NOTICE_PREFIX) {
+        if let Some(end) = body.find("]\n") {
+            body = &body[end + 2..];
+        }
+    }
+    Some((provenance, body.to_owned()))
+}
+
+pub(crate) fn actor_of(provenance: &Value) -> Option<Value> {
+    if let Some(user) = provenance["actorUserId"].as_str() {
+        return Some(json!({"userId": user}));
+    }
+    provenance["actor"]["id"]
+        .as_str()
+        .map(|id| json!({"agentId": id}))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,6 +247,14 @@ struct AgentActor {
     id: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActorLabel {
+    pub kind: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Command {
@@ -95,6 +277,8 @@ pub struct Command {
     deliver_by: u64,
     held: bool,
     provider_message_id: Option<String>,
+    #[serde(skip)]
+    pub(crate) label: Option<ActorLabel>,
 }
 
 impl Command {
@@ -115,7 +299,37 @@ impl Command {
         } else {
             value["actorUserId"] = json!(self.actor_user_id);
         }
+        if let Some(label) = &self.label {
+            if let Some(handle) = &label.handle {
+                value["actorHandle"] = json!(handle);
+            }
+            if let Some(name) = &label.display_name {
+                value["actorDisplayName"] = json!(name);
+            }
+        }
         value
+    }
+    /// Byte-exact header both adapters strip again on the way back (`teammate_contribution`).
+    /// Labels are display text: braces, brackets and newlines are dropped so they can never
+    /// be mistaken for the header's own delimiters or the provenance JSON.
+    pub(crate) fn header(&self) -> String {
+        let clean = |s: &str| -> String {
+            s.chars()
+                .filter(|c| !matches!(c, '{' | '}' | '[' | ']' | '\n' | '\r'))
+                .collect()
+        };
+        let who = match &self.label {
+            Some(ActorLabel {
+                handle: Some(handle),
+                display_name,
+                ..
+            }) => match display_name {
+                Some(name) => format!(" from @{} ({})", clean(handle), clean(name)),
+                None => format!(" from @{}", clean(handle)),
+            },
+            _ => String::new(),
+        };
+        format!("{HEADER_PREFIX}{who} {}]\n", self.provenance())
     }
 }
 
@@ -544,6 +758,12 @@ struct NativeSession {
     version: String,
     restriction: Option<String>,
     status: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cwd_name: Option<String>,
+    #[serde(default)]
+    active_turn: Option<String>,
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -719,19 +939,118 @@ fn deadline_now(
 
 fn split_text(event: &Value) -> Vec<Value> {
     let text = event["text"].as_str().unwrap_or("");
-    let mut rest = text;
+    // Lifecycle markers and thinking markers carry no text; they still travel.
+    if text.is_empty() {
+        return vec![event.clone()];
+    }
+    // A tool event carries its bounded `tool.result`; chunking would clone it per part
+    // and the web keys tool rows by itemId, so the preview text is bounded instead.
+    if event["kind"] == "tool" {
+        let (cut, truncated) = bounded(text, 8192);
+        let mut single = event.clone();
+        single["text"] = json!(cut);
+        if truncated {
+            single["truncated"] = json!(true);
+        }
+        // Those are UTF-8 byte bounds; the envelope charges 6 wire chars per UTF-16 unit
+        // of a non-ASCII char, so a CJK result can still build an event that never fits
+        // alone. Shrink the assembled event against the wire itself.
+        let mut budget = 8192;
+        while budget >= 64 && ascii_wire_len(&single).is_ok_and(|wire| wire > 15_000) {
+            budget /= 2;
+            single["text"] = json!(bounded(single["text"].as_str().unwrap_or(""), budget).0);
+            if let Some(result) = single.pointer_mut("/tool/result") {
+                if !result.is_null() {
+                    *result = bound_json(result.take(), budget).0;
+                }
+            }
+            single["truncated"] = json!(true);
+        }
+        return vec![single];
+    }
     let mut result = vec![];
-    while !rest.is_empty() {
-        let mut end = rest.len().min(1800);
-        while !rest.is_char_boundary(end) {
-            end -= 1;
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = start;
+        let mut wire = 0usize;
+        for (index, c) in text[start..].char_indices() {
+            let cost = if c.is_ascii() {
+                if matches!(c, '"' | '\\') || (c as u32) < 0x20 {
+                    6
+                } else {
+                    1
+                }
+            } else {
+                c.len_utf16() * 6
+            };
+            if wire + cost > 11_000 && index > 0 {
+                break;
+            }
+            wire += cost;
+            end = start + index + c.len_utf8();
         }
         let mut part = event.clone();
-        part["text"] = json!(&rest[..end]);
+        part["text"] = json!(&text[start..end]);
         result.push(part);
-        rest = &rest[end..];
+        start = end;
+    }
+    if result.is_empty() {
+        result.push(event.clone());
     }
     result
+}
+
+/// Make an event acceptable to the backend's contract before it is queued. Harness ids
+/// travel verbatim and are not ours to trust; a rejected batch tears the connection down
+/// and the same head of queue replays forever.
+fn admissible(event: &mut Value) {
+    fn opaque(value: &Value) -> bool {
+        value.as_str().is_some_and(|s| {
+            (1..=256).contains(&s.len())
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+        })
+    }
+    if let Some(map) = event.as_object_mut() {
+        for key in ["itemId", "parentId"] {
+            if map.get(key).is_some_and(|v| !opaque(v)) {
+                map.remove(key);
+            }
+        }
+    }
+    if let Some(ts) = event
+        .get("ts")
+        .and_then(Value::as_str)
+        .map(|t| bounded(t, 40).0)
+    {
+        event["ts"] = json!(ts);
+    }
+    let name = event
+        .pointer("/tool/name")
+        .and_then(Value::as_str)
+        .map(|n| bounded(n, 128).0);
+    if let Some(name) = name {
+        event["tool"]["name"] = json!(if name.is_empty() {
+            "tool"
+        } else {
+            name.as_str()
+        });
+    }
+}
+
+/// Stands in for an event that cannot be sent at all, so the queue keeps moving.
+fn unsendable(original: &Value) -> Value {
+    let mut marker = event(
+        "text",
+        "system",
+        "[Lightbulb could not mirror one event: it exceeded the envelope]",
+        original["ts"].as_str(),
+        original["itemId"].as_str(),
+    );
+    marker["truncated"] = json!(true);
+    // The ids are inherited, and a queue restored from an older build never saw admissible.
+    admissible(&mut marker);
+    marker
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -804,15 +1123,16 @@ impl Mirror {
             let mut cursor = self.cursor.clone();
             let mut queue = Vec::new();
             for row in cursor.read(path)? {
-                let event = normalize_public_message(
+                let events = normalize_public_message(
                     &self.native.provider,
                     &self.native.conversation,
                     &row,
                 )?;
-                if let Some(mut event) = event {
+                for mut event in events {
+                    admissible(&mut event);
                     let text = event["text"].as_str().unwrap_or("");
-                    if text.len() > 65536 {
-                        let mut end = 65536;
+                    if text.len() > MAX_TEXT {
+                        let mut end = MAX_TEXT;
                         while !text.is_char_boundary(end) {
                             end -= 1;
                         }
@@ -828,15 +1148,29 @@ impl Mirror {
         let Some(session_id) = &self.session_id else {
             return Ok(None);
         };
-        let Some(event) = self.queue.first() else {
+        if self.queue.is_empty() {
             return Ok(None);
-        };
-        let batch = json!({"type":"local.session.events", "sessionId":session_id, "generation":self.generation,
-            "batchId":uuid::Uuid::new_v4().to_string(), "afterSeq":self.after_seq, "events":[event]});
-        // One bounded event per envelope, including escaping; no provider output
-        // bypasses this final serialized-wire size check.
-        if ascii_wire_len(&batch)? > 16384 {
-            return Err("event envelope exceeds limit".into());
+        }
+        let mut events: Vec<Value> = vec![];
+        let mut batch = json!({"type":"local.session.events", "sessionId":session_id, "generation":self.generation,
+            "batchId":uuid::Uuid::new_v4().to_string(), "afterSeq":self.after_seq, "events":[]});
+        for candidate in self.queue.iter().take(32) {
+            events.push(candidate.clone());
+            batch["events"] = Value::Array(events.clone());
+            if ascii_wire_len(&batch)? > 16384 {
+                events.pop();
+                batch["events"] = Value::Array(events.clone());
+                break;
+            }
+        }
+        if events.is_empty() {
+            // A single event that cannot fit alone would replay forever (the batch fails,
+            // the session re-registers, the persisted queue restores it). Mirror a marker
+            // in its place and keep going.
+            let marker = unsendable(&self.queue[0]);
+            self.queue[0] = marker.clone();
+            events.push(marker);
+            batch["events"] = Value::Array(events);
         }
         self.pending = Some(batch.clone());
         Ok(Some(batch))
@@ -846,11 +1180,12 @@ impl Mirror {
             .pending
             .as_ref()
             .ok_or("unexpected upload acknowledgment")?;
-        if pending["batchId"] != batch_id || after_seq != self.after_seq + 1 {
+        let count = pending["events"].as_array().map(Vec::len).unwrap_or(0) as u64;
+        if pending["batchId"] != batch_id || after_seq != self.after_seq + count {
             return Err("upload cursor conflict".into());
         }
         self.after_seq = after_seq;
-        self.queue.remove(0);
+        self.queue.drain(..count as usize);
         self.pending = None;
         Ok(())
     }
@@ -934,6 +1269,9 @@ mod tests {
             version: "2.1.268".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -1153,6 +1491,9 @@ mod tests {
             version: "0.149.0".into(),
             restriction: None,
             status: "unknown".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -1226,6 +1567,9 @@ mod tests {
                 version: "2.1.268".into(),
                 restriction: None,
                 status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1260,5 +1604,452 @@ mod tests {
             "final before exit",
             "an enrolled transcript's anchored final records survive process exit"
         );
+    }
+
+    #[test]
+    fn local_sessions_split_text_preserves_empty_marker_events_and_bounds_tool_text_without_splitting(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let ts = "2026-09-12T10:00:00.000Z";
+        let turn = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a1","timestamp":ts,
+            "message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"","signature":"x"},{"type":"text","text":"All good."}]}});
+        let empty_result = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1","timestamp":ts,
+            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"","is_error":false}]}});
+        let big = "x".repeat(30 * 1024);
+        let big_result = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u2","timestamp":ts,
+            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":big,"is_error":false}]}});
+        fs::write(
+            &transcript,
+            format!("{turn}\n{empty_result}\n{big_result}\n"),
+        )
+        .unwrap();
+        let mut mirror = Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.269".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        };
+        mirror.next_batch().unwrap();
+        assert!(
+            mirror.queue.iter().any(|e| e["kind"] == "thinking"),
+            "thinking marker survived"
+        );
+        assert!(
+            mirror
+                .queue
+                .iter()
+                .any(|e| e["kind"] == "lifecycle" && e["lifecycle"] == "turn_end"),
+            "turn_end lifecycle survived"
+        );
+        assert!(
+            mirror
+                .queue
+                .iter()
+                .any(|e| e["role"] == "tool" && e["text"] == ""),
+            "empty tool result survived"
+        );
+        let big_events: Vec<_> = mirror
+            .queue
+            .iter()
+            .filter(|e| e["text"].as_str().is_some_and(|t| t.len() == 8192))
+            .collect();
+        assert_eq!(
+            big_events.len(),
+            1,
+            "the big tool result is bounded, not split into several chunks"
+        );
+        assert_eq!(big_events[0]["truncated"], true);
+    }
+
+    #[test]
+    fn local_sessions_mirror_packs_many_events_per_envelope_and_splits_by_wire_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let row = |i: usize| {
+            json!({"type":"assistant","sessionId":"s","version":"2.1.268","uuid":format!("m{i}"),"message":{"role":"assistant","content":[{"type":"text","text":format!("event {i}")}]}}).to_string()
+        };
+        fs::write(
+            &transcript,
+            (0..40).map(row).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let mut mirror = Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.268".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        };
+        let first = mirror.next_batch().unwrap().unwrap();
+        let n = first["events"].as_array().unwrap().len();
+        assert!(n > 1 && n <= 32);
+        assert!(ascii_wire_len(&first).unwrap() <= 16384);
+        assert!(
+            mirror
+                .acknowledge(first["batchId"].as_str().unwrap(), 1)
+                .is_err(),
+            "must advance by the batch length"
+        );
+        mirror
+            .acknowledge(first["batchId"].as_str().unwrap(), n as u64)
+            .unwrap();
+        assert_eq!(mirror.after_seq, n as u64);
+        let parts = split_text(
+            &json!({"kind":"text","role":"assistant","text":"é".repeat(6000),"truncated":false,"itemId":"m"}),
+        );
+        assert!(parts.len() > 1);
+        // 11_000 of text budget leaves room for the other fields inside a 12_000 wire budget per event.
+        assert!(parts
+            .iter()
+            .all(|p| p["itemId"] == "m" && ascii_wire_len(p).unwrap() <= 12_000));
+        assert_eq!(
+            split_text(&json!({"kind":"thinking","role":"assistant","text":"","truncated":false}))
+                .len(),
+            1,
+            "empty markers still travel"
+        );
+        let tool = split_text(
+            &json!({"kind":"tool","role":"tool","text":"x".repeat(20_000),"truncated":false,"tool":{"name":"result","status":"done"}}),
+        );
+        assert_eq!(tool.len(), 1, "tool events are bounded, never chunked");
+        assert!(tool[0]["truncated"] == true && tool[0]["text"].as_str().unwrap().len() == 8192);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|p| p["text"].as_str().unwrap())
+                .collect::<String>(),
+            "é".repeat(6000)
+        );
+    }
+
+    #[test]
+    fn local_sessions_mirror_next_batch_stops_at_wire_budget_and_preserves_the_rest() {
+        // Six ~5 KiB ASCII rows: only 3 fit inside a 16 KiB envelope (15406 bytes at
+        // 3, 20488 at 4), forcing next_batch's push -> check -> pop -> re-clone branch.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let row_text = |i: usize| format!("row{i}-{}", "y".repeat(4990));
+        let row = |i: usize| {
+            json!({"type":"assistant","sessionId":"s","version":"2.1.268","uuid":format!("m{i}"),
+                "message":{"role":"assistant","content":[{"type":"text","text":row_text(i)}]}})
+            .to_string()
+        };
+        fs::write(
+            &transcript,
+            (0..6).map(row).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let mut mirror = Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.268".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        };
+        let first = mirror.next_batch().unwrap().unwrap();
+        let n = first["events"].as_array().unwrap().len();
+        assert!(ascii_wire_len(&first).unwrap() <= 16384);
+        assert!(
+            n < 6,
+            "six ~5 KiB rows must not all fit in one 16 KiB envelope"
+        );
+        assert_eq!(
+            mirror.queue.len(),
+            6,
+            "next_batch must not drop the events it declined to pack"
+        );
+        // The event the loop pushed then popped for overflowing must be untouched
+        // in the queue, ready for the next envelope.
+        let popped_text = mirror.queue[n]["text"].as_str().unwrap().to_string();
+        mirror
+            .acknowledge(first["batchId"].as_str().unwrap(), n as u64)
+            .unwrap();
+        assert_eq!(mirror.queue.len(), 6 - n);
+        let second = mirror.next_batch().unwrap().unwrap();
+        assert_eq!(second["events"][0]["text"], popped_text);
+    }
+
+    fn test_mirror(transcript: PathBuf) -> Mirror {
+        Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.269".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        }
+    }
+
+    #[test]
+    fn local_sessions_tool_event_is_bounded_against_the_wire_not_its_byte_length() {
+        // 20 KiB of CJK passes every byte bound, but the envelope charges 6 wire chars
+        // per UTF-16 unit: unshrunk, this event can never fit alone and wedges the session.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let stdout = "漢字テスト".repeat(20 * 1024 / "漢字テスト".len() + 1);
+        assert!(stdout.len() >= 20 * 1024);
+        let row = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1","timestamp":"2026-09-12T10:00:00.000Z",
+            "toolUseResult":{"stdout":&stdout,"stderr":"","interrupted":false},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":&stdout,"is_error":false}]}});
+        fs::write(&transcript, format!("{row}\n")).unwrap();
+        let mut mirror = test_mirror(transcript);
+        let batch = mirror
+            .next_batch()
+            .expect("a CJK tool result must not wedge the queue")
+            .unwrap();
+        let events = batch["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "a tool event is never split");
+        assert!(ascii_wire_len(&events[0]).unwrap() <= 15_000);
+        assert_eq!(events[0]["truncated"], true);
+    }
+
+    #[test]
+    fn local_sessions_admissible_drops_ids_and_names_the_backend_would_reject() {
+        // Upstream ids travel verbatim; a rejected batch tears the connection down and
+        // replays the same head of queue forever.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let row = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"bad id","timestamp":"2026-09-12T10:00:00.000Z",
+            "message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool_use","id":"toolu_1","name":"","input":{}}]}});
+        fs::write(&transcript, format!("{row}\n")).unwrap();
+        let mut mirror = test_mirror(transcript);
+        let batch = mirror.next_batch().unwrap().unwrap();
+        let events = batch["events"].as_array().unwrap();
+        assert_eq!(events[0]["text"], "hello");
+        assert!(
+            events[0].get("itemId").is_none(),
+            "an itemId with a space cannot match the backend's pattern"
+        );
+        assert_eq!(events[1]["tool"]["name"], "tool");
+    }
+
+    #[test]
+    fn local_sessions_next_batch_marks_an_unsendable_event_instead_of_wedging() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(dir.path().join("absent.jsonl"));
+        // Nothing shrinks actor.userId, so this event can never fit alone.
+        mirror.queue = vec![
+            json!({"kind":"text","role":"user","text":"hi","truncated":false,
+            "ts":"2026-09-12T10:00:00.000Z","itemId":"u1","actor":{"userId":"漢".repeat(4000)}}),
+        ];
+        let batch = mirror
+            .next_batch()
+            .expect("an unsendable event must not wedge the queue")
+            .unwrap();
+        let event = &batch["events"][0];
+        assert_eq!(
+            (&event["kind"], &event["role"]),
+            (&json!("text"), &json!("system"))
+        );
+        assert!(event["text"]
+            .as_str()
+            .unwrap()
+            .contains("could not mirror one event"));
+        assert_eq!(event["truncated"], true);
+        assert_eq!(event["itemId"], "u1");
+        assert_eq!(event["ts"], "2026-09-12T10:00:00.000Z");
+        assert!(ascii_wire_len(&batch).unwrap() <= 16384);
+        assert_eq!(
+            mirror.queue.len(),
+            1,
+            "the marker replaces the event in place"
+        );
+        mirror
+            .acknowledge(batch["batchId"].as_str().unwrap(), 1)
+            .unwrap();
+        assert!(mirror.queue.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_helpers_bound_preview_and_redact() {
+        assert_eq!(bounded("héllo", 3), ("hé".into(), true));
+        assert_eq!(preview("a\nb\nc", 2), ("a\nb".into(), 3));
+        let leaked = "token AKIAIOSFODNN7EXAMPLE and sk-abcdefghijklmnopqrstuvwxyz12 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc plain sk-short";
+        let clean = redact(leaked);
+        assert!(
+            !clean.contains("AKIAIOSFODNN7EXAMPLE")
+                && !clean.contains("sk-abcdefghijklmnopqrstuvwxyz12")
+                && !clean.contains("eyJhbGci")
+        );
+        assert!(clean.contains("plain sk-short"));
+        assert_eq!(
+            redact("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\nafter"),
+            "[redacted]\nafter"
+        );
+        // A 20-line tool preview can cut the block before its END marker.
+        assert_eq!(
+            redact("x\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\nMIIF"),
+            "x\n[redacted]"
+        );
+        assert_eq!(redact("nothing to hide here"), "nothing to hide here");
+        let (big, cut) = bound_json(json!({"stdout": "x".repeat(20_000), "code": 0}), 4096);
+        assert!(serde_json::to_string(&big).unwrap().len() <= 4096 && big["code"] == 0);
+        assert!(cut, "a shrunken payload reports itself truncated");
+        assert_eq!(
+            bound_json(json!({"stdout": "small", "code": 0}), 4096),
+            (json!({"stdout": "small", "code": 0}), false)
+        );
+        assert_eq!(
+            bound_json(json!(vec![1u8; 1000]), 64),
+            (Value::Null, true),
+            "nothing shrinkable left"
+        );
+    }
+
+    #[test]
+    fn local_sessions_event_builders_and_teammate_header_parse() {
+        let e = event(
+            "text",
+            "assistant",
+            "hi",
+            Some("2026-09-12T10:00:00.000Z"),
+            Some("m1"),
+        );
+        assert_eq!(
+            e,
+            json!({"kind":"text","role":"assistant","text":"hi","truncated":false,"ts":"2026-09-12T10:00:00.000Z","itemId":"m1"})
+        );
+        assert_eq!(
+            lifecycle("turn_end", "", None, None)["lifecycle"],
+            "turn_end"
+        );
+        let labelled = "[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_1\",\"actorHandle\":\"aden\"}]\n[Lightbulb workspace advisory: something changed.]\nCheck concurrency 50";
+        let (provenance, body) = teammate_contribution(labelled).unwrap();
+        assert_eq!(body, "Check concurrency 50");
+        assert_eq!(actor_of(&provenance), Some(json!({"userId":"user_1"})));
+        let legacy = "[Lightbulb teammate contribution {\"roomId\":\"r\",\"requestId\":\"q\",\"actor\":{\"kind\":\"agent\",\"id\":\"friday\"}}]\nhello";
+        let (provenance, body) = teammate_contribution(legacy).unwrap();
+        assert_eq!(
+            (body.as_str(), actor_of(&provenance)),
+            ("hello", Some(json!({"agentId":"friday"})))
+        );
+        let brace_in_name = "[Lightbulb teammate contribution from @aden (Aden {Kim}) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nhello";
+        let (provenance, body) = teammate_contribution(brace_in_name).unwrap();
+        assert_eq!(
+            (body.as_str(), actor_of(&provenance)),
+            ("hello", Some(json!({"userId":"user_a"})))
+        );
+        assert!(teammate_contribution("ordinary prompt").is_none());
+        assert!(teammate_contribution("[Lightbulb teammate contribution not-json]\nx").is_none());
+    }
+
+    #[test]
+    fn local_sessions_command_header_names_the_sender_and_keeps_the_hash_stable() {
+        let mut cmd = command();
+        let unlabelled = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(
+            cmd.header(),
+            format!("[Lightbulb teammate contribution {}]\n", cmd.provenance())
+        );
+        cmd.label = Some(ActorLabel {
+            kind: "human".into(),
+            handle: Some("aden".into()),
+            display_name: Some("Aden Kim".into()),
+        });
+        assert_eq!(
+            serde_json::to_string(&cmd).unwrap(),
+            unlabelled,
+            "label never enters the idempotency hash"
+        );
+        let header = cmd.header();
+        assert!(header.starts_with("[Lightbulb teammate contribution from @aden (Aden Kim) {"));
+        assert_eq!(cmd.provenance()["actorHandle"], "aden");
+        let (provenance, body) = teammate_contribution(&format!("{header}hello")).unwrap();
+        assert_eq!(
+            (provenance["actorUserId"].as_str(), body.as_str()),
+            (Some("alice"), "hello")
+        );
+        cmd.label = Some(ActorLabel {
+            kind: "human".into(),
+            handle: Some("aden".into()),
+            display_name: Some("Aden {Kim]\n".into()),
+        });
+        assert!(
+            cmd.header()
+                .starts_with("[Lightbulb teammate contribution from @aden (Aden Kim) {"),
+            "delimiters never come from a label"
+        );
+        assert!(teammate_contribution(&format!("{}hello", cmd.header())).is_some());
     }
 }

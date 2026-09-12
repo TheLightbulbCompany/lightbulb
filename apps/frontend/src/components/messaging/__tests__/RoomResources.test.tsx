@@ -407,7 +407,7 @@ it("renders only safe public text and labels native approval and capability limi
   f.client.listLocalSessionEvents.mockResolvedValue({ events: [{ seq: 250, kind: "tool", role: "tool", text: '<script>alert(1)</script> ![private](https://example.com/private.png) [bad](javascript:alert(1))', truncated: true }], nextAfterSeq: null });
   const { container } = render(<RoomPanel {...f.props} />);
   await openSession();
-  expect(await screen.findByText(/Output truncated/)).toBeInTheDocument();
+  expect(await screen.findByLabelText("Native event 250")).toBeInTheDocument();
   expect(screen.getByText(/Waiting for approval on/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
   expect(container.querySelector("script")).toBeNull();
@@ -483,6 +483,41 @@ it("retries the failed older page rather than silently refreshing a different re
   await userEvent.click(screen.getByRole("button", { name: "Load older" }));
   await userEvent.click(await screen.findByRole("button", { name: "Retry history" }));
   expect(await screen.findByText("Native event 151")).toBeInTheDocument();
+});
+
+it("shows the harness title, keeps the composer, and renders tool rows in the terminal grammar", async () => {
+  const f = setup();
+  f.client.listResources.mockResolvedValue({ ...resources, sessions: [{ ...session, title: "Retry fix", status: "busy", latestEventSeq: 2 }] });
+  f.client.listLocalSessionEvents.mockResolvedValue({ nextAfterSeq: null, events: [
+    { seq: 1, kind: "text", role: "user", text: "fix the retry", truncated: false },
+    { seq: 2, kind: "tool", role: "assistant", text: "pnpm test", truncated: false, itemId: "e1", tool: { name: "CommandExecution", status: "done", result: { output: "1 passed" }, lines: 1 } },
+  ] });
+  render(<RoomPanel {...f.props} />);
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  await userEvent.click(await screen.findByRole("button", { name: /Open Codex · Retry fix/ }));
+  expect(await screen.findByRole("heading", { name: /Codex · Retry fix/ })).toBeInTheDocument();
+  expect(screen.getByText("Ran pnpm test")).toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Working" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send follow-up" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Copy session link" })).toBeInTheDocument();
+});
+
+it("submits the follow-up on Enter, keeps Shift+Enter as a newline, and ignores Enter mid-IME composition", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  const input = screen.getByRole("textbox", { name: /Send to Codex/ });
+  await userEvent.type(input, "line one{Shift>}{Enter}{/Shift}line two");
+  expect(input).toHaveValue("line one\nline two");
+  expect(f.client.submitLocalSessionCommand).not.toHaveBeenCalled();
+  fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+  fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+  expect(f.client.submitLocalSessionCommand).not.toHaveBeenCalled();
+  expect(input).toHaveValue("line one\nline two");
+  await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledWith("room", session.sessionId,
+    expect.objectContaining({ kind: "send", text: "line one\nline two" }));
+  expect(input).toHaveValue("");
 });
 
 it("cannot race a new send with a receipt check or erase the next draft", async () => {

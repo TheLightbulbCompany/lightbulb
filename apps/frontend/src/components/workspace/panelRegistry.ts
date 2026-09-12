@@ -3,7 +3,7 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "missing";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "session" | "missing";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -165,6 +165,7 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "control",
   "file-viewer",
   "browser",
+  "session",
   "missing",
 ]);
 
@@ -238,6 +239,11 @@ export function describePanel(
     if (params.agent) p.agentId = params.agent;
     if (params.inspectorTab) p.initialTab = params.inspectorTab;
     return { panelId: "agent-inspector", component: "control", title: "Agent Inspector", params: p };
+  }
+
+  if (key === "session") {
+    if (!params.room || !params.session) return null;
+    return { panelId: `session:${params.session}`, component: "session", title: "Session", params: { roomId: params.room, sessionId: params.session } };
   }
 
   if (key.startsWith("teams-")) {
@@ -321,6 +327,7 @@ export function durableParamsFor(panelId: string): string[] {
   // "agentId" cover the explicit ?panel=chat grammar (describePanel accepts
   // agent OR agentId) so an externally-authored chat link clears fully.
   if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session"];
+  if (panelId.startsWith("session:")) return ["panel", "room", "session"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];

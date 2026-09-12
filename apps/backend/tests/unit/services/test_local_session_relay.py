@@ -816,6 +816,7 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
             "sessionId": sid,
             "generation": "generation-1",
             "status": "busy",
+            "activeTurnId": "turn-1",
             "title": "Renamed by the harness",
         },
     )

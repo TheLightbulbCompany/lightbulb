@@ -501,6 +501,30 @@ it("dismisses a medium overlay on Escape from outside the room and restores its 
   expect(onSelectThread).not.toHaveBeenCalled();
 });
 
+it("leaves a medium overlay open when Escape is dismissing a portalled popper", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(min-width: 860px) and (max-width: 1179px)",
+    media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList));
+  const user = userEvent.setup();
+  const onSelectThread = vi.fn();
+  render(<><button>Outside room</button><RoomPanel {...props} onSelectThread={onSelectThread} /></>);
+  await user.click(screen.getByRole("button", { name: "Reply in thread" }));
+  await user.click(screen.getByRole("button", { name: "Outside room" }));
+  // A Radix menu/picker renders in a portal outside this subtree, so its own
+  // Escape still bubbles to the window listener.
+  const popper = document.body.appendChild(document.createElement("div"));
+  popper.setAttribute("data-radix-popper-content-wrapper", "");
+  const item = popper.appendChild(document.createElement("button"));
+  item.focus();
+
+  await user.keyboard("{Escape}");
+  popper.remove();
+
+  expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+  expect(onSelectThread).not.toHaveBeenCalledWith(null);
+});
+
 it("leaves a medium overlay open when Escape is dismissing an open dialog", async () => {
   vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
     matches: query === "(min-width: 860px) and (max-width: 1179px)",

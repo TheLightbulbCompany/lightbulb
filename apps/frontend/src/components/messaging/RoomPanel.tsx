@@ -406,8 +406,13 @@ function RoomContent({
   useEffect(() => {
     if (!showDetail || showResources) return;
     // An open dialog owns Escape — dismissing the overlay underneath it as
-    // well would close two things on one keypress.
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !hasBlockingShortcutDialog()) closeOverlay(); };
+    // well would close two things on one keypress. A Radix popper (menu,
+    // emoji picker, tooltip) is portalled out of this subtree, so its own
+    // Escape reaches this window listener too and needs the same exemption.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !hasBlockingShortcutDialog()
+        && !(event.target as Element | null)?.closest?.("[data-radix-popper-content-wrapper]")) closeOverlay();
+    };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail, showResources]);

@@ -332,7 +332,7 @@
 .ld-page .lb-askai-copy { text-align: left; }
 .ld-page .lb-askai-copy .lb-eyebrow, .ld-page .lb-askai-copy .lb-h2 { text-align: left; }
 .ld-page .lb-askai-copy .lb-h2 { margin-top: 0.5rem; }
-.ld-page .lb-askai-sub { font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-mute); margin: 1rem 0 0; max-width: 40ch; }
+.ld-page .lb-askai-sub { font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-mute); margin: 1rem 0 0; max-width: 46ch; }
 
 /* The 1px gap over a --rule ground is what draws the hairline grid: each tile
    paints its own --cream back over it, leaving only the seams showing. */

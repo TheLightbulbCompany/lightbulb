@@ -40,26 +40,31 @@ deleted.
 | `/ws/{workspaceId}/rooms/{roomId}/{deliveryKey}` | backend (message events), container (run frames) | room members via Clerk OIDC | room message events, run frames |
 | `/ws/{workspaceId}/users/{userKey}` | backend, container | one human via Clerk OIDC | message-available, approvals, questions, progress, subscription-rotated |
 
-`workspaceId` is an opaque UUID minted once per workspace and stored on the containers
-row (`workspace_channel_id`); Clerk ids never appear in paths. `deliveryKey` and
-`userKey` keep their current rotation semantics.
+`workspaceId` is an opaque UUID minted lazily, once per owner, as the messaging-table
+row `OWNER#{ownerId}` / `WORKSPACE {workspaceId}` (`messaging_repo.ensure_workspace_id`)
+and stamped as `workspaceId` on every `ROOM#{roomId}/META` and `STREAM#{key}/META` row at
+creation (a one-shot backfill stamps existing rows). Clerk ids never appear in paths.
+`deliveryKey` and `userKey` keep their current rotation semantics.
 
 Authorization in the `ws` namespace handler:
 
 - `onSubscribe` (OIDC only): member row exists for `sub` in the room, room META's
   `deliveryKey` matches the path (rooms); user-stream mapping active and owned by
   `sub` (users). Same logic as today, new path shape. IAM subscribers are refused.
-- `onPublish` (IAM only): OIDC publishers are refused. The backend service role may
-  publish to any workspace. Any other IAM caller must be a container task role: the
-  role name embeds the owner id; the handler does one consistent read of the
-  messaging-table row `WS#{workspaceId}` / `META` (written at provision, carries
-  `ownerId`) and refuses unless that `ownerId` equals the one parsed from the caller
-  ARN. The handler's only data source stays the messaging table. Room channels
-  additionally require the current `deliveryKey` (existing check).
+- `onPublish` (IAM only): OIDC publishers are refused by the namespace auth mode. The
+  handler reads the same META row the subscribe path reads (room META or stream META),
+  refuses unless its `workspaceId` equals the path segment, and — when the caller ARN is
+  an assumed role named `lightbulb-{env}-owner-bedrock-{ownerId}` — refuses unless the
+  row's `ownerId` equals that `ownerId`. Any other IAM caller that IAM admitted (backend
+  service role, projector role) may publish to any workspace. The handler's only data
+  source stays the messaging table. Room channels additionally require the current
+  `deliveryKey`; user channels require `active`.
 
-IAM: the backend service role and every per-owner container task role get
-`appsync:EventPublish` on the `ws` namespace ARN only (`apis/{id}/channelNamespace/ws`).
-The container permission boundary (`OwnerBedrockBoundary`) gains the same statement.
+IAM: the backend service role and the projector get `appsync:EventPublish` on the `ws`
+namespace ARN. Every per-owner container task role gets the same action on
+`arn:aws:appsync:{region}:{account}:apis/*/channelNamespace/ws` through the CDK-managed
+`OwnerBedrockBasePolicy` (already attached to every owner role) and the
+`OwnerBedrockBoundary`. No per-owner inline policy and no backfill.
 
 Open verification (task 1 of the plan): confirm the exact `ctx.identity` field that
 carries the IAM caller ARN in an Events handler by publishing once from a
@@ -70,9 +75,13 @@ container-shaped role into a scratch handler that logs `ctx.identity`.
 ### Dispatch (backend SQS consumer)
 
 1. Read the `WORK#` pointer; resolve the running container (wake path unchanged).
-2. Mint `runId` (ULID). Conditional-put the run ledger row with `status=dispatched`.
-3. POST the ingress body to `/plugins/lightbulb-channel/inbound/{agentId}` with three
-   new fields: `runId`, `workspaceId`, `frameChannel` (the exact room channel path).
+2. `runId = uuid5(RUN_NS, "{agentId}:{messageId}")` — deterministic, so a redelivered
+   message lands on the same ledger row. Conditional-put the row with
+   `status=dispatched`; an existing row means redelivery and dispatch proceeds.
+3. POST the ingress body to `/plugins/lightbulb-channel/inbound/{agentId}` with one
+   required object `run: {runId, workspaceId, frameChannel, frameEndpoint}`
+   (`frameChannel` is the exact room channel path, `frameEndpoint` the AppSync Events
+   HTTP endpoint). A body without `run` is a 400; there is no compatibility path.
 4. Delete the SQS message on 200/202/409. On timeout or 5xx, leave it for redelivery.
    Visibility timeout 60 s, no extension, `maxReceiveCount` 5.
 
@@ -94,7 +103,14 @@ container-shaped role into a scratch handler that logs `ctx.identity`.
 |---|---|---|
 | `run.started` | gateway session accepted the turn | `sessionKey` |
 | `run.heartbeat` | every 30 s while running | — |
-| `run.ended` | terminal | `outcome` ∈ completed \| error \| aborted \| ignored \| gate_error, `errorKind`, `usage {model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}` |
+| `run.ended` | terminal | `outcome` ∈ completed \| error \| aborted \| ignored \| gate_error, `errorKind`, `usage {model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, estimatedCostUsd}` — required unless the outcome is `ignored` or `gate_error` |
+
+The plugin reads `usage` from its own session store entry (`getSessionEntry`, the row
+the gateway patches at run end), so the backend records usage straight from the
+callback and never calls `sessions.list` on the turn path. An unknown `runId` is a 404;
+a replayed callback is a 200 no-op. A failed run pushes a notification to the
+triggering member from the same callback; a completed run's reply is already pushed by
+the projector.
 
 ### Frames (container → AppSync)
 
@@ -108,7 +124,9 @@ frames; a run never fails because of streaming. Usage is never derived from fram
 ### Final reply
 
 Unchanged: the plugin POSTs to `/internal/messaging/agent-messages/{ownerId}` (hook
-token); the body now carries `runId` explicitly. The receipt fence stays.
+token); the body carries `runId` whenever the send belongs to an in-flight run (the
+agent's `message` tool can also send outside one, so the field is optional). The
+receipt fence stays; the backend no longer guesses a run id from gateway state.
 
 ### Run controls
 
@@ -119,11 +137,16 @@ rooms is removed.
 
 ## 5. Run ledger
 
-Row `ROOM#{roomId}` / `RUN#{runId}` in the messaging table:
+Row `OWNER#{ownerId}` / `RUN#{runId}` in the messaging table (owner-keyed because every
+reader — callback route, abort, steer, status — knows the owner but not the room):
 
-`runId, roomId, workspaceId, agentId, triggerMessageId, eventKind, status
-(dispatched|started|ended), outcome, errorKind, dispatchedAt, startedAt, endedAt,
-lastHeartbeatAt, usage, sessionKey, ttl (7 days)`.
+`runId, ownerId, roomId, workspaceId, agentId, triggerMessageId, eventKind, status
+(dispatched|started|ended), outcome (completed|error|aborted|ignored|gate_error|
+not_admitted), errorKind, dispatchedAt, startedAt, endedAt, lastHeartbeatAt, usage,
+sessionKey, sweep ("open" while not ended), deadlineAt (epoch seconds), expiresAt (7 days)`.
+
+A sparse GSI `by-run-deadline` (`sweep`, `deadlineAt`) lets the sweeper query open runs
+past their deadline without scanning.
 
 Transitions are conditional writes: `started` only from `dispatched`; `heartbeat`
 only while not `ended`; `ended` once. Replayed callbacks are no-ops returning 200.
@@ -133,7 +156,8 @@ and usage analytics read this row. No run state lives in process memory.
 Sweeper (backend, one-minute tick, the only clock): `dispatched` older than 120 s
 without `started` → `ended/error(agent_did_not_start)`; `started` with
 `lastHeartbeatAt` older than 90 s → `ended/error(agent_stopped_responding)`. Both
-conditional; both publish a single `run_ended{error}` frame from the backend.
+conditional; both publish an `error` frame followed by a `run_ended{error}` frame from
+the backend (the terminal pair the clients already render).
 
 ## 6. Failure handling
 
@@ -152,22 +176,27 @@ conditional; both publish a single `run_ended{error}` frame from the backend.
 
 ## 7. Rollout
 
+No compatibility paths and no feature flag: there are no external users, and every
+prod container is rolled in the same sitting as the deploy.
+
 1. Identity spike (half a day). Result recorded in this spec.
-2. Infra: `ws` namespace + handler + IAM (boundary and per-owner policies); delete
-   `rooms`/`users`. `workspace_channel_id` is minted at provision and written both to
-   the containers row and as the messaging-table row `WS#{id}`/`META {ownerId}`; a
-   one-shot backfill does the same for existing containers (script deleted after it
-   runs). Backend publisher, projector, web and mobile clients switch paths in the
-   same PR set.
-3. Backend: run ledger, callback route, sweeper, ledger-backed run status, consumer
-   without visibility extension, abort/steer over HTTP. The WebSocket frame relay
-   stays behind a per-owner flag on the containers row (`turn_contract_v2`), default
-   off.
-4. Plugin: immediate ack, background turn, callbacks, direct frames, abort/steer
-   routes. Image build → dev pin → dev verification → prod pin → fleet roll.
-5. Flip `turn_contract_v2` per owner as containers reach the new image; when the
-   fleet is on it, delete the relay path, `_room_session_subs`, `_active_runs`'
-   room branches, and the visibility-extension code.
+2. Plugin PR: run contract required on ingress, immediate ack, background turn,
+   callbacks with usage, direct frames, abort/steer routes. Merging builds the image
+   tag; nothing runs it yet.
+3. Cutover PR (one change, or a short stack merged back to back): `dev.tag` and
+   `prod.tag` pinned to that image; `ws` namespace + handler + IAM + `by-run-deadline`
+   GSI + queue redrive, `rooms`/`users` deleted; backend ledger, callback route,
+   sweeper, ledger-backed run status, consumer without visibility extension,
+   abort/steer over HTTP, and deletion of the relay (`subscribe_room_session`,
+   `_room_session_subs`, `_publish_room_frame`, the room branches of `_active_runs`);
+   publisher, projector, live-config and the web/mobile clients on the new paths.
+   Before each environment's deploy, the one-shot backfill stamps `workspaceId` on
+   its existing rows (script deleted afterwards).
+4. Per environment: deploy, then roll the fleet immediately (`POST /container/updates
+   {owner_id:"all", update_type:"task_definition_refresh"}`). A pointer that reaches a
+   not-yet-rolled container during the roll is answered 400, retried five times at
+   60 s and dead-lettered; `scripts/openclaw_work_redrive.py` replays the DLQ once the
+   roll is complete. Dev first, verified; then one prod dispatch and the prod roll.
 
 ## 8. Testing
 

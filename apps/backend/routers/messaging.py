@@ -7,11 +7,11 @@ import hmac
 import logging
 import math
 import time
-import uuid
 from datetime import timedelta
 from urllib.parse import quote
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 
 from core.dynamodb import run_in_thread
@@ -447,105 +447,76 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
     return Response(status_code=204)
 
 
-async def _resolved_active_run(auth: AuthContext, run_id: str) -> tuple[str, dict, str]:
+async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     owner_id = resolve_owner_id(auth)
-    state = get_gateway_pool().resolve_run(owner_id, run_id)
-    if state is None:
+    row = await messaging_repo.get_run(owner_id, run_id)
+    if row is None:
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
-    session_key = state["sessionKey"]
-    from core.gateway.connection_pool import parse_lightbulb_session_key
-
-    parsed = parse_lightbulb_session_key(session_key)
-    if parsed is None:
-        raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
-    await service.require_room_member(owner_id, auth.user_id, parsed["room_id"])
-    if await messaging_repo.get_member(parsed["room_id"], "agent", parsed["agent_id"]) is None:
+    await service.require_room_member(owner_id, auth.user_id, row["roomId"])
+    if await messaging_repo.get_member(row["roomId"], "agent", row["agentId"]) is None:
         raise ApiProblem("RUN_NOT_ACTIVE", "The run's agent is no longer in this room.")
-    return owner_id, state, "" if state.get("terminal") else session_key
+    return owner_id, row
+
+
+async def _post_run_control(url: str, token: str, payload: dict) -> int:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+        response = await client.post(url, json=payload, headers={"Authorization": f"Bearer {token}"})
+    return response.status_code
+
+
+async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
+    """202 accepted, 404 not active, None when no container is running."""
+    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+    if not container or not ip:
+        return None
+    return await _post_run_control(
+        f"http://{ip}:18789/plugins/lightbulb-channel/runs/{run_id}/{action}", container["gateway_token"], payload
+    )
 
 
 @router.get("/messaging/runs/{run_id}", response_model=RunStatusResponse)
 async def get_run_status(run_id: str, auth: AuthContext = Depends(get_current_user)):
-    """Read-only reconciliation for a run the client already knows about.
-
-    ``room.run.frame`` is ephemeral (see the architecture spec) -- a client
-    that reconnects or rotates its delivery key mid-run can miss the
-    terminal ``run_ended`` frame and be left showing "Working" forever.
-    Reuses the exact same ``pool.resolve_run`` truth as abort/steer, with no
-    side effect, so the frontend can poll it on reconnect. A run this
-    connection has no memory of at all (evicted from the terminal-id cache,
-    or from a since-reconnected container link) is reported terminal rather
-    than 404 -- from the client's point of view "unknown" and "ended" call
-    for the same action: stop showing it as running.
-    """
+    """Read-only reconciliation for a run the client already knows about (ledger-backed)."""
     try:
-        _, _, session_key = await _resolved_active_run(auth, run_id)
+        _, row = await _resolved_run(auth, run_id)
     except ApiProblem as exc:
         if exc.error.code != "RUN_NOT_FOUND":
             raise
         return RunStatusResponse(run_id=run_id, state="terminal")
-    return RunStatusResponse(run_id=run_id, state="running" if session_key else "terminal")
+    return RunStatusResponse(run_id=run_id, state="terminal" if row.get("status") == "ended" else "running")
 
 
 @router.post("/messaging/runs/{run_id}/abort", response_model=AbortRunResponse)
 async def abort_run(run_id: str, auth: AuthContext = Depends(get_current_user)):
-    owner_id, state, session_key = await _resolved_active_run(auth, run_id)
-    if session_key == "":
-        return AbortRunResponse(run_id=run_id, state="already-terminal")
-    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-    if not container or not ip:
+    owner_id, row = await _resolved_run(auth, run_id)
+    if row.get("status") == "ended":
         return AbortRunResponse(run_id=run_id, state="already-terminal")
     try:
-        await get_gateway_pool().send_rpc(
-            user_id=owner_id,
-            req_id=str(uuid.uuid4()),
-            method="chat.abort",
-            params={"sessionKey": session_key, "runId": run_id},
-            ip=ip,
-            token=container["gateway_token"],
-        )
-    except RuntimeError as exc:
-        if "unknown" in str(exc).lower() or "not found" in str(exc).lower():
-            return AbortRunResponse(run_id=run_id, state="already-terminal")
+        status = await _run_control(owner_id, run_id, "abort", {})
+    except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not abort the run.", retryable=True, retry_after=3) from exc
-    return AbortRunResponse(run_id=run_id, state="aborting")
+    return AbortRunResponse(run_id=run_id, state="aborting" if status == 202 else "already-terminal")
 
 
 @router.post("/messaging/runs/{run_id}/steer", response_model=SteerRunResponse)
-async def steer_run(
-    run_id: str,
-    request: SteerRunRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    owner_id, _, session_key = await _resolved_active_run(auth, run_id)
-    if not session_key:
+async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = Depends(get_current_user)):
+    owner_id, row = await _resolved_run(auth, run_id)
+    if row.get("status") == "ended":
         raise ApiProblem("RUN_NOT_ACTIVE", "Run is already terminal.")
-    pool = get_gateway_pool()
-    gate = await pool.gate_chat(user_id=auth.user_id, owner_id=owner_id, session_key=session_key)
+    session_key = f"agent:{row['agentId']}:lightbulb:channel:{row['roomId']}"
+    gate = await get_gateway_pool().gate_chat(user_id=auth.user_id, owner_id=owner_id, session_key=session_key)
     if gate.get("blocked"):
         raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "Steering is blocked."))
-    # Clear a racing idle-stop claim before runtime resolution or dispatch.
     await container_repo.touch_last_interactive(owner_id)
-    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-    if not container or not ip:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is unavailable.", retryable=True, retry_after=3)
     try:
-        await pool.send_rpc(
-            user_id=owner_id,
-            req_id=str(uuid.uuid4()),
-            method="chat.send",
-            params={
-                "sessionKey": session_key,
-                "message": request.text,
-                "deliver": False,
-                "idempotencyKey": str(uuid.uuid4()),
-            },
-            ip=ip,
-            token=container["gateway_token"],
-        )
-    except Exception as exc:
+        status = await _run_control(owner_id, run_id, "steer", {"text": request.text})
+    except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
-    return SteerRunResponse(run_id=run_id)
+    if status == 202:
+        return SteerRunResponse(run_id=run_id)
+    if status == 404:
+        raise ApiProblem("RUN_NOT_ACTIVE", "Run is already terminal.")
+    raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is unavailable.", retryable=True, retry_after=3)
 
 
 @router.post(

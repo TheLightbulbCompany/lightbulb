@@ -35,10 +35,10 @@ _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs
 # goes stale (METRONOME_GATE_STALENESS_S, default 60s — true for any run over
 # a minute) it synchronously does a live Metronome round trip + a DDB write,
 # and possibly a second Metronome round trip + more writes. `_handle_message`
-# awaits `_budget_error_code` before forwarding the error frame and the
-# synthesized `run_ended` frame, and `_reader_loop` awaits `_handle_message`
-# serially — so without a bound here, a slow/degraded Metronome stalls
-# delivery of every subsequent event on this owner's gateway connection.
+# awaits `_budget_error_code` on the chat-error terminal and `_reader_loop`
+# awaits `_handle_message` serially — so without a bound here, a slow/degraded
+# Metronome stalls delivery of every subsequent event on this owner's gateway
+# connection.
 _BUDGET_RECLASSIFY_TIMEOUT_S = 2.0  # seconds
 # Application-level WebSocket keepalive tuned for long-running LLM turns.
 # The websockets library defaults ping_interval=20 / ping_timeout=20 — fine for
@@ -156,64 +156,6 @@ _AGENT_NAME_TTL_S = 60.0
 # one. Far above any realistic count of concurrent `/btw` runs on one session.
 _SIDE_RUN_IDS_CAP = 256
 
-# Frame types whose full-text resync payload is accumulated per run.
-_RUN_TEXT_TYPES = frozenset({"chunk", "thinking"})
-_ROOM_SAFE_FRAME_TYPES = frozenset(
-    {
-        "chunk",
-        "thinking",
-        "done",
-        "error",
-        "run_ended",
-        "run_active",
-        "tool_start",
-        "tool_end",
-        "tool_error",
-        "tool_progress",
-        "command_output",
-        "agent_activity",
-        "btw_result",
-    }
-)
-
-# Bound on the per-connection run-text accumulator. Entries self-clean on the
-# run's chat terminal; this cap is only a safety net for a run whose terminal
-# never arrives (container killed mid-stream, reader loop torn down). Well
-# above any realistic count of concurrent runs on one owner's container.
-_RUN_TEXT_CAP = 64
-
-
-class _RunText:
-    """Per-run accumulation behind the ``_full_content`` resync payload.
-
-    OpenClaw resets its assistant text buffer at every ``message_start``
-    (``resetAssistantMessageState`` → ``state.deltaBuffer = ""``), and every
-    tool call ends one assistant message and starts another. So the ``text``
-    on a ``stream: "assistant"`` agent event is cumulative within the CURRENT
-    assistant message only, while our chunk stream — and the frontend bubble
-    it paints — is keyed by ``runId`` and spans the whole run.
-
-    ``blocks`` maps frame type → ``(prefix, last_snapshot)``: the text of the
-    run's earlier assistant messages, plus the last per-message snapshot seen.
-    A snapshot that no longer extends the previous one is a message boundary,
-    so the previous snapshot retires into the prefix.
-
-    Deliberately NOT delta accumulation: keeping upstream's own per-message
-    snapshot as the tail means a delta we never received (a gateway seq gap)
-    still heals on the next event, because ``text`` carries the whole current
-    message rather than only what changed.
-    """
-
-    __slots__ = ("blocks", "resync")
-
-    def __init__(self) -> None:
-        self.blocks: dict[str, tuple[str, str]] = {}
-        # Set when the gateway reports a seq gap: frames were dropped between
-        # the container and us, so the next text frame must ship as a full
-        # replace rather than an append.
-        self.resync = False
-
-
 # A chat run whose terminal arrives later than this is a hung/stale outlier
 # (e.g. a terminal re-delivered after a reconnect), NOT a real latency
 # datapoint — emitting its elapsed would inflate the chat.e2e.latency p99 and
@@ -290,31 +232,18 @@ class GatewayConnection:
         self._agent_names: Optional[Dict[str, str]] = None
         self._agent_names_at: float = 0.0
         # Active LLM runs keyed by OpenClaw sessionKey (agent:{agentId}:{member}).
-        # Populated by `mark_run_active` when we dispatch chat.send; cleared by
-        # `_handle_message` when the matching chat-terminal event arrives.
-        # Non-emptiness is the load-bearing signal for the parked-vs-dead
-        # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
+        # Cleared by `_handle_message` when the matching chat-terminal event
+        # arrives. Non-emptiness is the load-bearing signal for the
+        # parked-vs-dead teardown decision in `_reader_loop` — see
+        # _on_reader_loop_exit. Room turns no longer populate it (they are
+        # asynchronous and ledger-tracked); personal chat re-opens it in
+        # sub-project B.
         self._active_runs: Dict[str, Dict[str, Any]] = {}
-        # Room-routing metadata may outlive `_active_runs` briefly when an
-        # ingress POST times out after OpenClaw accepted it. It is deliberately
-        # separate so uncertain delivery never keeps a connection "active".
-        self._room_run_context: Dict[str, Dict[str, Any]] = {}
         # Recently terminal run IDs retain their session key so idempotent abort
         # still passes current room authorization after the active entry is
         # cleared. Bounded insertion-order map; runtime state remains
         # process-local like the gateway connection itself.
         self._terminal_run_ids: Dict[str, str] = {}
-        self._live_publish_lock = asyncio.Lock()
-        # Lightbulb room session keys this connection has asked the gateway to
-        # stream (`sessions.messages.subscribe`). See
-        # `subscribe_room_session` for why a room run is invisible without it.
-        # Re-sent by `connect()`, so a reconnect keeps streaming.
-        self._room_session_subs: set[str] = set()
-        # Last-forwarded run-active value per webchat session_key. Deduplicates
-        # `sessions.changed` bursts so only transitions produce a `run_active`
-        # frame. SEPARATE from `_active_runs` (which is the parked-vs-dead
-        # signal) — never conflate the two.
-        self._run_state: dict[str, bool] = {}
         # Side-channel (`/btw`) run ids. A `/btw` aside runs CONCURRENTLY with a
         # normal turn but, on the wire, shares the same ``session_key`` (only the
         # runId differs). ``_active_runs`` is keyed by session_key — which is
@@ -329,13 +258,6 @@ class GatewayConnection:
         # handler skips all ``_active_runs`` mutation for them. Insertion-ordered
         # dict used as a bounded FIFO set; entries self-clean on their terminal.
         self._side_run_ids: Dict[str, None] = {}
-        # runId -> per-run text accumulation for the full-text resync payload
-        # (see `_RunText` and `_rewrite_run_full_text`). Keyed by runId, so two
-        # concurrent runs on a shared org container — or a `/btw` side run
-        # alongside its primary — never read each other's text. Insertion-
-        # ordered, used as a bounded FIFO; entries self-clean on the run's
-        # chat terminal.
-        self._run_text: Dict[str, _RunText] = {}
         # True after the reader_loop has died with active runs in flight.
         # Means: the OpenClaw process is presumed alive (we just saw it
         # streaming) but our WS to it tore down (e.g. websockets ping
@@ -550,128 +472,31 @@ class GatewayConnection:
     def has_active_runs(self) -> bool:
         return bool(self._active_runs)
 
-    def mark_run_active(
-        self,
-        session_key: str,
-        agent_id: str | None = None,
-        member_id: str | None = None,
-        event_kind: str | None = None,
-        thread_root_message_id: str | None = None,
-    ) -> None:
-        """Record an in-flight run for *session_key* (parked-vs-dead signal).
-
-        Called from the chat dispatcher before the chat.send RPC is forwarded so
-        the active-run window opens before the first inbound event. NOT a
-        serialize gate — its sole consumer is the parked-vs-dead reconnect
-        decision (`_on_reader_loop_exit` / `is_alive`), which keys on
-        ``_active_runs`` non-emptiness. Idempotent — re-marking refreshes
-        started_at without losing the existing last_event_at.
-
-        *member_id* is the CANONICAL Clerk id of the dispatching member (the JWT
-        sub, mixed-case) — carried on the entry so the run-completion push can
-        target the users-table PK. It must NOT come from the echoed session key,
-        which OpenClaw lowercases (a case-sensitive PK lookup would miss).
-
-        The dict key is folded to lowercase because the dispatcher stores the
-        CANONICAL (mixed-case) key while OpenClaw echoes it LOWERCASED; only the
-        userId segment can carry case (agentId is a lowercase UUID, sessionId is
-        regex-forced lowercase), so ``key.lower()`` on both sides always agrees.
-        """
-        key = session_key.lower()
-        now = time.monotonic()
-        if not hasattr(self, "_room_run_context"):
-            self._room_run_context = {}
-        existing = self._active_runs.get(key)
-        if existing is not None:
-            existing["started_at"] = now
-            existing["last_event_at"] = now
-            if agent_id:
-                existing["agent_id"] = agent_id
-            if member_id:
-                existing["member_id"] = member_id
-            if event_kind and existing.get("event_kind") is None:
-                # First kind wins for the life of the run — an ambient
-                # room_event re-mark must not flip an in-flight addressed
-                # run's suppression state (see `_publish_room_frame`).
-                existing["event_kind"] = event_kind
-            if thread_root_message_id and existing.get("thread_root_message_id") is None:
-                existing["thread_root_message_id"] = thread_root_message_id
-                self._room_run_context[key] = {"thread_root_message_id": thread_root_message_id}
-            return
-        self._active_runs[key] = {
-            "started_at": now,
-            "last_event_at": now,
-            "agent_id": agent_id or "",
-            "run_id": None,
-            "event_kind": event_kind,
-            "thread_root_message_id": thread_root_message_id,
-            # Canonical dispatch member id for the run-completion push audience.
-            "member_id": member_id,
-            # Set when OpenClaw emits an approval-requested agent event for this
-            # session; consumed by `_is_true_terminal` so the interim chat
-            # `final` that closes the approval bracket does NOT end the run.
-            "awaiting_approval": False,
-        }
-        self._room_run_context[key] = {"thread_root_message_id": thread_root_message_id}
-        while len(self._room_run_context) > 256:
-            self._room_run_context.pop(next(iter(self._room_run_context)), None)
-
     def _touch_run(self, session_key: str, run_id: str | None = None) -> None:
         """Bump ``last_event_at`` on the active run keyed by *session_key*.
 
         No-op if no run is active for the key (e.g. cron / channel sessions).
         Cheap enough to call on every inbound agent/chat event.
 
-        Normalized to lowercase — see `mark_run_active` for why store/read
+        Normalized to lowercase: the dispatch side stores the CANONICAL
+        (mixed-case) key while OpenClaw echoes it LOWERCASED, so store and read
         must agree on casing.
         """
-        # Fold the key: the store side (mark_run_active) lowercases, so reads
-        # keyed on the echoed (already-lowercased) key must too.
         run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["last_event_at"] = time.monotonic()
             if run_id:
                 run["run_id"] = run_id
 
-    def run_id_for_session(self, session_key: str) -> str | None:
-        """The in-flight run id for *session_key*, if the gateway has seen one.
-
-        Read by the agent-message receipt path so a persisted agent reply can
-        carry the run that produced it — clients use it to retire the run card
-        instead of showing card + message side by side. Active window only: a
-        completed run's entry is already cleared, and anything else (no entry,
-        entry without a run id yet) returns None, which keeps today's
-        text-match fallback. Never raises; missing state means unstamped.
-
-        Normalized to lowercase — see `mark_run_active` for why store/read
-        must agree on casing.
-        """
-        run = self._active_runs.get(session_key.lower())
-        run_id = (run or {}).get("run_id")
-        return run_id if isinstance(run_id, str) and run_id else None
-
-    def _clear_active_run(
-        self,
-        session_key: str,
-        run_id: str | None = None,
-        *,
-        preserve_room_context: bool = False,
-    ) -> None:
+    def _clear_active_run(self, session_key: str, run_id: str | None = None) -> None:
         """Pop an active run and retain its terminal ID for idempotent abort."""
         key = session_key.lower()
         active = self._active_runs.pop(key, None)
-        if not preserve_room_context:
-            getattr(self, "_room_run_context", {}).pop(key, None)
         terminal_id = run_id or (active or {}).get("run_id")
         if terminal_id:
-            self._terminal_run_ids[terminal_id] = session_key.lower()
+            self._terminal_run_ids[terminal_id] = key
             while len(self._terminal_run_ids) > 256:
                 self._terminal_run_ids.pop(next(iter(self._terminal_run_ids)), None)
-        # Reset run-active dedup so the next run's first `hasActiveRun:true`
-        # sessions.changed is forwarded as a fresh transition. (The frontend
-        # busy-gate is already closed by the run_ended/done/error frame; this
-        # only clears our transition bookkeeping.)
-        self._run_state.pop(session_key, None)
 
     def mark_side_run(self, run_id: str) -> None:
         """Record *run_id* as a side-channel (`/btw`) run.
@@ -719,15 +544,12 @@ class GatewayConnection:
 
         No-op when no run is tracked for the key (cron / channel sessions).
 
-        Normalized to lowercase — see `mark_run_active` for why store/read
-        must agree on casing.
+        Normalized to lowercase — see `_touch_run` for why store/read must
+        agree on casing.
         """
         run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["awaiting_approval"] = True
-        room_context = getattr(self, "_room_run_context", {}).get(session_key.lower())
-        if room_context is not None:
-            room_context["awaiting_approval"] = True
 
     def _is_true_terminal(self, session_key: str, state: str) -> bool:
         """True iff this chat-terminal event genuinely ends the per-session run.
@@ -757,18 +579,11 @@ class GatewayConnection:
         """
         if state in ("error", "aborted"):
             return True
-        key = session_key.lower()
-        run = self._active_runs.get(key) or getattr(self, "_room_run_context", {}).get(key)
+        run = self._active_runs.get(session_key.lower())
         if run is not None and run.get("awaiting_approval"):
             # Suppress Run A's genuine terminal final so the per-session window
             # survives the approval; the separate follow-up run's final clears it.
             run["awaiting_approval"] = False
-            active = self._active_runs.get(key)
-            if active is not None:
-                active["awaiting_approval"] = False
-            room_context = getattr(self, "_room_run_context", {}).get(key)
-            if room_context is not None:
-                room_context["awaiting_approval"] = False
             return False
         return True
 
@@ -862,8 +677,6 @@ class GatewayConnection:
 
         self._reader_task = asyncio.create_task(self._reader_loop())
         await self._subscribe_session_events()
-        for room_session_key in list(self._room_session_subs):
-            await self._send_room_session_subscribe(room_session_key)
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
         # Durable liveness signal (R4 kill) -- covers both a fresh connect()
@@ -1002,61 +815,6 @@ class GatewayConnection:
         except Exception:
             logger.warning("sessions.subscribe send failed user=%s", self.user_id, exc_info=True)
 
-    async def subscribe_room_session(self, session_key: str) -> None:
-        """Ask the gateway to stream a Lightbulb room session to this connection.
-
-        Channel-initiated runs are registered with ``isControlUiVisible: false``
-        — the fork derives it from the message provider, and only the internal
-        ``webchat`` channel counts as visible (agent-9.3
-        src/auto-reply/reply/agent-runner-execution.ts:172-187,
-        src/utils/message-channel-constants.ts). Every broadcast that gate
-        protects is then skipped for our room runs: tool events
-        (src/gateway/server-chat.ts:1619), assistant/item text (:1699) and the
-        whole chat terminal (:746). So the backend saw NOTHING for a room run —
-        no ``agent`` events, no ``chat`` final — and ``_publish_room_frame``
-        never fired even though ``mark_run_active`` had opened the window.
-
-        The one door a hidden run leaves open is ``sessionMessageSubscribers``:
-        a client that called ``sessions.messages.subscribe`` for the session key
-        gets the tool branch (:1641), the hidden text mirror (:1698) and the
-        chat terminal (:742) delivered to it by connection id. One RPC per room
-        session, `operator.read`-scoped, which we already hold.
-
-        Idempotent per connection and fire-and-forget for the same reason
-        ``_subscribe_session_events`` is: the ack carries nothing we need.
-        """
-        if not session_key or session_key in self._room_session_subs:
-            return
-        self._room_session_subs.add(session_key)
-        await self._send_room_session_subscribe(session_key)
-
-    async def _send_room_session_subscribe(self, session_key: str) -> None:
-        if self._ws is None:
-            return
-        frame = {
-            "type": "req",
-            "id": str(uuid.uuid4()),
-            "method": "sessions.messages.subscribe",
-            "params": {"key": session_key},
-        }
-        try:
-            await self._ws.send(json.dumps(frame))
-        except Exception:
-            # The key is added to _room_session_subs BEFORE the send, so a
-            # failure used to be PERMANENT: every later subscribe_room_session
-            # short-circuited on the membership test and the room streamed zero
-            # frames for the life of the connection. Drop it so the next
-            # dispatch (openclaw_work subscribes before every run) retries.
-            self._room_session_subs.discard(session_key)
-            put_metric("messaging.room_session.subscribe", dimensions={"outcome": "error"})
-            logger.warning(
-                "sessions.messages.subscribe send failed user=%s",
-                self.user_id,
-                exc_info=True,
-            )
-            return
-        put_metric("messaging.room_session.subscribe", dimensions={"outcome": "ok"})
-
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""
         msg = {"type": "req", "id": req_id, "method": method, "params": params or {}}
@@ -1104,15 +862,14 @@ class GatewayConnection:
         write, and then either `_maybe_restore_bedrock` (container read + a
         SECOND 5s `getNetBalance`) or `enforce_on_low_balance` (billing read +
         IAM policy delete) — up to ~10-15s of synchronous work. `_handle_message`
-        awaits this before `_forward_to_frontends(error)` and the synthesized
-        `run_ended` frame, and `_reader_loop` awaits `_handle_message`
-        serially, so an unbounded call here stalls delivery of every
-        subsequent event on this owner's gateway connection (other agents'
-        streams included) behind it. Bounded below with `asyncio.wait_for` so
+        awaits this on the chat-error terminal and `_reader_loop` awaits
+        `_handle_message` serially, so an unbounded call here stalls delivery
+        of every subsequent event on this owner's gateway connection (other
+        agents' streams included) behind it. Bounded below with `asyncio.wait_for` so
         the worst case is the timeout, not the full Metronome round trip(s).
 
-        Never raises: this runs on the terminal error frame, and an exception
-        here would drop the frame and hang the run in the UI. The reader loop's
+        Never raises: this runs on the terminal error event, and an exception
+        here would lose the `chat.error` emission. The reader loop's
         `except json.JSONDecodeError` around `_handle_message` catches nothing
         broader — an import failure here would propagate to
         `_on_reader_loop_exit` and tear down the owner's whole gateway
@@ -1120,7 +877,7 @@ class GatewayConnection:
         try too, not just the reads that follow them. The `asyncio.wait_for`
         timeout raises `TimeoutError` (a plain `Exception` subclass), which
         this same blanket `except Exception` below already swallows —
-        degrading to "forward the upstream error unchanged", the documented
+        degrading to "report the upstream errorKind unchanged", the documented
         fallback for any read failure on this path.
         """
         try:
@@ -1147,293 +904,11 @@ class GatewayConnection:
             return None
         except Exception:
             logger.warning(
-                "Budget reclassification read failed for owner %s — forwarding the upstream error unchanged",
+                "Budget reclassification read failed for owner %s — reporting the upstream errorKind unchanged",
                 self.owner_id,
                 exc_info=True,
             )
             return None
-
-    @staticmethod
-    def _transform_agent_event(payload: dict) -> dict | None:
-        """Extract streaming text, thinking, tool, and activity events from an OpenClaw agent event.
-
-        OpenClaw's gateway coalesces the assistant/thinking streams at a
-        hardcoded 150ms per run (fork src/gateway/server-chat.ts,
-        ``sendOrBufferAgentTextEvent``), so events arrive as ~150ms lumps
-        carrying BOTH the accumulated ``text`` and the incremental ``delta``
-        (coalesced events concatenate their deltas — see
-        ``mergeBufferedAgentPayload``). We forward the delta plus the full
-        text: ``content`` holds the delta with ``append: True``, and
-        ``_full_content`` holds the accumulated text. ``_full_content`` is
-        internal and never reaches a client — ``_publish_room_frame`` pops it
-        before publishing — but ``_rewrite_run_full_text`` reads it as the
-        append frame's per-message snapshot, which is what keeps the per-run
-        prefix complete for the cumulative-replacement frames that DO carry
-        authoritative text. When the event carries no usable delta — or
-        sets ``replace: true`` (the new text is not a prefix-extension of
-        what was streamed) — we fall back to the legacy full-text
-        cumulative-replacement frame.
-
-        - ``stream: "assistant"`` events with text are forwarded as chunks.
-        - ``stream: "reasoning"`` / ``"thinking"`` events are forwarded for real-time thinking.
-        - ``stream: "tool"`` events are forwarded as tool_start/tool_end/tool_error,
-          plus tool_progress for the mid-execution ``phase: "update"``.
-        - ``stream: "command_output"`` events are forwarded as command_output
-          (live stdout/stderr addressed to the matching tool pill).
-        - ``stream: "plan" | "patch" | "item" | "acp"`` are folded into one
-          uniform ``agent_activity`` envelope for a single low-noise pill.
-        - ``stream: "run_status" | "compaction"`` ride the same envelope but
-          describe the run's CURRENT STATE (startup phase, history compaction)
-          rather than an event; the frontend routes them to the status strip.
-
-        ``approval`` and ``lifecycle`` are intentionally NOT handled here — they
-        are consumed upstream in ``_handle_message`` (approval run-active window
-        + lifecycle billing/end) and forwarding them would conflict with that
-        state machine.
-
-        The OpenClaw ``runId`` on the source payload is propagated onto every
-        transformed event so the frontend can route chunks/tools to the
-        correct per-run assistant bubble (multi-bubble rendering).
-        """
-        stream = payload.get("stream")
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            return None
-
-        transformed: dict | None = None
-
-        if stream == "assistant":
-            transformed = GatewayConnection._build_text_frame("chunk", data)
-
-        elif stream in ("reasoning", "thinking"):
-            transformed = GatewayConnection._build_text_frame("thinking", data)
-
-        elif stream == "tool":
-            phase = data.get("phase", "")
-            name = data.get("name", "")
-            tool_call_id = data.get("toolCallId", "")
-            if phase == "update":
-                # Live tool progress: incremental output emitted mid-execution
-                # before the result phase. Upstream renders this via
-                # formatToolOutput(data.partialResult); we forward it so the
-                # running tool pill can show streaming output. An update attaches
-                # to an EXISTING pill keyed by toolCallId, so a toolCallId is the
-                # only thing it needs — name is optional here (the upstream
-                # tool-event contract declares name as optional, and updates
-                # address the pill by id, not name). Drop updates without a
-                # toolCallId (nothing for the frontend to attach them to), but
-                # never drop one merely for lacking a name.
-                if tool_call_id:
-                    transformed = {"type": "tool_progress", "toolCallId": tool_call_id}
-                    if name:
-                        transformed["tool"] = name
-                    if "partialResult" in data:
-                        transformed["partialResult"] = data["partialResult"]
-            elif name:
-                # start/result build or resolve a pill that needs the tool name,
-                # so these phases still require it.
-                if phase == "start":
-                    transformed = {"type": "tool_start", "tool": name}
-                    if tool_call_id:
-                        transformed["toolCallId"] = tool_call_id
-                    if "args" in data:
-                        transformed["args"] = data["args"]
-                elif phase == "result":
-                    is_error = bool(data.get("isError"))
-                    transformed = {
-                        "type": "tool_error" if is_error else "tool_end",
-                        "tool": name,
-                    }
-                    if tool_call_id:
-                        transformed["toolCallId"] = tool_call_id
-                    if "result" in data:
-                        transformed["result"] = data["result"]
-                    if data.get("meta"):
-                        transformed["meta"] = data["meta"]
-
-        elif stream == "command_output":
-            # Streaming command stdout/stderr emitted mid-exec. Carries a
-            # toolCallId so the frontend appends it to the matching live tool
-            # pill. Without one there is nothing to address, so drop it.
-            tool_call_id = data.get("toolCallId", "")
-            if tool_call_id:
-                transformed = {"type": "command_output", "toolCallId": tool_call_id}
-                if "output" in data:
-                    transformed["output"] = data["output"]
-
-        elif stream in ("run_status", "compaction"):
-            # Two "what is it doing right now" streams that used to fall out of
-            # this transform as None.
-            #
-            # run_status: the typed startup phases OpenClaw emits between the
-            # send and the first token (agent-run-status-events.ts). A closed
-            # enum — preparing_workspace | naming_worktree | creating_worktree |
-            # running_setup | provisioning_environment | preparing_context |
-            # starting_model — so the frontend maps it to copy rather than
-            # printing a raw enum at someone who does not know what a worktree
-            # is. Only the workspace/context/model three reach our fleet; the
-            # worktree and environment phases come from project sessions and
-            # worker environments, neither of which we run.
-            #
-            # compaction: history compaction start/end. A long session stalls
-            # for tens of seconds here with no explanation, and a compaction
-            # that FAILS (completed: false) otherwise reads as an unexplained
-            # pause followed by a possibly context-lost reply.
-            #
-            # Both ride the existing agent_activity envelope — no new frame
-            # type, no protocol change — and `detail` carries the whole payload
-            # so the frontend can tell a completed compaction from a failed one.
-            # The frontend routes these two activities to the run-status strip
-            # instead of a transcript pill: a phase is the run's current state,
-            # not an event worth logging.
-            phase = data.get("phase", "")
-            if phase:
-                transformed = {
-                    "type": "agent_activity",
-                    "activity": stream,
-                    "title": phase,
-                    "detail": data,
-                }
-
-        elif stream in ("plan", "patch", "item", "acp"):
-            # Low-noise "agent activity" surfaces upstream renders as rich
-            # affordances (proposed plan, patch summary, item lifecycle, ACP
-            # step). We fold them into one uniform envelope so the frontend
-            # shows a single activity pill: `title` is the human label and
-            # `detail` carries the full payload for the pill's expansion.
-            # NOTE: ``approval`` and ``lifecycle`` are deliberately excluded —
-            # they are consumed by _handle_message (approval run-active window
-            # + lifecycle billing/end), so forwarding them here would conflict
-            # with that state machine.
-            transformed = {
-                "type": "agent_activity",
-                "activity": stream,
-                "title": data.get("title", ""),
-                "detail": data,
-            }
-
-        if transformed is None:
-            return None
-
-        # OpenClaw emits runId on every agent event we forward (assistant/
-        # reasoning/thinking/tool streams), so treat it as a required field.
-        # Frontend routes chunks/tools to a per-run assistant bubble keyed by
-        # this id — a missing runId would silently break multi-bubble rendering.
-        transformed["runId"] = payload["runId"]
-        return transformed
-
-    @staticmethod
-    def _build_text_frame(frame_type: str, data: dict) -> dict | None:
-        """Build a ``chunk``/``thinking`` frame from an assistant/thinking event.
-
-        Append-delta form when the event carries a usable delta (the common
-        case): ``content`` is the delta, ``append: True``, and
-        ``_full_content`` carries the accumulated text. ``_full_content`` is
-        internal state for ``_rewrite_run_full_text`` only; no client sees it
-        (``_publish_room_frame`` strips it). Legacy
-        cumulative full-text form when the delta is absent/empty or the event
-        sets ``replace: true`` — the client replaces its buffer with
-        ``content`` exactly as it always has.
-
-        Returns ``None`` for events with no text at all (e.g. media-only).
-        """
-        text = data.get("text", "")
-        delta = data.get("delta")
-        if data.get("replace") is not True and isinstance(delta, str) and delta:
-            return {
-                "type": frame_type,
-                "content": delta,
-                "append": True,
-                # `text` should always superset `delta`; the `or delta` guard
-                # covers a hypothetical delta-only event so the resync form
-                # can never ship an empty message.
-                "_full_content": text or delta,
-            }
-        if text:
-            return {"type": frame_type, "content": text}
-        return None
-
-    def _run_text_state(self, run_id: str) -> "_RunText":
-        """Get-or-create the run's text accumulator, evicting oldest past the cap."""
-        state = self._run_text.get(run_id)
-        if state is None:
-            state = _RunText()
-            self._run_text[run_id] = state
-            while len(self._run_text) > _RUN_TEXT_CAP:
-                self._run_text.pop(next(iter(self._run_text)), None)
-        return state
-
-    def _rewrite_run_full_text(self, frame: dict) -> None:
-        """Widen a text frame's authoritative text from per-MESSAGE to per-RUN.
-
-        ``_build_text_frame`` copies OpenClaw's ``text`` verbatim, but that
-        field is cumulative only within the current assistant message —
-        upstream clears its buffer at every ``message_start``, and every tool
-        call starts a new assistant message. Our chunk stream is keyed by
-        ``runId`` and the frontend paints one bubble per run, so on the normal
-        agentic shape (text → tool_use → text) the authoritative text a
-        resyncing client receives would be the LAST block only: everything the
-        agent said before the last tool call disappears from the bubble.
-
-        Two frame shapes carry authoritative text and both are widened here:
-
-        - append form — ``content`` is the delta, ``_full_content`` is the
-          per-message snapshot. Nothing ships it (``_publish_room_frame``
-          strips it); widening it here is what keeps ``blocks`` carrying the
-          whole run, so a later cumulative frame is not truncated to its own
-          assistant message;
-        - cumulative-replacement form — ``content`` IS the snapshot, and the
-          client replaces its whole buffer with it.
-
-        The delta-append path itself was never wrong, so this changes nothing
-        for a client that saw every frame. It also does not touch the
-        ``chat``-terminal replace, which already carries run-scoped text from
-        the gateway's own accumulator and stays the end-of-run authority.
-        """
-        frame_type = frame.get("type")
-        run_id = frame.get("runId")
-        if frame_type not in _RUN_TEXT_TYPES or not run_id:
-            return
-        key = "_full_content" if "_full_content" in frame else "content"
-        snapshot = frame.get(key)
-        if not isinstance(snapshot, str):
-            return
-
-        state = self._run_text_state(run_id)
-        prefix, last = state.blocks.get(frame_type, ("", ""))
-        # A snapshot that no longer extends the previous one is a new assistant
-        # message (or an upstream `replace`): retire the old text into the
-        # prefix so the run's bubble keeps it.
-        if last and not snapshot.startswith(last):
-            prefix += last
-        state.blocks[frame_type] = (prefix, snapshot)
-        frame[key] = prefix + snapshot
-
-        # Seq gap: the gateway told us it dropped frames, so this client's
-        # append stream has a hole. Ship the widened text as a replace instead
-        # of a delta — `prefix + snapshot` is whole-run authoritative, so the
-        # hole closes on the first frame after the gap.
-        if state.resync:
-            state.resync = False
-            if frame.pop("append", None):
-                frame["content"] = frame.pop("_full_content")
-
-    @staticmethod
-    def _extract_thinking_text(payload: dict) -> str | None:
-        """Extract thinking/reasoning text from a chat event's message.content field."""
-        msg = payload.get("message")
-        if not isinstance(msg, dict):
-            return None
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            return None
-        thinking_parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "thinking":
-                text = block.get("thinking") or block.get("text") or ""
-                if text:
-                    thinking_parts.append(text)
-        return "\n\n".join(thinking_parts) if thinking_parts else None
 
     @staticmethod
     def _extract_assistant_text(payload: dict) -> str | None:
@@ -1459,61 +934,6 @@ class GatewayConnection:
                 if text:
                     text_parts.append(text)
         return "".join(text_parts) if text_parts else None
-
-    async def _publish_room_frame(self, session_key: str, frame: dict) -> None:
-        parsed = parse_lightbulb_session_key(session_key)
-        if parsed is None or frame.get("type") not in _ROOM_SAFE_FRAME_TYPES:
-            return
-        key = session_key.lower()
-        active = self._active_runs.get(key)
-        room_context = active or getattr(self, "_room_run_context", {}).get(key)
-        if (active or {}).get("event_kind") == "room_event" and frame.get("type") in {"chunk", "thinking"}:
-            return
-        from core.repositories import messaging_repo
-        from core.services.live_events import get_live_event_publisher
-        from core.services.messaging import make_live_event
-
-        meta = await messaging_repo.get_room(parsed["room_id"])
-        if meta is None or meta.get("ownerId") != self.owner_id:
-            return
-        member = await messaging_repo.get_member(parsed["room_id"], "agent", parsed["agent_id"])
-        if member is None:
-            return
-        normalized = {**frame}
-        normalized.pop("_full_content", None)
-        run_id = normalized.get("runId") or (active or {}).get("run_id")
-        event = make_live_event(
-            "room.run.frame",
-            {
-                "roomId": parsed["room_id"],
-                "agentId": parsed["agent_id"],
-                "runId": run_id,
-                "threadRootMessageId": (room_context or {}).get("thread_root_message_id"),
-                "frame": normalized,
-            },
-            room_id=parsed["room_id"],
-        )
-        # Bounded by the _ROOM_SAFE_FRAME_TYPES gate at the top of this method.
-        frame_type = str(normalized.get("type"))
-        try:
-            async with self._live_publish_lock:
-                await get_live_event_publisher().publish_room(parsed["room_id"], event)
-        except Exception:
-            put_metric(
-                "messaging.room_frame.publish",
-                dimensions={"outcome": "error", "frame_type": frame_type},
-            )
-            logger.warning(
-                "room run-frame publish failed owner=%s frame_type=%s",
-                self.owner_id,
-                frame_type,
-                exc_info=True,
-            )
-            return
-        put_metric(
-            "messaging.room_frame.publish",
-            dimensions={"outcome": "ok", "frame_type": frame_type},
-        )
 
     def _private_audience(self, session_key: str) -> str | None:
         run = self._active_runs.get(session_key.lower()) if session_key else None
@@ -1686,8 +1106,7 @@ class GatewayConnection:
         the prose.
 
         Audience = *carried_member* (the CANONICAL Clerk id of the dispatching
-        member, carried on the active-run entry by ``mark_run_active``), or the
-        owner (personal, whose key is agent:<id>:main with no member_id). It is
+        member, carried on the active-run entry), or the owner (personal, whose key is agent:<id>:main with no member_id). It is
         deliberately NOT the ``target_member`` parsed from the echoed session key
         — OpenClaw lowercases that, and the users-table PK lookup in
         ``send_push_to_user`` is case-sensitive, so a lowercased id would miss.
@@ -1734,8 +1153,7 @@ class GatewayConnection:
         """Map a parsed session key to the Clerk member_id.
 
         *carried_member* is the dispatching member recorded on the active-run
-        entry by ``mark_run_active`` (read by the caller while the run is still
-        open). A room/channel session key carries no member at all, so without
+        entry (read by the caller while the run is still open). A room/channel session key carries no member at all, so without
         it every room turn's spend was attributed to the owner — the same
         attribution the run-completion push already uses, and it is accepted
         under the same ``user_``-prefix guard.
@@ -1983,22 +1401,12 @@ class GatewayConnection:
                 if stream_data["phase"] == "end":
                     self._record_usage_from_session(payload)
                 self._emit_run_completed(payload, parsed_key, stream_data["phase"])
-            if room is None:
-                return
-            transformed = self._transform_agent_event(payload)
-            if transformed is not None:
-                self._rewrite_run_full_text(transformed)
-                transformed["agent_id"] = room["agent_id"]
-                await self._publish_room_frame(session_key, transformed)
             return
 
         if event_name == "chat":
             # NOTE: no `if room is None: return` here. Push notifications,
             # active-run cleanup, and e2e-latency metrics must fire for every
             # terminal chat run, not just canonical-room ones.
-            # `_publish_room_frame` already no-ops internally for a
-            # non-room session key, so the room-channel publish stays
-            # correctly gated without an explicit check here.
             agent_id = parsed_key.get("agent_id")
             state = payload.get("state")
             if state not in {"final", "error", "aborted"} or not run_id:
@@ -2006,18 +1414,15 @@ class GatewayConnection:
             # Which surface this turn came from, so the chat SLOs can be read
             # per-surface instead of as one blended number. A run's room id is
             # carried by its session key (`agent:<id>:lightbulb:channel:<room>`)
-            # and nowhere else — the active-run entry holds the room's
-            # event_kind/thread but never the id — so parsing the key is the
-            # room test, and it is the same key `mark_run_active` opened the run
-            # with. put_metric still publishes the [env, service] rollup
-            # alongside, so the existing dimensionless alarms keep working.
+            # and nowhere else, so parsing the key is the room test. put_metric
+            # still publishes the [env, service] rollup alongside, so the
+            # existing dimensionless alarms keep working.
             if room is not None:
                 source_dim = {"source": "room"}
             elif parsed_key.get("source") == "webchat":
                 source_dim = {"source": "webchat"}
             else:
                 source_dim = {"source": "other"}
-            self._run_text.pop(run_id, None)
             run_is_side = self._is_side_run(run_id)
             primary_started_at: float | None = None
             carried_member: str | None = None
@@ -2036,33 +1441,14 @@ class GatewayConnection:
                 put_metric("chat.message.count", dimensions=source_dim)
                 if is_true_terminal and not run_is_side and (self._extract_assistant_text(payload) or "").strip():
                     self._emit_trial_first_response()
-                thinking = self._extract_thinking_text(payload)
-                if thinking:
-                    await self._publish_room_frame(
-                        session_key,
-                        {"type": "thinking", "content": thinking, "agent_id": agent_id, "runId": run_id},
-                    )
-                text = self._extract_assistant_text(payload)
-                if text:
-                    await self._publish_room_frame(
-                        session_key,
-                        {"type": "chunk", "content": text, "agent_id": agent_id, "runId": run_id},
-                    )
-                await self._publish_room_frame(
-                    session_key,
-                    {"type": "done", "agent_id": agent_id, "runId": run_id},
-                )
             elif state == "error":
-                message = payload.get("errorMessage") or payload.get("error") or "Agent run failed"
-                if isinstance(message, dict):
-                    message = message.get("message") or "Agent run failed"
                 error_kind = payload.get("errorKind")
-                upstream_message = None
+                reclassified = False
                 if error_kind == "rate_limit":
                     money = await self._budget_error_code()
                     if money is not None:
-                        upstream_message = str(message)
-                        error_kind, message = money
+                        error_kind = money[0]
+                        reclassified = True
                 # The counterpart of chat.message.count: W10's error rate divides
                 # the two. `reason` is OpenClaw's bounded errorKind enum (plus
                 # our own money codes); `reclassified` records whether
@@ -2074,37 +1460,12 @@ class GatewayConnection:
                     "chat.error",
                     dimensions={
                         "reason": reason if reason in _CHAT_ERROR_REASONS else "other",
-                        "reclassified": "true" if upstream_message else "false",
+                        "reclassified": "true" if reclassified else "false",
                         **source_dim,
-                    },
-                )
-                frame = {"type": "error", "message": str(message), "agent_id": agent_id, "runId": run_id}
-                if error_kind:
-                    frame["code"] = error_kind
-                if upstream_message:
-                    frame["upstream_message"] = upstream_message
-                await self._publish_room_frame(session_key, frame)
-            else:
-                await self._publish_room_frame(
-                    session_key,
-                    {
-                        "type": "error",
-                        "message": "Agent run was cancelled",
-                        "agent_id": agent_id,
-                        "runId": run_id,
                     },
                 )
 
             if is_true_terminal:
-                await self._publish_room_frame(
-                    session_key,
-                    {
-                        "type": "run_ended",
-                        "runId": run_id,
-                        "outcome": "done" if state == "final" else state,
-                        "agent_id": agent_id,
-                    },
-                )
                 if state in {"final", "error"} and not run_is_side:
                     self._dispatch_push_notification(payload, carried_member, agent_id, state)
                 if not run_is_side:
@@ -2115,36 +1476,6 @@ class GatewayConnection:
                     put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds", dimensions=source_dim)
                 else:
                     put_metric("chat.run.abandoned")
-            return
-
-        if event_name == "chat.side_result" and room is not None:
-            await self._publish_room_frame(
-                session_key,
-                {
-                    "type": "btw_result",
-                    "question": payload.get("question", ""),
-                    "text": payload.get("text", ""),
-                    "isError": bool(payload.get("isError")),
-                    "agent_id": room["agent_id"],
-                    "runId": run_id,
-                },
-            )
-            return
-
-        if event_name == "sessions.changed" and room is not None:
-            active_row = self._active_runs.get(session_key.lower())
-            active_run_id = (active_row or {}).get("run_id")
-            if not active_run_id:
-                return
-            active = _is_session_run_active(payload)
-            key = session_key.lower()
-            if self._run_state.get(key) == active:
-                return
-            self._run_state[key] = active
-            await self._publish_room_frame(
-                session_key,
-                {"type": "run_active", "active": active, "agent_id": room["agent_id"], "runId": active_run_id},
-            )
             return
 
         nested_request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
@@ -2326,7 +1657,6 @@ class GatewayConnection:
                     list(self._active_runs.keys()),
                 )
                 self._active_runs.clear()
-                getattr(self, "_room_run_context", {}).clear()
                 self._parked = False
                 self._emit_status_change(
                     "GATEWAY_DOWN_DEAD",
@@ -2451,7 +1781,6 @@ class GatewayConnection:
         # Drop active-run state. close() means we don't expect to talk to
         # this OpenClaw process again under this connection instance.
         self._active_runs.clear()
-        getattr(self, "_room_run_context", {}).clear()
         self._parked = False
 
 
@@ -2530,69 +1859,6 @@ class GatewayConnectionPool:
         conn = self._connections.get(owner_id)
         return conn is not None and conn._parked
 
-    def mark_run_active(
-        self,
-        user_id: str,
-        session_key: str,
-        agent_id: str | None = None,
-        member_id: str | None = None,
-        event_kind: str | None = None,
-        thread_root_message_id: str | None = None,
-    ) -> None:
-        """Public entry point for the chat dispatcher.
-
-        Records that a chat.send is being issued for *session_key* on the
-        per-user gateway connection. Silently no-ops when no connection exists
-        for *user_id* yet — and NOTHING else populates ``_active_runs`` (inbound
-        events only touch/clear an existing entry), so a mark issued before the
-        connection exists is simply lost. The chat dispatcher therefore calls
-        ``ensure_connection`` before marking on every non-side send, which
-        guarantees a connection here. Idempotent.
-
-        *member_id* is the CANONICAL Clerk id of the dispatching member (carried
-        onto the active-run entry for the run-completion push audience).
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return
-        conn.mark_run_active(
-            session_key,
-            agent_id,
-            member_id=member_id,
-            event_kind=event_kind,
-            thread_root_message_id=thread_root_message_id,
-        )
-
-    async def subscribe_room_session(self, user_id: str, session_key: str) -> None:
-        """Stream a room session's run events to the owner's connection.
-
-        No-ops without a connection, like ``mark_run_active``. See
-        ``GatewayConnection.subscribe_room_session`` for why a room run emits
-        nothing to us until this lands.
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return
-        await conn.subscribe_room_session(session_key)
-
-    def clear_active_run(self, user_id: str, session_key: str, *, preserve_room_context: bool = False) -> None:
-        """Tear down the active-run window opened by ``mark_run_active``.
-
-        The dispatcher marks a run active *before* issuing chat.send so the
-        parked-vs-dead window is open for the whole dispatch. If that chat.send
-        never reaches OpenClaw (timeout, container unreachable, gateway error),
-        no terminal event will ever arrive to clear the window — leaving a stale
-        entry that keeps the connection parking on a WS drop forever. The
-        dispatcher calls this on the chat.send failure path. When delivery is
-        uncertain, ``preserve_room_context`` retains only bounded routing
-        metadata for frames that may still arrive; it does not keep the run
-        active. Silently no-ops when no connection exists. Idempotent.
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return
-        conn._clear_active_run(session_key, preserve_room_context=preserve_room_context)
-
     def mark_side_run(self, user_id: str, run_id: str) -> None:
         """Record *run_id* as a side-channel (`/btw`) run on *user_id*'s
         connection so its terminal never clears the PRIMARY run's session
@@ -2604,18 +1870,6 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_side_run(run_id)
-
-    def run_id_for_session(self, user_id: str, session_key: str) -> str | None:
-        """The in-flight run id for *session_key* on *user_id*'s connection.
-
-        Thin pool-level delegate over the connection's ``run_id_for_session``.
-        No connection at all → None (receipt stays unstamped, today's
-        behaviour). Used by the agent-message receipt path to retire run cards.
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return None
-        return conn.run_id_for_session(session_key)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
@@ -2862,13 +2116,11 @@ class GatewayConnectionPool:
         """Get-or-create the per-user gateway connection and return it.
 
         Same three repair paths as ``send_rpc`` (parked→reopen, stale→recreate,
-        absent→create), adopting the freshly-resolved endpoint. Extracted so the
-        chat dispatcher can GUARANTEE the connection exists before it records the
-        active-run window: ``mark_run_active`` silently no-ops when no connection
-        exists yet, and on a fresh backend task it is ``send_rpc`` that would
-        otherwise create the connection — so marking before the first send would
-        be lost. ``send_rpc`` itself routes through here, so the dispatcher's
-        pre-send call is idempotent (the second resolution finds the live
+        absent→create), adopting the freshly-resolved endpoint. Extracted so a
+        caller can GUARANTEE the connection exists before it dispatches work:
+        on a fresh backend task it is ``send_rpc`` that would otherwise create
+        the connection. ``send_rpc`` itself routes through here, so a
+        pre-dispatch call is idempotent (the second resolution finds the live
         connection on the fast path).
         """
         async with self._lock:
@@ -3096,25 +2348,6 @@ class GatewayConnectionPool:
         self._auth_backoff_until.pop(user_id, None)
         self._auth_failures.pop(user_id, None)
 
-    def resolve_run(self, owner_id: str, run_id: str) -> dict | None:
-        conn = self._connections.get(owner_id)
-        if conn is None:
-            return None
-        for session_key, run in conn._active_runs.items():
-            if run.get("run_id") == run_id:
-                return {
-                    "sessionKey": session_key,
-                    "agentId": run.get("agent_id"),
-                    "terminal": False,
-                }
-        terminal_session_key = conn._terminal_run_ids.get(run_id)
-        if terminal_session_key is not None:
-            return {
-                "sessionKey": terminal_session_key,
-                "terminal": True,
-            }
-        return None
-
     async def close_idle_user(self, owner_id: str) -> bool:
         """Close an idle machine connection before a durable trial stop.
 
@@ -3192,40 +2425,6 @@ class GatewayConnectionPool:
             gauge("gateway.connection.parked", parked_count)
         except Exception:
             pass
-
-
-def _is_session_run_active(payload: dict) -> bool:
-    """Resolve a session's run-active state from a `sessions.changed` payload.
-
-    Port of OpenClaw's own client-side rule (openclaw/ui/src/lib/session-run-state.ts
-    `isSessionRunActive`). The payload carries TWO run-state fields and they are not
-    redundant — trusting only `hasActiveRun` is what stranded the chat status pill on
-    "Working…" after a finished turn:
-
-    - ``hasActiveRun`` is a liveness HEURISTIC: an OR over three in-memory registries
-      (chat abort-controllers, projected remote runs, the embedded-agent run registry —
-      see gateway/server-methods/session-active-runs.ts `resolveVisibleActiveSessionRunState`).
-      Any one of them leaking an entry pins it true indefinitely, which is what happens
-      to a container under load.
-    - ``status`` is the DURABLE record, committed atomically with the transcript turn in
-      the SQLite write transaction. It is set to "running" at run start and to a terminal
-      value ("done"/"failed"/"killed"/"timeout") at run end
-      (gateway/session-lifecycle-state.ts `deriveGatewaySessionLifecycleSnapshot`).
-
-    So a terminal ``status`` WINS over a stale ``hasActiveRun: true``. Crucially this does
-    NOT blank the status bar during long silent tool windows: `status` stays "running"
-    across the yielded/waiting phase too (`isAgentLifecycleYieldedWaiting`), which is
-    exactly the case the frontend's server-truth `active` flag exists to cover.
-
-    Every other OpenClaw client already applies this rule; we are the outlier.
-    """
-    status = payload.get("status")
-    if status and status != "running":
-        return False
-    has_active_run = payload.get("hasActiveRun")
-    if isinstance(has_active_run, bool):
-        return has_active_run
-    return status == "running"
 
 
 def parse_lightbulb_session_key(session_key: str) -> dict[str, str] | None:

@@ -5,14 +5,14 @@ table PK), not the id parsed from the echoed session key — OpenClaw lowercases
 the whole session key on the wire (session-key-utils.ts), so the parsed
 ``member_id`` is lowercased and a case-sensitive ``user_repo.get`` PK lookup
 would miss. The canonical dispatch member id is therefore carried on the
-``_active_runs`` entry (set by ``mark_run_active(..., member_id=...)``) and read
-back at the terminal. These tests pin that behaviour with a MIXED-CASE member id
-so a regression that reintroduces the lowercased echoed id fails loudly.
+``_active_runs`` entry and read back at the terminal. These tests pin that
+behaviour with a MIXED-CASE member id so a regression that reintroduces the
+lowercased echoed id fails loudly.
 
 The ``_active_runs`` dict key is normalized to lowercase at every access site so
-the canonical (mixed-case) dispatch key stored by ``mark_run_active`` matches the
-lowercased echoed key read at the terminal (a latent bug fixed here: the entry
-used to leak and ``chat.e2e.latency`` never emitted for mixed-case users).
+a canonical (mixed-case) dispatch key matches the lowercased echoed key read at
+the terminal (a latent bug fixed here: the entry used to leak and
+``chat.e2e.latency`` never emitted for mixed-case users).
 
 Other divergences from the original brief (see task-4-report.md): the real
 ``send_rpc(req_id, method, params)`` only sends (result via
@@ -21,11 +21,29 @@ Other divergences from the original brief (see task-4-report.md): the real
 """
 
 import asyncio
+import time
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.gateway.connection_pool import GatewayConnection
+
+
+def _open_run(conn, session_key, *, agent_id="a1", member_id=None):
+    """Open an active-run window directly.
+
+    Nothing populates ``_active_runs`` in the backend today — room turns are
+    asynchronous and ledger-tracked, and personal-chat dispatch re-opens the
+    window in sub-project B — so the tests write the entry the terminal reads.
+    """
+    conn._active_runs[session_key.lower()] = {
+        "started_at": time.monotonic(),
+        "last_event_at": time.monotonic(),
+        "agent_id": agent_id,
+        "run_id": None,
+        "member_id": member_id,
+        "awaiting_approval": False,
+    }
 
 
 def _make_conn(owner_id="user_owner"):
@@ -64,9 +82,7 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._active_runs = {}
     conn._terminal_run_ids = {}
     conn._analytics_tasks = set()
-    conn._run_state = {}
     conn._side_run_ids = {}
-    conn._run_text = {}
     conn._parked = False
     conn._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -176,49 +192,13 @@ async def test_generic_title_when_agent_name_unresolved():
     assert sent.await_args.args[1] == "New reply"
 
 
-def test_active_runs_key_normalized():
-    """mark_run_active stores under a LOWERCASED key so the lowercased echoed
-    key from OpenClaw hits the same entry (store canonical, read echoed).
-
-    This is the latent-bug fix: previously the canonical (mixed-case) store key
-    and the lowercased echoed read key never matched for mixed-case users.
-    """
-    conn = GatewayConnection.__new__(GatewayConnection)
-    conn._active_runs = {}
-    conn._run_state = {}
-    canonical = "agent:a1:user_MixedCase"
-    echoed = "agent:a1:user_mixedcase"
-
-    conn.mark_run_active(canonical, agent_id="a1", member_id="user_MixedCase")
-
-    # Stored under the normalized (lowercased) key only.
-    assert canonical not in conn._active_runs
-    assert echoed in conn._active_runs
-    assert conn._active_runs[echoed]["member_id"] == "user_MixedCase"
-    assert conn._active_runs[echoed]["agent_id"] == "a1"
-
-    # Every read path resolves via the lowercased echoed key.
-    conn._touch_run(echoed)  # no miss
-    assert conn._is_true_terminal(echoed, "final") is True
-    conn._clear_active_run(echoed)
-    assert echoed not in conn._active_runs
-
-
-def test_mark_run_active_member_id_defaults_none():
-    """member_id is optional (default None) so existing call sites are unaffected."""
-    conn = GatewayConnection.__new__(GatewayConnection)
-    conn._active_runs = {}
-    conn.mark_run_active("agent:a1:main", agent_id="a1")
-    assert conn._active_runs["agent:a1:main"]["member_id"] is None
-
-
 @pytest.mark.asyncio
 async def test_carry_canonical_member_through_terminal():
-    """End-to-end: mark_run_active with a CANONICAL dispatch key + canonical
+    """End-to-end: open the window with a CANONICAL dispatch key + canonical
     member, drive the terminal with the LOWERCASED echoed key, and assert the
     entry is found and the CANONICAL member is the push audience."""
     conn = _make_terminal_conn(owner_id="org_1")
-    conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
+    _open_run(conn, "agent:a1:user_MixedCase", member_id="user_MixedCase")
 
     # OpenClaw echoes the session key lowercased.
     payload = {
@@ -231,7 +211,6 @@ async def test_carry_canonical_member_through_terminal():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -254,7 +233,7 @@ async def test_push_dispatched_before_active_run_cleared():
     So the terminal path must spawn the push first, then clear.
     """
     conn = _make_terminal_conn(owner_id="org_1")
-    conn.mark_run_active("agent:a1:user_Mixed", agent_id="a1", member_id="user_Mixed")
+    _open_run(conn, "agent:a1:user_Mixed", member_id="user_Mixed")
     payload = {
         "sessionKey": "agent:a1:user_mixed",
         "state": "final",
@@ -276,7 +255,6 @@ async def test_push_dispatched_before_active_run_cleared():
     with (
         patch("core.services.push_service.send_push_to_user", AsyncMock()),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
         patch.object(conn, "_dispatch_push_notification", side_effect=rec_dispatch),
         patch.object(conn, "_clear_active_run", side_effect=rec_clear),
@@ -292,7 +270,7 @@ async def test_terminal_error_state_pushes_failure():
     """An error terminal pushes a failure notice (a run failing while the user
     is away deserves notice as much as one finishing)."""
     conn = _make_terminal_conn(owner_id="org_1")
-    conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
+    _open_run(conn, "agent:a1:user_MixedCase", member_id="user_MixedCase")
     payload = {
         "sessionKey": "agent:a1:user_mixedcase",
         "state": "error",
@@ -304,7 +282,6 @@ async def test_terminal_error_state_pushes_failure():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -319,7 +296,7 @@ async def test_terminal_error_state_pushes_failure():
 async def test_terminal_aborted_does_not_push():
     """Aborted never pushes — the user cancelled the run themselves."""
     conn = _make_terminal_conn(owner_id="org_1")
-    conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
+    _open_run(conn, "agent:a1:user_MixedCase", member_id="user_MixedCase")
     payload = {
         "sessionKey": "agent:a1:user_mixedcase",
         "state": "aborted",
@@ -330,7 +307,6 @@ async def test_terminal_aborted_does_not_push():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -361,7 +337,6 @@ async def test_side_run_final_does_not_push():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})

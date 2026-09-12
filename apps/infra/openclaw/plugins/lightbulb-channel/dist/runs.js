@@ -83,6 +83,8 @@ export function createRunCallbacks(deps) {
     };
 }
 const asCount = (value) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0);
+/** A run that never reached the host owns no tokens; the session row holds the last turn's. */
+const ZERO_USAGE = { model: "unknown", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: null };
 export function createRunSupervisor(deps) {
     const runs = new Map();
     /**
@@ -181,7 +183,7 @@ export function createRunSupervisor(deps) {
             trackText(run, evt.data);
         frame(run, transformed);
     }
-    async function finish(run, gate, failure) {
+    async function finish(run, gate, failure, opts) {
         if (run.heartbeat)
             clearInterval(run.heartbeat);
         // Retire the run before the terminal frames: a late event must not be framed after
@@ -236,7 +238,7 @@ export function createRunSupervisor(deps) {
             at: iso(),
             outcome,
             ...(errorKind ? { errorKind } : {}),
-            ...(gate ? {} : { usage: usageFor(run) }),
+            ...(gate ? {} : { usage: opts?.neverLaunched ? ZERO_USAGE : usageFor(run) }),
         });
     }
     /** Only the session's current owner is turning; a queued run has nothing to reach yet. */
@@ -285,10 +287,11 @@ export function createRunSupervisor(deps) {
         abort(runId) {
             const run = runs.get(runId);
             // A queued turn has not been dispatched to the host, so there is nothing to abort
-            // there: drop it from the line and report its own end.
+            // there: drop it from the line and report its own end — with explicit zero usage,
+            // since the session row it would otherwise read belongs to the turn that did run.
             if (run && dequeue(run.sessionKey, runId)) {
                 run.terminal = { phase: "end", aborted: true };
-                void finish(run).catch((error) => logFailure(runId, error));
+                void finish(run, undefined, undefined, { neverLaunched: true }).catch((error) => logFailure(runId, error));
                 return "aborting";
             }
             const sessionId = sessionIdFor(runId);

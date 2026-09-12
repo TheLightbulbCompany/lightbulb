@@ -135,7 +135,8 @@ describe("run supervisor", () => {
   it("serializes a second turn on the same session behind the first", async () => {
     const h = harness();
     let finishFirst!: (v: "dispatched") => void;
-    const second = pending();
+    let finishSecond!: (v: "dispatched") => void;
+    const second = vi.fn(() => new Promise<"dispatched">((resolve) => { finishSecond = resolve; }));
     h.runs.start(RUN, () => new Promise((resolve) => { finishFirst = resolve; }));
     h.runs.start(RUN2, second);
     expect(second).not.toHaveBeenCalled();
@@ -146,6 +147,11 @@ describe("run supervisor", () => {
     await h.settle();
     expect(second).toHaveBeenCalledOnce();
     expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN2.runId);
+    // The shared session row is read once, by the run that actually turned.
+    expect(h.sdk.getSessionEntry).toHaveBeenCalledOnce();
+    finishSecond("dispatched");
+    await h.settle();
+    expect(h.sdk.getSessionEntry).toHaveBeenCalledTimes(2);
   });
 
   it("marks a queued run started at accept and heartbeats it while it waits", async () => {
@@ -172,7 +178,13 @@ describe("run supervisor", () => {
     await h.settle();
     expect(second).not.toHaveBeenCalled();
     expect(h.sdk.abortEmbeddedAgentRun).not.toHaveBeenCalled(); // the host never saw this turn
-    expect(h.sent().find((e: any) => e.runId === RUN2.runId && e.type === "run.ended")).toMatchObject({ outcome: "aborted" });
+    // The session row belongs to whatever turn last ran on it, so a run that never
+    // launched must report zeros rather than double-count another run's tokens.
+    expect(h.sdk.getSessionEntry).not.toHaveBeenCalled();
+    expect(h.sent().find((e: any) => e.runId === RUN2.runId && e.type === "run.ended")).toMatchObject({
+      outcome: "aborted",
+      usage: { model: "unknown", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: null },
+    });
     finishFirst("dispatched");
     await h.settle();
     expect(third).toHaveBeenCalledOnce();

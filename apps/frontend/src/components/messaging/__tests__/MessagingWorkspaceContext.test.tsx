@@ -50,6 +50,7 @@ const room: RoomDetail = {
   roomId: "room-1", kind: "dm", name: null, roomRevision: 1,
   deliveryKey: "delivery", lastMessageSeq: 0, lastMessageAt: null,
   unreadCount: 0, lastReadSeq: 0, createdAt: "2026-09-10T00:00:00Z", updatedAt: "2026-09-10T00:00:00Z",
+  topic: null, starred: false, muted: false, sectionId: null, pinnedMessageIds: [],
   members: [
     { kind: "human", id: "owner", displayName: "Owner", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },
     { kind: "agent", id: "agent-friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },
@@ -439,6 +440,17 @@ it("moves rooms on Alt+ArrowUp from inside the composer instead of editing the l
 
   expect(state.selectRoom).toHaveBeenCalledWith("room-3");
   expect(editLast).not.toHaveBeenCalled();
+});
+
+it("keeps a muted room's unread out of the browser-tab title", () => {
+  state.rooms = [{ ...room, unreadCount: 3, muted: true }];
+  const view = compose();
+  expect(document.title).not.toMatch(/^\(\d+\)/);
+  view.unmount();
+
+  state.rooms = [{ ...room, unreadCount: 3, muted: false }];
+  compose();
+  expect(document.title).toMatch(/^\(3\)/);
 });
 
 it("opens the shortcut sheet on Cmd+/", () => {

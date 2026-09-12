@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
+import { LIVE_EVENT_TYPES, parseLiveEvent } from "../live/types";
 
 function setup() {
   const methods = {
@@ -98,4 +99,53 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenCalledWith("/messaging/runs/run-1/steer", { text: "focus on checkout" });
     expect(JSON.stringify(methods)).not.toContain("ownerId");
   });
+
+  it("addresses the phase 3 room commands", async () => {
+    const calls: Array<[string, string, unknown]> = [];
+    const api = {
+      get: async (path: string) => { calls.push(["get", path, undefined]); return {}; },
+      post: async (path: string, body?: unknown) => { calls.push(["post", path, body]); return {}; },
+      put: async (path: string, body?: unknown) => { calls.push(["put", path, body]); return {}; },
+      patch: async (path: string, body?: unknown) => { calls.push(["patch", path, body]); return {}; },
+      del: async (path: string) => { calls.push(["del", path, undefined]); return {}; },
+    } as never;
+    const client = createMessagingClient(api);
+    await client.setMemberPrefs("r 1", { starred: true });
+    await client.putSections({ sections: [{ id: "s-1", name: "Ship" }] });
+    await client.leaveRoom("r 1");
+    await client.setPin("r 1", "m 1", true);
+    await client.setPin("r 1", "m 1", false);
+    await client.markUnread("r 1", 4);
+    await client.markUnread("r 1");
+    expect(calls).toEqual([
+      ["patch", "/messaging/rooms/r%201/me", { starred: true }],
+      ["put", "/messaging/me/sections", { sections: [{ id: "s-1", name: "Ship" }] }],
+      ["post", "/messaging/rooms/r%201/leave", {}],
+      ["put", "/messaging/rooms/r%201/pins/m%201", {}],
+      ["del", "/messaging/rooms/r%201/pins/m%201", undefined],
+      ["post", "/messaging/rooms/r%201/unread", { fromSeq: 4 }],
+      ["post", "/messaging/rooms/r%201/unread", {}],
+    ]);
+  });
+});
+
+it("recognises the member-updated live event", () => {
+  expect(LIVE_EVENT_TYPES.has("room.member.updated")).toBe(true);
+});
+
+it("parses a room.member.updated frame and rejects a malformed one", () => {
+  // The backend publishes this on the user channel, not a room subscription,
+  // so (unlike other room.* events) the envelope itself carries no roomId --
+  // only payload.roomId does. See core/services/messaging.py's patch_room_me.
+  const event = {
+    schemaVersion: 1, eventId: "member-updated-1", type: "room.member.updated", occurredAt: "now",
+    payload: { roomId: "room-1" },
+  };
+  expect(parseLiveEvent(event)).toEqual(event);
+  expect(parseLiveEvent({ ...event, payload: {} })).toBeNull();
+  expect(parseLiveEvent({ ...event, payload: { roomId: 42 } })).toBeNull();
+  // Relaxing the cross-check waives only an ABSENT envelope roomId: one that
+  // is present and disagrees with the payload is still a rejected frame.
+  expect(parseLiveEvent({ ...event, roomId: "other" })).toBeNull();
+  expect(parseLiveEvent({ ...event, roomId: "room-1" })).toEqual({ ...event, roomId: "room-1" });
 });

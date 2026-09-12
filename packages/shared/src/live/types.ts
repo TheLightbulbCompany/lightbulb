@@ -175,6 +175,7 @@ export type LiveEventType =
   | "room.run.frame"
   | "room.metadata.changed"
   | "room.resources.changed"
+  | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
   | "runtime.operation.changed"
@@ -195,6 +196,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.run.frame",
   "room.metadata.changed",
   "room.resources.changed",
+  "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
   "runtime.operation.changed",
@@ -221,6 +223,7 @@ export interface LiveEventEnvelope<T extends LiveEventType, P> {
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
+export type RoomMemberUpdated = { roomId: string };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
 export type RoomAccessRemoved = { roomId: string; roomRevision: number };
 export type RuntimeOperationChanged = {
@@ -253,6 +256,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"room.resources.changed", { roomId: string }>
+  | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
@@ -363,6 +367,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);
+    case "room.member.updated":
+      return str(payload.roomId);
     case "room.subscription.rotated":
       return str(payload.roomId) && str(payload.deliveryKey) && num(payload.roomRevision);
     case "runtime.operation.changed":
@@ -409,7 +415,10 @@ export function parseLiveEvent(raw: unknown): LiveEvent | null {
   const type = value.type as LiveEventType;
   if (!payloadValid(type, value.payload)) return null;
   const payload = value.payload as Record<string, unknown>;
-  if (type.startsWith("room.") && payload.roomId !== value.roomId) return null;
+  // `room.member.updated` rides the user channel (not a room subscription),
+  // so the backend never sets the envelope-level roomId for it -- only
+  // `payload.roomId` -- and this cross-check must not demand one.
+  if (type.startsWith("room.") && value.roomId !== undefined && payload.roomId !== value.roomId) return null;
   if (type === "room.message.created") {
     if (payload.messageSeq !== value.messageSeq || payload.roomRevision !== value.roomRevision) return null;
   }

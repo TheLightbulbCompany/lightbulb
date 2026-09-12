@@ -30,14 +30,26 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  e.g. InlineTeamsPanel.tsx)
   - Message actions ......... references/surfaces.md
                               <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
-                                 reply-in-thread, edit/delete); messageLinks.ts (copy-link permalink format);
+                                 reply-in-thread, edit/delete, the menuExtras-gated "more" menu open to every member);
+                                 RoomPanel.tsx renderMessage (pin/unpin against pinnedMessageIds, mark-unread-from-here
+                                 gated `!inThread`); messageLinks.ts (copy-link permalink format);
                                  RoomPanel.tsx renderRun (muted "<Agent> finished · no reply" / "stopped" / "run failed"
                                  status line for a silent agent turn)
+  - Conversation list ....... references/surfaces.md
+                              <- apps/frontend/src/components/messaging/RoomDirectory.tsx (group order, Manage sections
+                                 dialog, drag/keyboard section reorder, Leave confirm); RoomDirectoryRow.tsx (the ⋯ menu,
+                                 Move to section); roomSections.ts (groupRooms — Starred · custom · Channels · Direct);
+                                 sidebarPrefs.ts (per-browser collapse + sort)
   - Composer ................ references/surfaces.md
                               <- apps/frontend/src/components/messaging/RoomComposer.tsx (typeaheads, formatting toolbar,
                                  drag-and-drop, up-arrow edit); composerText.ts (caret grammar); mentions.ts
                                  resolveTypedMentions (typed tokens resolve on send); respondHint.ts (must mirror
                                  core/services/messaging.py select_dispatch_targets); drafts.ts (lightbulb.messaging.draft| keys)
+  - Room header ............. references/surfaces.md
+                              <- apps/frontend/src/components/messaging/RoomHeader.tsx (topic edit, member facepile,
+                                 star/mute, the pinned-count affordance, the ⋯ overflow's Copy link/Rename/Details/Leave);
+                                 messageLinks.ts (roomPermalink copy-link format); RoomPanel.tsx (Details tab pinned count);
+                                 RoomDetailsPanel.tsx (the Members/Pins/Files/Links/About tabs)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)

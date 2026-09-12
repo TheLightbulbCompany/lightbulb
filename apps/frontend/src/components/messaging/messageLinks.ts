@@ -3,6 +3,11 @@ export function messagePermalink(roomId: string, messageId: string, origin = win
   return `${origin}/chat?${params.toString()}`;
 }
 
+export function roomPermalink(roomId: string, origin = window.location.origin): string {
+  const params = new URLSearchParams({ panel: "chat", room: roomId });
+  return `${origin}/chat?${params.toString()}`;
+}
+
 export function sessionPermalink(roomId: string, sessionId: string, origin = window.location.origin): string {
   return `${origin}/chat?${new URLSearchParams({ panel: "chat", room: roomId, session: sessionId })}`;
 }

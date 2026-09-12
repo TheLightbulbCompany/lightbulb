@@ -1,15 +1,21 @@
 "use client";
 
-import { useId, useState } from "react";
-import { ChevronDown, Hash, MailOpen, MessageCircle, MoreHorizontal, Pencil, Plus, Users } from "lucide-react";
-import type { ListenMode, RoomKind } from "@lightbulb/shared";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ChevronDown, ChevronRight, FolderPlus, GripVertical, Pencil, Plus, Trash2, Users } from "lucide-react";
+import type { ListenMode, MemberPrefsRequest, RoomKind, RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { ParticipantAvatar } from "./ParticipantAvatar";
-import { nextUnreadRoomId } from "./roomNavigation";
-import { roomDisplayName, roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
+import { copyText, roomPermalink } from "./messageLinks";
+import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
+import { RoomDirectoryRow } from "./RoomDirectoryRow";
+import { groupRooms, type SidebarSort } from "./roomSections";
+import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
+import { useAsyncAction } from "./useAsyncAction";
+import { roomDisplayName, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {
@@ -21,6 +27,7 @@ export interface ConversationCreation {
 export interface RoomDirectoryProps {
   ownerScopeId: string;
   rooms: readonly DirectoryRoom[];
+  sections: readonly RoomSection[];
   participants: readonly DirectoryParticipant[];
   state: "loading" | "ready" | "error" | "access-removed";
   currentRoomId?: string;
@@ -28,18 +35,39 @@ export interface RoomDirectoryProps {
   onSelectParticipant: (participant: DirectoryParticipant) => void | Promise<void>;
   onCreate?: (creation: ConversationCreation) => void | Promise<boolean>;
   onMarkUnread?: (roomId: string) => void | Promise<void>;
+  onSetPrefs?: (roomId: string, prefs: MemberPrefsRequest) => Promise<void>;
+  onSaveSections?: (sections: RoomSection[]) => Promise<void>;
+  onLeaveRoom?: (roomId: string) => Promise<void>;
   creationBusy?: boolean;
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
 }
 
+// Mirrors the backend's own limits (`core/services/messaging.py`) so the
+// dialog refuses what a PUT would reject anyway, instead of round-tripping a
+// 422 the owner cannot act on.
+const SECTION_NAME_MAX_CHARS = 40;
+const MAX_SECTIONS = 20;
+
 export function RoomDirectory(props: RoomDirectoryProps) {
   return <DirectoryContent key={JSON.stringify([props.ownerScopeId, props.currentRoomId])} {...props} />;
 }
 
+/** A custom section: the whole group moves, dragged by the grip in its header. */
+function SortableSection({ id, label, children }: { id: string; label: string; children: (grip: ReactNode) => ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const grip = <button type="button" className="room-directory-grip" aria-label={`Reorder ${label}`} {...attributes} {...listeners}>
+    <GripVertical size={14} aria-hidden="true" />
+  </button>;
+  return <section ref={setNodeRef} aria-label={label} data-dragging={isDragging || undefined}
+    style={{ transform: CSS.Transform.toString(transform), transition }}>{children(grip)}</section>;
+}
+
 function DirectoryContent({
+  ownerScopeId,
   rooms,
+  sections: savedSections,
   participants,
   state,
   currentRoomId,
@@ -47,6 +75,9 @@ function DirectoryContent({
   onSelectParticipant,
   onCreate,
   onMarkUnread,
+  onSetPrefs,
+  onSaveSections,
+  onLeaveRoom,
   creationBusy = false,
   creationError,
   onRetry,
@@ -61,7 +92,50 @@ function DirectoryContent({
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
-  const validName = kind !== "channel" || (name.trim().length >= 1 && name.trim().length <= 80);
+  const [prefs, setPrefs] = useState(() => readSidebarPrefs(ownerScopeId));
+  const savePrefs = useAsyncAction();
+  const saveSections = useAsyncAction();
+  const leave = useAsyncAction();
+  const [managing, setManaging] = useState(false);
+  // Only the NAMES being edited are local: the rows themselves stay the
+  // server's list, so a section another device added shows up mid-edit
+  // instead of being silently dropped by the next save.
+  const [nameEdits, setNameEdits] = useState<Record<string, string>>({});
+  const [newSection, setNewSection] = useState("");
+  const [deleting, setDeleting] = useState<RoomSection | null>(null);
+  const [leaving, setLeaving] = useState<DirectoryRoom | null>(null);
+  // The order shown while a drag is being saved; cleared either way, so a
+  // failed save falls back to the server's order and a successful one lands
+  // on the list the save returned.
+  const [pendingOrder, setPendingOrder] = useState<RoomSection[] | null>(null);
+  const deleteCancel = useRef<HTMLButtonElement>(null);
+  const leaveCancel = useRef<HTMLButtonElement>(null);
+  const newSectionInput = useRef<HTMLInputElement>(null);
+  // Neither dialog has a DialogTrigger, so Radix has no element to hand focus
+  // back to and drops it on <body>. Remember what opened each one.
+  const manageTrigger = useRef<HTMLButtonElement>(null);
+  const leaveTrigger = useRef<HTMLElement | null>(null);
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const sections = pendingOrder ?? savedSections;
+  const drafts = sections.map((section) => ({ ...section, name: nameEdits[section.id] ?? section.name }));
+  // One predicate for every write out of this dialog: the backend rejects a
+  // blank name, so Add and Delete must not ship someone's half-typed rename
+  // along for the ride.
+  const blankName = drafts.some((section) => !section.name.trim());
+  const trimmedDrafts = () => drafts.map((section) => ({ ...section, name: section.name.trim() }));
+  const blankHintId = `${id}-section-blank`;
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const sectionName = (sectionId: string | number) => sections.find((section) => section.id === String(sectionId))?.name ?? "Section";
+  // The row `savePrefs` is acting on, so one in-flight star doesn't disable
+  // every other row's trigger. Only read while `savePrefs.pending`, so a
+  // stale value after the action settles is inert.
+  const [actingRoomId, setActingRoomId] = useState<string | null>(null);
+  const validName = kind === "channel"
+    ? name.trim().length >= 1 && name.trim().length <= 80
+    : kind === "group-dm" ? name.trim().length <= 80 : true;
   const validCount = kind === "dm" ? selected.size === 1 : kind === "group-dm" ? selected.size >= 2 : true;
   const canCreate = !!onCreate && validName && validCount && selected.size <= 31;
   const visibleParticipants = participants.filter((participant) => {
@@ -69,11 +143,76 @@ function DirectoryContent({
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
   });
   const partialError = state === "error" && rooms.length > 0;
-  const unreadRooms = rooms.filter((room) => room.unreadCount > 0);
+  // Muted rooms are unread but never a jump destination -- same predicate
+  // the Alt+Shift+Arrow shortcut uses, so the chevron cannot disagree with it.
+  const unreadRooms = rooms.filter(isUnreadTarget);
   // A drafted room can be absent from `rooms` (left, or directory still
   // loading) — gate the section on this filtered list, not on
   // draftRoomIds.length, or the heading renders over an empty list.
   const draftedRooms = rooms.filter((room) => draftRoomIds.includes(room.roomId));
+  const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants) });
+
+  // The delete confirm replaces the dialog's controls in place, so focus has
+  // to follow it — and land on Cancel, never on the destructive button. On the
+  // way back it returns to the Delete control that opened it, or to the new
+  // section field when that row is gone because the delete went through.
+  useEffect(() => {
+    if (deleting) { deleteCancel.current?.focus(); return; }
+    const opener = deleteTrigger.current;
+    deleteTrigger.current = null;
+    if (opener) (opener.isConnected ? opener : newSectionInput.current)?.focus();
+  }, [deleting]);
+
+  // Section ids are UUIDs — a keyboard drag must never read one aloud.
+  const position = (sectionId: string | number) => `position ${sections.findIndex((section) => section.id === String(sectionId)) + 1} of ${sections.length}`;
+  const announcements: Announcements = {
+    onDragStart: ({ active }) => `Picked up ${sectionName(active.id)}.`,
+    onDragOver: ({ active, over }) => over ? `${sectionName(active.id)} is over ${position(over.id)}.` : undefined,
+    onDragEnd: ({ active, over }) => over ? `${sectionName(active.id)} was moved to ${position(over.id)}.` : `${sectionName(active.id)} was dropped.`,
+    onDragCancel: ({ active }) => `Reordering ${sectionName(active.id)} was cancelled.`,
+  };
+
+  async function persistSections(next: RoomSection[]) {
+    if (!onSaveSections) return false;
+    let saved = false;
+    await saveSections.run(() => onSaveSections(next), "Sections could not be saved.", () => { saved = true; });
+    return saved;
+  }
+
+  function reorderSections(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const ids = sections.map((section) => section.id);
+    const from = ids.indexOf(String(active.id));
+    const to = ids.indexOf(String(over.id));
+    if (from < 0 || to < 0) return;
+    const next = [...sections];
+    next.splice(to, 0, ...next.splice(from, 1));
+    setPendingOrder(next);
+    // Only this save's order is cleared — a second drag while the first is in
+    // flight owns the list from then on.
+    void persistSections(next).then(() => setPendingOrder((current) => (current === next ? null : current)));
+  }
+
+  function openManageSections() {
+    saveSections.reset();
+    setNameEdits({});
+    setNewSection("");
+    setDeleting(null);
+    setManaging(true);
+  }
+
+  function setRoomPrefs(roomId: string, next: MemberPrefsRequest, fallback: string) {
+    if (!onSetPrefs) return;
+    setActingRoomId(roomId);
+    void savePrefs.run(() => onSetPrefs(roomId, next), fallback);
+  }
+
+  const updatePrefs = (patch: Partial<SidebarPrefs>) => {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    writeSidebarPrefs(ownerScopeId, next);
+  };
 
   function selectNextUnread() {
     const next = nextUnreadRoomId(rooms, currentRoomId ?? null, 1);
@@ -127,42 +266,68 @@ function DirectoryContent({
   return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav className="room-directory" aria-label="Conversations">
     <div className="room-directory-heading"><h2 className="font-semibold">Conversations</h2>
       <div className="room-directory-heading-actions">
+        <label className="sr-only" htmlFor={`${id}-sort`}>Sort conversations</label>
+        <select id={`${id}-sort`} className="room-listen-mode" value={prefs.sort}
+          onChange={(event) => updatePrefs({ sort: event.target.value as SidebarSort })}>
+          <option value="alpha">A–Z</option>
+          <option value="unread">Unread first</option>
+        </select>
         <Button variant="ghost" size="icon" aria-label="Next unread conversation" disabled={unreadRooms.length === 0} onClick={selectNextUnread}><ChevronDown aria-hidden="true" /></Button>
+        {onSaveSections && <Button ref={manageTrigger} variant="ghost" size="icon" aria-label="Manage sections" onClick={openManageSections}><FolderPlus aria-hidden="true" /></Button>}
         {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
       </div>
     </div>
     {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
       onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
-    {(["Channels", "Group chats", "Direct messages"] as const).map((group) => {
-      const kind = group === "Channels" ? "channel" : group === "Group chats" ? "group-dm" : "dm";
-      const entries = rooms.filter((room) => room.kind === kind);
-      return <section key={group} aria-label={group}>
-        <h3 className="room-directory-group">{group}</h3>
-        {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{
-          group === "Channels" ? "Create a channel for shared work."
-            : group === "Group chats" ? "Start a conversation with two or more people or agents."
-              : "Start a conversation with a person or agent."
-        }</p>}
-        <ul>{entries.map((room) => {
-          const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
+    {savePrefs.error && <p role="alert" className="px-2 text-sm text-err">{savePrefs.error}</p>}
+    {saveSections.error && !managing && <p role="alert" className="px-2 text-sm text-err">{saveSections.error}</p>}
+    {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
+    <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
+    {groups.map((group) => {
+      const collapsed = prefs.collapsed.includes(group.id);
+      // Collapsing hides rooms, never activity or your place: the header keeps
+      // the group's unread count, and the room you are reading stays on screen
+      // so `aria-current` survives a ⌘K / next-unread / permalink jump into a
+      // collapsed group.
+      const unread = group.rooms.reduce((total, room) => total + (room.muted ? 0 : room.unreadCount), 0);
+      const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
+      const listId = `${id}-group-${group.id}`;
+      const body = (grip?: ReactNode) => <>
+        <div className="room-directory-group-header">
+          {grip}
+          <h3 className="room-directory-group">{group.label}</h3>
+          {collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>}
+          <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId}
+            aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.label}`}
+            onClick={() => updatePrefs({ collapsed: collapsed ? prefs.collapsed.filter((groupId) => groupId !== group.id) : [...prefs.collapsed, group.id] })}>
+            {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+          </Button>
+        </div>
+        <ul id={listId}>{visible.map((room) => {
           const label = roomDisplayName(room, room.participants);
-          return <li key={room.roomId} className="room-directory-row"><button type="button" className={`room-directory-entry ${room.unreadCount > 0 ? "font-semibold" : ""}`}
-            aria-current={room.roomId === currentRoomId ? "page" : undefined} onClick={() => onSelectRoom(room.roomId)}>
-            {room.kind === "dm" && room.participants.length === 1
-              ? <ParticipantAvatar participant={room.participants[0]} size="sm" />
-              : <Icon size={16} aria-hidden="true" />}
-            <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
-            {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
-            {draftRoomIds.includes(room.roomId) && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
-          </button>{onMarkUnread && <DropdownMenu><DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={markingUnread === room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
-          </DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={markingUnread !== null} onSelect={() => void markRoomUnread(room.roomId, label)}>
-            <MailOpen aria-hidden="true" />{markingUnread === room.roomId ? "Marking unread…" : "Mark unread"}
-          </DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</li>;
+          return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
+            active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
+            busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
+            onSelect={() => onSelectRoom(room.roomId)}
+            onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred }, `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
+            onToggleMute={onSetPrefs && (() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`))}
+            onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
+            onMoveToSection={onSetPrefs && sections.length > 0
+              ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
+            onLeave={onLeaveRoom && room.kind === "channel" ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
+            onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
         })}</ul>
-      </section>;
+      </>;
+      // No grip at all when the caller cannot save an order — a drag handle
+      // that silently does nothing is worse than no handle.
+      return group.custom && onSaveSections
+        ? <SortableSection key={group.id} id={group.id} label={group.label}>{body}</SortableSection>
+        : <section key={group.id} aria-label={group.label}>{body()}</section>;
     })}
+    </SortableContext>
+    </DndContext>
     {draftedRooms.length > 0 && <section aria-label="Drafts">
       <h3 className="room-directory-group">Drafts</h3>
       <ul>{draftedRooms.map((room) => {
@@ -196,11 +361,11 @@ function DirectoryContent({
       onSubmit={async (event) => {
         event.preventDefault();
         if (!canCreate || creationBusy) return;
-        const created = await onCreate?.({ kind, name: kind === "channel" ? name.trim() : null, members: [...selected.values()] });
+        const created = await onCreate?.({ kind, name: kind === "dm" ? null : name.trim() || null, members: [...selected.values()] });
         if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind("channel"); }
       }}>
       <div className="room-creation-header">
-        <DialogTitle>{kind === "channel" ? "Create a channel" : "New message"}</DialogTitle>
+        <DialogTitle>{kind === "channel" ? "Create a channel" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
         <DialogDescription>Choose the people and agents you want to talk with.</DialogDescription>
       </div>
       <div className="room-creation-body">
@@ -211,7 +376,7 @@ function DirectoryContent({
         <option value="dm">Direct message</option>
         <option value="group-dm">Group chat</option>
       </select>
-      {kind === "channel" && <><label htmlFor={`${id}-name`}>Channel name</label>
+      {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
       <p className="text-sm text-muted-foreground">Only selected workspace members can read this conversation.</p>
       <div className="room-picker">
@@ -239,9 +404,76 @@ function DirectoryContent({
       <div className="room-creation-footer">
         {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
         <div className="room-composer-actions"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
-          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : "Start message"}</Button></div>
+          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></div>
       </div>
     </form>
     </DialogContent>
+    <Dialog open={managing} onOpenChange={(open) => { if (!open && !saveSections.pending) { setManaging(false); saveSections.reset(); } }}>
+      <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
+        onCloseAutoFocus={(event) => { if (manageTrigger.current?.isConnected) { event.preventDefault(); manageTrigger.current.focus(); } }}>
+        <DialogHeader><DialogTitle>Manage sections</DialogTitle>
+          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels or Direct messages.</DialogDescription>
+        </DialogHeader>
+        {sections.length > 0 && <ul className="grid gap-2">{sections.map((section) => <li key={section.id} className="room-section-edit">
+          {/* Both accessible names stay on the SAVED name: a control whose name
+              changes under the caret as you type is unusable with a screen reader. */}
+          <label className="sr-only" htmlFor={`${id}-section-${section.id}`}>Rename {section.name}</label>
+          <input id={`${id}-section-${section.id}`} className="room-input" value={nameEdits[section.id] ?? section.name}
+            maxLength={SECTION_NAME_MAX_CHARS} disabled={saveSections.pending || !!deleting}
+            aria-invalid={(nameEdits[section.id] ?? section.name).trim() ? undefined : true}
+            aria-describedby={(nameEdits[section.id] ?? section.name).trim() ? undefined : blankHintId}
+            onChange={(event) => setNameEdits({ ...nameEdits, [section.id]: event.target.value })} />
+          <Button type="button" variant="ghost" size="icon" aria-label={`Delete ${section.name}`}
+            disabled={saveSections.pending || !!deleting || blankName}
+            onClick={(event) => { saveSections.reset(); deleteTrigger.current = event.currentTarget; setDeleting(section); }}><Trash2 aria-hidden="true" /></Button>
+        </li>)}</ul>}
+        <form className="room-section-edit" onSubmit={async (event) => {
+          event.preventDefault();
+          const name = newSection.trim();
+          if (!name || sections.length >= MAX_SECTIONS) return;
+          if (blankName) return;
+          if (await persistSections([...trimmedDrafts(), { id: crypto.randomUUID(), name }])) { setNewSection(""); setNameEdits({}); }
+        }}>
+          <label className="sr-only" htmlFor={`${id}-new-section`}>New section name</label>
+          <input ref={newSectionInput} id={`${id}-new-section`} className="room-input" value={newSection} maxLength={SECTION_NAME_MAX_CHARS}
+            disabled={saveSections.pending || !!deleting} onChange={(event) => setNewSection(event.target.value)} />
+          <Button type="submit" variant="outline" disabled={!newSection.trim() || sections.length >= MAX_SECTIONS || saveSections.pending || !!deleting || blankName}>Add section</Button>
+        </form>
+        {sections.length >= MAX_SECTIONS && <p className="text-sm text-muted-foreground">You can keep up to {MAX_SECTIONS} sections.</p>}
+        {blankName && <p id={blankHintId} className="text-sm text-muted-foreground">Every section needs a name.</p>}
+        {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
+        {deleting && <div role="alert" className="room-section-confirm">
+          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels or Direct messages.</p>
+          <div className="room-composer-actions">
+            <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
+            <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}
+              onClick={async () => { if (await persistSections(trimmedDrafts().filter((section) => section.id !== deleting.id))) { setDeleting(null); setNameEdits({}); } }}>
+              {saveSections.pending ? "Deleting…" : "Delete section"}</Button>
+          </div>
+        </div>}
+        {!deleting && <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setNameEdits({}); setManaging(false); saveSections.reset(); }}>Cancel</Button>
+          <Button type="button" disabled={saveSections.pending || blankName}
+            onClick={async () => { if (await persistSections(trimmedDrafts())) { setNameEdits({}); setManaging(false); } }}>
+            {saveSections.pending ? "Saving…" : "Save sections"}</Button>
+        </DialogFooter>}
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!leaving} onOpenChange={(open) => { if (!open && !leave.pending) { setLeaving(null); leave.reset(); } }}>
+      <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md"
+        onOpenAutoFocus={(event) => { event.preventDefault(); leaveCancel.current?.focus(); }}
+        onCloseAutoFocus={(event) => { if (leaveTrigger.current?.isConnected) { event.preventDefault(); leaveTrigger.current.focus(); } }}>
+        <DialogHeader><DialogTitle className="break-words">Leave {leaving ? roomDisplayName(leaving, leaving.participants) : ""}?</DialogTitle>
+          <DialogDescription>You will stop receiving its messages and lose access to its history. An admin can add you back.</DialogDescription>
+        </DialogHeader>
+        {leave.error && <p role="alert" className="text-sm text-err break-words">{leave.error}</p>}
+        <DialogFooter className="gap-2">
+          <Button ref={leaveCancel} type="button" variant="outline" disabled={leave.pending} onClick={() => { setLeaving(null); leave.reset(); }}>Cancel</Button>
+          <Button type="button" variant="destructive" disabled={leave.pending}
+            onClick={() => void leave.run(() => onLeaveRoom!(leaving!.roomId), "The channel could not be left.", () => setLeaving(null))}>
+            {leave.pending ? "Leaving…" : "Leave channel"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </nav></Dialog>;
 }

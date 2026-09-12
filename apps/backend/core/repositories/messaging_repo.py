@@ -75,6 +75,10 @@ class RoomNotFound(MessagingRepoError):
     pass
 
 
+class PinLimitExceeded(MessagingRepoError):
+    pass
+
+
 # ---------------------------------------------------------------------------
 # keys / ids
 # ---------------------------------------------------------------------------
@@ -126,6 +130,10 @@ def live_sk(event_id: str, user_id: str) -> str:
 
 def userstream_sk(user_id: str) -> str:
     return f"USERSTREAM#{user_id}"
+
+
+def pref_sk(user_id: str) -> str:
+    return f"PREF#{user_id}"
 
 
 def stream_pk(channel_key: str) -> str:
@@ -885,6 +893,39 @@ async def upsert_member(
     return {**meta, "revision": revision, "updatedAt": now}
 
 
+_MEMBER_PREF_FIELDS = ("starred", "muted", "sectionId")
+
+
+async def set_member_prefs(room_id: str, kind: str, member_id: str, updates: dict[str, Any]) -> dict:
+    """Per-user, per-room view preferences on the member row.
+
+    Deliberately does NOT bump ``META.revision``: starring a room is one
+    person's view of it, and a revision bump would invalidate every other
+    member's cached room on every toggle.
+    """
+    named = {k: v for k, v in updates.items() if k in _MEMBER_PREF_FIELDS}
+    if not named:
+        return await get_member(room_id, kind, member_id) or {}
+    names = {f"#{k}": k for k in named}
+    values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
+    expression = "SET " + ", ".join(f"#{k} = :{k}" for k in named)
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"pk": room_pk(room_id), "sk": member_sk(kind, member_id)},
+            UpdateExpression=expression,
+            ConditionExpression="attribute_exists(sk)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise RoomNotFound(f"{room_id}:{kind}:{member_id}") from exc
+        raise
+    return _plain(response["Attributes"])
+
+
 def _live_item(
     table_name: str, room_id: str, owner_id: str, user_id: str, channel_key: str | None, event: dict
 ) -> dict:
@@ -958,42 +999,93 @@ async def remove_member(
     return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_delivery_key or meta["deliveryKey"]}
 
 
-async def patch_room_name(room_id: str, name: str | None) -> dict:
+_ROOM_META_FIELDS = ("name", "topic")
+
+
+async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
+    """Update the caller-editable META fields under the usual revision CAS.
+
+    ``name`` is mirrored into the owner catalog row because
+    ``list_rooms_for_member`` joins the sidebar off it; ``topic`` is not in
+    that projection and is never mirrored.
+    """
     meta = await get_room(room_id)
     if meta is None:
         raise RoomNotFound(room_id)
+    named = {k: v for k, v in updates.items() if k in _ROOM_META_FIELDS}
     now = utc_now_iso()
     table_name = _table().name
     revision = int(meta["revision"]) + 1
-    await _transact(
-        [
-            {
-                "Update": {
-                    "TableName": table_name,
-                    "Key": {"pk": room_pk(room_id), "sk": "META"},
-                    "UpdateExpression": "SET #name = :name, revision = :rev, updatedAt = :now",
-                    "ConditionExpression": "revision = :expected",
-                    "ExpressionAttributeNames": {"#name": "name"},
-                    "ExpressionAttributeValues": {
-                        ":name": name,
-                        ":rev": revision,
-                        ":expected": revision - 1,
-                        ":now": now,
-                    },
-                }
-            },
+    names = {f"#{k}": k for k in named}
+    values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
+    sets = ", ".join(f"#{k} = :{k}" for k in named)
+    items: list[dict] = [
+        {
+            "Update": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": f"SET {sets + ', ' if sets else ''}revision = :rev, updatedAt = :now",
+                "ConditionExpression": "revision = :expected",
+                "ExpressionAttributeNames": names or None,
+                "ExpressionAttributeValues": {**values, ":rev": revision, ":expected": revision - 1, ":now": now},
+            }
+        }
+    ]
+    if "name" in named:
+        items.append(
             {
                 "Update": {
                     "TableName": table_name,
                     "Key": {"pk": owner_pk(meta["ownerId"]), "sk": room_pk(room_id)},
                     "UpdateExpression": "SET #name = :name, updatedAt = :now",
                     "ExpressionAttributeNames": {"#name": "name"},
-                    "ExpressionAttributeValues": {":name": name, ":now": now},
+                    "ExpressionAttributeValues": {":name": _ddb_safe(named["name"]), ":now": now},
                 }
-            },
+            }
+        )
+    items[0]["Update"] = {k: v for k, v in items[0]["Update"].items() if v is not None}
+    await _transact(items)
+    return {**meta, **named, "revision": revision, "updatedAt": now}
+
+
+MAX_PINNED_MESSAGES = 50
+
+
+async def set_pin(room_id: str, message_id: str, pinned: bool) -> dict:
+    """Pin/unpin one message on META. Idempotent: a no-op change does not bump
+    the revision, so repeated clicks never churn every client's room cache."""
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    current = [str(value) for value in meta.get("pinnedMessageIds", [])]
+    if pinned and message_id in current:
+        return meta
+    if not pinned and message_id not in current:
+        return meta
+    if pinned and len(current) >= MAX_PINNED_MESSAGES:
+        raise PinLimitExceeded(f"rooms hold at most {MAX_PINNED_MESSAGES} pinned messages")
+    updated = [*current, message_id] if pinned else [value for value in current if value != message_id]
+    now = utc_now_iso()
+    revision = int(meta["revision"]) + 1
+    await _transact(
+        [
+            {
+                "Update": {
+                    "TableName": _table().name,
+                    "Key": {"pk": room_pk(room_id), "sk": "META"},
+                    "UpdateExpression": "SET pinnedMessageIds = :pins, revision = :rev, updatedAt = :now",
+                    "ConditionExpression": "revision = :expected",
+                    "ExpressionAttributeValues": {
+                        ":pins": _ddb_safe(updated),
+                        ":rev": revision,
+                        ":expected": revision - 1,
+                        ":now": now,
+                    },
+                }
+            }
         ]
     )
-    return {**meta, "name": name, "revision": revision, "updatedAt": now}
+    return {**meta, "pinnedMessageIds": updated, "revision": revision, "updatedAt": now}
 
 
 # ---------------------------------------------------------------------------
@@ -1042,12 +1134,15 @@ async def set_read_cursor(room_id: str, user_id: str, last_read_seq: int) -> int
     return await get_read_cursor(room_id, user_id)
 
 
-async def mark_unread(room_id: str, user_id: str, *, joined_seq: int) -> int:
-    """Leave at least the latest room message unread without advancing the cursor."""
+async def mark_unread(room_id: str, user_id: str, *, joined_seq: int, from_seq: int | None = None) -> int:
+    """Leave the latest room message (or everything from ``from_seq`` on)
+    unread without ever advancing the cursor."""
     meta = await get_room(room_id)
     if meta is None:
         raise RoomNotFound(room_id)
-    target = max(int(joined_seq), max(0, int(meta["lastSeq"]) - 1))
+    last_seq = int(meta["lastSeq"])
+    ceiling = min(int(from_seq) - 1, last_seq) if from_seq is not None else last_seq - 1
+    target = max(int(joined_seq), max(0, ceiling))
     try:
         await run_in_thread(
             _table().update_item,
@@ -1185,6 +1280,41 @@ async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
         if _is_cancelled(exc):
             return False
         raise
+
+
+async def get_user_prefs(owner_id: str, user_id: str) -> dict | None:
+    """The caller's sidebar preferences.
+
+    A dedicated ``PREF#`` item rather than the ``USERSTREAM#`` row: that row's
+    writes are conditioned on the delivery-key lifecycle (``ensure_user_stream``
+    / ``deactivate_user_stream``), so a sections write there would race key
+    rotation and be dropped on revocation.
+    """
+    return await _get(owner_pk(owner_id), pref_sk(user_id))
+
+
+async def put_user_sections(owner_id: str, user_id: str, sections: list[dict]) -> list[dict]:
+    """Replace the ordered section list wholesale (the client owns the order).
+
+    An ``update_item`` on just the ``sections``/``ownerId``/``userId``/``updatedAt``
+    attributes, never ``put_item`` -- the ``PREF#`` row is the caller's general
+    preferences, not a sections-only row, and a wholesale put would clobber any
+    other attribute a later feature stores on it. No ``ConditionExpression``:
+    the row may not exist yet, and ``update_item`` upserts.
+    """
+    stored = [{"id": str(section["id"]), "name": str(section["name"])} for section in sections]
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": owner_pk(owner_id), "sk": pref_sk(user_id)},
+        UpdateExpression="SET sections = :s, ownerId = :o, userId = :u, updatedAt = :t",
+        ExpressionAttributeValues={
+            ":s": _ddb_safe(stored),
+            ":o": owner_id,
+            ":u": user_id,
+            ":t": utc_now_iso(),
+        },
+    )
+    return stored
 
 
 # ---------------------------------------------------------------------------

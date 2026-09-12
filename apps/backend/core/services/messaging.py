@@ -35,6 +35,10 @@ MESSAGE_TEXT_MAX_BYTES = 100_000
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
+ROOM_TOPIC_MAX_CHARS = 250
+MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
+MAX_SECTIONS = 20
+SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
 LIVE_SCHEMA_VERSION = 1
 DEFAULT_ROOM_NAME = "general"
@@ -61,6 +65,7 @@ API_ERROR_STATUS = {
     "AGENT_LIFECYCLE_CONFLICT": 409,
     "MESSAGE_CONFLICT": 409,
     "MEMBER_LIMIT": 409,
+    "PIN_LIMIT": 409,
     "RUN_NOT_ACTIVE": 409,
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
@@ -91,6 +96,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "runtime.progress.changed",
         "runtime.resource.invalidated",
         "paperclip.event",
+        "room.member.updated",
     }
 )
 LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES
@@ -134,6 +140,10 @@ class RoomSummary(ContractModel):
     last_message_at: datetime | None
     unread_count: int = Field(ge=0)
     updated_at: datetime
+    starred: bool = False
+    muted: bool = False
+    section_id: str | None = None
+    topic: str | None = None
 
 
 class RoomDetail(RoomSummary):
@@ -141,10 +151,36 @@ class RoomDetail(RoomSummary):
     members: list[RoomMember]
     last_read_seq: int = Field(ge=0)
     created_at: datetime
+    pinned_message_ids: list[str] = []
+
+
+class RoomSection(ContractModel):
+    id: uuid.UUID
+    name: str = Field(min_length=1, max_length=SECTION_NAME_MAX_CHARS)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("name must not be blank")
+        return cleaned
+
+
+class SectionsRequest(ContractModel):
+    sections: list[RoomSection] = Field(max_length=MAX_SECTIONS)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "SectionsRequest":
+        ids = [section.id for section in self.sections]
+        if len(ids) != len(set(ids)):
+            raise ValueError("section ids must be unique")
+        return self
 
 
 class RoomListResponse(ContractModel):
     rooms: list[RoomSummary]
+    sections: list[RoomSection] = []
 
 
 class CreateRoomMember(ContractModel):
@@ -175,12 +211,41 @@ class CreateRoomRequest(ContractModel):
 
 
 class PatchRoomRequest(ContractModel):
-    name: str | None
+    name: str | None = None
+    topic: str | None = None
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str | None) -> str | None:
         return validate_room_name(value)
+
+    @field_validator("topic")
+    @classmethod
+    def validate_topic(cls, value: str | None) -> str | None:
+        return validate_room_topic(value)
+
+    def named_updates(self) -> dict[str, Any]:
+        """Only the fields the caller sent, so a topic-only PATCH cannot blank
+        the name (and vice versa) while an explicit null still clears one."""
+        return {key: getattr(self, key) for key in ("name", "topic") if key in self.model_fields_set}
+
+
+class MemberPrefsRequest(ContractModel):
+    starred: bool | None = None
+    muted: bool | None = None
+    section_id: uuid.UUID | None = None
+
+    def named_updates(self) -> dict[str, Any]:
+        """Only the fields the caller actually sent — an omitted field is left
+        alone, an explicit null clears it."""
+        out: dict[str, Any] = {}
+        if "starred" in self.model_fields_set:
+            out["starred"] = bool(self.starred)
+        if "muted" in self.model_fields_set:
+            out["muted"] = bool(self.muted)
+        if "section_id" in self.model_fields_set:
+            out["sectionId"] = str(self.section_id) if self.section_id else None
+        return out
 
 
 class UpsertRoomMemberRequest(ContractModel):
@@ -310,6 +375,10 @@ class ReadCursorRequest(ContractModel):
 class ReadCursorResponse(ContractModel):
     room_id: uuid.UUID
     last_read_seq: int = Field(ge=0)
+
+
+class MarkUnreadRequest(ContractModel):
+    from_seq: int | None = Field(default=None, ge=1)
 
 
 class TypingRequest(ContractModel):
@@ -510,6 +579,17 @@ def validate_room_name(value: str | None) -> str | None:
     if not cleaned or len(cleaned) > ROOM_NAME_MAX_CHARS:
         raise ValueError(f"name must be 1..{ROOM_NAME_MAX_CHARS} characters or null")
     return cleaned
+
+
+def validate_room_topic(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > ROOM_TOPIC_MAX_CHARS:
+        raise ValueError(f"topic exceeds {ROOM_TOPIC_MAX_CHARS} characters")
+    return trimmed
 
 
 def validate_message_text(value: str) -> str:
@@ -861,23 +941,32 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         last_message_at=meta.get("lastMessageAt"),
         unread_count=max(0, int(meta["lastSeq"]) - floor),
         updated_at=meta["updatedAt"],
+        starred=bool(member.get("starred")),
+        muted=bool(member.get("muted")),
+        section_id=member.get("sectionId"),
+        topic=meta.get("topic"),
         delivery_key=meta["deliveryKey"],
         members=[_room_member(row) for row in with_human_handles(members)],
         last_read_seq=last_read,
         created_at=meta["createdAt"],
+        pinned_message_ids=[str(value) for value in meta.get("pinnedMessageIds", [])],
     )
 
 
-async def list_rooms(auth: AuthContext) -> RoomListResponse:
-    owner_id = resolve_owner_id(auth)
-    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", auth.user_id)
+async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
+    prefs = await messaging_repo.get_user_prefs(owner_id, user_id)
+    return [RoomSection(id=row["id"], name=row["name"]) for row in (prefs or {}).get("sections", [])]
+
+
+async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
+    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
     summaries: list[RoomSummary] = []
     for row in discovered:
         meta = row["meta"]
-        member = await messaging_repo.get_member(meta["roomId"], "human", auth.user_id)
+        member = await messaging_repo.get_member(meta["roomId"], "human", user_id)
         if member is None:
             continue
-        last_read = await messaging_repo.get_read_cursor(meta["roomId"], auth.user_id)
+        last_read = await messaging_repo.get_read_cursor(meta["roomId"], user_id)
         floor = max(last_read, int(member.get("joinedSeq", 0)))
         summaries.append(
             RoomSummary(
@@ -889,10 +978,34 @@ async def list_rooms(auth: AuthContext) -> RoomListResponse:
                 last_message_at=meta.get("lastMessageAt"),
                 unread_count=max(0, int(meta["lastSeq"]) - floor),
                 updated_at=meta["updatedAt"],
+                starred=bool(member.get("starred")),
+                muted=bool(member.get("muted")),
+                section_id=member.get("sectionId"),
+                topic=meta.get("topic"),
             )
         )
     summaries.sort(key=lambda room: room.updated_at, reverse=True)
-    return RoomListResponse(rooms=summaries)
+    return summaries
+
+
+async def list_rooms(auth: AuthContext) -> RoomListResponse:
+    owner_id = resolve_owner_id(auth)
+    summaries = await _room_summaries(owner_id, auth.user_id)
+    return RoomListResponse(rooms=summaries, sections=await _user_sections(owner_id, auth.user_id))
+
+
+async def put_sections(auth: AuthContext, request: SectionsRequest) -> RoomListResponse:
+    """Replace the caller's ordered section list. Sections are per-user view
+    state; a room's ``sectionId`` is not validated against them, so a deleted
+    section simply drops its rooms back into their default group."""
+    owner_id = resolve_owner_id(auth)
+    stored = await messaging_repo.put_user_sections(
+        owner_id,
+        auth.user_id,
+        [{"id": str(section.id), "name": section.name} for section in request.sections],
+    )
+    summaries = await _room_summaries(owner_id, auth.user_id)
+    return RoomListResponse(rooms=summaries, sections=[RoomSection(id=row["id"], name=row["name"]) for row in stored])
 
 
 def default_room_id(owner_id: str) -> str:
@@ -1030,14 +1143,47 @@ async def get_room(auth: AuthContext, room_id: str) -> RoomDetail:
 async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
-    if meta.get("kind") == "dm":
+    updates = request.named_updates()
+    # A DM's display name is derived from its counterpart; a stored name would
+    # shadow it with nothing in the UI able to clear it. (Finding from #2483,
+    # merged to main — this generalizes the same guard to updates-scoping.)
+    if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
+    if not updates:
+        return await _room_detail(meta, auth.user_id)
     try:
-        meta = await messaging_repo.patch_room_name(room_id, request.name)
+        meta = await messaging_repo.patch_room_meta(room_id, updates)
     except messaging_repo.RoomNotFound as exc:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
+
+
+def get_live_event_publisher():
+    """Module-level indirection so tests can monkeypatch ``messaging.get_live_event_publisher``
+    directly. The real lookup stays a lazy import — ``core.services.live_events`` imports
+    from this module at load time, so a top-level import here would be circular."""
+    from core.services.live_events import get_live_event_publisher as _get_live_event_publisher
+
+    return _get_live_event_publisher()
+
+
+async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsRequest) -> RoomDetail:
+    """The caller's own view preferences for one room. Any member may set them."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    updates = request.named_updates()
+    if updates:
+        try:
+            member = await messaging_repo.set_member_prefs(room_id, "human", auth.user_id, updates)
+        except messaging_repo.RoomNotFound as exc:
+            raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.") from exc
+        await get_live_event_publisher().publish_user(
+            owner_id,
+            auth.user_id,
+            make_live_event("room.member.updated", {"roomId": meta["roomId"]}),
+        )
+    return await _room_detail(meta, auth.user_id, member)
 
 
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
@@ -1077,6 +1223,19 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
     if target.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner cannot be removed.")
     await _remove_member_with_notices(meta, kind, member_id)
+
+
+async def leave_room(auth: AuthContext, room_id: str) -> None:
+    """A member removes themselves. The owner must transfer or delete the room
+    first — room deletion is out of scope, so this is a hard refusal."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    if member.get("role") == "owner":
+        raise ApiProblem(
+            "INVALID_REQUEST",
+            "The room owner cannot leave. Make someone else an admin and transfer ownership first.",
+        )
+    await _remove_member_with_notices(meta, "human", auth.user_id)
 
 
 async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> dict:
@@ -1194,6 +1353,27 @@ async def set_reaction(
 
         logging.getLogger(__name__).exception("Could not publish message reactions for room %s", room_id)
     return message
+
+
+async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool) -> RoomDetail:
+    """Pin or unpin a message. Any member may do either (spec)."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    if await messaging_repo.get_message_by_id(room_id, message_id) is None:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
+    previous_revision = int(meta["revision"])
+    try:
+        meta = await messaging_repo.set_pin(room_id, message_id, pinned)
+    except messaging_repo.PinLimitExceeded as exc:
+        raise ApiProblem("PIN_LIMIT", f"A room can pin at most {MAX_PINNED_MESSAGES} messages.") from exc
+    except messaging_repo.RoomNotFound as exc:
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
+    # The repo is idempotent (no CAS write, no revision bump) when the requested
+    # pin state already holds -- skip the live event too, so a repeated click
+    # never fans out a no-op `room.metadata.changed`.
+    if int(meta["revision"]) != previous_revision:
+        await _publish_room_metadata(meta)
+    return await _room_detail(meta, auth.user_id, member)
 
 
 async def _validate_message_links(
@@ -1382,9 +1562,18 @@ async def set_read_cursor(auth: AuthContext, room_id: str, request: ReadCursorRe
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
 
 
-async def mark_room_unread(auth: AuthContext, room_id: str) -> ReadCursorResponse:
+async def mark_room_unread(
+    auth: AuthContext, room_id: str, request: MarkUnreadRequest | None = None
+) -> ReadCursorResponse:
+    """Whole-room by default; ``fromSeq`` leaves that message and everything
+    after it unread ("mark unread from here")."""
     _, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    value = await messaging_repo.mark_unread(room_id, auth.user_id, joined_seq=int(member.get("joinedSeq", 0)))
+    value = await messaging_repo.mark_unread(
+        room_id,
+        auth.user_id,
+        joined_seq=int(member.get("joinedSeq", 0)),
+        from_seq=request.from_seq if request else None,
+    )
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
 
 

@@ -221,19 +221,6 @@ async def test_create_room_replay_is_idempotent_and_conflict_is_detected(table):
 
 
 @pytest.mark.asyncio
-async def test_patch_room_name_persists_to_room_and_sidebar_catalog(table):
-    room_id, meta = await _room(name="Launch crew")
-
-    updated = await repo.patch_room_name(room_id, "Release crew")
-
-    assert updated["name"] == "Release crew"
-    assert updated["revision"] == meta["revision"] + 1
-    assert (await repo.get_room(room_id))["name"] == "Release crew"
-    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
-    assert listed[0]["meta"]["name"] == "Release crew"
-
-
-@pytest.mark.asyncio
 async def test_default_room_uses_complete_renamed_starter_map_once_without_reconciling_members(table, monkeypatch):
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services import messaging
@@ -617,3 +604,152 @@ async def test_wipe_deletes_room_partitions_owner_rows_and_streams_only_for_that
     assert len(remaining) == 3 and all(f"#{OWNER}_other#" in r["pk"] for r in remaining)
     assert await repo.delete_owner_partition(OWNER) == 0
     assert await repo.delete_room_partition(room_id) == 0  # idempotent retry
+
+
+@pytest.mark.asyncio
+async def test_set_member_prefs_writes_only_named_fields_and_leaves_revision_alone(table):
+    room_id, meta = await _room()
+
+    updated = await repo.set_member_prefs(room_id, "human", USER_A, {"starred": True, "sectionId": "sec-1"})
+    assert updated["starred"] is True
+    assert updated["sectionId"] == "sec-1"
+    assert updated.get("muted") in (None, False)
+
+    only_mute = await repo.set_member_prefs(room_id, "human", USER_A, {"muted": True})
+    assert only_mute["muted"] is True
+    assert only_mute["starred"] is True
+    assert only_mute["sectionId"] == "sec-1"
+
+    cleared = await repo.set_member_prefs(room_id, "human", USER_A, {"sectionId": None})
+    assert cleared["sectionId"] is None
+    assert cleared["starred"] is True
+
+    assert (await repo.get_room(room_id))["revision"] == meta["revision"]
+    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
+    assert listed[0]["member"]["starred"] is True
+
+
+@pytest.mark.asyncio
+async def test_set_member_prefs_rejects_a_member_that_is_not_in_the_room(table):
+    room_id, _ = await _room()
+    with pytest.raises(repo.RoomNotFound):
+        await repo.set_member_prefs(room_id, "human", USER_B, {"starred": True})
+
+
+@pytest.mark.asyncio
+async def test_user_sections_round_trip_preserve_order_and_replace_wholesale(table):
+    assert await repo.get_user_prefs(OWNER, USER_A) is None
+
+    first = await repo.put_user_sections(OWNER, USER_A, [{"id": "s-2", "name": "Ship"}, {"id": "s-1", "name": "Admin"}])
+    assert first == [{"id": "s-2", "name": "Ship"}, {"id": "s-1", "name": "Admin"}]
+    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == first
+
+    replaced = await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
+    assert replaced == [{"id": "s-1", "name": "Admin"}]
+    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == replaced
+
+    assert await repo.put_user_sections(OWNER, USER_A, []) == []
+
+
+@pytest.mark.asyncio
+async def test_user_sections_are_per_user_and_survive_stream_deactivation(table):
+    await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
+    assert await repo.get_user_prefs(OWNER, USER_B) is None
+
+    await repo.ensure_user_stream(OWNER, USER_A)
+    await repo.deactivate_user_stream(OWNER, USER_A)
+    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == [{"id": "s-1", "name": "Admin"}]
+
+
+@pytest.mark.asyncio
+async def test_put_user_sections_does_not_clobber_other_pref_row_attributes(table):
+    repo._table().put_item(
+        Item={
+            "pk": repo.owner_pk(OWNER),
+            "sk": repo.pref_sk(USER_A),
+            "ownerId": OWNER,
+            "userId": USER_A,
+            "theme": "dark",
+        }
+    )
+
+    await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
+
+    prefs = await repo.get_user_prefs(OWNER, USER_A)
+    assert prefs["sections"] == [{"id": "s-1", "name": "Admin"}]
+    assert prefs["theme"] == "dark"
+
+
+@pytest.mark.asyncio
+async def test_patch_room_meta_writes_name_topic_and_mirrors_only_the_name(table):
+    room_id, meta = await _room(name="Launch crew")
+
+    renamed = await repo.patch_room_meta(room_id, {"name": "Release crew"})
+    assert renamed["name"] == "Release crew"
+    assert renamed["revision"] == meta["revision"] + 1
+    assert (await repo.get_room(room_id))["name"] == "Release crew"
+    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
+    assert listed[0]["meta"]["name"] == "Release crew"
+
+    topicked = await repo.patch_room_meta(room_id, {"topic": "Ship v2 by Friday"})
+    assert topicked["topic"] == "Ship v2 by Friday"
+    assert topicked["name"] == "Release crew"
+    assert topicked["revision"] == renamed["revision"] + 1
+
+    both = await repo.patch_room_meta(room_id, {"name": None, "topic": None})
+    assert both["name"] is None and both["topic"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_room_meta_rejects_an_unknown_room(table):
+    with pytest.raises(repo.RoomNotFound):
+        await repo.patch_room_meta("11111111-1111-4111-8111-999999999999", {"topic": "x"})
+
+
+@pytest.mark.asyncio
+async def test_set_pin_appends_removes_is_idempotent_and_caps_at_fifty(table):
+    room_id, meta = await _room()
+
+    pinned = await repo.set_pin(room_id, "m-1", True)
+    assert pinned["pinnedMessageIds"] == ["m-1"]
+    assert pinned["revision"] == meta["revision"] + 1
+
+    again = await repo.set_pin(room_id, "m-1", True)
+    assert again["pinnedMessageIds"] == ["m-1"]
+    assert again["revision"] == pinned["revision"]
+
+    two = await repo.set_pin(room_id, "m-2", True)
+    assert two["pinnedMessageIds"] == ["m-1", "m-2"]
+
+    unpinned = await repo.set_pin(room_id, "m-1", False)
+    assert unpinned["pinnedMessageIds"] == ["m-2"]
+
+    missing = await repo.set_pin(room_id, "m-9", False)
+    assert missing["pinnedMessageIds"] == ["m-2"]
+    assert missing["revision"] == unpinned["revision"]
+
+    for index in range(3, 52):
+        await repo.set_pin(room_id, f"m-{index}", True)
+    assert len((await repo.get_room(room_id))["pinnedMessageIds"]) == 50
+    with pytest.raises(repo.PinLimitExceeded):
+        await repo.set_pin(room_id, "m-over", True)
+
+
+@pytest.mark.asyncio
+async def test_mark_unread_from_a_sequence_leaves_that_message_and_everything_after_unread(table):
+    room_id, _ = await _room()
+    for index in range(1, 6):
+        await _post(room_id, text=f"m{index}", client_id=f"c-{index}")
+    await repo.set_read_cursor(room_id, USER_A, 5)
+    assert await repo.get_read_cursor(room_id, USER_A) == 5
+
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0, from_seq=3) == 2
+    assert await repo.get_read_cursor(room_id, USER_A) == 2
+
+    # Never moves the cursor forward: marking from a later message is a no-op.
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0, from_seq=5) == 2
+    # No from_seq keeps the shipped whole-room behaviour, floored at joined_seq.
+    await repo.set_read_cursor(room_id, USER_A, 5)
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=0) == 4
+    await repo.set_read_cursor(room_id, USER_A, 5)
+    assert await repo.mark_unread(room_id, USER_A, joined_seq=3, from_seq=1) == 3

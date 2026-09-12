@@ -11,11 +11,13 @@ import {
   type CreateMessageRequest,
   type UpdateMessageRequest,
   type CreateRoomRequest,
+  type MemberPrefsRequest,
   type MessagePage,
   type MemberRef,
   type PatchRoomRequest,
   type RoomMember,
   type RoomDetail,
+  type RoomSection,
   type UpsertRoomMemberRequest,
 } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -60,6 +62,7 @@ export function mergeCanonicalMessages(
 
 const lastSequence = (messages: readonly CanonicalRoomMessage[]) => messages.at(-1)?.messageSeq ?? 0;
 const NO_ROOMS: never[] = [];
+const NO_SECTIONS: RoomSection[] = [];
 
 export function useRooms(initialAgentId?: string | null, subscribeToRoom = true) {
   const { isLoaded, userId, orgId } = useAuth();
@@ -85,6 +88,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     if (liveConnected) void mutateRooms();
   }, [connectionRevision, liveConnected, mutateRooms]);
   const rooms = roomsData?.rooms ?? NO_ROOMS;
+  const sections = roomsData?.sections ?? NO_SECTIONS;
   const directoryDetailCache = useRef(new Map<string, RoomDetail>());
   const getCachedDirectoryRoomDetails = useCallback(() => {
     const details = new Map<string, RoomDetail>();
@@ -307,6 +311,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       void mutateRoom();
       return;
     }
+    if (event.type === "room.member.updated") { void mutateRooms(); return; }
     if (event.type === "room.message.reactions.changed" && event.payload.roomId === activeRoomId) {
       const merged = mergeCanonicalMessages(messagesRef.current, [event.payload]);
       messagesRef.current = merged;
@@ -471,11 +476,11 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     setActiveRoomId(roomId);
   }, [markVisibleRead]);
 
-  const markUnread = useCallback(async (roomId: string) => {
+  const markUnread = useCallback(async (roomId: string, fromSeq?: number) => {
     if (activeRoomId === roomId) manuallyUnreadRoom.current = roomId;
     try {
       await pendingRead.current;
-      await messaging.markUnread(roomId);
+      await messaging.markUnread(roomId, fromSeq);
       await Promise.all([mutateRooms(), activeRoomId === roomId ? mutateRoom() : Promise.resolve()]);
     } catch (error) {
       if (manuallyUnreadRoom.current === roomId) manuallyUnreadRoom.current = null;
@@ -557,6 +562,37 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     return updated;
   }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
+  const setRoomPrefs = useCallback(async (roomId: string, prefs: MemberPrefsRequest) => {
+    // Optimistic so a star or a bell flips under the cursor, then reconciled.
+    await mutateRooms(
+      (current) => current && { ...current, rooms: current.rooms.map((room) => room.roomId === roomId ? { ...room, ...prefs, sectionId: prefs.sectionId === undefined ? room.sectionId : prefs.sectionId } : room) },
+      false,
+    );
+    try {
+      const updated = await messaging.setMemberPrefs(roomId, prefs);
+      if (roomId === activeRoomId) await mutateRoom(updated, false);
+    } finally {
+      await mutateRooms();
+    }
+  }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
+
+  const saveSections = useCallback(async (next: readonly RoomSection[]) => {
+    const response = await messaging.putSections({ sections: [...next] });
+    await mutateRooms(response, false);
+  }, [messaging, mutateRooms]);
+
+  const leaveRoom = useCallback(async (roomId: string) => {
+    await messaging.leaveRoom(roomId);
+    if (roomId === activeRoomId) setActiveRoomId(null);
+    await mutateRooms();
+  }, [activeRoomId, messaging, mutateRooms]);
+
+  const setPin = useCallback(async (messageId: string, pinned: boolean) => {
+    if (!activeRoomId) throw new Error("No room selected.");
+    const updated = await messaging.setPin(activeRoomId, messageId, pinned);
+    await mutateRoom(updated, false);
+  }, [activeRoomId, messaging, mutateRoom]);
+
   const upsertMember = useCallback(async (request: UpsertRoomMemberRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
     const updated = await messaging.upsertMember(activeRoomId, request);
@@ -589,6 +625,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
 
   return {
     rooms,
+    sections,
     roomsError: roomsResponse.error as Error | undefined,
     roomsLoading: roomsResponse.isLoading,
     directoryError,
@@ -623,6 +660,10 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     refreshRoom: () => mutateRoom(),
     createRoom,
     updateRoom,
+    setRoomPrefs,
+    saveSections,
+    leaveRoom,
+    setPin,
     upsertMember,
     removeMember,
     markUnread,

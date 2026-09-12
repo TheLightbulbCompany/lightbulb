@@ -10,63 +10,16 @@ const friday: RoomParticipant = { ...owner, kind: "agent", id: "friday", display
 const message: RoomMessage = { messageId: "message", roomId: "room", messageSeq: 1, roomRevision: 1, author: { kind: "agent", id: "friday", displayName: "Old name" }, text: "Hello", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-10T00:00:00Z", runId: null, run: { state: "completed" } };
 const props: RoomPanelProps = {
   ownerScopeId: "org", currentUserId: "owner", roomId: "room", state: "ready", httpReady: true, liveConnected: true,
-  room: { roomId: "room", kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 1, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z" },
+  room: { roomId: "room", kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 1, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null },
   participants: [owner, friday], messages: [message],
   composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
 };
-
-it("renames a channel in a centered dialog with pending, retry, and focus restoration", async () => {
-  const user = userEvent.setup();
-  let reject!: (error: Error) => void;
-  const onRenameRoom = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
-  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRenameRoom={onRenameRoom} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
-  const trigger = screen.getByRole("button", { name: "Rename channel" });
-  await user.click(trigger);
-  const dialog = screen.getByRole("dialog", { name: "Rename channel" });
-  const input = within(dialog).getByRole("textbox", { name: "Channel name" });
-  expect(input).toHaveFocus();
-  expect(input).toHaveValue("Launch");
-  await user.clear(input);
-  await user.type(input, "   ");
-  expect(within(dialog).getByRole("button", { name: "Save name" })).toBeDisabled();
-  await user.type(input, "New name ");
-  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
-  expect(onRenameRoom).toHaveBeenCalledWith("New name");
-  expect(within(dialog).getByRole("button", { name: "Saving…" })).toBeDisabled();
-  await user.keyboard("{Escape}");
-  expect(dialog).toBeInTheDocument();
-  await act(async () => reject(new Error("Could not save. Try again.")));
-  expect(within(dialog).getByRole("alert")).toHaveTextContent("Could not save. Try again.");
-  onRenameRoom.mockResolvedValue(undefined);
-  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(trigger).toHaveFocus();
-});
-
-it("lets a group chat admin rename the chat without exposing channel membership controls", async () => {
-  const user = userEvent.setup();
-  const onRenameRoom = vi.fn().mockResolvedValue(undefined);
-  render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "Launch crew" }}
-    onRenameRoom={onRenameRoom} onAddMember={vi.fn()} onRemoveMember={vi.fn()} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Rename group chat" }));
-  const dialog = screen.getByRole("dialog", { name: "Rename group chat" });
-  const input = within(dialog).getByRole("textbox", { name: "Group chat name" });
-  expect(input).toHaveValue("Launch crew");
-  await user.clear(input);
-  await user.type(input, "Release room");
-  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
-  expect(onRenameRoom).toHaveBeenCalledWith("Release room");
-});
 
 it("confirms removal of a non-owner with Cancel focused and restores focus", async () => {
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRemoveMember={onRemoveMember} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: "Remove Owner" })).not.toBeInTheDocument();
   const trigger = screen.getByRole("button", { name: "Remove Friday" });
   await user.click(trigger);
@@ -84,29 +37,10 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
 it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "View members" }));
-  expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
   expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
-});
-
-it("never offers renaming for a direct message", async () => {
-  render(<RoomPanel {...props} onRenameRoom={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: /Rename/ })).not.toBeInTheDocument();
-});
-
-it("closes channel management if the viewer loses admin permission", async () => {
-  const onRenameRoom = vi.fn();
-  const channel = { ...props.room!, kind: "channel" as const };
-  const { rerender } = render(<RoomPanel {...props} room={channel} onRenameRoom={onRenameRoom} />);
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  await userEvent.click(screen.getByRole("button", { name: "Rename channel" }));
-  rerender(<RoomPanel {...props} room={channel} participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={onRenameRoom} />);
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(onRenameRoom).not.toHaveBeenCalled();
 });
 
 it("reveals and focuses same-room message navigation from a narrow resources pane", async () => {
@@ -185,8 +119,8 @@ it("names a DM for its counterpart and uses canonical author and member activity
   expect(within(article).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(article).getByText("Agent")).toBeInTheDocument();
   expect(within(article).getByRole("status", { name: "Work status" })).toHaveTextContent("Completed");
-  fireEvent.click(screen.getByRole("button", { name: "View members" }));
-  const members = screen.getByRole("region", { name: "Room members" });
+  fireEvent.click(screen.getByRole("button", { name: "View members, 2 in this conversation" }));
+  const members = screen.getByRole("complementary", { name: "Room details" });
   expect(within(members).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
 });
@@ -296,13 +230,13 @@ it("opens profiles before the real DM action for human and agent authors and dis
 it("opens and closes the real room context on a narrow viewport", async () => {
   render(<RoomPanel {...props} narrow />);
   const history = screen.getByRole("region", { name: "Messages" });
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(history).not.toBeVisible();
   expect(screen.getByRole("complementary", { name: "Room details" })).toBeVisible();
   expect(screen.getByRole("heading", { name: "Room details" })).toHaveFocus();
   await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
-  expect(screen.getByRole("button", { name: "Show room details" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
 });
 
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
@@ -317,7 +251,7 @@ it("shows canonical members and only running work in collapsible room details", 
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "active", state: "running", text: "", thinking: "", tools: [] };
   const { rerender } = render(<RoomPanel {...props} runs={[run, ...(["completed", "failed", "aborted"] as const).map((state) => ({ ...run, runId: state, state }))]} />);
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  const toggle = screen.getByRole("button", { name: "Show room details" });
+  const toggle = screen.getByRole("button", { name: /^Details/ });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
   const details = screen.getByRole("complementary", { name: "Room details" });
@@ -329,7 +263,7 @@ it("shows canonical members and only running work in collapsible room details", 
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   await user.click(toggle);
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Show room details" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
   expect(toggle).toHaveFocus();
@@ -353,7 +287,7 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(onSelectThread).toHaveBeenLastCalledWith(null);
   expect(reply).toHaveFocus();
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("keeps a thread open when Escape dismisses its delete dialog or deletion is pending", async () => {
@@ -410,7 +344,7 @@ it("lets wide room details change agent response without giving humans a control
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
@@ -424,7 +358,7 @@ it("lets wide room details change agent response without giving humans a control
 it("shows an agent response as read-only text to ordinary members", async () => {
   const user = userEvent.setup();
   render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   expect(details.getByText("Response: Mentions only")).toBeInTheDocument();
   expect(details.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
@@ -441,7 +375,7 @@ it("adds only eligible non-members to an existing channel", async () => {
     ]}
     onAddMember={onAddMember} />);
 
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   expect(screen.getByRole("checkbox", { name: "Colleague" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeInTheDocument();
@@ -461,7 +395,7 @@ it("shows member-add progress and a useful retryable error", async () => {
     room={{ ...props.room!, kind: "channel", name: "Launch" }}
     addMemberCandidates={[{ kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null }]}
     onAddMember={onAddMember} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   await user.click(screen.getByRole("checkbox", { name: "Colleague" }));
   await user.click(screen.getByRole("button", { name: "Add selected" }));
@@ -479,7 +413,7 @@ it("resets member selection and picker state when the room changes", async () =>
   const candidates = [{ kind: "agent" as const, id: "atlas", displayName: "Atlas", mentionHandle: null }];
   const view = render(<RoomPanel {...props} messages={[]} roomId="channel-a" room={{ ...props.room!, roomId: "channel-a", kind: "channel", name: "A" }}
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeChecked();
@@ -488,7 +422,7 @@ it("resets member selection and picker state when the room changes", async () =>
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
 
   expect(screen.queryByRole("button", { name: "Add selected" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
@@ -497,7 +431,7 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
     onAddMember={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 
@@ -565,6 +499,30 @@ it("dismisses a medium overlay on Escape from outside the room and restores its 
   unmount();
   await user.keyboard("{Escape}");
   expect(onSelectThread).not.toHaveBeenCalled();
+});
+
+it("leaves a medium overlay open when Escape is dismissing a portalled popper", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(min-width: 860px) and (max-width: 1179px)",
+    media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList));
+  const user = userEvent.setup();
+  const onSelectThread = vi.fn();
+  render(<><button>Outside room</button><RoomPanel {...props} onSelectThread={onSelectThread} /></>);
+  await user.click(screen.getByRole("button", { name: "Reply in thread" }));
+  await user.click(screen.getByRole("button", { name: "Outside room" }));
+  // A Radix menu/picker renders in a portal outside this subtree, so its own
+  // Escape still bubbles to the window listener.
+  const popper = document.body.appendChild(document.createElement("div"));
+  popper.setAttribute("data-radix-popper-content-wrapper", "");
+  const item = popper.appendChild(document.createElement("button"));
+  item.focus();
+
+  await user.keyboard("{Escape}");
+  popper.remove();
+
+  expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+  expect(onSelectThread).not.toHaveBeenCalledWith(null);
 });
 
 it("leaves a medium overlay open when Escape is dismissing an open dialog", async () => {
@@ -711,4 +669,104 @@ it("opens exactly one edit form when the ArrowUp target is also the open thread'
   render(<RoomPanel {...props} messages={[message, own]} selectedThreadId={own.messageId} onUpdateMessage={vi.fn()} />);
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
   expect(screen.getAllByRole("textbox", { name: "Edit message" })).toHaveLength(1);
+});
+
+it("labels the details tab and shows the pinned count on it", () => {
+  render(<RoomPanel {...props} room={{ ...props.room!, topic: null, starred: false, muted: false, sectionId: null }}
+    pinnedMessageIds={["m-1", "m-2"]} />);
+  expect(screen.getByRole("button", { name: /^Details/ })).toHaveTextContent("2");
+  expect(screen.queryByRole("button", { name: "Context" })).not.toBeInTheDocument();
+});
+
+it("pins and unpins a message from its menu", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  const { rerender } = render(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} pinnedMessageIds={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  expect(onSetPin).toHaveBeenCalledWith(message.messageId, true);
+  rerender(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} pinnedMessageIds={[message.messageId]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  expect(await screen.findByRole("menuitem", { name: "Unpin from conversation" })).toBeInTheDocument();
+});
+
+it("disables the pin and mark-unread menu items while a pin request is in flight", async () => {
+  let resolvePin!: () => void;
+  const onSetPin = vi.fn(() => new Promise<void>((done) => { resolvePin = done; }));
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} messages={[message]} pinnedMessageIds={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  // The menu closes on select (Radix default); reopen it while the request is still
+  // unresolved to observe the disabled/pending state.
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  const pinItem = await screen.findByRole("menuitem", { name: "Pinning…" });
+  expect(pinItem).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("menuitem", { name: "Marking unread…" })).toHaveAttribute("aria-disabled", "true");
+  await act(async () => resolvePin());
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).not.toHaveAttribute("aria-disabled");
+  expect(screen.getByRole("menuitem", { name: "Mark unread from here" })).not.toHaveAttribute("aria-disabled");
+});
+
+it("marks unread from a message using that message's sequence", async () => {
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} onMarkUnreadFrom={onMarkUnreadFrom} messages={[{ ...message, messageSeq: 7 }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Mark unread from here" }));
+  expect(onMarkUnreadFrom).toHaveBeenCalledWith(7);
+});
+
+it("reports a failed pin without losing the message", async () => {
+  const onSetPin = vi.fn().mockRejectedValue(new Error("A room can pin at most 50 messages."));
+  render(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("A room can pin at most 50 messages.");
+  expect(screen.getByText(message.text)).toBeInTheDocument();
+});
+
+it("omits mark-unread-from-here for the thread pane's root message", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} selectedThreadId={message.messageId} onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} />);
+  const thread = within(screen.getByRole("complementary", { name: "Thread" }));
+  // The trigger button lives inside the thread pane, but DropdownMenuContent is portalled
+  // to the document body, so the opened menu's items are queried unscoped.
+  await userEvent.click(thread.getByRole("button", { name: "Message actions" }));
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
+});
+
+it("omits mark-unread-from-here for a thread reply", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Reply text", threadRootMessageId: message.messageId };
+  render(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={message.messageId}
+    onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} />);
+  const thread = within(screen.getByRole("complementary", { name: "Thread" }));
+  const [, replyTrigger] = thread.getAllByRole("button", { name: "Message actions" });
+  await userEvent.click(replyTrigger);
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
+});
+
+it("opens the details panel on the pins tab from the header pinned count", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} onSetPin={onSetPin} />);
+  await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  expect(details.getByRole("tab", { name: "Pins", selected: true })).toBeInTheDocument();
+  expect(within(details.getByRole("list", { name: "Pinned messages" })).getByText("Hello")).toBeInTheDocument();
+  await userEvent.click(details.getByRole("button", { name: "Unpin this message" }));
+  expect(onSetPin).toHaveBeenCalledWith(message.messageId, false);
+  await userEvent.click(details.getByRole("tab", { name: "Members" }));
+  expect(details.getByText("Friday")).toBeInTheDocument();
+});
+
+it("jumps from a pinned message back to it in the conversation", async () => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} />);
+  await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Jump to message from Friday at / }));
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });

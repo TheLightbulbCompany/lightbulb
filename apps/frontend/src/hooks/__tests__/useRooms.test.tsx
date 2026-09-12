@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
-import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomSummary, RunStatusResponse } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomListResponse, RoomSummary, RunStatusResponse } from "@lightbulb/shared";
 
 const room: RoomDetail = {
   roomId: "11111111-1111-4111-8111-111111111111",
@@ -14,8 +14,13 @@ const room: RoomDetail = {
   lastMessageAt: "2026-09-10T00:00:00Z",
   unreadCount: 1,
   updatedAt: "2026-09-10T00:00:00Z",
+  topic: null,
+  starred: false,
+  muted: false,
+  sectionId: null,
   lastReadSeq: 0,
   createdAt: "2026-09-10T00:00:00Z",
+  pinnedMessageIds: [],
   members: [
     { kind: "human", id: "user-a", displayName: "Alice", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },
     { kind: "agent", id: "33333333-3333-4333-8333-333333333333", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },
@@ -38,7 +43,7 @@ const firstMessage: CanonicalRoomMessage = {
 const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
   listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })),
-  listRooms: vi.fn(async () => ({ rooms: [room as RoomSummary] })),
+  listRooms: vi.fn<() => Promise<RoomListResponse>>(async () => ({ rooms: [room as RoomSummary], sections: [] })),
   getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
   listMessages: vi.fn(async () => ({ messages: [firstMessage], nextAfterSeq: null as number | null })),
   sendMessage: vi.fn(async (_roomId: string, request: { clientMessageId: string; text: string; mentions: unknown[]; replyToMessageId: string | null; threadRootMessageId: string | null }) => ({
@@ -52,6 +57,7 @@ const messaging = {
   markUnread: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 0 })),
   setTyping: vi.fn(async () => undefined),
   createRoom: vi.fn(), updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), getLiveConfig: vi.fn(),
+  setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), setPin: vi.fn(),
   getRunStatus: vi.fn(async (): Promise<RunStatusResponse> => ({ runId: "run-1", state: "running" })),
 };
 const releaseActiveRoomSubscription = vi.fn();
@@ -120,7 +126,7 @@ beforeEach(() => {
   for (const method of Object.values(messaging)) {
     if (typeof method === "function" && "mockClear" in method) (method as ReturnType<typeof vi.fn>).mockClear();
   }
-  messaging.listRooms.mockResolvedValue({ rooms: [room] });
+  messaging.listRooms.mockResolvedValue({ rooms: [room], sections: [] });
   messaging.getRoom.mockResolvedValue(room);
   messaging.listMessages.mockResolvedValue({ messages: [firstMessage], nextAfterSeq: null });
 });
@@ -155,7 +161,7 @@ describe("useRooms canonical reconciliation", () => {
     await act(async () => result.current.markUnread(room.roomId));
     act(() => window.dispatchEvent(new Event("focus")));
 
-    expect(messaging.markUnread).toHaveBeenCalledWith(room.roomId);
+    expect(messaging.markUnread).toHaveBeenCalledWith(room.roomId, undefined);
     expect(messaging.markRead).not.toHaveBeenCalled();
 
     act(() => result.current.selectRoom(room.roomId));
@@ -181,7 +187,7 @@ describe("useRooms canonical reconciliation", () => {
     act(() => { unread = result.current.markUnread(room.roomId); });
     expect(messaging.markUnread).not.toHaveBeenCalled();
     await act(async () => { finishRead(); await unread; });
-    expect(messaging.markUnread).toHaveBeenCalledWith(room.roomId);
+    expect(messaging.markUnread).toHaveBeenCalledWith(room.roomId, undefined);
   });
   it("reports complete history only after all pages and exposes failed loads for retry", async () => {
     const { result } = renderHook(() => useRooms(), { wrapper });
@@ -302,8 +308,8 @@ describe("useRooms canonical reconciliation", () => {
       name: null,
       members: [room.members[0], { ...room.members[1], id: "agent-friday" }],
     };
-    let resolveRooms!: (value: { rooms: RoomSummary[] }) => void;
-    const pendingRooms = new Promise<{ rooms: RoomSummary[] }>((resolve) => { resolveRooms = resolve; });
+    let resolveRooms!: (value: RoomListResponse) => void;
+    const pendingRooms = new Promise<RoomListResponse>((resolve) => { resolveRooms = resolve; });
     messaging.listRooms.mockReturnValue(pendingRooms);
     messaging.getRoom.mockImplementation(async (id) => id === fridayDm.roomId ? fridayDm : room);
     messaging.createRoom.mockResolvedValue({ ...fridayDm, roomId: "unwanted-duplicate" });
@@ -318,7 +324,7 @@ describe("useRooms canonical reconciliation", () => {
     expect(messaging.createRoom).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveRooms({ rooms: [room, fridayDm] });
+      resolveRooms({ rooms: [room, fridayDm], sections: [] });
       await selectingFriday;
     });
 
@@ -339,7 +345,7 @@ describe("useRooms canonical reconciliation", () => {
       roomId: "11111111-1111-4111-8111-111111111113",
       members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
     };
-    messaging.listRooms.mockResolvedValue({ rooms: [fridayDm, atlasDm] });
+    messaging.listRooms.mockResolvedValue({ rooms: [fridayDm, atlasDm], sections: [] });
     messaging.getRoom.mockImplementation(async (roomId: string) =>
       roomId === atlasDm.roomId ? atlasDm : fridayDm,
     );
@@ -360,7 +366,7 @@ describe("useRooms canonical reconciliation", () => {
       name: null,
       members: [room.members[0], { ...room.members[0], id: "user-colleague", displayName: "Colleague", role: "member" as const }],
     };
-    messaging.listRooms.mockResolvedValue({ rooms: [room, colleagueDm] });
+    messaging.listRooms.mockResolvedValue({ rooms: [room, colleagueDm], sections: [] });
     messaging.getRoom.mockImplementation(async (roomId: string) => roomId === colleagueDm.roomId ? colleagueDm : room);
     const { result } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.directoryRoomDetails.has(colleagueDm.roomId)).toBe(true));
@@ -385,7 +391,7 @@ describe("useRooms canonical reconciliation", () => {
       members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
     };
     let atlasAttempts = 0;
-    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm] });
+    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm], sections: [] });
     messaging.getRoom.mockImplementation(async (roomId: string) => {
       if (roomId === room.roomId) return room;
       if (roomId === fridayDm.roomId) return fridayDm;
@@ -419,7 +425,7 @@ describe("useRooms canonical reconciliation", () => {
       roomId: "11111111-1111-4111-8111-111111111120",
       members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
     };
-    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm] });
+    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm], sections: [] });
     messaging.getRoom.mockImplementation(async (roomId: string) => {
       if (roomId === room.roomId) return room;
       if (roomId === fridayDm.roomId) return fridayDm;
@@ -487,7 +493,7 @@ describe("useRooms canonical reconciliation", () => {
       members: [room.members[0], { ...room.members[1], id: "agent-friday", displayName: "Friday" }],
     };
     const resolveFridayDetails: Array<(detail: RoomDetail) => void> = [];
-    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm] });
+    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm], sections: [] });
     messaging.getRoom.mockImplementation(async (roomId: string) => {
       if (roomId === room.roomId) return room;
       return new Promise<RoomDetail>((resolve) => resolveFridayDetails.push(resolve));
@@ -510,7 +516,7 @@ describe("useRooms canonical reconciliation", () => {
   it("does not let a rejected initial DM selection override a newer room selection", async () => {
     const otherChannel = { ...room, roomId: "11111111-1111-4111-8111-111111111121", name: "General" };
     let rejectCreate!: (error: Error) => void;
-    messaging.listRooms.mockResolvedValue({ rooms: [room, otherChannel] });
+    messaging.listRooms.mockResolvedValue({ rooms: [room, otherChannel], sections: [] });
     messaging.createRoom.mockImplementation(() => new Promise<RoomDetail>((_, reject) => { rejectCreate = reject; }));
     const { result } = renderHook(() => useRooms("agent-new"), { wrapper });
     await waitFor(() => expect(messaging.createRoom).toHaveBeenCalledOnce());
@@ -623,7 +629,7 @@ describe("useRooms canonical reconciliation", () => {
   it("does not merge a late send response into a newly selected room", async () => {
     const otherRoom = { ...room, roomId: "11111111-1111-4111-8111-111111111122", name: "General" };
     let resolveSend!: (message: CanonicalRoomMessage) => void;
-    messaging.listRooms.mockResolvedValue({ rooms: [room, otherRoom] });
+    messaging.listRooms.mockResolvedValue({ rooms: [room, otherRoom], sections: [] });
     messaging.getRoom.mockImplementation(async (roomId: string) => roomId === otherRoom.roomId ? otherRoom : room);
     messaging.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
     const { result } = renderHook(() => useRooms(), { wrapper });
@@ -683,5 +689,46 @@ describe("useRooms canonical reconciliation", () => {
 
     await waitFor(() => expect(messaging.getRunStatus).toHaveBeenCalledWith(runId));
     await waitFor(() => expect(result.current.runs).toEqual([expect.objectContaining({ runId, state: "completed" })]));
+  });
+
+  it("stars a room optimistically and revalidates the list", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    // The server confirms the star, so the post-mutation revalidate (the
+    // `finally { mutateRooms() }` reconciliation) also comes back starred --
+    // this exercises both the optimistic flip and the settled truth.
+    messaging.setMemberPrefs.mockResolvedValueOnce({ ...room, starred: true });
+    messaging.listRooms.mockResolvedValueOnce({ rooms: [{ ...room, starred: true }], sections: [] });
+
+    await act(async () => { await result.current.setRoomPrefs(room.roomId, { starred: true }); });
+
+    expect(messaging.setMemberPrefs).toHaveBeenCalledWith(room.roomId, { starred: true });
+    await waitFor(() => expect(result.current.rooms[0].starred).toBe(true));
+  });
+
+  it("passes fromSeq through to mark unread", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+
+    await act(async () => { await result.current.markUnread(room.roomId, 3); });
+
+    expect(messaging.markUnread).toHaveBeenCalledWith(room.roomId, 3);
+  });
+
+  it("revalidates the room list on a member-updated live event", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.rooms).toHaveLength(1));
+    messaging.listRooms.mockClear();
+
+    act(() => {
+      // Published on the user channel (not a room subscription), so the
+      // real wire frame carries no envelope-level roomId -- only payload.roomId.
+      for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "member-updated", type: "room.member.updated", occurredAt: "2026-09-10T00:03:00Z",
+        payload: { roomId: room.roomId },
+      });
+    });
+
+    await waitFor(() => expect(messaging.listRooms).toHaveBeenCalled());
   });
 });

@@ -32,6 +32,8 @@ from core.services.messaging import (
     CreateMessageRequest,
     CreateRoomRequest,
     LiveConfig,
+    MarkUnreadRequest,
+    MemberPrefsRequest,
     MessagePage,
     PatchRoomRequest,
     ReadCursorRequest,
@@ -40,6 +42,7 @@ from core.services.messaging import (
     RoomListResponse,
     ImageAttachment,
     RunStatusResponse,
+    SectionsRequest,
     SteerRunRequest,
     SteerRunResponse,
     TypingRequest,
@@ -203,6 +206,11 @@ async def list_rooms(auth: AuthContext = Depends(get_current_user)):
     return await service.list_rooms(auth)
 
 
+@router.put("/messaging/me/sections", response_model=RoomListResponse)
+async def put_sections(request: SectionsRequest, auth: AuthContext = Depends(get_current_user)):
+    return await service.put_sections(auth, request)
+
+
 @router.post("/messaging/rooms", response_model=RoomDetail, status_code=201)
 async def create_room(request: CreateRoomRequest, auth: AuthContext = Depends(get_current_user)):
     return await service.create_room(auth, request)
@@ -222,6 +230,15 @@ async def patch_room(
     return await service.patch_room(auth, room_id, request)
 
 
+@router.patch("/messaging/rooms/{room_id}/me", response_model=RoomDetail)
+async def patch_room_me(
+    room_id: str,
+    request: MemberPrefsRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await service.patch_room_me(auth, room_id, request)
+
+
 @router.post("/messaging/rooms/{room_id}/members", response_model=RoomDetail)
 async def upsert_room_member(
     room_id: str,
@@ -239,6 +256,12 @@ async def remove_room_member(
     auth: AuthContext = Depends(get_current_user),
 ):
     await service.remove_member(auth, room_id, kind, member_id)
+    return Response(status_code=204)
+
+
+@router.post("/messaging/rooms/{room_id}/leave", status_code=204)
+async def leave_room(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    await service.leave_room(auth, room_id)
     return Response(status_code=204)
 
 
@@ -273,6 +296,16 @@ async def update_room_message(
     room_id: str, message_id: str, request: UpdateMessageRequest, auth: AuthContext = Depends(get_current_user)
 ):
     return await service.update_message(auth, room_id, message_id, request)
+
+
+@router.put("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
+async def pin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.set_pin(auth, room_id, message_id, True)
+
+
+@router.delete("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
+async def unpin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.set_pin(auth, room_id, message_id, False)
 
 
 @router.post("/messaging/rooms/{room_id}/attachments", response_model=ImageAttachment, status_code=201)
@@ -322,8 +355,12 @@ async def set_room_read_cursor(
 
 
 @router.post("/messaging/rooms/{room_id}/unread", response_model=ReadCursorResponse)
-async def mark_room_unread(room_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await service.mark_room_unread(auth, room_id)
+async def mark_room_unread(
+    room_id: str,
+    request: MarkUnreadRequest | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await service.mark_room_unread(auth, room_id, request)
 
 
 @router.post("/messaging/typing", status_code=204)

@@ -11,14 +11,19 @@
 .room-panel { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; overflow: hidden; }
 .room-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .room-conversation[hidden] { display: none; }
-.room-header { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
+.room-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
 .room-tabs { display: flex; flex-shrink: 0; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--border); overflow-x: auto; }
-.room-tab { white-space: nowrap; }
-.room-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; }
+.room-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; white-space: nowrap; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; }
 .room-tab[aria-current="page"] { color: var(--foreground); border-bottom-color: var(--foreground); font-weight: 600; }
+.room-tab .room-count { margin-left: 6px; }
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
+.room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: .875rem; font-weight: 400; }
+.room-topic-dot { color: var(--muted-foreground); }
+.room-topic-form { flex: 1 1 200px; min-width: 0; }
+.room-header-error { flex-basis: 100%; }
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-.room-facepile { display: flex; align-items: center; gap: 4px; }
+.room-facepile { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 6px; }
+.room-facepile > :not(:first-child) { margin-left: -8px; }
 .room-history { position: relative; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
@@ -84,6 +89,12 @@
 .room-details-toggle { display: none; }
 .room-context-header { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
 .room-context .room-composer { margin: 8px 12px 16px; }
+.room-details-tabs { display: flex; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.room-details-tabs button { padding: 4px 2px; font-size: .875rem; color: var(--muted-foreground); border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
+.room-details-tabs button:hover { color: var(--foreground); }
+.room-details-tabs button[aria-selected="true"] { color: var(--foreground); font-weight: 600; border-bottom-color: var(--foreground); }
+.room-details-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.room-details-row p { min-width: 0; overflow-wrap: anywhere; }
 .room-context-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 16px; }
 .room-context-body > section + section { margin-top: 16px; }
 .room-context-record { margin: 12px 0 20px; overflow-wrap: anywhere; }
@@ -189,6 +200,17 @@
   .room-context { border-left: 0; }
   .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
   .room-panel button, .room-directory button, .room-run summary { min-height: 44px; }
+  /* Icon-only sidebar controls (collapse chevron, next unread, new conversation,
+     the row overflow trigger — which carries .room-directory-actions on the
+     button itself) need the 44px in both axes; the sort select is a touch
+     target too. */
+  .room-directory-heading-actions button, .room-directory-group-header button,
+  .room-directory-actions { min-width: 44px; }
+  .room-directory select { min-height: 44px; }
+  /* The section dialogs are portalled out of .room-directory, so they need the
+     touch floor stated again. */
+  .room-section-dialog :is(button, input) { min-height: 44px; }
+  .room-section-edit button { min-width: 44px; }
   .room-composer textarea, .room-input { font-size: 1rem; }
   .room-message { gap: 8px; }
   .room-message-byline { flex-wrap: wrap; gap: 4px 8px; }
@@ -220,3 +242,19 @@
 .room-shortcuts > div { display: flex; align-items: baseline; gap: 12px; }
 .room-shortcuts dt { flex: none; min-width: 88px; }
 .room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--foreground); }
+
+.room-directory-group-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.room-directory-group-header .room-directory-group { flex: 1 1 auto; margin-bottom: 4px; }
+.room-directory-grip { display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 4px; border-radius: 4px; color: var(--muted-foreground); cursor: grab; }
+.room-directory-grip:hover, .room-directory-grip:focus-visible { color: var(--foreground); background: var(--cream-deeper); }
+.room-directory-grip:active { cursor: grabbing; }
+/* The section being dragged reads as lifted without relying on colour alone:
+   the outline is the signal, the tint is the reinforcement. */
+[data-dragging] > .room-directory-group-header { background: var(--cream-deeper); border: 1px solid var(--ring); border-radius: 4px; }
+.room-section-edit { display: flex; align-items: center; gap: 8px; }
+.room-section-confirm { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; }
+.room-directory-muted { color: var(--muted-foreground); }
+.room-directory-star { flex: none; color: var(--muted-foreground); }
+.room-directory-tag { flex: none; font-size: .75rem; color: var(--muted-foreground); }
+.room-directory-faces { display: inline-flex; flex: none; }
+.room-directory-faces > :nth-child(2) { margin-left: -8px; }

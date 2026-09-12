@@ -1,7 +1,11 @@
 import type { RoomSummary } from "./types";
 
 export type NavigationDirection = 1 | -1;
-type NavigableRoom = Pick<RoomSummary, "roomId" | "unreadCount">;
+type NavigableRoom = Pick<RoomSummary, "roomId" | "unreadCount" | "muted">;
+
+/** A room the "next unread" jumps count: unread, and not muted. */
+export const isUnreadTarget = (room: Pick<NavigableRoom, "unreadCount" | "muted">) =>
+  !room.muted && room.unreadCount > 0;
 
 /**
  * The room immediately before/after `currentId` in `rooms` (room order,
@@ -25,7 +29,8 @@ export function adjacentRoomId(
  * The next/previous unread room from `currentId`, wrapping at both ends and
  * considering `currentId` itself last. Generalizes RoomDirectory's
  * `selectNextUnread` wrapping search (forward-only there) to either
- * direction. Returns null when no room is unread.
+ * direction. Muted rooms are never a destination. Returns null when no room
+ * is unread.
  */
 export function nextUnreadRoomId(
   rooms: readonly NavigableRoom[],
@@ -37,7 +42,7 @@ export function nextUnreadRoomId(
   const from = rooms.findIndex((room) => room.roomId === currentId);
   for (let offset = 1; offset <= length; offset += 1) {
     const index = (((from + direction * offset) % length) + length) % length;
-    if (rooms[index].unreadCount > 0) return rooms[index].roomId;
+    if (isUnreadTarget(rooms[index])) return rooms[index].roomId;
   }
   return null;
 }

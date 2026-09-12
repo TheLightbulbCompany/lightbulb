@@ -58,7 +58,6 @@ describe("MessageList — streamed block reveal + caret", () => {
       <MessageList
         renderGroups={streamGroup("Setting the fallback to on-demand")}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -84,7 +83,6 @@ describe("MessageList — streamed block reveal + caret", () => {
           },
         ]}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
       />,
     );

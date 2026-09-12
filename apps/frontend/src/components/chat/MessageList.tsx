@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
+import { linkifyFilePaths } from "@/lib/filePathDetection";
 import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, Check, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -41,7 +41,6 @@ import {
   resolveMessageBlocks,
   type ToolBlockPair,
 } from "@/hooks/internal/toolBlockExtract";
-import { persistedEntryId } from "@lightbulb/shared";
 import type {
   ChatRenderItem,
   ContentBlock,
@@ -54,21 +53,10 @@ import type {
 // represents execution state only — running / done / error. See
 // ExecApprovalDialog.tsx for the modal that surfaces pending exec approvals.
 
-export interface MessageListProps {
+interface MessageListProps {
   renderGroups: RenderGroup[];
   agentName?: string;
   isStreaming?: boolean;
-  isTyping?: boolean;
-  onOpenFile?: (path: string) => void;
-  hasOlder?: boolean;
-  isLoadingOlder?: boolean;
-  onLoadOlder?: () => void;
-  /** Cut the transcript back to just before this persisted user message
-   *  (`sessions.rewind`). Omit to hide the affordance entirely. */
-  onRewind?: (entryId: string) => void;
-  /** Rewind is refused server-side while a run is live — disable rather than
-   *  hide, so the affordance stays where the user learned it is. */
-  rewindDisabled?: boolean;
 }
 
 /**
@@ -117,7 +105,7 @@ for (const grammar of PRISM_LANGUAGES) {
  * languages fall back to plain text rather than reaching refractor, which
  * throws on an unregistered grammar. Exported for unit tests.
  */
-export function resolveHighlightLanguage(language: string): string {
+function resolveHighlightLanguage(language: string): string {
   const normalized = language.toLowerCase();
   return REGISTERED_LANGUAGES.has(normalized) ? normalized : PLAIN_LANGUAGE;
 }
@@ -207,10 +195,8 @@ export function CodeBlock({ className, children, ...props }: React.HTMLAttribute
 
 export const MarkdownContent = React.memo(function MarkdownContent({
   content,
-  onOpenFile,
 }: {
   content: string;
-  onOpenFile?: (path: string) => void;
 }) {
   // Sentinel strip BEFORE linkify: the injection-defense markers are
   // internal plumbing wherever they surface (echoed into assistant prose,
@@ -230,17 +216,6 @@ export const MarkdownContent = React.memo(function MarkdownContent({
         h4: ({ children }) => <h4 className="text-sm font-medium mt-2 mb-1">{children}</h4>,
         p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
         a: ({ href, children }) => {
-          if (href && isWorkspaceFileLink(href) && onOpenFile) {
-            const filePath = extractFilePath(href);
-            return (
-              <button
-                onClick={() => onOpenFile(filePath)}
-                className="text-[var(--midnight)] hover:underline cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit inline"
-              >
-                {children}
-              </button>
-            );
-          }
           const isSafe = !href?.match(/^(javascript|data|vbscript):/i);
           return (
             <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[var(--midnight)] hover:underline">
@@ -277,7 +252,13 @@ export const MarkdownContent = React.memo(function MarkdownContent({
  * outside code fences (fences stay intact as single blocks, including an
  * unterminated fence still streaming in). Used by StreamingMarkdownContent
  * so a growing live message only re-parses its tail block per paint.
- * Exported for unit tests.
+ *
+ * Exported for unit tests ONLY (same convention as CodeBlock/AgentHead/
+ * ThinkingBlock above). Kept exported deliberately: the prefix-stability
+ * property test — every settled block stays byte-identical as the tail
+ * grows, which is what makes the per-block memo hit while streaming — has
+ * no equivalent through the rendered DOM, where a block is markdown, not
+ * its source text.
  */
 export function splitMarkdownBlocks(content: string): string[] {
   // Reference-style definitions ([label]: url, [^1]: footnote) resolve at
@@ -344,11 +325,9 @@ export function splitMarkdownBlocks(content: string): string[] {
  */
 const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
   content,
-  onOpenFile,
   streaming,
 }: {
   content: string;
-  onOpenFile?: (path: string) => void;
   streaming?: boolean;
 }) {
   const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
@@ -359,7 +338,7 @@ const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
         const isTail = streaming && i === lastIndex;
         return (
           <div key={i} className={cn("chat-block-in", isTail && "chat-tail")}>
-            <MarkdownContent content={block} onOpenFile={onOpenFile} />
+            <MarkdownContent content={block} />
             {isTail && <span className="chat-caret" aria-hidden="true" />}
           </div>
         );
@@ -376,10 +355,18 @@ const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
  * boundary — alternating bold, with leftover `****` rendered literally. Split
  * the collision back into one header per paragraph.
  */
-export function splitCollidedHeaders(content: string): string {
+function splitCollidedHeaders(content: string): string {
   return content.replace(/\*\*(?=\*\*)/g, "**\n\n");
 }
 
+/**
+ * Exported for unit tests ONLY. Kept exported deliberately: its collapse
+ * state machine (mount expanded while streaming, auto-collapse on settle,
+ * a user toggle that survives the settle) spans a streaming→settled
+ * transition that MessageList expresses as an item-KIND change, so driving
+ * it through the public component remounts the block and loses the state
+ * the tests exist to pin.
+ */
 export function ThinkingBlock({
   content,
   streaming,
@@ -454,7 +441,7 @@ export function ThinkingBlock({
  * The exported name, props and call sites are unchanged, so AgentHead and
  * StreamingStatusBar keep working without edits.
  */
-export const AGENT_GLYPH_PATH =
+const AGENT_GLYPH_PATH =
     "M 86,150 L 72,132 L 72,76 A 28,32 0 0 1 128,76 L 128,132 L 114,150 Z";
 
 export function AgentGlyph({
@@ -622,13 +609,7 @@ function toolCallFromPair(block: ContentBlock, pairs: ToolBlockPair[]): ToolCall
  * blocks are skipped — they're rendered implicitly as part of the
  * matching tool_use pair.
  */
-function MessageBlocks({
-  message,
-  onOpenFile,
-}: {
-  message: HistoryMessage;
-  onOpenFile?: (path: string) => void;
-}) {
+function MessageBlocks({ message }: { message: HistoryMessage }) {
   // `content` may be a block array, a bare string, or absent with the body on
   // the top-level `text` field (older chat.history rows, cron run transcripts).
   // resolveMessageBlocks collapses all three — without it each non-array shape
@@ -704,11 +685,7 @@ function MessageBlocks({
           );
         } else {
           rendered.push(
-            <MarkdownContent
-              key={`text:${i}`}
-              content={text}
-              onOpenFile={onOpenFile}
-            />
+            <MarkdownContent key={`text:${i}`} content={text} />
           );
         }
       }
@@ -722,15 +699,7 @@ function MessageBlocks({
   return <>{rendered}</>;
 }
 
-function UserMessageRow({
-  message,
-  onRewind,
-  rewindDisabled,
-}: {
-  message: HistoryMessage;
-  onRewind?: (entryId: string) => void;
-  rewindDisabled?: boolean;
-}) {
+function UserMessageRow({ message }: { message: HistoryMessage }) {
   // Same three-shape normalization as MessageBlocks — a typed user message
   // arrives from chat.history with `content` as a bare string, which the old
   // `Array.isArray ? … : message.text ?? ""` ternary rendered as empty.
@@ -738,51 +707,12 @@ function UserMessageRow({
     .filter(isTextBlock)
     .map((b) => (b.text ?? "") as string)
     .join("");
-  // Null on an optimistic turn the server has not persisted yet — there is no
-  // entryId for sessions.rewind to cut at, so the affordance must not appear.
-  const entryId = persistedEntryId(message);
-  const [confirming, setConfirming] = React.useState(false);
   return (
-    <div className="group flex w-full justify-end" data-role="user">
+    <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col items-end min-w-0 max-w-[85%]">
         <div className="relative text-sm leading-relaxed bg-[var(--cream-deep)] text-[var(--midnight)] rounded-lg rounded-br-sm px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
-        {entryId && onRewind && (
-          confirming ? (
-            <div className="mt-1 flex items-center gap-2 text-caption text-[var(--midnight-muted)]">
-              <span>Rewind — this removes everything after this message.</span>
-              <button
-                type="button"
-                className="text-[var(--warn)] hover:underline"
-                onClick={() => {
-                  setConfirming(false);
-                  onRewind(entryId);
-                }}
-              >
-                Rewind
-              </button>
-              <button
-                type="button"
-                className="hover:text-[var(--midnight-soft)]"
-                onClick={() => setConfirming(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              // Hover-revealed, but focusable at all times so keyboard users
-              // reach it: opacity, not conditional rendering.
-              className="mt-1 text-caption text-[var(--midnight-muted)] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-[var(--midnight-soft)] disabled:cursor-not-allowed"
-              disabled={rewindDisabled}
-              onClick={() => setConfirming(true)}
-            >
-              Rewind to here
-            </button>
-          )
-        )}
       </div>
     </div>
   );
@@ -826,13 +756,7 @@ function itemEquals(a: ChatRenderItem, b: ChatRenderItem): boolean {
  * reconciliation entirely instead of re-walking their block trees per paint.
  */
 const ItemRenderer = React.memo(
-  function ItemRenderer({
-    item,
-    onOpenFile,
-  }: {
-    item: ChatRenderItem;
-    onOpenFile?: (path: string) => void;
-  }) {
+  function ItemRenderer({ item }: { item: ChatRenderItem }) {
     if (item.kind === "divider") {
       return (
         <div className="my-3 flex items-center gap-2 text-caption text-[var(--midnight-muted)]">
@@ -848,7 +772,6 @@ const ItemRenderer = React.memo(
       return (
         <StreamingMarkdownContent
           content={item.text}
-          onOpenFile={onOpenFile}
           streaming={item.kind === "stream"}
         />
       );
@@ -857,13 +780,11 @@ const ItemRenderer = React.memo(
       return <ThinkingBlock content={item.text} streaming />;
     }
     if (item.kind === "message") {
-      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
+      return <MessageBlocks message={item.message} />;
     }
     return null;
   },
-  (prev, next) =>
-    prev.onOpenFile === next.onOpenFile &&
-    itemEquals(prev.item, next.item),
+  (prev, next) => itemEquals(prev.item, next.item),
 );
 
 /**
@@ -877,12 +798,10 @@ function BtwSideCard({
   question,
   text,
   isError,
-  onOpenFile,
 }: {
   question: string;
   text: string;
   isError?: boolean;
-  onOpenFile?: (path: string) => void;
 }) {
   return (
     <div
@@ -905,7 +824,7 @@ function BtwSideCard({
       </div>
       {question && <div className="text-xs text-[var(--midnight-muted)] mb-1.5">{question}</div>}
       <div className={cn("leading-relaxed", isError ? "text-[var(--err)]" : "text-[var(--midnight-soft)]")}>
-        <MarkdownContent content={text} onOpenFile={onOpenFile} />
+        <MarkdownContent content={text} />
       </div>
     </div>
   );
@@ -933,11 +852,8 @@ function groupEquals(a: RenderGroup, b: RenderGroup): boolean {
  */
 const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   prev.agentName === next.agentName &&
-  prev.onRewind === next.onRewind &&
-  prev.rewindDisabled === next.rewindDisabled &&
   prev.isStreaming === next.isStreaming &&
   prev.isLastAssistantGroup === next.isLastAssistantGroup &&
-  prev.onOpenFile === next.onOpenFile &&
   groupEquals(prev.group, next.group),
 );
 
@@ -1046,17 +962,11 @@ function BubbleGroupImpl({
   agentName,
   isStreaming,
   isLastAssistantGroup,
-  onOpenFile,
-  onRewind,
-  rewindDisabled,
 }: {
   group: RenderGroup;
   agentName?: string;
   isStreaming?: boolean;
   isLastAssistantGroup?: boolean;
-  onRewind?: (entryId: string) => void;
-  rewindDisabled?: boolean;
-  onOpenFile?: (path: string) => void;
 }) {
   if (group.side === "btw") {
     return (
@@ -1069,7 +979,6 @@ function BubbleGroupImpl({
                 question={item.question}
                 text={item.text}
                 isError={item.isError}
-                onOpenFile={onOpenFile}
               />
             ) : null,
           )}
@@ -1082,12 +991,7 @@ function BubbleGroupImpl({
       <>
         {group.items.map((item) =>
           item.kind === "message" ? (
-            <UserMessageRow
-              key={item.key}
-              message={item.message}
-              onRewind={onRewind}
-              rewindDisabled={rewindDisabled}
-            />
+            <UserMessageRow key={item.key} message={item.message} />
           ) : null
         )}
       </>
@@ -1119,11 +1023,7 @@ function BubbleGroupImpl({
             entry.kind === "tool-run" ? (
               <ToolActivityTrace key={entry.key} calls={entry.calls} />
             ) : (
-            <ItemRenderer
-              key={entry.item.key}
-              item={entry.item}
-              onOpenFile={onOpenFile}
-            />
+            <ItemRenderer key={entry.item.key} item={entry.item} />
             ),
           )}
         </div>
@@ -1131,61 +1031,16 @@ function BubbleGroupImpl({
     </div>
   );
 }
-
-function TypingPlaceholder({ agentName }: { agentName?: string }) {
-  return (
-    <div
-      data-testid="typing-placeholder"
-      className="flex w-full justify-start"
-    >
-      <div className="flex flex-col min-w-0 max-w-[85%]">
-        <AgentHead name={agentName || "Assistant"} state="thinking" streaming />
-      </div>
-    </div>
-  );
-}
-
 export interface MessageListHandle {
   scrollToBottom: () => void;
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
   function MessageList(
-    {
-      renderGroups,
-      isStreaming,
-      isTyping,
-      agentName,
-      onOpenFile,
-      hasOlder,
-      isLoadingOlder,
-      onLoadOlder,
-      onRewind,
-      rewindDisabled,
-    },
+    { renderGroups, isStreaming, agentName },
     ref
   ) {
     const { containerRef, scrollToBottom, isAutoScrollingRef, markAutoScroll } = useScrollToBottom();
-
-    // Loading an older page prepends messages at the top of a bottom-anchored
-    // transcript, which would otherwise shove the viewport down by the height
-    // of the newly-inserted content. Pin the distance from the bottom before
-    // the fetch, then restore it once the DOM has the new messages painted —
-    // mutate scrollTop on the container directly, never scrollIntoView (see
-    // useScrollToBottom.ts for why).
-    const handleLoadOlder = React.useCallback(() => {
-      const c = containerRef.current;
-      const before = c ? c.scrollHeight - c.scrollTop : null;
-      Promise.resolve(onLoadOlder?.()).then(() => {
-        requestAnimationFrame(() => {
-          const el = containerRef.current;
-          if (el && before !== null) {
-            markAutoScroll();
-            el.scrollTop = el.scrollHeight - before;
-          }
-        });
-      });
-    }, [onLoadOlder, containerRef, markAutoScroll]);
 
     // Track whether the user is at (or near) the bottom of the scroll
     // container. While true, incoming streamed chunks pull the view down.
@@ -1334,16 +1189,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       prevLastSideRef.current = lastSide;
     }, [totalItems, lastTailLength, lastSide, containerRef, markAutoScroll]);
 
-    // The "typing placeholder" shows the agent header (animated thinking
-    // glyph) during the window between `sendMessage` and the first
-    // streamed chunk. Since the flat-timeline rendering creates assistant
-    // items lazily on first event, nothing else is on screen to signal
-    // "the agent received your message and is working." This placeholder
-    // is rendered only when streaming is active AND the trailing group
-    // side is user (or no groups yet).
-    const showTypingPlaceholder =
-      !!isTyping && (renderGroups.length === 0 || lastSide === "user");
-
     // Find the index of the last assistant-side group (for "thinking"
     // glyph wiring). We only animate the head of the bottommost assistant
     // bubble while streaming.
@@ -1370,18 +1215,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         {/* `chat-transcript` occludes off-screen groups (content-visibility) —
             see globals.css. Keeps a long history off the layout hot path. */}
         <div className="max-w-3xl mx-auto space-y-10 py-8 chat-transcript">
-          {hasOlder && (
-            <div className="flex justify-center pb-3">
-              <button
-                type="button"
-                onClick={handleLoadOlder}
-                disabled={isLoadingOlder}
-                className="text-caption text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] disabled:opacity-50 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)]"
-              >
-                {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
-              </button>
-            </div>
-          )}
           {renderGroups.map((group, idx) => (
             <BubbleGroup
               key={group.key}
@@ -1389,12 +1222,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               agentName={agentName}
               isStreaming={isStreaming}
               isLastAssistantGroup={idx === lastAssistantGroupIndex}
-              onOpenFile={onOpenFile}
-              onRewind={onRewind}
-              rewindDisabled={rewindDisabled}
             />
           ))}
-          {showTypingPlaceholder && <TypingPlaceholder agentName={agentName} />}
         </div>
         {/* Sticky, not absolute: `absolute` inside a scroll container anchors
             to the scrolled content, which would park this at the end of the

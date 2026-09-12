@@ -3,12 +3,14 @@
  * registered grammars (the barrel export bundles all ~300 refractor grammars).
  * Two things must hold: registered languages — including their aliases — still
  * highlight, and a fence naming anything else degrades to plain text instead
- * of reaching refractor, which throws on an unregistered grammar.
+ * of reaching refractor, which throws on an unregistered grammar. Both are
+ * asserted through the rendered output — `resolveHighlightLanguage` is
+ * module-private.
  */
 
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
-import { MessageList, resolveHighlightLanguage } from "../MessageList";
+import { MessageList } from "../MessageList";
 import type { RenderGroup } from "@/hooks/internal/types";
 
 function fenceGroups(language: string, code: string): RenderGroup[] {
@@ -35,41 +37,10 @@ function renderFence(language: string, code: string) {
     <MessageList
       renderGroups={fenceGroups(language, code)}
       isStreaming={false}
-      isTyping={false}
       agentName="Friday"
     />,
   );
 }
-
-describe("resolveHighlightLanguage", () => {
-  it("passes through registered grammars", () => {
-    for (const language of ["python", "typescript", "bash", "json", "yaml", "markdown", "sql", "docker", "diff", "rust"]) {
-      expect(resolveHighlightLanguage(language)).toBe(language);
-    }
-  });
-
-  it("resolves the aliases those grammars register", () => {
-    expect(resolveHighlightLanguage("py")).toBe("py");
-    expect(resolveHighlightLanguage("sh")).toBe("sh");
-    expect(resolveHighlightLanguage("shell")).toBe("shell");
-    expect(resolveHighlightLanguage("ts")).toBe("ts");
-    expect(resolveHighlightLanguage("yml")).toBe("yml");
-    expect(resolveHighlightLanguage("md")).toBe("md");
-    expect(resolveHighlightLanguage("dockerfile")).toBe("dockerfile");
-    expect(resolveHighlightLanguage("html")).toBe("html");
-  });
-
-  it("normalizes case", () => {
-    expect(resolveHighlightLanguage("Python")).toBe("python");
-    expect(resolveHighlightLanguage("JSON")).toBe("json");
-  });
-
-  it("falls back to plain text for unregistered grammars", () => {
-    expect(resolveHighlightLanguage("brainfuck")).toBe("text");
-    expect(resolveHighlightLanguage("cobol")).toBe("text");
-    expect(resolveHighlightLanguage("")).toBe("text");
-  });
-});
 
 describe("MessageList code fences", () => {
   it("highlights a registered language", () => {

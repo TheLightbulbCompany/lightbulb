@@ -106,7 +106,8 @@ async def list_brain_tree(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     workspace = get_workspace()
     entries: list = []
-    _collect_recursive(workspace, owner_id, BRAIN_SUBTREE, entries, BRAIN_SUBTREE)
+    # Blocking EFS walk: off the event loop (bounded — the vault is wiki pages, not a repo).
+    await asyncio.to_thread(_collect_recursive, workspace, owner_id, BRAIN_SUBTREE, entries, BRAIN_SUBTREE)
     return {"files": _strip_wiki_prefix(entries)}
 
 

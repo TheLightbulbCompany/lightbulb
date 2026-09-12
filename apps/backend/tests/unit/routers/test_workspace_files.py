@@ -807,21 +807,16 @@ class TestWorkspaceTreeRoundTrip:
 
         from routers.workspace_files import list_workspace_tree, read_workspace_file
 
-        tree = await list_workspace_tree(
-            agent_id=AGENT_ID,
-            path="",
-            recursive=True,
-            auth=_auth(),
-        )
-        paths = {f["path"] for f in tree["files"]}
+        root = await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
+        paths = {f["path"] for f in root["files"]}
         # Paths must be agent-relative (no `workspace-{agent_id}/` prefix)
-        assert "plan.md" in paths
-        assert "uploads" in paths
-        assert "uploads/data.csv" in paths
-        assert not any(p.startswith("workspace-") for p in paths if p)
+        assert paths == {"plan.md", "uploads"}
+        # One level per request: a child directory is listed by its agent-relative path
+        child = await list_workspace_tree(agent_id=AGENT_ID, path="uploads", auth=_auth())
+        assert [f["path"] for f in child["files"]] == ["uploads/data.csv"]
 
         # Every file path should read successfully via the file endpoint
-        for entry in tree["files"]:
+        for entry in root["files"] + child["files"]:
             if entry["type"] == "file":
                 info = await read_workspace_file(
                     agent_id=AGENT_ID,
@@ -850,12 +845,7 @@ class TestWorkspaceTreeRoundTrip:
         # Backend returned path is user-root-relative; tree will show agent-relative
         assert result["path"] == f"workspace-{AGENT_ID}/notes.txt"
 
-        tree = await list_workspace_tree(
-            agent_id=AGENT_ID,
-            path="",
-            recursive=True,
-            auth=_auth(),
-        )
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
         assert any(f["path"] == "notes.txt" and f["type"] == "file" for f in tree["files"])
 
         info = await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
@@ -911,7 +901,6 @@ class TestReadEndpointTraversal:
             await list_workspace_tree(
                 agent_id=AGENT_ID,
                 path=f"../{self.VICTIM_AGENT}",
-                recursive=False,
                 auth=_auth(),
             )
         assert exc.value.status_code == 400
@@ -973,15 +962,16 @@ class TestReadEndpointTraversal:
         leaky = "/mnt/efs/users/" + USER_ID + "/workspace-secret-internal-path boom"
         monkeypatch.setattr(workspace, "list_directory", lambda *a, **k: (_ for _ in ()).throw(WorkspaceError(leaky)))
         with pytest.raises(HTTPException) as exc:
-            await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
+            await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
         assert exc.value.status_code == 500
         assert "/mnt/efs" not in exc.value.detail
         assert exc.value.detail == "Failed to list workspace directory"
 
     @pytest.mark.asyncio
-    async def test_tree_recursive_does_not_enumerate_symlinked_sibling(self, workspace, monkeypatch):
-        """A symlinked subdir to a sibling workspace must not be walked by the
-        recursive tree (guarding only the root path is insufficient)."""
+    async def test_tree_cannot_descend_into_symlinked_sibling(self, workspace, monkeypatch):
+        """Level-by-level listing: the escaping symlink is dropped from the root
+        listing, and asking for it as a subdirectory is refused (guarding only
+        the root path is insufficient)."""
         import os
 
         from routers.workspace_files import list_workspace_tree
@@ -992,14 +982,14 @@ class TestReadEndpointTraversal:
         # workspace-<attacker>/link -> ../workspace-<victim> (a sibling agent workspace)
         os.symlink(f"../workspace-{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
 
-        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=True, auth=_auth())
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
         paths = {f["path"] for f in tree["files"]}
         assert "notes.txt" in paths  # legit content still listed
-        # The sibling's secret must not appear under any path, and the escaping
-        # symlink itself is dropped.
-        assert not any("secret.txt" in p for p in paths)
-        assert not any(self.VICTIM_AGENT in p for p in paths)
         assert "link" not in paths
+        with pytest.raises(HTTPException) as exc:
+            await list_workspace_tree(agent_id=AGENT_ID, path="link", auth=_auth())
+        assert exc.value.status_code == 403
+        assert self.VICTIM_AGENT not in str(exc.value.detail)
 
     @pytest.mark.asyncio
     async def test_tree_nonrecursive_omits_symlink_escape(self, workspace, monkeypatch):
@@ -1013,7 +1003,52 @@ class TestReadEndpointTraversal:
         (root / f"workspace-{AGENT_ID}" / "notes.txt").write_text("legit", encoding="utf-8")
         os.symlink(f"../workspace-{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
 
-        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
         names = {f["name"] for f in tree["files"]}
         assert "notes.txt" in names
         assert "link" not in names
+
+
+class TestTreeListingOffLoop:
+    """The listing runs on EFS (NFS). On 2026-09-12 the old recursive walk of a
+    ~114k-entry workspace ran ~150s ON THE EVENT LOOP, freezing /health and every
+    request; the endpoint is now one directory per call, off the loop."""
+
+    @pytest.mark.asyncio
+    async def test_listing_does_not_block_event_loop(self, workspace, monkeypatch):
+        import asyncio
+        import time
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        ws_dir = workspace._mount / USER_ID / f"workspace-{AGENT_ID}"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "a.md").write_text("x", encoding="utf-8")
+        real = workspace.list_directory
+
+        def stalled_nfs_listing(*args, **kwargs):
+            time.sleep(0.3)  # one stalled NFS round trip
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(workspace, "list_directory", stalled_nfs_listing)
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        beat = asyncio.create_task(heartbeat())
+        from routers.workspace_files import list_workspace_tree
+
+        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
+        beat.cancel()
+        assert [f["path"] for f in tree["files"]] == ["a.md"]
+        assert ticks >= 5, "the event loop stalled while the EFS listing ran"
+
+    def test_no_recursive_mode(self):
+        import inspect
+
+        from routers.workspace_files import list_workspace_tree
+
+        assert "recursive" not in inspect.signature(list_workspace_tree).parameters

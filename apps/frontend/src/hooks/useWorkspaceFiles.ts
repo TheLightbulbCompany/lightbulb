@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 
@@ -26,13 +27,31 @@ export interface FileInfo {
   mime_type: string;
 }
 
+/**
+ * Root listing of an agent workspace plus a loader for one folder at a time.
+ *
+ * Deliberately NOT recursive: the workspace lives on EFS, where a walk costs
+ * several NFS round trips per entry — one ~114k-entry workspace took ~150 s per
+ * walk and froze the prod backend (2026-09-12). Folders load when expanded.
+ */
 export function useWorkspaceTree(agentId: string | null) {
   const api = useApi();
-  const key = agentId ? `/container/workspace/${agentId}/tree?recursive=true` : null;
+  const key = agentId ? `/container/workspace/${agentId}/tree` : null;
 
   const { data, error, isLoading, mutate } = useSWR<{ files: FileEntry[] }>(
     key,
     () => api.get(key!) as Promise<{ files: FileEntry[] }>,
+  );
+
+  const loadChildren = useCallback(
+    async (dirPath: string): Promise<FileEntry[]> => {
+      if (!agentId) return [];
+      const res = (await api.get(
+        `/container/workspace/${agentId}/tree?path=${encodeURIComponent(dirPath)}`,
+      )) as { files: FileEntry[] };
+      return res.files;
+    },
+    [api, agentId],
   );
 
   return {
@@ -40,6 +59,7 @@ export function useWorkspaceTree(agentId: string | null) {
     error,
     isLoading,
     refresh: mutate,
+    loadChildren,
   };
 }
 

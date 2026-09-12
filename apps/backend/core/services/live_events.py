@@ -17,7 +17,6 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services.messaging import (
-    LIVE_SCHEMA_VERSION,
     ROOM_LIVE_EVENT_TYPES,
     USER_LIVE_EVENT_TYPES,
     LiveEvent,
@@ -51,8 +50,6 @@ def _validated_event(
         event = LiveEvent.model_validate(raw_event)
     except Exception as exc:
         raise LivePublishError("invalid live event") from exc
-    if event.schema_version != LIVE_SCHEMA_VERSION:
-        raise LivePublishError("unsupported live schema version")
     if event.type not in allowed_types:
         raise LivePublishError("live event is not allowed on this channel family")
     return event

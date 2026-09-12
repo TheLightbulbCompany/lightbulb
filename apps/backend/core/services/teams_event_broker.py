@@ -1,10 +1,14 @@
-"""Process-wide Paperclip WebSocket clients projected to private AppSync streams."""
+"""Process-wide Paperclip WebSocket clients projected to private AppSync streams.
+
+main.py builds the one broker during lifespan startup and publishes it with
+``set_broker``; ``GET /messaging/live-config`` reads it back with ``get_broker``
+to ``ensure_user`` before handing the client its AppSync channel."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable
 
 from core.observability.metrics import gauge, put_metric
 from core.services.live_events import get_live_event_publisher
@@ -26,29 +30,20 @@ _PAPERCLIP_EVENTS = frozenset(
 )
 
 
-class _Client(Protocol):
-    async def start(self) -> None: ...
-    async def close(self) -> None: ...
-    def is_alive(self) -> bool: ...
-
-
-ClientFactory = Callable[..., _Client]
-
-
 class TeamsEventBroker:
     """Keep one upstream Paperclip client per active application user."""
 
     def __init__(
         self,
         *,
-        client_factory: ClientFactory,
+        client_factory: Callable[..., Any],
         resolve_company_id: Callable[[str], Awaitable[str]],
         resolve_session_cookie: Callable[[str], Awaitable[str]],
     ) -> None:
         self._client_factory = client_factory
         self._resolve_company_id = resolve_company_id
         self._resolve_cookie = resolve_session_cookie
-        self._clients: dict[tuple[str, str], _Client] = {}
+        self._clients: dict[tuple[str, str], Any] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     async def ensure_user(self, owner_id: str, user_id: str) -> bool:
@@ -118,7 +113,7 @@ class TeamsEventBroker:
         clients = list(self._clients.values())
         self._clients.clear()
 
-        async def _close(client: _Client) -> None:
+        async def _close(client: Any) -> None:
             try:
                 await asyncio.wait_for(client.close(), timeout=_CLIENT_CLOSE_TIMEOUT)
             except Exception:
@@ -127,3 +122,17 @@ class TeamsEventBroker:
         if clients:
             await asyncio.gather(*(_close(client) for client in clients))
         gauge("teams.broker.users.active", 0)
+
+
+_singleton: TeamsEventBroker | None = None
+
+
+def set_broker(broker: TeamsEventBroker | None) -> None:
+    """Called by main.py during lifespan startup/shutdown."""
+    global _singleton
+    _singleton = broker
+
+
+def get_broker() -> TeamsEventBroker | None:
+    """The live broker, or None before startup has built one."""
+    return _singleton

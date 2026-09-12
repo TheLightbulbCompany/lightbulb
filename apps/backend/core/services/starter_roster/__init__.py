@@ -5,7 +5,6 @@ from pathlib import Path
 from core.containers.workspace import Workspace
 
 _FILES_DIR = Path(__file__).parent / "files"
-_ROLE_KEYS = ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
 _ROLE_DETAILS = {
     "ceo": (
         "CEO",
@@ -38,6 +37,7 @@ _ROLE_DETAILS = {
         "Treat customers fairly; bring consequential remedies to the owner.",
     ),
 }
+ROLE_KEYS = tuple(_ROLE_DETAILS)
 _SHARED_ROLE_CONTRACT = """
 
 ## Operating contract
@@ -61,7 +61,7 @@ async def pre_stage_starter_roster(
 ) -> None:
     """Write each live starter agent's role and persona files without replacing edits."""
     live_ids = {agent.get("id") for agent in paperclip_agents}
-    for role_key in _ROLE_KEYS:
+    for role_key in ROLE_KEYS:
         agent_id = starter_agent_ids.get(role_key)
         if not agent_id or agent_id not in live_ids:
             continue

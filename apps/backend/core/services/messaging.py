@@ -23,6 +23,7 @@ from core.auth import AuthContext, resolve_owner_id
 from core.repositories import container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
+from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
 
 RoomKind = Literal["channel", "dm", "group-dm"]
 MemberKind = Literal["human", "agent"]
@@ -40,13 +41,11 @@ MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
-LIVE_SCHEMA_VERSION = 1
 DEFAULT_ROOM_NAME = "general"
 DEFAULT_ROOM_WELCOME = (
     "Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. "
     "I’ll coordinate. Tell us what you’re trying to build or change."
 )
-_STARTER_KEYS = ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
 
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
@@ -248,16 +247,7 @@ class MemberPrefsRequest(ContractModel):
         return out
 
 
-class UpsertRoomMemberRequest(ContractModel):
-    kind: MemberKind
-    id: str = Field(min_length=1, max_length=256)
-    role: Literal["admin", "member"]
-    listen_mode: ListenMode | None
-
-    @model_validator(mode="after")
-    def validate_member_shape(self) -> "UpsertRoomMemberRequest":
-        _validate_member_shape(self.kind, self.role, self.listen_mode)
-        return self
+UpsertRoomMemberRequest = CreateRoomMember
 
 
 class SetReactionRequest(ContractModel):
@@ -858,9 +848,7 @@ async def _validate_human_in_owner(owner_id: str, user_id: str) -> None:
         raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
 
 
-async def _resolved_member(
-    owner_id: str, member: CreateRoomMember | UpsertRoomMemberRequest, roster: list[dict]
-) -> dict:
+async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list[dict]) -> dict:
     if member.kind == "human":
         await _validate_human_in_owner(owner_id, member.id)
         return {
@@ -923,6 +911,25 @@ def _room_member(item: dict[str, Any]) -> RoomMember:
     )
 
 
+def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, Any]:
+    """The RoomSummary half of a room projection — RoomDetail extends it."""
+    floor = max(last_read, int(member.get("joinedSeq", 0)))
+    return {
+        "room_id": meta["roomId"],
+        "name": meta.get("name"),
+        "kind": meta["kind"],
+        "room_revision": int(meta["revision"]),
+        "last_message_seq": int(meta["lastSeq"]),
+        "last_message_at": meta.get("lastMessageAt"),
+        "unread_count": max(0, int(meta["lastSeq"]) - floor),
+        "updated_at": meta["updatedAt"],
+        "starred": bool(member.get("starred")),
+        "muted": bool(member.get("muted")),
+        "section_id": member.get("sectionId"),
+        "topic": meta.get("topic"),
+    }
+
+
 async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> RoomDetail:
     member = member or await messaging_repo.get_member(meta["roomId"], "human", user_id)
     if member is None:
@@ -931,20 +938,8 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_cursor(meta["roomId"], user_id),
     )
-    floor = max(last_read, int(member.get("joinedSeq", 0)))
     return RoomDetail(
-        room_id=meta["roomId"],
-        name=meta.get("name"),
-        kind=meta["kind"],
-        room_revision=int(meta["revision"]),
-        last_message_seq=int(meta["lastSeq"]),
-        last_message_at=meta.get("lastMessageAt"),
-        unread_count=max(0, int(meta["lastSeq"]) - floor),
-        updated_at=meta["updatedAt"],
-        starred=bool(member.get("starred")),
-        muted=bool(member.get("muted")),
-        section_id=member.get("sectionId"),
-        topic=meta.get("topic"),
+        **_room_summary_fields(meta, member, last_read),
         delivery_key=meta["deliveryKey"],
         members=[_room_member(row) for row in with_human_handles(members)],
         last_read_seq=last_read,
@@ -967,23 +962,7 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
         if member is None:
             continue
         last_read = await messaging_repo.get_read_cursor(meta["roomId"], user_id)
-        floor = max(last_read, int(member.get("joinedSeq", 0)))
-        summaries.append(
-            RoomSummary(
-                room_id=meta["roomId"],
-                name=meta.get("name"),
-                kind=meta["kind"],
-                room_revision=int(meta["revision"]),
-                last_message_seq=int(meta["lastSeq"]),
-                last_message_at=meta.get("lastMessageAt"),
-                unread_count=max(0, int(meta["lastSeq"]) - floor),
-                updated_at=meta["updatedAt"],
-                starred=bool(member.get("starred")),
-                muted=bool(member.get("muted")),
-                section_id=member.get("sectionId"),
-                topic=meta.get("topic"),
-            )
-        )
+        summaries.append(RoomSummary(**_room_summary_fields(meta, member, last_read)))
     summaries.sort(key=lambda room: room.updated_at, reverse=True)
     return summaries
 
@@ -1587,11 +1566,6 @@ async def _publish_room_metadata(meta: dict) -> None:
         room_revision=int(meta["revision"]),
     )
     await get_live_event_publisher().publish_room(meta["roomId"], event)
-
-
-def agent_message_receipt_json(receipt: AgentMessageReceiptResponse) -> dict[str, Any]:
-    """Exact three-key wire body shared by POST and receipt reconciliation."""
-    return receipt.model_dump(mode="json", by_alias=True)
 
 
 def json_body_size(value: dict[str, Any]) -> int:

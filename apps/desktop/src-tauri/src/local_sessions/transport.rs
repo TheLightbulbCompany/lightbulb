@@ -52,6 +52,17 @@ fn reconnect_delay(previous: u64, lived: Duration) -> u64 {
     }
 }
 
+/// Mirrors `reconnect_delay` for the supervisor's own restart backoff: a `run_once` call that
+/// lived at least 60 s was a healthy stretch overall, so start the next restart wait over at
+/// one second instead of wherever the backoff had climbed to.
+fn restart_delay(previous: u64, lived: Duration) -> u64 {
+    if lived >= Duration::from_secs(60) {
+        1
+    } else {
+        (previous * 2).clamp(1, 60)
+    }
+}
+
 impl Host {
     async fn observe_workspace(&mut self, key: &str) -> Result<()> {
         let execution = self
@@ -365,6 +376,9 @@ impl Host {
             let started = Instant::now();
             self.run_once(&enrollment, &identity, wake.clone(), status.clone())
                 .await;
+            // Measured here, before the status write and the backoff sleep: a sustained outage's
+            // own sleep must never count toward "lived a healthy while" and reset the cap early.
+            let lived = started.elapsed();
             if let Ok(mut s) = status.lock() {
                 *s = "disconnected".into();
             }
@@ -373,12 +387,7 @@ impl Host {
             }
             relay_log(&format!("supervisor loop ended; restarting in {restart}s"));
             tokio::time::sleep(Duration::from_secs(restart)).await;
-            // A healthy hours-long run should not leave the next restart pinned at the cap.
-            restart = if started.elapsed() >= Duration::from_secs(60) {
-                1
-            } else {
-                (restart * 2).min(60)
-            };
+            restart = restart_delay(restart, lived);
         }
     }
 
@@ -1768,6 +1777,13 @@ mod tests {
         assert_eq!(reconnect_delay(30, Duration::from_secs(1)), 30);
         assert_eq!(reconnect_delay(30, Duration::from_secs(30)), 1);
         assert_eq!(reconnect_delay(4, Duration::from_secs(600)), 1);
+    }
+    #[test]
+    fn local_sessions_restart_delay_backs_off_unless_run_once_lived_a_minute() {
+        assert_eq!(restart_delay(1, Duration::from_secs(0)), 2);
+        assert_eq!(restart_delay(2, Duration::from_secs(59)), 4);
+        assert_eq!(restart_delay(30, Duration::from_secs(60)), 1);
+        assert_eq!(restart_delay(40, Duration::from_secs(10)), 60);
     }
     #[tokio::test]
     async fn local_sessions_supervisor_keeps_running_after_the_network_loop_ends_and_honours_stop() {

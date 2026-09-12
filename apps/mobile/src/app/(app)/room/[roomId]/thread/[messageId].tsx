@@ -99,6 +99,22 @@ export default function ThreadScreen() {
   // The message a long press is acting on; dropping it dismisses the sheet.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
 
+  // The messageId of the most recent failed reaction toggle (mirrors the web's
+  // single `reactionError` string state) — cleared on the next toggle that
+  // succeeds, from either the reactions row or the long-press sheet.
+  const [reactionErrorMessageId, setReactionErrorMessageId] = useState<string | null>(null);
+  const reactToMessage = useCallback(
+    (targetMessageId: string, emoji: string, active: boolean) => {
+      void rooms
+        .setReaction(targetMessageId, emoji, active)
+        .then(() =>
+          setReactionErrorMessageId((current) => (current === targetMessageId ? null : current)),
+        )
+        .catch(() => setReactionErrorMessageId(targetMessageId));
+    },
+    [rooms],
+  );
+
   const runningRun = runs.find((run) => run.state === "running");
   const agentName = useCallback(
     (agentId: string) =>
@@ -133,6 +149,9 @@ export default function ThreadScreen() {
                 message={root}
                 collapsed={false}
                 replyCount={0}
+                currentUserId={userId ?? ""}
+                reactionError={reactionErrorMessageId === root.messageId}
+                onToggleReaction={(emoji, active) => reactToMessage(root.messageId, emoji, active)}
                 onLongPress={() => setActionTarget(root)}
                 downloadAttachment={rooms.downloadAttachment}
               />
@@ -185,6 +204,11 @@ export default function ThreadScreen() {
               message={item.message}
               collapsed={item.collapsed}
               replyCount={0}
+              currentUserId={userId ?? ""}
+              reactionError={reactionErrorMessageId === item.message.messageId}
+              onToggleReaction={(emoji, active) =>
+                reactToMessage(item.message.messageId, emoji, active)
+              }
               onLongPress={() => setActionTarget(item.message)}
               downloadAttachment={rooms.downloadAttachment}
             />
@@ -197,12 +221,9 @@ export default function ThreadScreen() {
           currentUserId={userId ?? ""}
           roomId={roomId}
           onClose={() => setActionTarget(null)}
-          // ponytail: a rejected reaction is swallowed, so the emoji just never
-          // appears; the upgrade is an inline error under the message (what the
-          // web's `reactionError` does) or a toast.
-          onReact={(emoji, active) =>
-            void rooms.setReaction(actionTarget.messageId, emoji, active).catch(() => {})
-          }
+          // Reaction failures surface inline under the message (see
+          // `reactionErrorMessageId` above), matching the web's `reactionError`.
+          onReact={(emoji, active) => reactToMessage(actionTarget.messageId, emoji, active)}
           // No Reply in thread and no Mark unread — the web's `!inThread` rule.
           // A reply cannot root a nested thread, and the read cursor is per room,
           // so marking unread here is undone the moment the conversation behind

@@ -55,6 +55,49 @@ function AttachmentImage({
 }
 
 /**
+ * The applied-reactions row: one chip per emoji with a nonzero reactor count,
+ * drawn under the message body. Mirrors web's `RoomMessageItem` `appliedReactions`
+ * block — same wording, same "state is a border and a tint, never a loud fill"
+ * rule `MessageActionsSheet.styles.reactionActive` already follows.
+ */
+function MessageReactions({
+  reactions,
+  currentUserId,
+  onToggle,
+}: {
+  reactions: [string, string[]][];
+  currentUserId: string;
+  onToggle: (emoji: string, active: boolean) => void;
+}) {
+  return (
+    <View style={styles.reactionsRow} accessibilityLabel="Message reactions">
+      {reactions.map(([emoji, users]) => {
+        const selected = users.includes(currentUserId);
+        return (
+          <Pressable
+            key={emoji}
+            onPress={() => onToggle(emoji, !selected)}
+            accessibilityRole="button"
+            accessibilityLabel={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`}
+            accessibilityState={{ selected }}
+            style={({ pressed }) => [
+              styles.reactionChip,
+              selected && styles.reactionChipActive,
+              pressed && styles.reactionChipPressed,
+            ]}
+          >
+            <Text style={styles.reactionEmoji}>{emoji}</Text>
+            <Text style={[styles.reactionCount, selected && styles.reactionCountActive]}>
+              {users.length}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/**
  * One `message` timeline item, Slack's shape: avatar + author + time on the
  * first message of an author's run, body only on the rest. A long press
  * reveals the time of a collapsed message (and hands the press on to the
@@ -64,19 +107,31 @@ export function MessageGroup({
   message,
   collapsed,
   replyCount,
+  currentUserId = "",
   onLongPress,
   onOpenThread,
+  onToggleReaction,
+  reactionError = false,
   downloadAttachment,
 }: {
   message: CanonicalRoomMessage;
   collapsed: boolean;
   replyCount: number;
+  /** Needed only to mark the viewer's own reaction chip as selected. */
+  currentUserId?: string;
   onLongPress?: () => void;
   onOpenThread?: () => void;
+  /** Omitted (e.g. for an in-flight local row) hides the reactions row entirely. */
+  onToggleReaction?: (emoji: string, active: boolean) => void;
+  /** True when this message's last reaction toggle failed. */
+  reactionError?: boolean;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
 }) {
   const [timeShown, setTimeShown] = useState(false);
   const time = formatTime(message.createdAt);
+  const appliedReactions = Object.entries(message.reactions ?? {}).filter(
+    ([, users]) => users.length > 0,
+  );
   return (
     <Pressable
       style={collapsed ? styles.collapsed : styles.group}
@@ -103,6 +158,18 @@ export function MessageGroup({
         ) : (
           <MessageMarkdown text={message.text} />
         )}
+        {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 ? (
+          <MessageReactions
+            reactions={appliedReactions}
+            currentUserId={currentUserId}
+            onToggle={onToggleReaction}
+          />
+        ) : null}
+        {reactionError ? (
+          <Text accessibilityRole="alert" style={styles.reactionError}>
+            Could not update reaction. Try again.
+          </Text>
+        ) : null}
         {(message.attachments ?? []).map((attachment) => (
           <AttachmentImage
             key={attachment.id}
@@ -172,6 +239,25 @@ const styles = StyleSheet.create({
   collapsedTime: { marginBottom: 2 },
   body: { paddingLeft: MESSAGE_BODY_INDENT, marginTop: 2 },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute, fontStyle: "italic" },
+  reactionsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.xs },
+  reactionChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    backgroundColor: colors.chip,
+  },
+  // The manual's rule: state is a border and a tint, never a loud fill.
+  reactionChipActive: { backgroundColor: colors.forestTint, borderColor: colors.forest },
+  reactionChipPressed: { backgroundColor: colors.rowPressed },
+  reactionEmoji: { fontSize: 14, lineHeight: 18 },
+  reactionCount: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.inkSoft },
+  reactionCountActive: { color: colors.forest },
+  reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText, marginTop: spacing.xs },
   replies: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest, marginTop: spacing.xs },
   unsent: {
     flexDirection: "row",

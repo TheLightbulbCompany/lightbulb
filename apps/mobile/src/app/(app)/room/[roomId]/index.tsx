@@ -124,6 +124,20 @@ function Conversation() {
   // The message a long press is acting on; dropping it dismisses the sheet.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
 
+  // The messageId of the most recent failed reaction toggle (mirrors the web's
+  // single `reactionError` string state) — cleared on the next toggle that
+  // succeeds, from either the reactions row or the long-press sheet.
+  const [reactionErrorMessageId, setReactionErrorMessageId] = useState<string | null>(null);
+  const reactToMessage = useCallback(
+    (messageId: string, emoji: string, active: boolean) => {
+      void rooms
+        .setReaction(messageId, emoji, active)
+        .then(() => setReactionErrorMessageId((current) => (current === messageId ? null : current)))
+        .catch(() => setReactionErrorMessageId(messageId));
+    },
+    [rooms],
+  );
+
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -235,6 +249,11 @@ function Conversation() {
               message={item.message}
               collapsed={item.collapsed}
               replyCount={replyCounts.get(item.message.messageId) ?? 0}
+              currentUserId={userId ?? ""}
+              reactionError={reactionErrorMessageId === item.message.messageId}
+              onToggleReaction={(emoji, active) =>
+                reactToMessage(item.message.messageId, emoji, active)
+              }
               onLongPress={() => setActionTarget(item.message)}
               onOpenThread={() =>
                 router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
@@ -260,12 +279,11 @@ function Conversation() {
           currentUserId={userId ?? ""}
           roomId={roomId}
           onClose={() => setActionTarget(null)}
-          // ponytail: both rejections are swallowed, so a failed reaction or
+          // ponytail: mark-unread's rejection is still swallowed, so a failed
           // mark-unread just looks like nothing happened; the upgrade is an
-          // inline error under the message (the web's `reactionError`) or a toast.
-          onReact={(emoji, active) =>
-            void rooms.setReaction(actionTarget.messageId, emoji, active).catch(() => {})
-          }
+          // inline error or a toast. Reaction failures now surface (see
+          // `reactionErrorMessageId` above), matching the web's `reactionError`.
+          onReact={(emoji, active) => reactToMessage(actionTarget.messageId, emoji, active)}
           onReplyInThread={() =>
             router.push(`/(app)/room/${roomId}/thread/${actionTarget.messageId}`)
           }

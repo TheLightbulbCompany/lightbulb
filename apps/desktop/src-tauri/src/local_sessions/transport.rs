@@ -42,6 +42,11 @@ pub(super) struct Host {
     stop: Arc<AtomicBool>,
 }
 
+/// How long a per-session verdict (a stale generation, a relay rejection) keeps that session out
+/// of rotation. Connections are long-lived now, so "for this connection" could mean hours; this
+/// bounds it and lets a session that has since been repaired re-register on the same socket.
+const QUARANTINE: Duration = Duration::from_secs(300);
+
 /// A connection that lived long enough was healthy: start over at one second. A short-lived one
 /// (connect-then-die, the 2026-09-12 loop) doubles the wait, capped at 30 s.
 fn reconnect_delay(previous: u64, lived: Duration) -> u64 {
@@ -346,14 +351,14 @@ impl Host {
                     }
                     .into();
                 }
-                if self
+                if let Err(e) = self
                     .observing_wait(&mut rx, async {
                         tokio::time::sleep(Duration::from_secs(delay)).await;
                         Ok(())
                     })
                     .await
-                    .is_err()
                 {
+                    relay_log(&format!("network loop stopped: {e}"));
                     break;
                 }
                 delay = reconnect_delay(delay, lived);
@@ -397,7 +402,7 @@ impl Host {
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
     ) -> Result<()> {
         let mut registered = BTreeMap::<String, Instant>::new();
-        let mut quarantined = std::collections::BTreeSet::<String>::new();
+        let mut quarantined = BTreeMap::<String, Instant>::new();
         let mut pending_rpc: Option<(String, bool, Instant, SystemTime, Value)> = None;
         let mut anchor: Option<ClockAnchor> = None;
         let mut deferred = std::collections::VecDeque::<Command>::new();
@@ -456,7 +461,9 @@ impl Host {
                 if let Some(key) = self
                     .mirrors
                     .keys()
-                    .find(|key| !registered.contains_key(*key) && !quarantined.contains(*key))
+                    .find(|key| {
+                        !registered.contains_key(*key) && !quarantine_active(&quarantined, key)
+                    })
                     .cloned()
                 {
                     let sent = Instant::now();
@@ -543,6 +550,11 @@ impl Host {
                         Some("local.session.registered" | "local.session.heartbeat.ack") => {
                             let (key,is_register,sent,wall,metadata) = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             if is_register != (body["type"] == "local.session.registered") {return Err("mismatched session acknowledgment".into());}
+                            if quarantine_active(&quarantined, &key) {
+                                // A late ACK must never put a quarantined session back in rotation.
+                                relay_log(&format!("{} ack ignored while quarantined", short(&key)));
+                                continue;
+                            }
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -614,11 +626,21 @@ impl Host {
                                 self.mirrors.iter().find(|(_, m)| m.session_id.as_deref() == Some(sid)).map(|(k, _)| k.clone())
                             });
                             let inflight = pending_rpc.as_ref().map(|(k, ..)| k.clone());
+                            let attributed = named.is_some();
                             let Some(key) = named.or(inflight) else {
                                 relay_log(&format!("relay rejected an unattributable frame: {code}"));
                                 return Err("local session relay rejected the frame".into());
                             };
-                            if pending_rpc.as_ref().is_some_and(|(k, ..)| *k == key) {
+                            if code == "RATE_LIMITED" {
+                                // Retryable by contract: the pending batch re-sends on the 2s
+                                // sent_batches throttle. Quarantining it would go dark for 5min.
+                                relay_log(&format!("{} rate limited; pending batch retries after the throttle", short(&key)));
+                                continue;
+                            }
+                            // Only an error that named no session is necessarily this RPC's own
+                            // reply; one naming a session may be about a batch while the in-flight
+                            // RPC is that key's heartbeat, whose real ACK is still coming.
+                            if !attributed {
                                 pending_rpc = None;
                             }
                             quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, &format!("relay rejected a frame: {code}"));
@@ -859,15 +881,25 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
+fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
+    quarantined
+        .get(key)
+        .is_some_and(|at| at.elapsed() < QUARANTINE)
+}
+
 fn quarantine(
-    quarantined: &mut std::collections::BTreeSet<String>,
+    quarantined: &mut BTreeMap<String, Instant>,
     registered: &mut BTreeMap<String, Instant>,
     sent_batches: &mut BTreeMap<String, Instant>,
     key: &str,
     reason: &str,
 ) {
-    relay_log(&format!("{} quarantined for this connection: {reason}", short(key)));
-    quarantined.insert(key.to_owned());
+    relay_log(&format!(
+        "{} quarantined for {}s: {reason}",
+        short(key),
+        QUARANTINE.as_secs()
+    ));
+    quarantined.insert(key.to_owned(), Instant::now());
     registered.remove(key);
     sent_batches.remove(key);
 }
@@ -1768,6 +1800,56 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert!(stored.pending.is_some(), "the rejected batch stays pending for the next connection's reconciliation");
         assert_eq!(stored.after_seq, 0);
+    }
+    #[tokio::test]
+    async fn local_sessions_rate_limited_batch_retries_on_the_same_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g1",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            let batch = next_frame(&mut socket).await;
+            assert_eq!(batch["type"], "local.session.events");
+            // Retryable by contract (retry_after 0.5s), so it must not darken the session.
+            reply(&mut socket, json!({"type":"local.session.error","code":"RATE_LIMITED","sessionId":SID})).await;
+            let frame = tokio::time::timeout(Duration::from_millis(3500), socket.next())
+                .await
+                .expect("the throttled batch retries on this connection")
+                .expect("stream open")
+                .expect("frame ok");
+            let retry: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_eq!(retry["type"], "local.session.events");
+            assert_eq!(retry["batchId"], batch["batchId"], "the same pending batch retries");
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":retry["batchId"],"afterSeq":1})).await;
+            socket.close(None).await.unwrap();
+        });
+        let mut mirror = test_mirror("native", "g1");
+        mirror.queue = vec![json!({"kind":"text","role":"assistant","text":"public output","truncated":false})];
+        let mut host = test_host(dir.path(), vec![("local", mirror)]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
+        assert_eq!(stored.after_seq, 1);
+        assert!(stored.pending.is_none());
+    }
+    #[test]
+    fn local_sessions_quarantine_is_time_bound_not_connection_bound() {
+        let mut quarantined = BTreeMap::new();
+        assert!(!quarantine_active(&quarantined, "absent"));
+        quarantined.insert("fresh".to_string(), Instant::now());
+        assert!(quarantine_active(&quarantined, "fresh"));
+        if let Some(expired) = Instant::now().checked_sub(QUARANTINE + Duration::from_secs(1)) {
+            quarantined.insert("stale".to_string(), expired);
+            assert!(!quarantine_active(&quarantined, "stale"));
+        }
     }
     #[test]
     fn local_sessions_reconnect_delay_backs_off_unless_the_connection_lived() {

@@ -1176,6 +1176,10 @@ impl Mirror {
         Ok(Some(batch))
     }
     fn acknowledge(&mut self, batch_id: &str, after_seq: u64) -> Result<()> {
+        if self.pending.is_none() && after_seq == self.after_seq {
+            // A registration ACK already reconciled this batch; its own late ACK is a no-op.
+            return Ok(());
+        }
         let pending = self
             .pending
             .as_ref()
@@ -1874,6 +1878,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_sessions_ack_for_an_already_reconciled_batch_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(dir.path().join("transcript.jsonl"));
+        mirror.after_seq = 7;
+        // The registration ACK already reconciled this batch; its own ACK arrives late.
+        mirror.acknowledge("b1", 7).unwrap();
+        assert_eq!(mirror.after_seq, 7);
+        assert!(mirror.pending.is_none());
+        assert!(mirror.acknowledge("b1", 8).is_err(), "a cursor we never reached is still a conflict");
+    }
     #[test]
     fn local_sessions_tool_event_is_bounded_against_the_wire_not_its_byte_length() {
         // 20 KiB of CJK passes every byte bound, but the envelope charges 6 wire chars

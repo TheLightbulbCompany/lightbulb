@@ -158,17 +158,34 @@ function AgentChat() {
   }, [activeRoomId]);
 
   // A run the canonical transcript now covers is done double-duty: drop its
-  // live items so the stream doesn't render twice (sessions contract §5). This
-  // is point-in-time, not a standing filter — frames that arrive AFTER the
-  // persisted message (the same run still streaming) have to survive.
+  // live items so the stream doesn't render twice (sessions contract §5).
+  //
+  // Scoped to the messages that just ARRIVED, which is what the old
+  // `applyCanonical(batch)` pruned on. Two failure modes bracket this:
+  // filtering on every runId in `messages` kills a still-streaming run,
+  // because `reconcile` re-merges into a fresh array after every page (a
+  // reconnect or the `run_ended` refetch is enough, even with an empty page);
+  // remembering runIds already pruned kills the dedupe instead, because the
+  // user's own message carries the runId of the run it started, so the run
+  // would be marked handled long before the agent's reply lands. Tracking
+  // seen message ids is the only cut that survives both.
+  const seenMessageIdsRef = useRef(new Set<string>());
   useEffect(() => {
-    const canonicalRunIds = new Set(messages.flatMap((message) => message.runId ? [message.runId] : []));
-    if (canonicalRunIds.size === 0) return;
+    seenMessageIdsRef.current = new Set();
+  }, [activeRoomId]);
+  useEffect(() => {
+    const arrivedRunIds = new Set<string>();
+    for (const message of messages) {
+      if (seenMessageIdsRef.current.has(message.messageId)) continue;
+      seenMessageIdsRef.current.add(message.messageId);
+      if (message.runId) arrivedRunIds.add(message.runId);
+    }
+    if (arrivedRunIds.size === 0) return;
     setItems((current) => {
-      const next = current.filter((item) => !item.runId || !canonicalRunIds.has(item.runId));
+      const next = current.filter((item) => !item.runId || !arrivedRunIds.has(item.runId));
       return next.length === current.length ? current : next;
     });
-  }, [messages]);
+  }, [messages, activeRoomId]);
 
   const handleFrame = useCallback((msg: ChatIncomingMessage, runId: string) => {
     if (msg.type === "run_active") {
@@ -376,8 +393,12 @@ function AgentChat() {
             replyToMessageId: null,
             threadRootMessageId: null,
           });
+      // `reconcileSend` resolves undefined when the room changed under it and
+      // the shared hook dropped the request — nothing was sent, so parking the
+      // composer on a Stop button with no run to stop would be a dead end.
+      if (!canonical) return false;
       pendingSendRef.current = null;
-      if (canonical?.runId) activeRunIdRef.current = canonical.runId;
+      if (canonical.runId) activeRunIdRef.current = canonical.runId;
       setBusy(true);
       return true;
     } catch (error) {

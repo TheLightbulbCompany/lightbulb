@@ -23,8 +23,10 @@ jest.mock("expo-router", () => {
   };
 });
 
-// user: null keeps history hydration inert — which is exactly the trap this
-// suite pins: nothing else may be relied on to clear a stale conversation.
+// `listMessages` resolves empty, so history hydration adds nothing — which is
+// exactly the trap this suite pins: nothing but the switch itself may be
+// relied on to clear a stale conversation. `userId` is required: the shared
+// useRooms keys its SWR scope on it and fetches nothing without one.
 jest.mock("@clerk/clerk-expo", () => ({
   useUser: () => ({ user: null }),
   useAuth: () => ({ userId: "user_a", getToken: jest.fn(async () => "token") }),
@@ -156,7 +158,7 @@ describe("AgentChat agent switching", () => {
     }));
 
     // Friday's transcript must be gone IMMEDIATELY — not "once Atlas's
-    // history fetch replaces it" (here it never fetches: no user). This is
+    // history fetch replaces it" (here that fetch returns nothing). This is
     // the stale-conversation flash: the General→General switch hit
     // switchSession's same-session early return and cleared nothing.
     expect(screen.queryByText("friday question")).toBeNull();

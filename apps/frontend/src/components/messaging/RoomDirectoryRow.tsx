@@ -56,14 +56,17 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         <Button ref={actionsTrigger} variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} aria-busy={busy} data-room-id={room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {onToggleStar && <DropdownMenuItem onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>}
-        {onToggleMute && <DropdownMenuItem onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute conversation" : "Mute conversation"}</DropdownMenuItem>}
-        {onMarkUnread && <DropdownMenuItem onSelect={onMarkUnread}><MailOpen aria-hidden="true" />Mark unread</DropdownMenuItem>}
+        {/* The trigger itself stays enabled (see aria-busy above) so Radix has
+            somewhere to return focus to -- these items are what actually gate
+            re-entry while this room's own save is in flight. */}
+        {onToggleStar && <DropdownMenuItem disabled={busy} onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>}
+        {onToggleMute && <DropdownMenuItem disabled={busy} onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute conversation" : "Mute conversation"}</DropdownMenuItem>}
+        {onMarkUnread && <DropdownMenuItem disabled={busy} onSelect={onMarkUnread}><MailOpen aria-hidden="true" />Mark unread</DropdownMenuItem>}
         <DropdownMenuItem onSelect={onCopyLink}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
         {onMoveToSection && <>
           <DropdownMenuSeparator />
-          {sections.map((section) => <DropdownMenuItem key={section.id} disabled={room.sectionId === section.id} onSelect={() => onMoveToSection(section.id)}>Move to {section.name}</DropdownMenuItem>)}
-          {room.sectionId && <DropdownMenuItem onSelect={() => onMoveToSection(null)}>Remove from section</DropdownMenuItem>}
+          {sections.map((section) => <DropdownMenuItem key={section.id} disabled={busy || room.sectionId === section.id} onSelect={() => onMoveToSection(section.id)}>Move to {section.name}</DropdownMenuItem>)}
+          {room.sectionId && <DropdownMenuItem disabled={busy} onSelect={() => onMoveToSection(null)}>Remove from section</DropdownMenuItem>}
         </>}
         {onLeave && <>
           <DropdownMenuSeparator />

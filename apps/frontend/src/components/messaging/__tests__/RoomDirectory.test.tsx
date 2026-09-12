@@ -246,6 +246,45 @@ it("keeps a failed star's error banner across a room switch", async () => {
   expect(screen.getByRole("alert")).toHaveTextContent("offline");
 });
 
+it("guards against a double star while the row's own save is still pending", async () => {
+  let resolveSetPrefs!: () => void;
+  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={onSetPrefs} onMarkUnread={vi.fn()}
+    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
+  expect(onSetPrefs).toHaveBeenCalledTimes(1);
+  // Reopen the row menu while the first save is still in flight -- the
+  // trigger stays enabled (so focus restoration keeps working), but the item
+  // itself is disabled, and setRoomPrefs' own guard must hold even if it
+  // weren't.
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  const item = await screen.findByRole("menuitem", { name: "Star conversation" });
+  expect(item).toHaveAttribute("data-disabled");
+  await userEvent.click(item);
+  expect(onSetPrefs).toHaveBeenCalledTimes(1);
+  await act(async () => resolveSetPrefs());
+});
+
+it("focuses the destination group's header when starring collapses the row out of view", async () => {
+  window.localStorage.clear();
+  window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: ["starred"], sort: "alpha" }));
+  let resolveSetPrefs!: () => void;
+  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
+  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
+    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn() };
+  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star conversation" }));
+  // Starred is already collapsed and "plain" is not the open room, so once it
+  // re-buckets into Starred its row (and overflow trigger) never renders at all.
+  rerender(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain", starred: true }]} />);
+  expect(screen.queryByRole("button", { name: "Conversation actions for Plain" })).not.toBeInTheDocument();
+  await act(async () => resolveSetPrefs());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Expand Starred" })).toHaveFocus());
+});
+
 it("sorts unread first when asked and remembers the choice per owner scope", async () => {
   window.localStorage.clear();
   const rooms = [

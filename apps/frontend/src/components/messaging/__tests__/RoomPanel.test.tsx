@@ -277,10 +277,11 @@ it("shows the newest reply's relative time beside the reply count", () => {
     vi.setSystemTime(new Date("2026-09-10T00:12:00Z"));
     render(<RoomPanel {...props} messages={[
       message,
-      { ...message, messageId: "reply-1", messageSeq: 2, text: "First reply", threadRootMessageId: message.messageId, createdAt: "2026-09-10T00:05:00Z" },
-      // Out of arrival order and lower messageSeq is the OLDER reply here --
-      // the newest one (by messageSeq) is reply-2, and its time is the one shown.
+      // The newest reply by messageSeq is listed FIRST in the array, and the
+      // older one second -- a `replies.at(-1)`/last-array-element regression
+      // would show reply-1's time (7m ago) instead of reply-2's (2m ago).
       { ...message, messageId: "reply-2", messageSeq: 3, text: "Second reply", threadRootMessageId: message.messageId, createdAt: "2026-09-10T00:10:00Z" },
+      { ...message, messageId: "reply-1", messageSeq: 2, text: "First reply", threadRootMessageId: message.messageId, createdAt: "2026-09-10T00:05:00Z" },
     ]} />);
     const reply = screen.getByRole("button", { name: "Reply in thread, 2 replies · last reply 2m ago" });
     expect(reply).toHaveTextContent("2 replies · last reply 2m ago");

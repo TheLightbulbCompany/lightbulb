@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { HEARTBEAT_MS, createRunCallbacks, createRunSupervisor, transformAgentEvent } from "./runs.js";
+import { HEARTBEAT_MS, createRunCallbacks, createRunSupervisor, postToBackend, transformAgentEvent, usageFromEntry } from "./runs.js";
 
 const ENV = {
   ISOL8_API_URL: "https://api.flickmeon.ai/",
@@ -257,6 +257,27 @@ describe("createRunCallbacks", () => {
       "lightbulb: run callback run.ended undelivered for bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       "lightbulb: run callback run.ended undelivered for bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     ]);
+  });
+});
+
+describe("postToBackend and usageFromEntry", () => {
+  it("postToBackend retries 5xx and stops on 2xx/4xx", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn().mockResolvedValueOnce({ status: 503 }).mockResolvedValueOnce({ status: 404 });
+      const p = postToBackend({ fetch: fetch as any, env: () => ENV }, (base, owner) => `${base}/api/v1/internal/messaging/usage/${owner}`, { a: 1 });
+      await vi.runAllTimersAsync();
+      await expect(p).resolves.toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls[0][0]).toBe("https://api.flickmeon.ai/api/v1/internal/messaging/usage/owner_123");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("usageFromEntry maps a session entry and tolerates an empty one", () => {
+    expect(usageFromEntry(ENTRY)).toEqual({ model: "claude-sonnet-4-6", inputTokens: 1200, outputTokens: 300, cacheReadTokens: 5000, cacheWriteTokens: 100, estimatedCostUsd: 0.0123 });
+    expect(usageFromEntry(undefined)).toEqual({ model: "unknown", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: null });
   });
 });
 

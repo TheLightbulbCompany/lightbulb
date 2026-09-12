@@ -6,7 +6,8 @@ import {
 abortAgentHarnessRun as abortEmbeddedAgentRun, onAgentEvent, queueAgentHarnessMessage, resolveActiveEmbeddedRunSessionId, } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { createFramePublisher, ecsCredentialsProvider } from "./appsync.js";
-import { createRunCallbacks, createRunSupervisor } from "./runs.js";
+import { createRunCallbacks, createRunSupervisor, postToBackend } from "./runs.js";
+import { createUsageHook } from "./usage.js";
 import { buildChannelOutboundSessionRoute, createChatChannelPlugin, defineChannelPluginEntry, } from "openclaw/plugin-sdk/channel-core";
 import { buildChannelInboundEventContext, resolveChannelInboundRouteEnvelope } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -168,5 +169,14 @@ export default defineChannelPluginEntry({
             gatewayRuntimeScopeSurface: "trusted-operator",
             handler: createRpcHandler({ dispatch: dispatchGatewayMethod, readBody: readJsonWebhookBodyOrReject }),
         });
+        api.on("agent_end", createUsageHook({
+            post: async (path, body) => {
+                const delivered = await postToBackend({ fetch: fetchLike, env: () => process.env }, (base, owner) => `${base}${path}/${owner}`, body);
+                if (!delivered)
+                    console.warn(`lightbulb: usage callback undelivered`);
+            },
+            getSessionEntry: ({ agentId, sessionKey }) => getSessionEntry({ agentId, sessionKey, env: process.env, readConsistency: "latest" }),
+            log: (m) => console.warn(m),
+        }));
     },
 });

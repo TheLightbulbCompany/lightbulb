@@ -10,7 +10,8 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { createFramePublisher, ecsCredentialsProvider } from "./appsync.js";
-import { createRunCallbacks, createRunSupervisor } from "./runs.js";
+import { createRunCallbacks, createRunSupervisor, postToBackend } from "./runs.js";
+import { createUsageHook } from "./usage.js";
 import {
   buildChannelOutboundSessionRoute,
   createChatChannelPlugin,
@@ -210,5 +211,14 @@ export default defineChannelPluginEntry({
       gatewayRuntimeScopeSurface: "trusted-operator",
       handler: createRpcHandler({ dispatch: dispatchGatewayMethod, readBody: readJsonWebhookBodyOrReject as any }),
     });
+    api.on("agent_end", createUsageHook({
+      post: async (path, body) => {
+        const delivered = await postToBackend({ fetch: fetchLike, env: () => process.env }, (base, owner) => `${base}${path}/${owner}`, body);
+        if (!delivered) console.warn(`lightbulb: usage callback undelivered`);
+      },
+      getSessionEntry: ({ agentId, sessionKey }) =>
+        getSessionEntry({ agentId, sessionKey, env: process.env, readConsistency: "latest" }) as any,
+      log: (m) => console.warn(m),
+    }));
   },
 });

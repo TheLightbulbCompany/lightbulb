@@ -633,6 +633,23 @@ class GatewayConnection:
             if run_id:
                 run["run_id"] = run_id
 
+    def run_id_for_session(self, session_key: str) -> str | None:
+        """The in-flight run id for *session_key*, if the gateway has seen one.
+
+        Read by the agent-message receipt path so a persisted agent reply can
+        carry the run that produced it — clients use it to retire the run card
+        instead of showing card + message side by side. Active window only: a
+        completed run's entry is already cleared, and anything else (no entry,
+        entry without a run id yet) returns None, which keeps today's
+        text-match fallback. Never raises; missing state means unstamped.
+
+        Normalized to lowercase — see `mark_run_active` for why store/read
+        must agree on casing.
+        """
+        run = self._active_runs.get(session_key.lower())
+        run_id = (run or {}).get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
+
     def _clear_active_run(
         self,
         session_key: str,
@@ -2587,6 +2604,18 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_side_run(run_id)
+
+    def run_id_for_session(self, user_id: str, session_key: str) -> str | None:
+        """The in-flight run id for *session_key* on *user_id*'s connection.
+
+        Thin pool-level delegate over the connection's ``run_id_for_session``.
+        No connection at all → None (receipt stays unstamped, today's
+        behaviour). Used by the agent-message receipt path to retire run cards.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return None
+        return conn.run_id_for_session(session_key)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the

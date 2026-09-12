@@ -37,6 +37,17 @@ def get_gateway_pool() -> GatewayConnectionPool:
     return _gateway_pool
 
 
+def get_gateway_pool_if_started() -> GatewayConnectionPool | None:
+    """The pool singleton if already constructed, else None (no construction).
+
+    Read paths that only consult tracked run/connection state use this: when
+    no pool exists there is nothing tracked yet, so None is the answer — and
+    a cold process avoids paying singleton construction (boto3 setup, ~2s)
+    inside a latency-measured request.
+    """
+    return _gateway_pool
+
+
 async def startup_containers() -> None:
     """No-op: ECS Services are always-on; no reconciliation needed at startup."""
     logger.info("Container startup: ECS services are always-on, nothing to reconcile")

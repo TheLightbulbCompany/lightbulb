@@ -110,7 +110,11 @@ export function DesktopPermissionsGate() {
     const current = ++operation.current;
     setSaving(true); setSaveError(null);
     // Pairing uses the existing node grant; sharing is a separate native command.
-    if (shouldShowGate) writeDesktopPermissionGrant(next);
+    if (shouldShowGate) {
+      writeDesktopPermissionGrant(next);
+      setPermissions(next);
+    }
+    if (mode === "basic") setChoice(false);
     capture("desktop_permissions_saved", {
       mode,
       screen: next.screen,

@@ -64,6 +64,7 @@ it("keeps failed remote-history disable visible instead of silently completing s
   await userEvent.click(screen.getByRole("button", {name:"Basic only"}));
   expect(await screen.findByRole("alert")).toBeInTheDocument();
   expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  expect(screen.getByRole("button", {name:/Browser/})).toHaveAttribute("aria-pressed", "false");
   expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
 });
 it("stops sharing on retry even when failed enrollment status has not arrived", async () => {

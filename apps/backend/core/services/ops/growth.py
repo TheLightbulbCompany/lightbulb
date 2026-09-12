@@ -1,7 +1,8 @@
 """Growth / GTM metrics for the admin console — computed on read.
 
-Definitions are DECIDED in docs/growth/2026-08-17-blitzscaling-strategy.md §3;
-data-source research is docs/superpowers/plans/2026-08-26-admin-gtm-dashboards.md §0.1.
+Definitions are DECIDED in docs/growth/2026-08-17-blitzscaling-strategy.md §3
+(data-source research doc that seeded this module has shipped and been
+deleted per the "Planning docs are disposable" CLAUDE.md rule).
 
 Sources: DynamoDB scans (owners, plans, readiness, connected providers),
 the Paperclip Aurora DB via the Data API (routines + runs — the ledger for

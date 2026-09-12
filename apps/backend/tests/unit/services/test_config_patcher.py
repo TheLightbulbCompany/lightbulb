@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -2449,6 +2450,28 @@ _LIGHTBULB_BINDING = {
     "match": {"channel": "lightbulb", "accountId": "agent_x", "peer": {"kind": "channel", "id": "*"}},
 }
 
+# The first extended build baking the channel plugin, and the pin one build
+# earlier that does not (same base, same isol8 patch level).
+_PLUGIN_IMAGE = "2026.9.3-isol8.2-fa8bf22"
+_PRE_PLUGIN_IMAGE = "2026.9.3-isol8.2-449894a"
+
+
+@pytest.fixture(autouse=True)
+def owner_image():
+    """``register_lightbulb_agent_account`` gates on the owner's container image.
+
+    Default every test to one that bakes the plugin; a test that cares sets
+    ``owner_image["tag"]`` to something older.
+    """
+    holder = {"tag": _PLUGIN_IMAGE}
+
+    async def _deployed_image_tag(owner_id):
+        return holder["tag"]
+
+    manager = SimpleNamespace(_deployed_image_tag=_deployed_image_tag)
+    with patch("core.containers.get_ecs_manager", lambda: manager):
+        yield holder
+
 
 @pytest.mark.asyncio
 async def test_register_lightbulb_agent_account_adds_account_and_exact_binding_shape(efs_dir):
@@ -2489,6 +2512,34 @@ async def test_register_lightbulb_agent_account_preserves_other_channels_and_age
         result = json.load(f)
     assert set(result["channels"]["lightbulb"]["accounts"]) == {"friday", "agent_x"}
     assert len(result["bindings"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tag", [_PRE_PLUGIN_IMAGE, "2026.8.1-isol8.3-4e22eb8", "", None])
+async def test_register_lightbulb_agent_account_skipped_on_image_without_the_plugin(efs_dir, owner_image, tag):
+    # This is the one writer that CREATES channels.lightbulb from nothing, so on
+    # an image that does not bake the plugin it would turn a healthy container
+    # into a boot crash loop. It must not write at all — not even the backup.
+    owner_image["tag"] = tag
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "channels" not in result
+    assert "bindings" not in result
+    assert not os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.bak"))
+
+
+@pytest.mark.asyncio
+async def test_deregister_lightbulb_agent_account_is_never_gated_on_the_image(efs_dir, owner_image):
+    # Removal can only ever make an old image's config more acceptable, so the
+    # counterpart stays ungated — a crash-looping owner must still be cleanable.
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    owner_image["tag"] = _PRE_PLUGIN_IMAGE
+    await deregister_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["lightbulb"]["accounts"] == {}
+    assert result["bindings"] == []
 
 
 @pytest.mark.asyncio

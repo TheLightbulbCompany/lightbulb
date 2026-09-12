@@ -265,3 +265,41 @@ def test_deployed_fork_at_least_uses_env_pin_when_no_tag(monkeypatch):
     assert openclaw_version.deployed_fork_at_least("2026.7.2", 7) is True
     monkeypatch.setenv("ENVIRONMENT", "dev")
     assert openclaw_version.deployed_fork_at_least("2026.7.2", 7) is False
+
+
+# --- baked lightbulb-channel plugin gate ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tag, expected",
+    [
+        # The first extended build that bakes the plugin, and every later one
+        # on the same base — the short sha carries no ordering, so anything on
+        # this base that is not the one known pre-plugin build qualifies.
+        ("2026.9.3-isol8.2-fa8bf22", True),
+        ("2026.9.3-isol8.2-1da8ca8", True),
+        # The build one pin earlier: SAME base AND same isol8 patch level, so
+        # only the explicit denylist separates it. This is the tag the prod
+        # container that crash-looped 390 times on 2026-09-11 was running.
+        ("2026.9.3-isol8.2-449894a", False),
+        # Older bases never baked it, however many fork patches they carry.
+        ("2026.8.1-isol8.3-4e22eb8", False),
+        ("2026.8.1-isol8.9-abc1234", False),
+        # A future base bakes it by construction (the plugin is in-repo).
+        ("2026.9.4-isol8.1-abc1234", True),
+        # Unknown/unreadable image, and "no container row" — both gate closed;
+        # deliberately NOT the environment pin, which is newer than any
+        # lagging container's image.
+        ("", False),
+        (None, False),
+    ],
+)
+def test_bakes_lightbulb_channel(tag, expected):
+    assert openclaw_version.bakes_lightbulb_channel(tag) is expected
+
+
+def test_bakes_lightbulb_channel_never_falls_back_to_the_env_pin(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.9.3-isol8.2-1da8ca8")
+    assert openclaw_version.bakes_lightbulb_channel(None) is False
+    assert openclaw_version.bakes_lightbulb_channel("") is False

@@ -280,3 +280,39 @@ def deployed_fork_at_least(base: str, patch: int, *, tag: str | None = None) -> 
     if upstream < wanted:
         return False
     return isol8_patch_level(t) >= patch
+
+
+# The first extended image baking the in-repo ``lightbulb-channel`` plugin
+# (``apps/infra/openclaw/plugins/lightbulb-channel``, added 2026-09-10 by
+# 3bf788173) is ``2026.9.3-isol8.2-fa8bf22``, pinned the next morning by
+# 451a39c45. Its predecessor ``2026.9.3-isol8.2-449894a`` carries the SAME
+# upstream base AND the same isol8 patch level — the two differ only in the
+# monorepo short sha, which carries no ordering — so :func:`deployed_fork_at_least`
+# alone cannot separate them.
+#
+# Hence a DENYLIST rather than an allowlist of good tags: the pre-plugin builds
+# on this base are a closed set (the plugin is in-repo, so every later build
+# bakes it), whereas an allowlist would go stale on the very next image bump and
+# silently drop the channel fleet-wide. Older bases are rejected by the fork gate
+# below; newer ones bake the plugin by construction.
+_PRE_LIGHTBULB_CHANNEL_TAGS = frozenset({"2026.9.3-isol8.2-449894a"})
+_LIGHTBULB_CHANNEL_BASE = "2026.9.3"
+_LIGHTBULB_CHANNEL_PATCH = 2
+
+
+def bakes_lightbulb_channel(tag: str | None) -> bool:
+    """True when the image named by ``tag`` ships the ``lightbulb`` channel
+    plugin, so ``channels.lightbulb`` + its bindings are safe to write.
+
+    An image without the plugin rejects the WHOLE config at boot
+    (``channels.lightbulb: unknown channel id: lightbulb``) and exits 1 — one
+    prod owner crash-looped ~390 times on 2026-09-11 for exactly that. So an
+    empty or unknown tag gates CLOSED, and unlike the other gates here there is
+    deliberately no fall back to this environment's pin: the pin is newer than
+    any lagging container's image, which is the whole failure mode. A missing
+    channel block only costs inbound room routing until the next config write
+    (``reapply-config`` restores it); a rejected config costs the container.
+    """
+    if not tag or tag in _PRE_LIGHTBULB_CHANNEL_TAGS:
+        return False
+    return deployed_fork_at_least(_LIGHTBULB_CHANNEL_BASE, _LIGHTBULB_CHANNEL_PATCH, tag=tag)

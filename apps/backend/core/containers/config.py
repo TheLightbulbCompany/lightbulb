@@ -71,6 +71,17 @@ def _emits_81_shape(deployed_tag: str | None) -> bool:
     return openclaw_version.version_at_least(_target_upstream(deployed_tag), "2026.8.1")
 
 
+def _emits_lightbulb_channel(deployed_tag: str | None) -> bool:
+    """True when the TARGET image bakes the ``lightbulb`` channel plugin.
+
+    Same shape as :func:`_emits_81_shape` but a finer gate: the channel is a
+    BAKED PLUGIN, so it turns on per extended build, not per upstream version.
+    An image without it rejects the whole file at boot with
+    ``channels.lightbulb: unknown channel id: lightbulb``.
+    """
+    return openclaw_version.bakes_lightbulb_channel(deployed_tag)
+
+
 # PAC served to the browser tool's Chrome when BROWSER_EGRESS_PROXY_PORT is set,
 # routing page loads through the container's Cloudflare WARP local proxy instead
 # of the AWS NAT IP. `%d` is that port.
@@ -1680,6 +1691,7 @@ def build_openclaw_config_dict(
     # See the per-key comments below: this selects the config SHAPE for the image
     # this environment is actually running, not the one we are building toward.
     _emit_81_shape = _emits_81_shape(deployed_tag)
+    _emit_lightbulb_channel = _emits_lightbulb_channel(deployed_tag)
     providers_config, default_model, plugin_entries = build_provider_block(
         provider_choice=provider_choice,
         user_id=user_id,
@@ -2468,20 +2480,27 @@ def build_openclaw_config_dict(
                 # is the behaviour this replaced. The tools are non-optional,
                 # so the explicit tools.allow ["*"] above surfaces them.
                 "lightbulb-marketplace": {"enabled": True},
-                # First-party canonical multiplayer channel, baked and promoted
-                # before this config shape lands.
-                "lightbulb": {"enabled": True},
+                # First-party canonical multiplayer channel. Only on images that
+                # bake the plugin — see _emit_lightbulb_channel.
+                **({"lightbulb": {"enabled": True}} if _emit_lightbulb_channel else {}),
             },
         },
         # Lightbulb is a first-party account-per-agent channel. Third-party
-        # channels remain empty until configured and are carried below.
-        "channels": {
-            "lightbulb": {
-                "enabled": True,
-                "accounts": {agent_id: {"enabled": True} for agent_id in lightbulb_agent_ids},
+        # channels remain empty until configured and are carried below (that
+        # carry-forward setdefault()s both keys, so omitting them here is safe).
+        **(
+            {
+                "channels": {
+                    "lightbulb": {
+                        "enabled": True,
+                        "accounts": {agent_id: {"enabled": True} for agent_id in lightbulb_agent_ids},
+                    }
+                },
+                "bindings": _lightbulb_bindings(lightbulb_agent_ids),
             }
-        },
-        "bindings": _lightbulb_bindings(lightbulb_agent_ids),
+            if _emit_lightbulb_channel
+            else {}
+        ),
         "session": {
             "dmScope": "per-account-channel-peer",
             "groupScope": "per-group",

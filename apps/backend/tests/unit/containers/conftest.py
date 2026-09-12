@@ -88,3 +88,22 @@ def _emit_81_config_shape(monkeypatch):
 
     monkeypatch.setattr(config_mod, "_emits_81_shape", lambda deployed_tag: True)
     monkeypatch.setattr(config_mod, "_target_upstream", lambda deployed_tag: "2026.8.1")
+
+
+@pytest.fixture(autouse=True)
+def _emit_lightbulb_channel(monkeypatch):
+    """Emit ``channels.lightbulb`` in these tests.
+
+    Same reasoning as ``_emit_81_config_shape`` above, one gate finer: the
+    native channel is a BAKED PLUGIN, so it is emitted only for an extended
+    image that carries it, and a test passing no ``deployed_tag`` gates CLOSED
+    (an unknown image must never be handed a config it would reject at boot).
+    Without this fixture every assertion about the channel would silently
+    exercise the gated-off branch.
+
+    ``test_config_lightbulb_channel.py`` overrides this with a no-op and drives
+    both sides by passing a real tag, the way production does.
+    """
+    from core.containers import config as config_mod
+
+    monkeypatch.setattr(config_mod, "_emits_lightbulb_channel", lambda deployed_tag: True)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from botocore.exceptions import ClientError
 from pydantic import Field, model_serializer, model_validator
@@ -133,16 +133,49 @@ class RoomResources(ContractModel):
     paired_nodes: list[PairedNode]
 
 
-class LocalSessionEvent(ContractModel):
-    seq: int = Field(ge=1)
-    kind: Literal["text", "tool", "lifecycle"]
+class EventActor(ContractModel):
+    user_id: OpaqueId | None = None
+    agent_id: OpaqueId | None = None
+
+    @model_validator(mode="after")
+    def one_identity(self):
+        if (self.user_id is None) == (self.agent_id is None):
+            raise ValueError("actor needs exactly one of userId or agentId")
+        return self
+
+
+class EventTool(ContractModel):
+    name: Annotated[str, Field(min_length=1, max_length=128)]
+    status: Literal["running", "done", "error"]
+    input: Any = None
+    result: Any = None
+    lines: int | None = Field(default=None, ge=0)
+
+
+Lifecycle = Literal["turn_start", "turn_end", "turn_aborted", "compaction", "approval_pending"]
+
+
+class LocalSessionEventBody(ContractModel):
+    """One transcript item as the harness drew it. Every field past `truncated` is optional wire growth."""
+
+    kind: Literal["text", "tool", "thinking", "lifecycle"]
     text: str = Field(max_length=MAX_ENVELOPE_BYTES)
     role: Literal["user", "assistant", "system", "tool"]
     truncated: bool = False
+    ts: Annotated[str, Field(max_length=40)] | None = None
+    item_id: OpaqueId | None = None
+    parent_id: OpaqueId | None = None
+    actor: EventActor | None = None
+    tool: EventTool | None = None
+    lifecycle: Lifecycle | None = None
+
+
+class LocalSessionEvent(LocalSessionEventBody):
+    seq: int = Field(ge=1)
 
     @model_validator(mode="after")
     def validate_envelope(self):
-        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > MAX_ENVELOPE_BYTES:
+        if len(self.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")) > MAX_ENVELOPE_BYTES:
             raise ValueError("event exceeds 16 KiB; split text on UTF-8 boundaries")
         return self
 

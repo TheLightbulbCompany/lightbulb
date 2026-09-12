@@ -863,3 +863,62 @@ async def test_session_revision_contention_retries_without_rejecting_authorized_
     assert second["state"] == "pending"
     assert [body["command"]["requestId"] for _, body in transport[3]] == ["request-1"]
     assert (await repo.get_session(OWNER, sid))["eventSeq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
+    sid = await start(transport)
+    call = {
+        "kind": "tool",
+        "role": "assistant",
+        "text": "git status",
+        "truncated": False,
+        "ts": "2026-09-12T10:00:00.000Z",
+        "itemId": "toolu_01",
+        "tool": {"name": "Bash", "status": "running", "input": {"command": "git status"}},
+    }
+    result = {
+        "kind": "tool",
+        "role": "tool",
+        "text": "On branch main",
+        "truncated": False,
+        "ts": "2026-09-12T10:00:01.000Z",
+        "itemId": "uuid-2",
+        "parentId": "toolu_01",
+        "tool": {"name": "result", "status": "done", "result": {"stdout": "On branch main\n"}, "lines": 1},
+    }
+    prompt = {"kind": "text", "role": "user", "text": "hi", "actor": {"userId": BOB.user_id}}
+    old = {"kind": "text", "role": "assistant", "text": "plain"}
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "b1",
+        "afterSeq": 0,
+        "events": [
+            prompt,
+            call,
+            result,
+            old,
+            {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"},
+        ],
+    }
+    ack = await relay(transport).handle_message("conn-1", body)
+    assert ack["afterSeq"] == 5
+    page = await service.list_events(BOB, ROOM, sid)
+    events = page.model_dump(by_alias=True, exclude_none=True)["events"]
+    assert events[0]["actor"] == {"userId": BOB.user_id}
+    assert events[1]["tool"]["name"] == "Bash" and events[1]["ts"] == "2026-09-12T10:00:00.000Z"
+    assert events[2]["parentId"] == "toolu_01" and events[2]["tool"]["lines"] == 1
+    assert "tool" not in events[3] and "ts" not in events[3]
+    assert events[4]["lifecycle"] == "turn_end"
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message(
+            "conn-1",
+            {
+                **body,
+                "batchId": "b2",
+                "afterSeq": 5,
+                "events": [{"kind": "text", "role": "user", "text": "x", "actor": {"userId": "u", "agentId": "a"}}],
+            },
+        )

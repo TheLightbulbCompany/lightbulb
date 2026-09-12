@@ -58,11 +58,7 @@ class Heartbeat(ContractModel):
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
 
 
-class Event(ContractModel):
-    kind: Literal["text", "tool", "lifecycle"]
-    role: Literal["user", "assistant", "system", "tool"]
-    text: str = Field(max_length=sessions.MAX_ENVELOPE_BYTES)
-    truncated: bool = False
+Event = sessions.LocalSessionEventBody
 
 
 class Events(ContractModel):
@@ -348,7 +344,9 @@ class LocalSessionRelay:
         end = message.after_seq + len(message.events)
         updates = []
         for seq, event in enumerate(message.events, first_seq):
-            value = sessions.LocalSessionEvent(seq=seq, **event.model_dump()).model_dump(by_alias=True)
+            value = sessions.LocalSessionEvent(seq=seq, **event.model_dump(exclude_none=True)).model_dump(
+                by_alias=True, exclude_none=True
+            )
             value.update(pk=row["pk"], sk=f"EVENT#{seq:020d}", createdAt=int(time.time()))
             if seq == first_seq:
                 value.update(batchHash=digest, batchEndSeq=end)

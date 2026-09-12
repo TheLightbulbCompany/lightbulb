@@ -84,7 +84,7 @@ export function RoomHeader({
         <label className="sr-only" htmlFor={`${id}-topic`}>Topic</label>
         <input id={`${id}-topic`} className="room-input" autoFocus maxLength={250} value={topicDraft} disabled={pending}
           onChange={(event) => setTopicDraft(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditingTopic(false); setTopicDraft(room?.topic ?? ""); topicTrigger.current?.focus(); } }} />
+          onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); reset(); setEditingTopic(false); setTopicDraft(room?.topic ?? ""); topicTrigger.current?.focus(); } }} />
       </form> : ((onSetTopic && canEditRoom) || room?.topic) ? <>
         <span aria-hidden="true" className="room-topic-dot">·</span>
         {onSetTopic && canEditRoom

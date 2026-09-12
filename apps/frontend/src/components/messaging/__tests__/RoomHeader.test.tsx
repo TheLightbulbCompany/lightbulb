@@ -48,6 +48,18 @@ it("clears the topic when the field is emptied and cancels on Escape", async () 
   expect(onSetTopic).toHaveBeenCalledTimes(1);
 });
 
+it("clears a failed topic save's banner when the edit is cancelled with Escape", async () => {
+  const onSetTopic = vi.fn().mockRejectedValue(new Error("Topic rejected"));
+  render(<RoomHeader {...props} onSetTopic={onSetTopic} />);
+  await userEvent.click(screen.getByRole("button", { name: "Edit topic" }));
+  await userEvent.type(screen.getByLabelText("Topic"), " again{Enter}");
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Topic rejected"));
+
+  await userEvent.type(screen.getByLabelText("Topic"), "{Escape}");
+
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
 it("offers an add-topic affordance when there is none", () => {
   render(<RoomHeader {...props} room={{ ...room, topic: null }} onSetTopic={vi.fn()} />);
   expect(screen.getByRole("button", { name: "Add a topic" })).toBeInTheDocument();

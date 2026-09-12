@@ -1,5 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { localSessionTool } from "./local-sessions.js";
+import {
+  // `abortEmbeddedAgentRun` is only reachable under its public alias.
+  abortAgentHarnessRun as abortEmbeddedAgentRun,
+  onAgentEvent,
+  queueAgentHarnessMessage,
+  resolveActiveEmbeddedRunSessionId,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
+import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { createFramePublisher, ecsCredentialsProvider } from "./appsync.js";
+import { createRunCallbacks, createRunSupervisor } from "./runs.js";
 import {
   buildChannelOutboundSessionRoute,
   createChatChannelPlugin,
@@ -30,6 +41,7 @@ import {
   DURABLE_FINAL_CAPABILITIES,
   PLUGIN_ID,
   createOutbound,
+  createRunControlHandler,
   listAccountIds,
   normalizeTarget,
   resolveAccount,
@@ -42,9 +54,34 @@ export const lightbulbChannelConfigSchema = buildJsonChannelConfigSchema(
   { cacheKey: "lightbulb-channel-config:v1" },
 );
 
+const fetchLike = (url: string, init: RequestInit) => fetch(url, init);
+
+const runs = createRunSupervisor({
+  sdk: {
+    onAgentEvent,
+    resolveActiveEmbeddedRunSessionId,
+    abortEmbeddedAgentRun,
+    queueAgentHarnessMessage,
+    // readConsistency "latest": usage is read at run end, where a validity-token-cached
+    // snapshot would still carry the previous turn's totals.
+    getSessionEntry: ({ agentId, sessionKey }) =>
+      getSessionEntry({ agentId, sessionKey, env: process.env, readConsistency: "latest" }) as any,
+  },
+  callbacks: createRunCallbacks({ fetch: fetchLike, env: () => process.env, log: (m) => console.warn(m) }),
+  frames: createFramePublisher({
+    fetch: fetchLike,
+    region: process.env.AWS_REGION ?? "us-east-1",
+    credentials: ecsCredentialsProvider(() => process.env, fetchLike),
+    log: (m) => console.warn(m),
+  }),
+  uuid: () => randomUUID(),
+  now: () => new Date(),
+});
+
 const outbound = createOutbound({
-  fetch: async (url, init) => await fetch(url, init),
+  fetch: fetchLike,
   env: () => process.env,
+  runs,
 });
 
 export const lightbulbMessageAdapter = defineChannelMessageAdapter({
@@ -139,6 +176,11 @@ export const lightbulbChannelPlugin = createChatChannelPlugin({
           waitUntilAbort,
           channelReadyPatch,
           channelStoppedPatch,
+          runs,
+          runControlHandler: createRunControlHandler({
+            sdk: { applyBasicWebhookRequestGuards, readJsonWebhookBodyOrReject },
+            runs,
+          }),
         }),
     },
     message: lightbulbMessageAdapter,

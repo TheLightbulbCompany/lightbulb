@@ -1,5 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { localSessionTool } from "./local-sessions.js";
+import { 
+// `abortEmbeddedAgentRun` is only reachable under its public alias.
+abortAgentHarnessRun as abortEmbeddedAgentRun, onAgentEvent, queueAgentHarnessMessage, resolveActiveEmbeddedRunSessionId, } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { createFramePublisher, ecsCredentialsProvider } from "./appsync.js";
+import { createRunCallbacks, createRunSupervisor } from "./runs.js";
 import { buildChannelOutboundSessionRoute, createChatChannelPlugin, defineChannelPluginEntry, } from "openclaw/plugin-sdk/channel-core";
 import { buildChannelInboundEventContext, resolveChannelInboundRouteEnvelope } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -10,11 +17,33 @@ import { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once
 import { completeWithPreparedSimpleCompletionModel, prepareSimpleCompletionModelForAgent } from "openclaw/plugin-sdk/simple-completion-runtime";
 import { createComputedAccountStatusAdapter, createDefaultChannelRuntimeState, } from "openclaw/plugin-sdk/status-helpers";
 import { applyBasicWebhookRequestGuards, readJsonWebhookBodyOrReject, registerPluginHttpRoute, } from "openclaw/plugin-sdk/webhook-ingress";
-import { CHANNEL_CONFIG_JSON_SCHEMA, CHANNEL_ID, DURABLE_FINAL_CAPABILITIES, PLUGIN_ID, createOutbound, listAccountIds, normalizeTarget, resolveAccount, startGatewayAccount, } from "./channel.js";
+import { CHANNEL_CONFIG_JSON_SCHEMA, CHANNEL_ID, DURABLE_FINAL_CAPABILITIES, PLUGIN_ID, createOutbound, createRunControlHandler, listAccountIds, normalizeTarget, resolveAccount, startGatewayAccount, } from "./channel.js";
 export const lightbulbChannelConfigSchema = buildJsonChannelConfigSchema(CHANNEL_CONFIG_JSON_SCHEMA, { cacheKey: "lightbulb-channel-config:v1" });
+const fetchLike = (url, init) => fetch(url, init);
+const runs = createRunSupervisor({
+    sdk: {
+        onAgentEvent,
+        resolveActiveEmbeddedRunSessionId,
+        abortEmbeddedAgentRun,
+        queueAgentHarnessMessage,
+        // readConsistency "latest": usage is read at run end, where a validity-token-cached
+        // snapshot would still carry the previous turn's totals.
+        getSessionEntry: ({ agentId, sessionKey }) => getSessionEntry({ agentId, sessionKey, env: process.env, readConsistency: "latest" }),
+    },
+    callbacks: createRunCallbacks({ fetch: fetchLike, env: () => process.env, log: (m) => console.warn(m) }),
+    frames: createFramePublisher({
+        fetch: fetchLike,
+        region: process.env.AWS_REGION ?? "us-east-1",
+        credentials: ecsCredentialsProvider(() => process.env, fetchLike),
+        log: (m) => console.warn(m),
+    }),
+    uuid: () => randomUUID(),
+    now: () => new Date(),
+});
 const outbound = createOutbound({
-    fetch: async (url, init) => await fetch(url, init),
+    fetch: fetchLike,
     env: () => process.env,
+    runs,
 });
 export const lightbulbMessageAdapter = defineChannelMessageAdapter({
     id: CHANNEL_ID,
@@ -106,6 +135,11 @@ export const lightbulbChannelPlugin = createChatChannelPlugin({
                 waitUntilAbort,
                 channelReadyPatch,
                 channelStoppedPatch,
+                runs,
+                runControlHandler: createRunControlHandler({
+                    sdk: { applyBasicWebhookRequestGuards, readJsonWebhookBodyOrReject },
+                    runs,
+                }),
             }),
         },
         message: lightbulbMessageAdapter,

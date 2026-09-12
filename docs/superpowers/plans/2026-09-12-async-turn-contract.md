@@ -1542,8 +1542,13 @@ async def test_publish_room_refuses_a_room_without_a_workspace_id(monkeypatch):
 Run once per environment before that environment's cutover deploy, then DELETE this
 file (CLAUDE.md: one-shot backfills do not accumulate; git history is the record).
 
+DRY RUN BY DEFAULT — prints the count and writes nothing.
+
     cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging \
-        uv run python scripts/backfill_workspace_ids.py --dry-run
+        uv run python scripts/backfill_workspace_ids.py
+    # …then, once the count looks right:
+    AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging \
+        uv run python scripts/backfill_workspace_ids.py --apply
 """
 
 import argparse
@@ -1586,14 +1591,14 @@ async def main(dry_run: bool) -> int:
         if "LastEvaluatedKey" not in page:
             break
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
-    print(f"{'would stamp' if dry_run else 'stamped'} {stamped} rows")
+    print(f"{'stamped' if not dry_run else 'would stamp'} {stamped} rows{'' if not dry_run else ' (dry run — pass --apply to write)'}")
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dry-run", action="store_true")
-    raise SystemExit(asyncio.run(main(parser.parse_args().dry_run)))
+    parser.add_argument("--apply", action="store_true", help="actually write (default: dry run)")
+    raise SystemExit(asyncio.run(main(dry_run=not parser.parse_args().apply)))
 ```
 
 - [ ] **Step 6: Run the tests**
@@ -2789,7 +2794,7 @@ Set `dev.tag` and `prod.tag` to the Task 5 tag with its `artifactDigest`/`runtim
 
 - [ ] **Step 2: Dev**
 
-1. `cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging uv run python scripts/backfill_workspace_ids.py --dry-run`, then without `--dry-run`.
+1. `cd apps/backend && AWS_PROFILE=isol8-admin MESSAGING_TABLE=lightbulb-dev-messaging uv run python scripts/backfill_workspace_ids.py` (dry run by default), then the same with `--apply`.
 2. Merge the cutover PR; watch the dev deploy (`gh run watch`).
 3. Roll the dev fleet from a signed-in `dev.flickmeon.ai` admin tab:
 
@@ -2806,7 +2811,7 @@ await fetch('https://api-dev.flickmeon.ai/api/v1/container/updates', { method: '
 
 - [ ] **Step 3: Prod (owner runs the dispatch and the roll)**
 
-1. Backfill against `lightbulb-prod-messaging` (dry run, then real).
+1. Backfill against `lightbulb-prod-messaging` (dry run by default, then `--apply`).
 2. `gh workflow run deploy.yml --ref main` when `gh run list --workflow deploy.yml --json status --jq '[.[]|select(.status!="completed")]|length'` reads 0; watch it.
 3. Roll the prod fleet immediately (same call against `api.flickmeon.ai` from a `flickmeon.ai` admin tab), then confirm every running task is on the new task definition:
 

@@ -40,6 +40,29 @@ pub fn config_path(state_dir: &Path) -> PathBuf {
     state_dir.join("openclaw.json")
 }
 
+/// Keep the app-private execution node separate from opt-in session sharing.
+/// OpenClaw 9.3 advertises these plugin commands by default, exceeding the
+/// paired device grant. Never widen that grant to approve local transcripts.
+pub fn restrict_node_integrations(state_dir: &Path) -> Result<(), String> {
+    let mut config = read_config(state_dir)?;
+    let entries = entry_object(entry_object(&mut config, "plugins")?, "entries")?;
+    let mut changed = false;
+    for (plugin, feature) in [("anthropic", "sessionCatalog"), ("ollama", "nodeInference")] {
+        let settings = entry_object(
+            entry_object(entry_object(entries, plugin)?, "config")?,
+            feature,
+        )?;
+        if settings.get("enabled") != Some(&Value::Bool(false)) {
+            settings.insert("enabled".into(), Value::Bool(false));
+            changed = true;
+        }
+    }
+    if changed {
+        write_config(state_dir, &config)?;
+    }
+    Ok(())
+}
+
 /// Parse the config file into an object. A missing file is an empty
 /// object (a partial config is valid upstream — `validateConfigObject({nodeHost:{}})`
 /// passes), a malformed one is an error: silently replacing a file we
@@ -250,6 +273,54 @@ mod tests {
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn node_scope_preserves_other_config_and_disables_unapproved_integrations() {
+        let d = dir();
+        let mut expected = json!({
+            "browser": {"headless": true},
+            "nodeHost": {"mcp": {"servers": {"docs": {"command": "docs-mcp"}}}},
+            "plugins": {"entries": {
+                "anthropic": {"config": {"sessionCatalog": {"enabled": true}}},
+                "ollama": {"config": {"nodeInference": {"enabled": true}, "discovery": {"enabled": true}}},
+                "browser": {"enabled": true}
+            }}
+        });
+        std::fs::write(config_path(d.path()), expected.to_string()).unwrap();
+        restrict_node_integrations(d.path()).unwrap();
+        expected["plugins"]["entries"]["anthropic"]["config"]["sessionCatalog"]["enabled"] =
+            json!(false);
+        expected["plugins"]["entries"]["ollama"]["config"]["nodeInference"]["enabled"] =
+            json!(false);
+        assert_eq!(Value::Object(read_config(d.path()).unwrap()), expected);
+        let bytes = std::fs::read(config_path(d.path())).unwrap();
+        restrict_node_integrations(d.path()).unwrap();
+        assert_eq!(std::fs::read(config_path(d.path())).unwrap(), bytes);
+    }
+
+    #[test]
+    fn node_scope_creates_missing_config_but_never_overwrites_malformed_config() {
+        let d = dir();
+        restrict_node_integrations(d.path()).unwrap();
+        let cfg = Value::Object(read_config(d.path()).unwrap());
+        assert_eq!(
+            cfg["plugins"]["entries"]["anthropic"]["config"]["sessionCatalog"]["enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            cfg["plugins"]["entries"]["ollama"]["config"]["nodeInference"]["enabled"],
+            json!(false)
+        );
+        for bad in [
+            "{not json",
+            r#"{"plugins":[]}"#,
+            r#"{"plugins":{"entries":{"ollama":{"config":false}}}}"#,
+        ] {
+            std::fs::write(config_path(d.path()), bad).unwrap();
+            assert!(restrict_node_integrations(d.path()).is_err());
+            assert_eq!(std::fs::read_to_string(config_path(d.path())).unwrap(), bad);
+        }
     }
 
     #[test]

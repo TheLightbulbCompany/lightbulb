@@ -138,6 +138,12 @@ export function MessagingWorkspaceProvider({
   activeRoomIdRef.current = rooms.activeRoomId;
   const threadIdRef = useRef<string | null>(threadId);
   threadIdRef.current = threadId;
+  // Mirror the live composer text. Read in the send failure path to decide
+  // whether there is anything there worth protecting.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const threadDraftRef = useRef(threadDraft);
+  threadDraftRef.current = threadDraft;
   const [creationBusy, setCreationBusy] = useState(false);
   const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
   // Bumped whenever a draft is written for a room OTHER than the active one —
@@ -291,6 +297,7 @@ export function MessagingWorkspaceProvider({
         // microtask would otherwise read a stale ref and conclude the composer
         // had moved on when it had not.
         threadClientMessageIdRef.current = rotatedTo;
+        threadDraftRef.current = "";
         setThreadDraft("");
         setThreadClientMessageId(rotatedTo);
       }
@@ -299,6 +306,7 @@ export function MessagingWorkspaceProvider({
       if (clientMessageIdRef.current === request.clientMessageId) {
         rotatedTo = crypto.randomUUID();
         clientMessageIdRef.current = rotatedTo;   // see the thread branch above
+        draftRef.current = "";
         setDraft("");
         setClientMessageId(rotatedTo);
       }
@@ -319,8 +327,15 @@ export function MessagingWorkspaceProvider({
       // that newer, unsent work (its text and any attached-but-unsent images).
       // Newer work wins: it is the owner's live intent, and unlike the failed
       // message it exists nowhere else.
-      const composerHeld = !thread && rotatedTo !== null && clientMessageIdRef.current === rotatedTo;
-      const threadComposerHeld = thread && rotatedTo !== null && threadClientMessageIdRef.current === rotatedTo;
+      // Two ways the composer stops being the empty box this send left behind,
+      // and BOTH have to be checked: sending again rotates the id, but simply
+      // TYPING does not — it only fills the box. Restoring over either is the
+      // same data loss, so the box must still be the one we rotated to AND
+      // still be empty.
+      const composerHeld = !thread && rotatedTo !== null
+        && clientMessageIdRef.current === rotatedTo && draftRef.current.trim() === "";
+      const threadComposerHeld = thread && rotatedTo !== null
+        && threadClientMessageIdRef.current === rotatedTo && threadDraftRef.current.trim() === "";
       if (thread) {
         if (sameRoom && threadComposerHeld && threadIdRef.current === request.threadRootMessageId) {
           setThreadDraft(request.text);

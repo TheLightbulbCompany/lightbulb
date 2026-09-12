@@ -516,10 +516,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   }, [messages, activeRoom, accessRemoved, subscribeToRoom, isVisible, messaging, mutateRoom, mutateRooms]);
 
   // `markVisibleRead` closes over `messages`, so its identity changes on every
-  // message. Reading it through a ref keeps the visibility subscription from
-  // being torn down and re-attached each time, and — more importantly — lets
-  // `selectRoom` be referentially stable, which callers rely on to avoid
-  // re-running room-selection effects on unrelated traffic.
+  // message. Reading it through a ref is what lets `selectRoom` be
+  // referentially stable, which callers rely on to avoid re-running
+  // room-selection effects on unrelated traffic. (The effect below still
+  // re-subscribes as `messages` changes — the ref does not avoid that, and an
+  // earlier version of this comment wrongly claimed it did.)
   const markVisibleReadRef = useRef(markVisibleRead);
   markVisibleReadRef.current = markVisibleRead;
 

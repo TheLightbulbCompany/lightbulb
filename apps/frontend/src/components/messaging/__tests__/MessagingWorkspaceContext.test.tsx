@@ -478,6 +478,30 @@ it("recovers a failed send into the room it was sent from when the owner has mov
   expect(directory.draftRoomIds).toContain("room-1");
 });
 
+it("does not overwrite text typed into the composer while an earlier send was still in flight", async () => {
+  // The other door onto the same data loss: typing does not rotate the client
+  // id, it only fills the box. So checking the id alone still let a failed send
+  // overwrite text the owner had typed but not yet sent.
+  let rejectSend!: (error: Error) => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSend = reject; }));
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("the one that fails"));
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit({
+    clientMessageId: sentId, text: "the one that fails", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  })).catch(() => {}); });
+
+  // Same composer instance, no second send — just typing.
+  const liveId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("something else entirely"));
+
+  await act(async () => { rejectSend(new Error("network")); await sending; });
+
+  expect(panel.composer.text).toBe("something else entirely");
+  expect(panel.composer.clientMessageId).toBe(liveId);
+});
+
 it("does not clobber newer unsent work when an earlier send fails", async () => {
   // Two sends in flight and the owner typing into the box the second one left
   // behind. Re-adopting the first message's id here would remount the composer

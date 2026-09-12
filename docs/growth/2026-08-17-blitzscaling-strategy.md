@@ -7,7 +7,7 @@ firefighting hierarchy).
 Metric definitions moved to §3; the admin growth page (`/admin/growth`) and the
 founder's Daily Lightbulb Brief implement them.
 
-**Status legend:** `DECIDED` · `LEANING` · `OPEN` · `REJECTED`
+**Status legend:** `DECIDED` · `LEANING` · `OPEN` · `REJECTED` · `SUPERSEDED`
 
 ---
 
@@ -47,8 +47,9 @@ Three consequences that should govern every decision below:
 2. Our own funnel says the same thing from the other side: the leak is **pre-payment**
    (7 of 15 external signups never started checkout), not container reliability and
    not OAuth.
-3. It validates trial → first successful autonomous run as the metric that decides
-   everything, which is exactly what §3 measures.
+3. It validates trial → activation as the metric that decides everything — now
+   defined in §3 as the activated-workspace rate and the agent-answered rate,
+   not an autonomous-run count.
 
 Per Hoffman's firefighting order (distribution → product → revenue model →
 operations → competition → what's next), distribution is correctly fire #1: without
@@ -150,9 +151,10 @@ Three exploitable gaps fall out of that table:
 
 1. **Grokbot's agents sleep when the laptop sleeps.** Running on-device is
    architecturally incompatible with the "works while you're asleep" promise. Our
-   entire autonomous-run North Star (§3) is a capability they cannot ship without
-   rebuilding on cloud tenancy. This is the single sharpest differentiator we have
-   and it should be said plainly in launch copy.
+   entire multiplayer workspace — humans and agents answering each other in
+   shared rooms, §3's answered-rate metric — is a capability they cannot ship
+   without rebuilding on cloud tenancy. This is the single sharpest
+   differentiator we have and it should be said plainly in launch copy.
 2. **Grokbot has no spend cap; we have a hard one.** Their uncapped meter is already
    the headline critique in third-party pricing coverage. "It cannot surprise you
    with a bill" is a real purchase objection we answer and they do not.
@@ -179,7 +181,7 @@ technology gets copied.** Our wedge is *aligned* rather than extractive: **do no
 revenue — finance growth.** Note that revenue share is not merely rejected on
 principle; it directly contradicts the "100% of revenue" promise already in market.
 
-### 4.0.1 The paywall inversion `OPEN` — highest-leverage change available
+### 4.0.1 The paywall inversion `SUPERSEDED` — highest-leverage change available
 
 **Superseded by the 2026-09-10 messaging pivot.** This section's framing —
 chat is the free commodity demo, automations behind the paywall are the real
@@ -366,8 +368,9 @@ exist by roughly October, which means the distribution taps and the §3 run-even
 instrumentation need to be live in weeks, not months. Runway and burn (GTM loop 8)
 are the first two numbers an angel asks for.
 
-1. **Now:** distribution loops + the §3 instrumentation gap + the §4.0.1 paywall
-   inversion. Nothing else matters until flow exists and PMF is measurable.
+1. **Now:** distribution loops + the messaging instrumentation gap (observability
+   audit §4, superseding §4.0.1). Nothing else matters until flow exists and PMF
+   is measurable.
 2. **On PMF evidence:** marketplace liquidity (B), inference arbitrage (4.2).
 3. **On liquidity + revenue data:** agent labor market (A), compute credit (4.3).
 4. **Blitzscale trigger:** first real marketplace/labor-market liquidity. That is when
@@ -384,8 +387,10 @@ Ref: `docs/superpowers/plans/2026-08-14-gtm-and-operating-loops.md` (rev 5, bran
 derived independently and **agree on the load-bearing questions**:
 
 - Its "metrics come from the integrations the loop already needs, never a count the
-  loop produces" is the same anti-gaming principle as §3's origin tagging. Its "cost
-  per successful completion" is a sharper single number than anything here — adopt it.
+  loop produces" is the same anti-gaming principle as §3's ignore-list note on
+  `agent_run_completed` volume (routines and the nightly CEO inflate a raw count,
+  so it anchors nothing). Its "cost per successful completion" is a sharper
+  single number than anything here — adopt it.
 - Its `Work product:` requirement (an artifact with a resolving `url`/`external_id`,
   or the run scores zero) is the direct answer to the competitor's task-completion
   illusion (one audit: 41 of 47 tasks marked complete, real success 21.3%, income $0).
@@ -414,8 +419,9 @@ already available and idle.
 - Are Polsia/Grokbot *scaling* (raising, growing, retaining) or also searching?
   Grokbot's bundled distribution suggests real reach but caps it at existing
   Cursor/xAI subscribers. Worth a firmer read before setting aggression.
-- Does a backend-initiated scheduled wake for trial containers exist or need building
-  (§4.0.1)? Blocking question for the highest-leverage change on the list.
+- Closed by the pivot: the §4.0.1 scheduled-wake-for-trials question no longer
+  blocks the highest-leverage change — messaging is already live for trial
+  workspaces.
 - Legal structure for §4.3 (MCA vs. loan) and which state licenses, if any.
 - Agent-labor-market trust model: how does Company A verify Company B's agent did the
   work, and what is the dispute/refund path?

@@ -10,14 +10,17 @@ const ACTIVITY_LABEL = {
 interface ParticipantAvatarProps {
   participant: DirectoryParticipant | RoomParticipant;
   size?: IdentityProps["size"];
+  /** Off in stacked facepiles (the next face paints over the corner) and on
+   *  message rows (Slack keeps those quiet); the dot and its sr-only text go together. */
+  showPresence?: boolean;
 }
 
-export function ParticipantAvatar({ participant, size = "default" }: ParticipantAvatarProps) {
+export function ParticipantAvatar({ participant, size = "default", showPresence = true }: ParticipantAvatarProps) {
   const activity = participant.kind === "agent" ? participant.agentActivity : undefined;
   const label = activity && activity in ACTIVITY_LABEL
     ? ACTIVITY_LABEL[activity as keyof typeof ACTIVITY_LABEL]
     : undefined;
-  const online = participant.kind === "human" && participant.online === true;
+  const online = showPresence && participant.kind === "human" && participant.online === true;
   return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={online ? "online" : undefined}>
     <Identity name={participant.displayName} avatarOnly size={size} />
     {label && <span className="sr-only">{label}</span>}

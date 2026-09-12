@@ -40,7 +40,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
       {room.kind === "dm" && room.participants.length === 1
         ? <ParticipantAvatar participant={room.participants[0]} size="xs" />
         : room.kind === "group-dm" && faces.length > 0
-          ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="xs" />)}</span>
+          ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="xs" showPresence={false} />)}</span>
           : <Icon size={16} aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>

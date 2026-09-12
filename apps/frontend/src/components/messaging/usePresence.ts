@@ -18,10 +18,10 @@ const ACTIVE_WITHIN_MS = 10 * 60_000;
  * visible and someone has touched it in the last 10 minutes, and polls the
  * snapshot every 60s (the backend ages a heartbeat out after 90s).
  */
-export function usePresence(enabled: boolean): ReadonlySet<string> {
+export function usePresence(enabled: boolean, scope: string): ReadonlySet<string> {
   const api = useApi();
   const { data } = useSWR<{ online: string[] }>(
-    enabled ? "/messaging/presence" : null,
+    enabled ? ["messaging-presence", scope] : null,
     () => api.get("/messaging/presence") as Promise<{ online: string[] }>,
     { refreshInterval: SNAPSHOT_MS, dedupingInterval: 15_000, revalidateOnFocus: true },
   );
@@ -29,7 +29,7 @@ export function usePresence(enabled: boolean): ReadonlySet<string> {
     if (!enabled) return;
     const beat = () => {
       if (document.visibilityState !== "visible" || !isPresent(ACTIVE_WITHIN_MS)) return;
-      void Promise.resolve(api.post("/messaging/presence", {})).catch(() => {});
+      void api.post("/messaging/presence", {}).catch(() => {});
     };
     beat();
     const timer = window.setInterval(beat, HEARTBEAT_MS);

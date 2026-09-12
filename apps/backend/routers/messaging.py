@@ -171,7 +171,9 @@ _typing_last: dict[tuple[str, str], float] = {}
 # in-process on purpose -- the backend runs one task, and there is no room-wide
 # live channel to push it over (room events are per-room subscriptions).
 # ponytail: a backend restart shows everyone offline until their next heartbeat
-# (<= 45s); move to the ws-connections table if that ever matters.
+# (<= 45s), and a rolling deploy (two tasks for a minute or two, no shared
+# state, no stickiness on this endpoint) makes the dot flicker for that window;
+# move to a shared table if either ever matters.
 PRESENCE_TTL_SECONDS = 90.0
 _presence_last: dict[str, dict[str, float]] = {}
 

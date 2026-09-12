@@ -167,7 +167,7 @@ export function MessagingWorkspaceProvider({
     if (typingActive.current) void setRoomTyping(false);
   }, [setRoomTyping]);
 
-  const online = usePresence(rooms.httpReady);
+  const online = usePresence(rooms.httpReady, scope);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
     : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);

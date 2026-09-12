@@ -64,7 +64,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "bg-accent", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`}>
     {collapsed
       ? <span className="room-message-gutter" aria-hidden="true">{time}</span>
-      : participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
+      : participant ? <ParticipantAvatar participant={participant} showPresence={false} /> : <Identity name={name} avatarOnly size="default" />}
     <div className="room-message-content">
       {collapsed && timestamp && <time className="sr-only" dateTime={timestamp}>{time}</time>}
       {!collapsed && <div className="room-message-byline">{participant

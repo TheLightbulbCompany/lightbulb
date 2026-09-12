@@ -200,4 +200,32 @@ describe("MessageGroup mentions", () => {
       backgroundColor: colors.mentionRowBg,
     });
   });
+
+  // An `@` token that names nobody in this room must stay prose — not a
+  // linkifyMentions bug (that grammar is proven in the shared package's own
+  // tests), but the case that would actually catch a mistake in how
+  // MessageGroup calls it: a wrong/empty `members` list, or a future change
+  // that bypasses the call, would otherwise pass every other test here too.
+  it("leaves an @ token that matches no member as plain prose", async () => {
+    const message: CanonicalRoomMessage = {
+      ...baseMessage,
+      text: "email me @ noon, or ask @Nobody about it",
+      mentions: [],
+    };
+    await render(
+      <MessageGroup
+        message={message}
+        collapsed={false}
+        replyCount={0}
+        downloadAttachment={downloadAttachment}
+        members={members}
+        currentUserId="user-a"
+      />,
+    );
+    expect(screen.getByText("email me @ noon, or ask @Nobody about it")).toBeTruthy();
+    expect(screen.queryByText("@Nobody")).toBeNull();
+    expect(screen.getByTestId("message-group")).not.toHaveStyle({
+      backgroundColor: colors.mentionRowBg,
+    });
+  });
 });

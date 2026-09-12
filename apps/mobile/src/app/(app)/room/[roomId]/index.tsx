@@ -298,7 +298,6 @@ function Conversation() {
               }
               downloadAttachment={rooms.downloadAttachment}
               members={members ?? []}
-              currentUserId={userId ?? ""}
             />
           );
         }}

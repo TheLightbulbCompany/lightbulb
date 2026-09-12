@@ -195,7 +195,6 @@ export default function ThreadScreen() {
                 onLongPress={() => setActionTarget(root)}
                 downloadAttachment={rooms.downloadAttachment}
                 members={members ?? []}
-                currentUserId={userId ?? ""}
               />
               <View style={styles.hairline} />
               <Text style={styles.count}>
@@ -256,7 +255,6 @@ export default function ThreadScreen() {
               onLongPress={() => setActionTarget(item.message)}
               downloadAttachment={rooms.downloadAttachment}
               members={members ?? []}
-              currentUserId={userId ?? ""}
             />
           );
         }}

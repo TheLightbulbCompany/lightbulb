@@ -88,36 +88,6 @@ async def test_get_profile_by_handle_uses_gsi():
 
 
 @pytest.mark.asyncio
-async def test_check_handle_available_true_when_free():
-    table = _stub_table_with_existing(None)
-    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
-        assert await seller_profile.check_handle_available("aden")
-
-
-@pytest.mark.asyncio
-async def test_check_handle_available_false_for_other_owner():
-    other = {"seller_id": "user_other", "handle": "aden"}
-    table = _stub_table_with_existing(other)
-    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
-        assert not await seller_profile.check_handle_available("aden", for_seller_id=SELLER_ID)
-
-
-@pytest.mark.asyncio
-async def test_check_handle_available_true_for_same_owner():
-    mine = {"seller_id": SELLER_ID, "handle": "aden"}
-    table = _stub_table_with_existing(mine)
-    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
-        assert await seller_profile.check_handle_available("aden", for_seller_id=SELLER_ID)
-
-
-@pytest.mark.asyncio
-async def test_check_handle_available_false_for_reserved():
-    table = _stub_table_with_existing(None)
-    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
-        assert not await seller_profile.check_handle_available("isol8")
-
-
-@pytest.mark.asyncio
 async def test_upsert_profile_creates_when_handle_free():
     table = _stub_table_with_existing(None)
     with (

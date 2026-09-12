@@ -1,9 +1,11 @@
 """Process-wide singleton accessor for the TeamsEventBroker.
 
 Built once during FastAPI lifespan startup; consumed by
-``routers/websocket_chat.py`` for ``teams.subscribe`` /
-``teams.unsubscribe`` dispatch. Lives in its own module so the router
-can import it without pulling in main.py (circular).
+``routers/messaging.py``'s ``GET /messaging/live-config``, which asks the
+broker to ``ensure_user`` before handing the client its AppSync channel.
+(The WS ``teams.subscribe`` / ``teams.unsubscribe`` dispatch this was
+written for went away with the AppSync cutover.) Lives in its own module
+so the router can import it without pulling in main.py (circular).
 """
 
 from __future__ import annotations

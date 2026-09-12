@@ -2,7 +2,7 @@
 
 // Live-agent-runs feed for the Dashboard "Agents" panel.
 //
-// Ported (semantics only) from upstream Paperclip's ActiveAgentsPanel data
+// Ported (semantics only) from upstream Paperclip's agent-runs data
 // path (paperclip/ui/src/components/ActiveAgentsPanel.tsx +
 // api/heartbeats.ts) (MIT, (c) 2025 Paperclip AI). We deliberately DO NOT
 // port upstream's raw-log-byte polling hook (useLiveRunTranscripts) — that

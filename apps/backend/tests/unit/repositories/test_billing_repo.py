@@ -70,24 +70,6 @@ async def test_get_by_owner_id_nonexistent(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_get_by_stripe_customer_id(dynamodb_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_2", "cus_def")
-    item = await billing_repo.get_by_stripe_customer_id("cus_def")
-    assert item is not None
-    assert item["owner_id"] == "user_2"
-
-
-@pytest.mark.asyncio
-async def test_get_by_stripe_customer_id_nonexistent(dynamodb_table):
-    from core.repositories import billing_repo
-
-    item = await billing_repo.get_by_stripe_customer_id("cus_nope")
-    assert item is None
-
-
-@pytest.mark.asyncio
 async def test_create_if_not_exists_rejects_duplicate(dynamodb_table):
     from core.repositories import billing_repo
     from core.repositories.billing_repo import AlreadyExistsError

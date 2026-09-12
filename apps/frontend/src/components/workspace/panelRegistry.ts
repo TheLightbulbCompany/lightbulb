@@ -142,7 +142,7 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
 };
 
 // Legacy control keys kept for URL grammar parity (ChatErrorCard links to
-// ?panel=llm; AgentManageSection to ?panel=agents&agent=…). They open as
+// ?panel=llm; the agent detail view to ?panel=agents&agent=…). They open as
 // dock panels but are NOT in the sidebar — /settings remains their home.
 const CONTROL_KEYS: Readonly<Record<string, string>> = {
   overview: "Overview",

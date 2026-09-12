@@ -21,7 +21,6 @@ from routers.paperclip_proxy import (
     _ALLOWED_ADAPTER_TYPES,
     _assert_paperclip_request_allowed,
     _filter_request_headers,
-    _parse_json_object,
 )
 
 
@@ -341,20 +340,6 @@ def test_unparseable_body_without_json_content_type_passes():
 )
 def test_info_disclosure_routes_are_blocked(method, path):
     assert _blocked(method, path)
-
-
-# ---------------------------------------------------------------
-# _parse_json_object helper
-# ---------------------------------------------------------------
-
-
-def test_parse_json_object_reads_dict():
-    assert _parse_json_object(b'{"adapterType":"openclaw_gateway"}') == {"adapterType": "openclaw_gateway"}
-
-
-@pytest.mark.parametrize("body", [b"", b"not-json", b'["adapterType"]', b"123"])
-def test_parse_json_object_returns_none_for_non_object(body):
-    assert _parse_json_object(body) is None
 
 
 def test_allowlist_is_gateway_only():

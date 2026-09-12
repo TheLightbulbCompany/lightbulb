@@ -4,9 +4,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.services.node_proxy import (
+    get_user_cli_node,
     handle_node_connect,
     handle_node_disconnect,
-    get_user_node,
     force_close_device,
     _user_nodes,
     _node_count,
@@ -187,17 +187,6 @@ async def test_disconnect_broadcasts_to_member(
 
 
 @pytest.mark.asyncio
-async def test_get_user_node_returns_none_when_disconnected(
-    mock_ecs,
-    mock_pool,
-    mock_upstream,
-    mock_config_patcher,
-):
-    """get_user_node returns None for users without a connected node."""
-    assert get_user_node("user_nobody") is None
-
-
-@pytest.mark.asyncio
 async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
     mock_ecs,
     mock_pool,
@@ -229,7 +218,7 @@ async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
     await handle_node_disconnect("conn_old", "org_123", "user_alice")
 
     # The live mapping must still point at the new connection.
-    stored = get_user_node("user_alice")
+    stored = get_user_cli_node("user_alice")
     assert stored is not None
     assert stored["connection_id"] == "conn_new"
 
@@ -476,19 +465,6 @@ def test_get_user_cli_node_none_when_missing():
     _user_nodes["user_alice"] = {"mac": {"deviceId": "dev_mac"}}  # only mac
     assert get_user_cli_node("user_alice") is None
     assert get_user_mac_node("user_alice")["deviceId"] == "dev_mac"
-
-
-def test_get_user_node_backward_compat_prefers_cli():
-    """Legacy get_user_node should still return something — prefer CLI when both exist."""
-    from core.services.node_proxy import get_user_node
-
-    _user_nodes.clear()
-    _user_nodes["u"] = {
-        "cli": {"deviceId": "dev_cli", "clientId": "node-host"},
-        "mac": {"deviceId": "dev_mac", "clientId": "openclaw-macos"},
-    }
-    legacy = get_user_node("u")
-    assert legacy["deviceId"] == "dev_cli"  # CLI preferred for backward compat
 
 
 # ---------------------------------------------------------------------------

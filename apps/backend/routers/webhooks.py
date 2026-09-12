@@ -160,7 +160,13 @@ def _clerk_event_sequence(payload: dict, headers: dict, event_id: str, event_typ
 
 
 def _membership_alias(user_id: str) -> str:
-    """Preserve the stable lifecycle key formerly owned by native_rooms."""
+    """The stable per-member lifecycle key.
+
+    Shape is frozen: ``webhook_dedup``'s membership-lifecycle rows are keyed
+    off it, so changing the digest orphans every in-flight claim. It predates
+    this module (it was minted by the removed native-rooms path) and is kept
+    verbatim for that reason, not because anything still reads it from there.
+    """
     value = json.dumps([settings.CLERK_ISSUER, user_id], ensure_ascii=False, separators=(",", ":"))
     return f"clerk-{hashlib.sha256(value.encode()).hexdigest()}@identity.lightbulb.invalid"
 

@@ -17,8 +17,6 @@ export interface PlatformAdapter {
   getToken(): Promise<string | null>;
   /** Backend REST base URL including /api/v1 (NEXT_PUBLIC_* / EXPO_PUBLIC_*). */
   apiUrl: string;
-  /** Explicit WS gateway origin; when absent, derived from apiUrl. */
-  wsUrl?: string;
   /**
    * RFC-4122 v4 UUID, lowercase. crypto.randomUUID on web; mobile injects a
    * polyfilled implementation (react-native-get-random-values).

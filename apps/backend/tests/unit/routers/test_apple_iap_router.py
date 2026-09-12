@@ -12,7 +12,7 @@ The chaos suite (tests/chaos/api/test_contract_negative.py) fuzzes every route
 in the OpenAPI schema for exactly this and caught an empty-body 500 here.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -105,16 +105,19 @@ async def test_retired_link_route_still_requires_authentication(client):
 )
 async def test_retired_link_route_is_always_gone_before_verification(request_kwargs):
     app = _app_with_auth(ORG)
+    # `link_purchase` is gone; `_verify_signed` is the shared door into Apple's
+    # verifier that BOTH the retired link path and the live webhook used, so
+    # patching it still proves the 410 fires before any verification.
     with patch.object(
         apple_iap.apple_iap_service,
-        "link_purchase",
-        AsyncMock(side_effect=AssertionError("retired route reached Apple verification")),
-    ) as link:
+        "_verify_signed",
+        Mock(side_effect=AssertionError("retired route reached Apple verification")),
+    ) as verify:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.post("/api/v1/billing/apple/link", **request_kwargs)
 
     assert r.status_code == 410, r.text
-    link.assert_not_awaited()
+    verify.assert_not_called()
 
 
 @pytest.mark.asyncio

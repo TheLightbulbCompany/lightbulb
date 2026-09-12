@@ -58,10 +58,6 @@ async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypa
         "routers.teams.agents._user_session",
         AsyncMock(return_value="cookie123"),
     )
-    monkeypatch.setattr(
-        "routers.teams.agents._service_token_for",
-        AsyncMock(return_value="svc_tok"),
-    )
 
     from routers.teams.agents import create_agent
     from routers.teams.schemas import CreateAgentBody
@@ -108,10 +104,6 @@ async def test_teams_create_agent_uses_user_id_for_personal_owner(monkeypatch):
         "routers.teams.agents._user_session",
         AsyncMock(return_value="cookie123"),
     )
-    monkeypatch.setattr(
-        "routers.teams.agents._service_token_for",
-        AsyncMock(return_value="svc_tok"),
-    )
 
     from routers.teams.agents import create_agent
     from routers.teams.schemas import CreateAgentBody
@@ -152,10 +144,6 @@ async def test_teams_create_agent_skips_pairing_when_container_down(monkeypatch)
     monkeypatch.setattr(
         "routers.teams.agents._user_session",
         AsyncMock(return_value="cookie123"),
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._service_token_for",
-        AsyncMock(return_value="svc_tok"),
     )
 
     from routers.teams.agents import create_agent
@@ -198,10 +186,6 @@ async def test_teams_create_agent_pairing_failure_is_non_fatal(monkeypatch, capl
     monkeypatch.setattr(
         "routers.teams.agents._user_session",
         AsyncMock(return_value="cookie123"),
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._service_token_for",
-        AsyncMock(return_value="svc_tok"),
     )
 
     from routers.teams.agents import create_agent

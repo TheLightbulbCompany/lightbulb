@@ -180,14 +180,14 @@ class LocalSessionRelay:
     async def _current(self, cid: str, connection: dict, sid: str, generation: str | None) -> dict:
         owner = connection.get("org_id") or connection["user_id"]
         row = await repo.get_session(owner, sid)
-        if (
-            not row
-            or row.get("humanUserId") != connection["user_id"]
-            or row.get("deviceId") != connection["device_id"]
-            or row.get("connectionId") != cid
-            or (generation is not None and row.get("generation") != generation)
-        ):
-            raise _conflict("session lookup", sid=sid, cid=cid)
+        if not row:
+            raise _conflict("missing", sid=sid, cid=cid)
+        if row.get("humanUserId") != connection["user_id"] or row.get("deviceId") != connection["device_id"]:
+            raise _conflict("ownership", sid=sid, cid=cid)
+        if row.get("connectionId") != cid:
+            raise _conflict("older connection", sid=sid, cid=cid)
+        if generation is not None and row.get("generation") != generation:
+            raise _conflict("generation chain", sid=sid, cid=cid)
         return row
 
     async def handle_message(self, cid: str, body: dict) -> dict:

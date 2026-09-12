@@ -82,7 +82,7 @@ async def test_success_after_one_retry_reports_ok_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_task_credential_lookup_does_not_block_the_event_loop(monkeypatch):
+async def test_task_credentials_are_reused_without_blocking_the_event_loop(monkeypatch):
     monkeypatch.setattr(settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://appsync.test/event")
     monkeypatch.setattr(live_events, "put_metric", lambda *_args, **_kwargs: None)
     release = threading.Event()
@@ -108,6 +108,7 @@ async def test_task_credential_lookup_does_not_block_the_event_loop(monkeypatch)
         await asyncio.sleep(0)
         order.append("event-loop")
         await publish
+        await publisher._publish("/users/11111111-1111-4111-8111-111111111111", event)
     finally:
         release.set()
         timer.cancel()

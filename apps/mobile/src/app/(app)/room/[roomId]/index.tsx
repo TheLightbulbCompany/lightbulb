@@ -23,6 +23,7 @@ import {
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
+import { HeaderBack } from "../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
@@ -151,6 +152,8 @@ function Conversation() {
       <Stack.Screen
         options={{
           title,
+          // The room is this Stack's root, so nothing draws a back button for it.
+          headerLeft: () => <HeaderBack fallback="/(app)/home" />,
           headerTitle: () => (
             <View style={styles.headerTitle}>
               <Text style={styles.headerName} numberOfLines={1}>

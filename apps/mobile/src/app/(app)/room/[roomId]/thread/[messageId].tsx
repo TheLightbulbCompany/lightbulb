@@ -18,6 +18,7 @@ import {
 } from "react-native";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
+import { HeaderBack } from "../../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomComposer } from "../../../../../components/room/RoomComposer";
@@ -113,7 +114,14 @@ export default function ThreadScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={90}
     >
-      <Stack.Screen options={{ title: "Thread" }} />
+      <Stack.Screen
+        options={{
+          title: "Thread",
+          // A push can deep-link straight into a thread, with no room beneath
+          // it to pop back to — hence the explicit fallback.
+          headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}`} />,
+        }}
+      />
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle} numberOfLines={1}>
           {subtitle}

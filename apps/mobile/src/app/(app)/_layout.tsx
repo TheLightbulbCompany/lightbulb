@@ -67,6 +67,10 @@ export default function AppLayout() {
               count, and the list fetch would only 403 in a retry loop. */}
           <TabBadge onCount={setUnread} />
           <Tabs
+            // A conversation is pushed onto this navigator, so "back" out of
+            // one must land on the tab it was opened FROM (Home or DMs), not
+            // always the first tab.
+            backBehavior="history"
             screenOptions={{
               headerShown: true,
               sceneStyle: { backgroundColor: colors.cream },

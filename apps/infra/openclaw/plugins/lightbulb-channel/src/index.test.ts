@@ -435,7 +435,8 @@ describe("strict package and channel configuration", () => {
     for (const mode of ["full", "tool-discovery", "discovery", "cli-metadata"]) {
       const registerTool = vi.fn();
       const registerHttpRoute = vi.fn();
-      entry.register({ registrationMode: mode, registerChannel: vi.fn(), registerTool, registerHttpRoute, on: vi.fn(), runtime: { nodes: { list: vi.fn() } } } as any);
+      const on = vi.fn();
+      entry.register({ registrationMode: mode, registerChannel: vi.fn(), registerTool, registerHttpRoute, on, runtime: { nodes: { list: vi.fn() } } } as any);
       expect(registerTool.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 1 : 0);
       if (registerTool.mock.calls.length) {
         expect(registerTool.mock.calls[0][1]).toEqual({ names: ["lightbulb_local_sessions"] });
@@ -451,6 +452,11 @@ describe("strict package and channel configuration", () => {
           gatewayRuntimeScopeSurface: "trusted-operator",
         });
         expect(typeof params.handler).toBe("function");
+      }
+      expect(on.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 1 : 0);
+      if (on.mock.calls.length) {
+        expect(on.mock.calls[0][0]).toBe("agent_end");
+        expect(typeof on.mock.calls[0][1]).toBe("function");
       }
     }
   });

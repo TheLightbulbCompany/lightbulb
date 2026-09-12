@@ -51,7 +51,16 @@ const SECTION_NAME_MAX_CHARS = 40;
 const MAX_SECTIONS = 20;
 
 export function RoomDirectory(props: RoomDirectoryProps) {
-  return <DirectoryContent key={JSON.stringify([props.ownerScopeId, props.currentRoomId])} {...props} />;
+  // Keyed on the owner scope alone: every dependent read (active=, the
+  // collapsed-group visible filter) already takes currentRoomId as a plain
+  // prop, so including it here only bought an unwanted remount on every room
+  // switch — dropping the sidebar's error banner, an in-flight section
+  // reorder, and the People-and-agents search mid-use. See
+  // `git log -S'currentRoomId])' -- RoomDirectory.tsx`: the key has carried
+  // currentRoomId since the file's introduction, and none of DirectoryContent's
+  // state (section-management dialogs, the creation form, sidebar prefs) is
+  // scoped to which room is open, so nothing needs a reset here.
+  return <DirectoryContent key={props.ownerScopeId} {...props} />;
 }
 
 /** A custom section: the whole group moves, dragged by the grip in its header. */
@@ -111,6 +120,11 @@ function DirectoryContent({
   const deleteCancel = useRef<HTMLButtonElement>(null);
   const leaveCancel = useRef<HTMLButtonElement>(null);
   const newSectionInput = useRef<HTMLInputElement>(null);
+  // Starring/moving a room re-buckets it into a different group, which
+  // unmounts and remounts its row (and overflow trigger) under a new parent
+  // list. A ref captured before the action would point at a removed node, so
+  // the trigger is found by its stable `data-room-id` after the fact instead.
+  const directoryRef = useRef<HTMLElement>(null);
   // Neither dialog has a DialogTrigger, so Radix has no element to hand focus
   // back to and drops it on <body>. Remember what opened each one.
   const manageTrigger = useRef<HTMLButtonElement>(null);
@@ -202,10 +216,16 @@ function DirectoryContent({
     setManaging(true);
   }
 
+  function focusRoomTrigger(roomId: string) {
+    // Room ids are opaque server-issued tokens, never viewer-authored text,
+    // so a raw attribute-selector match is safe here.
+    directoryRef.current?.querySelector<HTMLButtonElement>(`[data-room-id="${roomId}"]`)?.focus();
+  }
+
   function setRoomPrefs(roomId: string, next: MemberPrefsRequest, fallback: string) {
     if (!onSetPrefs) return;
     setActingRoomId(roomId);
-    void savePrefs.run(() => onSetPrefs(roomId, next), fallback);
+    void savePrefs.run(() => onSetPrefs(roomId, next), fallback).then(() => focusRoomTrigger(roomId));
   }
 
   const updatePrefs = (patch: Partial<SidebarPrefs>) => {
@@ -229,6 +249,7 @@ function DirectoryContent({
       setUnreadError({ roomId, label });
     } finally {
       setMarkingUnread(null);
+      focusRoomTrigger(roomId);
     }
   }
 
@@ -263,7 +284,7 @@ function DirectoryContent({
     });
   }
 
-  return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav className="room-directory" aria-label="Conversations">
+  return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav ref={directoryRef} className="room-directory" aria-label="Conversations">
     <div className="room-directory-heading"><h2 className="font-semibold">Conversations</h2>
       <div className="room-directory-heading-actions">
         <label className="sr-only" htmlFor={`${id}-sort`}>Sort conversations</label>

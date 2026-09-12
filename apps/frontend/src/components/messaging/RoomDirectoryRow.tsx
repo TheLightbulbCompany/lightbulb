@@ -53,7 +53,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
     </button>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button ref={actionsTrigger} variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} disabled={busy}><MoreHorizontal aria-hidden="true" /></Button>
+        <Button ref={actionsTrigger} variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} aria-busy={busy} data-room-id={room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {onToggleStar && <DropdownMenuItem onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>}

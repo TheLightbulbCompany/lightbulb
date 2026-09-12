@@ -1,9 +1,10 @@
+import Feather from "@expo/vector-icons/Feather";
 import type { CanonicalRoomMessage, ImageAttachment } from "@lightbulb/shared";
 import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
-import { blobToDataUri } from "../../lib/rooms";
+import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { Avatar } from "./Avatar";
 
@@ -122,6 +123,46 @@ export function MessageGroup({
   );
 }
 
+/**
+ * The messages that exist only on this device — in flight, or failed and
+ * waiting on a tap. Drawn through the same `MessageGroup` as everything else so
+ * the user's own text survives a failure (the composer has already cleared).
+ */
+export function LocalMessageRows({
+  rows,
+  onRetry,
+  downloadAttachment,
+}: {
+  rows: readonly LocalMessageRow[];
+  onRetry: (clientMessageId: string) => void;
+  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+}) {
+  return (
+    <>
+      {rows.map(({ message, unsent }) => (
+        <View key={message.messageId}>
+          <MessageGroup
+            message={message}
+            collapsed={false}
+            replyCount={0}
+            downloadAttachment={downloadAttachment}
+          />
+          {unsent ? (
+            <Pressable
+              style={styles.unsent}
+              onPress={() => onRetry(message.messageId)}
+              accessibilityRole="button"
+            >
+              <Feather name="alert-circle" size={12} color={colors.errorText} />
+              <Text style={styles.unsentText}>Not sent · tap to retry</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ))}
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   group: { marginTop: spacing.lg },
   collapsed: { marginTop: spacing.xs, paddingLeft: MESSAGE_BODY_INDENT },
@@ -132,6 +173,14 @@ const styles = StyleSheet.create({
   body: { paddingLeft: MESSAGE_BODY_INDENT, marginTop: 2 },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute, fontStyle: "italic" },
   replies: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest, marginTop: spacing.xs },
+  unsent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+    paddingLeft: MESSAGE_BODY_INDENT,
+  },
+  unsentText: { fontFamily: fonts.sansMedium, fontSize: 12, lineHeight: 16, color: colors.errorText },
   image: { width: 220, height: 220, borderRadius: radii.md, marginTop: spacing.sm },
   imagePending: { backgroundColor: colors.skeleton },
 });

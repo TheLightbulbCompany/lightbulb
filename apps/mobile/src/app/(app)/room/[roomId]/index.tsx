@@ -1,79 +1,30 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import {
-  buildTimeline,
-  frameText,
-  roomDisplayName,
-  runView,
-  type CanonicalRoomMessage,
-  type OptimisticRoomMessage,
-  type RoomRunView,
-  type TimelineItem,
-} from "@lightbulb/shared";
-import { randomUUID } from "expo-crypto";
+import { buildTimeline, roomDisplayName, runView, type TimelineItem } from "@lightbulb/shared";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Animated,
   FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
 
-import { AgentHead } from "../../../../components/chat/AgentHead";
 import { EmptyState } from "../../../../components/chat/EmptyState";
-import { MessageMarkdown } from "../../../../components/chat/MessageMarkdown";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
-import { ToolPill } from "../../../../components/chat/ToolPill";
-import { usePulse } from "../../../../components/chat/usePulse";
-import { MESSAGE_BODY_INDENT, MessageGroup } from "../../../../components/room/MessageGroup";
+import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
+import { RoomComposer } from "../../../../components/room/RoomComposer";
+import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
-import { useMobileRooms } from "../../../../lib/rooms";
+import { useMobileRooms, useSendDrafts } from "../../../../lib/rooms";
 
 /** Distance from the bottom, in px, still counted as "at the bottom". */
 const BOTTOM_SLACK = 80;
-
-function ReconnectingBanner() {
-  const pulse = usePulse(true, 0.3, 700);
-  return (
-    <View style={styles.banner}>
-      <Animated.View style={[styles.bannerDot, { opacity: pulse }]} />
-      <Text style={styles.bannerText}>Reconnecting live updates. You can keep sending.</Text>
-    </View>
-  );
-}
-
-/** A live (or just-finished, not-yet-persisted) agent run. */
-function RunBlock({ run, name }: { run: RoomRunView; name: string }) {
-  return (
-    <View style={styles.run}>
-      <AgentHead name={name} active={run.state === "running"} />
-      {run.tools.map((tool) => (
-        <View key={tool.id} style={styles.pillGap}>
-          <ToolPill
-            tool={tool.name}
-            status={tool.status}
-            args={
-              tool.args && typeof tool.args === "object" && !Array.isArray(tool.args)
-                ? (tool.args as Record<string, unknown>)
-                : undefined
-            }
-            result={frameText(tool.result) ?? tool.progressText}
-          />
-        </View>
-      ))}
-      {run.text.trim() ? <MessageMarkdown text={run.text} /> : null}
-    </View>
-  );
-}
 
 export default function ConversationRoute() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
@@ -145,32 +96,14 @@ function Conversation() {
   // gets `#`; swap in a lock glyph once the backend ships one.
   const title = `${isChannel ? "#" : ""}${roomDisplayName(rooms.activeRoom, others)}`;
 
-  // A not-yet-canonical message, rendered through the same MessageGroup as a
-  // real one. The server answers before this is visible on a fast network; on a
-  // slow one it is the difference between "sent" and "nothing happened".
-  const localMessage = useCallback(
-    (message: OptimisticRoomMessage): CanonicalRoomMessage => ({
-      messageId: message.clientMessageId,
-      roomId: message.roomId,
-      messageSeq: 0,
-      roomRevision: 0,
-      author: { kind: "human", id: userId ?? "", displayName: viewer?.displayName ?? "You" },
-      text: message.text,
-      mentions: message.mentions,
-      replyToMessageId: message.replyToMessageId,
-      threadRootMessageId: message.threadRootMessageId,
-      createdAt: message.createdAt,
-      runId: null,
-    }),
-    [userId, viewer?.displayName],
-  );
-  const pending = useMemo(
-    () =>
-      rooms.optimisticMessages
-        .filter((message) => message.threadRootMessageId === null)
-        .map(localMessage),
-    [rooms.optimisticMessages, localMessage],
-  );
+  // In-flight and failed sends, drawn through the same MessageGroup as a real
+  // message. On a fast network the server answers first; on a slow one this is
+  // the difference between "sent" and "nothing happened".
+  const { canSend, send, retry, rows } = useSendDrafts(rooms, {
+    authorId: userId ?? "",
+    authorName: viewer?.displayName ?? "You",
+    threadRootMessageId: null,
+  });
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const atBottomRef = useRef(true);
@@ -181,66 +114,6 @@ function Conversation() {
     atBottomRef.current = next;
     setAtBottom(next);
   }, []);
-
-  const [input, setInput] = useState("");
-  const [inputFocused, setInputFocused] = useState(false);
-  const [sending, setSending] = useState(false);
-  // Drafts sent from this screen, kept until they persist. The shared machine
-  // DROPS its optimistic row when a send fails (useRooms' catch) and records the
-  // outcome in sendState only — so without this a failed send would clear the
-  // input and vanish silently, which is worse than the row it replaces.
-  const [drafts, setDrafts] = useState<OptimisticRoomMessage[]>([]);
-  const { sendMessage, reconcileSend, sendState, activeRoomId, httpReady } = rooms;
-  const settled = useCallback(
-    (clientMessageId: string) =>
-      setDrafts((current) => current.filter((draft) => draft.clientMessageId !== clientMessageId)),
-    [],
-  );
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text || sending || !activeRoomId || !httpReady) return;
-    const request = {
-      clientMessageId: randomUUID(),
-      text,
-      mentions: [],
-      replyToMessageId: null,
-      threadRootMessageId: null,
-    };
-    setSending(true);
-    setInput("");
-    setDrafts((current) =>
-      current.some((draft) => draft.clientMessageId === request.clientMessageId)
-        ? current
-        : [...current, { ...request, roomId: activeRoomId, createdAt: new Date().toISOString() }],
-    );
-    try {
-      await sendMessage(request);
-      settled(request.clientMessageId);
-    } catch {
-      // sendState now reads rejected/uncertain, which is what draws the row.
-    } finally {
-      setSending(false);
-    }
-  }, [input, sending, activeRoomId, httpReady, sendMessage, settled]);
-  const retry = useCallback(
-    async (clientMessageId: string) => {
-      try {
-        await reconcileSend(clientMessageId);
-        settled(clientMessageId);
-      } catch {
-        // sendState flips back and the row returns.
-      }
-    },
-    [reconcileSend, settled],
-  );
-  // sendState is a fresh closure over the attempts map every render, so this is
-  // a plain derivation rather than a memo that would never hit.
-  const unsent = drafts
-    .filter((draft) => {
-      const state = sendState(draft.clientMessageId);
-      return state === "rejected" || state === "uncertain";
-    })
-    .map(localMessage);
 
   const runningRun = runs.find((run) => run.state === "running");
   const agentName = useCallback(
@@ -309,26 +182,11 @@ function Conversation() {
         }
         ListFooterComponent={
           <View>
-            {[...pending, ...unsent].map((message) => (
-              <View key={message.messageId}>
-                <MessageGroup
-                  message={message}
-                  collapsed={false}
-                  replyCount={0}
-                  downloadAttachment={rooms.downloadAttachment}
-                />
-                {unsent.some((draft) => draft.messageId === message.messageId) ? (
-                  <Pressable
-                    style={styles.unsent}
-                    onPress={() => void retry(message.messageId)}
-                    accessibilityRole="button"
-                  >
-                    <Feather name="alert-circle" size={12} color={colors.errorText} />
-                    <Text style={styles.unsentText}>Not sent · tap to retry</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            ))}
+            <LocalMessageRows
+              rows={rows}
+              onRetry={(clientMessageId) => void retry(clientMessageId)}
+              downloadAttachment={rooms.downloadAttachment}
+            />
             {runs.map((run) => (
               <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
             ))}
@@ -376,53 +234,13 @@ function Conversation() {
           <Feather name="arrow-down" size={16} color={colors.white} />
         </Pressable>
       )}
-      <View style={styles.composerOuter}>
-        {!rooms.liveConnected && <ReconnectingBanner />}
-        <View style={[styles.card, inputFocused && styles.cardFocused]}>
-          <View style={styles.inputZone}>
-            <TextInput
-              style={styles.input}
-              placeholder="Message"
-              placeholderTextColor={colors.placeholder}
-              value={input}
-              onChangeText={setInput}
-              multiline
-              editable={httpReady && !sending}
-              onFocus={() => setInputFocused(true)}
-              onBlur={() => setInputFocused(false)}
-            />
-          </View>
-          <View style={styles.rail}>
-            {/* A room can hold several agents, so a run in flight must never
-                block sending — Stop only takes the slot while the draft is
-                empty, which is exactly when Send would be disabled anyway. */}
-            {runningRun && !input.trim() ? (
-              <Pressable
-                style={styles.sendButton}
-                onPress={() => void rooms.abortRun(runningRun.runId).catch(() => {})}
-                accessibilityRole="button"
-                accessibilityLabel="Stop"
-              >
-                <Feather name="square" size={14} color={colors.white} />
-              </Pressable>
-            ) : (
-              <Pressable
-                style={[styles.sendButton, (!input.trim() || !httpReady) && styles.sendDisabled]}
-                onPress={() => void send()}
-                disabled={!input.trim() || sending || !httpReady}
-                accessibilityRole="button"
-                accessibilityLabel="Send"
-              >
-                {sending ? (
-                  <ActivityIndicator size="small" color={colors.white} />
-                ) : (
-                  <Feather name="arrow-up" size={16} color={colors.white} />
-                )}
-              </Pressable>
-            )}
-          </View>
-        </View>
-      </View>
+      <RoomComposer
+        placeholder="Message"
+        disabled={!canSend}
+        reconnecting={!rooms.liveConnected}
+        onSend={send}
+        onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -450,16 +268,6 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     color: colors.danger,
   },
-  run: { marginTop: spacing.lg },
-  unsent: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    marginTop: spacing.xs,
-    paddingLeft: MESSAGE_BODY_INDENT,
-  },
-  unsentText: { fontFamily: fonts.sansMedium, fontSize: 12, lineHeight: 16, color: colors.errorText },
-  pillGap: { marginTop: spacing.sm },
   errorCard: {
     backgroundColor: colors.errorBg,
     borderWidth: 1,
@@ -481,77 +289,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forest,
     alignItems: "center",
     justifyContent: "center",
-  },
-  composerOuter: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
-    backgroundColor: colors.cream,
-  },
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.xl,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    shadowColor: colors.ink,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-    elevation: 3,
-  },
-  cardFocused: {
-    borderColor: colors.forestFocusBorder,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    elevation: 4,
-  },
-  inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  input: {
-    fontFamily: fonts.sans,
-    fontSize: 15,
-    lineHeight: 24,
-    maxHeight: 200,
-    color: colors.ink,
-    paddingTop: 0,
-    paddingBottom: 0,
-    textAlignVertical: "top",
-  },
-  rail: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    paddingBottom: spacing.sm,
-    paddingTop: 6,
-  },
-  sendButton: {
-    marginLeft: "auto",
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.forest,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sendDisabled: { opacity: 0.5 },
-  banner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    backgroundColor: colors.bannerBg,
-    borderWidth: 1,
-    borderColor: colors.bannerBorder,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    marginBottom: spacing.sm,
-  },
-  bannerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.connectingYellow },
-  bannerText: {
-    flex: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.bannerText,
   },
 });

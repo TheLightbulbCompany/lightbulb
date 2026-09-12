@@ -1,7 +1,15 @@
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
-import { useRooms, type RoomsPlatform, type UseRoomsOptions, type UseRoomsResult } from "@lightbulb/shared";
+import {
+  useRooms,
+  type CanonicalRoomMessage,
+  type CreateMessageRequest,
+  type OptimisticRoomMessage,
+  type RoomsPlatform,
+  type UseRoomsOptions,
+  type UseRoomsResult,
+} from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 
 import { useLiveEvents } from "../providers/live-events";
@@ -57,6 +65,128 @@ export function useMobileRooms(
 ): UseRoomsResult {
   const { visible = true, ...roomOptions } = options;
   return useRooms(useRoomsPlatform(visible), roomOptions);
+}
+
+/** One not-yet-canonical message a room screen still has to draw. */
+export interface LocalMessageRow {
+  message: CanonicalRoomMessage;
+  /** The send failed; the row carries a retry affordance. */
+  unsent: boolean;
+}
+
+/**
+ * Sending from one room screen, with failed sends kept on screen.
+ *
+ * The shared machine DROPS its optimistic row when a send fails (useRooms'
+ * catch) and records the outcome in `sendState` only — so a screen that renders
+ * `optimisticMessages` alone clears the composer and shows nothing at all.
+ * `drafts` holds everything sent here until it persists, and `sendState` stays
+ * the source of truth for which of them failed.
+ *
+ * `threadRootMessageId` is both what this screen sends into and the filter on
+ * what it draws: `null` for a room's own timeline, the root's id for a thread.
+ * A thread reply is also a reply TO the root, so it doubles as
+ * `replyToMessageId`.
+ *
+ * ponytail: per-mount state, so navigating away loses the retry row (the
+ * message is still absent server-side and the room list is unaffected). Slack
+ * keeps failed sends across navigation; that needs the failed draft held
+ * outside the screen — the same store draft persistence will want.
+ */
+export function useSendDrafts(
+  rooms: UseRoomsResult,
+  {
+    authorId,
+    authorName,
+    threadRootMessageId = null,
+  }: { authorId: string; authorName: string; threadRootMessageId?: string | null },
+): {
+  canSend: boolean;
+  send: (text: string) => Promise<void>;
+  retry: (clientMessageId: string) => Promise<void>;
+  rows: LocalMessageRow[];
+} {
+  const { sendMessage, reconcileSend, sendState, activeRoomId, httpReady, optimisticMessages } =
+    rooms;
+  const [drafts, setDrafts] = useState<OptimisticRoomMessage[]>([]);
+  const settled = useCallback(
+    (clientMessageId: string) =>
+      setDrafts((current) => current.filter((draft) => draft.clientMessageId !== clientMessageId)),
+    [],
+  );
+  const send = useCallback(
+    async (text: string) => {
+      if (!activeRoomId || !httpReady) return;
+      // ponytail: mentions are empty until Task 10's composer resolves them.
+      const request: CreateMessageRequest = {
+        clientMessageId: randomUUID(),
+        text,
+        mentions: [],
+        replyToMessageId: threadRootMessageId,
+        threadRootMessageId,
+      };
+      // De-duped on clientMessageId, which also makes a constant-uuid test
+      // environment safe.
+      setDrafts((current) =>
+        current.some((draft) => draft.clientMessageId === request.clientMessageId)
+          ? current
+          : [...current, { ...request, roomId: activeRoomId, createdAt: new Date().toISOString() }],
+      );
+      try {
+        await sendMessage(request);
+        settled(request.clientMessageId);
+      } catch {
+        // sendState now reads rejected/uncertain, which is what draws the row.
+      }
+    },
+    [activeRoomId, httpReady, threadRootMessageId, sendMessage, settled],
+  );
+  const retry = useCallback(
+    async (clientMessageId: string) => {
+      try {
+        // The machine's own primitive: it reconciles history first and re-sends
+        // the SAME request, which is the right handling of the uncertain case.
+        await reconcileSend(clientMessageId);
+        settled(clientMessageId);
+      } catch {
+        // sendState flips back and the row returns.
+      }
+    },
+    [reconcileSend, settled],
+  );
+  const localMessage = useCallback(
+    (message: OptimisticRoomMessage): CanonicalRoomMessage => ({
+      messageId: message.clientMessageId,
+      roomId: message.roomId,
+      messageSeq: 0,
+      roomRevision: 0,
+      author: { kind: "human", id: authorId, displayName: authorName },
+      text: message.text,
+      mentions: message.mentions,
+      replyToMessageId: message.replyToMessageId,
+      threadRootMessageId: message.threadRootMessageId,
+      createdAt: message.createdAt,
+      runId: null,
+    }),
+    [authorId, authorName],
+  );
+  const mine = (message: OptimisticRoomMessage) =>
+    message.threadRootMessageId === threadRootMessageId;
+  // The two lists are disjoint by construction: the machine's `optimistic` holds
+  // only in-flight sends. Plain derivations rather than memos, because
+  // `sendState` is a fresh closure over the attempts map every render.
+  const rows: LocalMessageRow[] = [
+    ...optimisticMessages
+      .filter(mine)
+      .map((message) => ({ message: localMessage(message), unsent: false })),
+    ...drafts
+      .filter((draft) => {
+        const state = sendState(draft.clientMessageId);
+        return mine(draft) && (state === "rejected" || state === "uncertain");
+      })
+      .map((draft) => ({ message: localMessage(draft), unsent: true })),
+  ];
+  return { canSend: Boolean(activeRoomId) && httpReady, send, retry, rows };
 }
 
 /**

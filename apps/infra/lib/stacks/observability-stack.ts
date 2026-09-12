@@ -1153,20 +1153,6 @@ def handler(event, context):
         "wake failure, ahead of anything reaching the DLQ.",
     });
 
-    // -- W72: run frames not reaching AppSync --
-    this.createAlarm({
-      id: "W72",
-      name: "messaging-room-frame-publish-error",
-      metricName: "messaging.room_frame.publish",
-      dimensions: { outcome: "error" },
-      threshold: 5,
-      periodMinutes: 5,
-      severity: "warn",
-      description:
-        "Room run frames are failing to publish - agents appear frozen " +
-        "mid-run in the UI even though the run is progressing.",
-    });
-
     // -- W73: live events not reaching AppSync --
     this.createAlarm({
       id: "W73",

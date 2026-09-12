@@ -1,11 +1,9 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import {
-  ApiError,
   accumulateStreamText,
   type CanonicalRoomMessage,
   type ChatIncomingMessage,
-  type RoomDetail,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
@@ -45,6 +43,7 @@ import {
   MAX_ATTACHMENTS,
   type PendingAttachment,
 } from "../../../lib/attachments";
+import { useRooms } from "../../../lib/rooms";
 import { useLiveEvents } from "../../../providers/live-events";
 
 const ABORTED_PATTERN = /Agent run was cancelled/i;
@@ -74,19 +73,6 @@ function ReconnectingBanner() {
   );
 }
 
-function mergeMessages(
-  current: readonly CanonicalRoomMessage[],
-  incoming: readonly CanonicalRoomMessage[],
-): CanonicalRoomMessage[] {
-  const byId = new Map(current.map((message) => [message.messageId, message]));
-  for (const message of incoming) byId.set(message.messageId, message);
-  return [...byId.values()].sort((left, right) => left.messageSeq - right.messageSeq);
-}
-
-function lastSequence(messages: readonly CanonicalRoomMessage[]): number {
-  return messages.at(-1)?.messageSeq ?? 0;
-}
-
 function messageItem(message: CanonicalRoomMessage, userId: string | null): ChatItem {
   return {
     id: message.messageId,
@@ -105,19 +91,38 @@ export default function AgentChatRoute() {
 
 function AgentChat() {
   const { agentId, name } = useLocalSearchParams<{ agentId: string; name?: string }>();
-  const live = useLiveEvents();
-  const {
-    httpReady,
-    liveConnected,
-    liveChannels,
-    connectionRevision,
-    messaging,
-    claimActiveRoomSubscription,
-    onEvent,
-  } = live;
+  const { onEvent } = useLiveEvents();
   const { userId, getToken } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
+  // Room resolve-or-create, history reconciliation, the live-event fan-out,
+  // optimistic sends and mark-read all live in @lightbulb/shared's useRooms.
+  // What stays here is the streaming-run projection: the shared hook keeps runs
+  // as LiveRoomRun objects, this screen renders frames as tool pills and
+  // resyncable assistant segments.
+  const {
+    activeRoom,
+    accessRemoved,
+    messages,
+    optimisticMessages,
+    historyErrorMessage,
+    roomsError,
+    directoryError,
+    roomError,
+    selectRoomError,
+    httpReady,
+    liveConnected,
+    loadHistory,
+    refreshRooms,
+    selectAgentDm,
+    sendMessage,
+    reconcileSend,
+    sendState,
+    abortRun,
+  } = useRooms(agentId ?? null);
+  const activeRoomId = activeRoom?.roomId ?? null;
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
 
   useFocusEffect(
     useCallback(() => {
@@ -126,14 +131,6 @@ function AgentChat() {
     }, [agentId]),
   );
 
-  const [room, setRoom] = useState<RoomDetail | null>(null);
-  const [roomLoading, setRoomLoading] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [historyNonce, setHistoryNonce] = useState(0);
-  const roomCreationRef = useRef<{ agentId: string; clientRoomId: string } | null>(null);
-  const [messages, setMessages] = useState<CanonicalRoomMessage[]>([]);
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -150,159 +147,45 @@ function AgentChat() {
   const cumulativeTextRef = useRef<string | null>(null);
   const listRef = useRef<FlatList<ChatItem>>(null);
   const inputRef = useRef<TextInput>(null);
-  const generation = useRef(0);
-  const reconciliation = useRef<Promise<void> | null>(null);
-  const requestedAfter = useRef<number | null>(null);
-  const pendingSendRef = useRef<{
-    clientMessageId: string;
-    text: string;
-    uncertain: boolean;
-  } | null>(null);
+  const pendingSendRef = useRef<{ clientMessageId: string; text: string } | null>(null);
 
-  const applyCanonical = useCallback((incoming: readonly CanonicalRoomMessage[]) => {
-    if (!room) return;
-    const valid = incoming.filter((message) => message.roomId === room.roomId);
-    const merged = mergeMessages(messagesRef.current, valid);
-    messagesRef.current = merged;
-    setMessages(merged);
-    const canonicalRuns = new Set(valid.flatMap((message) => message.runId ? [message.runId] : []));
-    if (canonicalRuns.size > 0) {
-      setItems((current) => current.filter((item) => !item.runId || !canonicalRuns.has(item.runId)));
-    }
-  }, [room]);
-
+  // The shared hook resets its own message/optimistic state on a room change;
+  // the live-stream projection this screen owns has to be reset alongside it.
   useEffect(() => {
-    if (!agentId || !httpReady) return;
-    let cancelled = false;
-    const resolveRoom = async () => {
-      setRoomLoading(true);
-      setHistoryError(null);
-      try {
-        const directory = await messaging.listRooms();
-        const details = await Promise.all(
-          directory.rooms
-            .filter((candidate) => candidate.kind === "dm")
-            .map((candidate) => messaging.getRoom(candidate.roomId).catch(() => null)),
-        );
-        let detail = details.find((candidate): candidate is RoomDetail =>
-          !!candidate && candidate.members.some(
-            (member) => member.kind === "agent" && member.id === agentId,
-          ),
-        );
-        if (!detail) {
-          const creation = roomCreationRef.current?.agentId === agentId
-            ? roomCreationRef.current
-            : { agentId, clientRoomId: randomUUID() };
-          roomCreationRef.current = creation;
-          detail = await messaging.createRoom({
-            clientRoomId: creation.clientRoomId,
-            kind: "dm",
-            name: null,
-            members: [{
-              kind: "agent",
-              id: agentId,
-              role: "member",
-              listenMode: "active",
-            }],
-          });
-        }
-        if (cancelled) return;
-        setRoom(detail);
-      } catch (error) {
-        if (!cancelled) {
-          setHistoryError(error instanceof Error ? error.message : "Failed to open conversation");
-        }
-      } finally {
-        if (!cancelled) setRoomLoading(false);
-      }
-    };
-    void resolveRoom();
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId, httpReady, messaging, historyNonce]);
-
-  useEffect(() => {
-    generation.current += 1;
-    messagesRef.current = [];
-    setMessages([]);
     setItems([]);
     setBusy(false);
     activeRunIdRef.current = null;
-    requestedAfter.current = null;
-    reconciliation.current = null;
-  }, [room?.roomId]);
+  }, [activeRoomId]);
 
-  const subscriptionRoomId = room?.roomId;
-  const subscriptionDeliveryKey = room?.deliveryKey;
-  useFocusEffect(
-    useCallback(() => {
-      if (!subscriptionRoomId || !subscriptionDeliveryKey) return;
-      return claimActiveRoomSubscription({
-        roomId: subscriptionRoomId,
-        deliveryKey: subscriptionDeliveryKey,
-      });
-    }, [subscriptionRoomId, subscriptionDeliveryKey, claimActiveRoomSubscription]),
-  );
-
-  const reconcile = useCallback((afterSeq: number) => {
-    if (!room) return Promise.resolve();
-    requestedAfter.current = requestedAfter.current === null
-      ? afterSeq
-      : Math.min(requestedAfter.current, afterSeq);
-    if (reconciliation.current) return reconciliation.current;
-    const roomId = room.roomId;
-    const runGeneration = generation.current;
-    const run = async () => {
-      setHistoryError(null);
-      while (requestedAfter.current !== null && generation.current === runGeneration) {
-        let cursor = requestedAfter.current;
-        requestedAfter.current = null;
-        for (;;) {
-          const page = await messaging.listMessages(roomId, cursor, 100);
-          if (generation.current !== runGeneration) return;
-          applyCanonical(page.messages);
-          if (page.nextAfterSeq === null) break;
-          cursor = page.nextAfterSeq;
-        }
-      }
-    };
-    reconciliation.current = run()
-      .catch((error) => {
-        if (generation.current === runGeneration) {
-          setHistoryError(error instanceof Error ? error.message : "Failed to load history");
-        }
-      })
-      .finally(() => {
-        reconciliation.current = null;
-        if (requestedAfter.current !== null && generation.current === runGeneration) {
-          void reconcile(requestedAfter.current);
-        }
-      });
-    return reconciliation.current;
-  }, [room, messaging, applyCanonical]);
-
-  const subscriptionPath = room ? `/rooms/${room.roomId}/${room.deliveryKey}` : null;
+  // A run the canonical transcript now covers is done double-duty: drop its
+  // live items so the stream doesn't render twice (sessions contract §5).
+  //
+  // Scoped to the messages that just ARRIVED, which is what the old
+  // `applyCanonical(batch)` pruned on. Two failure modes bracket this:
+  // filtering on every runId in `messages` kills a still-streaming run,
+  // because `reconcile` re-merges into a fresh array after every page (a
+  // reconnect or the `run_ended` refetch is enough, even with an empty page);
+  // remembering runIds already pruned kills the dedupe instead, because the
+  // user's own message carries the runId of the run it started, so the run
+  // would be marked handled long before the agent's reply lands. Tracking
+  // seen message ids is the only cut that survives both.
+  const seenMessageIdsRef = useRef(new Set<string>());
   useEffect(() => {
-    if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
-    void reconcile(lastSequence(messagesRef.current));
-  }, [subscriptionPath, liveChannels, connectionRevision, historyNonce, reconcile]);
-
+    seenMessageIdsRef.current = new Set();
+  }, [activeRoomId]);
   useEffect(() => {
-    if (!room) return;
-    const interval = setInterval(() => {
-      void messaging.getRoom(room.roomId).then((detail) => {
-        setRoom((current) => current?.roomId === detail.roomId ? detail : current);
-      }).catch((error) => {
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
-          messagesRef.current = [];
-          setMessages([]);
-          setRoom(null);
-        }
-      });
-    }, 60_000);
-    return () => clearInterval(interval);
-  }, [room?.roomId, messaging]);
+    const arrivedRunIds = new Set<string>();
+    for (const message of messages) {
+      if (seenMessageIdsRef.current.has(message.messageId)) continue;
+      seenMessageIdsRef.current.add(message.messageId);
+      if (message.runId) arrivedRunIds.add(message.runId);
+    }
+    if (arrivedRunIds.size === 0) return;
+    setItems((current) => {
+      const next = current.filter((item) => !item.runId || !arrivedRunIds.has(item.runId));
+      return next.length === current.length ? current : next;
+    });
+  }, [messages, activeRoomId]);
 
   const handleFrame = useCallback((msg: ChatIncomingMessage, runId: string) => {
     if (msg.type === "run_active") {
@@ -404,52 +287,21 @@ function AgentChat() {
       setItems((current) => current.map((item) => item.streaming ? { ...item, streaming: false } : item));
       activeRunIdRef.current = null;
       setBusy(false);
-      void reconcile(lastSequence(messagesRef.current));
+      loadHistoryRef.current();
     }
-  }, [reconcile]);
+  }, []);
 
+  // Every other branch of the live stream is the shared hook's; this one is
+  // not, because only this screen turns frames into ChatItems.
   useEffect(() => onEvent((event) => {
-    if (!room) return;
-    if (event.type === "room.access.removed" && event.payload.roomId === room.roomId) {
-      messagesRef.current = [];
-      setMessages([]);
-      setRoom(null);
-      return;
-    }
-    if (event.type === "room.subscription.rotated" && event.payload.roomId === room.roomId) {
-      setRoom((current) => current ? {
-        ...current,
-        deliveryKey: event.payload.deliveryKey,
-        roomRevision: event.payload.roomRevision,
-      } : current);
-      return;
-    }
-    if (event.type === "room.metadata.changed" && event.payload.roomId === room.roomId) {
-      void messaging.getRoom(room.roomId).then(setRoom).catch(() => {});
-      return;
-    }
-    if (event.type === "room.message.created" && event.payload.roomId === room.roomId) {
-      const previous = lastSequence(messagesRef.current);
-      applyCanonical([event.payload]);
-      if (event.payload.messageSeq > previous + 1) void reconcile(previous);
-      return;
-    }
     if (
       event.type === "room.run.frame" &&
-      event.payload.roomId === room.roomId &&
+      event.payload.roomId === activeRoomId &&
       event.payload.agentId === agentId
     ) {
       handleFrame(event.payload.frame, event.payload.runId);
     }
-  }), [room, agentId, onEvent, messaging, applyCanonical, reconcile, handleFrame]);
-
-  useEffect(() => {
-    const sequence = lastSequence(messages);
-    if (!room || sequence <= room.lastReadSeq) return;
-    void messaging.markRead(room.roomId, { lastReadSeq: sequence }).then((cursor) => {
-      setRoom((current) => current ? { ...current, lastReadSeq: cursor.lastReadSeq } : current);
-    }).catch(() => {});
-  }, [messages, room, messaging]);
+  }), [activeRoomId, agentId, onEvent, handleFrame]);
 
   const showSizeError = useCallback((message: string) => {
     if (sizeErrorTimerRef.current) clearTimeout(sizeErrorTimerRef.current);
@@ -522,35 +374,36 @@ function AgentChat() {
   }, [pickFromLibrary, pickFiles]);
 
   const dispatchText = useCallback(async (text: string): Promise<boolean> => {
-    if (!text || !room || !agentId || !httpReady) return false;
+    if (!text || !activeRoomId || !agentId || !httpReady) return false;
     let pending = pendingSendRef.current;
     if (!pending || pending.text !== text) {
-      pending = { clientMessageId: randomUUID(), text, uncertain: false };
+      pending = { clientMessageId: randomUUID(), text };
       pendingSendRef.current = pending;
     }
-    const localId = `pending-${pending.clientMessageId}`;
-    setItems((current) => current.some((item) => item.id === localId)
-      ? current
-      : [...current, { id: localId, role: "user", text }]);
-    if (pending.uncertain) await reconcile(lastSequence(messagesRef.current));
     try {
-      const canonical = await messaging.sendMessage(room.roomId, {
-        clientMessageId: pending.clientMessageId,
-        text,
-        mentions: [],
-        replyToMessageId: null,
-        threadRootMessageId: null,
-      });
+      // An attempt that failed without a server verdict may already be
+      // persisted: reconcile first, then replay the SAME clientMessageId so the
+      // server dedupes instead of double-posting.
+      const canonical = sendState(pending.clientMessageId) === "uncertain"
+        ? await reconcileSend(pending.clientMessageId)
+        : await sendMessage({
+            clientMessageId: pending.clientMessageId,
+            text,
+            mentions: [],
+            replyToMessageId: null,
+            threadRootMessageId: null,
+          });
+      // `reconcileSend` resolves undefined when the room changed under it and
+      // the shared hook dropped the request — nothing was sent, so parking the
+      // composer on a Stop button with no run to stop would be a dead end.
+      if (!canonical) return false;
       pendingSendRef.current = null;
-      setItems((current) => current.filter((item) => item.id !== localId));
-      applyCanonical([canonical]);
       if (canonical.runId) activeRunIdRef.current = canonical.runId;
       setBusy(true);
       return true;
     } catch (error) {
-      pending.uncertain = !(error instanceof ApiError);
       setItems((current) => [
-        ...current.filter((item) => item.id !== localId),
+        ...current,
         {
           id: randomUUID(),
           role: "error",
@@ -559,11 +412,11 @@ function AgentChat() {
       ]);
       return false;
     }
-  }, [room, agentId, httpReady, messaging, reconcile, applyCanonical]);
+  }, [activeRoomId, agentId, httpReady, sendState, reconcileSend, sendMessage]);
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || uploading || !agentId || !room) return;
+    if ((!text && attachments.length === 0) || uploading || !agentId || !activeRoomId) return;
     let message = text;
     if (attachments.length > 0) {
       setUploading(true);
@@ -589,13 +442,13 @@ function AgentChat() {
       setInput("");
       setAttachments([]);
     }
-  }, [input, attachments, uploading, agentId, room, dispatchText]);
+  }, [input, attachments, uploading, agentId, activeRoomId, dispatchText]);
 
   const stopRun = useCallback(async () => {
     const runId = activeRunIdRef.current;
     if (!runId || !httpReady) return;
     try {
-      await messaging.abortRun(runId);
+      await abortRun(runId);
     } catch (error) {
       setItems((current) => [...current, {
         id: randomUUID(),
@@ -603,13 +456,27 @@ function AgentChat() {
         text: error instanceof Error ? error.message : "Stop failed",
       }]);
     }
-  }, [httpReady, messaging]);
+  }, [httpReady, abortRun]);
 
   const agentName = name || agentId || "Agent";
-  const allItems = useMemo(
-    () => [...messages.map((message) => messageItem(message, userId ?? null)), ...items],
-    [messages, userId, items],
-  );
+  const allItems = useMemo(() => [
+    ...messages.map((message) => messageItem(message, userId ?? null)),
+    ...optimisticMessages.map((message) => ({
+      id: `pending-${message.clientMessageId}`,
+      role: "user" as const,
+      text: message.text,
+    })),
+    ...items,
+  ], [messages, optimisticMessages, items, userId]);
+  // Once a room is open only its own detail error matters; before that, the
+  // resolve-or-create errors do — `selectRoomError` last, since it reports the
+  // failed create rather than the more specific fetch that caused it.
+  // `accessRemoved` is not an error the user can retry past, so it leaves an
+  // empty transcript, as it always has.
+  const openError = roomError?.message
+    ?? (activeRoom ? undefined : roomsError?.message ?? directoryError?.message ?? selectRoomError);
+  const errorMessage = accessRemoved ? null : openError ?? historyErrorMessage;
+  const roomLoading = !activeRoom && !errorMessage;
   let lastUserIndex = -1;
   for (let index = allItems.length - 1; index >= 0; index -= 1) {
     if (allItems[index].role === "user") {
@@ -662,11 +529,17 @@ function AgentChat() {
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
-        ListHeaderComponent={historyError ? (
+        ListHeaderComponent={errorMessage ? (
           <View style={[styles.errorCard, styles.historyErrorCard]}>
-            <Text style={styles.errorText}>Couldn’t load history — {historyError}</Text>
+            <Text style={styles.errorText}>Couldn’t load history — {errorMessage}</Text>
             <Pressable
-              onPress={() => setHistoryNonce((nonce) => nonce + 1)}
+              onPress={() => {
+                void refreshRooms().catch(() => {});
+                // `initialAgentId` is one-shot per agent inside the hook, so a
+                // failed resolve-or-create only retries if we re-drive it.
+                if (agentId) void selectAgentDm(agentId).catch(() => {});
+                loadHistory();
+              }}
               accessibilityRole="button"
               accessibilityLabel="Retry loading history"
             >

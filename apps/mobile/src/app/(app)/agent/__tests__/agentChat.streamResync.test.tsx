@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
 jest.mock("expo-router", () => ({
   router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
@@ -28,22 +28,30 @@ const mockSendMessage = jest.fn(async (_roomId: string, request: { clientMessage
   mentions: [], replyToMessageId: null, threadRootMessageId: null,
   createdAt: "2026-09-09T00:00:00.000Z", runId: "run_1",
 }));
-let liveHandler: ((event: unknown) => void) | null = null;
+// The real provider fans every event out to EVERY registered handler; the
+// screen and the shared useRooms each register one, so a single-slot mock
+// silently drops whichever of them re-subscribed first.
+const mockLiveHandlers = new Set<(event: unknown) => void>();
+const emitLiveEvent = (event: unknown) => {
+  for (const handler of [...mockLiveHandlers]) handler(event);
+};
 const mockMessaging = {
   listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
   getRoom: jest.fn(async () => mockRoom),
   listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
   markRead: jest.fn(async () => ({ roomId: "room_a", lastReadSeq: 1 })),
+  getRunStatus: jest.fn(async () => ({ runId: "run_1", state: "running" })),
   sendMessage: mockSendMessage,
   abortRun: jest.fn(),
 };
 const mockLiveChannels = ["/rooms/room_a/delivery_a"];
+// Mutable so a test can stage a reconnect, which is what re-fires the shared
+// hook's reconcile effect.
+let mockConnectionRevision = 1;
 const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: (event: unknown) => void) => {
-  liveHandler = handler;
-  return () => {
-    if (liveHandler === handler) liveHandler = null;
-  };
+  mockLiveHandlers.add(handler);
+  return () => mockLiveHandlers.delete(handler);
 };
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
@@ -51,7 +59,7 @@ jest.mock("../../../../providers/live-events", () => ({
     liveConnected: true,
     liveChannels: mockLiveChannels,
     liveError: null,
-    connectionRevision: 1,
+    connectionRevision: mockConnectionRevision,
     messaging: mockMessaging,
     claimActiveRoomSubscription: mockClaimActiveRoomSubscription,
     onEvent: mockOnEvent,
@@ -77,7 +85,7 @@ async function startRun(): Promise<string> {
 async function frame(runId: string, value: Record<string, unknown>) {
   const payloadFrame = { agentId: "agent_a", runId, ...value };
   await act(async () => {
-    liveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: { roomId: "room_a", agentId: "agent_a", runId, frame: payloadFrame },
     });
@@ -86,7 +94,7 @@ async function frame(runId: string, value: Record<string, unknown>) {
 
 async function finishRun(runId: string) {
   await act(async () => {
-    liveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: {
         roomId: "room_a",
@@ -102,7 +110,9 @@ describe("AgentChat stream resync across tool splits", () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
     mockClaimActiveRoomSubscription.mockClear();
-    liveHandler = null;
+    mockMessaging.listMessages.mockClear();
+    mockConnectionRevision = 1;
+    mockLiveHandlers.clear();
   });
 
   afterEach(async () => {
@@ -121,6 +131,53 @@ describe("AgentChat stream resync across tool splits", () => {
     expect(await screen.findByText(/Part two begins and continues\./)).toBeTruthy();
     expect(screen.getByText(/Part one\./)).toBeTruthy();
     await finishRun(runId);
+  });
+
+  it("keeps the live run intact when a reconnect refetches history mid-run", async () => {
+    const view = await render(<AgentChat />);
+    const runId = await startRun();
+    await frame(runId, { type: "chunk", content: "Part one. ", append: true });
+    await frame(runId, { type: "tool_start", tool: "exec", toolCallId: "t1" });
+    expect(await screen.findByLabelText("exec tool call")).toBeTruthy();
+
+    // A reconnect re-runs reconcile(0), and mergeCanonicalMessages allocates a
+    // fresh array even for an empty page. A prune keyed on every runId in
+    // `messages` would fire here and erase the run mid-flight, because the
+    // user's own canonical message already carries this run's id.
+    mockConnectionRevision = 2;
+    await act(async () => { await view.rerender(<AgentChat />); });
+    await waitFor(() => expect(mockMessaging.listMessages.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+    expect(screen.getByLabelText("exec tool call")).toBeTruthy();
+    expect(screen.getByText(/Part one\./)).toBeTruthy();
+    await finishRun(runId);
+  });
+
+  it("keeps the streamed answer past run_ended, and drops it when the reply persists", async () => {
+    await render(<AgentChat />);
+    const runId = await startRun();
+    await frame(runId, { type: "chunk", content: "streaming draft", append: true });
+
+    // run_ended refetches history; the reply is not committed yet, so the
+    // streamed text is all the user has and must not blink out.
+    await finishRun(runId);
+    await waitFor(() => expect(mockMessaging.listMessages.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText(/streaming draft/)).toBeTruthy();
+
+    // ...and it goes the moment the canonical reply lands carrying that runId.
+    await act(async () => {
+      emitLiveEvent({
+        type: "room.message.created",
+        payload: {
+          messageId: "message_2", roomId: "room_a", messageSeq: 2, roomRevision: 1,
+          author: { kind: "agent", id: "agent_a", displayName: "Friday" },
+          text: "persisted reply", mentions: [], replyToMessageId: null,
+          threadRootMessageId: null, createdAt: "2026-09-09T00:00:00.000Z", runId,
+        },
+      });
+    });
+    expect(await screen.findByText("persisted reply")).toBeTruthy();
+    expect(screen.queryByText(/streaming draft/)).toBeNull();
   });
 
   it("accepts a full-text resync when no tool split the run", async () => {

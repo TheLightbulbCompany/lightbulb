@@ -31,12 +31,19 @@ const mockSendMessage = jest.fn(async (_roomId: string, request: { clientMessage
 }));
 const mockAbortRun = jest.fn(async () => ({ runId: "run_1", state: "aborting" }));
 let mockLiveConnected = true;
-let mockLiveHandler: ((event: unknown) => void) | null = null;
+// The real provider fans every event out to EVERY registered handler; the
+// screen and the shared useRooms each register one, so a single-slot mock
+// silently drops whichever of them re-subscribed first.
+const mockLiveHandlers = new Set<(event: unknown) => void>();
+const emitLiveEvent = (event: unknown) => {
+  for (const handler of [...mockLiveHandlers]) handler(event);
+};
 const mockMessaging = {
   listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
   getRoom: jest.fn(async () => mockRoom),
   listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
   markRead: jest.fn(async (_roomId: string, request: { lastReadSeq: number }) => request),
+  getRunStatus: jest.fn(async () => ({ runId: "run_1", state: "running" })),
   sendMessage: mockSendMessage,
   abortRun: mockAbortRun,
 };
@@ -44,8 +51,8 @@ const mockConnectedChannels = ["/rooms/room_a/delivery_a"];
 const mockDisconnectedChannels: string[] = [];
 const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: (event: unknown) => void) => {
-  mockLiveHandler = handler;
-  return () => {};
+  mockLiveHandlers.add(handler);
+  return () => mockLiveHandlers.delete(handler);
 };
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
@@ -80,7 +87,7 @@ async function startRun() {
     deliveryKey: "delivery_a",
   }));
   await act(async () => {
-    mockLiveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: {
         roomId: "room_a",
@@ -100,7 +107,7 @@ async function startRun() {
 
 async function terminalFrame() {
   await act(async () => {
-    mockLiveHandler?.({
+    emitLiveEvent({
       type: "room.run.frame",
       payload: {
         roomId: "room_a",
@@ -123,7 +130,7 @@ describe("AgentChat stop run", () => {
     mockSendMessage.mockClear();
     mockAbortRun.mockReset().mockResolvedValue({ runId: "run_1", state: "aborting" });
     mockLiveConnected = true;
-    mockLiveHandler = null;
+    mockLiveHandlers.clear();
     mockClaimActiveRoomSubscription.mockClear();
   });
 

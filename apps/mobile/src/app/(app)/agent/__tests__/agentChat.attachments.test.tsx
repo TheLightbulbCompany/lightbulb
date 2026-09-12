@@ -20,7 +20,7 @@ jest.mock("expo-router", () => ({
 // user: null keeps history hydration + first-run kickoff inert.
 jest.mock("@clerk/clerk-expo", () => ({
   useUser: () => ({ user: null }),
-  useAuth: () => ({ getToken: jest.fn(async () => "token") }),
+  useAuth: () => ({ userId: "user_a", getToken: jest.fn(async () => "token") }),
 }));
 
 // Incrementing uuids: chips, run ids, and error items all mint via

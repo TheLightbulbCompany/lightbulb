@@ -1006,7 +1006,14 @@ async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
 
 # Rooms summarised at once. Every repo call is a thread hop onto the default
 # executor (~6 threads on a 2-vCPU task), so an unbounded gather over a large
-# workspace would monopolise it and stall every other request on the process.
+# workspace would flood it and leave every other request on the process queued
+# behind a single room list.
+#
+# Note this bounds ROOMS, and each one issues three calls concurrently — so the
+# real ceiling on submitted work is three times this number. That is deliberate:
+# the calls are IO-bound and mostly sit waiting on DynamoDB, so a modest queue
+# behind the pool costs nothing, whereas the serial version this replaced cost
+# two full round trips per room in sequence.
 _SUMMARY_CONCURRENCY = 8
 
 

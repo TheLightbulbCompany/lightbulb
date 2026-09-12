@@ -65,6 +65,43 @@ afterEach(() => {
 });
 
 describe("useOnboardingStatus", () => {
+  it("does not multiply background polling when several consumers share one status key", async () => {
+    // `/chat` mounts this hook four times against one SWR key (the provisioning
+    // stepper, the chat-ready gate, the join modal, the health indicator), and
+    // SWR dedupes the request between them. So "time of the last fetch attempt"
+    // describes the KEY, not any one instance: only the instance whose fetcher
+    // actually ran would ever stamp a private ref, and the others would read a
+    // ref frozen at 0, conclude on every backstop tick that the poll was
+    // overdue, and call mutate() forever.
+    //
+    // Measured past the 60s fast window, so the cadence is the 15s slow poll
+    // and a 5s backstop tick is the only thing that could add fetches.
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = vi.fn(jsonResponder(200, contractBody()));
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      const cache = new Map();
+      const shared = ({ children }: { children: React.ReactNode }) =>
+        React.createElement(SWRConfig, { value: { provider: () => cache } }, children);
+      const mount = () =>
+        renderHook(() => useOnboardingStatus({ api: makeApi(), enabled: true }), { wrapper: shared });
+
+      mount(); mount(); mount(); mount();
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+
+      const settled = fetchSpy.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      const overOneMinute = fetchSpy.mock.calls.length - settled;
+
+      // A 15s cadence over 60s is four polls. Four instances each running their
+      // own overdue backstop would be several times that.
+      expect(overOneMinute).toBeLessThanOrEqual(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears sticky state immediately when the workspace scope changes", async () => {
     global.fetch = vi.fn().mockImplementationOnce(jsonResponder(200, contractBody({ service_name: "org-a" })))
       .mockRejectedValue(new Error("org-b unavailable"));

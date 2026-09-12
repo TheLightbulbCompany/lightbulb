@@ -233,8 +233,14 @@ export function useOnboardingStatus(
     previousKey.current = key;
     lastGoodRef.current = undefined;
     windowStartRef.current = Date.now();
-    lastAttemptRef.current = 0;
     prevReadyRef.current = false;
+    // `lastAttemptRef` is deliberately NOT reset here. It is shared per SWR key
+    // now, and this branch fires on every fresh mount (each instance starts
+    // with `previousKey.current === null`) — so zeroing it would let a
+    // late-joining consumer stomp the clock of instances already polling that
+    // key, and their next backstop tick would read the poll as overdue. It
+    // bought nothing even when private: the deduped fetcher stamps a real
+    // timestamp on the next actual attempt either way.
   }
 
   // STABLE identity, deliberately. SWR lists `refreshInterval` in its polling

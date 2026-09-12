@@ -242,6 +242,12 @@ fuller context.
 ## 3. Wire contract
 
 All additions are optional so old desktops and old web builds keep working.
+Optional means **absent on the wire, never `null`**, at every nesting level:
+the web discriminates `actor` with `"userId" in actor` and keys tool previews
+off `tool.lines !== undefined`, so a serialized `null` would misattribute an
+agent follow-up to the owner and echo a tool's label as its output (found by
+the final review; the backend's wrap serializers on `EventActor` and
+`EventTool` enforce it and an HTTP-boundary test pins it).
 
 ```ts
 export interface LocalSessionEvent {
@@ -318,8 +324,14 @@ Row → event mapping. Everything not listed is dropped, as today.
 | `queue-operation` | ignored in V1 (the composer already reports queued receipts) |
 
 Bounds: `text` ≤ 12 KiB per event; `tool.input` ≤ 4 KiB; `tool.result` ≤ 12 KiB;
-beyond that `truncated: true` and a trailing `… truncated` line. This keeps
-one event under the 16 KiB envelope with headroom, and matches the TUI, which
+beyond that `truncated: true` and a trailing `… truncated` line. Those
+per-field byte caps are the desktop's first pass only: they do not add up to
+an envelope (12 + 4 + 12 KiB > 16 KiB, and the wire charges non-ASCII text
+sixfold), so the binding limit is on the composed event: every tool event is
+shrunk as a whole (preview text first, then `tool.result`) until its
+`ascii_wire_len` is ≤ 15,000, and an event that still cannot fit alone is
+replaced by a one-line system marker rather than blocking the queue
+(corrected 2026-09-12 after the final review). This matches the TUI, which
 also caps what it shows before "expand". Chunk sizes are chosen against
 `ascii_wire_len` (non-ASCII expands sixfold on the wire), not character
 counts. Splitting continues to work for oversized prose (`split_text` with a
@@ -343,7 +355,7 @@ the turn events. Same session/version guards as today.
 | `AgentMessage phase=commentary` | `text/assistant` (the renderer draws every assistant text as a `•` line and gives only the last one before `turn_end` the `codex` header, which is what the TUI does) |
 | `Reasoning` | `thinking/assistant`, `text` = summary lines joined |
 | `CommandExecution` | `tool/assistant`, `name="CommandExecution"`, `input={command, cwdName}` where `command` is the shell string (the last element of the `["/bin/zsh","-lc",…]` array, as the TUI shows it), `result={exit_code, aggregated_output bounded}`, `status` from item, `lines` |
-| `FileChange` | `tool/assistant`, `name="FileChange"`, `result={changes: {basename: {type, diff bounded}}}` |
+| `FileChange` | `tool/assistant`, `name="FileChange"`, `result={changes: {basename: {type, diff bounded, content bounded}}}` — `content` (an added file's full text, bounded and redacted) was added so added files render at all; the consent copy names file changes as shared (owner-visible decision recorded 2026-09-12) |
 | `McpToolCall` | `tool/assistant`, `input={server, tool, arguments bounded}`, `result` bounded, `status` |
 | `Extension web.search` | `tool/assistant`, `input={query}` |
 | `SubAgentActivity`, `CollabAgentToolCall` | `tool/assistant` with `name` and `status: done`, no input or result: one activity line |

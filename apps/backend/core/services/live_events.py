@@ -32,6 +32,14 @@ class LivePublishError(RuntimeError):
     pass
 
 
+def _publish_status_class(status_code: int) -> str:
+    """Failure class for a non-2xx AppSync answer. 429 is split out because it
+    is throttling (shed load) rather than an outage."""
+    if status_code == 429:
+        return "429"
+    return "5xx" if status_code >= 500 else "4xx"
+
+
 def _uuid(value: str, label: str) -> str:
     try:
         parsed = uuid.UUID(str(value))
@@ -123,21 +131,30 @@ class LiveEventPublisher:
         body = json.dumps({"channel": channel, "events": [serialized_event]}, separators=(",", ":")).encode()
 
         last_error: Exception | None = None
+        last_status_class = "transport"
         for attempt in range(2):
             request = self._signed_request(endpoint, body)
             try:
                 response = await self._post(endpoint, body, dict(request.headers))
             except Exception as exc:
                 last_error = exc
+                last_status_class = "transport"
                 if attempt == 0:
                     continue
                 break
             if response.status_code == 429 or response.status_code >= 500:
                 last_error = LivePublishError(f"AppSync HTTP {response.status_code}")
+                last_status_class = _publish_status_class(response.status_code)
                 if attempt == 0:
                     continue
                 break
             if not 200 <= response.status_code < 300:
+                # Not retried, so this is the terminal outcome — it was the one
+                # failure path that published nothing at all.
+                put_metric(
+                    "messaging.live.publish",
+                    dimensions={"outcome": "error", "status_class": _publish_status_class(response.status_code)},
+                )
                 raise LivePublishError(f"AppSync HTTP {response.status_code}")
             try:
                 payload = response.json()
@@ -149,7 +166,10 @@ class LiveEventPublisher:
                 raise LivePublishError("AppSync rejected live event")
             put_metric("messaging.live.publish", dimensions={"outcome": "ok"})
             return
-        put_metric("messaging.live.publish", dimensions={"outcome": "error"})
+        put_metric(
+            "messaging.live.publish",
+            dimensions={"outcome": "error", "status_class": last_status_class},
+        )
         # IDs and payloads are intentionally absent: message text, tokens, and
         # Authorization headers must never reach logs.
         logger.warning("AppSync live publish failed after retry (%s)", type(last_error).__name__)

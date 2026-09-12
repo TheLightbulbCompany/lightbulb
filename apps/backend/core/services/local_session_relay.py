@@ -101,6 +101,22 @@ def _conflict() -> ApiProblem:
     return ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed; reconcile before retrying.")
 
 
+async def _actor_label(command: dict) -> dict | None:
+    """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
+    from core.services.messaging import with_human_handles
+
+    kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
+    members = with_human_handles(await store.list_members(command["roomId"]))
+    member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
+    if member is None:
+        return None
+    return {
+        "kind": kind,
+        "handle": member.get("mentionHandle") or None,
+        "displayName": member.get("displayName") or None,
+    }
+
+
 async def publish_resources_changed(owner: str, human: str) -> None:
     from core.services.live_events import get_live_event_publisher
 
@@ -512,7 +528,7 @@ class LocalSessionRelay:
                         continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
-                    envelope = {"type": "local.session.command", "command": public}
+                    envelope = {"type": "local.session.command", "command": public, "actor": await _actor_label(claim)}
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))

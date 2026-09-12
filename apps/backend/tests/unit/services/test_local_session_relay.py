@@ -158,6 +158,32 @@ async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, db):
+    from core.services.messaging import with_human_handles
+
+    db[0].put_item(
+        Item={
+            "pk": f"ROOM#{ROOM}",
+            "sk": f"MEMBER#human#{BOB.user_id}",
+            "kind": "human",
+            "id": BOB.user_id,
+            "displayName": "Bob Example",
+            "joinedSeq": 2,
+            "memberKey": messaging_repo.member_key(OWNER, "human", BOB.user_id),
+            "roomId": ROOM,
+        }
+    )
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
+    expected = next(m for m in with_human_handles(await messaging_repo.list_members(ROOM)) if m["id"] == BOB.user_id)
+    assert commands[0]["actor"] == {"kind": "human", "handle": expected["mentionHandle"], "displayName": "Bob Example"}
+    assert commands[0]["command"]["actorUserId"] == BOB.user_id
+
+
+@pytest.mark.asyncio
 async def test_optional_cli_revocation_does_not_revoke_native_mac_sharing(transport, db):
     sid = await start(transport)
     db[1].update_item(

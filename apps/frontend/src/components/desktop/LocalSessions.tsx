@@ -14,7 +14,7 @@ function message(error: unknown): string {
     : String(error instanceof Error ? error.message : error);
 }
 
-export function LocalSessions() {
+export function useLocalSessions(waitForRemoteDisable = false) {
   const { userId, orgId, getToken } = useAuth();
   const [state, setState] = useState<State | null>(null);
   const [desktop, setDesktop] = useState(false);
@@ -28,9 +28,13 @@ export function LocalSessions() {
     setDesktop(Boolean(invoke));
     if (!invoke) return;
     let active = true;
-    void invoke<State>("local_sessions_status").then(s => { if (active) setState(s); }).catch(e => { if (active) setError(message(e)); });
+    setState(null); setError(null);
+    const currentOperation = operation.current;
+    void invoke<State>("local_sessions_status").then(s => {
+      if (active && operation.current === currentOperation) setState(s);
+    }).catch(e => { if (active && operation.current === currentOperation) setError(message(e)); });
     return () => { active = false; };
-  }, []);
+  }, [userId, orgId]);
   const enabled = state?.enrollment?.enabled ?? false;
   const recoveryPending = state?.enrollment?.recoveryPending ?? false;
   const canRecover = Boolean(userId && orgId && state?.enrollment?.humanUserId === userId && state.enrollment.ownerId === orgId);
@@ -38,34 +42,47 @@ export function LocalSessions() {
   async function refresh(invoke: Invoke, currentOperation: number) {
     const latest = await invoke<State>("local_sessions_status");
     if (operation.current === currentOperation) setState(latest);
+    return latest;
   }
   async function setEnabled(next: boolean) {
     const invoke = bridge();
-    if (!invoke) return;
+    if (!invoke) return false;
     const currentOperation = ++operation.current;
     setBusy(true); setError(null);
     try {
       const token = next ? await getToken().catch(() => null) : null;
-      if (operation.current !== currentOperation) return;
+      if (operation.current !== currentOperation) return false;
       const revision = await invoke<number>("local_sessions_set", { enabled: next, token, humanUserId: userId ?? null, workspaceId: orgId ?? null });
-      await refresh(invoke, currentOperation);
-      if (operation.current !== currentOperation) return;
-      if (!next && userId && orgId) {
+      const latest = await refresh(invoke, currentOperation);
+      if (operation.current !== currentOperation) return false;
+      if (!next && latest.enrollment && userId && orgId) {
         // The local stop is already complete. Token refresh and remote cleanup
         // cannot delay it; pending state stays visible until confirmed.
-        void getToken().then(async token => {
+        const cleanup = getToken().then(async token => {
           if (operation.current !== currentOperation) return;
           if (!token) throw new Error("Sign in to confirm remote-history revocation.");
           await invoke("local_sessions_revoke", { revision, token, humanUserId:userId, workspaceId:orgId });
-          await refresh(invoke, currentOperation);
-        }).catch(e => { if (operation.current === currentOperation) setError(message(e)); });
+          const confirmed = await refresh(invoke, currentOperation);
+          if (waitForRemoteDisable && confirmed.enrollment && !confirmed.enrollment.remoteDisabled) {
+            throw new Error("Local sharing stopped. Sign in as the enrolled person in the enrolled workspace to disable retained history in Settings.");
+          }
+        });
+        if (waitForRemoteDisable) await cleanup;
+        else void cleanup.catch(e => { if (operation.current === currentOperation) setError(message(e)); });
       }
       setConsent(false);
+      return true;
     } catch (e) {
       if (operation.current === currentOperation) setError(message(e));
       void refresh(invoke, currentOperation).catch(() => {});
+      return false;
     } finally { if (operation.current === currentOperation) setBusy(false); }
   }
+  return {state,desktop,consent,setConsent,busy,error,setError,enabled,recoveryPending,canRecover,sameWorkspace,userId,orgId,setEnabled,refresh,operation};
+}
+
+export function LocalSessions() {
+  const {state,desktop,consent,setConsent,busy,error,setError,enabled,recoveryPending,canRecover,sameWorkspace,userId,setEnabled,refresh,operation} = useLocalSessions();
   return <section className="settings-panel space-y-4" aria-labelledby="local-sessions-heading">
     <h2 id="local-sessions-heading" className="text-lg font-medium">Native terminal sessions</h2>
     <p>Share currently active Claude Code and Codex sessions, including their existing conversation transcript, and new sessions with the current human members of every conversation you belong to in the enrolled workspace.</p>

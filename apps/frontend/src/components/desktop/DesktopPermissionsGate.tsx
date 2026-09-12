@@ -217,12 +217,13 @@ export function DesktopPermissionsGate() {
         <p className="text-xs leading-relaxed text-[var(--midnight-muted)]">
           Sharing includes active sessions’ existing transcripts and new sessions. Current human members of conversations you share in this workspace can view and steer them; contributions can be visible across conversations. Personal memory files are not uploaded. Enrollment is saved and resumes automatically when you reopen Lightbulb. You can disable sharing in Settings.
         </p>
+        {checking && <p role="status" className="text-xs text-[var(--midnight-muted)]">Checking local-session sharing… You can continue with Basic only.</p>}
         {(saveError || sharing.error) && <p role="alert" className="text-sm text-destructive">{sharing.error || saveError}</p>}
 
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
             type="button"
-            disabled={saving || checking}
+            disabled={saving}
             onClick={() => void save(BASIC_DESKTOP_PERMISSIONS, "basic")}
             className="rounded-md border border-edge px-4 py-2 text-sm font-medium text-[var(--midnight-soft)] hover:bg-cream"
           >

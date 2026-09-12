@@ -11,6 +11,14 @@ vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
 const auth = vi.hoisted(()=>({userId:"alice",orgId:"org",getToken:vi.fn()}));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 const invoke = vi.fn();
+it("lets Basic only proceed even while initial sharing status is pending", async () => {
+  invoke.mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:"paused"});
+  render(<DesktopPermissionsGate />);
+  expect(screen.getByRole("button", {name:"Continue"})).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", {name:"Basic only"}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+});
 it("offers sharing with the other permissions once and sends nothing until Continue", async () => {
   invoke.mockImplementation(async (command) => {
     if (command === "local_sessions_set") return 1;

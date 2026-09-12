@@ -137,9 +137,14 @@
 @keyframes agent-activity-halo {
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--brass) 20%, transparent); }
 }
-.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--muted); }
-.room-directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; }
+.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; overflow-x: hidden; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--muted); }
+.room-directory-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+/* The title shrinks and ellipsizes before the sidebar is forced wider than its
+   box; the actions cluster never shrinks, and only wraps to a second line
+   (via the container's flex-wrap above) once it alone can't fit. */
+.room-directory-heading > h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-directory-heading-actions { flex-shrink: 0; }
+.room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; min-width: 0; }
 .room-directory-row .room-directory-entry { min-width: 0; }
 .room-directory-actions { flex: none; opacity: 0; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }

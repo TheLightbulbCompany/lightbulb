@@ -479,6 +479,26 @@ it("keeps the section drag grip usable on touch and above the 44px touch floor",
   expect(css).toMatch(/\.room-directory-actions,\s*\.room-directory-grip\s*\{\s*min-width:\s*44px;\s*\}/);
 });
 
+// The heading's title is a direct <h2> child of .room-directory-heading (the
+// CSS ellipsis selector below targets it structurally) -- jsdom won't apply
+// the stylesheet, so this pairs a DOM-structure assertion with a source-text
+// assertion of the rules instead of a computed-style one.
+it("keeps the sidebar heading from forcing the directory wider than its box", () => {
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={vi.fn()} onSaveSections={vi.fn()} />);
+  const heading = screen.getByText("Conversations");
+  expect(heading.tagName).toBe("H2");
+  expect(heading.parentElement).toHaveClass("room-directory-heading");
+  const actions = heading.nextElementSibling;
+  expect(actions).toHaveClass("room-directory-heading-actions");
+
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/\.room-directory\s*\{[^}]*overflow-x:\s*hidden;/);
+  expect(css).toMatch(/\.room-directory-heading\s*\{[^}]*flex-wrap:\s*wrap;/);
+  expect(css).toMatch(/\.room-directory-heading\s*>\s*h2\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/);
+  expect(css).toMatch(/\.room-directory-heading-actions\s*\{\s*flex-shrink:\s*0;\s*\}/);
+  expect(css).toMatch(/\.room-directory-heading-actions,\s*\.room-directory-row\s*\{[^}]*min-width:\s*0;/);
+});
+
 it("reorders sections with the keyboard and persists the new order", async () => {
   stackGroupRects();
   const onSaveSections = vi.fn().mockResolvedValue(undefined);

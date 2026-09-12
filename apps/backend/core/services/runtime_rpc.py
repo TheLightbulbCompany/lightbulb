@@ -12,9 +12,10 @@ import httpx
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_gateway_pool
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
+from core.services.container_rpc import running_container as _running_container
 from core.services.messaging import (
     ApiProblem,
     RuntimeOperationAccepted,
@@ -241,32 +242,6 @@ def _sanitize_agent_update(params: dict[str, Any]) -> dict[str, Any]:
             raise ApiProblem("INVALID_REQUEST", "Agent name must be 1..80 characters.")
         clean["name"] = name
     return clean
-
-
-async def _running_container(owner_id: str) -> tuple[dict, str]:
-    manager = get_ecs_manager()
-    container, ip = await manager.resolve_running_container(owner_id)
-    if container and ip:
-        token = container.get("gateway_token")
-        if isinstance(token, str) and token:
-            return container, ip
-    row = container or await container_repo.get_by_owner_id(owner_id, consistent=True)
-    if row and row.get("status") == "stopped":
-        from core.services.container_wake import request_wake_silent
-
-        await request_wake_silent(owner_id)
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE",
-            "The runtime is waking. Try again shortly.",
-            retryable=True,
-            retry_after=3,
-        )
-    raise ApiProblem(
-        "RUNTIME_UNAVAILABLE",
-        "The runtime is temporarily unavailable.",
-        retryable=True,
-        retry_after=3,
-    )
 
 
 async def execute(

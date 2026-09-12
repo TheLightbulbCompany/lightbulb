@@ -11,6 +11,8 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { invocationBinding } from "./local-sessions.js";
+// Type-only: runs.ts imports values from this file, so the edge must not exist at runtime.
+import type { RunSupervisor } from "./runs.js";
 import type {
   buildChannelInboundEventContext,
   ChannelBotLoopProtectionFacts,
@@ -38,6 +40,7 @@ import type {
 export const CHANNEL_ID = "lightbulb";
 export const PLUGIN_ID = "lightbulb";
 export const ROUTE_PREFIX = "/plugins/lightbulb-channel/inbound/";
+export const RUNS_ROUTE_PREFIX = "/plugins/lightbulb-channel/runs/";
 export const MAX_BODY_BYTES = 1_048_576;
 export const BODY_TIMEOUT_MS = 30_000;
 export const UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS = 10_000;
@@ -163,6 +166,7 @@ export type OutboundBody = {
   text: string;
   replyToMessageId: string | null;
   threadRootMessageId: string | null;
+  runId?: string;
 };
 
 /** Durable queue id + part index first, then the prepared id; never a minted key. */
@@ -187,11 +191,16 @@ function requireOpaqueEventId(value: string): string {
   return value;
 }
 
-export function buildOutboundBody(ctx: ChannelMessageSendTextContext): OutboundBody {
+export function buildOutboundBody(
+  ctx: ChannelMessageSendTextContext,
+  runs?: Pick<RunSupervisor, "runIdForSession">,
+): OutboundBody {
   const roomId = normalizeTarget(ctx.to);
   if (!roomId) throw new Error("lightbulb: outbound target is not a room id");
   const agentId = (ctx.accountId ?? "").trim();
   if (!AGENT_ID_RE.test(agentId)) throw new Error("lightbulb: outbound send has no bound account");
+  // The agent's `message` tool can also send outside a run, so the field stays optional.
+  const runId = runs?.runIdForSession(sessionKeyFor(agentId, roomId));
   return {
     eventId: resolveOutboundEventId(ctx),
     roomId,
@@ -199,6 +208,7 @@ export function buildOutboundBody(ctx: ChannelMessageSendTextContext): OutboundB
     text: ctx.text,
     replyToMessageId: ctx.replyToId ?? null,
     threadRootMessageId: ctx.threadId == null ? null : String(ctx.threadId),
+    ...(runId ? { runId } : {}),
   };
 }
 
@@ -233,7 +243,11 @@ export function toReceipt(value: unknown, roomId: string): MessageReceipt {
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
-export function createOutbound(deps: { fetch: FetchLike; env: () => RawEnv }) {
+export function createOutbound(deps: {
+  fetch: FetchLike;
+  env: () => RawEnv;
+  runs?: Pick<RunSupervisor, "runIdForSession">;
+}) {
   const request = async (
     resolved: ReturnType<typeof resolveEnv>,
     path: string,
@@ -249,7 +263,7 @@ export function createOutbound(deps: { fetch: FetchLike; env: () => RawEnv }) {
   return {
     async sendText(ctx: ChannelMessageSendTextContext) {
       const resolved = resolveEnv(deps.env());
-      const body = buildOutboundBody(ctx);
+      const body = buildOutboundBody(ctx, deps.runs);
       const res = await request(
         resolved,
         agentMessagesPath(resolved.ownerId),
@@ -633,6 +647,7 @@ export type InboundDeps = {
   accountId: string;
   channelRuntime: PluginRuntime["channel"];
   env: () => RawEnv;
+  runs: RunSupervisor;
 };
 
 /** Status-bearing rejection raised inside the guarded effect; maps to the HTTP reply. */
@@ -968,29 +983,46 @@ export function createInboundHandler(deps: InboundDeps) {
     const invocation = count <= 1 && typeof raw === "string" && raw.length <= 4096 && !raw.includes(",")
       && invocationBinding(raw, accountId, event.room.id, event.eventId) ? raw : undefined;
     try {
-      const outcome = await effectOnce.runOnce({
+      const outcome = await effectOnce.runOnce<AdmittedRoomEvent | "not_admitted">({
         eventId: event.eventId,
         effect: "dispatch",
         run: async () => {
           try {
-            return await runRoomTurn(deps, event, await admitRoomEvent(deps, event), invocation);
+            return await admitRoomEvent(deps, event);
           } catch (error) {
             if (error instanceof IngressRejected && error.status === 409) return "not_admitted";
             throw error;
           }
         },
       });
-      if (outcome.kind === "executed" && outcome.value === "not_admitted") {
+      const { run } = event;
+      if (outcome.kind === "replayed") return json(res, 200, { eventId: event.eventId, runId: run.runId, status: "replayed" });
+      if (outcome.value === "not_admitted") {
         return json(res, 409, {
           eventId: event.eventId,
           error: "not_admitted",
           message: "lightbulb: channel declined the event",
         });
       }
-      return json(res, 202, {
-        eventId: event.eventId,
-        status: outcome.kind === "replayed" ? "replayed" : outcome.value,
-      });
+      // The claim is committed and the caller is answered before the turn starts: a
+      // death in between is a run that never started, which the backend sweeper reports
+      // as an error rather than re-running (spec §2).
+      json(res, 202, { eventId: event.eventId, runId: run.runId, status: "accepted" });
+      const admitted = outcome.value;
+      deps.runs.start(
+        {
+          runId: run.runId,
+          roomId: event.room.id,
+          agentId: accountId,
+          sessionKey: sessionKeyFor(accountId, event.room.id),
+          frameChannel: run.frameChannel,
+          frameEndpoint: run.frameEndpoint,
+          threadRootMessageId: event.message.threadRootMessageId ?? null,
+          eventKind: event.eventKind,
+        },
+        () => runRoomTurn(deps, event, admitted, invocation),
+      );
+      return true;
     } catch (error) {
       if (error instanceof IngressRejected) {
         return json(res, error.status, {
@@ -1004,6 +1036,39 @@ export function createInboundHandler(deps: InboundDeps) {
   };
 }
 
+const RUN_CONTROL_RE = /^\/plugins\/lightbulb-channel\/runs\/([0-9a-f-]{36})\/(abort|steer)$/;
+
+/** The backend's abort_run/steer_run door: one gateway-auth prefix route for every account. */
+export function createRunControlHandler(deps: {
+  sdk: Pick<LightbulbSdk, "applyBasicWebhookRequestGuards" | "readJsonWebhookBodyOrReject">;
+  runs: RunSupervisor;
+}) {
+  return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+    if (!deps.sdk.applyBasicWebhookRequestGuards({ req, res, allowMethods: ["POST"], requireJsonContentType: true })) return true;
+    const match = RUN_CONTROL_RE.exec((req.url ?? "").split("?")[0]);
+    if (!match) return json(res, 404, { error: "not_found" });
+    const [, runId, action] = match;
+    const body = await deps.sdk.readJsonWebhookBodyOrReject({
+      req,
+      res,
+      maxBytes: MAX_TEXT_BYTES + 1_024,
+      timeoutMs: 10_000,
+      invalidJsonMessage: "invalid JSON body",
+    });
+    if (!body.ok) return true;
+    if (action === "abort") {
+      const state = deps.runs.abort(runId);
+      return json(res, state === "aborting" ? 202 : 404, { runId, state });
+    }
+    const text = (body.value as Record<string, unknown> | null)?.text;
+    if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text, "utf8") > MAX_TEXT_BYTES) {
+      return json(res, 400, { error: "invalid_steer", message: "text is required" });
+    }
+    const state = deps.runs.steer(runId, text);
+    return json(res, state === "accepted" ? 202 : 404, { runId, state });
+  };
+}
+
 export type GatewayDeps = {
   sdk: LightbulbSdk;
   env: () => RawEnv;
@@ -1011,7 +1076,12 @@ export type GatewayDeps = {
   waitUntilAbort: typeof waitUntilAbort;
   channelReadyPatch: typeof channelReadyPatch;
   channelStoppedPatch: typeof channelStoppedPatch;
+  runs: RunSupervisor;
+  runControlHandler: ReturnType<typeof createRunControlHandler>;
 };
+
+/** The run-control route is shared by every account, so it is claimed once per process. */
+let controlsRegistered = false;
 
 /** Own one exact gateway-auth route for one configured agent account. */
 export async function startGatewayAccount(
@@ -1048,6 +1118,7 @@ export async function startGatewayAccount(
       accountId: account.accountId,
       channelRuntime: ctx.channelRuntime as PluginRuntime["channel"],
       env: deps.env,
+      runs: deps.runs,
     });
     unregister = deps.registerPluginHttpRoute({
       path: `${ROUTE_PREFIX}${account.accountId}`,
@@ -1060,6 +1131,19 @@ export async function startGatewayAccount(
       throwOnFailure: true,
       handler,
     });
+    if (!controlsRegistered) {
+      deps.registerPluginHttpRoute({
+        path: RUNS_ROUTE_PREFIX,
+        auth: "gateway",
+        match: "prefix",
+        pluginId: PLUGIN_ID,
+        source: "lightbulb-channel-runs",
+        replaceExisting: true,
+        throwOnFailure: true,
+        handler: deps.runControlHandler,
+      });
+      controlsRegistered = true;
+    }
     ctx.setStatus(deps.channelReadyPatch({ accountId: account.accountId }));
     await deps.waitUntilAbort(ctx.abortSignal);
   } finally {

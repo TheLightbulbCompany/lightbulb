@@ -17,10 +17,12 @@ import {
   MAX_PARTICIPANTS,
   MAX_TEXT_BYTES,
   ROUTE_PREFIX,
+  RUNS_ROUTE_PREFIX,
   UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS,
   admitRoomEvent,
   buildOutboundBody,
   createInboundHandler,
+  createRunControlHandler,
   createOutbound,
   listAccountIds,
   normalizeTarget,
@@ -62,6 +64,8 @@ const RUN = {
   frameChannel: `/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY}`,
   frameEndpoint: "https://abc123.appsync-api.us-east-1.amazonaws.com/event",
 };
+const OTHER_MESSAGE = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const OTHER_RUN = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const ENV = {
   ISOL8_API_URL: "https://api.flickmeon.ai/",
   ISOL8_OWNER_ID: "owner_123",
@@ -77,6 +81,27 @@ async function dispatchTurn(
   return runRoomTurn(deps, event, await admitRoomEvent(deps, event), invocation);
 }
 
+/** An inert supervisor: `start` never runs the turn, so acks are observed on their own. */
+function fakeRuns() {
+  return { start: vi.fn(), abort: vi.fn(() => "aborting" as const), steer: vi.fn(() => "accepted" as const), runIdForSession: vi.fn(() => RUN_ID) };
+}
+
+/** A supervisor that does run the background turn, for the tests that assert turn behaviour. */
+function turnRuns() {
+  const turns: Promise<unknown>[] = [];
+  return Object.assign(fakeRuns(), {
+    start: vi.fn((_spec: unknown, turn: () => Promise<unknown>) => {
+      turns.push(turn().catch((error) => error));
+    }),
+    /** Resolves to every finished turn's outcome, or the error it failed with. */
+    settled: () => Promise.all(turns),
+  });
+}
+
+function withBody(body: unknown, overrides: Partial<LightbulbSdk> = {}) {
+  return inboundSdk({ readJsonWebhookBodyOrReject: vi.fn(async () => ({ ok: true, value: body })) as any, ...overrides });
+}
+
 it("carries invocation sentinel only in the actual SDK runtime binding, never prompt fields or another ingress", async () => {
   const now = Math.floor(Date.now() / 1000);
   const token = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ kind: "lightbulb_local_session_invocation", aud: "lightbulb:local-sessions",
@@ -86,7 +111,8 @@ it("carries invocation sentinel only in the actual SDK runtime binding, never pr
   expect(parseIngress(event).ok).toBe(true);
   expect(parseIngress({ ...event, invocation: { grant: token } }).ok).toBe(false);
   const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
-  const deps = { sdk: inboundSdk({ buildChannelInboundEventContext }), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV };
+  const runs = turnRuns();
+  const deps = { sdk: inboundSdk({ buildChannelInboundEventContext }), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs };
   await dispatchTurn(deps, event, token);
   const first = dispatch.mock.calls[0][0].ctxPayload;
   expect(first.GatewayRunToolBindings.lightbulbLocalSessions.grant).toBe(token);
@@ -100,6 +126,7 @@ it("carries invocation sentinel only in the actual SDK runtime binding, never pr
   const sdk = inboundSdk({ buildChannelInboundEventContext });
   const handler = createInboundHandler({ ...deps, sdk });
   const response = () => ({ setHeader: vi.fn(), end: vi.fn(), statusCode: 0 }) as any;
+  let acked = false;
   for (const [headerValue, rawHeaders, expected] of [
     [token, ["X-Lightbulb-Local-Session-Token", token], true],
     [undefined, [], false], ["invalid", [], false], [token.repeat(20), [], false],
@@ -107,20 +134,24 @@ it("carries invocation sentinel only in the actual SDK runtime binding, never pr
   ] as const) {
     const res = response();
     await handler({ headers: { "x-lightbulb-local-session-token": headerValue }, rawHeaders } as any, res);
-    expect(res.statusCode).toBe(202);
     // Effect-once test mock replays repeated IDs; use a fresh handler below for isolation.
+    expect(res.statusCode).toBe(acked ? 200 : 202);
+    acked = true;
     expect(JSON.stringify(res.end.mock.calls)).not.toContain(token);
     const fresh = createInboundHandler({ ...deps, sdk });
     await fresh({ headers: { "x-lightbulb-local-session-token": headerValue }, rawHeaders } as any, response());
+    await runs.settled();
     expect(Boolean(dispatch.mock.calls.at(-1)?.[0].ctxPayload.GatewayRunToolBindings)).toBe(expected);
   }
-  const failing = createInboundHandler({ ...deps, sdk, channelRuntime: runtime(vi.fn(async () => { throw new Error(token); })) });
+  const failingRuns = turnRuns();
+  const failing = createInboundHandler({ ...deps, sdk, runs: failingRuns, channelRuntime: runtime(vi.fn(async () => { throw new Error(token); })) });
   const failed = response();
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
   try {
     await failing({ headers: { "x-lightbulb-local-session-token": token }, rawHeaders: [] } as any, failed);
-    expect(failed.statusCode).toBe(500);
+    expect(failed.statusCode).toBe(202);
+    expect((await failingRuns.settled())[0]).toBeInstanceOf(Error);
     expect(JSON.stringify([failed.end.mock.calls, errors.mock.calls, warnings.mock.calls])).not.toContain(token);
     expect(errors).not.toHaveBeenCalled();
     expect(warnings).not.toHaveBeenCalled();
@@ -145,7 +176,8 @@ it.each([["DISPATCH", "dispatched"], ["IGNORE", "ignored"], ["uncertain", "gate_
     const first = responseRecorder();
     await handler(req, first);
     expect(first.statusCode).toBe(202);
-    expect(JSON.parse(first.body).status).toBe(status);
+    expect(JSON.parse(first.body).status).toBe("accepted");
+    await expect(state.runs.settled()).resolves.toEqual([status]);
     expect(JSON.stringify(complete.mock.calls)).not.toContain(token);
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({ options: expect.objectContaining({ maxTokens: 16, reasoning: "off" }) }));
     if (status === "dispatched") {
@@ -364,10 +396,12 @@ function handlerDeps(options: {
   const sdk = options.sdk ?? inboundSdk({
     readJsonWebhookBodyOrReject: vi.fn(async () => ({ ok: true, value: options.event ?? ingress() })) as any,
   });
+  const runs = turnRuns();
   return {
-    deps: { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+    deps: { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs },
     sdk,
     dispatch,
+    runs,
   };
 }
 
@@ -804,7 +838,7 @@ describe("native inbound context and delivery", () => {
     const message = canonicalMessage({ mentions: [], text: "Lunch arrived in the kitchen." });
 
     const outcome = await dispatchTurn(
-      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress({ eventKind: "room_event", message, mentions: [] }),
     );
 
@@ -840,7 +874,7 @@ describe("native inbound context and delivery", () => {
     const message = canonicalMessage({ mentions: [], text: "Ambient update." });
 
     const outcome = await dispatchTurn(
-      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress({ eventKind: "room_event", message, mentions: [] }),
     );
 
@@ -856,7 +890,7 @@ describe("native inbound context and delivery", () => {
     delete cfg.agents.defaults.utilityModel;
 
     const outcome = await dispatchTurn(
-      { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress({ eventKind: "room_event", message: canonicalMessage({ mentions: [] }), mentions: [] }),
     );
 
@@ -873,7 +907,7 @@ describe("native inbound context and delivery", () => {
     cfg.agents.entries[FRIDAY].utilityModel = "";
 
     const outcome = await dispatchTurn(
-      { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk, cfg, accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress({ eventKind: "room_event", message: canonicalMessage({ mentions: [] }), mentions: [] }),
     );
 
@@ -901,7 +935,7 @@ describe("native inbound context and delivery", () => {
     });
 
     await dispatchTurn(
-      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV, runs: fakeRuns() },
       event,
     );
 
@@ -922,7 +956,7 @@ describe("native inbound context and delivery", () => {
     const sdk = inboundSdk();
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
     await dispatchTurn(
-      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress(),
     );
     expect(sdk.resolveStableChannelMessageIngress).toHaveBeenCalledWith(
@@ -975,7 +1009,7 @@ describe("native inbound context and delivery", () => {
       mentions: [],
     });
     await dispatchTurn(
-      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       event,
     );
     expect(sdk.resolveStableChannelMessageIngress).toHaveBeenCalledWith(
@@ -1004,7 +1038,7 @@ describe("native inbound context and delivery", () => {
       mentions: [],
     });
     await dispatchTurn(
-      { sdk: inboundSdk(), cfg: config(), accountId: GAUGE, channelRuntime: runtime(reverseDispatch), env: () => ENV },
+      { sdk: inboundSdk(), cfg: config(), accountId: GAUGE, channelRuntime: runtime(reverseDispatch), env: () => ENV, runs: fakeRuns() },
       ingress({ targetAgentId: GAUGE, sender: reverseMessage.author, message: reverseMessage, mentions: [] }),
     );
     expect(reverseDispatch.mock.calls[0]?.[0].botLoopProtection).toMatchObject({
@@ -1032,7 +1066,7 @@ describe("native inbound context and delivery", () => {
       return { admission: { kind: "dispatch" }, dispatched: true };
     });
     await dispatchTurn(
-      { sdk: inboundSdk(), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk: inboundSdk(), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress(),
     );
     expect(delivered).toEqual({ text: "addressed final" });
@@ -1054,7 +1088,7 @@ describe("native inbound context and delivery", () => {
       return { admission: { kind: "dispatch" }, dispatched: true };
     });
     await dispatchTurn(
-      { sdk: inboundSdk(), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV },
+      { sdk: inboundSdk(), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
       ingress({ eventKind: "room_event" }),
     );
     expect(dispatch).toHaveBeenCalledOnce();
@@ -1070,7 +1104,7 @@ describe("native inbound context and delivery", () => {
     });
     await expect(
       dispatchTurn(
-        { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
+        { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV, runs: fakeRuns() },
         ingress(),
       ),
     ).rejects.toMatchObject({ status: 409 });
@@ -1085,7 +1119,7 @@ describe("native inbound context and delivery", () => {
     });
     await expect(
       dispatchTurn(
-        { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
+        { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV, runs: fakeRuns() },
         ingress(),
       ),
     ).rejects.toMatchObject({ status: 500 });
@@ -1118,7 +1152,7 @@ describe("private ingress handler", () => {
     await createInboundHandler(state.deps)(request(), res);
 
     expect(res.statusCode).toBe(202);
-    expect(JSON.parse(res.body).status).toBe("ignored");
+    await expect(state.runs.settled()).resolves.toEqual(["ignored"]);
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
@@ -1216,7 +1250,7 @@ describe("private ingress handler", () => {
 
     expect(first.statusCode).toBe(409);
     expect(JSON.parse(first.body).error).toBe("not_admitted");
-    expect(replay.statusCode).toBe(202);
+    expect(replay.statusCode).toBe(200);
     expect(JSON.parse(replay.body).status).toBe("replayed");
     expect(resolveIngress).toHaveBeenCalledOnce();
   });
@@ -1229,8 +1263,9 @@ describe("private ingress handler", () => {
     await handler(request(), first);
     await handler(request(), replay);
     expect(first.statusCode).toBe(202);
-    expect(JSON.parse(first.body).status).toBe("dispatched");
+    expect(JSON.parse(first.body).status).toBe("accepted");
     expect(JSON.parse(replay.body).status).toBe("replayed");
+    await state.runs.settled();
     expect(state.dispatch).toHaveBeenCalledOnce();
     expect(state.sdk.createIngressEffectOnce).toHaveBeenCalledWith({
       pluginId: "lightbulb",
@@ -1239,16 +1274,17 @@ describe("private ingress handler", () => {
     });
   });
 
-  it("returns 500 when native dispatch reports no dispatched turn", async () => {
+  it("fails the background run when native dispatch reports no dispatched turn", async () => {
     const state = handlerDeps({
       dispatch: vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: false })),
     });
     const res = responseRecorder();
     await createInboundHandler(state.deps)(request(), res);
-    expect(res.statusCode).toBe(500);
+    expect(res.statusCode).toBe(202);
+    expect((await state.runs.settled())[0]).toMatchObject({ status: 500 });
   });
 
-  it("documents the at-least-once crash window after dispatch and before commit", async () => {
+  it("documents the crash window between admission and commit, which costs no turn", async () => {
     let crash = true;
     const crashGuard = vi.fn(() => ({
       runOnce: async ({ run }: any) => {
@@ -1259,14 +1295,18 @@ describe("private ingress handler", () => {
     }));
     const sdk = inboundSdk({ createIngressEffectOnce: crashGuard as any });
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+    const crashed = handlerDeps({ sdk, dispatch });
     const first = responseRecorder();
-    await createInboundHandler(handlerDeps({ sdk, dispatch }).deps)(request(), first);
+    await createInboundHandler(crashed.deps)(request(), first);
     expect(first.statusCode).toBe(500);
+    expect(crashed.runs.start).not.toHaveBeenCalled();
     crash = false;
+    const retried = handlerDeps({ sdk, dispatch });
     const retry = responseRecorder();
-    await createInboundHandler(handlerDeps({ sdk, dispatch }).deps)(request(), retry);
+    await createInboundHandler(retried.deps)(request(), retry);
     expect(retry.statusCode).toBe(202);
-    expect(dispatch).toHaveBeenCalledTimes(2);
+    await retried.runs.settled();
+    expect(dispatch).toHaveBeenCalledOnce();
   });
 });
 
@@ -1335,6 +1375,8 @@ describe("per-agent gateway lifecycle", () => {
     return {
       sdk: inboundSdk(),
       env: () => ENV,
+      runs: fakeRuns(),
+      runControlHandler: vi.fn(),
       registerPluginHttpRoute: vi.fn((registration: any) => {
         registrations.push(registration);
         return () => {
@@ -1386,11 +1428,12 @@ describe("per-agent gateway lifecycle", () => {
     const friday = startGatewayAccount(lifecycleContext(FRIDAY, fridayAbort, fridayStatuses), deps);
     const gauge = startGatewayAccount(lifecycleContext(GAUGE, gaugeAbort, gaugeStatuses), deps);
 
-    expect(registrations.map((row) => row.path)).toEqual([
+    const inbound = registrations.filter((row) => row.source === "lightbulb-channel-gateway");
+    expect(inbound.map((row) => row.path)).toEqual([
       `${ROUTE_PREFIX}${FRIDAY}`,
       `${ROUTE_PREFIX}${GAUGE}`,
     ]);
-    for (const row of registrations) {
+    for (const row of inbound) {
       expect(row).toMatchObject({
         auth: "gateway",
         match: "exact",
@@ -1400,13 +1443,17 @@ describe("per-agent gateway lifecycle", () => {
         throwOnFailure: true,
       });
     }
+    // The run-control route is shared by every account, so it is registered once per process.
+    expect(registrations.filter((row) => row.source === "lightbulb-channel-runs")).toMatchObject([
+      { path: RUNS_ROUTE_PREFIX, auth: "gateway", match: "prefix", pluginId: "lightbulb", handler: deps.runControlHandler },
+    ]);
     expect(fridayStatuses.map((status) => status.lifecycle)).toEqual(["starting", "ready"]);
     expect(gaugeStatuses.map((status) => status.lifecycle)).toEqual(["starting", "ready"]);
 
     fridayAbort.abort();
     gaugeAbort.abort();
     await Promise.all([friday, gauge]);
-    expect(registrations.every((row) => row.unregistered)).toBe(true);
+    expect(inbound.every((row) => row.unregistered)).toBe(true);
     expect(fridayStatuses.at(-1).lifecycle).toBe("stopped");
     expect(gaugeStatuses.at(-1).lifecycle).toBe("stopped");
   });
@@ -1439,5 +1486,70 @@ describe("per-agent gateway lifecycle", () => {
       }),
     ).toThrow(/replacement denied/);
     unregister();
+  });
+});
+
+describe("async turn ack and run controls", () => {
+  it("acks 202 accepted before the turn runs, 200 replayed on redelivery, 409 when not admitted", async () => {
+    const dispatch = vi.fn(() => new Promise<never>(() => {})); // a turn that never ends
+    const runs = fakeRuns();
+    const handler = createInboundHandler({ sdk: withBody(ingress()), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs });
+    const first = responseRecorder();
+    await handler(request(), first);
+    expect(first.statusCode).toBe(202);
+    expect(JSON.parse(first.body)).toEqual({ eventId: MESSAGE, runId: RUN_ID, status: "accepted" });
+    expect(runs.start).toHaveBeenCalledTimes(1);
+    expect(runs.start.mock.calls[0][0]).toMatchObject({ runId: RUN_ID, roomId: ROOM, agentId: FRIDAY, frameChannel: RUN.frameChannel, frameEndpoint: RUN.frameEndpoint, eventKind: "user_request" });
+    expect(dispatch).not.toHaveBeenCalled(); // the turn is the supervisor's to start
+    const second = responseRecorder();
+    await handler(request(), second);
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body)).toEqual({ eventId: MESSAGE, runId: RUN_ID, status: "replayed" });
+    expect(runs.start).toHaveBeenCalledTimes(1);
+    const declined = responseRecorder();
+    const declining = withBody(ingress({ eventId: OTHER_MESSAGE, message: canonicalMessage({ messageId: OTHER_MESSAGE }), run: { ...RUN, runId: OTHER_RUN } }), {
+      resolveStableChannelMessageIngress: vi.fn(async () => ({ ...dispatchedIngress(), ingress: { admission: "drop" } })) as any,
+    });
+    await createInboundHandler({ sdk: declining, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs })(request(), declined);
+    expect(declined.statusCode).toBe(409);
+    expect(runs.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a body without the run contract", async () => {
+    const { run: _run, ...legacy } = ingress();
+    const rec = responseRecorder();
+    await createInboundHandler({ sdk: withBody(legacy), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV, runs: fakeRuns() })(request(), rec);
+    expect(rec.statusCode).toBe(400);
+  });
+
+  it("routes abort and steer to the supervisor", async () => {
+    const runs = fakeRuns();
+    const at = (action: string, body: unknown = {}) => Object.assign(request(), { url: `${RUNS_ROUTE_PREFIX}${RUN_ID}/${action}`, sdkBody: body });
+    const handler = createRunControlHandler({ sdk: inboundSdk({ readJsonWebhookBodyOrReject: vi.fn(async ({ req }: any) => ({ ok: true, value: req.sdkBody })) as any }), runs });
+    const abort = responseRecorder();
+    await handler(at("abort"), abort);
+    expect(abort.statusCode).toBe(202);
+    expect(runs.abort).toHaveBeenCalledWith(RUN_ID);
+    const steer = responseRecorder();
+    await handler(at("steer", { text: "shorter" }), steer);
+    expect(steer.statusCode).toBe(202);
+    expect(runs.steer).toHaveBeenCalledWith(RUN_ID, "shorter");
+    const bad = responseRecorder();
+    await handler(at("steer", {}), bad);
+    expect(bad.statusCode).toBe(400);
+    runs.abort.mockReturnValueOnce("not_found" as any);
+    const gone = responseRecorder();
+    await handler(at("abort"), gone);
+    expect(gone.statusCode).toBe(404);
+    const unknown = responseRecorder();
+    await handler(Object.assign(request(), { url: "/plugins/lightbulb-channel/runs/nope" }), unknown);
+    expect(unknown.statusCode).toBe(404);
+  });
+
+  it("stamps the active run id on the outbound reply body", () => {
+    const runs = fakeRuns();
+    const body = buildOutboundBody({ to: `lightbulb:${ROOM}`, accountId: FRIDAY, text: "hi", deliveryQueueId: "q", deliveryPartIndex: 0 } as any, runs);
+    expect(body.runId).toBe(RUN_ID);
+    expect(runs.runIdForSession).toHaveBeenCalledWith(sessionKeyFor(FRIDAY, ROOM));
   });
 });

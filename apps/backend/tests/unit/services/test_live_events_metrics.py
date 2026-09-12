@@ -1,6 +1,9 @@
 """AppSync live-publish failures must be countable and separable by class:
 a 4xx is our bug, a 429 is shed load, a 5xx/transport is AppSync being down."""
 
+import asyncio
+import threading
+
 import pytest
 from botocore.credentials import Credentials
 
@@ -76,3 +79,37 @@ async def test_success_after_one_retry_reports_ok_only(monkeypatch):
     await _publish(monkeypatch, [_Answer(503), _Answer(200)], metrics)
 
     assert metrics == [("messaging.live.publish", {"dimensions": {"outcome": "ok"}})]
+
+
+@pytest.mark.asyncio
+async def test_task_credential_lookup_does_not_block_the_event_loop(monkeypatch):
+    monkeypatch.setattr(settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://appsync.test/event")
+    monkeypatch.setattr(live_events, "put_metric", lambda *_args, **_kwargs: None)
+    release = threading.Event()
+    order: list[str] = []
+
+    class BlockingSession:
+        def get_credentials(self):
+            assert release.wait(timeout=1)
+            order.append("credentials")
+            return Credentials("AKIATEST", "secret")
+
+    class FakeHttp:
+        async def post(self, *_args, **_kwargs):
+            return _Answer(200)
+
+    monkeypatch.setattr(live_events, "get_session", lambda: BlockingSession())
+    publisher = LiveEventPublisher(http_client=FakeHttp())
+    event = LiveEvent.model_validate(make_live_event("runtime.operation.changed", {"state": "succeeded"}))
+    timer = threading.Timer(0.1, release.set)
+    timer.start()
+    try:
+        publish = asyncio.create_task(publisher._publish("/users/11111111-1111-4111-8111-111111111111", event))
+        await asyncio.sleep(0)
+        order.append("event-loop")
+        await publish
+    finally:
+        release.set()
+        timer.cancel()
+
+    assert order == ["event-loop", "credentials"]

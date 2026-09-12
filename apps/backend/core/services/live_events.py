@@ -133,7 +133,7 @@ class LiveEventPublisher:
         last_error: Exception | None = None
         last_status_class = "transport"
         for attempt in range(2):
-            request = self._signed_request(endpoint, body)
+            request = await asyncio.to_thread(self._signed_request, endpoint, body)
             try:
                 response = await self._post(endpoint, body, dict(request.headers))
             except Exception as exc:

@@ -269,14 +269,17 @@ async def ws_message(
             response = await relay.handle_message(x_connection_id, body)
         except ApiProblem as exc:
             response = {"type": "local.session.error", "code": exc.error.code}
-            sid = body.get("sessionId") if isinstance(body, dict) else None
-            if isinstance(sid, str) and len(sid) <= 64:
+            raw_sid = body.get("sessionId") if isinstance(body, dict) else None
+            sid = raw_sid if isinstance(raw_sid, str) and len(raw_sid) <= 64 else None
+            if sid is not None:
                 response["sessionId"] = sid
+            raw_frame = body.get("type") if isinstance(body, dict) else None
+            frame = raw_frame if isinstance(raw_frame, str) and len(raw_frame) <= 64 else None
             logger.warning(
                 "local session frame rejected",
                 extra={
                     "code": exc.error.code,
-                    "frame": body.get("type") if isinstance(body, dict) else None,
+                    "frame": frame,
                     "sid": sid,
                     "cid": x_connection_id,
                 },

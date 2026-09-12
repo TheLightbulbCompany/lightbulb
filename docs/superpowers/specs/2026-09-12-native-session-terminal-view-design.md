@@ -503,3 +503,37 @@ scope by the owner on 2026-09-12.
 
 Token streaming; remote approval; interrupt/steer; Codex Desktop or IDE
 sessions; mobile app rendering; PTY or screen mirroring; a second event bus.
+
+## 11. Verification (2026-09-12, branch head before the PR opened)
+
+Run from the worktree root, first-hand, after the final fix wave:
+
+- Backend: `uv run pytest tests/unit/services/test_local_sessions.py
+  tests/unit/services/test_local_session_relay.py` → 95 passed.
+- Desktop: `cargo test --lib local_sessions` → 66 passed, 3 ignored (the live
+  capture tests); `cargo test --example local_session_probe`, run unfiltered
+  because the combined filter selects none of its tests → 9 passed. Both now
+  run in CI on every PR touching `apps/desktop/**` (`test-desktop` in
+  `desktop-build.yml`, self-hosted `macos-desktop` runner).
+- Web: `pnpm --filter @lightbulb/frontend test -- src/components/messaging
+  src/components/workspace src/hooks` → 743 passed in 75 files; `tsc --noEmit`
+  and `lint` clean.
+- Live loopback on the owner's Mac, Claude Code 2.1.269: the ignored capture
+  test bound a running session (pid, generation, transcript, inbox socket,
+  runtime version). Replaying that session's 8.5 MB transcript through the
+  production adapter (probe `watch`) produced 1,293 events with 0 parse
+  failures: 59 prompts, 250 thinking markers, 109 prose, 371 tool calls, 370
+  tool results, 134 lifecycle rows.
+- Codex 0.149.0 is installed here but was exercised only through the fixture
+  tests (adapter rows, status from turn events) and the probe's own tests, not
+  a live session.
+- Process: every task had a fresh implementer and an independent reviewer. The
+  whole-branch review found two Critical findings (a CJK/emoji tool result
+  could build an event that never fits the envelope and wedge the session;
+  nested optionals serialized as explicit `null` on the read path) and five
+  Important ones; all were fixed in one wave and re-reviewed.
+
+Not verified before merge: the two-person dev comparison in §9, the signed
+desktop build, and prod. Release gates in §7 order: backend (this PR's merge
+and deploy), then the `desktop-build.yml` dispatch, then the web is live with
+the same deploy.

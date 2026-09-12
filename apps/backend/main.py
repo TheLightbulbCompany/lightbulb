@@ -408,9 +408,9 @@ async def lifespan(app: FastAPI):
     # private AppSync channel. REST remains available when it is unconfigured.
     broker = await _build_teams_event_broker()
     if broker is not None:
-        from core.services import teams_event_broker_singleton
+        from core.services.teams_event_broker import set_broker
 
-        teams_event_broker_singleton.set_broker(broker)
+        set_broker(broker)
 
     gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
@@ -473,9 +473,9 @@ async def lifespan(app: FastAPI):
     finally:
         system_health.BACKGROUND_TASKS.clear()
         if broker is not None:
-            from core.services import teams_event_broker_singleton
+            from core.services.teams_event_broker import set_broker
 
-            teams_event_broker_singleton.set_broker(None)
+            set_broker(None)
         if not containers_shutdown:
             await shutdown_containers()
 

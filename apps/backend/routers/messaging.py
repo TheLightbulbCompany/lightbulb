@@ -186,9 +186,9 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
     try:
-        from core.services import teams_event_broker_singleton
+        from core.services.teams_event_broker import get_broker
 
-        broker = teams_event_broker_singleton.get_broker()
+        broker = get_broker()
         if broker is not None:
             asyncio.create_task(broker.ensure_user(owner_id, auth.user_id))
     except Exception:

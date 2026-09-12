@@ -218,4 +218,22 @@ describe("useRooms platform seams", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(messaging.listRooms).not.toHaveBeenCalled();
   });
+
+  // The SWR key is null while identity is unresolved, so SWR's own isLoading
+  // is false in that window -- indistinguishable from "fetched, zero rooms"
+  // without this. Both apps gate the room surface behind an auth redirect, so
+  // userId/orgId being null here only ever means "Clerk hasn't resolved yet",
+  // never "signed out with no rooms".
+  it("reports loading while identity is unresolved, then flips false once rooms resolve", async () => {
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string | null }) => useRooms(platform({ userId })),
+      { wrapper, initialProps: { userId: null as string | null } },
+    );
+    expect(result.current.roomsLoading).toBe(true);
+    expect(messaging.listRooms).not.toHaveBeenCalled();
+
+    rerender({ userId: "user-a" });
+    await waitFor(() => expect(result.current.roomsLoading).toBe(false));
+    expect(result.current.rooms).toHaveLength(1);
+  });
 });

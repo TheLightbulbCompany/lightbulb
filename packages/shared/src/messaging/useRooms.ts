@@ -698,7 +698,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     rooms,
     sections,
     roomsError: roomsResponse.error as Error | undefined,
-    roomsLoading: roomsResponse.isLoading,
+    roomsLoading: roomsResponse.isLoading || !scope,
     directoryError,
     directoryLoading: directoryDetailsResponse.isLoading,
     activeRoomId,

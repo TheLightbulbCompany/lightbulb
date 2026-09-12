@@ -127,8 +127,9 @@ Unchanged: the plugin POSTs to `/internal/messaging/agent-messages/{ownerId}` (h
 token); the body carries `runId` whenever the send belongs to an in-flight run (the
 agent's `message` tool can also send outside one, so the field is optional). A present
 `runId` is verified against the ledger — it must be this owner's run for this room and
-agent and not yet ended — or the receipt is refused with `RUN_NOT_FOUND`. The receipt
-fence stays; the backend no longer guesses a run id from gateway state.
+agent — or the receipt is refused with `RUN_NOT_FOUND`. A run that already closed still
+accepts its late reply (durable retries, sweeper closures): delivery is at-least-once.
+The receipt fence stays; the backend no longer guesses a run id from gateway state.
 
 ### Run controls
 

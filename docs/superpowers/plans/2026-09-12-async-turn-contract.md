@@ -2113,17 +2113,18 @@ class RunEventResponse(ContractModel):
     run_id = str(request.run_id) if request.run_id else None
     if run_id is not None:
         # A present run id is a claim about the ledger, not a hint: it must be this
-        # owner's live run for this room and agent.
+        # owner's run for this room and agent. A run that already closed still accepts
+        # its late reply (durable retries, sweeper closures) — delivery is at-least-once.
         run = await messaging_repo.get_run(owner_id, run_id)
-        if run is None or run.get("roomId") != room_id or run.get("agentId") != agent_id or run.get("status") == "ended":
-            raise ApiProblem("RUN_NOT_FOUND", "runId does not name a live run for this room and agent.")
+        if run is None or run.get("roomId") != room_id or run.get("agentId") != agent_id:
+            raise ApiProblem("RUN_NOT_FOUND", "runId does not name this owner's run for this room and agent.")
 ```
 
 Add to `tests/unit/services/test_run_events.py`:
 
 ```python
 @pytest.mark.asyncio
-async def test_agent_message_with_a_run_id_must_match_a_live_ledger_row(metrics):
+async def test_agent_message_with_a_run_id_must_match_the_ledger_row(metrics):
     from core.services.messaging import AgentMessageRequest, create_agent_message
 
     request = AgentMessageRequest(event_id="f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0", room_id=ROOM, agent_id=AGENT_UUID, text="hi", reply_to_message_id=None, thread_root_message_id=None, run_id=RUN)
@@ -2131,7 +2132,7 @@ async def test_agent_message_with_a_run_id_must_match_a_live_ledger_row(metrics)
         patch.object(messaging.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "o", "kind": "channel"})),
         patch.object(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": AGENT_UUID})),
         patch.object(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": AGENT_UUID, "name": "Friday"}])),
-        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value={"roomId": ROOM, "agentId": AGENT_UUID, "status": "ended"})),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value={"roomId": "33333333-3333-4333-8333-333333333333", "agentId": AGENT_UUID, "status": "ended"})),
     ):
         with pytest.raises(ApiProblem) as exc:
             await create_agent_message("o", request)

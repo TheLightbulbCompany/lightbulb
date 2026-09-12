@@ -407,7 +407,8 @@ impl Host {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
                     send(socket, &json!({"type":"local.session.heartbeat", "sessionId":mirror.session_id,"generation":mirror.generation,
-                        "status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction,
+                        "status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
+                        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,
                         "workspace":mirror.workspace.summary()})).await?;
                     pending_rpc = Some((
                         key.clone(),
@@ -727,7 +728,8 @@ fn persist_changed(dir: &Path, key: &str, mirror: &mut Mirror, before: &Value) -
 fn registration(mirror: &Mirror) -> Value {
     let mut body = json!({"type":"local.session.register", "session":{"provider":mirror.native.provider,
         "profileFingerprint":mirror.native.profile,"nativeConversationId":mirror.native.conversation,"generation":mirror.generation,
-        "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction,
+        "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
+        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,
         "workspace":mirror.workspace.summary()}});
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);

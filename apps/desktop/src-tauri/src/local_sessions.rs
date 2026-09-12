@@ -894,33 +894,49 @@ fn deadline_now(
 
 fn split_text(event: &Value) -> Vec<Value> {
     let text = event["text"].as_str().unwrap_or("");
-    // An empty-text event (a thinking marker, a lifecycle event, an empty tool result) still
-    // carries meaning; the loop below produces zero parts for it, which would silently drop it.
+    // Lifecycle markers and thinking markers carry no text; they still travel.
     if text.is_empty() {
         return vec![event.clone()];
     }
-    // Tool events are keyed by itemId and rendered as one card; the frontend cannot merge split
-    // chunks (each would also clone the whole tool.result payload), so bound instead of splitting.
+    // A tool event carries its bounded `tool.result`; chunking would clone it per part
+    // and the web keys tool rows by itemId, so the preview text is bounded instead.
     if event["kind"] == "tool" {
         let (cut, truncated) = bounded(text, 8192);
-        let mut part = event.clone();
-        part["text"] = json!(cut);
+        let mut single = event.clone();
+        single["text"] = json!(cut);
         if truncated {
-            part["truncated"] = json!(true);
+            single["truncated"] = json!(true);
         }
-        return vec![part];
+        return vec![single];
     }
-    let mut rest = text;
     let mut result = vec![];
-    while !rest.is_empty() {
-        let mut end = rest.len().min(1800);
-        while !rest.is_char_boundary(end) {
-            end -= 1;
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = start;
+        let mut wire = 0usize;
+        for (index, c) in text[start..].char_indices() {
+            let cost = if c.is_ascii() {
+                if matches!(c, '"' | '\\') || (c as u32) < 0x20 {
+                    6
+                } else {
+                    1
+                }
+            } else {
+                c.len_utf16() * 6
+            };
+            if wire + cost > 11_000 && index > 0 {
+                break;
+            }
+            wire += cost;
+            end = start + index + c.len_utf8();
         }
         let mut part = event.clone();
-        part["text"] = json!(&rest[..end]);
+        part["text"] = json!(&text[start..end]);
         result.push(part);
-        rest = &rest[end..];
+        start = end;
+    }
+    if result.is_empty() {
+        result.push(event.clone());
     }
     result
 }
@@ -1002,8 +1018,8 @@ impl Mirror {
                 )?;
                 for mut event in events {
                     let text = event["text"].as_str().unwrap_or("");
-                    if text.len() > 65536 {
-                        let mut end = 65536;
+                    if text.len() > MAX_TEXT {
+                        let mut end = MAX_TEXT;
                         while !text.is_char_boundary(end) {
                             end -= 1;
                         }
@@ -1019,14 +1035,23 @@ impl Mirror {
         let Some(session_id) = &self.session_id else {
             return Ok(None);
         };
-        let Some(event) = self.queue.first() else {
+        if self.queue.is_empty() {
             return Ok(None);
-        };
-        let batch = json!({"type":"local.session.events", "sessionId":session_id, "generation":self.generation,
-            "batchId":uuid::Uuid::new_v4().to_string(), "afterSeq":self.after_seq, "events":[event]});
-        // One bounded event per envelope, including escaping; no provider output
-        // bypasses this final serialized-wire size check.
-        if ascii_wire_len(&batch)? > 16384 {
+        }
+        let mut events: Vec<Value> = vec![];
+        let mut batch = json!({"type":"local.session.events", "sessionId":session_id, "generation":self.generation,
+            "batchId":uuid::Uuid::new_v4().to_string(), "afterSeq":self.after_seq, "events":[]});
+        for candidate in self.queue.iter().take(32) {
+            events.push(candidate.clone());
+            batch["events"] = Value::Array(events.clone());
+            if ascii_wire_len(&batch)? > 16384 {
+                events.pop();
+                batch["events"] = Value::Array(events.clone());
+                break;
+            }
+        }
+        // A single event that cannot fit alone is a normalizer bug, not something to skip silently.
+        if events.is_empty() {
             return Err("event envelope exceeds limit".into());
         }
         self.pending = Some(batch.clone());
@@ -1037,11 +1062,12 @@ impl Mirror {
             .pending
             .as_ref()
             .ok_or("unexpected upload acknowledgment")?;
-        if pending["batchId"] != batch_id || after_seq != self.after_seq + 1 {
+        let count = pending["events"].as_array().map(Vec::len).unwrap_or(0) as u64;
+        if pending["batchId"] != batch_id || after_seq != self.after_seq + count {
             return Err("upload cursor conflict".into());
         }
         self.after_seq = after_seq;
-        self.queue.remove(0);
+        self.queue.drain(..count as usize);
         self.pending = None;
         Ok(())
     }
@@ -1537,6 +1563,87 @@ mod tests {
             "the big tool result is bounded, not split into several chunks"
         );
         assert_eq!(big_events[0]["truncated"], true);
+    }
+
+    #[test]
+    fn local_sessions_mirror_packs_many_events_per_envelope_and_splits_by_wire_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let row = |i: usize| {
+            json!({"type":"assistant","sessionId":"s","version":"2.1.268","uuid":format!("m{i}"),"message":{"role":"assistant","content":[{"type":"text","text":format!("event {i}")}]}}).to_string()
+        };
+        fs::write(
+            &transcript,
+            (0..40).map(row).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let mut mirror = Mirror {
+            workspace: workspace::State::default(),
+            dirty: false,
+            registration: RegistrationState::default(),
+            native: NativeSession {
+                provider: "claude".into(),
+                conversation: "s".into(),
+                profile: "root".into(),
+                process: process(std::process::id()).unwrap(),
+                transcript: Some(transcript),
+                socket: None,
+                socket_inode: None,
+                version: "2.1.268".into(),
+                restriction: None,
+                status: "unknown".into(),
+                title: None,
+                cwd_name: None,
+                active_turn: None,
+            },
+            generation: "g".into(),
+            previous_generation: None,
+            session_id: Some("server-session".into()),
+            cursor: Cursor::default(),
+            after_seq: 0,
+            queue: vec![],
+            pending: None,
+        };
+        let first = mirror.next_batch().unwrap().unwrap();
+        let n = first["events"].as_array().unwrap().len();
+        assert!(n > 1 && n <= 32);
+        assert!(ascii_wire_len(&first).unwrap() <= 16384);
+        assert!(
+            mirror
+                .acknowledge(first["batchId"].as_str().unwrap(), 1)
+                .is_err(),
+            "must advance by the batch length"
+        );
+        mirror
+            .acknowledge(first["batchId"].as_str().unwrap(), n as u64)
+            .unwrap();
+        assert_eq!(mirror.after_seq, n as u64);
+        let parts = split_text(
+            &json!({"kind":"text","role":"assistant","text":"é".repeat(6000),"truncated":false,"itemId":"m"}),
+        );
+        assert!(parts.len() > 1);
+        // 11_000 of text budget leaves room for the other fields inside a 12_000 wire budget per event.
+        assert!(parts
+            .iter()
+            .all(|p| p["itemId"] == "m" && ascii_wire_len(p).unwrap() <= 12_000));
+        assert_eq!(
+            split_text(&json!({"kind":"thinking","role":"assistant","text":"","truncated":false}))
+                .len(),
+            1,
+            "empty markers still travel"
+        );
+        let tool = split_text(
+            &json!({"kind":"tool","role":"tool","text":"x".repeat(20_000),"truncated":false,"tool":{"name":"result","status":"done"}}),
+        );
+        assert_eq!(tool.len(), 1, "tool events are bounded, never chunked");
+        assert!(tool[0]["truncated"] == true && tool[0]["text"].as_str().unwrap().len() == 8192);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|p| p["text"].as_str().unwrap())
+                .collect::<String>(),
+            "é".repeat(6000)
+        );
     }
 
     #[test]

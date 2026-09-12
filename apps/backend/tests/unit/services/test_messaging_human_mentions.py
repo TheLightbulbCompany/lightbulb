@@ -81,12 +81,12 @@ def test_a_human_with_no_ascii_in_their_name_falls_back_to_a_user_handle():
 
 def test_parse_agent_mentions_resolves_a_human_handle():
     members = messaging.with_human_handles([human("user_a", "Aden Kim"), agent(AGENT_ID, "Friday", "friday")])
-    assert messaging.parse_agent_mentions("thanks @aden-kim", members) == [{"kind": "human", "id": "user_a"}]
-    assert messaging.parse_agent_mentions("@friday and @aden-kim", members) == [
+    assert messaging.parse_agent_mentions("thanks @aden-kim", members)[0] == [{"kind": "human", "id": "user_a"}]
+    assert messaging.parse_agent_mentions("@friday and @aden-kim", members)[0] == [
         {"kind": "agent", "id": AGENT_ID},
         {"kind": "human", "id": "user_a"},
     ]
-    assert messaging.parse_agent_mentions("nobody here", members) == []
+    assert messaging.parse_agent_mentions("nobody here", members) == ([], [])
 
 
 @pytest.mark.asyncio

@@ -8,36 +8,6 @@ export interface MemberRef {
   id: string;
 }
 
-export type ApiErrorCode =
-  | "LOCAL_SESSION_FORBIDDEN"
-  | "LOCAL_SESSION_NOT_FOUND"
-  | "LOCAL_SESSION_CONFLICT"
-  | "LOCAL_SESSION_UNSUPPORTED"
-  | "LOCAL_SESSION_OFFLINE"
-  | "INVALID_REQUEST"
-  | "ROOM_FORBIDDEN"
-  | "ROOM_NOT_FOUND"
-  | "MEMBER_NOT_FOUND"
-  | "MESSAGE_NOT_FOUND"
-  | "RUN_NOT_FOUND"
-  | "OPERATION_NOT_FOUND"
-  | "IDEMPOTENCY_CONFLICT"
-  | "MESSAGE_CONFLICT"
-  | "MEMBER_LIMIT"
-  | "RUN_NOT_ACTIVE"
-  | "RATE_LIMITED"
-  | "RUNTIME_UNAVAILABLE"
-  | "INTERNAL_ERROR";
-
-export interface MessagingApiError {
-  code: ApiErrorCode;
-  message: string;
-  retryable: boolean;
-  reconcileFromSeq?: number;
-  retryAfter?: number;
-  details?: Record<string, unknown>;
-}
-
 export interface RoomMember extends MemberRef {
   displayName: string;
   mentionHandle: string | null;
@@ -292,15 +262,3 @@ export type LocalSessionCommandReceipt = {
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent"; id: string }; invocationExpiresAt: number });
 
-export interface LocalSessionEnrollmentRequest {
-  deviceId: string;
-  cliDeviceId?: string | null;
-  enabled: boolean;
-  /** Optional stale-cleanup fence; only valid when disabling. */
-  expectedRevision?: string;
-}
-
-export interface LocalSessionEnrollment extends LocalDevice {
-  enabled: boolean;
-  revision: string;
-}

@@ -132,8 +132,12 @@
  *     (on --card:   6.04     6.06        5.47        6.53)
  *     --brass  5.18:1 on midnight, 4.23:1 on --card — rules and labels, not copy.
  */
-/* Messaging uses neutral surfaces; marketing and existing routes keep the brand palette. */
-.workspace-shell {
+/* Messaging uses neutral surfaces; marketing and existing routes keep the brand
+   palette. Declared on :root while the shell is mounted (not only on the shell)
+   so Radix portals — menus, dialogs, popovers rendered under <body> — take the
+   same neutral tokens instead of leaking the cream brand back in around a white
+   workspace. */
+:root:has(.workspace-shell), .workspace-shell {
   --background: var(--cream);
   --foreground: var(--midnight);
   --card: var(--cream);
@@ -158,11 +162,15 @@
   --edge-soft: #f0f0f2;
   --midnight: #242428;
   --midnight-soft: #45454b;
-  --midnight-muted: #66666e;
-  --midnight-label: #66666e;
-  --midnight-faint: #85858d;
+  --midnight-muted: #6b6b73;
+  --midnight-label: #6b6b73;
+  --midnight-faint: #8e8e94;
+  /* The one accent in the neutral shell: links, mentions, unread badges. */
+  --info: #1e52cc;
+  --on-info: #ffffff;
+  --presence: #1fa463;
 }
-.dark .workspace-shell {
+.dark:has(.workspace-shell), .dark .workspace-shell {
   --cream: #1c1c20;
   --cream-deep: #232328;
   --cream-deeper: #33333a;
@@ -173,6 +181,9 @@
   --midnight-muted: #b0b0ba;
   --midnight-label: #b0b0ba;
   --midnight-faint: #92929d;
+  --info: #8fb0ff;
+  --on-info: #1c1c20;
+  --presence: #3fbf7f;
 }
 
 :root {

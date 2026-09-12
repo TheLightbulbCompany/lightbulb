@@ -322,7 +322,13 @@ async def admin_container_start(
 
 @router.post(
     "/users/{user_id}/container/resize",
-    description="Re-apply the owner's canonical task profile (sized by plan: standard 1 vCPU / 4 GB, Ultra 2 vCPU / 8 GB). Recovery action for containers wedged on a stale task def. No body.",
+    description=(
+        "Re-apply the owner's canonical task profile. Size is derived by "
+        "ecs_manager._size_for_owner: 2 vCPU / 8 GB for an `ultra_pro` plan OR "
+        "a live agent roster over COMPANY_STANDARD_PLAN_MAX_AGENTS (a "
+        "reliability floor, not an entitlement), otherwise 1 vCPU / 4 GB. "
+        "Recovery action for containers wedged on a stale task def. No body."
+    ),
 )
 @idempotency()
 @audit_admin_action("container.resize")

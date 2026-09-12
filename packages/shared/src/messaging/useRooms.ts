@@ -89,6 +89,11 @@ export type UseRoomsResult = ReturnType<typeof useRooms>;
 
 const NO_ROOMS: never[] = [];
 const NO_SECTIONS: RoomSection[] = [];
+const HISTORY_FAILED = "history could not be loaded";
+const SELECT_FAILED = "this conversation could not be opened";
+
+const failureMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error && error.message ? error.message : fallback;
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
   const { initialAgentId = null, subscribeToRoom = true, autoSelect = true } = options;
@@ -160,6 +165,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const handledInitialAgent = useRef<string | null>(null);
   const selectionRequest = useRef(0);
   const [accessRemoved, setAccessRemoved] = useState(false);
+  // `selectAgentDm` is fired from an effect whose only caller is a `.catch`, so
+  // a failed resolve-or-create used to vanish and leave the surface on a
+  // spinner. Cleared by the next select or create that succeeds.
+  const [selectRoomError, setSelectRoomError] = useState<string | null>(null);
   const [deliveryOverride, setDeliveryOverride] = useState<{ roomId: string; deliveryKey: string; roomRevision: number } | null>(null);
   const detailResponse = useSWR(
     scope && activeRoomId ? ["messaging-room", scope, activeRoomId] : null,
@@ -181,7 +190,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const [messages, setMessages] = useState<CanonicalRoomMessage[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyComplete, setHistoryComplete] = useState(false);
-  const [historyError, setHistoryError] = useState(false);
+  // One state, two shapes on the surface: `historyError` stays a boolean for
+  // the web timeline/search controls, `historyErrorMessage` carries the reason
+  // so a client can name the failure instead of saying "something went wrong".
+  const [historyErrorMessage, setHistoryErrorMessage] = useState<string | null>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const [optimistic, setOptimistic] = useState<OptimisticRoomMessage[]>([]);
@@ -201,7 +213,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setMessages([]);
     setHistoryLoading(false);
     setHistoryComplete(false);
-    setHistoryError(false);
+    setHistoryErrorMessage(null);
     setOptimistic([]);
     setAttempts(new Map());
     requests.current.clear();
@@ -243,7 +255,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     const roomId = activeRoomId;
     const runGeneration = generation.current;
     setHistoryLoading(true);
-    setHistoryError(false);
+    setHistoryErrorMessage(null);
     const run = async () => {
       while (requestedAfter.current !== null && generation.current === runGeneration) {
         let cursor = requestedAfter.current;
@@ -266,7 +278,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     };
     reconciliation.current = run().catch((error) => {
       if (generation.current === runGeneration) {
-        setHistoryError(true);
+        setHistoryErrorMessage(failureMessage(error, HISTORY_FAILED));
         setHistoryComplete(false);
       }
       throw error;
@@ -522,12 +534,13 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     { requestId = ++selectionRequest.current, activate = true }: { requestId?: number; activate?: boolean } = {},
   ) => {
     const created = await messaging.createRoom(request);
+    setSelectRoomError(null);
     await mutateRooms();
     if (activate && requestId === selectionRequest.current) setActiveRoomId(created.roomId);
     return created;
   }, [messaging, mutateRooms]);
 
-  const selectDm = useCallback(async (
+  const resolveDm = useCallback(async (
     participant: MemberRef,
     { activate = true }: { activate?: boolean } = {},
   ): Promise<string | null> => {
@@ -566,6 +579,20 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     dmRequests.current.delete(key);
     return requestId === selectionRequest.current ? created.roomId : null;
   }, [createRoom, directoryDetailsResponse.data, directoryDetailsResponse.error, getCachedDirectoryRoomDetails, loadDirectoryRoomDetails, uuid]);
+
+  const selectDm = useCallback(async (
+    participant: MemberRef,
+    options: { activate?: boolean } = {},
+  ): Promise<string | null> => {
+    try {
+      const roomId = await resolveDm(participant, options);
+      setSelectRoomError(null);
+      return roomId;
+    } catch (error) {
+      setSelectRoomError(failureMessage(error, SELECT_FAILED));
+      throw error;
+    }
+  }, [resolveDm]);
 
   const selectAgentDm = useCallback(
     (agentId: string) => selectDm({ kind: "agent", id: agentId }),
@@ -679,10 +706,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     roomError: detailResponse.error as Error | undefined,
     roomLoading: detailResponse.isLoading,
     accessRemoved,
+    selectRoomError,
     messages,
     historyLoading,
     historyComplete,
-    historyError,
+    historyError: historyErrorMessage !== null,
+    historyErrorMessage,
     loadHistory: () => { void reconcile(0).catch(() => {}); },
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],

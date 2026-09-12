@@ -8,6 +8,7 @@ import logging
 import math
 import time
 import uuid
+from datetime import timedelta
 from urllib.parse import quote
 from typing import Annotated
 
@@ -47,7 +48,6 @@ from core.services.messaging import (
     SteerRunResponse,
     TypingRequest,
     UpsertRoomMemberRequest,
-    agent_message_receipt_json,
     make_live_event,
 )
 
@@ -165,7 +165,35 @@ async def get_local_session_command(
 
 
 _typing_last: dict[tuple[str, str], float] = {}
-_typing_lock = asyncio.Lock()
+
+# Presence: who has a tab open and in use in this workspace. Clients heartbeat
+# while the tab is visible and recently used; readers poll the snapshot. Kept
+# in-process on purpose -- the backend runs one task, and there is no room-wide
+# live channel to push it over (room events are per-room subscriptions).
+# ponytail: a backend restart shows everyone offline until their next heartbeat
+# (<= 45s), and a rolling deploy (two tasks for a minute or two, no shared
+# state, no stickiness on this endpoint) makes the dot flicker for that window;
+# move to a shared table if either ever matters.
+PRESENCE_TTL_SECONDS = 90.0
+_presence_last: dict[str, dict[str, float]] = {}
+
+
+def _online_user_ids(owner_id: str, now: float) -> list[str]:
+    seen = _presence_last.get(owner_id, {})
+    for stale in [user_id for user_id, ts in seen.items() if now - ts > PRESENCE_TTL_SECONDS]:
+        del seen[stale]
+    return sorted(seen)
+
+
+@router.post("/messaging/presence", status_code=204)
+async def presence_heartbeat(auth: AuthContext = Depends(get_current_user)):
+    _presence_last.setdefault(resolve_owner_id(auth), {})[auth.user_id] = time.monotonic()
+    return Response(status_code=204)
+
+
+@router.get("/messaging/presence")
+async def presence_snapshot(auth: AuthContext = Depends(get_current_user)) -> dict[str, list[str]]:
+    return {"online": _online_user_ids(resolve_owner_id(auth), time.monotonic())}
 
 
 async def _require_hook_token(owner_id: str, request: Request) -> dict:
@@ -186,9 +214,9 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
     try:
-        from core.services import teams_event_broker_singleton
+        from core.services.teams_event_broker import get_broker
 
-        broker = teams_event_broker_singleton.get_broker()
+        broker = get_broker()
         if broker is not None:
             asyncio.create_task(broker.ensure_user(owner_id, auth.user_id))
     except Exception:
@@ -369,29 +397,30 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
     room_id = str(request.room_id)
     await service.require_room_member(owner_id, auth.user_id, room_id)
     key = (auth.user_id, room_id)
+    # No await below until the map is updated, so the event loop cannot
+    # interleave two requests for the same key -- no lock needed.
     now = time.monotonic()
-    async with _typing_lock:
-        elapsed = now - _typing_last.get(key, 0.0)
-        if elapsed < 1.0:
-            raise ApiProblem(
-                "RATE_LIMITED",
-                "Typing updates are limited to one per second.",
-                retryable=True,
-                retry_after=max(0.01, math.ceil((1.0 - elapsed) * 100) / 100),
-            )
-        _typing_last[key] = now
-        # Evict entries outside the rate-limit window so this map tracks only
-        # recently-active (user, room) pairs instead of growing forever.
-        for stale_key in [k for k, ts in _typing_last.items() if now - ts > 1.0]:
-            del _typing_last[stale_key]
-    expires = service.utc_now().timestamp() + (3 if request.is_typing else 0)
+    elapsed = now - _typing_last.get(key, 0.0)
+    if elapsed < 1.0:
+        raise ApiProblem(
+            "RATE_LIMITED",
+            "Typing updates are limited to one per second.",
+            retryable=True,
+            retry_after=max(0.01, math.ceil((1.0 - elapsed) * 100) / 100),
+        )
+    # Evict entries outside the rate-limit window so this map tracks only
+    # recently-active (user, room) pairs instead of growing forever.
+    for stale_key in [k for k, ts in _typing_last.items() if now - ts > 1.0]:
+        del _typing_last[stale_key]
+    _typing_last[key] = now
+    expires = service.utc_now() + timedelta(seconds=3 if request.is_typing else 0)
     event = make_live_event(
         "room.typing.changed",
         {
             "roomId": room_id,
             "userId": auth.user_id,
             "displayName": await service.human_display_name(auth.user_id),
-            "expiresAt": datetime_from_timestamp(expires),
+            "expiresAt": expires.isoformat(),
         },
         room_id=room_id,
     )
@@ -407,13 +436,7 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
     return Response(status_code=204)
 
 
-def datetime_from_timestamp(value: float) -> str:
-    from datetime import datetime, timezone
-
-    return datetime.fromtimestamp(value, timezone.utc).isoformat()
-
-
-async def _resolved_active_run(auth: AuthContext, run_id: str) -> tuple[str, str, str, dict, str]:
+async def _resolved_active_run(auth: AuthContext, run_id: str) -> tuple[str, dict, str]:
     owner_id = resolve_owner_id(auth)
     state = get_gateway_pool().resolve_run(owner_id, run_id)
     if state is None:
@@ -427,9 +450,7 @@ async def _resolved_active_run(auth: AuthContext, run_id: str) -> tuple[str, str
     await service.require_room_member(owner_id, auth.user_id, parsed["room_id"])
     if await messaging_repo.get_member(parsed["room_id"], "agent", parsed["agent_id"]) is None:
         raise ApiProblem("RUN_NOT_ACTIVE", "The run's agent is no longer in this room.")
-    if state.get("terminal"):
-        return owner_id, parsed["room_id"], parsed["agent_id"], state, ""
-    return owner_id, parsed["room_id"], parsed["agent_id"], state, session_key
+    return owner_id, state, "" if state.get("terminal") else session_key
 
 
 @router.get("/messaging/runs/{run_id}", response_model=RunStatusResponse)
@@ -447,7 +468,7 @@ async def get_run_status(run_id: str, auth: AuthContext = Depends(get_current_us
     for the same action: stop showing it as running.
     """
     try:
-        _, _, _, _, session_key = await _resolved_active_run(auth, run_id)
+        _, _, session_key = await _resolved_active_run(auth, run_id)
     except ApiProblem as exc:
         if exc.error.code != "RUN_NOT_FOUND":
             raise
@@ -457,7 +478,7 @@ async def get_run_status(run_id: str, auth: AuthContext = Depends(get_current_us
 
 @router.post("/messaging/runs/{run_id}/abort", response_model=AbortRunResponse)
 async def abort_run(run_id: str, auth: AuthContext = Depends(get_current_user)):
-    owner_id, _, _, state, session_key = await _resolved_active_run(auth, run_id)
+    owner_id, state, session_key = await _resolved_active_run(auth, run_id)
     if session_key == "":
         return AbortRunResponse(run_id=run_id, state="already-terminal")
     container, ip = await get_ecs_manager().resolve_running_container(owner_id)
@@ -485,7 +506,7 @@ async def steer_run(
     request: SteerRunRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    owner_id, _, _, _, session_key = await _resolved_active_run(auth, run_id)
+    owner_id, _, session_key = await _resolved_active_run(auth, run_id)
     if not session_key:
         raise ApiProblem("RUN_NOT_ACTIVE", "Run is already terminal.")
     pool = get_gateway_pool()
@@ -523,12 +544,7 @@ async def steer_run(
 )
 async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: Request):
     await _require_hook_token(owner_id, request)
-    receipt = await service.create_agent_message(owner_id, body)
-    return Response(
-        status_code=201,
-        media_type="application/json",
-        content=json_bytes(agent_message_receipt_json(receipt)),
-    )
+    return await service.create_agent_message(owner_id, body)
 
 
 @router.get(
@@ -538,9 +554,3 @@ async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: 
 async def get_agent_message_receipt(owner_id: str, event_id: str, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.get_agent_receipt(owner_id, event_id)
-
-
-def json_bytes(value: dict) -> bytes:
-    import json
-
-    return json.dumps(value, separators=(",", ":")).encode("utf-8")

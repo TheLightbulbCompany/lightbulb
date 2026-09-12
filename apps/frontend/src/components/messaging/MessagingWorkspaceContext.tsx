@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
@@ -14,11 +14,12 @@ import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
+import { usePresence } from "./usePresence";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
-import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomSummary } from "./types";
+import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
   activeRoomId: string | null;
@@ -60,7 +61,7 @@ export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null 
  * is open, but must not stack a sheet over someone else's dialog — the ⌘K
  * palette.
  */
-export function useMessagingShortcuts(
+function useMessagingShortcuts(
   rooms: readonly RoomSummary[],
   activeRoomId: string | null,
   selectRoom: (roomId: string) => void,
@@ -166,17 +167,18 @@ export function MessagingWorkspaceProvider({
     if (typingActive.current) void setRoomTyping(false);
   }, [setRoomTyping]);
 
+  const online = usePresence(rooms.httpReady, scope);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-    : member) ?? [], [rooms.activeRoom, activityByAgentId]);
+    : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     participants: (rooms.directoryRoomDetails.get(room.roomId)?.members ?? [])
       .filter((member) => member.kind !== "human" || member.id !== userId)
       .map((member) => member.kind === "agent"
         ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-        : member),
-  })), [rooms.rooms, rooms.directoryRoomDetails, activityByAgentId, userId]);
+        : { ...member, online: online.has(member.id) }),
+  })), [rooms.rooms, rooms.directoryRoomDetails, activityByAgentId, userId, online]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
@@ -185,6 +187,7 @@ export function MessagingWorkspaceProvider({
       id: member.userId,
       displayName: member.name || member.email || "Workspace member",
       mentionHandle: null,
+      online: online.has(member.userId),
     }));
     const agents = (agentRoster?.agents ?? []).map((agent) => ({
       kind: "agent" as const,
@@ -193,7 +196,7 @@ export function MessagingWorkspaceProvider({
       mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
-  }, [humanRoster, agentRoster, rooms.activeRoom, userId]);
+  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online]);
 
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);

@@ -11,6 +11,7 @@ import tempfile
 from collections.abc import Iterable
 from typing import Any, Callable
 
+from core import openclaw_version
 from core.config import settings
 from core.containers.config import _lightbulb_bindings, memory_plugin_entries, workflow_plugin_entries
 from core.services.agent_roster import read_agent_roster, write_agent_roster
@@ -902,7 +903,24 @@ async def register_lightbulb_agent_account(owner_id: str, agent_id: str) -> None
     ``accountScopedRestart``, so this hot patch alone is enough.
 
     Idempotent: no-op write when the account and binding already match.
+
+    Skipped entirely when the owner's container runs an image that does not bake
+    the channel plugin: this is the one writer that CREATES ``channels.lightbulb``
+    from nothing, so on an older image it would turn a working container into a
+    boot crash loop ("unknown channel id: lightbulb"). The same predicate the
+    provision-time writer uses, read from the same accessor, against the image
+    that will actually read the file — not this environment's pin.
     """
+    from core.containers import get_ecs_manager
+
+    deployed_tag = await get_ecs_manager()._deployed_image_tag(owner_id)
+    if not openclaw_version.bakes_lightbulb_channel(deployed_tag):
+        logger.info(
+            "Skipping lightbulb channel account for owner %s: image %r predates the channel plugin",
+            owner_id,
+            deployed_tag,
+        )
+        return
 
     def _mutate(current: dict) -> bool:
         changed = False

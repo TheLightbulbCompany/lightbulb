@@ -159,6 +159,11 @@ def test_runtime_only_delta_recurses_only_into_co_owned_subtrees():
 # --------------------------------------------------------------------------- #
 
 
+# Extended tags either side of the baked lightbulb-channel plugin.
+_PLUGIN_IMAGE = "2026.9.3-isol8.2-fa8bf22"
+_PRE_PLUGIN_IMAGE = "2026.9.3-isol8.2-449894a"
+
+
 def _patches(
     *,
     container,
@@ -166,6 +171,7 @@ def _patches(
     existing_config=None,
     fresh_config=None,
     patch_mock=None,
+    image_tag=_PLUGIN_IMAGE,
 ):
     """Patch the collaborators the script lazy-imports inside main.
 
@@ -180,6 +186,9 @@ def _patches(
     write_mock = AsyncMock()
     ecs_manager = MagicMock()
     ecs_manager.write_user_configs = write_mock
+    # reapply_owner_config resolves the target image once, up front, so the
+    # regen and the lightbulb-channel restore guard see the same tag.
+    ecs_manager._deployed_image_tag = AsyncMock(return_value=image_tag)
 
     # read_openclaw_config_from_efs is called twice on --apply: once before
     # the regen (existing) and once after (fresh). On dry-run it is not
@@ -445,6 +454,122 @@ async def test_apply_on_trial_owner_does_not_restore_channels_or_bindings():
     restore_patch.assert_awaited_once()
     p_args, _ = restore_patch.call_args
     restored = p_args[1]
+    assert "channels" not in restored
+    assert "bindings" not in restored
+    assert restored["wizard"] == {"lastRunAt": "2026-08-01T00:00:00Z"}
+
+
+_LIGHTBULB_BINDING = {
+    "agentId": "agent_friday",
+    "match": {"channel": "lightbulb", "accountId": "agent_friday", "peer": {"kind": "channel", "id": "*"}},
+}
+_SLACK_BINDING = {"type": "route", "agentId": "agent_friday", "match": {"channel": "slack", "accountId": "team-1"}}
+
+
+def _lightbulb_restore_case():
+    """A pre-regen snapshot carrying the channel block, and a fresh config
+    whose generator dropped it (the image-gated branch)."""
+    existing = {
+        "channels": {
+            "lightbulb": {"enabled": True, "accounts": {"agent_friday": {"enabled": True}}},
+            "slack": {"accounts": {"agent_friday": {"allowFrom": ["U123"]}}},
+        },
+        "bindings": [_LIGHTBULB_BINDING, _SLACK_BINDING],
+    }
+    return existing, {"channels": {}}
+
+
+@pytest.mark.asyncio
+async def test_apply_on_pre_plugin_image_does_not_restore_the_lightbulb_channel():
+    """The regen omits channels.lightbulb for an image that does not bake the
+    plugin; restoring it from the snapshot would put the crash-loop key back.
+
+    prune_schema_rejected cannot catch this — ``channels`` is an open map in
+    the vendored schema — so the restore itself has to drop it. The owner's
+    OTHER channel state must survive: this is a targeted strip, not the
+    trial-mode blanket pop.
+    """
+    existing, fresh = _lightbulb_restore_case()
+    restore_patch = AsyncMock()
+    write_mock, cms = _patches(
+        container={"gateway_token": "gw", "hook_token": "hk", "owner_type": "personal"},
+        existing_config=existing,
+        fresh_config=fresh,
+        patch_mock=restore_patch,
+        image_tag=_PRE_PLUGIN_IMAGE,
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", owner_id="user_old_image")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    write_mock.assert_awaited_once()
+    restore_patch.assert_awaited_once()
+    restored = restore_patch.call_args[0][1]
+    assert "lightbulb" not in restored["channels"]
+    assert restored["channels"]["slack"] == {"accounts": {"agent_friday": {"allowFrom": ["U123"]}}}
+    assert restored["bindings"] == [_SLACK_BINDING]
+
+
+@pytest.mark.asyncio
+async def test_apply_on_plugin_image_restores_the_lightbulb_channel():
+    """The guard must not be over-broad: on an image that bakes the plugin the
+    snapshot's channel block and binding are ordinary runtime state."""
+    existing, fresh = _lightbulb_restore_case()
+    restore_patch = AsyncMock()
+    write_mock, cms = _patches(
+        container={"gateway_token": "gw", "hook_token": "hk", "owner_type": "personal"},
+        existing_config=existing,
+        fresh_config=fresh,
+        patch_mock=restore_patch,
+        image_tag=_PLUGIN_IMAGE,
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", owner_id="user_new_image")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    restore_patch.assert_awaited_once()
+    restored = restore_patch.call_args[0][1]
+    assert restored["channels"]["lightbulb"]["accounts"] == {"agent_friday": {"enabled": True}}
+    assert restored["bindings"] == [_LIGHTBULB_BINDING, _SLACK_BINDING]
+
+
+@pytest.mark.asyncio
+async def test_apply_on_pre_plugin_image_drops_channels_key_when_nothing_else_remains():
+    """A lightbulb-only snapshot leaves no channels/bindings to restore at
+    all — the guard must not leave empty husks in the patch."""
+    existing = {
+        "channels": {"lightbulb": {"enabled": True, "accounts": {"agent_friday": {"enabled": True}}}},
+        "bindings": [_LIGHTBULB_BINDING],
+        "wizard": {"lastRunAt": "2026-08-01T00:00:00Z"},
+    }
+    restore_patch = AsyncMock()
+    write_mock, cms = _patches(
+        container={"gateway_token": "gw", "hook_token": "hk", "owner_type": "personal"},
+        existing_config=existing,
+        fresh_config={"channels": {}},
+        patch_mock=restore_patch,
+        image_tag=_PRE_PLUGIN_IMAGE,
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", owner_id="user_old_image")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    restored = restore_patch.call_args[0][1]
     assert "channels" not in restored
     assert "bindings" not in restored
     assert restored["wizard"] == {"lastRunAt": "2026-08-01T00:00:00Z"}

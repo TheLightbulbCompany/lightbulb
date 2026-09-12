@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -17,7 +18,7 @@ from boto3.dynamodb.types import TypeDeserializer
 
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.observability.metrics import put_metric
+from core.observability.metrics import gauge, put_metric
 from core.repositories import messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
@@ -39,6 +40,22 @@ _VISIBILITY_REFRESH_SECONDS = 120
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
+# Every value request_wake_silent can return (container_wake.py). The
+# allowlist is the point: an unmapped string becomes "unknown" rather than
+# opening an unbounded dimension, and a new return value shows up as
+# "unknown" instead of silently inflating a real bucket.
+_WAKE_OUTCOMES = frozenset(
+    {
+        "dispatched",
+        "blocked",
+        "operator_stopped",
+        "no_row",
+        "error",
+        "already_running",
+        "in_flight",
+        "converting",
+    }
+)
 
 
 class WorkRetry(RuntimeError):
@@ -87,6 +104,31 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
             raise ValueError("invalid operationId") from exc
         return value
     raise ValueError("unknown work pointer kind")
+
+
+def _ingress_status_class(status_code: int) -> str:
+    """202/409 are the plugin's two contractual answers; 4xx/5xx are the error
+    classes. A non-202 success or a redirect is a contract violation that is
+    neither, and folding it into 4xx would poison the client-error count."""
+    if status_code in (202, 409):
+        return str(status_code)
+    if status_code >= 500:
+        return "5xx"
+    return "4xx" if status_code >= 400 else "other"
+
+
+def _emit_queue_wait(message: dict, kind: str) -> None:
+    sent = (message.get("Attributes") or {}).get("SentTimestamp")
+    try:
+        waited_ms = time.time() * 1000 - int(sent)
+    except (TypeError, ValueError):
+        return
+    put_metric(
+        "messaging.work.queue_wait",
+        value=max(0.0, waited_ms),
+        unit="Milliseconds",
+        dimensions={"kind": kind},
+    )
 
 
 def lightbulb_session_key(agent_id: str, room_id: str) -> str:
@@ -164,7 +206,11 @@ class OpenClawWorkWorker:
             return
         if self._sqs is None:
             self._sqs = boto3.client("sqs", region_name=settings.AWS_REGION)
+        consecutive_failures = 0
         while not self._stop.is_set():
+            # The one signal that separates "the queue is quiet" from "the
+            # worker died": emitted every iteration, empty receives included.
+            gauge("messaging.worker.alive", 1)
             try:
                 response = await asyncio.to_thread(
                     self._sqs.receive_message,
@@ -172,12 +218,22 @@ class OpenClawWorkWorker:
                     MaxNumberOfMessages=10,
                     WaitTimeSeconds=5,
                     VisibilityTimeout=_VISIBILITY_SECONDS,
-                    AttributeNames=["MessageGroupId"],
+                    AttributeNames=["MessageGroupId", "SentTimestamp"],
                 )
             except Exception:
                 put_metric("messaging.worker.poll", dimensions={"outcome": "error"})
                 logger.warning("OpenClaw FIFO poll failed", exc_info=True)
+                # A failing receive returns immediately, so an unslept retry
+                # spins a hot loop against throttled/unreachable SQS. Waiting on
+                # the stop event rather than sleeping keeps the backoff inside
+                # main.py's ~20s graceful drain — a bare sleep(30) would burn it.
+                # ponytail: plain exponential backoff, no jitter — one worker
+                # per environment, so there is no herd to spread.
+                consecutive_failures = min(consecutive_failures + 1, 5)  # 2**5 already exceeds the cap
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), min(30, 2**consecutive_failures))
                 continue
+            consecutive_failures = 0
             messages = response.get("Messages") or []
             if not messages:
                 continue
@@ -205,9 +261,16 @@ class OpenClawWorkWorker:
 
     async def _process_message(self, message: dict) -> None:
         completed = False
+        kind = "unknown"
         extender = asyncio.create_task(self._extend_visibility(message))
         try:
-            pointer = deserialize_pointer(message.get("Body", ""))
+            try:
+                pointer = deserialize_pointer(message.get("Body", ""))
+                kind = pointer["kind"]
+            finally:
+                # Emitted for every received message, poisoned pointers
+                # included — those are exactly the ones that sat longest.
+                _emit_queue_wait(message, kind)
             if pointer["kind"] == "room_dispatch":
                 await self._room_dispatch(pointer)
             else:
@@ -224,7 +287,7 @@ class OpenClawWorkWorker:
         except WorkRetry as exc:
             put_metric(
                 "messaging.worker.message",
-                dimensions={"kind": "unknown", "outcome": "retry", "error": type(exc).__name__},
+                dimensions={"kind": kind, "outcome": "retry", "error": type(exc).__name__},
             )
             # Never log the SQS body or canonical message text.
             logger.warning("OpenClaw work item will retry (%s)", type(exc).__name__)
@@ -235,7 +298,7 @@ class OpenClawWorkWorker:
         except Exception as exc:
             put_metric(
                 "messaging.worker.message",
-                dimensions={"kind": "unknown", "outcome": "retry", "error": type(exc).__name__},
+                dimensions={"kind": kind, "outcome": "retry", "error": type(exc).__name__},
             )
             # Never log the SQS body or canonical message text: exception
             # messages (pydantic's especially) echo input values, so log only
@@ -342,7 +405,11 @@ class OpenClawWorkWorker:
         if not container or not ip:
             from core.services.container_wake import request_wake_silent
 
-            await request_wake_silent(owner_id)
+            wake = await request_wake_silent(owner_id)
+            put_metric(
+                "messaging.wake.outcome",
+                dimensions={"outcome": wake if wake in _WAKE_OUTCOMES else "unknown"},
+            )
             raise WorkRetry("runtime is waking")
         token = container.get("gateway_token")
         if not isinstance(token, str) or not token:
@@ -386,15 +453,30 @@ class OpenClawWorkWorker:
             # Optional local-session adapter must not break ordinary room delivery.
             logger.warning("Local session invocation unavailable")
         url = f"http://{ip}:18789/plugins/lightbulb-channel/inbound/{member['id']}"
+        started = time.perf_counter()
         try:
             response = await self._post(url, body, token, invocation)
+            put_metric(
+                "messaging.ingress.post",
+                dimensions={"status_class": _ingress_status_class(response.status_code), "event_kind": event_kind},
+            )
+            # Latency only where the plugin actually answered: a timed-out or
+            # dropped POST measures our own deadline, not its service time.
+            put_metric(
+                "messaging.ingress.latency",
+                value=(time.perf_counter() - started) * 1000,
+                unit="Milliseconds",
+                dimensions={"event_kind": event_kind},
+            )
             if response.status_code == 409:
                 # The plugin uses 409 only for permanent admission refusals
                 # (including the native agent-pair loop guard). Retrying after
                 # its cooldown would resurrect the causal chain.
                 pool.clear_active_run(owner_id, session_key)
-                if event_kind == "room_event":
-                    put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted"})
+                put_metric(
+                    "messaging.ambient_gate",
+                    dimensions={"outcome": "not_admitted", "event_kind": event_kind},
+                )
                 return
             if response.status_code != 202:
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
@@ -406,11 +488,21 @@ class OpenClawWorkWorker:
                 outcome = "unknown"
             if outcome == "replayed":
                 pool.clear_active_run(owner_id, session_key)
-            if event_kind == "room_event":
-                put_metric("messaging.ambient_gate", dimensions={"outcome": outcome})
-                if outcome in {"ignored", "gate_error"}:
-                    pool.clear_active_run(owner_id, session_key)
+            # Counted for both event kinds: a user_request the plugin ignores is
+            # the same silent drop, and was invisible before. Clearing the
+            # synthetic run stays room_event-only — that is delivery behaviour,
+            # not observability.
+            put_metric("messaging.ambient_gate", dimensions={"outcome": outcome, "event_kind": event_kind})
+            if event_kind == "room_event" and outcome in {"ignored", "gate_error"}:
+                pool.clear_active_run(owner_id, session_key)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
+            put_metric(
+                "messaging.ingress.post",
+                dimensions={
+                    "status_class": "timeout" if isinstance(exc, httpx.TimeoutException) else "transport",
+                    "event_kind": event_kind,
+                },
+            )
             # The plugin dedupes ingress by eventId (effect-once), so a timed-out
             # or dropped POST is safe to retry soon; holding the full 300s
             # visibility stalls the whole FIFO group (prod, 2026-09-10 18:15Z).

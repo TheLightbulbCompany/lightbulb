@@ -91,3 +91,13 @@ it("re-scrolls to the same target message when its token bumps", () => {
   rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={null} targetMessageId="m1" targetToken={2} renderMessage={renderMessage} empty={null} />);
   expect(scrollIntoView).toHaveBeenCalledTimes(2);
 });
+
+it("renders the leading node above the oldest message, and alone when there are no messages", () => {
+  const { rerender } = render(<RoomTimeline roomId="r" messages={[]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage}
+    leading={<p>This is the beginning of #general.</p>} empty={null} />);
+  expect(screen.getByText("This is the beginning of #general.")).toBeInTheDocument();
+  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage}
+    leading={<p>This is the beginning of #general.</p>} empty={null} />);
+  const region = screen.getByRole("region", { name: "Messages" });
+  expect(region.firstElementChild).toHaveTextContent("This is the beginning of #general.");
+});

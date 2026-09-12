@@ -67,12 +67,18 @@ vi.mock("next/navigation", () => ({
 
 describe("PostHogProvider", () => {
   const originalKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
   afterEach(() => {
     if (originalKey === undefined) {
       delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
     } else {
       process.env.NEXT_PUBLIC_POSTHOG_KEY = originalKey;
+    }
+    if (originalApiUrl === undefined) {
+      delete process.env.NEXT_PUBLIC_API_URL;
+    } else {
+      process.env.NEXT_PUBLIC_API_URL = originalApiUrl;
     }
   });
 
@@ -83,6 +89,7 @@ describe("PostHogProvider", () => {
     mockCaptureException.mockClear();
     mockIdentify.mockClear();
     mockReset.mockClear();
+    mockRegister.mockClear();
     mockRouterState.pathname = "/";
     mockRouterState.search = "";
     mockClerkState.isSignedIn = false;
@@ -90,6 +97,7 @@ describe("PostHogProvider", () => {
     mockClerkState.user = null;
     window.localStorage.clear();
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
+    delete process.env.NEXT_PUBLIC_API_URL;
   });
 
   it("does NOT initialize PostHog when NEXT_PUBLIC_POSTHOG_KEY is not set", async () => {
@@ -300,5 +308,48 @@ describe("PostHogProvider", () => {
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     expect(mockCaptureException).toHaveBeenCalledWith(err);
+  });
+
+  describe("resolveEnvironment", () => {
+    it("is prod only for the prod API host", async () => {
+      const { resolveEnvironment } = await import("../PostHogProvider");
+      expect(resolveEnvironment("https://api.flickmeon.ai/api/v1")).toBe("prod");
+    });
+
+    it("is dev for the dev host, localhost, and an unset URL", async () => {
+      const { resolveEnvironment } = await import("../PostHogProvider");
+      expect(resolveEnvironment("https://api-dev.flickmeon.ai/api/v1")).toBe("dev");
+      expect(resolveEnvironment("http://localhost:8000/api/v1")).toBe("dev");
+      expect(resolveEnvironment(undefined)).toBe("dev");
+    });
+  });
+
+  it("registers environment=prod as a super property against the prod API host", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    process.env.NEXT_PUBLIC_API_URL = "https://api.flickmeon.ai/api/v1";
+
+    const mod = await import("../PostHogProvider");
+    render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+
+    expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining({ environment: "prod" }));
+  });
+
+  it("registers environment=dev against the dev API host, and re-registers it after reset() on sign-out", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    process.env.NEXT_PUBLIC_API_URL = "https://api-dev.flickmeon.ai/api/v1";
+    mockClerkState.isSignedIn = true;
+    mockClerkState.userId = "user_123";
+
+    const mod = await import("../PostHogProvider");
+    const { rerender } = render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+    expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining({ environment: "dev" }));
+    mockRegister.mockClear();
+
+    // reset() clears super properties on sign-out — environment must be re-registered.
+    mockClerkState.isSignedIn = false;
+    mockClerkState.userId = null;
+    rerender(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+    expect(mockReset).toHaveBeenCalledTimes(1);
+    expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining({ environment: "dev" }));
   });
 });

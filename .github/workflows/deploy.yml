@@ -1574,7 +1574,7 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
       - name: Deploy to Vercel (Preview)
-        run: vercel deploy --prebuilt --token=$VERCEL_TOKEN
+        run: vercel deploy --prebuilt --archive=tgz --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -1627,8 +1627,8 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}
       - name: Deploy to Vercel (Preview)
         id: vercel-deploy-dev
-        run: DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo
-          "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
+        run: DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --token=$VERCEL_TOKEN)
+          && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -2390,8 +2390,9 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
       - name: Deploy to Vercel (Production)
         id: company-deploy-prod
-        run: DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo
-          "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
+        run: DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --prod
+          --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >>
+          $GITHUB_OUTPUT
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -2488,8 +2489,9 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_PROD }}
       - name: Deploy to Vercel (Production)
         id: vercel-deploy-prod
-        run: DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo
-          "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
+        run: DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --prod
+          --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >>
+          $GITHUB_OUTPUT
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

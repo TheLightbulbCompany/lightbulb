@@ -4,10 +4,12 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, FolderPlus, GripVertical, Pencil, Plus, Trash2, Users } from "lucide-react";
-import type { ListenMode, MemberPrefsRequest, RoomKind, RoomSection } from "@lightbulb/shared";
+import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
+import { roomDisplayName, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { ParticipantAvatar } from "./ParticipantAvatar";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
@@ -15,7 +17,7 @@ import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
-import { roomDisplayName, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
+import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {
@@ -98,7 +100,6 @@ function DirectoryContent({
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
-  const [directoryOpen, setDirectoryOpen] = useState(false);
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
   const [prefs, setPrefs] = useState(() => readSidebarPrefs(ownerScopeId));
@@ -165,7 +166,15 @@ function DirectoryContent({
   // loading) — gate the section on this filtered list, not on
   // draftRoomIds.length, or the heading renders over an empty list.
   const draftedRooms = rooms.filter((room) => draftRoomIds.includes(room.roomId));
-  const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants) });
+  // Slack's Direct messages section is the roster, not the list of rooms that
+  // happen to exist: every person and agent gets a row, and a click opens (or
+  // creates) the 1:1 DM. Group chats stay as rooms.
+  const dmCounterpart = (room: DirectoryRoom) => room.kind === "dm" && room.participants.length === 1
+    ? `${room.participants[0].kind}:${room.participants[0].id}` : null;
+  const withDm = new Set(rooms.map(dmCounterpart));
+  const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`));
+  const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
+    alwaysShow: roster.length > 0 ? ["direct"] : [] });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
   // whatever `groups` was closed over at click time -- a plain ref, kept in
@@ -303,17 +312,23 @@ function DirectoryContent({
   return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav ref={directoryRef} className="room-directory" aria-label="Conversations">
     <div className="room-directory-heading"><h2 className="font-semibold">Conversations</h2>
       <div className="room-directory-heading-actions">
-        <label className="sr-only" htmlFor={`${id}-sort`}>Sort conversations</label>
-        <select id={`${id}-sort`} className="room-listen-mode" value={prefs.sort}
-          onChange={(event) => updatePrefs({ sort: event.target.value as SidebarSort })}>
-          <option value="alpha">A–Z</option>
-          <option value="unread">Unread first</option>
-        </select>
-        <Button variant="ghost" size="icon" aria-label="Next unread conversation" disabled={unreadRooms.length === 0} onClick={selectNextUnread}><ChevronDown aria-hidden="true" /></Button>
-        {onSaveSections && <Button ref={manageTrigger} variant="ghost" size="icon" aria-label="Manage sections" onClick={openManageSections}><FolderPlus aria-hidden="true" /></Button>}
-        {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button ref={manageTrigger} variant="ghost" size="icon-sm" aria-label="Sidebar options"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel>Sort</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={prefs.sort} onValueChange={(value) => updatePrefs({ sort: value as SidebarSort })}>
+              <DropdownMenuRadioItem value="alpha">A–Z</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="unread">Unread first</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled={unreadRooms.length === 0} onSelect={selectNextUnread}>Jump to next unread</DropdownMenuItem>
+            {onSaveSections && <DropdownMenuItem onSelect={openManageSections}>Manage sections</DropdownMenuItem>}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
       </div>
     </div>
+    {creationError && !creating && <p role="alert" className="px-2 text-sm text-err">{creationError}</p>}
     {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
       onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
@@ -331,19 +346,35 @@ function DirectoryContent({
       const unread = group.rooms.reduce((total, room) => total + (room.muted ? 0 : room.unreadCount), 0);
       const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
       const listId = `${id}-group-${group.id}`;
-      const body = (grip?: ReactNode) => <>
+      const body = (grip?: ReactNode) => {
+        const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant }> = [
+          ...visible.map((room) => ({ key: room.roomId, label: roomDisplayName(room, room.participants), room })),
+          ...(group.id === "direct" && !collapsed ? roster.map((participant) => ({ key: `${participant.kind}:${participant.id}`, label: participant.displayName, participant })) : []),
+        ];
+        if (group.id === "direct") {
+          const unreadOf = (row: typeof rows[number]) => row.room && !row.room.muted ? row.room.unreadCount : 0;
+          rows.sort((left, right) => prefs.sort === "unread" && unreadOf(left) !== unreadOf(right)
+            ? unreadOf(right) - unreadOf(left) : left.label.localeCompare(right.label));
+        }
+        return <>
         <div className="room-directory-group-header">
           {grip}
-          <h3 className="room-directory-group">{group.label}</h3>
-          {collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>}
           <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId} data-group-id={group.id}
             aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.label}`}
             onClick={() => updatePrefs({ collapsed: collapsed ? prefs.collapsed.filter((groupId) => groupId !== group.id) : [...prefs.collapsed, group.id] })}>
             {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
           </Button>
+          <h3 className="room-directory-group">{group.label}</h3>
+          {collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>}
         </div>
-        <ul id={listId}>{visible.map((room) => {
-          const label = roomDisplayName(room, room.participants);
+        <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
+          if (!room) return <li key={key} className="room-directory-row">
+            <button type="button" className="room-directory-entry" disabled={creationBusy} onClick={() => onSelectParticipant(participant!)}>
+              <ParticipantAvatar participant={participant!} size="xs" />
+              <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
+              {participant!.kind === "agent" && <span className="room-directory-tag">Agent</span>}
+            </button>
+          </li>;
           return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
             active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
             busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
@@ -357,6 +388,7 @@ function DirectoryContent({
             onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
         })}</ul>
       </>;
+      };
       // No grip at all when the caller cannot save an order — a drag handle
       // that silently does nothing is worse than no handle.
       return group.custom && onSaveSections
@@ -379,20 +411,6 @@ function DirectoryContent({
         </li>;
       })}</ul>
     </section>}
-    <section aria-label="People and agents">
-      <Button variant="ghost" className="w-full justify-start" aria-expanded={directoryOpen}
-        aria-controls={`${id}-people`} onClick={() => setDirectoryOpen(!directoryOpen)}><Users aria-hidden="true" />People and agents</Button>
-      {directoryOpen && <div id={`${id}-people`} className="room-picker">
-        <label htmlFor={`${id}-directory-search`} className="sr-only">Find people and agents</label>
-        <input id={`${id}-directory-search`} className="room-input" type="search" placeholder="Find a person or agent…" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <div className="room-picker-list">{visibleParticipants.map((participant) => <button type="button" className="room-choice room-choice-button" key={`${participant.kind}:${participant.id}`} disabled={creationBusy} onClick={() => onSelectParticipant(participant)}>
-          <Identity name={participant.displayName} avatarOnly size="sm" />
-          <span className="min-w-0 flex-1"><span className="block truncate">{participant.displayName}</span><span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
-        </button>)}</div>
-        {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
-        {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
-      </div>}
-    </section>
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {

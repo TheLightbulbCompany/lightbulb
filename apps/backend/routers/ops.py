@@ -45,7 +45,7 @@ async def get_alarms(_auth: AuthContext = Depends(require_platform_admin)):
 
 @router.get("/growth")
 async def get_growth(_auth: AuthContext = Depends(require_platform_admin)):
-    """Fleet GTM metrics (docs/growth §3), computed on read, 60s cache.
+    """Fleet growth metrics (the observability audit §6), computed on read, 60s cache.
     Partial sources surface in errors[] — the page must never render a
     missing section as zero-and-green."""
     from core.services.ops import growth

@@ -25,17 +25,15 @@ import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
 import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
-import { GetStarted } from "@/components/getstarted/GetStarted";
 import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
 import { MessagingWorkspaceProvider } from "@/components/messaging/MessagingWorkspaceContext";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
-import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
-import { useGetStartedDerived } from "@/components/chat/shell/useGetStartedDerived";
+import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { PANEL_COMPONENTS } from "./panelComponents";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
@@ -44,7 +42,6 @@ import { readLayout, writeLayout } from "./layoutStorage";
 import { useBrowserToolAutoOpen } from "./useBrowserToolAutoOpen";
 import { clearClosedPanelFromUrl } from "./urlChannel";
 import { MESSAGES_PANEL_ID, resolvePanelAlias } from "./panelRegistry";
-import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
   attachDockviewApi,
@@ -158,7 +155,7 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
   // Sentinel re-resolution: the snapshot resolves chat:__default__ through
   // defaultIdRef at recompute time, and the roster arriving is not a dockview
   // event — without this, a cold load leaves focusedChatAgentId /
-  // visibleChatAgentIds null (no sidebar highlight, no SessionList, toast
+  // visibleChatAgentIds null (no sidebar highlight, toast
   // suppression misses the watched run) until some unrelated layout event.
   // Declared AFTER the ref-sync effect above so the ref is fresh when it runs.
   useEffect(() => {
@@ -171,11 +168,7 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
 
   useUserSyncOnce(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
-  // `chatReady` + the four completion signals (chat/hire/channel/task) are
-  // derived in the shared shell hook — see its doc comment for the
-  // readiness-gate rationale.
-  const { chatReady, ...getStartedDerived } = useGetStartedDerived();
-  const { open: openMarketplace } = useMarketplaceDrawer();
+  const { chatReady } = useChatReady();
 
   // [BODY 3: reconciler] — pure decision in workspaceShellReconciler; this
   // executes it. Ordering (pinned by workspaceShellUrl.test.ts): signature
@@ -477,39 +470,6 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
                   )}
                 </div>
               </div>
-              {chatReady && (
-                <GetStarted
-                  derived={getStartedDerived}
-                  actions={{
-                    chat: () => {
-                      // Don't act on an empty id: if no real agent exists yet,
-                      // bail rather than opening a chat panel for "".
-                      const target = defaultIdRef.current;
-                      if (!target) return;
-                      // Record the focus intent before opening. openChatPanel
-                      // defers delivery until ChatPanel renders the selected DM,
-                      // so this event cannot focus a same-agent composer too soon.
-                      requestFocusComposer(target);
-                      openChatPanel(target);
-                      window.dispatchEvent(
-                        new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),
-                      );
-                    },
-                    task: () =>
-                      openPanel("teams-issues", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
-                    hire: () => openMarketplace({ view: "browse" }),
-                    channel: () => {
-                      const target = defaultIdRef.current;
-                      if (!target) return;
-                      openPanel(
-                        "agent-inspector",
-                        { agent: target, inspectorTab: "channels" },
-                        { pushUrl: true },
-                      );
-                    },
-                  }}
-                />
-              )}
             </div>
           </CommandPaletteProvider>
         </DesktopMessagingProvider>

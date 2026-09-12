@@ -77,9 +77,7 @@ describe("MessageList — tool results & sentinel stripping (#1425)", () => {
       <MessageList
         renderGroups={groupWithFoldedToolResult()}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     // Collapsed by default: the raw output is not on screen.
@@ -98,9 +96,7 @@ describe("MessageList — tool results & sentinel stripping (#1425)", () => {
       <MessageList
         renderGroups={groupWithSentinelProse()}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
     expect(screen.getByText(/Here is what I found/)).toBeInTheDocument();

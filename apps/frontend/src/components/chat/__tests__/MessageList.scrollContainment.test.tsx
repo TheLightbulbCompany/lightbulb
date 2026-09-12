@@ -45,9 +45,7 @@ function renderList(
       ref={ref}
       renderGroups={groups}
       isStreaming={false}
-      isTyping={false}
       agentName="Friday"
-      onOpenFile={() => {}}
     />,
   );
 }
@@ -72,9 +70,7 @@ describe("MessageList scroll containment", () => {
       <MessageList
         renderGroups={[userGroup("g1", "hi"), userGroup("g2", "again")]}
         isStreaming={false}
-        isTyping={false}
         agentName="Friday"
-        onOpenFile={() => {}}
       />,
     );
 
@@ -130,7 +126,6 @@ describe("MessageList scroll throttling", () => {
       <MessageList
         renderGroups={[streamGroup(text)]}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -158,7 +153,6 @@ describe("MessageList scroll throttling", () => {
       <MessageList
         renderGroups={[streamGroup("chunk chunk")]}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -182,7 +176,6 @@ describe("MessageList scroll throttling", () => {
       <MessageList
         renderGroups={[streamGroup("chunk chunk")]}
         isStreaming
-        isTyping={false}
         agentName="Friday"
       />,
     );
@@ -204,7 +197,6 @@ describe("MessageList scroll throttling", () => {
         <MessageList
           renderGroups={[streamGroup(text)]}
           isStreaming
-          isTyping={false}
           agentName="Friday"
         />,
       );

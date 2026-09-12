@@ -25,20 +25,18 @@ import { RoomHeader } from "./RoomHeader";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
+import { RoomIntro } from "./RoomIntro";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
-import { buildTimeline, linkifyMentions, parseMentionHref } from "@lightbulb/shared";
+import { buildTimeline, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
-import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
   DirectoryParticipant,
   RoomMessage,
   RoomParticipant,
-  RoomRunView,
   RoomState,
-  RoomSummary,
   WorkState,
 } from "./types";
 import "./messaging.css";
@@ -86,7 +84,6 @@ export interface RoomPanelProps {
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
-  narrow?: boolean;
   resourceSource?: RoomResourceSource;
 }
 
@@ -238,7 +235,6 @@ function RoomContent({
   onSteerRun,
   onLinkToWork,
   onDownloadAttachment,
-  narrow,
   resourceSource,
 }: RoomPanelProps) {
   const id = useId();
@@ -310,8 +306,7 @@ function RoomContent({
     }
   }
   const historyRef = useRef<HTMLDivElement>(null);
-  const viewportNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
-  const isNarrow = narrow ?? viewportNarrow;
+  const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
@@ -439,7 +434,7 @@ function RoomContent({
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={replies.length} lastReplyAt={lastReply?.createdAt}
-      highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}
+      highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
@@ -569,7 +564,8 @@ function RoomContent({
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
-          empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+          leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
+          empty={null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}

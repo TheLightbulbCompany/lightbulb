@@ -385,15 +385,6 @@ describe("AgentRoster rendering", () => {
     });
     expect(rowNames()).toEqual(["Broken", "Ada"]);
   });
-
-  it("nests the session list under the active row only", () => {
-    renderRoster([entry("a", "Ada", "idle"), entry("b", "Bo", "idle")], {
-      activeAgentId: "a",
-      renderSessions: (id: string) => <div data-testid={`sessions-${id}`} />,
-    });
-    expect(screen.getByTestId("sessions-a")).toBeInTheDocument();
-    expect(screen.queryByTestId("sessions-b")).not.toBeInTheDocument();
-  });
 });
 
 describe("collapsedRoster", () => {

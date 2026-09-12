@@ -1,6 +1,6 @@
-import type { RoomSummary } from "./types";
+import type { RoomSummary } from "@lightbulb/shared";
 
-export type NavigationDirection = 1 | -1;
+type NavigationDirection = 1 | -1;
 type NavigableRoom = Pick<RoomSummary, "roomId" | "unreadCount" | "muted">;
 
 /** A room the "next unread" jumps count: unread, and not muted. */

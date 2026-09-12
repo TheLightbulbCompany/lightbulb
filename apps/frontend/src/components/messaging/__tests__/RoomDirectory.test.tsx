@@ -9,6 +9,11 @@ import type { DirectoryParticipant, DirectoryRoom } from "../types";
 const friday: DirectoryParticipant = { kind: "agent", id: "friday", displayName: "Friday", mentionHandle: null, agentActivity: "running" };
 const alice: DirectoryParticipant = { kind: "human", id: "alice", displayName: "Alice", mentionHandle: null };
 const atlas: DirectoryParticipant = { kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: "atlas" };
+// Manage sections moved from a masthead icon into the sidebar options menu.
+const openManageSections = async () => {
+  await userEvent.click(screen.getByRole("button", { name: "Sidebar options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Manage sections" }));
+};
 const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch", roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null, participants: [] };
 
 it("creates through a centered portal with member settings and closes on success", async () => {
@@ -82,7 +87,8 @@ it("marks a conversation unread and navigates to the next unread conversation", 
       { ...base, roomId: "second-unread", name: "Second unread", unreadCount: 1 },
     ]} />);
 
-  fireEvent.click(screen.getByRole("button", { name: "Next unread conversation" }));
+  await user.click(screen.getByRole("button", { name: "Sidebar options" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Jump to next unread" }));
   expect(onSelectRoom).toHaveBeenCalledWith("first-unread");
   await user.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
   await user.click(await screen.findByRole("menuitem", { name: "Mark unread" }));
@@ -111,22 +117,37 @@ it("shows mark-unread progress and lets the user retry a failure", async () => {
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
 });
 
-it("identifies agents without handles in People and agents", () => {
+it("lists every person and agent under Direct messages, once each, and opens the conversation on click", () => {
   const onSelectParticipant = vi.fn();
-  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[friday, alice]} onSelectRoom={vi.fn()} onSelectParticipant={onSelectParticipant} />);
-  fireEvent.click(screen.getByRole("button", { name: "People and agents" }));
-  expect(screen.getByText("Agent")).toBeInTheDocument();
-  expect(screen.getAllByText("Person")).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: /Friday.*Agent/ }));
-  fireEvent.click(screen.getByRole("button", { name: /Alice.*Person/ }));
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" onSelectRoom={vi.fn()} onSelectParticipant={onSelectParticipant}
+    rooms={[{ ...base, roomId: "atlas-dm", kind: "dm", name: null, participants: [atlas] }]} participants={[friday, alice, atlas]} />);
+  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  // Atlas already has a DM room, so he is the room row and not a second roster row.
+  expect(directMessages.getAllByRole("button", { name: /^Atlas/ })).toHaveLength(1);
+  // Friday (roster row) and Atlas (DM room row) are agents; Alice is not.
+  expect(directMessages.getAllByText("Agent")).toHaveLength(2);
+  fireEvent.click(directMessages.getByRole("button", { name: /^Friday/ }));
+  fireEvent.click(directMessages.getByRole("button", { name: /^Alice/ }));
   expect(onSelectParticipant).toHaveBeenNthCalledWith(1, friday);
   expect(onSelectParticipant).toHaveBeenNthCalledWith(2, alice);
+  expect(screen.queryByRole("button", { name: "People and agents" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 });
 
-it("shows a participant-selection error beside the open people directory", () => {
+it("marks people who are online with a presence dot, never agents", () => {
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    participants={[{ ...alice, online: true }, { ...alice, id: "bob", displayName: "Bob", online: false }, friday]} />);
+  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const aliceRow = directMessages.getByRole("button", { name: /^Alice/ });
+  expect(within(aliceRow).getByText("Online")).toBeInTheDocument();
+  expect(within(aliceRow).getByRole("img", { name: "Alice" }).parentElement).toHaveAttribute("data-presence", "online");
+  expect(within(directMessages.getByRole("button", { name: /^Bob/ })).queryByText("Online")).not.toBeInTheDocument();
+  expect(within(directMessages.getByRole("button", { name: /^Friday/ })).queryByText("Online")).not.toBeInTheDocument();
+});
+
+it("shows a participant-selection error under the heading", () => {
   render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice]} onSelectRoom={vi.fn()}
     onSelectParticipant={vi.fn()} creationError="Conversation could not be opened." />);
-  fireEvent.click(screen.getByRole("button", { name: "People and agents" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Conversation could not be opened.");
 });
 
@@ -296,12 +317,14 @@ it("sorts unread first when asked and remembers the choice per owner scope", asy
   const { unmount } = render(<RoomDirectory {...props} />);
   const names = () => screen.getAllByTitle(/^(Alpha|Zulu)$/).map((node) => node.textContent);
   expect(names()).toEqual(["Alpha", "Zulu"]);
-  await userEvent.selectOptions(screen.getByLabelText("Sort conversations"), "unread");
+  await userEvent.click(screen.getByRole("button", { name: "Sidebar options" }));
+  await userEvent.click(await screen.findByRole("menuitemradio", { name: "Unread first" }));
   expect(names()).toEqual(["Zulu", "Alpha"]);
   expect(window.localStorage.getItem("lightbulb.messaging.sidebar.org")).toContain('"sort":"unread"');
   unmount();
   render(<RoomDirectory {...props} />);
-  expect(screen.getByLabelText("Sort conversations")).toHaveValue("unread");
+  await userEvent.click(screen.getByRole("button", { name: "Sidebar options" }));
+  expect(await screen.findByRole("menuitemradio", { name: "Unread first" })).toHaveAttribute("aria-checked", "true");
 });
 
 it("collapses a group and keeps the collapse across a remount", async () => {
@@ -398,7 +421,7 @@ it("creates a section, renames it, and deletes it from the manage dialog", async
   const onSaveSections = vi.fn().mockResolvedValue(undefined);
   render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections} sections={[{ id: "s-1", name: "Ship" }]}
     rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  await openManageSections();
   const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
   await userEvent.type(within(dialog).getByLabelText("New section name"), "Admin");
   await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));
@@ -416,7 +439,7 @@ it("creates a section, renames it, and deletes it from the manage dialog", async
   // Saving closes the dialog, so the delete runs against a freshly opened one.
   // The mock never updates `sections`, so the row is still named "Ship".
   onSaveSections.mockClear();
-  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  await openManageSections();
   const reopened = await screen.findByRole("dialog", { name: "Manage sections" });
   await userEvent.click(within(reopened).getByRole("button", { name: "Delete Ship" }));
   const confirm = await within(reopened).findByRole("alert");
@@ -437,7 +460,7 @@ it("offers Move to <name> in the row menu right after that section is created, w
   const props = { ...sectionProps, onSaveSections, onSetPrefs };
   const { rerender } = render(<RoomDirectory {...props} sections={[]} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
 
-  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  await openManageSections();
   const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
   await userEvent.type(within(dialog).getByLabelText("New section name"), "Ops");
   await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));
@@ -470,21 +493,20 @@ it("moves a room into a section and back out from the row menu", async () => {
   expect(onSetPrefs).toHaveBeenLastCalledWith("plain", { sectionId: null });
 });
 
-it("returns focus to the Manage sections button when the dialog closes", async () => {
+it("returns focus to the sidebar options button when the Manage sections dialog closes", async () => {
   render(<RoomDirectory {...sectionProps} sections={[{ id: "s-1", name: "Ship" }]} rooms={[]} />);
-  const manage = screen.getByRole("button", { name: "Manage sections" });
-  await userEvent.click(manage);
+  await openManageSections();
   const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
   await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Manage sections" })).not.toBeInTheDocument());
-  expect(manage).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Sidebar options" })).toHaveFocus();
 });
 
 it("refuses to save, add or delete while a section name is blank", async () => {
   const onSaveSections = vi.fn().mockResolvedValue(undefined);
   render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections}
     sections={[{ id: "s-1", name: "Ship" }, { id: "s-2", name: "Admin" }]} rooms={[]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  await openManageSections();
   const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
   await userEvent.clear(within(dialog).getByLabelText("Rename Ship"));
   await userEvent.type(within(dialog).getByLabelText("New section name"), "Admin");
@@ -568,7 +590,7 @@ it("offers Leave on a channel only, and confirms before leaving", async () => {
 it("surfaces a failed section save without losing the edit", async () => {
   const onSaveSections = vi.fn().mockRejectedValue(new Error("Sections could not be saved."));
   render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections} sections={[]} rooms={[]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  await openManageSections();
   const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
   await userEvent.type(within(dialog).getByLabelText("New section name"), "Admin");
   await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));

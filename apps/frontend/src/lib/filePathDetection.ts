@@ -2,8 +2,11 @@
  * Detects file paths in agent message content and wraps them
  * in a custom markdown link format that the chat UI can intercept.
  *
- * Uses the custom scheme `isol8-file://` so the link renderer
- * can distinguish workspace file links from regular URLs.
+ * Uses the custom scheme `isol8-file://` to mark workspace file links as
+ * distinct from regular URLs. The reader side of that scheme
+ * (`isWorkspaceFileLink` / `extractFilePath`) went with MessageList's
+ * `onOpenFile` prop, which no caller ever passed — restore them from git
+ * history if a surface ever wires file links to a viewer again.
  */
 
 // Matches paths like: path/to/file.ext or ./path/to/file.ext
@@ -37,18 +40,4 @@ export function linkifyFilePaths(content: string): string {
     // Don't double-wrap if already inside a markdown link
     return `[${match}](isol8-file://${match})`;
   });
-}
-
-/**
- * Checks if a URL uses the isol8-file:// scheme.
- */
-export function isWorkspaceFileLink(href: string): boolean {
-  return href.startsWith("isol8-file://");
-}
-
-/**
- * Extracts the file path from an isol8-file:// URL.
- */
-export function extractFilePath(href: string): string {
-  return href.replace("isol8-file://", "");
 }

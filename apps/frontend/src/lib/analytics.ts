@@ -130,7 +130,11 @@ export type AnalyticsEvent =
   // MCP
   | "mcp_server_added"
   | "mcp_server_removed"
+  // Messaging
+  | "message_search_used"
   // Notifications
+  | "notification_clicked"
+  | "notification_shown"
   | "run_notification_clicked"
   | "run_notification_shown"
   // Plugins

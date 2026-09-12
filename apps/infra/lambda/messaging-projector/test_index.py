@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import unittest
 from unittest.mock import MagicMock, patch
@@ -480,6 +482,147 @@ class PushTests(unittest.TestCase):
             index._project_message(push_message())
         self.assertEqual(len(json.loads(urlopen.call_args.args[0].data)), 100)
         self.assertTrue(any("101" in line for line in logs.output))
+
+
+def capture_stdout(fn, *args, **kwargs) -> tuple[object, list[dict]]:
+    """Run fn, returning its result plus every printed line parsed as JSON."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(*args, **kwargs)
+    return result, [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+
+
+def metric_lines(lines: list[dict], name: str) -> list[dict]:
+    return [line for line in lines if name in line]
+
+
+class MetricsTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index.USERS_TABLE, index._ddb_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+        index.USERS_TABLE = USERS_TABLE
+        index._ddb_client = FakeDdb()
+
+    def tearDown(self):
+        index.MESSAGING_TABLE, index.USERS_TABLE, index._ddb_client = self.saved
+
+    def test_emit_metric_prints_one_well_formed_emf_line(self):
+        _, lines = capture_stdout(
+            index._emit_metric, "messaging.projector.push", 1, "Count", {"outcome": "ok"}
+        )
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line["messaging.projector.push"], 1)
+        self.assertEqual(line["env"], "test")
+        self.assertEqual(line["service"], "messaging-projector")
+        self.assertEqual(line["outcome"], "ok")
+        self.assertIsInstance(line["_aws"]["Timestamp"], int)
+        metric = line["_aws"]["CloudWatchMetrics"][0]
+        self.assertEqual(metric["Namespace"], "LightbulbAI")
+        self.assertEqual(metric["Metrics"], [{"Name": "messaging.projector.push", "Unit": "Count"}])
+        self.assertEqual(set(metric["Dimensions"][0]), {"env", "service", "outcome"})
+
+    def test_push_ok_emits_once_per_successful_expo_batch(self):
+        index._ddb_client = FakeDdb(push_world())
+        with patch.object(index, "_publish"), patch("index.urllib.request.urlopen"):
+            _, lines = capture_stdout(index._project_message, push_message())
+        outcomes = [line["outcome"] for line in metric_lines(lines, "messaging.projector.push")]
+        self.assertEqual(outcomes.count("ok"), 1)
+
+    def test_push_send_error_outcome_on_swallowed_exception(self):
+        index._ddb_client = FakeDdb(push_world())
+        with (
+            patch.object(index, "_publish"),
+            patch("index.urllib.request.urlopen", side_effect=OSError("boom")),
+        ):
+            _, lines = capture_stdout(index._project_message, push_message())
+        outcomes = [line["outcome"] for line in metric_lines(lines, "messaging.projector.push")]
+        self.assertIn("send_error", outcomes)
+        self.assertNotIn("ok", outcomes)
+
+    def test_push_capped_outcome_when_over_the_token_limit(self):
+        world = push_world(tokens={BOB_ID: [f"tok-{n}" for n in range(101)]})
+        index._ddb_client = FakeDdb(world)
+        with patch.object(index, "_publish"), patch("index.urllib.request.urlopen"):
+            _, lines = capture_stdout(index._project_message, push_message())
+        outcomes = [line["outcome"] for line in metric_lines(lines, "messaging.projector.push")]
+        self.assertIn("capped", outcomes)
+        self.assertIn("ok", outcomes)
+
+    def test_push_muted_outcome_and_muted_member_gets_no_expo_send(self):
+        index._ddb_client = FakeDdb(push_world(muted=(BOB_ID,)))
+        with patch.object(index, "_publish"), patch("index.urllib.request.urlopen") as urlopen:
+            _, lines = capture_stdout(index._project_message, push_message())
+        outcomes = [line["outcome"] for line in metric_lines(lines, "messaging.projector.push")]
+        self.assertIn("muted", outcomes)
+        sent = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual([m["to"] for m in sent], ["tok-carol"])
+
+    def test_token_read_error_outcome_on_users_table_fault(self):
+        class RaisingDdb(FakeDdb):
+            def get_item(self, **kwargs):
+                if "user_id" in kwargs["Key"]:
+                    raise RuntimeError("boom")
+                return super().get_item(**kwargs)
+
+        index._ddb_client = RaisingDdb()
+        with self.assertLogs(level="WARNING"):
+            tokens, lines = capture_stdout(index._push_tokens, USER_ID)
+        self.assertEqual(tokens, [])
+        outcomes = [line["outcome"] for line in metric_lines(lines, "messaging.projector.push")]
+        self.assertEqual(outcomes, ["token_read_error"])
+
+    def test_notify_latency_uses_elapsed_time_and_room_kind_dimension(self):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "channel"}}
+        )
+        message = message_item()
+        message["createdAt"] = "2020-01-01T00:00:00Z"
+        with patch.object(index, "_publish"):
+            _, lines = capture_stdout(index._project_message, message)
+        latency_lines = metric_lines(lines, "messaging.projector.notify.latency")
+        self.assertEqual(len(latency_lines), 1)
+        line = latency_lines[0]
+        self.assertEqual(line["room_kind"], "channel")
+        self.assertGreater(line["messaging.projector.notify.latency"], 0)
+        metric = line["_aws"]["CloudWatchMetrics"][0]
+        self.assertEqual(
+            metric["Metrics"], [{"Name": "messaging.projector.notify.latency", "Unit": "Milliseconds"}]
+        )
+
+    def test_notify_latency_not_emitted_on_edit_path(self):
+        old = message_item()
+        updated = {**old, "messageRevision": 1, "editedText": "changed", "editedAt": CREATED_AT, "deletedAt": None}
+        index._ddb_client = FakeDdb(
+            {(old["pk"], old["sk"]): updated, (f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY}}
+        )
+        with patch.object(index, "_publish"):
+            _, lines = capture_stdout(index._project_message, old)
+        self.assertEqual(metric_lines(lines, "messaging.projector.notify.latency"), [])
+
+    def test_notify_latency_parses_production_shaped_created_at(self):
+        # core.dynamodb.utc_now_iso() writes "+00:00" with microseconds and no
+        # "Z" -- confirm _parse_rfc3339 (shared with _require_timestamp) and
+        # the latency metric both handle that shape, not just the "Z" one.
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm"}}
+        )
+        message = message_item()
+        message["createdAt"] = "2020-01-01T00:00:00.123456+00:00"
+        with patch.object(index, "_publish"):
+            _, lines = capture_stdout(index._project_message, message)
+        latency_lines = metric_lines(lines, "messaging.projector.notify.latency")
+        self.assertEqual(len(latency_lines), 1)
+        self.assertGreater(latency_lines[0]["messaging.projector.notify.latency"], 0)
+
+    def test_emit_metric_never_raises_on_a_non_serializable_dimension(self):
+        class Unserializable:
+            pass
+
+        _, lines = capture_stdout(
+            index._emit_metric, "messaging.projector.push", 1, "Count", {"outcome": Unserializable()}
+        )
+        self.assertEqual(lines, [])
 
 
 class ReplayTests(unittest.TestCase):

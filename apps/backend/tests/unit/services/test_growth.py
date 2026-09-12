@@ -1,11 +1,13 @@
-"""derive(): the DECIDED metric set over fixture rows.
+"""derive(): the audit §6 metric set over synthetic billing + messaging rows.
 
-Fixture: 3 external owners + 1 internal.
-  ext_a  paid, container ready, 1 armed routine, autonomous successes in each of the
-         last 4 completed weeks -> activated + counts toward the headline bar
-  ext_b  paid, container ready, nightly-CEO only (must NOT count), one manual run
-  ext_c  expired trial, never ready
-  int_x  internal, paid, armed, running every week -> must be absent from external
+Fixture (NOW = Wed 2026-08-26; the current week bucket is 2026-08-24):
+  ext_a  paying, signed up 6 weeks ago, activated (5 human msgs over 2 days +
+         an agent reply inside its 7-day window), still messaging in week 4
+  ext_b  trial, signed up 6 weeks ago, 5 human messages but all on ONE day ->
+         NOT activated even though an agent replied
+  ext_c  trial (expired), signed up 6 weeks ago, plenty of human messages over
+         several days but NO agent message -> NOT activated
+  int_x  internal, paying, activated -> must be absent from every external number
 """
 
 import os
@@ -26,6 +28,30 @@ def _week(n_back: int) -> str:
     return monday.isoformat()
 
 
+def _ts(days_back: float) -> str:
+    return (NOW - timedelta(days=days_back)).isoformat().replace("+00:00", "Z")
+
+
+SIGNUP_DAYS_BACK = 41  # 6 weeks minus a day -> cohort week _week(6), window long closed
+
+
+def _msg(owner, room, kind, sender, at, *, dispatched=False):
+    return {
+        "pk": f"ROOM#{room}",
+        "sk": "MSG#00000000000000000001",
+        "ownerId": owner,
+        "roomId": room,
+        "author": {"kind": kind, "id": sender, "displayName": sender},
+        "createdAt": at,
+        "dispatchTargets": [{"agentId": "ag1"}] if dispatched else [],
+    }
+
+
+def _human_burst(owner, room, sender, start_days_back, *, n=5, spread_days=2):
+    """`n` human messages spread over `spread_days` distinct UTC days."""
+    return [_msg(owner, room, "human", sender, _ts(start_days_back - (i % spread_days))) for i in range(n)]
+
+
 def _fixture():
     billing = [
         {
@@ -33,175 +59,60 @@ def _fixture():
             "subscription_status": "active",
             "plan": "standard",
             "provider_choice": "chatgpt_oauth",
-            "created_at": "2026-07-01T00:00:00Z",
-            "nightly_ceo_armed_company": "c_a",
+            "created_at": _ts(SIGNUP_DAYS_BACK),
         },
         {
             "owner_id": "ext_b",
-            "subscription_status": "active",
-            "plan": "ultra_pro",
-            "provider_choice": "byo_key",
-            "created_at": "2026-08-20T00:00:00Z",
-            "nightly_ceo_opted_out": True,
+            "subscription_status": "trial_local",
+            "trial_end": int((NOW + timedelta(days=1)).timestamp()),
+            "created_at": _ts(SIGNUP_DAYS_BACK),
         },
         {
             "owner_id": "ext_c",
             "subscription_status": "trial_local",
             "trial_end": 1_700_000_000,
-            "created_at": "2026-08-20T00:00:00Z",
+            "created_at": _ts(SIGNUP_DAYS_BACK),
         },
         {
             "owner_id": "int_x",
             "subscription_status": "active",
-            "plan": "standard",
-            "provider_choice": "chatgpt_oauth",
-            "created_at": "2026-07-01T00:00:00Z",
+            "plan": "ultra_pro",
+            "provider_choice": "byo_key",
+            "created_at": _ts(SIGNUP_DAYS_BACK),
         },
     ]
-    containers = [
-        {"owner_id": "ext_a", "status": "running", "last_gateway_handshake_at": "2026-08-26T01:00:00Z"},
-        {"owner_id": "ext_b", "status": "running", "last_gateway_handshake_at": "2026-08-26T01:00:00Z"},
-        {"owner_id": "ext_c", "status": "stopped"},
-        {"owner_id": "int_x", "status": "running", "last_gateway_handshake_at": "2026-08-26T01:00:00Z"},
-    ]
-    paperclip = [
-        {
-            "user_id": "ext_a",
-            "company_id": "c_a",
-            "seeded_agent_ids": ["f"],
-            "status": "active",
-            "funnel_state": "complete",
-        },
-        {
-            "user_id": "ext_b",
-            "company_id": "c_b",
-            "seeded_agent_ids": ["f"],
-            "status": "active",
-            "funnel_state": "submitted",
-        },
-        {
-            "user_id": "ext_c",
-            "company_id": "c_c",
-            "seeded_agent_ids": ["f"],
-            "status": "active",
-            "funnel_state": "not_started",
-        },
-        {
-            "user_id": "u_int",
-            "org_id": "int_x",
-            "company_id": "c_x",
-            "seeded_agent_ids": ["f"],
-            "status": "active",
-            "funnel_state": "complete",
-        },
-        {"user_id": "__pending_brief__:zzz"},
-    ]
-    integrations = [
-        {"owner_id": "ext_a", "provider": "github", "status": "connected"},
-        {"owner_id": "ext_a", "provider": "stripe", "status": "connected"},
-        {"owner_id": "ext_b", "provider": "google", "status": "connected"},
-    ]
-    companies = [
-        {"id": "c_a", "name": "Alpha"},
-        {"id": "c_b", "name": "Beta"},
-        {"id": "c_c", "name": "Gamma"},
-        {"id": "c_x", "name": "Isol8"},
-    ]
-    old = "2026-06-01T00:00:00Z"
-    routines = [
-        {
-            "company_id": "c_a",
-            "id": "r1",
-            "title": "Daily report",
-            "status": "active",
-            "auto_paused": False,
-            "created_at": old,
-            "updated_at": old,
-            "has_enabled_trigger": True,
-            "trigger_kinds": "schedule",
-        },
-        {
-            "company_id": "c_a",
-            "id": "r2",
-            "title": "Old one",
-            "status": "archived",
-            "auto_paused": False,
-            "created_at": "2026-08-20T00:00:00Z",
-            "updated_at": "2026-08-22T00:00:00Z",
-            "has_enabled_trigger": False,
-            "trigger_kinds": None,
-        },
-        {
-            "company_id": "c_b",
-            "id": "r3",
-            "title": growth.NIGHTLY_CEO_ROUTINE_TITLE,
-            "status": "active",
-            "auto_paused": False,
-            "created_at": old,
-            "updated_at": old,
-            "has_enabled_trigger": True,
-            "trigger_kinds": "schedule",
-        },
-        {
-            "company_id": "c_b",
-            "id": "r4",
-            "title": "Broken",
-            "status": "paused",
-            "auto_paused": True,
-            "created_at": old,
-            "updated_at": "2026-08-10T00:00:00Z",
-            "has_enabled_trigger": True,
-            "trigger_kinds": "webhook",
-        },
-        {
-            "company_id": "c_x",
-            "id": "r5",
-            "title": "Internal",
-            "status": "active",
-            "auto_paused": False,
-            "created_at": old,
-            "updated_at": old,
-            "has_enabled_trigger": True,
-            "trigger_kinds": "schedule",
-        },
-    ]
-    runs = []
-    for back in range(0, 6):  # current week + 5 previous
-        runs.append({"company_id": "c_a", "week": _week(back), "kind": "autonomous", "ok": 2, "total": 3})
-        runs.append({"company_id": "c_x", "week": _week(back), "kind": "autonomous", "ok": 9, "total": 9})
-    runs.append({"company_id": "c_b", "week": _week(1), "kind": "nightly_ceo", "ok": 5, "total": 5})
-    runs.append({"company_id": "c_b", "week": _week(1), "kind": "human", "ok": 1, "total": 1})
-    first_autonomous = [
-        {"company_id": "c_a", "first_ok": "2026-07-10T00:00:00Z"},
-        {"company_id": "c_x", "first_ok": "2026-07-01T00:00:00Z"},
-    ]
-    runs_daily = [
-        {"company_id": "c_a", "day": "2026-08-25", "kind": "autonomous", "ok": 2, "total": 3},
-        {"company_id": "c_a", "day": "2026-08-24", "kind": "autonomous", "ok": 1, "total": 1},
+    messages = []
+    # ext_a: activates on day 2 of its window, then keeps messaging in week 4.
+    messages += _human_burst("ext_a", "r_a", "u_a", SIGNUP_DAYS_BACK - 1)
+    messages.append(_msg("ext_a", "r_a", "agent", "ag1", _ts(SIGNUP_DAYS_BACK - 2)))
+    messages.append(_msg("ext_a", "r_a", "human", "u_a", _ts(SIGNUP_DAYS_BACK - 28)))  # week 4 after activation
+    # ext_b: five messages, one day only.
+    messages += _human_burst("ext_b", "r_b", "u_b", SIGNUP_DAYS_BACK - 1, spread_days=1)
+    messages.append(_msg("ext_b", "r_b", "agent", "ag1", _ts(SIGNUP_DAYS_BACK - 2)))
+    # ext_c: humans over 3 days, never an agent.
+    messages += _human_burst("ext_c", "r_c", "u_c", SIGNUP_DAYS_BACK - 1, n=6, spread_days=3)
+    # int_x: activated, must never leak into external.
+    messages += _human_burst("int_x", "r_x", "u_x", SIGNUP_DAYS_BACK - 1)
+    messages.append(_msg("int_x", "r_x", "agent", "ag1", _ts(SIGNUP_DAYS_BACK - 2)))
+    rooms = [
+        {"pk": "ROOM#r_a", "sk": "META", "ownerId": "ext_a", "roomId": "r_a"},
+        {"pk": "ROOM#r_b", "sk": "META", "ownerId": "ext_b", "roomId": "r_b"},
+        {"pk": "ROOM#r_c", "sk": "META", "ownerId": "ext_c", "roomId": "r_c"},
+        {"pk": "ROOM#r_x", "sk": "META", "ownerId": "int_x", "roomId": "r_x"},
     ]
     gate_blocked = {
         "totals": [{"code": "trial_expired", "n": 7}],
         "daily": [{"day": "2026-08-25", "code": "trial_expired", "n": 7}],
     }
-    posthog_runs = [[_week(1), "autonomous", 2], [_week(1), "human", 10]]
-    posthog_funnel = [[_week(1), "trial_started", 4]]
-    posthog_funnel_daily = [["2026-08-25", "trial_started", 1]]
-    posthog_sources = [["reddit.com", 3], ["direct", 2]]
     return dict(
         billing=billing,
-        containers=containers,
-        paperclip=paperclip,
-        integrations=integrations,
-        companies=companies,
-        routines=routines,
-        runs=runs,
-        first_autonomous=first_autonomous,
+        messages=messages,
+        rooms=rooms,
         gate_blocked=gate_blocked,
-        posthog_runs=posthog_runs,
-        posthog_funnel=posthog_funnel,
-        posthog_sources=posthog_sources,
-        runs_daily=runs_daily,
-        posthog_funnel_daily=posthog_funnel_daily,
+        dlq_depth=4,
+        posthog_funnel=[[_week(1), "trial_started", 4]],
+        posthog_sources=[["reddit.com", 3], ["direct", 2]],
+        posthog_funnel_daily=[["2026-08-25", "trial_started", 1]],
         internal={"int_x"},
         now=NOW,
     )
@@ -216,164 +127,246 @@ def test_week_of_is_monday():
 def test_segments_exclude_internal_from_external():
     out = growth.derive(**_fixture())
     ext, intl = out["segments"]["external"], out["segments"]["internal"]
-    assert ext["owners"]["total"] == 3 and intl["owners"]["total"] == 1
-    assert "int_x" not in [o["owner_id"] for o in ext["activation"]["owners"]]
+    assert ext["workspaces"]["total"] == 3 and intl["workspaces"]["total"] == 1
+    assert ext["messaging"]["rooms"] == 3 and intl["messaging"]["rooms"] == 1
+    assert ext["activation"]["activated"] == 1  # ext_a only — int_x is not here
+    assert intl["activation"]["activated"] == 1
 
 
-def test_owner_counts_and_signups():
-    ext = growth.derive(**_fixture())["segments"]["external"]["owners"]
-    assert ext["paid"] == 2 and ext["paid_by_plan"] == {"standard": 1, "ultra_pro": 1}
-    assert ext["trial_active"] == 0 and ext["trial_expired"] == 1
-    assert ext["paid_by_provider"] == {"chatgpt_oauth": 1, "byo_key": 1}
-    assert {"week": "2026-08-17", "n": 2} in ext["signups_by_week"]
-
-
-def test_activation_stages():
-    ext = growth.derive(**_fixture())["segments"]["external"]["activation"]
-    by_owner = {o["owner_id"]: o for o in ext["owners"]}
-    assert by_owner["ext_a"]["stage"] == "first_autonomous_success"
-    assert by_owner["ext_b"]["stage"] == "container_ready"  # kickoff FAILED, and nightly CEO does not count as armed
-    assert by_owner["ext_b"]["onboarding_state"] == "submitted"
-    assert by_owner["ext_c"]["stage"] == "signed_up"
-    assert by_owner["ext_a"]["name"] == "Alpha"
-    assert ext["stages"] == {
-        "signed_up": 3,
-        "subscribed": 2,
-        "container_ready": 2,
-        "onboarding_complete": 1,
-        "automation_armed": 1,
-        "first_autonomous_success": 1,
-    }
-    assert ext["flags"] == {
-        "subscribed": 2,
-        "container_ready": 2,
-        "onboarding_complete": 1,
-        "automation_armed": 1,
-        "first_autonomous_success": 1,
-    }
-
-
-def test_activation_flags_are_order_independent_of_the_stage_ladder():
-    """ext_b's kickoff FAILED, so the ladder stops at container_ready — but if
-    ext_b's company later gets an armed routine anyway, the order-independent
-    flag must say so even though the ladder still stops short."""
+def test_paying_workspaces_and_signup_cohorts():
+    """§6 metric 4: paying is `subscription_status == "active"` — `trialing` is not."""
     fx = _fixture()
-    fx["routines"].append(
-        {
-            "company_id": "c_b",
-            "id": "r6",
-            "title": "Armed despite failed kickoff",
-            "status": "active",
-            "auto_paused": False,
-            "created_at": "2026-08-20T00:00:00Z",
-            "updated_at": "2026-08-20T00:00:00Z",
-            "has_enabled_trigger": True,
-            "trigger_kinds": "schedule",
-        }
+    fx["billing"].append(
+        {"owner_id": "ext_d", "subscription_status": "trialing", "plan": "standard", "created_at": _ts(2)}
     )
-    fx["first_autonomous"].append({"company_id": "c_b", "first_ok": "2026-08-21T00:00:00Z"})
-    ext = growth.derive(**fx)["segments"]["external"]["activation"]
-    assert ext["stages"]["automation_armed"] == 1
-    assert ext["flags"]["automation_armed"] == 2
+    ext = growth.derive(**fx)["segments"]["external"]
+    assert ext["workspaces"]["paying"] == 1
+    assert ext["workspaces"]["paying_by_plan"] == {"standard": 1}
+    assert ext["workspaces"]["trial_active"] == 1 and ext["workspaces"]["trial_expired"] == 1
+    cohort = next(c for c in ext["cohorts"] if c["week"] == _week(6))
+    assert cohort == {"week": _week(6), "signups": 3, "measurable": 3, "activated": 1, "paying": 1}
 
 
-def test_org_owner_onboarding_state_comes_from_the_owner_row_regardless_of_scan_order():
-    """A DynamoDB scan has no ordering guarantee: an org member's row (no
-    funnel_state) must never beat the owner's row (has funnel_state)
-    for that owner's onboarding outcome, no matter which row the scan yields first."""
-    owner_row = {
-        "user_id": "u_owner",
-        "org_id": "int_x",
-        "company_id": "c_x",
-        "seeded_agent_ids": ["f"],
-        "status": "active",
-        "funnel_state": "complete",
-    }
-    member_row = {
-        "user_id": "u_member",
-        "org_id": "int_x",
-        "company_id": "c_x",
-        "seeded_agent_ids": ["f"],
-        "status": "active",
-    }
-    for org_rows in ([member_row, owner_row], [owner_row, member_row]):
-        fx = _fixture()
-        fx["paperclip"] = [r for r in fx["paperclip"] if r.get("org_id") != "int_x"] + org_rows
-        internal = growth.derive(**fx)["segments"]["internal"]["activation"]
-        by_owner = {o["owner_id"]: o for o in internal["owners"]}
-        assert by_owner["int_x"]["onboarding_state"] == "complete"
-        assert by_owner["int_x"]["stage"] == "first_autonomous_success"
+def test_activation_needs_both_conditions():
+    """Five messages on one day is not activation; messages without an agent
+    reply is not activation. Both conditions, or the workspace is not activated."""
+    ext = growth.derive(**_fixture())["segments"]["external"]["activation"]
+    assert ext == {"activated": 1, "measurable": 3, "rate": 1 / 3}
 
 
-def test_company_owner_resolution_prefers_starter_identity_row():
+def test_activation_is_workspace_scoped_not_per_sender():
+    """Controller ruling: the workspace's humans count TOGETHER. Two people
+    sending three messages each across two days activates it; one person
+    sending four does not, however the messages are spread."""
     fx = _fixture()
-    fx["paperclip"] = [row for row in fx["paperclip"] if row.get("company_id") != "c_a"] + [
-        {"user_id": "wrong", "org_id": "wrong_org", "company_id": "c_a", "status": "active"},
-        {
-            "user_id": "owner",
-            "org_id": "ext_a",
-            "company_id": "c_a",
-            "starter_agent_ids": {"ceo": "agent-ceo"},
-            "status": "active",
-            "funnel_state": "complete",
-        },
+    fx["billing"] = [
+        {"owner_id": "ext_two", "subscription_status": "trial_local", "created_at": _ts(SIGNUP_DAYS_BACK)},
+        {"owner_id": "ext_one", "subscription_status": "trial_local", "created_at": _ts(SIGNUP_DAYS_BACK)},
     ]
+    day_a, day_b = SIGNUP_DAYS_BACK - 1, SIGNUP_DAYS_BACK - 2
+    fx["messages"] = [
+        # ext_two: 3 + 3 from two humans, over two distinct UTC days.
+        *(_msg("ext_two", "r2", "human", "u_1", _ts(d)) for d in (day_a, day_a, day_b)),
+        *(_msg("ext_two", "r2", "human", "u_2", _ts(d)) for d in (day_a, day_b, day_b)),
+        _msg("ext_two", "r2", "agent", "ag1", _ts(day_b)),
+        # ext_one: a single human, four messages, two days — one short.
+        *(_msg("ext_one", "r1", "human", "u_3", _ts(d)) for d in (day_a, day_a, day_b, day_b)),
+        _msg("ext_one", "r1", "agent", "ag1", _ts(day_b)),
+    ]
+    seg = growth.derive(**fx)["segments"]["external"]
+    assert seg["activation"] == {"activated": 1, "measurable": 2, "rate": 0.5}
+    by_week = {c["week"]: c for c in seg["cohorts"]}
+    assert by_week[_week(6)]["activated"] == 1
 
-    owners = growth.derive(**fx)["segments"]["external"]["activation"]["owners"]
-    assert {owner["owner_id"] for owner in owners} >= {"ext_a"}
-    assert "wrong_org" not in {owner["owner_id"] for owner in owners}
+
+def test_activation_ignores_messages_outside_the_seven_day_window():
+    fx = _fixture()
+    # Push ext_b's agent reply 10 days past signup: the human side still fails
+    # (one day), so move its burst to 2 days as well and keep only the agent late.
+    fx["messages"] = [m for m in fx["messages"] if m["ownerId"] != "ext_b"]
+    fx["messages"] += _human_burst("ext_b", "r_b", "u_b", SIGNUP_DAYS_BACK - 1)
+    fx["messages"].append(_msg("ext_b", "r_b", "agent", "ag1", _ts(SIGNUP_DAYS_BACK - 10)))
+    assert growth.derive(**fx)["segments"]["external"]["activation"]["activated"] == 1
+    # Same agent reply inside the window activates it.
+    fx["messages"][-1] = _msg("ext_b", "r_b", "agent", "ag1", _ts(SIGNUP_DAYS_BACK - 6))
+    assert growth.derive(**fx)["segments"]["external"]["activation"]["activated"] == 2
 
 
-def test_north_star_excludes_nightly_and_headline_four_weeks():
+def test_activation_denominator_excludes_an_open_window():
+    """A workspace that signed up yesterday has not failed activation yet."""
+    fx = _fixture()
+    fx["billing"].append({"owner_id": "ext_new", "subscription_status": "trial_local", "created_at": _ts(1)})
+    ext = growth.derive(**fx)["segments"]["external"]["activation"]
+    assert ext["measurable"] == 3 and ext["rate"] == 1 / 3
+
+
+def test_weekly_active_and_multiplayer_share():
+    fx = _fixture()
+    # This week: ext_a has two distinct human senders, ext_b has one.
+    fx["messages"] += [
+        _msg("ext_a", "r_a", "human", "u_a", _ts(0.5)),
+        _msg("ext_a", "r_a", "human", "u_a2", _ts(0.4)),
+        _msg("ext_b", "r_b", "human", "u_b", _ts(0.3)),
+        _msg("ext_a", "r_a", "agent", "ag1", _ts(0.2)),  # agents never make a week "active"
+    ]
+    weeks = {w["week"]: w for w in growth.derive(**fx)["segments"]["external"]["weekly_active"]}
+    assert weeks[_week(0)] == {"week": _week(0), "workspaces": 2, "multiplayer": 1, "multiplayer_share": 0.5}
+    assert weeks[_week(1)] == {"week": _week(1), "workspaces": 0, "multiplayer": 0, "multiplayer_share": None}
+
+
+def test_weekly_active_respects_the_utc_week_boundary():
+    """Monday 00:00Z opens a new bucket; the Sunday before it does not."""
+    fx = _fixture()
+    fx["messages"] = [
+        _msg("ext_a", "r_a", "human", "u_a", "2026-08-23T23:59:59Z"),  # Sunday -> week 2026-08-17
+        _msg("ext_b", "r_b", "human", "u_b", "2026-08-24T00:00:00Z"),  # Monday -> week 2026-08-24
+    ]
+    weeks = {w["week"]: w["workspaces"] for w in growth.derive(**fx)["segments"]["external"]["weekly_active"]}
+    assert weeks["2026-08-17"] == 1 and weeks["2026-08-24"] == 1
+
+
+def test_answered_rate_and_p50_over_the_120s_window():
+    fx = _fixture()
+    base = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+
+    def at(seconds):
+        return (base + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    fx["messages"] = [
+        # answered in 30s
+        _msg("ext_a", "r1", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r1", "agent", "ag1", at(30)),
+        # answered exactly at the boundary
+        _msg("ext_a", "r2", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r2", "agent", "ag1", at(120)),
+        # one second late -> not answered
+        _msg("ext_a", "r3", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r3", "agent", "ag1", at(121)),
+        # an agent reply in ANOTHER room does not answer this one
+        _msg("ext_a", "r4", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r5", "agent", "ag1", at(5)),
+        # no dispatch target -> not counted at all
+        _msg("ext_a", "r6", "human", "u_a", at(0)),
+    ]
+    ext = growth.derive(**fx)["segments"]["external"]["answered"]
+    assert ext == {"dispatched": 4, "answered": 2, "rate": 0.5, "p50_reply_s": 75.0}
+
+
+def test_answered_ignores_an_agent_message_that_precedes_the_human():
+    """An agent turn already in the room before the request is not its reply."""
+    fx = _fixture()
+    base = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+
+    def at(seconds):
+        return (base + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    fx["messages"] = [
+        _msg("ext_a", "r1", "agent", "ag1", at(-30)),
+        _msg("ext_a", "r1", "human", "u_a", at(0), dispatched=True),
+    ]
+    assert growth.derive(**fx)["segments"]["external"]["answered"] == {
+        "dispatched": 1,
+        "answered": 0,
+        "rate": 0.0,
+        "p50_reply_s": None,
+    }
+
+
+def test_answered_measures_the_next_agent_message_not_a_later_one():
+    """Two agent turns follow the request: the latency is the FIRST one's. A
+    later reply must not be able to rescue a request the next one already missed."""
+    fx = _fixture()
+    base = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+
+    def at(seconds):
+        return (base + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    fx["messages"] = [
+        _msg("ext_a", "r1", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r1", "agent", "ag1", at(20)),
+        _msg("ext_a", "r1", "agent", "ag1", at(300)),
+        # r2: the next agent message is late, and a much later one cannot save it.
+        _msg("ext_a", "r2", "human", "u_a", at(0), dispatched=True),
+        _msg("ext_a", "r2", "agent", "ag1", at(200)),
+        _msg("ext_a", "r2", "agent", "ag1", at(400)),
+    ]
+    assert growth.derive(**fx)["segments"]["external"]["answered"] == {
+        "dispatched": 2,
+        "answered": 1,
+        "rate": 0.5,
+        "p50_reply_s": 20.0,
+    }
+
+
+def test_answered_is_zero_not_none_when_nothing_was_dispatched():
+    fx = _fixture()
+    fx["messages"] = [_msg("ext_a", "r1", "human", "u_a", _ts(1))]
+    ext = growth.derive(**fx)["segments"]["external"]["answered"]
+    assert ext == {"dispatched": 0, "answered": 0, "rate": None, "p50_reply_s": None}
+
+
+def test_week4_retention_counts_only_completed_fourth_weeks():
+    out = growth.derive(**_fixture())["segments"]["external"]["retention_w4"]
+    assert out == {"eligible": 1, "retained": 1, "rate": 1.0}
+
+
+def test_week4_retention_misses_a_silent_workspace():
+    fx = _fixture()
+    fx["messages"] = [m for m in fx["messages"] if m["createdAt"] != _ts(SIGNUP_DAYS_BACK - 28)]
+    assert growth.derive(**fx)["segments"]["external"]["retention_w4"] == {
+        "eligible": 1,
+        "retained": 0,
+        "rate": 0.0,
+    }
+
+
+def test_week4_retention_skips_an_activation_too_recent_to_judge():
+    fx = _fixture()
+    fx["billing"] = [{"owner_id": "ext_n", "subscription_status": "trial_local", "created_at": _ts(8)}]
+    fx["messages"] = _human_burst("ext_n", "r_n", "u_n", 7) + [_msg("ext_n", "r_n", "agent", "ag1", _ts(6))]
+    seg = growth.derive(**fx)["segments"]["external"]
+    assert seg["activation"]["activated"] == 1
+    assert seg["retention_w4"] == {"eligible": 0, "retained": 0, "rate": None}
+
+
+def test_messaging_card_counts_rooms_and_human_messages_this_week():
+    fx = _fixture()
+    fx["messages"] += [
+        _msg("ext_a", "r_a", "human", "u_a", _ts(0.5)),
+        _msg("ext_a", "r_a", "agent", "ag1", _ts(0.4)),  # agents are not counted
+    ]
+    ext = growth.derive(**fx)["segments"]["external"]["messaging"]
+    assert ext == {"rooms": 3, "human_messages_this_week": 1}
+
+
+def test_daily_series_are_continuous_and_segmented():
     out = growth.derive(**_fixture())
-    ext = out["segments"]["external"]
-    last_completed = next(w for w in ext["north_star"]["weeks"] if w["week"] == _week(1))
-    assert last_completed == {
-        "week": _week(1),
-        "owners_active": 1,
-        "autonomous_ok": 2,
-        "human_ok": 1,
-        "nightly_ok": 5,
-        "autonomous_share": 2 / 3,
-    }
-    assert ext["headline"] == {
-        "bar": 5,
-        "count": 1,
-        "owners": ["Alpha"],
-        "weeks": [_week(4), _week(3), _week(2), _week(1)],
-    }
-    assert out["segments"]["internal"]["headline"]["owners"] == ["Isol8"]
+    daily = out["segments"]["external"]["daily"]
+    for key in ("signups", "human_messages", "activated"):
+        assert len(daily[key]) == growth.WINDOW_DAYS
+        assert [r["day"] for r in daily[key]] == sorted(r["day"] for r in daily[key])
+    assert sum(r["n"] for r in daily["signups"]) == 3
+    assert sum(r["n"] for r in daily["activated"]) == 1
+    assert sum(r["n"] for r in out["segments"]["internal"]["daily"]["activated"]) == 1
 
 
-def test_retention_survival_and_depth():
-    ext = growth.derive(**_fixture())["segments"]["external"]
-    assert ext["retention"]["automation_survival"] == {"armed": 1, "paused_manual": 0, "auto_paused": 1, "archived": 0}
-    assert ext["depth"]["armed_per_owner"] == [
-        {"owner_id": "ext_a", "name": "Alpha", "armed": 1, "trigger_kinds": ["schedule"]}
+def test_malformed_message_rows_are_skipped_not_fatal():
+    fx = _fixture()
+    fx["messages"] += [
+        {"ownerId": "ext_a", "roomId": "r_a", "author": {"kind": "human", "id": "u"}},  # no createdAt
+        {"ownerId": "ext_a", "roomId": "r_a", "createdAt": _ts(1)},  # no author
+        _msg("ext_a", "r_a", "system", "sys", _ts(0.5)),  # system is neither human nor agent
+        _msg("ext_a", None, "human", "u_a", _ts(0.5)),  # no room
     ]
-    assert ext["depth"]["providers_per_owner"] == [
-        {"owner_id": "ext_a", "name": "Alpha", "providers": ["github", "stripe"]},
-        {"owner_id": "ext_b", "name": "Beta", "providers": ["google"]},
-    ]
-
-
-def test_counters_and_nightly():
-    ext = growth.derive(**_fixture())["segments"]["external"]
-    assert ext["counters"]["auto_paused"] == [
-        {"owner_id": "ext_b", "name": "Beta", "title": "Broken", "since": "2026-08-10T00:00:00Z"}
-    ]
-    assert ext["counters"]["archived_within_7d"] == [{"owner_id": "ext_a", "name": "Alpha", "title": "Old one"}]
-    assert ext["nightly_ceo"] == {"armed": 1, "opted_out": 1, "never_armed": 0}
+    ext = growth.derive(**fx)["segments"]["external"]
+    assert ext["messaging"]["human_messages_this_week"] == 0
 
 
 def test_top_level_crosschecks_pass_through():
     out = growth.derive(**_fixture())
     assert out["gate_blocked_7d"] == [{"code": "trial_expired", "n": 7}]
     assert out["gate_blocked_daily"] == [{"day": "2026-08-25", "code": "trial_expired", "n": 7}]
-    assert out["posthog"]["runs"] == [
-        {"week": _week(1), "kind": "autonomous", "n": 2},
-        {"week": _week(1), "kind": "human", "n": 10},
-    ]
+    assert out["dlq_depth"] == 4
     assert out["posthog"]["funnel"] == [{"week": _week(1), "event": "trial_started", "owners": 4}]
     assert out["posthog"]["funnel_daily"] == [{"day": "2026-08-25", "event": "trial_started", "owners": 1}]
     assert out["posthog"]["signup_sources"] == [
@@ -383,234 +376,154 @@ def test_top_level_crosschecks_pass_through():
     assert out["window_weeks"] == 8 and out["generated_at"].startswith("2026-08-26")
 
 
-def test_gate_blocked_daily_passes_through():
-    fx = _fixture()
-    out = growth.derive(**fx)
-    assert out["gate_blocked_7d"] == fx["gate_blocked"]["totals"]
-    assert out["gate_blocked_daily"] == fx["gate_blocked"]["daily"]
-
-
 def test_funnel_daily_excludes_days_outside_the_axis_window():
     """HOGQL_FUNNEL_DAILY's query window (WINDOW_WEEKS+1 weeks) is wider than the
     WINDOW_DAYS axis -- a row outside `days` must be dropped, not leaked through."""
     fx = _fixture()
     out_of_window_day = (NOW.date() - timedelta(days=growth.WINDOW_DAYS + 3)).isoformat()
     fx["posthog_funnel_daily"].append([out_of_window_day, "trial_started", 5])
-    out = growth.derive(**fx)
-    days = {r["day"] for r in out["posthog"]["funnel_daily"]}
-    assert out_of_window_day not in days
-    assert "2026-08-25" in days
+    days = {r["day"] for r in growth.derive(**fx)["posthog"]["funnel_daily"]}
+    assert out_of_window_day not in days and "2026-08-25" in days
 
 
-def test_daily_runs_series_is_continuous_and_segmented():
-    fx = _fixture()
-    fx["runs_daily"].append({"company_id": "c_x", "day": "2026-08-25", "kind": "autonomous", "ok": 9, "total": 9})
-    out = growth.derive(**fx)
-    ext_daily = out["segments"]["external"]["daily"]["runs"]
-    assert len(ext_daily) == growth.WINDOW_DAYS
-    assert [r["day"] for r in ext_daily] == sorted(r["day"] for r in ext_daily)
-    by_day = {r["day"]: r for r in ext_daily}
-    assert by_day["2026-08-25"]["autonomous_ok"] == 2  # c_x's 9 (internal) must not leak in
-    assert by_day["2026-08-24"]["autonomous_ok"] == 1
-    other_days = [r for d, r in by_day.items() if d not in ("2026-08-25", "2026-08-24")]
-    assert all(r == {"day": r["day"], "autonomous_ok": 0, "human_ok": 0, "nightly_ok": 0} for r in other_days)
-    int_by_day = {r["day"]: r for r in out["segments"]["internal"]["daily"]["runs"]}
-    assert int_by_day["2026-08-25"]["autonomous_ok"] == 9
+def _patched_sources(fx, **overrides):
+    reads = {
+        "core.repositories.billing_repo.scan_all": AsyncMock(return_value=fx["billing"]),
+        "core.repositories.messaging_repo.scan_growth_rows": AsyncMock(return_value=(fx["messages"], fx["rooms"])),
+        "core.services.posthog_admin.hogql": AsyncMock(
+            return_value={"columns": [], "results": [], "stubbed": False, "error": None}
+        ),
+        "core.services.ops.gate_blocked.last_7d": AsyncMock(return_value={}),
+        "core.services.ops.dlq.work_dlq_depth": AsyncMock(return_value=0),
+        "core.services.run_analytics.resolve_internal_owner": AsyncMock(side_effect=lambda o: o == "int_x"),
+    }
+    reads.update(overrides)
+    return [patch(target, value) for target, value in reads.items()]
 
 
-def test_daily_signups_bucket_by_day():
-    fx = _fixture()
-    fx["billing"] = [
-        {
-            "owner_id": "ext_d",
-            "subscription_status": "trial_local",
-            "trial_end": 0,
-            "created_at": "2026-08-10T00:00:00Z",
-        }
-    ]
-    out = growth.derive(**fx)
-    by_day = {r["day"]: r["n"] for r in out["segments"]["external"]["daily"]["signups"]}
-    assert by_day["2026-08-10"] == 1
-    assert all(n == 0 for d, n in by_day.items() if d != "2026-08-10")
-
-
-def test_never_armed_counts_paid_owners_with_no_nightly_marker():
-    fx = _fixture()
-    fx["billing"].append(
-        {"owner_id": "ext_d", "subscription_status": "active", "plan": "standard", "created_at": "2026-08-01T00:00:00Z"}
-    )
-    ext = growth.derive(**fx)["segments"]["external"]
-    assert ext["nightly_ceo"] == {"armed": 1, "opted_out": 1, "never_armed": 1}
-
-
-def test_survival_handles_space_separated_zoneless_timestamp():
-    """Data API renders Postgres timestamptz as 'YYYY-MM-DD HH:MM:SS.ffffff' — no zone."""
-    fx = _fixture()
-    for r in fx["routines"]:
-        if r["id"] == "r1":
-            r["created_at"] = "2026-06-01 00:00:00.000000"
-    out = growth.derive(**fx)
-    assert out["segments"]["external"]["retention"]["automation_survival"]["armed"] == 1
-
-
-def test_archived_routine_with_none_updated_at_is_skipped():
-    """A malformed/incomplete row (missing updated_at) must not crash the whole
-    computation -- it's simply invisible to the archived-within-7d counter."""
-    fx = _fixture()
-    fx["routines"].append(
-        {
-            "company_id": "c_a",
-            "id": "r7",
-            "title": "No updated_at",
-            "status": "archived",
-            "auto_paused": False,
-            "created_at": "2026-08-20T00:00:00Z",
-            "updated_at": None,
-            "has_enabled_trigger": False,
-            "trigger_kinds": None,
-        }
-    )
-    ext = growth.derive(**fx)["segments"]["external"]
-    titles = [r["title"] for r in ext["counters"]["archived_within_7d"]]
-    assert "No updated_at" not in titles
-    assert "Old one" in titles  # the existing archived row still counts
+async def _compute_with(fx, **overrides):
+    growth._cache = None
+    patches = _patched_sources(fx, **overrides)
+    for p in patches:
+        p.start()
+    try:
+        return await growth.compute()
+    finally:
+        for p in patches:
+            p.stop()
+        growth._cache = None
 
 
 @pytest.mark.asyncio
-async def test_compute_partial_when_aurora_fails(monkeypatch):
-    growth._cache = None
-    fx = _fixture()
+async def test_compute_ok_reads_every_source():
+    data, state, errors = await _compute_with(_fixture())
+    assert state == "ok" and errors == []
+    assert data["sources"] == {
+        "ddb": "ok",
+        "messaging": "ok",
+        "posthog": "ok",
+        "cloudwatch": "ok",
+        "clerk": "ok",
+    }
+    assert data["segments"]["external"]["workspaces"]["total"] == 3
+    assert data["segments"]["external"]["activation"]["activated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_compute_partial_when_the_messaging_scan_fails():
+    """A failed messaging read must surface as partial, never as a zeroed,
+    green activation/answered panel."""
 
     async def boom(*a, **k):
-        raise RuntimeError("data api down")
+        raise RuntimeError("scan throttled")
 
-    with (
-        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
-        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
-        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
-        patch("core.services.paperclip_sql.select_rows", boom),
-        patch(
-            "core.services.posthog_admin.hogql",
-            AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
-        ),  # all three queries
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
-        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
-    ):
-        data, state, errors = await growth.compute()
+    data, state, errors = await _compute_with(_fixture(), **{"core.repositories.messaging_repo.scan_growth_rows": boom})
+    assert state == "partial" and [e["domain"] for e in errors] == ["messaging"]
+    assert data["sources"]["messaging"] == "unavailable"
 
-    assert state == "partial"
-    # stubbed hogql (posthog key/project id unset) fails alongside aurora — a
-    # stubbed read must never render as a green, zeroed cross-check.
-    assert [e["domain"] for e in errors] == ["aurora", "posthog"]
-    assert data["segments"]["external"]["owners"]["total"] == 3
-    assert data["segments"]["external"]["activation"]["stages"]["automation_armed"] == 0  # no routine rows
-
-
-@pytest.mark.asyncio
-async def test_compute_posthog_ok_when_not_stubbed():
-    """A real (non-stubbed) empty HogQL result is a legitimate zero, not a
-    misconfigured key/project id -- posthog must read as ok, not partial."""
-    growth._cache = None
-    fx = _fixture()
-
-    with (
-        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
-        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
-        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
-        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
-        patch(
-            "core.services.posthog_admin.hogql",
-            AsyncMock(return_value={"columns": [], "results": [], "stubbed": False, "error": None}),
-        ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
-        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
-    ):
-        data, state, errors = await growth.compute()
-
-    assert state == "ok" and errors == []
-    assert data["sources"]["posthog"] == "ok"
+    ext = data["segments"]["external"]
+    # Every messaging-fed figure is None so the page renders an em dash / a gap.
+    # A green 0% here would claim "nobody activated", which we do not know.
+    assert ext["activation"] == {"activated": None, "measurable": None, "rate": None}
+    assert ext["answered"] == {"dispatched": None, "answered": None, "rate": None, "p50_reply_s": None}
+    assert ext["retention_w4"] == {"eligible": None, "retained": None, "rate": None}
+    assert ext["messaging"] == {"rooms": None, "human_messages_this_week": None}
+    assert all(
+        w["workspaces"] is None and w["multiplayer"] is None and w["multiplayer_share"] is None
+        for w in ext["weekly_active"]
+    )
+    assert all(c["measurable"] is None and c["activated"] is None for c in ext["cohorts"])
+    assert all(d["n"] is None for d in ext["daily"]["human_messages"] + ext["daily"]["activated"])
+    # Billing-fed figures survive — that read succeeded. (compute() derives on the
+    # real clock, so the fixture's 6-week-old signups fall outside today's axis;
+    # what matters is that these stay numbers rather than being blanked too.)
+    assert ext["workspaces"]["total"] == 3 and ext["workspaces"]["paying"] == 1
+    assert all(isinstance(c["signups"], int) and isinstance(c["paying"], int) for c in ext["cohorts"])
+    assert all(isinstance(d["n"], int) for d in ext["daily"]["signups"])
 
 
 @pytest.mark.asyncio
-async def test_compute_unavailable_when_derive_raises():
-    """A malformed row that survives every source read but blows up inside
-    derive() must not 500 the endpoint -- same unavailable shape as a DDB-down read."""
-    growth._cache = None
-    fx = _fixture()
+async def test_compute_partial_when_the_dlq_read_fails():
+    """Both CloudWatch reads share one source key — either failing marks it."""
 
-    with (
-        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
-        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
-        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
-        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
-        patch(
-            "core.services.posthog_admin.hogql",
-            AsyncMock(return_value={"columns": [], "results": [], "stubbed": False, "error": None}),
-        ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
-        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
-        patch("core.services.ops.growth.derive", side_effect=RuntimeError("boom")),
-    ):
-        data, state, errors = await growth.compute()
+    async def boom(*a, **k):
+        raise RuntimeError("access denied")
 
-    assert data is None and state == "unavailable"
-    assert any(e["domain"] == "derive" for e in errors)
+    data, state, errors = await _compute_with(_fixture(), **{"core.services.ops.dlq.work_dlq_depth": boom})
+    assert state == "partial" and [e["domain"] for e in errors] == ["cloudwatch"]
+    assert data["dlq_depth"] is None
+
+
+@pytest.mark.asyncio
+async def test_compute_partial_when_posthog_is_stubbed():
+    """A stubbed read (key/project id unset) must never render as a green zero."""
+    data, state, errors = await _compute_with(
+        _fixture(),
+        **{
+            "core.services.posthog_admin.hogql": AsyncMock(
+                return_value={"columns": [], "results": [], "stubbed": True, "error": None}
+            )
+        },
+    )
+    assert state == "partial" and [e["domain"] for e in errors] == ["posthog"]
+    assert data["sources"]["posthog"] == "unavailable"
 
 
 @pytest.mark.asyncio
 async def test_compute_unavailable_when_clerk_fails():
-    """Segmentation is load-bearing (every aggregate assumes it ran before
-    aggregation) -- a Clerk failure must fail the whole read, never silently
-    classify every owner as external."""
-    growth._cache = None
-    fx = _fixture()
+    """Segmentation is load-bearing -- a Clerk failure must fail the whole read,
+    never silently classify every workspace as external."""
 
     async def boom(*a, **k):
         raise RuntimeError("clerk down")
 
-    with (
-        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
-        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
-        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
-        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
-        patch(
-            "core.services.posthog_admin.hogql",
-            AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
-        ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
-        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=boom)),
-    ):
-        data, state, errors = await growth.compute()
-
+    data, state, errors = await _compute_with(
+        _fixture(), **{"core.services.run_analytics.resolve_internal_owner": boom}
+    )
     assert data is None and state == "unavailable"
     assert [e["domain"] for e in errors] == ["clerk"]
 
 
 @pytest.mark.asyncio
 async def test_compute_unavailable_when_ddb_fails():
-    growth._cache = None
-
     async def boom(*a, **k):
         raise RuntimeError("ddb down")
 
-    with (
-        patch("core.repositories.billing_repo.scan_all", boom),
-        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=[])),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=[])),
-        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=[])),
-        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
-        patch(
-            "core.services.posthog_admin.hogql",
-            AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
-        ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
-    ):
-        data, state, errors = await growth.compute()
+    data, state, errors = await _compute_with(_fixture(), **{"core.repositories.billing_repo.scan_all": boom})
     assert data is None and state == "unavailable" and errors[0]["domain"] == "ddb"
+
+
+@pytest.mark.asyncio
+async def test_compute_unavailable_when_derive_raises():
+    """A malformed row that survives every source read but blows up inside
+    derive() must not 500 the endpoint -- same unavailable shape as a DDB-down read."""
+
+    def explode(**_kwargs):
+        raise RuntimeError("boom")
+
+    data, state, errors = await _compute_with(_fixture(), **{"core.services.ops.growth.derive": explode})
+    assert data is None and state == "unavailable"
+    assert any(e["domain"] == "derive" for e in errors)
 
 
 @pytest.mark.asyncio

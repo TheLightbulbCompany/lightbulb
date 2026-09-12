@@ -34,12 +34,9 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   httpReady: boolean;
   liveConnected: boolean;
   liveChannels: readonly string[];
-  lastEventAt: number | null;
-  liveError: string | null;
   nodeConnected: boolean;
   nodeStatus: string;
   messaging: ReturnType<typeof createMessagingClient>;
-  runtime: ReturnType<typeof createRuntimeClient>;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(handler: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void): () => void;
 }
@@ -54,7 +51,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
   const ownerScope = orgId ?? userId ?? null;
   const httpReady = !!isLoaded && !!userId;
-  const { data: config, error: configError } = useSWR(
+  const { data: config } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
     { revalidateOnFocus: false },
@@ -166,12 +163,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     httpReady,
     liveConnected: live.liveConnected,
     liveChannels: live.liveChannels,
-    lastEventAt: live.lastEventAt,
-    liveError: configError ? "Live updates are reconnecting." : live.lastError,
     nodeConnected: nodeStatus === "connected",
     nodeStatus,
     messaging,
-    runtime: runtimeClient,
     claimActiveRoomSubscription,
     onChatMessage,
     rpc: runtimeClient.rpc,
@@ -182,10 +176,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     httpReady,
     live.liveConnected,
     live.liveChannels,
-    live.lastEventAt,
-    live.lastError,
     live.connectionRevision,
-    configError,
     nodeStatus,
     messaging,
     claimActiveRoomSubscription,

@@ -1,36 +1,24 @@
 "use client";
 
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, XAxis, YAxis } from "recharts";
 
 import { Card } from "@/components/admin/Card";
 import { ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
-import type { GrowthData, GrowthOwnerStage, GrowthSegment } from "../_lib/api";
-import { STAGE_LABEL } from "./sections";
+import type { GrowthData, GrowthSegment } from "../_lib/api";
+import { num, pct } from "./sections";
 
 // Growth-dashboard series. globals.css maps --chart-1..5 to ok, info, warn, err,
 // NEUTRAL in BOTH grounds. Single-meaning series:
-//   CHART_1 ok      — autonomous / healthy / the ladder
-//   CHART_4 err     — alert: auto-paused, the largest gate-blocked reason.
-//                     A series that is not an alert never takes it.
-//   CHART_5 neutral — secondary / unknown / order-independent. Not a state
-//                     colour: state colour only ever means state. (It was
-//                     brass, a second warm gold indistinguishable from warn.)
+//   CHART_1 ok      — the healthy outcome: activated, multiplayer, answered
+//   CHART_4 err     — alert: the largest gate-blocked reason. A series that is
+//                     not an alert never takes it.
+//   CHART_5 neutral — secondary / the denominator a CHART_1 series sits inside.
+//                     Not a state colour: state colour only ever means state.
 // CHART_2 (info) and CHART_3 (warn) also serve as plain distinct hues where a
 // multi-series chart needs one more line than there are meanings — so
-// `trial_started` is warn and `archived` is info for separation, not status.
-// Read the legend, not the colour, on the funnel and survival charts.
+// `trial_started` is warn for separation, not status. Read the legend, not the
+// colour, on the funnel chart.
 const CHART_1 = "var(--chart-1)";
 const CHART_2 = "var(--chart-2)";
 const CHART_3 = "var(--chart-3)";
@@ -110,7 +98,7 @@ function distinctSeries(rows: readonly Record<string, unknown>[], seriesField: s
 
 /** Running sum of `signups`, shifted so the last point equals `total` — a
  * shape for the sparkline, not an exact historical count (the 56-day window
- * doesn't cover an owner's whole lifetime). */
+ * doesn't cover a workspace's whole lifetime). */
 function cumulativeOffsetToTotal(signups: readonly { day: string; n: number }[], total: number): number[] {
   const cumulative: number[] = [];
   let running = 0;
@@ -151,30 +139,39 @@ function NoSparkline() {
   return <div className="h-10 w-full" />;
 }
 
+/** The five §6 metrics, in order: activation, weekly active + multiplayer,
+ * answered + p50, paying, W4 retention. */
 export function KpiStrip({ seg }: { seg: GrowthSegment }) {
-  const cumulativeOwners = cumulativeOffsetToTotal(seg.daily.signups, seg.owners.total);
-  const activeOwnersByWeek = seg.north_star.weeks.map((w) => w.owners_active);
-  const autonomousByDay = seg.daily.runs.map((r) => r.autonomous_ok);
-  const armedAutomations = seg.depth.armed_per_owner.reduce((sum, o) => sum + o.armed, 0);
-  const autonomous7d = seg.daily.runs.slice(-7).reduce((sum, r) => sum + r.autonomous_ok, 0);
+  const cumulativeWorkspaces = cumulativeOffsetToTotal(seg.daily.signups, seg.workspaces.total);
+  const activeByWeek = seg.weekly_active.map((w) => w.workspaces ?? 0);
+  const thisWeek = seg.weekly_active[seg.weekly_active.length - 1];
+  const messagesByDay = seg.daily.human_messages.map((d) => d.n ?? 0);
 
   return (
     <Card>
       <div className="grid grid-cols-2 gap-6 md:grid-cols-3 xl:grid-cols-6">
-        <KpiTile label="Owners" value={seg.owners.total} sparkline={<Sparkline values={cumulativeOwners} color={CHART_5} />} />
-        <KpiTile label="Paying" value={seg.owners.paid} sparkline={<NoSparkline />} />
+        <KpiTile label="Workspaces" value={seg.workspaces.total} sparkline={<Sparkline values={cumulativeWorkspaces} color={CHART_5} />} />
+        <KpiTile label="Paying" value={seg.workspaces.paying} sparkline={<NoSparkline />} />
         <KpiTile
-          label="Active owners this week"
-          value={activeOwnersByWeek[activeOwnersByWeek.length - 1] ?? 0}
-          sparkline={<Sparkline values={activeOwnersByWeek} color={CHART_1} />}
+          label="Weekly active workspaces"
+          value={num(thisWeek?.workspaces)}
+          sparkline={<Sparkline values={activeByWeek} color={CHART_1} />}
         />
-        <KpiTile label="Autonomous runs (7d)" value={autonomous7d} sparkline={<Sparkline values={autonomousByDay} color={CHART_1} />} />
-        <KpiTile label="Armed automations" value={armedAutomations} sparkline={<NoSparkline />} />
         <KpiTile
-          label="Nightly loops never armed"
-          value={seg.nightly_ceo.never_armed}
-          tone={seg.nightly_ceo.never_armed > 0 ? "alert" : undefined}
-          sparkline={<NoSparkline />}
+          label="Multiplayer share (this week)"
+          value={pct(thisWeek?.multiplayer_share)}
+          sparkline={<Sparkline values={seg.weekly_active.map((w) => Math.round((w.multiplayer_share ?? 0) * 100))} color={CHART_1} />}
+        />
+        <KpiTile
+          label="Activated rate"
+          value={pct(seg.activation.rate)}
+          sparkline={<Sparkline values={seg.daily.activated.map((d) => d.n ?? 0)} color={CHART_1} />}
+        />
+        <KpiTile
+          label="Answered rate"
+          value={pct(seg.answered.rate)}
+          tone={seg.answered.rate !== null && seg.answered.rate < 0.95 ? "alert" : undefined}
+          sparkline={<Sparkline values={messagesByDay} color={CHART_5} />}
         />
       </div>
     </Card>
@@ -185,53 +182,118 @@ export function KpiStrip({ seg }: { seg: GrowthSegment }) {
 // Charts grid
 // ---------------------------------------------------------------------------
 
-// Four lines, deliberately: the fifth funnel step (`signup_cta_clicked`)
-// lives in the weekly table in sections.tsx instead, because the only
-// unused series token here is CHART_4 and CHART_4 means "alert" — a series
-// that is not an alert never takes it (see the palette note above).
-//
-// NOTE the "signup started" line STEPS DOWN around 2026-09-03. Nothing
-// broke: until then CTA clicks and real Clerk completions shared this one
-// event name, and clicks were ~4x completions. Clicks are now
-// `signup_cta_clicked`; this line finally means accounts created.
-const FUNNEL_DAILY_EVENTS = ["landing_viewed", "signup_started", "trial_started", "trial_converted"] as const;
-const FUNNEL_DAILY_CONFIG: ChartConfig = {
+// The funnel's last stage is SERVER-side: `activated` is the §6 definition
+// computed from the messaging table, not a client event. The three before it
+// are PostHog, which counts dev and prod together.
+const FUNNEL_POSTHOG_EVENTS = ["landing_viewed", "signup_started", "trial_started"] as const;
+const FUNNEL_CONFIG: ChartConfig = {
   landing_viewed: { label: "landing viewed", color: CHART_5 },
   signup_started: { label: "signup started", color: CHART_2 },
   trial_started: { label: "trial started", color: CHART_3 },
-  trial_converted: { label: "trial converted", color: CHART_1 },
+  activated: { label: "activated (server)", color: CHART_1 },
 };
+const FUNNEL_SERIES = [...FUNNEL_POSTHOG_EVENTS, "activated"] as const;
 
-/** 1. Acquisition (daily) — PostHog client funnel, one line per event. */
-export function AcquisitionChart({ data }: { data: GrowthData }) {
-  const rows = pivot(data.days, data.posthog.funnel_daily, "day", "event", "owners", FUNNEL_DAILY_EVENTS);
+/** 1. Acquisition (daily) — landing → signup → trial from PostHog, activation from us. */
+export function AcquisitionChart({ data, seg }: { data: GrowthData; seg: GrowthSegment }) {
+  const activatedByDay = new Map(seg.daily.activated.map((d) => [d.day, d.n]));
+  const rows = pivot(data.days, data.posthog.funnel_daily, "day", "event", "owners", FUNNEL_POSTHOG_EVENTS).map((row) => ({
+    ...row,
+    activated: activatedByDay.get(String(row.bucket)) ?? 0,
+  }));
   return (
-    <Card title="Acquisition — client funnel per day">
-      <ChartContainer config={FUNNEL_DAILY_CONFIG} className="h-[220px] w-full">
+    <Card title="Acquisition — landing viewed → signup started → trial started → activated">
+      <ChartContainer config={FUNNEL_CONFIG} className="h-[220px] w-full">
         <LineChart data={rows} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
           <CartesianGrid vertical={false} stroke={GRID_STROKE} />
           <XAxis dataKey="bucket" tickFormatter={tickDayMonth} interval={6} tickMargin={8} {...AXIS_TICK_PROPS} />
           <YAxis {...NUMERIC_Y_PROPS} />
           <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
           <ChartLegend content={<ChartLegendContent />} />
-          {FUNNEL_DAILY_EVENTS.map((event) => (
-            <Line key={event} dataKey={event} type="monotone" stroke={FUNNEL_DAILY_CONFIG[event].color} strokeWidth={2} dot={false} isAnimationActive={false} />
+          {FUNNEL_SERIES.map((series) => (
+            <Line key={series} dataKey={series} type="monotone" stroke={FUNNEL_CONFIG[series].color} strokeWidth={2} dot={false} isAnimationActive={false} />
           ))}
         </LineChart>
       </ChartContainer>
       <div className="mt-2 text-xs text-muted-foreground">
-        PostHog, unique persons — dev and prod share one PostHog project, so these count both environments.
+        The first three stages are PostHog unique persons — dev and prod share one project, so they count both
+        environments. The last is the audit §6 activation definition, computed server-side from this environment&apos;s
+        messages only; the stages are not directly comparable.
       </div>
     </Card>
   );
 }
 
-/** 2. Signups per day — billing rows, single series. */
-export function SignupsPerDayChart({ seg }: { seg: GrowthSegment }) {
+const WEEKLY_ACTIVE_CONFIG: ChartConfig = {
+  multiplayer: { label: "≥2 human senders", color: CHART_1 },
+  single: { label: "1 human sender", color: CHART_5 },
+};
+
+/** 2. Weekly active workspaces, split by whether more than one human spoke. */
+export function WeeklyActiveChart({ seg }: { seg: GrowthSegment }) {
+  const rows = seg.weekly_active.map((w) => ({
+    week: w.week,
+    // null (messaging read failed) leaves a gap in the bar; 0 would read as
+    // "nobody was active", which is a different and false claim.
+    multiplayer: w.multiplayer,
+    single: w.workspaces === null || w.multiplayer === null ? null : w.workspaces - w.multiplayer,
+  }));
   return (
-    <Card title="Signups per day (billing rows)">
-      <ChartContainer config={{ n: { label: "signups", color: CHART_2 } }} className="h-[220px] w-full">
-        <BarChart data={seg.daily.signups} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
+    <Card title="Weekly active workspaces (≥1 human room message) — multiplayer split">
+      <ChartContainer config={WEEKLY_ACTIVE_CONFIG} className="h-[220px] w-full">
+        <BarChart data={rows} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
+          <CartesianGrid vertical={false} stroke={GRID_STROKE} />
+          <XAxis dataKey="week" tickFormatter={tickDayMonth} tickMargin={8} {...AXIS_TICK_PROPS} />
+          <YAxis {...NUMERIC_Y_PROPS} />
+          <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
+          <ChartLegend content={<ChartLegendContent />} />
+          <Bar dataKey="multiplayer" stackId="waw" fill={CHART_1} isAnimationActive={false} />
+          <Bar dataKey="single" stackId="waw" fill={CHART_5} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+        </BarChart>
+      </ChartContainer>
+      <div className="mt-2 text-xs text-muted-foreground">
+        Agent messages never make a week active — only humans do.
+      </div>
+    </Card>
+  );
+}
+
+const COHORT_CONFIG: ChartConfig = {
+  signups: { label: "signups", color: CHART_5 },
+  activated: { label: "activated", color: CHART_1 },
+  paying: { label: "paying now", color: CHART_2 },
+};
+
+/** 3. Signup-week cohorts — how many of each week's workspaces activated and pay. */
+export function CohortChart({ seg }: { seg: GrowthSegment }) {
+  return (
+    <Card title="Signup cohorts — activated and paying">
+      <ChartContainer config={COHORT_CONFIG} className="h-[220px] w-full">
+        <BarChart data={seg.cohorts} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
+          <CartesianGrid vertical={false} stroke={GRID_STROKE} />
+          <XAxis dataKey="week" tickFormatter={tickDayMonth} tickMargin={8} {...AXIS_TICK_PROPS} />
+          <YAxis {...NUMERIC_Y_PROPS} />
+          <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
+          <ChartLegend content={<ChartLegendContent />} />
+          <Bar dataKey="signups" fill={CHART_5} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+          <Bar dataKey="activated" fill={CHART_1} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+          <Bar dataKey="paying" fill={CHART_2} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+        </BarChart>
+      </ChartContainer>
+      <div className="mt-2 text-xs text-muted-foreground">
+        &ldquo;Paying now&rdquo; is the cohort&apos;s CURRENT status, not a recorded trial→paid transition: a workspace
+        that converted and then cancelled reads here as never converted.
+      </div>
+    </Card>
+  );
+}
+
+/** 4. Human room messages per day — the volume behind the weekly-active count. */
+export function HumanMessagesChart({ seg }: { seg: GrowthSegment }) {
+  return (
+    <Card title="Human room messages per day">
+      <ChartContainer config={{ n: { label: "human messages", color: CHART_2 } }} className="h-[220px] w-full">
+        <BarChart data={seg.daily.human_messages} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
           <CartesianGrid vertical={false} stroke={GRID_STROKE} />
           <XAxis dataKey="day" tickFormatter={tickDayMonth} interval={6} tickMargin={8} {...AXIS_TICK_PROPS} />
           <YAxis {...NUMERIC_Y_PROPS} />
@@ -243,132 +305,13 @@ export function SignupsPerDayChart({ seg }: { seg: GrowthSegment }) {
   );
 }
 
-const RUNS_CONFIG: ChartConfig = {
-  autonomous_ok: { label: "autonomous", color: CHART_1 },
-  human_ok: { label: "human", color: CHART_2 },
-  nightly_ok: { label: "nightly CEO", color: CHART_3 },
-};
-
-/** 3. North Star — successful runs per day, stacked autonomous+human beside a separate nightly-CEO bar. */
-export function NorthStarRunsChart({ seg }: { seg: GrowthSegment }) {
-  return (
-    <Card title="North Star — successful runs per day">
-      <ChartContainer config={RUNS_CONFIG} className="h-[220px] w-full">
-        <BarChart data={seg.daily.runs} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-          <CartesianGrid vertical={false} stroke={GRID_STROKE} />
-          <XAxis dataKey="day" tickFormatter={tickDayMonth} interval={6} tickMargin={8} {...AXIS_TICK_PROPS} />
-          <YAxis {...NUMERIC_Y_PROPS} />
-          <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
-          <ChartLegend content={<ChartLegendContent />} />
-          <Bar dataKey="autonomous_ok" stackId="runs" fill={CHART_1} isAnimationActive={false} />
-          <Bar dataKey="human_ok" stackId="runs" fill={CHART_2} radius={[2, 2, 0, 0]} isAnimationActive={false} />
-          <Bar dataKey="nightly_ok" stackId="nightly" fill={CHART_3} radius={[2, 2, 0, 0]} isAnimationActive={false} />
-        </BarChart>
-      </ChartContainer>
-      <div className="mt-2 text-xs text-muted-foreground">
-        autonomous = dispatched by a schedule or webhook. human = everything else, including the nightly CEO&apos;s
-        follow-on work. The nightly CEO&apos;s own runs are shown and never counted.
-      </div>
-    </Card>
-  );
-}
-
-/** 4. Weekly active owners — owners with ≥1 successful autonomous run. */
-export function WeeklyActiveOwnersChart({ seg }: { seg: GrowthSegment }) {
-  return (
-    <Card title="Owners with ≥1 successful autonomous run, per week">
-      <ChartContainer config={{ n: { label: "active owners", color: CHART_1 } }} className="h-[220px] w-full">
-        <LineChart data={seg.retention.weekly_active_owners} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-          <CartesianGrid vertical={false} stroke={GRID_STROKE} />
-          <XAxis dataKey="week" tickFormatter={tickDayMonth} tickMargin={8} {...AXIS_TICK_PROPS} />
-          <YAxis {...NUMERIC_Y_PROPS} />
-          <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
-          <Line dataKey="n" type="monotone" stroke={CHART_1} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
-        </LineChart>
-      </ChartContainer>
-    </Card>
-  );
-}
-
-const LADDER: GrowthOwnerStage["stage"][] = [
-  "signed_up",
-  "subscribed",
-  "container_ready",
-  "onboarding_complete",
-  "automation_armed",
-  "first_autonomous_success",
-];
-const ACTIVATION_CONFIG: ChartConfig = {
-  stage: { label: "ladder", color: CHART_1 },
-  flag: { label: "order-independent", color: CHART_5 },
-};
-
-/** 5. Activation gate — ladder vs. order-independent counts per stage, horizontal. */
-export function ActivationGateChart({ seg }: { seg: GrowthSegment }) {
-  const a = seg.activation;
-  const rows = LADDER.map((stage) => ({
-    label: STAGE_LABEL[stage],
-    stage: a.stages[stage],
-    flag: stage === "signed_up" ? a.stages.signed_up : a.flags[stage],
-  }));
-  return (
-    <Card title="Activation gate">
-      <ChartContainer config={ACTIVATION_CONFIG} className="h-[220px] w-full">
-        <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-          <CartesianGrid vertical={false} stroke={GRID_STROKE} />
-          <XAxis type="number" tickMargin={8} {...AXIS_TICK_PROPS} allowDecimals={false} domain={[0, "auto"]} />
-          <YAxis type="category" dataKey="label" width={150} {...AXIS_TICK_PROPS} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          <ChartLegend content={<ChartLegendContent />} />
-          <Bar dataKey="stage" fill={CHART_1} radius={[0, 2, 2, 0]} isAnimationActive={false} />
-          <Bar dataKey="flag" fill={CHART_5} radius={[0, 2, 2, 0]} isAnimationActive={false} />
-        </BarChart>
-      </ChartContainer>
-      <div className="mt-2 text-xs text-muted-foreground">
-        Ladder (green) counts owners who cleared every earlier step; order-independent (brass) counts each step on
-        its own — a gap between them is a stalled owner, not a missing one.
-      </div>
-    </Card>
-  );
-}
-
-const SURVIVAL_ROWS: { key: "armed" | "paused_manual" | "auto_paused" | "archived"; label: string; color: string }[] = [
-  { key: "armed", label: "armed", color: CHART_1 },
-  { key: "paused_manual", label: "paused by owner", color: CHART_5 },
-  { key: "auto_paused", label: "auto-paused", color: CHART_4 },
-  { key: "archived", label: "archived", color: CHART_2 },
-];
-
-/** 6. Automation survival — routines ≥30 days old, one bar per outcome. */
-export function AutomationSurvivalChart({ seg }: { seg: GrowthSegment }) {
-  const s = seg.retention.automation_survival;
-  const rows = SURVIVAL_ROWS.map((r) => ({ label: r.label, value: s[r.key], color: r.color }));
-  return (
-    <Card title="Automation survival (routines ≥30 days old)">
-      <ChartContainer config={{}} className="h-[220px] w-full">
-        <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-          <CartesianGrid vertical={false} stroke={GRID_STROKE} />
-          <XAxis type="number" tickMargin={8} {...AXIS_TICK_PROPS} allowDecimals={false} domain={[0, "auto"]} />
-          <YAxis type="category" dataKey="label" width={150} {...AXIS_TICK_PROPS} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          <Bar dataKey="value" radius={[0, 2, 2, 0]} isAnimationActive={false}>
-            {rows.map((r) => (
-              <Cell key={r.label} fill={r.color} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ChartContainer>
-    </Card>
-  );
-}
-
 // err first (a blocked gate IS the alert), then four hues no two of which are
 // adjacent-and-alike in the stack: warn gold, neutral grey, info blue, ok green.
 const GATE_BLOCKED_CYCLE = [CHART_4, CHART_3, CHART_5, CHART_2, CHART_1];
 
-const GATE_BLOCKED_TITLE = "provision.gate.blocked per day (CloudWatch, all owners) — last 7 days";
+const GATE_BLOCKED_TITLE = "provision.gate.blocked per day (CloudWatch, all workspaces) — last 7 days";
 
-/** 7. provision.gate.blocked per day — one stacked series per code present.
+/** 5. provision.gate.blocked per day — one stacked series per code present.
  * CloudWatch only supplies the last 7 days, so this chart (unlike the other
  * daily ones) plots `days.slice(-7)`, not the full 56-day window. */
 export function GateBlockedDailyChart({ data }: { data: GrowthData }) {
@@ -410,32 +353,36 @@ export function GateBlockedDailyChart({ data }: { data: GrowthData }) {
   );
 }
 
-const POSTHOG_RUNS_ORDER = ["autonomous", "human", "unknown"] as const;
-const POSTHOG_RUNS_CONFIG: ChartConfig = {
-  autonomous: { label: "autonomous", color: CHART_1 },
-  human: { label: "human", color: CHART_2 },
-  unknown: { label: "unknown", color: CHART_5 },
-};
+const RETENTION_ROWS: { key: "retained" | "lapsed"; label: string; color: string }[] = [
+  { key: "retained", label: "still messaging in week 4", color: CHART_1 },
+  { key: "lapsed", label: "silent in week 4", color: CHART_5 },
+];
 
-/** 8. PostHog cross-check — agent_run_completed by initiation, weekly. */
-export function PosthogCrosscheckChart({ data }: { data: GrowthData }) {
-  const rows = pivot(data.weeks, data.posthog.runs, "week", "kind", "n", POSTHOG_RUNS_ORDER);
+/** 6. Week-4 retention of activated workspaces — two bars, so the denominator is visible. */
+export function RetentionChart({ seg }: { seg: GrowthSegment }) {
+  const r = seg.retention_w4;
+  const values = {
+    retained: r.retained,
+    lapsed: r.eligible === null || r.retained === null ? null : r.eligible - r.retained,
+  };
+  const rows = RETENTION_ROWS.map((row) => ({ label: row.label, value: values[row.key], color: row.color }));
   return (
-    <Card title="PostHog cross-check — agent_run_completed by initiation">
-      <ChartContainer config={POSTHOG_RUNS_CONFIG} className="h-[220px] w-full">
-        <LineChart data={rows} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
+    <Card title={`Week-4 retention of activated workspaces — ${pct(r.rate)}`}>
+      <ChartContainer config={{}} className="h-[220px] w-full">
+        <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
           <CartesianGrid vertical={false} stroke={GRID_STROKE} />
-          <XAxis dataKey="bucket" tickFormatter={tickDayMonth} tickMargin={8} {...AXIS_TICK_PROPS} />
-          <YAxis {...NUMERIC_Y_PROPS} />
-          <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
-          <ChartLegend content={<ChartLegendContent />} />
-          {POSTHOG_RUNS_ORDER.map((kind) => (
-            <Line key={kind} dataKey={kind} type="monotone" stroke={POSTHOG_RUNS_CONFIG[kind].color} strokeWidth={2} dot={false} isAnimationActive={false} />
-          ))}
-        </LineChart>
+          <XAxis type="number" tickMargin={8} {...AXIS_TICK_PROPS} allowDecimals={false} domain={[0, "auto"]} />
+          <YAxis type="category" dataKey="label" width={170} {...AXIS_TICK_PROPS} />
+          <ChartTooltip content={<ChartTooltipContent />} />
+          <Bar dataKey="value" radius={[0, 2, 2, 0]} isAnimationActive={false}>
+            {rows.map((row) => (
+              <Cell key={row.label} fill={row.color} />
+            ))}
+          </Bar>
+        </BarChart>
       </ChartContainer>
       <div className="mt-2 text-xs text-muted-foreground">
-        Attribution here is lossy; the Paperclip DB above is the ledger. Counts both environments.
+        Only workspaces whose 4th week after activation has fully passed are counted — an in-flight week is not a miss.
       </div>
     </Card>
   );

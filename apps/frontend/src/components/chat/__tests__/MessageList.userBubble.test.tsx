@@ -31,9 +31,7 @@ function renderUser(message: HistoryMessage) {
     <MessageList
       renderGroups={userGroup(message)}
       isStreaming={false}
-      isTyping={false}
       agentName="Friday"
-      onOpenFile={() => {}}
     />,
   );
 }

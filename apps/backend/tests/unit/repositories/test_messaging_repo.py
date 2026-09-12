@@ -78,6 +78,11 @@ async def _room(members=None, client_room_id="c-room-1", name="launch"):
 
 
 async def _post(room_id, text="hi", targets=None, client_id="m-1", author=None):
+    """The message only — ``_post_write`` keeps the replay flag."""
+    return (await _post_write(room_id, text, targets, client_id, author))[0]
+
+
+async def _post_write(room_id, text="hi", targets=None, client_id="m-1", author=None):
     author = author or {"kind": "human", "id": USER_A, "displayName": "Ann"}
     return await repo.create_message(
         room_id=room_id,
@@ -368,9 +373,11 @@ async def test_message_transaction_writes_idemp_and_one_work_row_per_target(tabl
 @pytest.mark.asyncio
 async def test_message_replay_returns_original_and_changed_body_conflicts(table):
     room_id, _ = await _room()
-    first = await _post(room_id, text="same")
-    again = await _post(room_id, text="same")
+    first, first_replayed = await _post_write(room_id, text="same")
+    again, again_replayed = await _post_write(room_id, text="same")
     assert again["messageId"] == first["messageId"] and (await repo.get_room(room_id))["lastSeq"] == 1
+    # The flag is what lets a caller skip post-commit side effects on a retry.
+    assert (first_replayed, again_replayed) == (False, True)
     with pytest.raises(repo.IdempotencyConflict):
         await _post(room_id, text="different")
 
@@ -379,7 +386,7 @@ async def test_message_replay_returns_original_and_changed_body_conflicts(table)
 async def test_agent_receipt_is_owner_scoped_by_event_id(table):
     room_id, _ = await _room()
     author = {"kind": "agent", "id": FRIDAY, "displayName": "Friday"}
-    m = await repo.create_message(
+    m, _ = await repo.create_message(
         room_id=room_id,
         owner_id=OWNER,
         idemp_pk=repo.owner_pk(OWNER),
@@ -776,3 +783,24 @@ async def test_mark_unread_from_a_sequence_leaves_that_message_and_everything_af
     assert await repo.mark_unread(room_id, USER_A, joined_seq=0) == 4
     await repo.set_read_cursor(room_id, USER_A, 5)
     assert await repo.mark_unread(room_id, USER_A, joined_seq=3, from_seq=1) == 3
+
+
+@pytest.mark.asyncio
+async def test_scan_growth_rows_returns_only_messages_and_rooms_without_bodies(table):
+    """The admin growth read sees every MSG# row and every ROOM META row — and
+    nothing else. ``STREAM#…`` rows also carry sk="META", so the pk prefix is what
+    separates a room from a private-channel pointer; message text is never
+    projected, because a metrics read has no business carrying message bodies."""
+    room_id, _ = await _room()
+    await _post(room_id, text="secret plan")
+    await repo.ensure_user_stream(OWNER, USER_A)
+
+    messages, rooms = await repo.scan_growth_rows()
+
+    assert [m["roomId"] for m in messages] == [room_id]
+    assert messages[0]["author"]["kind"] == "human" and messages[0]["ownerId"] == OWNER
+    assert messages[0]["dispatchTargets"] == [{"agentId": FRIDAY, "eventKind": "room_event"}]
+    assert messages[0]["createdAt"]
+    assert "text" not in messages[0] and "mentions" not in messages[0]
+    assert [r["roomId"] for r in rooms] == [room_id]
+    assert {r["sk"] for r in rooms} == {"META"}

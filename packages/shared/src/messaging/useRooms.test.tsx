@@ -181,6 +181,38 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).not.toHaveBeenCalled();
   });
 
+  it("surfaces a failed resolve-or-create instead of leaving the surface loading", async () => {
+    messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
+    messaging.createRoom.mockRejectedValueOnce(new Error("Room service is unavailable"));
+    const { result } = renderHook(
+      () => useRooms(platform(), { initialAgentId: "agent-1", autoSelect: false }),
+      { wrapper },
+    );
+    // The only caller of selectAgentDm here is an effect whose `.catch` used to
+    // discard this, leaving activeRoomId null and no error anywhere.
+    await waitFor(() => expect(result.current.selectRoomError).toBe("Room service is unavailable"));
+    expect(result.current.activeRoomId).toBeNull();
+
+    messaging.createRoom.mockResolvedValue({ ...room, roomId: "room-2", kind: "dm" });
+    await act(async () => { await result.current.selectAgentDm("agent-1"); });
+    expect(result.current.selectRoomError).toBeNull();
+  });
+
+  it("names the reason a history read failed, and clears it on the retry", async () => {
+    messaging.listMessages
+      .mockRejectedValueOnce(new Error("History is temporarily unavailable"))
+      .mockResolvedValue({ messages: [message], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.historyErrorMessage).toBe("History is temporarily unavailable"));
+    expect(result.current.historyError).toBe(true);
+
+    act(() => result.current.loadHistory());
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(result.current.historyErrorMessage).toBeNull();
+    expect(result.current.historyError).toBe(false);
+  });
+
   it("treats a null userId as signed out and fetches nothing", async () => {
     renderHook(() => useRooms(platform({ userId: null })), { wrapper });
     await new Promise((resolve) => setTimeout(resolve, 0));

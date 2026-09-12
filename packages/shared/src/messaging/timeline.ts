@@ -115,6 +115,8 @@ const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.
 export function dateDividerLabel(date: Date, now: Date): string {
   const startOf = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
   const days = Math.round((startOf(now) - startOf(date)) / 86_400_000);
+  // hand-rolled on purpose: Intl.RelativeTimeFormat is not guaranteed on Hermes
+  // (mobile shares this module)
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
   if (days > 1 && days < 7) return date.toLocaleDateString(undefined, { weekday: "long" });

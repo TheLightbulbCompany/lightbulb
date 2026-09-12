@@ -169,13 +169,24 @@ class LocalSessionEventBody(ContractModel):
     tool: EventTool | None = None
     lifecycle: Lifecycle | None = None
 
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        result = handler(self)
+        # Old-shape events stay byte-compatible: an unset optional field is absent
+        # from the wire, not an explicit null (LocalSessionEventPage cannot use
+        # response_model_exclude_none -- next_after_seq's null is meaningful).
+        for name in ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle"):
+            if getattr(self, name) is None:
+                result.pop(self.model_fields[name].alias if info.by_alias else name, None)
+        return result
+
 
 class LocalSessionEvent(LocalSessionEventBody):
     seq: int = Field(ge=1)
 
     @model_validator(mode="after")
     def validate_envelope(self):
-        if len(self.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")) > MAX_ENVELOPE_BYTES:
+        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > MAX_ENVELOPE_BYTES:
             raise ValueError("event exceeds 16 KiB; split text on UTF-8 boundaries")
         return self
 

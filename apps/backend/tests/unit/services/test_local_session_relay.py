@@ -922,3 +922,19 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
                 "events": [{"kind": "text", "role": "user", "text": "x", "actor": {"userId": "u", "agentId": "a"}}],
             },
         )
+    # The HTTP boundary is what the desktop and web renderer actually see: old-shape
+    # events must not gain the six new fields as explicit nulls, and the legitimately
+    # nullable page cursor must still come through as null, not absent.
+    from core.auth import get_current_user
+    from routers.messaging import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/messaging/rooms/{ROOM}/local-sessions/{sid}/events")
+    wire = response.json()
+    assert "nextAfterSeq" in wire and wire["nextAfterSeq"] is None
+    wire_events = wire["events"]
+    assert not set(wire_events[3]) & {"ts", "itemId", "parentId", "actor", "tool", "lifecycle"}
+    assert wire_events[1]["tool"]["name"] == "Bash" and wire_events[1]["ts"] == "2026-09-12T10:00:00.000Z"

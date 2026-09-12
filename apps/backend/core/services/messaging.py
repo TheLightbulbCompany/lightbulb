@@ -163,6 +163,10 @@ class RoomSummary(ContractModel):
 
 
 class RoomDetail(RoomSummary):
+    # Re-declared as required: the list tolerates their absence for a client
+    # holding a response from before they existed, the detail never does.
+    members: list[RoomMember]
+    last_read_seq: int = Field(ge=0)
     delivery_key: uuid.UUID
     created_at: datetime
     pinned_message_ids: list[str] = []
@@ -840,11 +844,6 @@ async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
 # backend runs desiredCount: 1), short enough that a rename shows up on its own.
 _DISPLAY_NAME_TTL_SECONDS = 300.0
 _display_names: dict[str, tuple[float, str]] = {}
-
-
-def forget_human_display_name(user_id: str) -> None:
-    """Drop a cached name. For callers that just changed one."""
-    _display_names.pop(user_id, None)
 
 
 async def human_display_name(user_id: str) -> str:

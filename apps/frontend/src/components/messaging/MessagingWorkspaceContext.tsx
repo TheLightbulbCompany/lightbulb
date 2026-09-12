@@ -140,6 +140,11 @@ export function MessagingWorkspaceProvider({
   threadIdRef.current = threadId;
   const [creationBusy, setCreationBusy] = useState(false);
   const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
+  // Bumped whenever a draft is written for a room OTHER than the active one —
+  // which only the send-failure path does. Without it the sidebar's draft dot
+  // and Drafts section would not show a recovered draft until some unrelated
+  // render happened to recompute them.
+  const [recoveredDrafts, setRecoveredDrafts] = useState(0);
   const [creationError, setCreationError] = useState<string>();
   // A failed DM resolve-or-create (rooms.selectRoomError) otherwise vanishes:
   // the caller rethrows but nobody renders it. Dismissal is local — the hook
@@ -284,6 +289,7 @@ export function MessagingWorkspaceProvider({
           setThreadClientMessageId(request.clientMessageId);
         } else if (roomId && request.threadRootMessageId) {
           writeDraft(draftKey(scope, roomId, request.threadRootMessageId), { text: request.text, mentions: request.mentions });
+          setRecoveredDrafts((count) => count + 1);
         }
       } else if (sameRoom) {
         setDraft(request.text);
@@ -292,6 +298,7 @@ export function MessagingWorkspaceProvider({
         // Switched away mid-send: the text cannot go back into a composer that
         // is now showing another room, so it goes back to that room's draft.
         writeDraft(draftKey(scope, roomId, null), { text: request.text, mentions: request.mentions });
+        setRecoveredDrafts((count) => count + 1);
       }
       // Rethrown: the composer's own submit() turns a rejection into its
       // uncertain state, and that path must keep working.
@@ -301,12 +308,14 @@ export function MessagingWorkspaceProvider({
 
   // localStorage is the source, so no prop dependency truly describes when this
   // changes — but it walks every key in the store and JSON.parses each hit, and
-  // the only writer is this component's own draft effects. Recomputing when a
-  // draft or the room actually moves is enough, and keeps it off the keystroke
-  // path for every OTHER room's row.
+  // every writer is in this component: the draft effects below, and the
+  // send-failure path, which is the only one that can write for a room the
+  // owner has already left (hence `recoveredDrafts`). Recomputing when one of
+  // those moves is enough, and keeps the walk off the keystroke path for every
+  // other room's row.
   const draftRoomIds = useMemo(
     () => listDraftRoomIds(scope),
-    [scope, draft, threadDraft, rooms.activeRoomId],
+    [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts],
   );
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");

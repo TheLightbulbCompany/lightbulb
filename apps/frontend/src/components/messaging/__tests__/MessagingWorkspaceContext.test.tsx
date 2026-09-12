@@ -442,6 +442,42 @@ it("hands a failed send back its text and its identity so retry still reaches it
   expect(panel.composer.clientMessageId).toBe(sentId);
 });
 
+it("recovers a failed send into the room it was sent from when the owner has moved on, and shows it in the sidebar", async () => {
+  // The other half of the recovery path: the composer is showing a different
+  // room by the time the send fails, so the text cannot go back into it. It
+  // goes back to the sending room's stored draft instead — and the sidebar has
+  // to notice, which it will not do off `draft`/`activeRoomId` alone because
+  // neither moves when a background room's draft is written.
+  let rejectSend!: (error: Error) => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSend = reject; }));
+  const view = compose();
+  act(() => panel.composer.onTextChange("Sent from room-1"));
+  const request = {
+    clientMessageId: panel.composer.clientMessageId,
+    text: "Sent from room-1",
+    mentions: [],
+    replyToMessageId: null,
+    threadRootMessageId: null,
+  };
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)).catch(() => {}); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  state.rooms = [room, { ...room, roomId: "room-2" }];
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+
+  await act(async () => { rejectSend(new Error("network")); await sending; });
+
+  // Stored against the room it was sent FROM, not the one now on screen.
+  expect(JSON.parse(localStorage.getItem(draftKey("org", "room-1", null))!).text).toBe("Sent from room-1");
+  expect(panel.composer.text).toBe("");
+  // And the sidebar knows about it without waiting for an unrelated render.
+  expect(directory.draftRoomIds).toContain("room-1");
+});
+
 it("clears the sending room's stored draft when the owner switches rooms mid-send", async () => {
   let resolveSend!: () => void;
   state.sendMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSend = resolve; }));

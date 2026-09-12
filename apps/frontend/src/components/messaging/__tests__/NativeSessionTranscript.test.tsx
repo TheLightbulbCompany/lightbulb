@@ -166,6 +166,29 @@ describe("small fixes", () => {
     expect(screen.getAllByLabelText(/Native event \d+/).length).toBe(1);
   });
 
+  // An old desktop or a pre-fix backend can still put explicit nulls on the wire, and
+  // `"userId" in actor` / `lines !== undefined` are both true for a null.
+  it("reads explicit nulls as absent: an agent follow-up is the agent, and a call's label is not its output", () => {
+    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "text", role: "user", text: "ship it", actor: { userId: null, agentId: "friday" } as unknown as LocalSessionEvent["actor"] }),
+      ev(2, { kind: "tool", role: "assistant", text: "LABEL_ONLY", itemId: "a1", tool: { name: "Bash", status: "running", input: {}, result: null, lines: null } as unknown as LocalSessionEvent["tool"] }),
+    ]} />);
+    expect(screen.getByText("Friday")).toBeInTheDocument();
+    expect(screen.queryByText("Prasiddha")).not.toBeInTheDocument();
+    expect(screen.getByText("Bash(LABEL_ONLY)")).toBeInTheDocument();
+    expect(screen.queryByText(/^LABEL_ONLY$/)).not.toBeInTheDocument();
+  });
+
+  it("draws a system text event as a meta line, not a prose bullet", () => {
+    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "text", role: "system", text: "[Lightbulb could not mirror one event: it exceeded the envelope]", truncated: true }),
+    ]} />);
+    const row = screen.getByLabelText("Native event 1");
+    expect(row.tagName).toBe("P");
+    expect(row).toHaveClass("native-session-meta");
+    expect(row).toHaveTextContent("[Lightbulb could not mirror one event: it exceeded the envelope]");
+  });
+
   it("labels an orphan tool result (no matching call) as Output rather than a raw item name", () => {
     render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} events={[
       ev(1, { kind: "tool", role: "tool", text: "ORPHAN_TEXT", tool: { name: "result", status: "done", result: { output: "ORPHAN_TEXT" } } }),

@@ -35,6 +35,6 @@ export function SessionDockPanel(props: IDockviewPanelProps<SessionDockPanelPara
   return <div className="native-session-dock room-context-body" style={{ display: "flex", flexDirection: "column", height: "100%", padding: 0 }}>
     <LocalSessionPanel key={`${session.sessionId}:${session.generation}:${resources.accessRevision}`}
       session={session} ownerName={owner} roomId={params.roomId} client={source.client} revision={resources.revision}
-      onAccessLost={resources.revoke} participants={members} onEvent={onEvent} />
+      onAccessLost={resources.revoke} participants={members} />
   </div>;
 }

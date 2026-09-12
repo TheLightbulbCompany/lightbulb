@@ -12,6 +12,7 @@ export type Row =
   | { kind: "prose"; seq: number; text: string; final: boolean }
   | { kind: "thinking"; seq: number; text: string }
   | { kind: "tool"; seq: number; call: LocalSessionEvent; result?: LocalSessionEvent }
+  | { kind: "notice"; seq: number; text: string }
   | { kind: "lifecycle"; seq: number; lifecycle: NonNullable<LocalSessionEvent["lifecycle"]>; text: string };
 
 const GLYPH = {
@@ -31,8 +32,15 @@ export function buildRows(events: readonly LocalSessionEvent[]): Row[] {
   let proseItem: string | undefined;
   for (const e of events) {
     const last = rows.at(-1);
-    if (e.kind === "text" && e.role === "user") {
-      rows.push({ kind: "prompt", seq: e.seq, text: e.text, who: e.actor ? ("userId" in e.actor ? e.actor.userId : e.actor.agentId) : null, ts: e.ts });
+    if (e.kind === "text" && e.role === "system") {
+      // Platform notices (an event the desktop could not mirror) read as meta, not prose.
+      rows.push({ kind: "notice", seq: e.seq, text: e.text });
+      proseItem = undefined;
+    } else if (e.kind === "text" && e.role === "user") {
+      // An absent optional may arrive as an explicit null; `"userId" in actor` is true for one.
+      const who = e.actor && "userId" in e.actor && e.actor.userId != null ? e.actor.userId
+        : e.actor && "agentId" in e.actor ? e.actor.agentId : null;
+      rows.push({ kind: "prompt", seq: e.seq, text: e.text, who, ts: e.ts });
       proseItem = undefined;
     } else if (e.kind === "text") {
       if (last?.kind === "prose" && e.itemId && proseItem === e.itemId) last.text += e.text;
@@ -130,11 +138,11 @@ function ToolRow({ provider, row, seq }: { provider: Provider; row: Extract<Row,
   // tool_result rows and Codex CommandExecution); it's absent when `text` is
   // a label (McpToolCall, FileChange, SubAgentActivity, ...) — so a label
   // never gets shown as if it were output.
-  const preview = stripAnsi(row.result?.text ?? (row.call.tool?.lines !== undefined ? row.call.text : ""));
+  const preview = stripAnsi(row.result?.text ?? (row.call.tool?.lines != null ? row.call.text : ""));
   const full = stripAnsi(fullOutput(resultPayload));
   const shownLines = preview ? preview.split("\n").length : 0;
   const total = row.result?.tool?.lines ?? row.call.tool?.lines;
-  const more = full && total !== undefined ? Math.max(0, total - shownLines) : 0;
+  const more = full && total != null ? Math.max(0, total - shownLines) : 0;
   const showOutput = more === 0 && full.length > preview.length;
   const truncated = (row.result ?? row.call).truncated;
   const withMarker = (text: string) => (truncated && text ? `${text}\n(truncated)` : text);
@@ -186,6 +194,7 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
           {row.text ? <div className="native-session-thought room-message-content"><MarkdownView skipHtml components={roomMarkdown}>{row.text}</MarkdownView></div> : <span>Thinking…</span>}</div>
       </div>;
       if (row.kind === "tool") return <ToolRow key={row.seq} provider={provider} row={row} seq={row.seq} />;
+      if (row.kind === "notice") return <p key={row.seq} className="native-session-meta" role="article" aria-label={`Native event ${row.seq}`}>{row.text}</p>;
       const worked = row.lifecycle === "turn_end" ? formatMs(row.text) : "";
       const label = row.lifecycle === "turn_end" ? (worked ? `Worked for ${worked}` : "")
         : row.lifecycle === "turn_aborted" ? "Interrupted"

@@ -407,7 +407,7 @@ it("renders only safe public text and labels native approval and capability limi
   f.client.listLocalSessionEvents.mockResolvedValue({ events: [{ seq: 250, kind: "tool", role: "tool", text: '<script>alert(1)</script> ![private](https://example.com/private.png) [bad](javascript:alert(1))', truncated: true }], nextAfterSeq: null });
   const { container } = render(<RoomPanel {...f.props} />);
   await openSession();
-  expect(await screen.findByText(/Output truncated/)).toBeInTheDocument();
+  expect(await screen.findByLabelText("Native event 250")).toBeInTheDocument();
   expect(screen.getByText(/Waiting for approval on/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
   expect(container.querySelector("script")).toBeNull();

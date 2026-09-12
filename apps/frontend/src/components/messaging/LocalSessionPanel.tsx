@@ -20,13 +20,13 @@ const unavailable: Record<NonNullable<LocalSession["controlUnavailableReason"]>,
 };
 type Attempt = { request: LocalSessionCommand; state: "sending" | "uncertain" | "rejected" | "received"; receipt?: LocalSessionCommandReceipt; error?: string };
 
-export function LocalSessionPanel({ session, ownerName, roomId, client, revision, onAccessLost, onShare, participants = [], onEvent }: {
+export function LocalSessionPanel({ session, ownerName, roomId, client, revision, onAccessLost, onShare, participants = [] }: {
   session: LocalSession; ownerName: string; roomId: string; client: RoomResourceSource["client"];
   revision: number; onAccessLost: () => void; onShare?: (url: string) => void;
-  participants?: readonly Person[]; onEvent?: RoomResourceSource["onEvent"];
+  participants?: readonly Person[];
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, onEvent ? { onEvent, busy } : undefined);
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { busy });
   const [text, setText] = useState("");
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [checking, setChecking] = useState(false);
@@ -107,7 +107,6 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
     <div className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0}>
       {history.hasOlder && <Button variant="outline" disabled={history.loading} onClick={() => void history.load("older")}>Load older</Button>}
       <NativeSessionTranscript provider={session.provider} events={history.events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={participants} />
-      {history.events.map(event => event.truncated ? <p key={event.seq} className="text-sm text-warn">Output truncated by the desktop.</p> : null)}
       {history.loading && <p role="status">Loading session history…</p>}
       {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
       {!history.loading && !history.error && history.events.length === 0 && <p>No shared output yet.</p>}

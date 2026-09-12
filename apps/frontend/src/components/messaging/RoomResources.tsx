@@ -69,7 +69,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
       <Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
     {selected ? <LocalSessionPanel key={`${selected.sessionId}:${selected.generation}:${resources.accessRevision}`}
       session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare}
-      participants={participants} onEvent={source.onEvent} />
+      participants={participants} />
       : <div className="room-context-body">
         {unavailable && <p role="status">Session unavailable in this conversation.</p>}
         {resources.loading && <p role="status">Loading devices and sessions…</p>}

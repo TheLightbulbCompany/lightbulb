@@ -173,6 +173,12 @@ describe("Messages room/controller boundary", () => {
     expect(messaging.createRoom).not.toHaveBeenCalled();
     expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
   });
+  it("opens the current panel=session permalink grammar into its own dock panel", async () => {
+    const { api } = renderWorkspace("agent-a", "?panel=session&room=r1&session=s1");
+    await waitFor(() => expect(api.getPanel("session:s1")).toBeDefined());
+    expect(api.getPanel("session:s1")?.params).toEqual({ roomId: "r1", sessionId: "s1" });
+    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
+  });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     const { api } = renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));

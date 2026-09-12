@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
-import { AtSign, Bold, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { AtSign, Bold, CaseSensitive, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
 import { activeTrigger, applyCompletion, resolveTypedMentions, type CompletionTrigger, type CreateMessageRequest, type ImageAttachment, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -118,6 +118,16 @@ function ComposerAttempt({
   const externalDragDepthRef = useRef(0);
   const addImagesRef = useRef<(files: File[]) => void>(() => {});
   const [toolbarIndex, setToolbarIndex] = useState(0);
+  // The formatting bar shows by default (compact, at the top of the box) and
+  // the Aa button collapses it; the keyboard shortcuts work either way.
+  const [formatOpen, setFormatOpen] = useState(true);
+  // One line that grows with the draft, instead of a fixed three-row box.
+  useLayoutEffect(() => {
+    const node = field.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, 200)}px`;
+  }, [text]);
   const toolbarButtons = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
@@ -385,6 +395,8 @@ function ComposerAttempt({
   }
 
   const hint = respondHint(roomKind, members, mentions, runningAgentIds);
+  // Who-will-reply matters at the moment of sending, not while the box is empty.
+  const showHint = !!hint && hasContent;
 
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     data-dropping={dropping || undefined}
@@ -393,7 +405,7 @@ function ComposerAttempt({
     onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) event.preventDefault(); }}
     onDragLeave={handleFormDragLeave}
     onDrop={handleFormDrop}>
-    <div className="room-format" role="toolbar" aria-label="Formatting"
+    {formatOpen && <div id={`${fieldId}-format`} className="room-format" role="toolbar" aria-label="Formatting"
       onKeyDown={(event) => {
         const count = FORMAT_CONTROLS.length;
         let next: number;
@@ -410,7 +422,7 @@ function ComposerAttempt({
         ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
         aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
         onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
-    </div>
+    </div>}
     {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop images to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label="Mention a room member" items={options} activeIndex={activeIndex}
@@ -423,8 +435,8 @@ function ComposerAttempt({
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
       renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
-    <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
-      aria-describedby={`${fieldId}-help ${fieldId}-status${hint ? ` ${fieldId}-respond` : ""}`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
+    <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={1} aria-invalid={!!error}
+      aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
       aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
       aria-activedescendant={listOpen ? `${fieldId}-option-${activeIndex}` : undefined}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}
@@ -493,9 +505,11 @@ function ComposerAttempt({
     <div className="room-composer-actions">
       {onUploadAttachment && <><input ref={imageInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple
         onChange={(event) => { addImages([...event.target.files ?? []]); event.target.value = ""; }} />
-        <Button type="button" variant="ghost" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
+      <Button type="button" variant="ghost" size="icon-sm" aria-label={formatOpen ? "Hide formatting" : "Show formatting"} aria-pressed={formatOpen}
+        aria-controls={formatOpen ? `${fieldId}-format` : undefined} onClick={() => setFormatOpen(!formatOpen)}><CaseSensitive aria-hidden="true" /></Button>
       <EmojiPicker triggerLabel="Insert emoji" disabled={!editable} onPick={insertAtCaret} />
-      <Button type="button" variant="ghost" aria-label="Mention someone" aria-expanded={mentionOpen}
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="Mention someone" aria-expanded={mentionOpen}
         disabled={!editable} onClick={() => {
           const caret = field.current?.selectionStart ?? text.length;
           const needsSpace = caret > 0 && !/\s$/.test(text.slice(0, caret));
@@ -506,10 +520,10 @@ function ComposerAttempt({
           setActiveIndex(0);
           requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(sigil + 1, sigil + 1); });
         }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
-      <Button type="submit" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
+      <Button type="submit" size="icon-sm" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
     </div>
-    {hint && <p id={`${fieldId}-respond`} className="room-respond-hint text-sm text-muted-foreground">{hint}</p>}
-    <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "room-composer-help text-sm text-muted-foreground"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
+    {showHint && <p id={`${fieldId}-respond`} className="room-respond-hint text-sm text-muted-foreground">{hint}</p>}
+    <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "sr-only"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}
     {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || uploading || (!text.trim() && !images.some((image) => image.attachment)) || retryPending} onClick={() => submit(true)}>Retry message</Button>}

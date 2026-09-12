@@ -25,6 +25,7 @@ import { RoomHeader } from "./RoomHeader";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
+import { RoomIntro } from "./RoomIntro";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
@@ -569,7 +570,8 @@ function RoomContent({
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
-          empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+          leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
+          empty={null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}

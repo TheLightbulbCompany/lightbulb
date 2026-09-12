@@ -16,6 +16,18 @@ const select = (start: number, end: number) => { field().setSelectionRange(start
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it("collapses the formatting toolbar behind Aa, and the Aa button announces it", () => {
+  render(<Harness />);
+  expect(screen.getByRole("toolbar", { name: "Formatting" })).toBeInTheDocument();
+  const toggle = screen.getByRole("button", { name: "Hide formatting" });
+  expect(toggle).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(toggle);
+  expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show formatting" })).toHaveAttribute("aria-pressed", "false");
+  // The "Enter to send" lesson is for screen readers only; sighted users get the field.
+  expect(screen.getByText("Enter to send · Shift+Enter for a new line.")).toHaveClass("sr-only");
+});
+
 it("exposes the eight formatting controls in one toolbar", () => {
   render(<Harness />);
   const toolbar = screen.getByRole("toolbar", { name: "Formatting" });

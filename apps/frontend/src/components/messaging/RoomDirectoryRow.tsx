@@ -38,14 +38,16 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
     <button type="button" className={`room-directory-entry ${badge ? "font-semibold" : ""} ${room.muted ? "room-directory-muted" : ""}`}
       aria-current={active ? "page" : undefined} onClick={onSelect}>
       {room.kind === "dm" && room.participants.length === 1
-        ? <ParticipantAvatar participant={room.participants[0]} size="sm" />
+        ? <ParticipantAvatar participant={room.participants[0]} size="xs" />
         : room.kind === "group-dm" && faces.length > 0
-          ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" />)}</span>
+          ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="xs" />)}</span>
           : <Icon size={16} aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>
         <span className="sr-only">{roomKindLabel[room.kind]}</span>
       </span>
+      {/* Same tag the roster rows carry, so an agent reads as an agent whether or not a DM exists yet. */}
+      {room.kind === "dm" && room.participants.length === 1 && room.participants[0].kind === "agent" && <span className="room-directory-tag">Agent</span>}
       {room.starred && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
       {badge && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}

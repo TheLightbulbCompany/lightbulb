@@ -6,6 +6,9 @@
   "activation": {
     "onStartup": false
   },
+  "contracts": {
+    "gatewayMethodDispatch": ["authenticated-request"]
+  },
   "channels": [
     "lightbulb"
   ],

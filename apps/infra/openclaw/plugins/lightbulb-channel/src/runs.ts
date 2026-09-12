@@ -100,41 +100,58 @@ export function transformAgentEvent(stream: string, data: Record<string, unknown
   return null; // approval and lifecycle are consumed by the supervisor itself
 }
 
+/** POST one JSON body to the backend with A's retry shape: three attempts, 5xx retried, never rejects. */
+export async function postToBackend(
+  deps: { fetch: FetchLike; env: () => RawEnv },
+  url: (base: string, ownerId: string) => string,
+  body: unknown,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < CALLBACK_ATTEMPTS; attempt++) {
+    try {
+      // Inside the try: an unset ISOL8_API_URL/ISOL8_OWNER_ID/OPENCLAW_HOOK_TOKEN
+      // throws LightbulbConfigurationError, which must not escape either.
+      const resolved = resolveEnv(deps.env());
+      const res = await deps.fetch(url(resolved.base, encodeURIComponent(resolved.ownerId)), {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${resolved.token}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
+      });
+      if (res.status < 500) return true; // 2xx applied/replayed and 4xx are both final
+    } catch {
+      // configuration or network failure: retry below
+    }
+    if (attempt + 1 < CALLBACK_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+  }
+  return false;
+}
+
 export function createRunCallbacks(deps: { fetch: FetchLike; env: () => RawEnv; log?: (message: string) => void }): RunCallbacks {
   return {
     // Never rejects: a lost callback is reported to the sweeper by silence, and a
     // throwing send would take the run's own terminal report down with it.
     async send(event) {
-      for (let attempt = 0; attempt < CALLBACK_ATTEMPTS; attempt++) {
-        try {
-          // Inside the try: an unset ISOL8_API_URL/ISOL8_OWNER_ID/OPENCLAW_HOOK_TOKEN
-          // throws LightbulbConfigurationError, which must not escape either.
-          const resolved = resolveEnv(deps.env());
-          const res = await deps.fetch(
-            `${resolved.base}/api/v1/internal/messaging/runs/${encodeURIComponent(resolved.ownerId)}/events`,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json", Authorization: `Bearer ${resolved.token}` },
-              body: JSON.stringify(event),
-              signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
-            },
-          );
-          if (res.status < 500) return; // 200 applied/replayed and 404 unknown are both final
-        } catch {
-          // configuration or network failure: retry below
-        }
-        if (attempt + 1 < CALLBACK_ATTEMPTS) {
-          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-        }
-      }
-      deps.log?.(`lightbulb: run callback ${event.type} undelivered for ${event.runId}`);
+      const delivered = await postToBackend(deps, (base, owner) => `${base}/api/v1/internal/messaging/runs/${owner}/events`, event);
+      if (!delivered) deps.log?.(`lightbulb: run callback ${event.type} undelivered for ${event.runId}`);
     },
   };
 }
 
 const asCount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0);
+export function usageFromEntry(entry: SessionUsageEntry | undefined): RunUsage {
+  const e = entry ?? {};
+  const cost = e.estimatedCostUsd;
+  return {
+    model: typeof e.model === "string" && e.model ? e.model : "unknown",
+    inputTokens: asCount(e.inputTokens),
+    outputTokens: asCount(e.outputTokens),
+    cacheReadTokens: asCount(e.cacheRead),
+    cacheWriteTokens: asCount(e.cacheWrite),
+    estimatedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null,
+  };
+}
 /** A run that never reached the host owns no tokens; the session row holds the last turn's. */
-const ZERO_USAGE: RunUsage = { model: "unknown", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: null };
+const ZERO_USAGE: RunUsage = usageFromEntry(undefined);
 
 export function createRunSupervisor(deps: {
   sdk: RunSdk;
@@ -198,16 +215,7 @@ export function createRunSupervisor(deps: {
     run.text.current = data.replace !== true && delta ? (text || run.text.current + delta) : text || run.text.current;
   }
   function usageFor(run: ActiveRun): RunUsage {
-    const entry = deps.sdk.getSessionEntry({ agentId: run.agentId, sessionKey: run.sessionKey }) ?? {};
-    const cost = entry.estimatedCostUsd;
-    return {
-      model: typeof entry.model === "string" && entry.model ? entry.model : "unknown",
-      inputTokens: asCount(entry.inputTokens),
-      outputTokens: asCount(entry.outputTokens),
-      cacheReadTokens: asCount(entry.cacheRead),
-      cacheWriteTokens: asCount(entry.cacheWrite),
-      estimatedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null,
-    };
+    return usageFromEntry(deps.sdk.getSessionEntry({ agentId: run.agentId, sessionKey: run.sessionKey }));
   }
   function onEvent(evt: AgentEvent): void {
     // `lifecycle/start` always carries a session key and always precedes the first

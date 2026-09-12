@@ -6,18 +6,21 @@ import {
 abortAgentHarnessRun as abortEmbeddedAgentRun, onAgentEvent, queueAgentHarnessMessage, resolveActiveEmbeddedRunSessionId, } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { createFramePublisher, ecsCredentialsProvider } from "./appsync.js";
-import { createRunCallbacks, createRunSupervisor } from "./runs.js";
+import { createRunCallbacks, createRunSupervisor, postToBackend } from "./runs.js";
+import { createUsageHook } from "./usage.js";
 import { buildChannelOutboundSessionRoute, createChatChannelPlugin, defineChannelPluginEntry, } from "openclaw/plugin-sdk/channel-core";
 import { buildChannelInboundEventContext, resolveChannelInboundRouteEnvelope } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { defineChannelMessageAdapter, waitUntilAbort, } from "openclaw/plugin-sdk/channel-outbound";
 import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { dispatchGatewayMethod } from "openclaw/plugin-sdk/gateway-method-runtime";
 import { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once";
 // @ts-expect-error OpenClaw 2026.9.3 exports this runtime JS subpath but omits its declaration file.
 import { completeWithPreparedSimpleCompletionModel, prepareSimpleCompletionModelForAgent } from "openclaw/plugin-sdk/simple-completion-runtime";
 import { createComputedAccountStatusAdapter, createDefaultChannelRuntimeState, } from "openclaw/plugin-sdk/status-helpers";
 import { applyBasicWebhookRequestGuards, readJsonWebhookBodyOrReject, registerPluginHttpRoute, } from "openclaw/plugin-sdk/webhook-ingress";
 import { CHANNEL_CONFIG_JSON_SCHEMA, CHANNEL_ID, DURABLE_FINAL_CAPABILITIES, PLUGIN_ID, createOutbound, createRunControlHandler, listAccountIds, normalizeTarget, resolveAccount, startGatewayAccount, } from "./channel.js";
+import { RPC_ROUTE, createRpcHandler } from "./rpc.js";
 export const lightbulbChannelConfigSchema = buildJsonChannelConfigSchema(CHANNEL_CONFIG_JSON_SCHEMA, { cacheKey: "lightbulb-channel-config:v1" });
 const fetchLike = (url, init) => fetch(url, init);
 const runs = createRunSupervisor({
@@ -157,5 +160,23 @@ export default defineChannelPluginEntry({
             fetch: (url, init) => fetch(url, init),
             nodes: () => api.runtime.nodes.list({ connected: true }),
         }), { names: ["lightbulb_local_sessions"] });
+        // Registered here, not through registerPluginHttpRoute: only the plugin-API path reads the
+        // manifest's gatewayMethodDispatch contract and grants dispatchGatewayMethod to the route.
+        api.registerHttpRoute({
+            path: RPC_ROUTE,
+            auth: "gateway",
+            match: "exact",
+            gatewayRuntimeScopeSurface: "trusted-operator",
+            handler: createRpcHandler({ dispatch: dispatchGatewayMethod, readBody: readJsonWebhookBodyOrReject }),
+        });
+        api.on("agent_end", createUsageHook({
+            post: async (path, body) => {
+                const delivered = await postToBackend({ fetch: fetchLike, env: () => process.env }, (base, owner) => `${base}${path}/${owner}`, body);
+                if (!delivered)
+                    console.warn(`lightbulb: usage callback undelivered`);
+            },
+            getSessionEntry: ({ agentId, sessionKey }) => getSessionEntry({ agentId, sessionKey, env: process.env, readConsistency: "latest" }),
+            log: (m) => console.warn(m),
+        }));
     },
 });

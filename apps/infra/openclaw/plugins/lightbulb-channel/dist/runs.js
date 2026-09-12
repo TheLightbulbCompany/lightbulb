@@ -85,7 +85,15 @@ export function createRunCallbacks(deps) {
 const asCount = (value) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0);
 export function createRunSupervisor(deps) {
     const runs = new Map();
+    /**
+     * Session key -> the most recently started run on it. The immediate ack means the FIFO
+     * group no longer serializes two turns on one room session, so for overlapping runs this
+     * names the newest — which is the one whose durable final is being delivered, and hence
+     * the right run id to stamp on an outbound reply.
+     */
     const bySession = new Map();
+    /** Host run id -> our run id, learned from the first event that carries a session key. */
+    const bySdkRun = new Map();
     let unsubscribe;
     const iso = () => deps.now().toISOString();
     /** Error name and run id only — a callback body carries room text. */
@@ -138,10 +146,16 @@ export function createRunSupervisor(deps) {
         };
     }
     function onEvent(evt) {
-        const runId = evt.sessionKey ? bySession.get(evt.sessionKey) : undefined;
+        // `lifecycle/start` always carries a session key and always precedes the first
+        // assistant/tool event, so it is what teaches us this host run id. Everything after
+        // is matched on that id — a blanked session key would otherwise drop the whole
+        // stream while lifecycle frames kept working, which fails silently.
+        const key = evt.deliverySessionKey ?? evt.sessionKey;
+        const runId = bySdkRun.get(evt.runId) ?? (key ? bySession.get(key) : undefined);
         const run = runId ? runs.get(runId) : undefined;
         if (!run)
             return;
+        bySdkRun.set(evt.runId, run.runId);
         if (evt.stream === "lifecycle") {
             const phase = evt.data.phase;
             if (phase === "start")
@@ -172,6 +186,9 @@ export function createRunSupervisor(deps) {
         runs.delete(run.runId);
         if (bySession.get(run.sessionKey) === run.runId)
             bySession.delete(run.sessionKey);
+        for (const [sdkRunId, owner] of bySdkRun)
+            if (owner === run.runId)
+                bySdkRun.delete(sdkRunId);
         let outcome;
         let errorKind;
         let message = "Agent run failed";

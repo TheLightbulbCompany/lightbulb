@@ -64,4 +64,19 @@ describe("createFramePublisher", () => {
     expect(retried).toEqual(["done"]);
     vi.useRealTimers();
   });
+
+  it("drops an unserializable frame without poisoning the channel", async () => {
+    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const logged: string[] = [];
+    const pub = createFramePublisher({ fetch: fetch as any, region: "us-east-1", credentials: async () => CREDS, log: (message) => logged.push(message) });
+    pub.push(ENDPOINT, CHANNEL, { ...frame("chunk"), cycle: 1n } as unknown as Parameters<typeof pub.push>[2]);
+    await expect(pub.flush(CHANNEL)).resolves.toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(logged).toEqual(["lightbulb: dropped 1 unserializable frame(s)"]);
+
+    pub.push(ENDPOINT, CHANNEL, frame("done"));
+    await expect(pub.flush(CHANNEL)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetch.mock.calls[0][1].body).events.map((e: string) => JSON.parse(e).payload.frame.type)).toEqual(["done"]);
+  });
 });

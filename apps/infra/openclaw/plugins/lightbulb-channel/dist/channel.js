@@ -749,6 +749,8 @@ export function createInboundHandler(deps) {
         const count = (req.rawHeaders ?? []).filter((_, i) => i % 2 === 0).filter((name) => name.toLowerCase() === header).length;
         const invocation = count <= 1 && typeof raw === "string" && raw.length <= 4096 && !raw.includes(",")
             && invocationBinding(raw, accountId, event.room.id, event.eventId) ? raw : undefined;
+        const { run } = event;
+        let admitted;
         try {
             const outcome = await effectOnce.runOnce({
                 eventId: event.eventId,
@@ -764,7 +766,6 @@ export function createInboundHandler(deps) {
                     }
                 },
             });
-            const { run } = event;
             if (outcome.kind === "replayed")
                 return json(res, 200, { eventId: event.eventId, runId: run.runId, status: "replayed" });
             if (outcome.value === "not_admitted") {
@@ -774,22 +775,7 @@ export function createInboundHandler(deps) {
                     message: "lightbulb: channel declined the event",
                 });
             }
-            // The claim is committed and the caller is answered before the turn starts: a
-            // death in between is a run that never started, which the backend sweeper reports
-            // as an error rather than re-running (spec §2).
-            json(res, 202, { eventId: event.eventId, runId: run.runId, status: "accepted" });
-            const admitted = outcome.value;
-            deps.runs.start({
-                runId: run.runId,
-                roomId: event.room.id,
-                agentId: accountId,
-                sessionKey: sessionKeyFor(accountId, event.room.id),
-                frameChannel: run.frameChannel,
-                frameEndpoint: run.frameEndpoint,
-                threadRootMessageId: event.message.threadRootMessageId ?? null,
-                eventKind: event.eventKind,
-            }, () => runRoomTurn(deps, event, admitted, invocation));
-            return true;
+            admitted = outcome.value;
         }
         catch (error) {
             if (error instanceof IngressRejected) {
@@ -801,6 +787,22 @@ export function createInboundHandler(deps) {
             }
             return json(res, 500, { error: "dispatch_failed", message: "lightbulb: inbound dispatch failed" });
         }
+        // Outside the try, so a throw here can never write a second response: the claim is
+        // committed and the caller is answered before the turn starts. A death in between is
+        // a run that never started, which the backend sweeper reports as an error rather
+        // than re-running (spec §2).
+        json(res, 202, { eventId: event.eventId, runId: run.runId, status: "accepted" });
+        deps.runs.start({
+            runId: run.runId,
+            roomId: event.room.id,
+            agentId: accountId,
+            sessionKey: sessionKeyFor(accountId, event.room.id),
+            frameChannel: run.frameChannel,
+            frameEndpoint: run.frameEndpoint,
+            threadRootMessageId: event.message.threadRootMessageId ?? null,
+            eventKind: event.eventKind,
+        }, () => runRoomTurn(deps, event, admitted, invocation));
+        return true;
     };
 }
 const RUN_CONTROL_RE = /^\/plugins\/lightbulb-channel\/runs\/([0-9a-f-]{36})\/(abort|steer)$/;

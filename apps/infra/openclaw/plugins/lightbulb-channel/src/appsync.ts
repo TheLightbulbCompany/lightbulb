@@ -97,7 +97,15 @@ export function createFramePublisher(deps: {
   const queues = new Map<string, Queue>();
 
   async function post(endpoint: string, channel: string, events: LiveFrameEvent[], attempt = 0): Promise<void> {
-    const body = JSON.stringify({ channel, events: events.map((event) => JSON.stringify(event)) });
+    let body: string;
+    try {
+      body = JSON.stringify({ channel, events: events.map((event) => JSON.stringify(event)) });
+    } catch {
+      // Unserializable frames can never be published, so retrying is pointless — and a
+      // throw here would poison the channel's promise chain for the rest of the process.
+      deps.log?.(`lightbulb: dropped ${events.length} unserializable frame(s)`);
+      return;
+    }
     let status: number;
     try {
       const headers = signAppSyncPublish({ url: endpoint, body, region: deps.region, credentials: await deps.credentials() });
@@ -124,7 +132,8 @@ export function createFramePublisher(deps: {
     if (queue.timer) clearTimeout(queue.timer);
     queue.timer = undefined;
     const batch = queue.events.splice(0, FRAME_BATCH);
-    queue.chain = queue.chain.then(() => post(queue.endpoint, channel, batch));
+    // A rejecting step would poison the chain forever and reject every later flush().
+    queue.chain = queue.chain.then(() => post(queue.endpoint, channel, batch)).catch(() => {});
     if (queue.events.length > 0) flushNow(channel);
   }
 

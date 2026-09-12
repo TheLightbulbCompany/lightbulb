@@ -63,6 +63,23 @@ describe("run supervisor", () => {
     expect(h.frames.flush).toHaveBeenCalledWith(RUN.frameChannel);
   });
 
+  it("keeps streaming after the host blanks the session key, and ignores another run's events", async () => {
+    const h = harness();
+    let finish!: (v: "dispatched") => void;
+    h.runs.start(RUN, () => new Promise((resolve) => { finish = resolve; }));
+    h.emit({ stream: "lifecycle", data: { phase: "start" } });
+    // The host blanks sessionKey on every non-lifecycle stream for a surface the control
+    // UI cannot see, and only attaches deliverySessionKey under a context claim.
+    h.emit({ stream: "assistant", sessionKey: undefined, deliverySessionKey: undefined, data: { text: "Hi", delta: "Hi" } });
+    h.emit({ runId: "other-sdk-run", stream: "assistant", sessionKey: undefined, deliverySessionKey: undefined, data: { text: "nope", delta: "nope" } });
+    finish("dispatched");
+    await h.settle();
+    expect(h.types()).toEqual(["run_active", "chunk", "chunk", "done", "run_ended", "run_active"]);
+    expect(h.frames.push.mock.calls[1][2].payload.frame).toMatchObject({ content: "Hi", append: true });
+    expect(h.frames.push.mock.calls[2][2].payload.frame).toMatchObject({ content: "Hi" }); // the resync is not empty
+    expect(JSON.stringify(h.frames.push.mock.calls)).not.toContain("nope");
+  });
+
   it("ends with error after a lifecycle error and never re-runs", async () => {
     const h = harness();
     h.runs.start(RUN, async () => { h.emit({ stream: "lifecycle", data: { phase: "start" } }); h.emit({ stream: "lifecycle", data: { phase: "error", error: "boom", stopReason: "timeout" } }); return "dispatched"; });

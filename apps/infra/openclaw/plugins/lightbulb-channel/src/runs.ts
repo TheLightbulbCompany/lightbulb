@@ -15,7 +15,19 @@ export type RunOutcome = "completed" | "error" | "aborted" | "ignored" | "gate_e
 export type RunUsage = { model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null };
 export type RunEvent = { runId: string; type: "run.started" | "run.heartbeat" | "run.ended"; at: string; sessionKey?: string; outcome?: RunOutcome; errorKind?: string; usage?: RunUsage };
 export type RunCallbacks = { send(event: RunEvent): Promise<void> };
-export type AgentEvent = { runId: string; stream: string; data: Record<string, unknown>; sessionKey?: string };
+/**
+ * `runId` is the HOST's run id, not ours. `sessionKey` is only populated for a surface the
+ * control UI can see (and, for every surface, on `lifecycle`); `deliverySessionKey` is the
+ * unblanked copy, but the host only attaches it when the run holds a context claim — so
+ * neither is a reliable correlator on a streaming event. The host run id is.
+ */
+export type AgentEvent = {
+  runId: string;
+  stream: string;
+  data: Record<string, unknown>;
+  sessionKey?: string;
+  deliverySessionKey?: string;
+};
 /** The session-store row the gateway patches at run end (sessions.list reads the same fields). */
 export type SessionUsageEntry = { model?: string; inputTokens?: number; outputTokens?: number; cacheRead?: number; cacheWrite?: number; estimatedCostUsd?: number };
 export type RunSdk = {
@@ -131,7 +143,15 @@ export function createRunSupervisor(deps: {
   log?: (message: string) => void;
 }) {
   const runs = new Map<string, ActiveRun>();
+  /**
+   * Session key -> the most recently started run on it. The immediate ack means the FIFO
+   * group no longer serializes two turns on one room session, so for overlapping runs this
+   * names the newest — which is the one whose durable final is being delivered, and hence
+   * the right run id to stamp on an outbound reply.
+   */
   const bySession = new Map<string, string>();
+  /** Host run id -> our run id, learned from the first event that carries a session key. */
+  const bySdkRun = new Map<string, string>();
   let unsubscribe: (() => void) | undefined;
 
   const iso = () => deps.now().toISOString();
@@ -184,9 +204,15 @@ export function createRunSupervisor(deps: {
     };
   }
   function onEvent(evt: AgentEvent): void {
-    const runId = evt.sessionKey ? bySession.get(evt.sessionKey) : undefined;
+    // `lifecycle/start` always carries a session key and always precedes the first
+    // assistant/tool event, so it is what teaches us this host run id. Everything after
+    // is matched on that id — a blanked session key would otherwise drop the whole
+    // stream while lifecycle frames kept working, which fails silently.
+    const key = evt.deliverySessionKey ?? evt.sessionKey;
+    const runId = bySdkRun.get(evt.runId) ?? (key ? bySession.get(key) : undefined);
     const run = runId ? runs.get(runId) : undefined;
     if (!run) return;
+    bySdkRun.set(evt.runId, run.runId);
     if (evt.stream === "lifecycle") {
       const phase = evt.data.phase;
       if (phase === "start") markStarted(run);
@@ -212,6 +238,7 @@ export function createRunSupervisor(deps: {
     // run_ended, and a throw below must not strand the entry in either map.
     runs.delete(run.runId);
     if (bySession.get(run.sessionKey) === run.runId) bySession.delete(run.sessionKey);
+    for (const [sdkRunId, owner] of bySdkRun) if (owner === run.runId) bySdkRun.delete(sdkRunId);
     let outcome: RunOutcome;
     let errorKind: string | undefined;
     let message = "Agent run failed";

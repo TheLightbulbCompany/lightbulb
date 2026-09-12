@@ -62,7 +62,10 @@ const runs = createRunSupervisor({
     resolveActiveEmbeddedRunSessionId,
     abortEmbeddedAgentRun,
     queueAgentHarnessMessage,
-    getSessionEntry: ({ agentId, sessionKey }) => getSessionEntry({ agentId, sessionKey, env: process.env }) as any,
+    // readConsistency "latest": usage is read at run end, where a validity-token-cached
+    // snapshot would still carry the previous turn's totals.
+    getSessionEntry: ({ agentId, sessionKey }) =>
+      getSessionEntry({ agentId, sessionKey, env: process.env, readConsistency: "latest" }) as any,
   },
   callbacks: createRunCallbacks({ fetch: fetchLike, env: () => process.env, log: (m) => console.warn(m) }),
   frames: createFramePublisher({

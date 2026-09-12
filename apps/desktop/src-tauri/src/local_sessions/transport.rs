@@ -637,10 +637,12 @@ impl Host {
                                 relay_log(&format!("{} rate limited; pending batch retries after the throttle", short(&key)));
                                 continue;
                             }
-                            // Only an error that named no session is necessarily this RPC's own
-                            // reply; one naming a session may be about a batch while the in-flight
-                            // RPC is that key's heartbeat, whose real ACK is still coming.
-                            if !attributed {
+                            // A named error is about this session's events frame only while a
+                            // batch is outstanding; in every other case it is the in-flight RPC's
+                            // own reply, and holding the slot would stall until the 10s timeout.
+                            if pending_rpc.as_ref().is_some_and(|(k, ..)| *k == key)
+                                && !(attributed && sent_batches.contains_key(&key))
+                            {
                                 pending_rpc = None;
                             }
                             quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, &format!("relay rejected a frame: {code}"));
@@ -1839,6 +1841,37 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 1);
         assert!(stored.pending.is_none());
+    }
+    #[tokio::test]
+    async fn local_sessions_named_error_without_an_outstanding_batch_frees_the_rpc_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["session"]["generation"], "g-a");
+            // A restored session already carries its id, so this rejection is a NAMED error with
+            // no batch outstanding -- the shape of a rejected heartbeat or receipt, whose reply
+            // this error is. Leaving the RPC slot occupied would stall until the 10s timeout.
+            reply(&mut socket, json!({"type":"local.session.error","code":"LOCAL_SESSION_CONFLICT","sessionId":SID})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(second["type"], "local.session.register");
+            assert_eq!(second["session"]["generation"], "g-b", "the RPC slot must be free for the next session");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID_B,"generation":"g-b",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            socket.close(None).await.unwrap();
+        });
+        let mut a = test_mirror("native-a", "g-a");
+        a.session_id = Some(SID.into());
+        let mut host = test_host(dir.path(), vec![("a-session", a), ("b-session", test_mirror("native-b", "g-b"))]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
+        assert_eq!(b.session_id.as_deref(), Some(SID_B));
     }
     #[test]
     fn local_sessions_quarantine_is_time_bound_not_connection_bound() {

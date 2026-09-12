@@ -546,7 +546,16 @@ function RoomContent({
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom} />
       <nav className="room-tabs" aria-label="Conversation views">
-        <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
+        <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined}
+          onClick={() => {
+            closeDetail();
+            // Same [contextCollapsed]-effect race as the search/Jump call
+            // sites above: this button closes the room details panel too,
+            // and the click itself should keep this button focused, not get
+            // yanked back onto the Details trigger.
+            contextWasOpen.current = false;
+            setContextCollapsed(true);
+          }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
         <button ref={contextTrigger} type="button" className="room-tab"
           aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>

@@ -266,6 +266,20 @@ it("returns focus to the Details trigger, not <body>, when Escape closes the roo
   expect(trigger).toHaveFocus();
 });
 
+it("leaves focus on the Conversation tab, not the Details trigger, when it closes an open details panel", async () => {
+  // Same [contextCollapsed]-effect race as the Escape/Jump/search paths --
+  // this tab also closes the room-details panel, so clicking it must not get
+  // yanked back onto the Details trigger.
+  render(<RoomPanel {...props} />);
+  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  expect(screen.getByRole("complementary", { name: "Room details" })).toBeInTheDocument();
+  const conversationTab = screen.getByRole("button", { name: "Conversation" });
+  await userEvent.click(conversationTab);
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(document.activeElement).toBe(conversationTab);
+  expect(conversationTab).toHaveFocus();
+});
+
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
   render(<RoomPanel {...props} messages={[{ ...message, author: { kind, id: "friday", displayName: "Announcement" } }]} />);
   const article = screen.getByRole("article", { name: "Message from Announcement" });

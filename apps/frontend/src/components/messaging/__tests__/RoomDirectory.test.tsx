@@ -527,8 +527,10 @@ it("keeps the sidebar heading from forcing the directory wider than its box", ()
   expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*flex-shrink:\s*0;/);
   // When the actions cluster wraps onto its own line it's the lone flex item
   // there, so .room-directory-heading's space-between has nothing left to
-  // space and collapses flush-left without its own right-alignment.
-  expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*justify-content:\s*flex-end;/);
+  // space and collapses flush-left. margin-left: auto (not justify-content,
+  // which would only distribute space among the cluster's OWN children) is
+  // what pushes a flex item to the end of its own flex line.
+  expect(css).toMatch(/\.room-directory-heading-actions\s*\{[^}]*margin-left:\s*auto;/);
   expect(css).toMatch(/\.room-directory-heading-actions,\s*\.room-directory-row\s*\{[^}]*min-width:\s*0;/);
 });
 

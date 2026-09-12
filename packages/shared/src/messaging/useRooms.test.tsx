@@ -126,6 +126,61 @@ describe("useRooms platform seams", () => {
     }));
   });
 
+  // `activate: false` is the picker seam: a sheet that resolves a room only to
+  // navigate to it must not leave its own hook instance holding that room, or
+  // the detail SWR (refreshInterval 60s) polls it for the rest of the session.
+  it("creates a DM without activating it when activate is false", async () => {
+    messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
+    messaging.createRoom.mockResolvedValue({ ...room, roomId: "room-2", kind: "dm" });
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.roomsLoading).toBe(false));
+    const opened: (string | null)[] = [];
+    await act(async () => {
+      opened.push(await result.current.selectDm({ kind: "agent", id: "agent-1" }, { activate: false }));
+    });
+    expect(opened).toEqual(["room-2"]);
+    expect(result.current.activeRoomId).toBeNull();
+    expect(messaging.getRoom).not.toHaveBeenCalled();
+    expect(messaging.listMessages).not.toHaveBeenCalled();
+  });
+
+  it("returns an existing DM without activating it when activate is false", async () => {
+    const dm: RoomDetail = {
+      ...room, roomId: "room-dm", kind: "dm", name: null,
+      members: [
+        room.members[0],
+        { kind: "agent", id: "agent-1", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "2026-09-11T00:00:00Z", joinedSeq: 0 },
+      ],
+    };
+    messaging.listRooms.mockResolvedValue({ rooms: [dm], sections: [] });
+    messaging.getRoom.mockResolvedValue(dm);
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.rooms).toHaveLength(1));
+    const opened: (string | null)[] = [];
+    await act(async () => {
+      opened.push(await result.current.selectDm({ kind: "agent", id: "agent-1" }, { activate: false }));
+    });
+    expect(opened).toEqual(["room-dm"]);
+    expect(result.current.activeRoomId).toBeNull();
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+    expect(messaging.listMessages).not.toHaveBeenCalled();
+  });
+
+  it("creates a room without activating it when activate is false", async () => {
+    messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
+    messaging.createRoom.mockResolvedValue({ ...room, roomId: "room-3", kind: "group-dm" });
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.roomsLoading).toBe(false));
+    await act(async () => {
+      await result.current.createRoom(
+        { clientRoomId: "c1", kind: "group-dm", name: null, members: [{ kind: "agent", id: "agent-1", role: "member", listenMode: "active" }] },
+        { activate: false },
+      );
+    });
+    expect(result.current.activeRoomId).toBeNull();
+    expect(messaging.listMessages).not.toHaveBeenCalled();
+  });
+
   it("treats a null userId as signed out and fetches nothing", async () => {
     renderHook(() => useRooms(platform({ userId: null })), { wrapper });
     await new Promise((resolve) => setTimeout(resolve, 0));

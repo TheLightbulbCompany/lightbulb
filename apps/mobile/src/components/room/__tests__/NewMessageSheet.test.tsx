@@ -11,12 +11,20 @@ jest.mock("expo-crypto", () => ({ randomUUID: () => "66666666-6666-4666-8666-666
 // babel-plugin-jest-hoist rejects the rest — and every reference INSIDE a
 // factory is lazy: babel lowers these `const`s to `var`, so a factory that
 // captured the binding directly would see `undefined`.
-const mockSelectDm = jest.fn(async (_ref: MemberRef): Promise<string | null> => "room-dm");
-const mockCreateRoom = jest.fn(async (_request: CreateRoomRequest) => ({ roomId: "room-group" }));
+interface Activation {
+  activate: boolean;
+}
+const mockSelectDm = jest.fn(
+  async (_ref: MemberRef, _options?: Activation): Promise<string | null> => "room-dm",
+);
+const mockCreateRoom = jest.fn(async (_request: CreateRoomRequest, _options?: Activation) => ({
+  roomId: "room-group",
+}));
 jest.mock("../../../lib/rooms", () => ({
   useMobileRooms: () => ({
-    selectDm: (ref: MemberRef) => mockSelectDm(ref),
-    createRoom: (request: CreateRoomRequest) => mockCreateRoom(request),
+    selectDm: (ref: MemberRef, options?: Activation) => mockSelectDm(ref, options),
+    createRoom: (request: CreateRoomRequest, options?: Activation) =>
+      mockCreateRoom(request, options),
   }),
 }));
 const mockFetchMembers = jest.fn(async () => [
@@ -56,6 +64,7 @@ describe("NewMessageSheet", () => {
     mockSelectDm.mockClear();
     mockCreateRoom.mockClear();
     mockSelectDm.mockImplementation(async () => "room-dm");
+
   });
 
   it("lists people and agents, and never the signed-in user", async () => {
@@ -71,7 +80,16 @@ describe("NewMessageSheet", () => {
     await waitFor(() => expect(screen.getByText("Friday")).toBeTruthy());
     await fireEvent.press(screen.getByText("Friday"));
     await fireEvent.press(screen.getByLabelText("Start conversation"));
-    await waitFor(() => expect(mockSelectDm).toHaveBeenCalledWith({ kind: "agent", id: "agent-1" }));
+    // `activate: false` is load-bearing, not decoration: this sheet stays
+    // mounted behind the room screen it navigates to, and a hook instance left
+    // holding that room polls `GET /rooms/{id}` every 60s and reconciles its
+    // history for the rest of the session.
+    await waitFor(() =>
+      expect(mockSelectDm).toHaveBeenCalledWith(
+        { kind: "agent", id: "agent-1" },
+        { activate: false },
+      ),
+    );
     await waitFor(() => expect(onOpenRoom).toHaveBeenCalledWith("room-dm"));
     expect(mockCreateRoom).not.toHaveBeenCalled();
   });
@@ -92,6 +110,8 @@ describe("NewMessageSheet", () => {
             { kind: "agent", id: "agent-1", role: "member", listenMode: "active" },
           ],
         }),
+        // Same reason as the single-pick path above.
+        { activate: false },
       ),
     );
     await waitFor(() => expect(onOpenRoom).toHaveBeenCalledWith("room-group"));

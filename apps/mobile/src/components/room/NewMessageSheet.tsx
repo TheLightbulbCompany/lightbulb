@@ -48,7 +48,15 @@ export function NewMessageSheet({
   configRef.current = config;
   const { agents } = useAgents(live);
   // List-only, like the tab that mounts this: the SWR keys are shared with the
-  // screen's own hook, so this costs no extra fetch.
+  // screen's own hook, so this costs no extra fetch. Both calls below pass
+  // `activate: false` — this sheet stays mounted behind the room it opens, and
+  // an instance holding a room it never displays would poll that room's detail
+  // every 60s and reconcile its history behind the screen that owns it.
+  //
+  // ponytail: it is still a SECOND room machine, so every live event runs two
+  // handlers and there are two AppState listeners. The upgrade is the parent
+  // passing its own instance's `selectDm`/`createRoom` down as props; do it if
+  // a busy workspace ever shows list churn.
   const { selectDm, createRoom } = useMobileRooms({
     autoSelect: false,
     subscribeToRoom: false,
@@ -119,7 +127,7 @@ export function NewMessageSheet({
     try {
       const roomId =
         picked.length === 1
-          ? await selectDm(picked[0])
+          ? await selectDm(picked[0], { activate: false })
           : (
               await createRoom({
                 clientRoomId: randomUUID(),
@@ -131,7 +139,7 @@ export function NewMessageSheet({
                   role: "member" as const,
                   listenMode: ref.kind === "agent" ? ("active" as const) : null,
                 })),
-              })
+              }, { activate: false })
             ).roomId;
       if (roomId) onOpenRoom(roomId);
     } catch (cause) {

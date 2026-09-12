@@ -509,14 +509,28 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
   }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
-  const createRoom = useCallback(async (request: CreateRoomRequest, requestId = ++selectionRequest.current) => {
+  /**
+   * `activate: false` resolves or creates the room WITHOUT making it this
+   * instance's active room. It exists for a picker (mobile's new-message sheet)
+   * that hands the id to a navigation and then stays mounted: an instance left
+   * holding a room it never displays keeps `detailResponse` polling it
+   * (`refreshInterval: 60_000`) and reconciles its history for the rest of the
+   * session, behind the screen that legitimately owns it.
+   */
+  const createRoom = useCallback(async (
+    request: CreateRoomRequest,
+    { requestId = ++selectionRequest.current, activate = true }: { requestId?: number; activate?: boolean } = {},
+  ) => {
     const created = await messaging.createRoom(request);
     await mutateRooms();
-    if (requestId === selectionRequest.current) setActiveRoomId(created.roomId);
+    if (activate && requestId === selectionRequest.current) setActiveRoomId(created.roomId);
     return created;
   }, [messaging, mutateRooms]);
 
-  const selectDm = useCallback(async (participant: MemberRef): Promise<string | null> => {
+  const selectDm = useCallback(async (
+    participant: MemberRef,
+    { activate = true }: { activate?: boolean } = {},
+  ): Promise<string | null> => {
     const requestId = ++selectionRequest.current;
     let details = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
     let hydrationError = directoryDetailsResponse.error;
@@ -536,7 +550,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     );
     if (existing) {
       dmRequests.current.delete(`${participant.kind}:${participant.id}`);
-      setActiveRoomId(existing.roomId);
+      if (activate) setActiveRoomId(existing.roomId);
       return existing.roomId;
     }
     if (hydrationError) throw hydrationError;
@@ -548,7 +562,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       kind: "dm",
       name: null,
       members: [{ kind: participant.kind, id: participant.id, role: "member", listenMode: participant.kind === "agent" ? "active" : null }],
-    }, requestId);
+    }, { requestId, activate });
     dmRequests.current.delete(key);
     return requestId === selectionRequest.current ? created.roomId : null;
   }, [createRoom, directoryDetailsResponse.data, directoryDetailsResponse.error, getCachedDirectoryRoomDetails, loadDirectoryRoomDetails, uuid]);

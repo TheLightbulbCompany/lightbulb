@@ -296,3 +296,38 @@ async def test_publish_room_frame_emits_outcome_and_frame_type(monkeypatch):
         ("messaging.room_frame.publish", {"outcome": "ok", "frame_type": "chunk"}),
         ("messaging.room_frame.publish", {"outcome": "error", "frame_type": "done"}),
     ]
+
+
+def _conn():
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    conn._room_run_context = {}
+    conn._run_state = {}
+    conn._terminal_run_ids = {}
+    return conn
+
+
+def test_run_id_for_session_hits_while_in_flight():
+    conn = _conn()
+    conn.mark_run_active(SESSION_KEY, agent_id=AGENT_ID)
+    assert conn.run_id_for_session(SESSION_KEY) is None
+    conn._touch_run(SESSION_KEY, "run-1")
+    assert conn.run_id_for_session(SESSION_KEY) == "run-1"
+
+
+def test_run_id_for_session_misses_without_entry_or_after_terminal():
+    conn = _conn()
+    assert conn.run_id_for_session(SESSION_KEY) is None
+    conn.mark_run_active(SESSION_KEY, agent_id=AGENT_ID)
+    conn._touch_run(SESSION_KEY, "run-1")
+    conn._clear_active_run(SESSION_KEY, "run-1")
+    # Terminal ids are retained for abort auth, but the receipt stamp reads
+    # the active window only — a completed run must not stamp later messages.
+    assert conn.run_id_for_session(SESSION_KEY) is None
+
+
+def test_run_id_for_session_folds_case_like_every_other_reader():
+    conn = _conn()
+    conn.mark_run_active(SESSION_KEY.upper(), agent_id=AGENT_ID)
+    conn._touch_run(SESSION_KEY, "run-9")
+    assert conn.run_id_for_session(SESSION_KEY) == "run-9"

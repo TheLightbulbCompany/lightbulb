@@ -24,7 +24,7 @@ from core.auth import AuthContext, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.repositories import container_repo, messaging_repo
-from core.containers import get_workspace
+from core.containers import get_gateway_pool_if_started, get_workspace
 from core.containers.workspace import WorkspaceError
 from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
 
@@ -1661,6 +1661,33 @@ def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], li
     return mentions, _unresolved_mention_reasons(text, members)
 
 
+def _receipt_run_id(owner_id: str, agent_id: str, room_id: str) -> str | None:
+    """The in-flight run id for the agent's room session, if the gateway knows it.
+
+    The container's receipt POST carries no run identity (the host send context
+    has no run field), but the backend's own gateway connection has been
+    recording every event's runId on the session's active-run entry since the
+    run started — so the reply's run is known here in the common case. Best
+    effort by design: any miss (no connection, run already terminal, a run the
+    gateway never saw such as cron) returns None and the message persists
+    exactly as before, on the clients' text-match fallback. Must never raise —
+    a best-effort lookup must not fail the receipt path.
+    """
+    # Same grammar as openclaw_work.lightbulb_session_key and the channel
+    # plugin's sessionKeyFor (duplicated, not imported: openclaw_work imports
+    # this module, so importing it back would cycle).
+    session_key = f"agent:{agent_id}:lightbulb:channel:{room_id}"
+    try:
+        # if_started: no pool means no tracked runs, so None is the answer —
+        # and a cold process must not pay singleton construction (~2s of boto
+        # setup) inside this latency-measured receipt path.
+        pool = get_gateway_pool_if_started()
+        return pool.run_id_for_session(owner_id, session_key) if pool else None
+    except Exception:
+        logger.exception("run-id lookup failed for agent %s room %s", agent_id, room_id)
+        return None
+
+
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
     room_id = str(request.room_id)
     agent_id = str(request.agent_id)
@@ -1683,6 +1710,10 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     mentions, unresolved = parse_agent_mentions(request.text, members)
     targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)
+    # Stamp the producing run when the gateway still holds it: clients retire
+    # the run card on an exact runId match instead of showing card + message
+    # side by side (the doubles). None keeps today's text-match fallback.
+    run_id = _receipt_run_id(owner_id, agent_id, room_id)
     req_hash = messaging_repo.request_hash(
         room_id,
         agent_id,
@@ -1702,7 +1733,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             mentions=mentions,
             reply_to_message_id=str(request.reply_to_message_id) if request.reply_to_message_id else None,
             thread_root_message_id=str(request.thread_root_message_id) if request.thread_root_message_id else None,
-            run_id=None,
+            run_id=run_id,
             dispatch_targets=targets,
             source_agent_id=agent_id,
             client_message_id=None,
@@ -1718,6 +1749,13 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         put_metric(
             "messaging.message.created",
             dimensions={"author_kind": "agent", "room_kind": room_kind, "has_targets": "true" if targets else "false"},
+        )
+        # Stamped vs unset tells us whether the doubles fix is actually
+        # engaging in prod. Counted here (not at lookup time) so container
+        # retries don't inflate it — same rule as every counter on this path.
+        put_metric(
+            "messaging.agent_message.run_id",
+            dimensions={"result": "stamped" if run_id else "unset", "room_kind": room_kind},
         )
         for reason in unresolved:
             put_metric("messaging.mention.unresolved", dimensions={"reason": reason})

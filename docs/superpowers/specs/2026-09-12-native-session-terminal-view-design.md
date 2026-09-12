@@ -34,7 +34,7 @@ shared `packages/shared/src/messaging/types.ts`, web
 | Claude `capture` status | `idle`/`busy` from `claude agents --json`; `waiting` falls to `unknown` | a session sitting on a permission dialog reads "Activity unknown" |
 | event contract | `{seq, kind, role, text, truncated}`; `kind: tool|lifecycle` reserved, never emitted | no timestamps, no item ids, no tool structure |
 | desktop upload | one event per envelope, ≥500 ms apart, 1,800-char text splits | a long answer is several `Claude` cards; a code fence can split |
-| relay `_events` | stores, acks, publishes **no** live hint | panel refreshes on its 5 s poll |
+| relay `_events` | stores, acks; the handler's loop default publishes an **unthrottled** `room.resources.changed` per batch (up to 2/s per session, corrected 2026-09-12 during implementation) | the active room's panel refetches on every batch; other rooms rely on the 5 s poll |
 | panel | 344 px pane; a third is caveat prose; cards labelled "Native user turn"/"Claude" | prompt + final prose, nothing in between |
 | teammate input | Claude records `Another Claude session sent a message:\n[Lightbulb teammate contribution {…}]…` + permission suffix; Codex records the bracketed prefix | rendered raw as a "Native user turn" |
 | title | provider + 8 hex chars | `Claude · 9e54c57e` |

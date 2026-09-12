@@ -142,6 +142,11 @@
 }
 .participant-avatar[data-agent-state="attention"] { box-shadow: 0 0 0 2px var(--err); }
 .participant-avatar[data-agent-state="paused"] { box-shadow: 0 0 0 2px var(--warn); }
+/* Presence dot for people: bottom-right of the avatar, ringed in the surface it
+   sits on so it reads as attached. Where it shows is decided by the
+   ParticipantAvatar `showPresence` prop (single faces only), not here. */
+.participant-avatar[data-presence="online"]::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; background: var(--presence); box-shadow: 0 0 0 2px var(--background); }
+.room-directory .participant-avatar[data-presence="online"]::after { box-shadow: 0 0 0 2px var(--muted); }
 @keyframes agent-activity-halo {
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
 }

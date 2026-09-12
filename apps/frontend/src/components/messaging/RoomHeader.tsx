@@ -111,7 +111,7 @@ export function RoomHeader({
         <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}
       <Button type="button" variant="ghost" className="room-facepile" aria-label={`View members, ${participantCount} in this conversation`}
         onClick={() => onOpenDetails("members")}>
-        {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" />)}
+        {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
         {overflow > 0 && <span className="text-sm text-muted-foreground">+{overflow}</span>}
       </Button>
       {onSetPrefs && <Button type="button" variant="ghost" size="icon" disabled={!actionable || pending}

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { copyText, roomPermalink } from "./messageLinks";
-import { nextUnreadRoomId } from "./roomNavigation";
+import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
@@ -143,7 +143,9 @@ function DirectoryContent({
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
   });
   const partialError = state === "error" && rooms.length > 0;
-  const unreadRooms = rooms.filter((room) => room.unreadCount > 0);
+  // Muted rooms are unread but never a jump destination -- same predicate
+  // the Alt+Shift+Arrow shortcut uses, so the chevron cannot disagree with it.
+  const unreadRooms = rooms.filter(isUnreadTarget);
   // A drafted room can be absent from `rooms` (left, or directory still
   // loading) — gate the section on this filtered list, not on
   // draftRoomIds.length, or the heading renders over an empty list.

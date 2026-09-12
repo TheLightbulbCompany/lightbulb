@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { adjacentRoomId, nextUnreadRoomId } from "../roomNavigation";
 
 const rooms = [
-  { roomId: "a", unreadCount: 0 },
-  { roomId: "b", unreadCount: 2 },
-  { roomId: "c", unreadCount: 0 },
+  { roomId: "a", unreadCount: 0, muted: false },
+  { roomId: "b", unreadCount: 2, muted: false },
+  { roomId: "c", unreadCount: 0, muted: false },
 ];
 
 describe("adjacentRoomId", () => {
@@ -40,6 +40,11 @@ describe("nextUnreadRoomId", () => {
   it("returns null when nothing is unread", () => {
     const readRooms = rooms.map((room) => ({ ...room, unreadCount: 0 }));
     expect(nextUnreadRoomId(readRooms, "a", 1)).toBeNull();
+  });
+  it("skips a muted room even when it is unread", () => {
+    const muted = rooms.map((room) => room.roomId === "b" ? { ...room, muted: true } : room);
+    expect(nextUnreadRoomId(muted, "c", 1)).toBeNull();
+    expect(nextUnreadRoomId([...muted, { roomId: "d", unreadCount: 1, muted: false }], "c", 1)).toBe("d");
   });
   it("matches RoomDirectory's forward wrapping search from an unknown current room", () => {
     // currentId not found (from = -1): search starts at index 0, exactly

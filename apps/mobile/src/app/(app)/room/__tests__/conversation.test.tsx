@@ -1,0 +1,162 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { dateDividerLabel, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
+import { AppState } from "react-native";
+
+// The real @lightbulb/shared room machine runs here (that is the point of the
+// suite), so a cold transform cache can outlast jest's 5s default.
+jest.setTimeout(20000);
+
+// Every out-of-scope name a jest.mock factory reaches for is `mock`-prefixed —
+// babel-plugin-jest-hoist rejects the rest.
+const mockPush = jest.fn();
+jest.mock("expo-router", () => {
+  // useFocusEffect is an EFFECT upstream. A mock that calls the callback during
+  // render turns the screen's setFocused into a render-phase update, which React
+  // re-runs unconditionally — "Too many re-renders" regardless of the value.
+  const { useEffect } = require("react");
+  return {
+    // Every reference out of a mock factory has to be LAZY: babel lowers these
+    // `const`s to `var`, and the factory runs while the screen's own import is
+    // still being resolved, i.e. before the module body has assigned them.
+    router: {
+      push: (...args: unknown[]) => mockPush(...args),
+      back: jest.fn(),
+      canGoBack: () => true,
+      replace: jest.fn(),
+    },
+    Stack: { Screen: () => null },
+    useFocusEffect: (cb: () => void) => useEffect(cb, [cb]),
+    useLocalSearchParams: () => ({ roomId: "room-1" }),
+  };
+});
+jest.mock("@clerk/clerk-expo", () => ({
+  useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
+  useOrganization: () => ({ organization: null }),
+}));
+jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
+
+const mockRoom: RoomDetail = {
+  roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",
+  lastMessageSeq: 3, lastMessageAt: "2026-09-11T10:02:00Z", unreadCount: 1,
+  updatedAt: "2026-09-11T10:02:00Z", lastReadSeq: 2, createdAt: "2026-09-11T09:00:00Z",
+  members: [
+    { kind: "human", id: "user-a", displayName: "Alice", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "x", joinedSeq: 0 },
+    { kind: "agent", id: "agent-1", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "x", joinedSeq: 0 },
+  ],
+};
+const mockMsg = (over: Partial<CanonicalRoomMessage>): CanonicalRoomMessage => ({
+  messageId: "m1", roomId: "room-1", messageSeq: 1, roomRevision: 1,
+  author: { kind: "agent", id: "agent-1", displayName: "Friday" }, text: "first",
+  mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  createdAt: "2026-09-11T10:00:00Z", runId: null, ...over,
+});
+const mockBase = [
+  mockMsg({}),
+  mockMsg({ messageId: "m2", messageSeq: 2, text: "second" }),
+  mockMsg({ messageId: "m3", messageSeq: 3, text: "mine", author: { kind: "human", id: "user-a", displayName: "Alice" } }),
+];
+let mockMessages: CanonicalRoomMessage[] = [...mockBase];
+
+const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
+const mockLive = {
+  httpReady: true, liveConnected: true, liveError: null,
+  liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
+  messaging: {
+    listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
+    getRoom: jest.fn(async () => mockRoom),
+    listMessages: jest.fn(async () => ({ messages: mockMessages, nextAfterSeq: null })),
+    markRead: mockMarkRead,
+    sendMessage: jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" })),
+    getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
+    downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
+    setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
+    updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
+    updateMessage: jest.fn(), setReaction: jest.fn(), getLiveConfig: jest.fn(), listResources: jest.fn(),
+  },
+  claimActiveRoomSubscription: jest.fn(() => () => {}),
+  onEvent: () => () => {}, onChatMessage: () => () => {},
+  runtime: {}, rpc: jest.fn(), getOperation: jest.fn(),
+};
+// One hoisted object, never a fresh literal per call: RoomsPlatform requires a
+// referentially stable `live`, and a new one per render re-fires the history
+// reconcile into "Maximum update depth exceeded".
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+
+import Conversation from "../[roomId]/index";
+
+// jest-expo leaves AppState.currentState undefined; a device reports "active",
+// and the RoomsPlatform ANDs it into isVisible(), which gates read marking.
+const realAppState = AppState.currentState;
+beforeAll(() => {
+  (AppState as { currentState: typeof AppState.currentState }).currentState = "active";
+});
+afterAll(() => {
+  (AppState as { currentState: typeof AppState.currentState }).currentState = realAppState;
+});
+
+describe("conversation screen", () => {
+  beforeEach(() => {
+    mockPush.mockClear();
+    mockMarkRead.mockClear();
+    mockMessages = [...mockBase];
+  });
+
+  it("shows the author name once per run and a day divider above the first message", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.getAllByText("Friday")).toHaveLength(1);
+    expect(screen.getByTestId("room-timeline")).toBeTruthy();
+    expect(
+      screen.getByText(dateDividerLabel(new Date("2026-09-11T10:00:00Z"), new Date())),
+    ).toBeTruthy();
+  });
+
+  it("draws the New messages line at the read cursor the room opened with", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());
+  });
+
+  it("marks the room read up to the newest sequence once it is on screen", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
+  });
+
+  it("keeps thread replies out of the main timeline and opens the thread from the replies row", async () => {
+    mockMessages = [
+      ...mockBase,
+      mockMsg({ messageId: "m5", messageSeq: 4, text: "in the thread", threadRootMessageId: "m2" }),
+    ];
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("1 reply")).toBeTruthy());
+    expect(screen.queryByText("in the thread")).toBeNull();
+    await fireEvent.press(screen.getByText("1 reply"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/thread/m2");
+  });
+
+  it("shows no replies row on a message nobody replied to", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.queryByText("1 reply")).toBeNull();
+  });
+
+  it("keeps the keyboard dismissable by drag and taps landing on controls", async () => {
+    await render(<Conversation />);
+    const list = screen.getByTestId("room-timeline");
+    expect(list.props.keyboardDismissMode).toBe("interactive");
+    expect(list.props.keyboardShouldPersistTaps).toBe("handled");
+  });
+
+  it("shows a jump-to-latest pill only after scrolling away from the bottom", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+    await fireEvent.scroll(screen.getByTestId("room-timeline"), {
+      nativeEvent: {
+        contentOffset: { y: 0, x: 0 },
+        contentSize: { height: 2000, width: 400 },
+        layoutMeasurement: { height: 600, width: 400 },
+      },
+    });
+    expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
+  });
+});

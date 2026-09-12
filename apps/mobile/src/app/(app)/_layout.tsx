@@ -97,6 +97,13 @@ export default function AppLayout() {
             />
             {/* Chat detail — reachable by navigation only, not a tab. */}
             <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
+            {/* Conversations live in their own Stack (room/_layout.tsx) so a
+                thread pushes over the room; it owns its headers, and the tab
+                bar is hidden because a conversation is a full-screen detail. */}
+            <Tabs.Screen
+              name="room"
+              options={{ href: null, headerShown: false, tabBarStyle: { display: "none" } }}
+            />
           </Tabs>
         </ProvisionGate>
       </AiConsentGate>

@@ -88,6 +88,32 @@ describe("AskAI", () => {
     expect(screen.queryByText("Copied")).not.toBeInTheDocument();
   });
 
+  // Regression: `navigator.clipboard?.writeText()` short-circuits to undefined
+  // when the API is absent (insecure context, webview), and `await undefined`
+  // does NOT throw — so the old code reported a copy that never happened.
+  it("does not claim success when the clipboard API is absent entirely", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    render(<AskAI />);
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Copy prompt/ })).toBeInTheDocument());
+    expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+  });
+
+  it("still navigates when the clipboard API is absent", () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    render(<AskAI />);
+    // Must not throw — the copy is a side-effect, never a gate on the link.
+    expect(() => fireEvent.click(screen.getByRole("link", { name: /Ask Claude/ }))).not.toThrow();
+  });
+
   it("offers a human escape hatch", () => {
     render(<AskAI />);
     expect(screen.getByRole("link", { name: "Talk to a human" })).toHaveAttribute("href", "/support");

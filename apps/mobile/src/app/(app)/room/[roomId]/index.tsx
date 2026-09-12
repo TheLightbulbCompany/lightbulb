@@ -5,6 +5,7 @@ import {
   roomDisplayName,
   runView,
   type CanonicalRoomMessage,
+  type MemberPrefsRequest,
   type TimelineItem,
 } from "@lightbulb/shared";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -28,11 +29,16 @@ import { MessageActionsSheet } from "../../../../components/room/MessageActionsS
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
+import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
+
+/** RoomHeader.tsx's own copy — the same two strings the room list's sheet shows. */
+const STAR_FAILED = "The star could not be saved.";
+const MUTE_FAILED = "The notification setting could not be saved.";
 
 /** Distance from the bottom, in px, still counted as "at the bottom". */
 const BOTTOM_SLACK = 80;
@@ -115,6 +121,24 @@ function Conversation() {
   // gets `#`; swap in a lock glyph once the backend ships one.
   const title = `${isChannel ? "#" : ""}${roomDisplayName(rooms.activeRoom, others)}`;
 
+  // Star/mute from the header's icon buttons. A native header has no room
+  // below the buttons for an inline error, so this screen owns the failure
+  // copy and shows it in the body instead (RoomHeader.tsx's own two strings).
+  const [prefsError, setPrefsError] = useState<string | null>(null);
+  const { setRoomPrefs } = rooms;
+  const savePrefs = useCallback(
+    async (prefs: MemberPrefsRequest, failureMessage: string) => {
+      if (!roomId) return;
+      setPrefsError(null);
+      try {
+        await setRoomPrefs(roomId, prefs);
+      } catch {
+        setPrefsError(failureMessage);
+      }
+    },
+    [roomId, setRoomPrefs],
+  );
+
   // In-flight and failed sends, drawn through the same MessageGroup as a real
   // message. On a fast network the server answers first; on a slow one this is
   // the difference between "sent" and "nothing happened".
@@ -190,6 +214,15 @@ function Conversation() {
         ) : null}
       </View>
     ),
+    headerRight: () => (
+      <RoomHeaderActions
+        starred={!!rooms.activeRoom?.starred}
+        muted={!!rooms.activeRoom?.muted}
+        disabled={!rooms.activeRoom}
+        onToggleStar={() => void savePrefs({ starred: !rooms.activeRoom?.starred }, STAR_FAILED)}
+        onToggleMute={() => void savePrefs({ muted: !rooms.activeRoom?.muted }, MUTE_FAILED)}
+      />
+    ),
   };
   if (rooms.roomLoading || rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
     const blockedState = rooms.roomLoading
@@ -215,6 +248,11 @@ function Conversation() {
       keyboardVerticalOffset={keyboardOffset}
     >
       <Stack.Screen options={headerOptions} />
+      {prefsError && (
+        <Text accessibilityRole="alert" style={styles.prefsError}>
+          {prefsError}
+        </Text>
+      )}
       <FlatList
         ref={listRef}
         testID="room-timeline"
@@ -353,6 +391,14 @@ const styles = StyleSheet.create({
   headerTitle: { alignItems: "center" },
   headerName: { fontFamily: fonts.sansSemiBold, fontSize: 17, lineHeight: 22, color: colors.ink },
   headerMeta: { fontFamily: fonts.sans, fontSize: 11, lineHeight: 14, color: colors.mute },
+  prefsError: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.errorText,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
   divider: {
     flexDirection: "row",
     alignItems: "center",

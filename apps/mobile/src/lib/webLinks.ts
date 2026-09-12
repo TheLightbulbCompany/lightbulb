@@ -48,3 +48,11 @@ export const teamsDetailUrl = (
  */
 export const messageUrl = (roomId: string, messageId: string): string =>
   `${WEB_ORIGIN}/chat?panel=chat&room=${encodeURIComponent(roomId)}&message=${encodeURIComponent(messageId)}`;
+
+/**
+ * A workspace permalink to a room, no particular message — the web's own
+ * `roomPermalink` keys (`panel=chat&room=…`), for the room list's and the
+ * conversation header's Copy link rows.
+ */
+export const roomUrl = (roomId: string): string =>
+  `${WEB_ORIGIN}/chat?panel=chat&room=${encodeURIComponent(roomId)}`;

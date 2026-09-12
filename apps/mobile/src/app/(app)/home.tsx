@@ -16,6 +16,7 @@ import {
 import { usePulse } from "../../components/chat/usePulse";
 import { LogoMark } from "../../components/LogoMark";
 import { NewMessageSheet } from "../../components/room/NewMessageSheet";
+import { RoomActionsSheet } from "../../components/room/RoomActionsSheet";
 import { RoomRow, byRecency, otherMembers } from "../../components/room/RoomRow";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { useMobileRooms } from "../../lib/rooms";
@@ -72,6 +73,8 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The room a long press is acting on; dropping it dismisses the sheet.
+  const [actionRoom, setActionRoom] = useState<RoomSummary | null>(null);
 
   const details = rooms.directoryRoomDetails;
   // A DM's name lives on the room DETAIL's member list, not on the summary.
@@ -205,6 +208,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
               unread={item.room.unreadCount}
               muted={item.room.muted}
               onPress={() => router.push(`/(app)/room/${item.room.roomId}`)}
+              onLongPress={() => setActionRoom(item.room)}
             />
           )
         }
@@ -217,6 +221,14 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           router.push(`/(app)/room/${roomId}`);
         }}
       />
+      {actionRoom && (
+        <RoomActionsSheet
+          room={actionRoom}
+          onClose={() => setActionRoom(null)}
+          onSetPrefs={(prefs) => rooms.setRoomPrefs(actionRoom.roomId, prefs)}
+          onMarkUnread={() => rooms.markUnread(actionRoom.roomId)}
+        />
+      )}
     </View>
   );
 }

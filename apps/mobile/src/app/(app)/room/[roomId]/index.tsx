@@ -26,6 +26,7 @@ import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
 import { HeaderBack } from "../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
+import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing } from "../../../../config/theme";
@@ -157,31 +158,60 @@ function Conversation() {
     [members],
   );
 
+  // A reader with no access, or a room that failed to open, replaces the WHOLE
+  // panel — timeline and composer both — the same guard web's RoomPanel runs
+  // (search `room-blocked`). `accessRemoved` means the server rotated the
+  // room's delivery key after removing this reader; the composer must go, not
+  // just sit disabled over a stale transcript.
+  // Hoisted above the blocked-state early return below: a hook called inside
+  // the JSX prop would run on the normal render and not on a blocked one,
+  // which is a rules-of-hooks violation and a real order change, not a lint nit.
+  const keyboardOffset = useComposerKeyboardOffset();
+
+  const headerOptions = {
+    title,
+    // The room is this Stack's root, so nothing draws a back button for it.
+    // It lives on `headerOptions` rather than inline so the blocked-state
+    // early return below keeps it too — a blocked screen with no way out is
+    // worse than the state it is reporting.
+    headerLeft: () => <HeaderBack fallback="/(app)/home" />,
+    headerTitle: () => (
+      <View style={styles.headerTitle}>
+        <Text style={styles.headerName} numberOfLines={1}>
+          {title}
+        </Text>
+        {isChannel && members ? (
+          <Text style={styles.headerMeta}>
+            {members.length} {members.length === 1 ? "member" : "members"}
+          </Text>
+        ) : null}
+      </View>
+    ),
+  };
+  if (rooms.roomLoading || rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
+    const blockedState = rooms.roomLoading
+      ? "loading" as const
+      : rooms.accessRemoved
+        ? "access-removed" as const
+        : "unavailable" as const;
+    return (
+      <View style={styles.container}>
+        <Stack.Screen options={headerOptions} />
+        <RoomBlockedState
+          state={blockedState}
+          onRetry={blockedState === "unavailable" ? rooms.refreshRoom : undefined}
+        />
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={useComposerKeyboardOffset()}
+      keyboardVerticalOffset={keyboardOffset}
     >
-      <Stack.Screen
-        options={{
-          title,
-          // The room is this Stack's root, so nothing draws a back button for it.
-          headerLeft: () => <HeaderBack fallback="/(app)/home" />,
-          headerTitle: () => (
-            <View style={styles.headerTitle}>
-              <Text style={styles.headerName} numberOfLines={1}>
-                {title}
-              </Text>
-              {isChannel && members ? (
-                <Text style={styles.headerMeta}>
-                  {members.length} {members.length === 1 ? "member" : "members"}
-                </Text>
-              ) : null}
-            </View>
-          ),
-        }}
-      />
+      <Stack.Screen options={headerOptions} />
       <FlatList
         ref={listRef}
         testID="room-timeline"

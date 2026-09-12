@@ -130,7 +130,8 @@ export function AskAI() {
           <h2 className="lb-h2">Still not sure?</h2>
           <p className="lb-askai-sub">
             Don&rsquo;t just take our word for it. Ask your favourite AI what
-            Lightbulb is and how it stacks up — the question is already written.
+            Lightbulb is and whether it suits your team — the question is
+            already written.
           </p>
         </div>
 

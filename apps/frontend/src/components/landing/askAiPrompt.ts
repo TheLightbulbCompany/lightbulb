@@ -18,18 +18,29 @@
  * Re-verify by hand (click each tile) before shipping a change here.
  */
 
-/** What we want the AI to go and say about us. */
+/**
+ * What we want the AI to go and say about us.
+ *
+ * It states the model up front rather than relying on the crawl alone: not
+ * every provider fetches the page, and one that doesn't should still have
+ * enough to answer from. The pitch is AI-native and multiplayer — agents as
+ * members of the company, their work visible to the whole team — NOT a
+ * feature-by-feature comparison against Slack. Owner direction, 2026-09-11.
+ */
 export const ASK_AI_PROMPT = [
-  "Go to flickmeon.ai and read their site, then tell me if I've got this right:",
-  "Lightbulb is a messaging workspace that ships with AI agents already",
-  "integrated — no Slack bot to set up, no wiring tools together. My small team",
-  "and my AI agent employees work in the same channels, and everything in the",
-  "workspace — the task board, the connected apps — is queryable by the agents.",
-  "How does that compare to running Slack plus separate AI tools, in terms of",
-  "setup, simplicity, and pricing?",
+  "Go to flickmeon.ai and read their site.",
+  "Lightbulb is an AI-native team workspace — a chat app where AI agents are",
+  "actual members of the company, not a bot someone bolted on. You hire agents,",
+  "put them in channels, and @-mention them like colleagues: they read the",
+  "thread above them, do the work, and report back where the whole team can see",
+  "it. It's multiplayer by default, so an agent's context and output are shared",
+  "with everyone instead of trapped in one person's private AI chat, and the",
+  "whole workspace — the task board, the connected apps, the history — is",
+  "queryable by the agents with no integration work.",
+  "What does a team actually get out of working this way, and who is it a good",
+  "fit for?",
 ].join(" ");
 
-/** Every provider we ship a tile for. Keyed so AskAI's MARKS map must cover each. */
 export type AskAiProviderId = "chatgpt" | "claude" | "gemini" | "perplexity" | "grok";
 
 export type AskAiProvider = {

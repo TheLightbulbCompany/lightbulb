@@ -1030,13 +1030,13 @@ def handler(event, context):
       name: "messaging-queue-wait-p99",
       metricName: "messaging.work.queue_wait",
       statistic: "p99",
-      threshold: 60_000,
+      threshold: 30_000,
       periodMinutes: 5,
       evaluationPeriods: 3,
       datapointsToAlarm: 2,
       severity: "page",
       description:
-        "PAGE: p99 wait before the worker picks work up exceeds 60s - the " +
+        "PAGE: p99 wait before the worker picks work up exceeds 30s - the " +
         "worker is falling behind the queue.",
     });
 

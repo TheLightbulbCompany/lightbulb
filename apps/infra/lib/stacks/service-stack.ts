@@ -352,10 +352,7 @@ export class ServiceStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "PublishMessagingEvents",
           actions: ["appsync:EventPublish"],
-          resources: [
-            `${props.appsyncEventsApiArn}/channelNamespace/rooms`,
-            `${props.appsyncEventsApiArn}/channelNamespace/users`,
-          ],
+          resources: [`${props.appsyncEventsApiArn}/channelNamespace/ws`],
         }),
       ],
     });

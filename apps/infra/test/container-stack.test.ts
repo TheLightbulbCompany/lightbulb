@@ -745,6 +745,19 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("owner base policy and boundary both allow publishing to the ws namespace", () => {
+    const policies = Object.values(template.findResources("AWS::IAM::ManagedPolicy")) as any[];
+    for (const [name, sid] of [
+      ["lightbulb-dev-owner-bedrock-base", "AppSyncWsPublish"],
+      ["lightbulb-dev-owner-bedrock-boundary", "BoundaryAppSyncWsPublish"],
+    ]) {
+      const policy = policies.find((p) => p.Properties.ManagedPolicyName === name);
+      const statement = (policy.Properties.PolicyDocument.Statement as any[]).find((s) => s.Sid === sid);
+      expect(statement.Action).toBe("appsync:EventPublish");
+      expect(JSON.stringify(statement.Resource)).toContain("apis/*/channelNamespace/ws");
+    }
+  });
+
   test("boundary invoke statement carries all 9 FM ARNs + the AIP wildcard", () => {
     // Guards against FM_IDS/FAN_OUT_REGIONS drift between this stack and the
     // Python mint (core/billing/bedrock_aip.py). A region/model added on one

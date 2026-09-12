@@ -128,123 +128,77 @@ const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> 
   prod: { burstLimit: 200, rateLimit: 100 },
 };
 
-// AppSync channel segments are deliberately UUID-only. Raw Clerk IDs never
-// appear in paths, and both handlers strong-read the current base-table state
-// before accepting a subscription or publication.
-const roomsHandlerCode = (tableName: string) => `
+// One namespace, workspace-scoped paths, tenancy decided here (spec §3). Segments are
+// UUID-only; every decision strong-reads the base table. IAM admits publishers to the
+// namespace; this handler narrows a per-owner container task role to its own rows.
+const wsHandlerCode = (tableName: string, env: string) => `
 import { util } from '@aws-appsync/utils';
 const TABLE = '${tableName}';
+const OWNER_ROLE_PREFIX = 'lightbulb-${env}-owner-bedrock-';
 // String pattern via util.matches: APPSYNC_JS has no regex literals.
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-function pathParts(ctx) {
-  const parts = ctx.info.channel.path.split('/');
-  if (parts.length !== 4 || parts[0] !== '' || parts[1] !== 'rooms' || !util.matches(UUID, parts[2]) || !util.matches(UUID, parts[3])) {
-    util.unauthorized();
+// /ws/{workspaceId}/rooms/{roomId}/{deliveryKey} or /ws/{workspaceId}/users/{userKey}
+function parsePath(ctx) {
+  const p = ctx.info.channel.path.split('/');
+  if (p.length < 5 || p[0] !== '' || p[1] !== 'ws' || !util.matches(UUID, p[2])) util.unauthorized();
+  if (p[3] === 'rooms' && p.length === 6 && util.matches(UUID, p[4]) && util.matches(UUID, p[5])) {
+    return { kind: 'rooms', workspaceId: p[2], roomId: p[4], deliveryKey: p[5] };
   }
-  return [parts[2], parts[3]];
+  if (p[3] === 'users' && p.length === 5 && util.matches(UUID, p[4])) {
+    return { kind: 'users', workspaceId: p[2], userKey: p[4] };
+  }
+  util.unauthorized();
+}
+function metaKey(path) {
+  return path.kind === 'rooms' ? { pk: 'ROOM#' + path.roomId, sk: 'META' } : { pk: 'STREAM#' + path.userKey, sk: 'META' };
 }
 function denyOnReadFailure(ctx) {
   if (ctx.error || !ctx.result) util.unauthorized();
 }
+function metaMatchesPath(meta, path) {
+  if (!meta || meta.workspaceId !== path.workspaceId) return false;
+  return path.kind === 'rooms' ? meta.deliveryKey === path.deliveryKey : meta.active === true;
+}
+// arn:aws:sts::{account}:assumed-role/{roleName}/{session}; null when the caller is not
+// an owner task role (backend service role, projector) — IAM already admitted it.
+function callerOwnerId(ctx) {
+  const arn = ctx.identity && ctx.identity.userArn;
+  if (typeof arn !== 'string') util.unauthorized();
+  const parts = arn.split('/');
+  if (parts.length !== 3 || parts[0].indexOf(':assumed-role') === -1) util.unauthorized();
+  if (parts[1].indexOf(OWNER_ROLE_PREFIX) !== 0) return null;
+  return parts[1].substring(OWNER_ROLE_PREFIX.length);
+}
 export const onSubscribe = {
   request(ctx) {
-    const [roomId] = pathParts(ctx);
+    const path = parsePath(ctx);
     const sub = ctx.identity && ctx.identity.sub;
     if (typeof sub !== 'string' || sub.length === 0) util.unauthorized();
-    return {
-      operation: 'BatchGetItem',
-      tables: {
-        [TABLE]: {
-          keys: [
-            util.dynamodb.toMapValues({ pk: 'ROOM#' + roomId, sk: 'META' }),
-            util.dynamodb.toMapValues({ pk: 'ROOM#' + roomId, sk: 'MEMBER#human#' + sub }),
-          ],
-          consistentRead: true,
-        },
-      },
-    };
+    const keys = [util.dynamodb.toMapValues(metaKey(path))];
+    if (path.kind === 'rooms') keys.push(util.dynamodb.toMapValues({ pk: 'ROOM#' + path.roomId, sk: 'MEMBER#human#' + sub }));
+    return { operation: 'BatchGetItem', tables: { [TABLE]: { keys, consistentRead: true } } };
   },
   response(ctx) {
     denyOnReadFailure(ctx);
-    const [, deliveryKey] = pathParts(ctx);
+    const path = parsePath(ctx);
     const rows = ctx.result.data && ctx.result.data[TABLE];
     const pending = ctx.result.unprocessedKeys && ctx.result.unprocessedKeys[TABLE];
     if (!Array.isArray(rows) || (Array.isArray(pending) && pending.length > 0)) util.unauthorized();
     const meta = rows[0];
-    const member = rows[1];
-    if (!meta || !member || meta.deliveryKey !== deliveryKey) util.unauthorized();
+    if (!metaMatchesPath(meta, path)) util.unauthorized();
+    if (path.kind === 'rooms' ? !rows[1] : meta.userId !== ctx.identity.sub) util.unauthorized();
   },
 };
 export const onPublish = {
   request(ctx) {
-    const [roomId] = pathParts(ctx);
-    return {
-      operation: 'GetItem',
-      key: util.dynamodb.toMapValues({ pk: 'ROOM#' + roomId, sk: 'META' }),
-      consistentRead: true,
-    };
+    return { operation: 'GetItem', key: util.dynamodb.toMapValues(metaKey(parsePath(ctx))), consistentRead: true };
   },
   response(ctx) {
     denyOnReadFailure(ctx);
-    const [, deliveryKey] = pathParts(ctx);
-    if (ctx.result.deliveryKey !== deliveryKey) util.unauthorized();
-    return ctx.events;
-  },
-};
-`;
-
-const usersHandlerCode = (tableName: string) => `
-import { util } from '@aws-appsync/utils';
-const TABLE = '${tableName}';
-// String pattern via util.matches: APPSYNC_JS has no regex literals.
-const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-function channelKey(ctx) {
-  const parts = ctx.info.channel.path.split('/');
-  if (parts.length !== 3 || parts[0] !== '' || parts[1] !== 'users' || !util.matches(UUID, parts[2])) {
-    util.unauthorized();
-  }
-  return parts[2];
-}
-function denyOnReadFailure(ctx) {
-  if (ctx.error || !ctx.result) util.unauthorized();
-}
-export const onSubscribe = {
-  request(ctx) {
-    const key = channelKey(ctx);
-    const sub = ctx.identity && ctx.identity.sub;
-    if (typeof sub !== 'string' || sub.length === 0) util.unauthorized();
-    return {
-      operation: 'BatchGetItem',
-      tables: {
-        [TABLE]: {
-          keys: [util.dynamodb.toMapValues({ pk: 'STREAM#' + key, sk: 'META' })],
-          consistentRead: true,
-        },
-      },
-    };
-  },
-  response(ctx) {
-    denyOnReadFailure(ctx);
-    const rows = ctx.result.data && ctx.result.data[TABLE];
-    const pending = ctx.result.unprocessedKeys && ctx.result.unprocessedKeys[TABLE];
-    const mapping = Array.isArray(rows) ? rows[0] : null;
-    if ((Array.isArray(pending) && pending.length > 0) || !mapping || mapping.active !== true || mapping.userId !== ctx.identity.sub) {
-      util.unauthorized();
-    }
-  },
-};
-export const onPublish = {
-  request(ctx) {
-    const key = channelKey(ctx);
-    return {
-      operation: 'GetItem',
-      key: util.dynamodb.toMapValues({ pk: 'STREAM#' + key, sk: 'META' }),
-      consistentRead: true,
-    };
-  },
-  response(ctx) {
-    denyOnReadFailure(ctx);
-    if (ctx.result.active !== true) util.unauthorized();
+    const path = parsePath(ctx);
+    if (!metaMatchesPath(ctx.result, path)) util.unauthorized();
+    const owner = callerOwnerId(ctx);
+    if (owner !== null && ctx.result.ownerId !== owner) util.unauthorized();
     return ctx.events;
   },
 };
@@ -552,6 +506,15 @@ export class ApiStack extends cdk.Stack {
       sortKey: { name: "memberSort", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+    messagingTable.addGlobalSecondaryIndex({
+      indexName: "by-run-deadline",
+      // Sparse: only open run-ledger rows carry `sweep`; the sweeper queries
+      // sweep = "open" AND deadlineAt < now. ponytail: one constant partition —
+      // fine while open runs stay in the low thousands.
+      partitionKey: { name: "sweep", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "deadlineAt", type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    });
     this.messagingTableName = `${tablePrefix(env)}messaging`;
 
     const workDlq = new sqs.Queue(this, "OpenClawWorkDlq", {
@@ -567,20 +530,13 @@ export class ApiStack extends cdk.Stack {
       fifo: true,
       contentBasedDeduplication: false,
       retentionPeriod: cdk.Duration.days(7),
-      visibilityTimeout: cdk.Duration.minutes(5),
+      visibilityTimeout: cdk.Duration.seconds(60),
       receiveMessageWaitTime: cdk.Duration.seconds(20),
       encryption: sqs.QueueEncryption.KMS,
       encryptionMasterKey: messagingKey,
-      // The worker's ingress POST to the channel plugin only returns once the
-      // agent's whole turn has run (the fork's runChannelTurn resolves after
-      // reply delivery), so during a long turn every receive is one 30s read
-      // timeout plus the 10s retry visibility: ~40s. Eight receives was a
-      // ~5-minute ceiling on an agent turn before the pointer dead-lettered
-      // and the agent's delivery cursor was abandoned (4 such pointers in
-      // the prod DLQ on 2026-09-11, all long Forge turns). 360 receives is
-      // ~4 hours of turn; a poison pointer surfaces in the DLQ later, which
-      // is the accepted trade.
-      deadLetterQueue: { queue: workDlq, maxReceiveCount: 360 },
+      // The plugin acks within milliseconds (async turn contract); a pointer
+      // not acked in 60 s is redelivered, and five failures are a poison pointer.
+      deadLetterQueue: { queue: workDlq, maxReceiveCount: 5 },
     });
     const pipeFailureQueue = new sqs.Queue(this, "OpenClawWorkPipeFailures", {
       queueName: `${resourcePrefix(env)}openclaw-work-pipe-failures`,
@@ -646,19 +602,9 @@ export class ApiStack extends cdk.Stack {
         readOnlyAccess: true,
       },
     );
-    const roomsNamespace = eventApi.addChannelNamespace("RoomsNamespace", {
-      channelNamespaceName: "rooms",
-      code: appsync.Code.fromInline(roomsHandlerCode(messagingTable.tableName)),
-      publishHandlerConfig: { dataSource: messagingDataSource },
-      subscribeHandlerConfig: { dataSource: messagingDataSource },
-      authorizationConfig: {
-        publishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
-        subscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
-      },
-    });
-    const usersNamespace = eventApi.addChannelNamespace("UsersNamespace", {
-      channelNamespaceName: "users",
-      code: appsync.Code.fromInline(usersHandlerCode(messagingTable.tableName)),
+    const wsNamespace = eventApi.addChannelNamespace("WsNamespace", {
+      channelNamespaceName: "ws",
+      code: appsync.Code.fromInline(wsHandlerCode(messagingTable.tableName, env)),
       publishHandlerConfig: { dataSource: messagingDataSource },
       subscribeHandlerConfig: { dataSource: messagingDataSource },
       authorizationConfig: {
@@ -704,8 +650,7 @@ export class ApiStack extends cdk.Stack {
       "UsersTableForProjector",
       `${tablePrefix(env)}users`,
     ).grantReadData(projectorFn);
-    roomsNamespace.grantPublish(projectorFn);
-    usersNamespace.grantPublish(projectorFn);
+    wsNamespace.grantPublish(projectorFn);
     const projectorEventSource = new lambdaEventSources.DynamoEventSource(
       messagingTable,
       {
@@ -889,16 +834,12 @@ def handler(event, context):
     pageAlarm("OpenClawWorkOldestAgeAlarm", {
       alarmName: `${resourcePrefix(env)}openclaw-work-oldest-age`,
       alarmDescription:
-        "PAGE: durable OpenClaw work has waited longer than an hour.",
+        "PAGE: durable OpenClaw work has waited longer than five minutes.",
       metric: workQueue.metricApproximateAgeOfOldestMessage({
         period: cdk.Duration.minutes(1),
         statistic: "Maximum",
       }),
-      // A pointer legitimately waits for the whole agent turn (see
-      // maxReceiveCount above), and turns of 30 minutes are routine, so five
-      // minutes paged on healthy work. Stuck work still surfaces through the
-      // DLQ alarm; this one now catches only a turn that has run an hour.
-      threshold: 60 * 60,
+      threshold: 5 * 60,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,

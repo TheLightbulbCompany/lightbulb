@@ -348,6 +348,14 @@ export class ContainerStack extends cdk.Stack {
           ],
           resources: ["*"],
         }),
+        // Async turn contract: the container publishes its run frames straight to
+        // AppSync Events. Namespace-wide grant; per-owner tenancy is enforced by the
+        // ws namespace handler (api-stack), which only IAM callers reach.
+        new iam.PolicyStatement({
+          sid: "AppSyncWsPublish",
+          actions: ["appsync:EventPublish"],
+          resources: [`arn:aws:appsync:${this.region}:${this.account}:apis/*/channelNamespace/ws`],
+        }),
       ],
     });
 
@@ -396,6 +404,14 @@ export class ContainerStack extends cdk.Stack {
             "ssmmessages:OpenDataChannel",
           ],
           resources: ["*"],
+        }),
+        // Async turn contract: the container publishes its run frames straight to
+        // AppSync Events. Namespace-wide grant; per-owner tenancy is enforced by the
+        // ws namespace handler (api-stack), which only IAM callers reach.
+        new iam.PolicyStatement({
+          sid: "BoundaryAppSyncWsPublish",
+          actions: ["appsync:EventPublish"],
+          resources: [`arn:aws:appsync:${this.region}:${this.account}:apis/*/channelNamespace/ws`],
         }),
         // local-sqlite layout: the boundary must CAP (not grant) S3 access
         // to the Litestream replica bucket, or the per-owner inline

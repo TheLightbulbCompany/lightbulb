@@ -29,9 +29,10 @@ import { LocalMessageRows, MessageGroup } from "../../../../components/room/Mess
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../components/room/RunBlock";
-import { colors, fonts, radii, spacing } from "../../../../config/theme";
+import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
-import { useMobileRooms, useSendDrafts } from "../../../../lib/rooms";
+import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
+import { typingLine } from "../../../../lib/typingLine";
 
 /** Distance from the bottom, in px, still counted as "at the bottom". */
 const BOTTOM_SLACK = 80;
@@ -122,6 +123,8 @@ function Conversation() {
     authorName: viewer?.displayName ?? "You",
     threadRootMessageId: null,
   });
+  const reportTyping = useTypingReport(rooms.setTyping, focused);
+  const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
   // The message a long press is acting on; dropping it dismisses the sheet.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
@@ -325,6 +328,7 @@ function Conversation() {
           }
         />
       )}
+      {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
         placeholder="Message"
@@ -333,6 +337,7 @@ function Conversation() {
         onSend={send}
         onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
+        onTypingChange={reportTyping}
       />
     </KeyboardAvoidingView>
   );
@@ -377,6 +382,7 @@ const styles = StyleSheet.create({
   },
   errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.errorText },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  typing: { ...type.caption, paddingHorizontal: spacing.lg, paddingTop: spacing.xs },
   jump: {
     position: "absolute",
     right: spacing.lg,

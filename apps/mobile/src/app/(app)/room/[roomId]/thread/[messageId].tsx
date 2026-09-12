@@ -29,7 +29,8 @@ import {
 import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
-import { useMobileRooms, useSendDrafts } from "../../../../../lib/rooms";
+import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../../lib/rooms";
+import { typingLine } from "../../../../../lib/typingLine";
 
 /**
  * One thread: its root pinned above the list, its replies below in the same item
@@ -100,6 +101,8 @@ export default function ThreadScreen() {
     authorName: viewer?.displayName ?? "You",
     threadRootMessageId: messageId ?? null,
   });
+  const reportTyping = useTypingReport(rooms.setTyping, focused);
+  const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
   // The message a long press is acting on; dropping it dismisses the sheet.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
@@ -268,6 +271,7 @@ export default function ThreadScreen() {
           // per-thread read state exists (Phase B, needs a backend field).
         />
       )}
+      {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
         placeholder="Reply…"
@@ -276,6 +280,7 @@ export default function ThreadScreen() {
         onSend={send}
         onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
+        onTypingChange={reportTyping}
       />
     </KeyboardAvoidingView>
   );
@@ -308,4 +313,5 @@ const styles = StyleSheet.create({
   missing: { paddingTop: spacing.xl, gap: spacing.sm },
   missingText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  typing: { ...type.caption, paddingHorizontal: spacing.lg, paddingTop: spacing.xs },
 });

@@ -38,7 +38,10 @@ const members: RoomMember[] = [
 
 // RNTL 14's render/fireEvent are async — every call here is awaited, the
 // convention the other room suites already follow.
-const setup = async (onSend = jest.fn(async () => {})) => {
+const setup = async (
+  onSend = jest.fn(async () => {}),
+  onTypingChange?: (typing: boolean) => void,
+) => {
   const onUploadAttachment = jest.fn(async () => ({ id: "att-1" }));
   await render(
     <RoomComposer
@@ -48,6 +51,7 @@ const setup = async (onSend = jest.fn(async () => {})) => {
       reconnecting={false}
       onSend={onSend}
       onUploadAttachment={onUploadAttachment}
+      onTypingChange={onTypingChange}
     />,
   );
   return { onSend, onUploadAttachment };
@@ -136,6 +140,31 @@ describe("RoomComposer", () => {
     await waitFor(() =>
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
     );
+  });
+
+  it("reports typing as the draft goes non-empty and empty again", async () => {
+    const onTypingChange = jest.fn();
+    await setup(jest.fn(async () => {}), onTypingChange);
+    await fireEvent.changeText(input(), "h");
+    expect(onTypingChange).toHaveBeenLastCalledWith(true);
+    await fireEvent.changeText(input(), "");
+    expect(onTypingChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reports typing stopped on blur", async () => {
+    const onTypingChange = jest.fn();
+    await setup(jest.fn(async () => {}), onTypingChange);
+    await fireEvent.changeText(input(), "hi");
+    await fireEvent(input(), "blur");
+    expect(onTypingChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reports typing stopped the moment a message sends", async () => {
+    const onTypingChange = jest.fn();
+    await setup(jest.fn(async () => {}), onTypingChange);
+    await fireEvent.changeText(input(), "ping");
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
 
   it("rejects a photo over the 10MB cap without uploading it", async () => {

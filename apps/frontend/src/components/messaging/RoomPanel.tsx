@@ -566,7 +566,7 @@ function RoomContent({
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
-        participants={participants} currentUserId={currentUserId} actionable={actionable}
+        participants={participants} actionable={actionable}
         messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns}
         onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
         onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined}

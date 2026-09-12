@@ -21,7 +21,6 @@ export interface RoomDetailsPanelProps {
   tab: DetailsTab;
   onSelectTab: (tab: DetailsTab) => void;
   participants: readonly RoomParticipant[];
-  currentUserId: string; // part of the shipped details contract; the panel itself renders no viewer-specific row
   actionable: boolean;
   messages: readonly RoomMessage[];
   pinnedMessageIds: readonly string[];

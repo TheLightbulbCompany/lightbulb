@@ -17,7 +17,7 @@ const message = (id: string, extra: Partial<RoomMessage> = {}): RoomMessage => (
 });
 const props = {
   room, roomName: "Roadmap", tab: "pins" as const, onSelectTab: vi.fn(), participants: [],
-  currentUserId: "me", actionable: true, pinnedMessageIds: [], activeRuns: [],
+  actionable: true, pinnedMessageIds: [], activeRuns: [],
   onOpenMessage: vi.fn(), members: <p>Members go here</p>, messages: [] as RoomMessage[],
 };
 

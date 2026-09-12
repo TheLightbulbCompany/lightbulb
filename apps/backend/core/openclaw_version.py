@@ -282,22 +282,65 @@ def deployed_fork_at_least(base: str, patch: int, *, tag: str | None = None) -> 
     return isol8_patch_level(t) >= patch
 
 
-# The first extended image baking the in-repo ``lightbulb-channel`` plugin
-# (``apps/infra/openclaw/plugins/lightbulb-channel``, added 2026-09-10 by
-# 3bf788173) is ``2026.9.3-isol8.2-fa8bf22``, pinned the next morning by
-# 451a39c45. Its predecessor ``2026.9.3-isol8.2-449894a`` carries the SAME
-# upstream base AND the same isol8 patch level — the two differ only in the
-# monorepo short sha, which carries no ordering — so :func:`deployed_fork_at_least`
-# alone cannot separate them.
+# The in-repo ``lightbulb-channel`` plugin
+# (``apps/infra/openclaw/plugins/lightbulb-channel``) reached ``main`` in the
+# merge commit ``fa8bf2237`` (PR #2425, 2026-09-10 10:58 -0400), which is why the
+# first image carrying it is tagged ``2026.9.3-isol8.2-fa8bf22``: the build
+# workflow tags every published image ``<upstream tag>-<short sha of the pushed
+# main commit>`` (``scripts/openclaw-image-proof.mjs`` ``verifyImageMetadata``).
 #
-# Hence a DENYLIST rather than an allowlist of good tags: the pre-plugin builds
-# on this base are a closed set (the plugin is in-repo, so every later build
-# bakes it), whereas an allowlist would go stale on the very next image bump and
-# silently drop the channel fleet-wide. Older bases are rejected by the fork gate
-# below; newer ones bake the plugin by construction.
-_PRE_LIGHTBULB_CHANNEL_TAGS = frozenset({"2026.9.3-isol8.2-449894a"})
+# Everything published on this base BEFORE that merge lacks the plugin, and the
+# fork gate cannot see it: those tags carry the same upstream base AND the same
+# isol8 patch level, differing only in the short sha, which carries no ordering.
+# So they are named here — and the set below is the COMPLETE one, because the
+# base ``2026.9.3-isol8.2`` itself only existed from ``3f27e6469`` (the base bump)
+# onward: it is every first-parent ``main`` commit in ``3f27e6469..fa8bf2237``,
+# i.e. every commit that could possibly have been the head of a publishing push
+# in that window. It is deliberately NOT filtered to the workflow's trigger paths
+# — a push carrying several commits runs the workflow at its HEAD, so a
+# path-filtered reconstruction can miss a real tag, while the extra entries here
+# merely name tags that were never published and are inert.
+#
+# A DENYLIST rather than an allowlist of good builds because this set is CLOSED
+# (no new pre-plugin build can ever exist) whereas an allowlist would go stale on
+# the very next image bump and silently drop the channel fleet-wide. Older bases
+# are rejected by the fork gate; newer ones bake the plugin by construction.
+#
+# Full 40-char shas, matched by prefix, so the entries hold whatever length
+# ``git rev-parse --short`` produced at build time (7 for every tag we have seen).
+_PRE_LIGHTBULB_CHANNEL_BUILD_SHAS = frozenset(
+    {
+        "00b8b48d5671d5fc8d4d549ab2748151a07a1a9c",
+        "2130cd0cca21221424bc1f8977527a6da335c7f2",
+        "24e2b4428df22e7afba96604e374f59131c67761",
+        "28429e316e3e9488997a2abd4c44554d09fafcd7",
+        "3f27e6469fc1ce558f9f9855d871684b4388fa39",
+        "449894aeddcc85fd75cf90021745a05e25f0e0fc",
+        "5baad909e16ea94ae4f58da3a59ed4a840f306b1",
+        "6b400a5d8d19e79cba5dbae2e795f2a6985ab4d7",
+        "7292080dc42038644150a47bd4cf5f060813480d",
+        "78e80a12974b5ede9d0a1b27fe420401123ea210",
+        "7a61c365654f53109af58ed2fd5d281023b0098d",
+        "7f0262f6e3c4218af694651fd95e11956ba23aa2",
+        "9c3331865709142c164dec2fb529c38a455b67a0",
+        "ac0394554002fedf5c6d04629fe09ed8a9a04c67",
+        "b0e8e811bfcb93fe9b276263a91f65189a5e702e",
+        "c3ed1a701b32116119b6c4ddd4d9d09ec2a9f762",
+        "c593c34de9f7119d4b3b578dada770104f7716db",
+        "dc08c0401fc74607cc8100418b7d1170b772d236",
+    }
+)
 _LIGHTBULB_CHANNEL_BASE = "2026.9.3"
 _LIGHTBULB_CHANNEL_PATCH = 2
+_PRE_LIGHTBULB_CHANNEL_PREFIX = f"{_LIGHTBULB_CHANNEL_BASE}-isol8.{_LIGHTBULB_CHANNEL_PATCH}-"
+
+
+def _is_pre_lightbulb_build(tag: str) -> bool:
+    """True when ``tag`` is one of the pre-plugin builds on the boundary base."""
+    if not tag.startswith(_PRE_LIGHTBULB_CHANNEL_PREFIX):
+        return False
+    sha = tag[len(_PRE_LIGHTBULB_CHANNEL_PREFIX) :]
+    return bool(sha) and any(full.startswith(sha) for full in _PRE_LIGHTBULB_CHANNEL_BUILD_SHAS)
 
 
 def bakes_lightbulb_channel(tag: str | None) -> bool:
@@ -310,9 +353,13 @@ def bakes_lightbulb_channel(tag: str | None) -> bool:
     empty or unknown tag gates CLOSED, and unlike the other gates here there is
     deliberately no fall back to this environment's pin: the pin is newer than
     any lagging container's image, which is the whole failure mode. A missing
-    channel block only costs inbound room routing until the next config write
-    (``reapply-config`` restores it); a rejected config costs the container.
+    channel block only costs inbound room routing until the next config write;
+    a rejected config costs the container.
+
+    This must stay correct for ROLLBACKS too, not just for containers lagging
+    behind: the admin image-update surface lists every tag in ECR, so any of the
+    pre-plugin builds above is one dropdown pick away from being live again.
     """
-    if not tag or tag in _PRE_LIGHTBULB_CHANNEL_TAGS:
+    if not tag or _is_pre_lightbulb_build(tag):
         return False
     return deployed_fork_at_least(_LIGHTBULB_CHANNEL_BASE, _LIGHTBULB_CHANNEL_PATCH, tag=tag)

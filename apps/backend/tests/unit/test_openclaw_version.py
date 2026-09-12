@@ -273,10 +273,10 @@ def test_deployed_fork_at_least_uses_env_pin_when_no_tag(monkeypatch):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        # The first extended build that bakes the plugin, and every later one
-        # on the same base — the short sha carries no ordering, so anything on
-        # this base that is not the one known pre-plugin build qualifies.
+        # The first extended build that bakes the plugin (the merge commit
+        # fa8bf2237), and later ones on the same base.
         ("2026.9.3-isol8.2-fa8bf22", True),
+        ("2026.9.3-isol8.2-7170958", True),
         ("2026.9.3-isol8.2-1da8ca8", True),
         # The build one pin earlier: SAME base AND same isol8 patch level, so
         # only the explicit denylist separates it. This is the tag the prod
@@ -296,6 +296,74 @@ def test_deployed_fork_at_least_uses_env_pin_when_no_tag(monkeypatch):
 )
 def test_bakes_lightbulb_channel(tag, expected):
     assert openclaw_version.bakes_lightbulb_channel(tag) is expected
+
+
+# Every pre-plugin build on the boundary base 2026.9.3-isol8.2 — one per
+# first-parent main commit in 3f27e6469..fa8bf2237. The admin image-update
+# dropdown lists every tag in ECR, so each of these is one pick away from
+# being live again and MUST gate closed.
+_PRE_PLUGIN_SHAS = [
+    "00b8b48",
+    "2130cd0",
+    "24e2b44",
+    "28429e3",
+    "3f27e64",
+    "449894a",
+    "5baad90",
+    "6b400a5",
+    "7292080",
+    "78e80a1",
+    "7a61c36",
+    "7f0262f",
+    "9c33318",
+    "ac03945",
+    "b0e8e81",
+    "c3ed1a7",
+    "c593c34",
+    "dc08c04",
+]
+
+
+@pytest.mark.parametrize("sha", _PRE_PLUGIN_SHAS)
+def test_every_pre_plugin_build_on_the_boundary_base_gates_closed(sha):
+    assert openclaw_version.bakes_lightbulb_channel(f"2026.9.3-isol8.2-{sha}") is False
+
+
+def test_denylist_covers_every_pre_plugin_build_in_the_window():
+    """The set in the module must stay the complete window, not a sample.
+
+    The bug this guards is fail-open: an unlisted sha on the boundary base is
+    classified NEW, and an admin rolling to it reproduces the crash loop.
+    """
+    assert len(openclaw_version._PRE_LIGHTBULB_CHANNEL_BUILD_SHAS) == len(_PRE_PLUGIN_SHAS)
+    assert {full[:7] for full in openclaw_version._PRE_LIGHTBULB_CHANNEL_BUILD_SHAS} == set(_PRE_PLUGIN_SHAS)
+
+
+@pytest.mark.parametrize(
+    "sha",
+    [
+        "fa8bf22",  # the plugin merge itself
+        "deadbee",  # any build after it
+        "00b8b48d5671d5fc8d4d549ab2748151a07a1a9d",  # 39 chars shared, last differs
+    ],
+)
+def test_unlisted_sha_on_the_boundary_base_is_new(sha):
+    assert openclaw_version.bakes_lightbulb_channel(f"2026.9.3-isol8.2-{sha}") is True
+
+
+def test_denylist_matches_by_prefix_so_abbreviation_length_does_not_matter():
+    # Published tags have all used 7 chars, but `git rev-parse --short` grows
+    # with the repo, so the entries are full shas matched by prefix.
+    for length in (7, 8, 12, 40):
+        tag = f"2026.9.3-isol8.2-{'449894aeddcc85fd75cf90021745a05e25f0e0fc'[:length]}"
+        assert openclaw_version.bakes_lightbulb_channel(tag) is False
+
+
+def test_empty_sha_after_the_boundary_prefix_is_not_treated_as_a_match():
+    # "2026.9.3-isol8.2-" with nothing after it must not prefix-match every
+    # entry in the set; the fork gate decides, and an unparseable tail is not
+    # a pre-plugin build.
+    assert openclaw_version._is_pre_lightbulb_build("2026.9.3-isol8.2-") is False
 
 
 def test_bakes_lightbulb_channel_never_falls_back_to_the_env_pin(monkeypatch):

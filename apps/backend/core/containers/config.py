@@ -1691,6 +1691,13 @@ def build_openclaw_config_dict(
     # See the per-key comments below: this selects the config SHAPE for the image
     # this environment is actually running, not the one we are building toward.
     _emit_81_shape = _emits_81_shape(deployed_tag)
+    # Unlike _emit_81_shape this has NO pin fallback: an empty/unknown tag gates
+    # it off. That is the safe direction (a rejected config crash-loops the
+    # container) but it means the FRESH-PROVISION path depends on
+    # ecs_manager._base_image_tag() returning a real tag — it returns "" for a
+    # describe failure or a base family pinned by @sha256 digest, and either
+    # would silently drop the channel for every new owner until their next
+    # config write. Pin the base family by tag, or give this a fallback first.
     _emit_lightbulb_channel = _emits_lightbulb_channel(deployed_tag)
     providers_config, default_model, plugin_entries = build_provider_block(
         provider_choice=provider_choice,

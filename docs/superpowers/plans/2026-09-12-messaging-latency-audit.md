@@ -327,3 +327,50 @@ of `roomProps` (`MessagingWorkspaceContext.tsx:399-452`).
 
 ### Cosmetic
 14. Reserve the overflow-menu width on roster rows (§0).
+
+---
+
+## Measured baseline — production, 2026-09-12, before any of this shipped
+
+Taken on `https://flickmeon.ai/chat`, founder org, signed in, warm tab.
+
+**Opening a conversation that was already in the sidebar:**
+
+```
+click → first message painted:  3047 ms
+
++35ms   (107ms)  GET /messaging/rooms/{id}      ← room detail, for the delivery key
+        ~915ms of nothing                       ← Clerk template-token mint + AppSync subscribe ack
++951ms  (254ms)  GET /messaging/rooms           ← room list refetch
++951ms  (253ms)  GET .../messages?afterSeq=0
+```
+
+The ~915ms gap between the room-detail response and the first message request is
+the gate this PR removes. Nothing is in flight during it.
+
+**Painting the sidebar once:**
+
+```
+17  messaging requests total
+10  GET /messaging/rooms/{id}   ← the per-DM fan-out, all issued in the same
+                                  millisecond, 335-507ms each
+ 4  GET /messaging/rooms        ← the list, fetched four times
+```
+
+Two room ids appear **twice** in that fan-out, which is the `roomRevision`-keyed
+SWR invalidation re-running it mid-load.
+
+**Sidebar rows, read out of the live DOM:**
+
+```
+founder-acceptance  menu: yes      report bugs  menu: yes
+Aden Kim            menu: yes      Friday       menu: yes     Prasiddha  menu: yes
+Atlas               menu: NO       Forge        menu: NO      Gauge      menu: NO
+Pulse               menu: NO       Tally        menu: NO      Vera       menu: NO
+```
+
+Six of eleven rows reserve no width for the overflow control the other five
+reserve — the misalignment, confirmed in production rather than inferred.
+
+**Loading screen:** bare "Loading…" text, no mark. The only brand on screen
+during load is the square app-icon tile in the browser tab.

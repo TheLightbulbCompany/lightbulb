@@ -280,7 +280,7 @@ async def test_list_user_agents_concurrent_calls_on_the_same_org_both_land():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.container_rpc.call", AsyncMock(side_effect=fake_call)),
+        patch("core.services.admin_service.container_rpc.call", AsyncMock(side_effect=fake_call)) as call,
     ):
         results = await asyncio.gather(
             admin_service.list_user_agents("user_abc"),
@@ -289,6 +289,8 @@ async def test_list_user_agents_concurrent_calls_on_the_same_org_both_land():
 
     assert len(results) == 2
     assert call_count["n"] == 2
+    # The ORG owner id, not the calling admin user id, must reach the RPC.
+    assert call.await_args_list[0].args[0] == "org_abc"
 
 
 @pytest.mark.asyncio
@@ -540,9 +542,11 @@ async def test_get_agent_detail_concurrent_calls_on_the_same_agent_both_land():
     org = {"id": "org_abc", "slug": "acme", "name": "Acme", "role": "org:admin"}
 
     call_count = {"n": 0}
+    owner_ids_seen = []
 
-    async def fake_call(_owner_id, _method, _params, **_kwargs):
+    async def fake_call(owner_id, _method, _params, **_kwargs):
         call_count["n"] += 1
+        owner_ids_seen.append(owner_id)
         # Return a plausibly-shaped dict so get_agent_detail doesn't error.
         return {"agent": {}, "sessions": [], "skills": [], "config": {}}
 
@@ -575,6 +579,8 @@ async def test_get_agent_detail_concurrent_calls_on_the_same_agent_both_land():
 
     # 4 RPCs per detail call * 2 concurrent calls.
     assert call_count["n"] == 8
+    # The ORG owner id, not the calling admin user id, must reach every RPC.
+    assert owner_ids_seen == ["org_abc"] * 8
 
 
 @pytest.mark.asyncio

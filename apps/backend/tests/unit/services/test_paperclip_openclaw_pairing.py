@@ -1395,31 +1395,6 @@ async def test_approve_pending_device_from_rejection_never_raises_on_failure(mon
 
 
 @pytest.mark.asyncio
-async def test_approve_pending_device_from_rejection_no_retry_on_auth_error(monkeypatch):
-    """A GatewayConnectAuthError (e.g. the container's admin token is stale)
-    must not be retried -- retrying an auth failure feeds the gateway's
-    10-failed-auths-in-60s lockout instead of healing anything."""
-    from core.gateway.operator_rpc import GatewayConnectAuthError
-
-    attempts = {"n": 0}
-
-    async def _call(_owner_id, _method, _params, **_kwargs):
-        attempts["n"] += 1
-        raise GatewayConnectAuthError("bad admin token", code="AUTH_FAILED")
-
-    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
-
-    healed = await approve_pending_device_from_rejection(
-        owner_id="owner_z",
-        device_id="dev_abc",
-        request_id="req-1",
-    )
-
-    assert healed is False
-    assert attempts["n"] == 1  # exactly one attempt -- no retry on auth failure
-
-
-@pytest.mark.asyncio
 async def test_approve_pending_device_from_rejection_no_device_id_is_noop(monkeypatch):
     """No deviceId in the rejection payload -> nothing to approve; must not
     attempt any RPC and must not raise. Stubs gateway_rpc_oneshot to raise if

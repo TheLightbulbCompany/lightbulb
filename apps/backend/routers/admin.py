@@ -9,7 +9,7 @@ accept an Idempotency-Key header to short-circuit double clicks.
 
 Read endpoints delegate to admin_service (composition layer).
 Mutation endpoints call the underlying service (ecs_manager,
-billing_service, clerk_admin, gateway_pool, config_patcher) directly —
+billing_service, clerk_admin, container_rpc, config_patcher) directly —
 admin_service intentionally doesn't compose those because each is a
 distinct side-effect.
 """
@@ -734,7 +734,7 @@ async def _admin_agent_rpc(*, user_id: str, agent_id: str, method: str) -> dict:
     """One gateway RPC for an admin-initiated per-agent action, keyed on the owner."""
     owner_id, _ = await resolve_admin_owner_id(user_id)
     try:
-        return await container_rpc.call(owner_id, method, {"agent_id": agent_id})
+        return await container_rpc.call(owner_id, method, {"agent_id": agent_id}, wake=False)
     except ApiProblem as exc:
         raise HTTPException(status_code=409, detail="container_not_running") from exc
 

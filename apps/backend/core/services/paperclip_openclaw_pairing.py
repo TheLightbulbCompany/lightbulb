@@ -31,7 +31,6 @@ import websockets
 
 from core.gateway.operator_rpc import (
     GATEWAY_PORT,
-    GatewayConnectAuthError,
     GatewayConnectNotPairedError,
     perform_signed_connect,
 )
@@ -535,13 +534,6 @@ async def _approve_pairing_request(
                     owner_id,
                 )
             return
-        except GatewayConnectAuthError:
-            # Structural, not incidental: never retry an auth failure into a
-            # second admin connect -- the gateway locks out after 10 failed
-            # auths in 60s, for 5 minutes. (GatewayConnectAuthError subclasses
-            # RuntimeError, so without this clause the retry below would only
-            # avoid it by string-matching "unknown requestId" out of luck.)
-            raise
         except RuntimeError as e:
             if attempt == 2 or "unknown requestId" not in str(e):
                 raise
@@ -578,11 +570,7 @@ async def approve_pending_device_from_rejection(
 
     Never raises: called from an exception handler on an already-failed
     connect, so an approval failure here must not mask or replace the
-    original rejection. Does NOT retry on ``GatewayConnectAuthError`` -- the
-    gateway locks out after repeated failed auths (10 in 60s -> 5 minutes),
-    and this whole path already fires off a live rejection, so compounding it
-    with another failed admin auth only digs the lockout hole deeper. Returns
-    True iff an approval RPC actually landed.
+    original rejection. Returns True iff an approval RPC actually landed.
     """
     if not device_id:
         logger.warning(
@@ -610,15 +598,6 @@ async def approve_pending_device_from_rejection(
         await _approve_pairing_request(
             owner_id=owner_id, device_id=device_id, request_id=resolved_request_id, timeout_s=5.0
         )
-    except GatewayConnectAuthError as e:
-        logger.warning(
-            "approve_pending_device_from_rejection: admin auth failed for device=%s owner=%s -- not retrying "
-            "(gateway lockout guard): %s",
-            device_id[:16],
-            owner_id,
-            e,
-        )
-        return False
     except Exception as e:  # noqa: BLE001 — never-raise contract; caller's reconnect loop is the real recovery
         logger.warning(
             "approve_pending_device_from_rejection: self-heal approval failed for device=%s owner=%s: %s",

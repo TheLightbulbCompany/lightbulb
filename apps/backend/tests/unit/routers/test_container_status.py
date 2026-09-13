@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from core.auth import AuthContext
+from core.services.messaging import ApiProblem
 from core.services.stripe_webhook_handlers import CONVERSION_GUARD_SECONDS
 from routers.container import _resolve_cold_start_phase
 
@@ -1309,11 +1310,21 @@ class TestGatewayRestart:
     async def test_gateway_restart_gateway_unreachable(
         self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
     ):
-        """Should return 502 when gateway refuses connection."""
-        mock_call_gateway_rpc.side_effect = ConnectionRefusedError()
+        """Should return 502 when the gateway is unreachable."""
+        mock_call_gateway_rpc.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 502
         assert "Gateway is not responding" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_gateway_restart_times_out(
+        self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
+    ):
+        """Should return 502 when the gateway RPC times out."""
+        mock_call_gateway_rpc.side_effect = TimeoutError()
+        response = await async_client.post("/api/v1/container/gateway/restart")
+        assert response.status_code == 502
+        assert "Gateway restart timed out" in response.json()["detail"]
 
 
 class TestContainerStatusTrialConversion:

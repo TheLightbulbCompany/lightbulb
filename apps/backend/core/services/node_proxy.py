@@ -439,7 +439,7 @@ async def handle_node_disconnect(
                     # OpenClaw's sessions.patch takes `key`, not `sessionKey`
                     # (openclaw/src/gateway/server-methods/sessions.ts).
                     await container_rpc.call(
-                        owner_id, "sessions.patch", {"key": sk, "execNode": None, "execHost": None}
+                        owner_id, "sessions.patch", {"key": sk, "execNode": None, "execHost": None}, wake=False
                     )
                 except Exception:
                     logger.debug(

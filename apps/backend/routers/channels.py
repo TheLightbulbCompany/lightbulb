@@ -82,7 +82,7 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
     # agent_id if the container isn't reachable or the probe fails.
     bot_usernames: dict[str, dict[str, str]] = {}  # provider -> accountId -> username
     try:
-        status = await container_rpc.call(owner_id, "channels.status", {"probe": True})
+        status = await container_rpc.call(owner_id, "channels.status", {"probe": True}, wake=False)
         for prov, accts in (status or {}).get("channelAccounts", {}).items():
             if not isinstance(accts, list):
                 continue

@@ -299,8 +299,6 @@ async def test_delete_runtime_agent_does_not_retry_unrelated_gateway_error():
 async def test_delete_everywhere_reconciles_persistence_when_container_is_stopped():
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-    gateway = MagicMock()
-    gateway.send_rpc = AsyncMock()
     workspace = MagicMock()
     workspace.remove_template_sidecar = MagicMock()
 
@@ -311,7 +309,6 @@ async def test_delete_everywhere_reconciles_persistence_when_container_is_stoppe
         ),
         patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_gateway_pool", return_value=gateway),
         patch("core.containers.get_workspace", return_value=workspace),
         patch(
             "core.services.config_patcher.remove_from_openclaw_config_list",
@@ -330,7 +327,6 @@ async def test_delete_everywhere_reconciles_persistence_when_container_is_stoppe
         result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
 
     assert result["deleted"] is True
-    gateway.send_rpc.assert_not_awaited()
     remove_config.assert_awaited_once()
     workspace.remove_template_sidecar.assert_called_once_with("owner", "retiring")
     delete_paperclip.assert_awaited_once_with(owner_id="owner", agent_id="retiring")

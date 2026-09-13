@@ -96,7 +96,7 @@ async def snapshot_browser_state(owner_id: str) -> bool:
     Call BEFORE the roll stops the old task — the old task must still be up.
     """
     try:
-        await container_rpc.running_container(owner_id)
+        await container_rpc.running_container(owner_id, wake=False)
     except Exception as exc:  # noqa: BLE001 — best-effort; covers ApiProblem (cold/unreachable) and a raw resolve failure
         logger.info("browser-state snapshot: resolve failed for %s: %s", owner_id, exc)
         return False

@@ -96,3 +96,22 @@ async def test_no_running_container_is_runtime_unavailable_before_any_http():
         await container_rpc.call("owner_1", "health")
     assert exc.value.error.code == "RUNTIME_UNAVAILABLE"
     wake.assert_awaited_once_with("owner_1")
+
+
+@pytest.mark.asyncio
+async def test_wake_false_never_dispatches_a_wake_for_a_stopped_container():
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(None, None))
+    with (
+        patch("core.services.container_rpc.get_ecs_manager", return_value=manager),
+        patch(
+            "core.services.container_rpc.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"status": "stopped"},
+        ),
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        pytest.raises(ApiProblem) as exc,
+    ):
+        await container_rpc.call("owner_1", "health", wake=False)
+    assert exc.value.error.code == "RUNTIME_UNAVAILABLE"
+    wake.assert_not_awaited()

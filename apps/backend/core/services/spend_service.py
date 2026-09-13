@@ -25,6 +25,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services import container_rpc
+from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)
 
@@ -195,12 +196,6 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
     return billed
 
 
-def _ecs_manager():
-    from core.containers import get_ecs_manager
-
-    return get_ecs_manager()
-
-
 async def _oauth_quota_payload(owner_id: str) -> dict | None:
     """ChatGPT plan-quota windows via the container's models.authStatus RPC.
 
@@ -209,7 +204,7 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
     falls back to tokens_only. OpenClaw caches upstream 60s; no cache here.
     """
     try:
-        result = await container_rpc.call(owner_id, "models.authStatus", {}, timeout_s=5.0)
+        result = await container_rpc.call(owner_id, "models.authStatus", {}, timeout_s=5.0, wake=False)
         for provider in (result or {}).get("providers") or []:
             if provider.get("provider") not in _OAUTH_PROVIDER_IDS:
                 continue
@@ -236,6 +231,8 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
                 "windows": windows,
             }
         return None
+    except ApiProblem:
+        return None  # parked/unreachable container — silent, not an error
     except Exception:
         put_metric("billing.spend.authstatus_error")
         logger.warning("spend: models.authStatus quota read failed for %s", owner_id, exc_info=True)

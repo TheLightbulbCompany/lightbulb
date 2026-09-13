@@ -1,7 +1,9 @@
-import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
+import * as Reanimated from "react-native-reanimated";
+import { colors } from "../../../config/theme";
 import type { RoomMember } from "@lightbulb/shared";
-import { RoomComposer, useComposerKeyboardOffset } from "../RoomComposer";
+import { RoomComposer } from "../RoomComposer";
 
 // `attachments.ts` → `adapter.ts` reaches expo-crypto at import time.
 jest.mock("expo-crypto", () => ({ randomUUID: () => "77777777-7777-4777-8777-777777777777" }));
@@ -182,23 +184,60 @@ describe("RoomComposer", () => {
   });
 });
 
-describe("useComposerKeyboardOffset", () => {
+describe("RoomComposer motion", () => {
   beforeEach(() => {
     mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
   });
 
-  it("adds the iOS header height to the top inset on an iPhone SE (no home indicator)", async () => {
-    mockInsets = { top: 20, bottom: 0, left: 0, right: 0 };
-    const { result } = await renderHook(() => useComposerKeyboardOffset());
-    // 20 (status-bar inset) + 44 (iOS compact header) - 0 (no bottom inset) = 64.
-    expect(result.current).toBe(64);
+  const bar = () => screen.getByTestId("composer-outer");
+  const send = () => screen.getByLabelText("Send");
+  /**
+   * Spying on the mocked module is what distinguishes a SPRING from a style
+   * flip: the mock resolves `withSpring` to its target value synchronously, so
+   * the rendered style alone cannot tell the two apart — the call can.
+   */
+  let withSpring: jest.SpyInstance;
+  beforeEach(() => {
+    withSpring = jest.spyOn(Reanimated, "withSpring");
+  });
+  afterEach(() => withSpring.mockRestore());
+
+  // The defect this replaces: `focused && styles.cardFocused` swapped a border
+  // colour and a 16→24pt shadow with no animation at all — a hard visual jump
+  // on every tap into the composer.
+  it("springs the bar's hairline on focus instead of flipping a static style", async () => {
+    await setup();
+    const style = () => StyleSheet.flatten(bar().props.style);
+    // The bar IS the hairline — flat on the page ground, no card left.
+    expect(style().borderTopWidth).toBe(StyleSheet.hairlineWidth);
+    expect(style().shadowRadius).toBeUndefined();
+    expect(style().elevation).toBeUndefined();
+    expect(style().borderRadius).toBeUndefined();
+    // At rest the animated style resolves to the plain edge token.
+    expect(style().borderTopColor).toBe(colors.edge);
+
+    await fireEvent(input(), "focus");
+    // Critically damped, both ways: a focus ring must never overshoot its colour.
+    expect(withSpring).toHaveBeenLastCalledWith(1, expect.objectContaining({ dampingRatio: 1 }));
+    await fireEvent(input(), "blur");
+    expect(withSpring).toHaveBeenLastCalledWith(0, expect.objectContaining({ dampingRatio: 1 }));
+    // …and no second static variant appeared to do the work instead.
+    expect(style().shadowRadius).toBeUndefined();
   });
 
-  it("subtracts the home-indicator inset back out on a notched device", async () => {
-    mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
-    const { result } = await renderHook(() => useComposerKeyboardOffset());
-    // 59 (Dynamic Island inset) + 44 (iOS compact header) - 34 (home indicator) = 69.
-    expect(result.current).toBe(69);
+  it("scales the send button down on press-IN, before the send is dispatched", async () => {
+    const onSend = jest.fn(async () => {});
+    await setup(onSend);
+    await fireEvent.changeText(input(), "ping");
+    withSpring.mockClear();
+
+    await fireEvent(send(), "pressIn");
+    expect(withSpring).toHaveBeenLastCalledWith(0.96, expect.objectContaining({ dampingRatio: 1 }));
+    // Press-down feedback is not the send: nothing has gone out yet.
+    expect(onSend).not.toHaveBeenCalled();
+
+    await fireEvent(send(), "pressOut");
+    expect(withSpring).toHaveBeenLastCalledWith(1, expect.objectContaining({ dampingRatio: 1 }));
   });
 });
 

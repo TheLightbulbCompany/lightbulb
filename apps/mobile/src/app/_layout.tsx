@@ -16,6 +16,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { colors, spacing, type } from "../config/theme";
 import { tokenCache } from "../lib/tokenCache";
@@ -64,19 +65,26 @@ export default function RootLayout() {
     );
   }
 
+  // KeyboardProvider is the native keyboard observer every composer on the two
+  // room screens rides. It has to sit above the navigator: it installs ONE
+  // UIKit keyboard-layout observer for the whole app, and the shared values it
+  // publishes are what let the composer track an interactive dismiss drag
+  // frame-for-frame (RN's own Keyboard events only fire at the ends).
   return (
-    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: colors.cream },
-        }}
-      >
-        <Stack.Screen name="(auth)" />
-        <Stack.Screen name="(app)" />
-      </Stack>
-      <StatusBar style="dark" />
-    </ClerkProvider>
+    <KeyboardProvider>
+      <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: colors.cream },
+          }}
+        >
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(app)" />
+        </Stack>
+        <StatusBar style="dark" />
+      </ClerkProvider>
+    </KeyboardProvider>
   );
 }
 

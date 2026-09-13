@@ -12,8 +12,6 @@ import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -21,13 +19,15 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
-import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
+import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
@@ -40,8 +40,13 @@ import { typingLine } from "../../../../lib/typingLine";
 const STAR_FAILED = "The star could not be saved.";
 const MUTE_FAILED = "The notification setting could not be saved.";
 
-/** Distance from the bottom, in px, still counted as "at the bottom". */
-const BOTTOM_SLACK = 80;
+/**
+ * How far the reader may scroll back, in px, before the jump-to-latest pill
+ * appears. The list is INVERTED, so `contentOffset.y === 0` is the newest
+ * message and the offset grows going back in time — no content/layout
+ * arithmetic, and nothing to recompute when the keyboard resizes the list.
+ */
+const JUMP_THRESHOLD = 80;
 
 export default function ConversationRoute() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
@@ -96,6 +101,10 @@ function Conversation() {
     [rooms.messages],
   );
   const items = useMemo(() => buildTimeline(mainMessages, { readSeq }), [mainMessages, readSeq]);
+  // `buildTimeline` is oldest → newest; an inverted list draws index 0 at the
+  // bottom, so reversing here puts the same visual order on screen — dividers
+  // included — with the newest message simply THERE, never scrolled to.
+  const newestFirst = useMemo(() => [...items].reverse(), [items]);
   const replyCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const message of rooms.messages) {
@@ -174,14 +183,10 @@ function Conversation() {
   );
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
-  const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const jumpScale = usePressScale();
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const next = contentSize.height - layoutMeasurement.height - contentOffset.y < BOTTOM_SLACK;
-    atBottomRef.current = next;
-    setAtBottom(next);
+    setAtBottom(event.nativeEvent.contentOffset.y <= JUMP_THRESHOLD);
   }, []);
 
   const runningRun = runs.find((run) => run.state === "running");
@@ -200,7 +205,7 @@ function Conversation() {
   // Hoisted above the blocked-state early return below: a hook called inside
   // the JSX prop would run on the normal render and not on a blocked one,
   // which is a rules-of-hooks violation and a real order change, not a lint nit.
-  const keyboardOffset = useComposerKeyboardOffset();
+  const insets = useSafeAreaInsets();
 
   // On `headerOptions` rather than inline so the blocked-state early return
   // below keeps the header too — a blocked screen with no title and no
@@ -250,8 +255,15 @@ function Conversation() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={keyboardOffset}
+      behavior="padding"
+      // `automaticOffset` asks UIKit where this view actually sits on screen,
+      // so the nav bar's height stops being something we have to guess — the
+      // measured-44pt `useComposerKeyboardOffset` constant died with it.
+      automaticOffset
+      // All that is left is the pairing with the composer's own safe-area
+      // padding: land the composer box `insets.bottom` INTO the keyboard so its
+      // padding lifts the visible bar back flush on top of it.
+      keyboardVerticalOffset={-insets.bottom}
     >
       <Stack.Screen options={headerOptions} />
       {prefsError && (
@@ -262,38 +274,20 @@ function Conversation() {
       <FlatList
         ref={listRef}
         testID="room-timeline"
-        data={items}
+        // Inverted, the way every chat app draws a timeline: the newest content
+        // is at offset 0 and simply appears there, so a new message, a run frame
+        // or the keyboard resizing the list never animates a scroll.
+        inverted
+        data={newestFirst}
         keyExtractor={(item) => item.key}
         contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
-        onContentSizeChange={() => {
-          if (atBottomRef.current) listRef.current?.scrollToEnd({ animated: true });
-        }}
+        // Header and footer are swapped against the un-inverted version: on an
+        // inverted list the HEADER draws at the bottom, under the newest message.
         ListHeaderComponent={
-          rooms.historyError ? (
-            <View style={styles.errorCard}>
-              <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
-              <Pressable
-                onPress={rooms.loadHistory}
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading history"
-              >
-                <Text style={styles.retryText}>Retry</Text>
-              </Pressable>
-            </View>
-          ) : null
-        }
-        ListEmptyComponent={
-          rooms.historyLoading ? (
-            <TimelineSkeleton />
-          ) : (
-            <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
-          )
-        }
-        ListFooterComponent={
           <View>
             <LocalMessageRows
               rows={rows}
@@ -306,6 +300,27 @@ function Conversation() {
               <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
             ))}
           </View>
+        }
+        ListEmptyComponent={
+          rooms.historyLoading ? (
+            <TimelineSkeleton />
+          ) : (
+            <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
+          )
+        }
+        ListFooterComponent={
+          rooms.historyError ? (
+            <View style={styles.errorCard}>
+              <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
+              <Pressable
+                onPress={rooms.loadHistory}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading history"
+              >
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : null
         }
         renderItem={({ item }) => {
           if (item.kind === "date") {
@@ -349,7 +364,8 @@ function Conversation() {
       {!atBottom && (
         <AnimatedPressable
           style={[styles.jump, jumpScale.style]}
-          onPress={() => listRef.current?.scrollToEnd({ animated: true })}
+          // Offset 0 IS the newest message on an inverted list.
+          onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
           onPressIn={jumpScale.onPressIn}
           onPressOut={jumpScale.onPressOut}
           accessibilityRole="button"
@@ -404,7 +420,10 @@ function Conversation() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.cream },
-  list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
+  // Top/bottom are swapped against the un-inverted version: the content
+  // container is inside the flipped scroll view, so `paddingTop` draws at the
+  // bottom (against the composer) and `paddingBottom` at the top.
+  list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
   headerTitle: { alignItems: "center" },
   // System font, not Source Sans 3 — see `type.navTitle`.

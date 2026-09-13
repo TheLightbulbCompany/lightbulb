@@ -171,3 +171,20 @@ jest.mock(
   }),
   { virtual: true },
 );
+
+// react-native-keyboard-controller: a real NATIVE dep (the composer on both
+// room screens rides its keyboard observer). Global, because the provider is
+// mounted at the app root and the KAV wraps both room screens.
+//
+// Deliberately an INLINE stub rather than the library's shipped
+// `react-native-keyboard-controller/jest` mock: that file is ESM and drags a
+// chain of untransformed imports into every suite that touches it. Only the
+// two components the app actually renders need standing in for.
+jest.mock("react-native-keyboard-controller", () => {
+  // Required inside the factory: jest hoists jest.mock above the imports.
+  const { View } = require("react-native");
+  return {
+    KeyboardProvider: ({ children }: { children?: unknown }) => children,
+    KeyboardAvoidingView: View,
+  };
+});

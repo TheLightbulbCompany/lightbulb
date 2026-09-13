@@ -87,8 +87,8 @@ jest.mock("react-native-safe-area-context", () => ({
 const mockRoom: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",
   pinnedMessageIds: [], topic: null, starred: false, muted: false, sectionId: null,
-  lastMessageSeq: 3, lastMessageAt: "2026-09-11T10:02:00Z", unreadCount: 1,
-  updatedAt: "2026-09-11T10:02:00Z", lastReadSeq: 2, createdAt: "2026-09-11T09:00:00Z",
+  lastMessageSeq: 3, lastMessageAt: "2026-06-11T10:02:00Z", unreadCount: 1,
+  updatedAt: "2026-06-11T10:02:00Z", lastReadSeq: 2, createdAt: "2026-06-11T09:00:00Z",
   members: [
     { kind: "human", id: "user-a", displayName: "Alice", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "x", joinedSeq: 0 },
     { kind: "agent", id: "agent-1", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "x", joinedSeq: 0 },
@@ -100,11 +100,16 @@ const mockSession = {
   capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true,
   latestEventSeq: 4, title: "Fix relay", cwdName: "lightbulb",
 };
+// Fixed more than a week in the past (not "recent" by any calendar reckoning at
+// any run date) so `dateDividerLabel` always renders the absolute-date branch —
+// never "Today"/"Yesterday" or a bare weekday name, which could otherwise
+// collide with the fixture agent's display name "Friday" on the calendar week
+// it happens to land on.
 const mockMsg = (over: Partial<CanonicalRoomMessage>): CanonicalRoomMessage => ({
   messageId: "m1", roomId: "room-1", messageSeq: 1, roomRevision: 1,
   author: { kind: "agent", id: "agent-1", displayName: "Friday" }, text: "first",
   mentions: [], replyToMessageId: null, threadRootMessageId: null,
-  createdAt: "2026-09-11T10:00:00Z", runId: null, ...over,
+  createdAt: "2026-06-11T10:00:00Z", runId: null, ...over,
 });
 const mockBase = [
   mockMsg({}),
@@ -205,7 +210,7 @@ describe("conversation screen", () => {
     expect(screen.getAllByText("Friday")).toHaveLength(1);
     expect(screen.getByTestId("room-timeline")).toBeTruthy();
     expect(
-      screen.getByText(dateDividerLabel(new Date("2026-09-11T10:00:00Z"), new Date())),
+      screen.getByText(dateDividerLabel(new Date("2026-06-11T10:00:00Z"), new Date())),
     ).toBeTruthy();
   });
 

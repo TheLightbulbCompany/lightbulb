@@ -1,6 +1,6 @@
 # Chat theme system: three planes, two axes
 
-Status: design, awaiting review
+Status: implemented
 Date: 2026-09-13
 Branch: `design/chat-page-color`
 Scope: the visual token system for `/chat` (both shells), plus two user controls
@@ -20,10 +20,11 @@ icon rail and the channel sidebar are the same color, and that shared plane sits
 2% away from the message pane. What should be three depths is two, at a
 separation the eye cannot resolve.
 
-**Agent identity carries no color.** `--presence-agent` is hardwired to
-`--info`, so Friday, Atlas and every marketplace agent render as identical blue
-squares with identical blue dots. For a product whose premise is a team of
-distinct agents, the interface communicates the opposite.
+**Agent identity carries no color.** `Identity.tsx` paints every avatar tile
+`--cream-deep`, and `--presence-agent` is hardwired to `--info`, so Friday,
+Atlas and every marketplace agent render as identical neutral tiles carrying
+identical blue dots. For a product whose premise is a team of distinct agents,
+the interface communicates the opposite.
 
 **The two shells disagree.** `.workspace-shell` exists only on desktop
 (`WorkspaceShell.tsx:451`). The mobile shell renders `.app-shell` /
@@ -190,7 +191,10 @@ Small and mostly mechanical — everything already reads through variables.
 5. `ChatLayout.tsx` — the same two toggles in the sidebar footer.
 6. `app/chat/layout.tsx` — the pre-paint stamping script.
 7. New `useChatTheme` hook owning both booleans, persistence, and the attribute
-   writes.
+   writes; new `ThemeToggles` component shared verbatim by both shells so they
+   cannot drift; new `lib/agentTint.ts` (FNV-1a over the agent id).
+8. `Identity.tsx` gains an optional `tint` prop. Opt-in, so every call site
+   outside the messaging roster keeps the neutral tile it has today.
 
 ## 8. Verification
 

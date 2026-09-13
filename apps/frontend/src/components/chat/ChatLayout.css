@@ -13,7 +13,9 @@
   min-width: 0;
 }
 .cream-sidebar {
-  background: var(--cream-deep);
+  /* Mobile's nav plane. Two planes here, not three: there is no rail on this
+     shell, so there is no third region to separate. */
+  background: var(--plane-sidebar);
   border-right: 1px solid var(--edge);
   display: flex;
   flex-direction: column;
@@ -735,6 +737,35 @@
 .sidebar-footer {
   border-top: 1px solid var(--edge);
   padding: 12px 16px;
+}
+.appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+.appearance-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 44px, not the rail's 40: this is the touch shell. */
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  color: var(--midnight-muted);
+  cursor: pointer;
+}
+.appearance-toggle:hover {
+  color: var(--midnight);
+  background: var(--cream-deeper);
+}
+.appearance-toggle[aria-pressed="true"] {
+  color: var(--brand);
+  background: var(--cream-deeper);
+}
+.appearance-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }
 .user-row {
   display: flex;

@@ -40,6 +40,7 @@ import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
 import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -351,6 +352,11 @@ export function ChatLayout({
               )}
             </div>
             <FreeTierNote />
+            {/* Mobile has no rail, so the appearance controls live here — the
+                nearest equivalent bottom-left slot to the desktop rail's. */}
+            <div className="appearance-row" role="group" aria-label="Appearance">
+              <ThemeToggles className="appearance-toggle" />
+            </div>
             <DesktopUpdater version="0.1" />
           </div>
         </div>

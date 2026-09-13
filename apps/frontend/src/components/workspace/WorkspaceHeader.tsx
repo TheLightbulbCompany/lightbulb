@@ -10,6 +10,7 @@ import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
 import { MESSAGES_PANEL_ID } from "./panelRegistry";
+import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 const DESTINATIONS = [
   { panel: MESSAGES_PANEL_ID, label: "Messages", Icon: MessageSquare },
@@ -51,6 +52,11 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         </button>;
       })}
       <div className="workspace-rail__spacer" />
+      {/* Appearance sits above the help/settings/account group: it changes how
+          the app looks, not what it does, so it reads as the least consequential
+          of the bottom controls and takes the position furthest from the
+          account button. */}
+      <ThemeToggles />
       <button type="button" onClick={() => openSupport()} aria-label="Get help" title="Get help"><HelpCircle size={20} aria-hidden="true" /></button>
       <Link href="/settings" aria-label="Settings" title="Settings"><Settings size={20} aria-hidden="true" /></Link>
       <UserButton appearance={{ elements: { avatarBox: "h-8 w-8" } }} />

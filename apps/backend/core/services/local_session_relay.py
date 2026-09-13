@@ -104,10 +104,11 @@ def _conflict(reason: str, **fields: object) -> ApiProblem:
 
 async def _actor_label(command: dict) -> dict | None:
     """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
-    from core.services.messaging import with_human_handles
+    from core.services.messaging import human_emails, with_human_handles
 
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
-    members = with_human_handles(await store.list_members(command["roomId"]))
+    room_members = await store.list_members(command["roomId"])
+    members = with_human_handles(room_members, await human_emails(room_members))
     member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
     if member is None:
         return None

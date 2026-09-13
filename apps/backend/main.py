@@ -5,6 +5,7 @@ load_dotenv()
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from core.observability.logging import configure_logging
@@ -249,13 +250,22 @@ class SecurityHeadersMiddleware:
 
 
 async def _running_count_gauge_loop():
-    """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream."""
+    """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream.
+
+    Tagged with the emitting ECS task id (`instance`) so P12 can divide its fleet
+    sample count by the live instance count -- at N >= 2 a dead loop only halves
+    the rate, which is otherwise indistinguishable from a healthy single instance.
+    This loop deliberately stays UNADMITTED (no pass-admission lease): it is the
+    liveness canary, and a canary admitted once per window only proves that *some*
+    instance is alive, not that this one is.
+    """
     from core.observability.metrics import gauge
 
+    instance = os.getenv("HOSTNAME") or "local"
     while True:
         try:
             rows = await container_repo.get_by_status("running")
-            gauge("gateway.running.count", len(rows))
+            gauge("gateway.running.count", len(rows), {"instance": instance})
         except Exception:
             logger.warning("running_gauges loop iteration failed", exc_info=True)
         await asyncio.sleep(60)

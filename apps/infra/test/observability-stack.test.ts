@@ -190,7 +190,9 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "debug.endpoint.prod_hit": [["endpoint"]],
   "gateway.cold_start.count": [["outcome"]],
   "gateway.cold_start.latency": [[]],
-  "gateway.running.count": [[]],
+  // main.py:_running_count_gauge_loop -- tagged with the emitting ECS task id
+  // so P12 can divide the fleet sample count by HealthyHostCount (C5).
+  "gateway.running.count": [["instance"]],
   "marketplace.path_traversal_attempt": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
@@ -723,14 +725,35 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
+  test("P12 divides the heartbeat by the live instance count", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "gateway.running.count",
-      Namespace: "LightbulbAI",
-      Statistic: "SampleCount",
+      AlarmName: "lightbulb-dev-P12-backend-liveness",
       ComparisonOperator: "LessThanThreshold",
-      Threshold: 5,
+      Threshold: 7,
       TreatMissingData: "breaching",
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Id: "beatsPerInstance", Expression: "beats / hosts" }),
+        Match.objectLike({
+          Id: "beats",
+          MetricStat: Match.objectLike({
+            Stat: "SampleCount",
+            Metric: Match.objectLike({
+              Namespace: "LightbulbAI",
+              MetricName: "gateway.running.count",
+            }),
+          }),
+        }),
+        Match.objectLike({
+          Id: "hosts",
+          MetricStat: Match.objectLike({
+            Stat: "Minimum",
+            Metric: Match.objectLike({
+              Namespace: "AWS/ApplicationELB",
+              MetricName: "HealthyHostCount",
+            }),
+          }),
+        }),
+      ]),
     });
   });
 

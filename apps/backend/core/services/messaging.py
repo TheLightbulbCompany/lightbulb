@@ -1920,6 +1920,11 @@ async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageR
     if body.duration_ms is not None:
         data["durationMs"] = body.duration_ms
     try:
+        # claim_usage_receipt above is the durable, cross-instance gate that keeps
+        # this single-emit at desiredCount >= 2 -- it is a conditional PutItem, so
+        # this call is reached at most once per (owner_id, run_id) fleet-wide.
+        # run_analytics._seen_run_ids is a per-process accelerator only; it is NOT
+        # what prevents a double-emit across instances.
         run_analytics.schedule_run_completed(
             owner_id=owner_id,
             parsed=parse_session_key(body.session_key),

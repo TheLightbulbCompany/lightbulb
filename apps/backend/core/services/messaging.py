@@ -29,6 +29,8 @@ from core.repositories import container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.services.push_service import send_push_to_user
+from core.services import run_analytics
+from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
 
@@ -467,6 +469,20 @@ class RunEventRequest(ContractModel):
 class RunEventResponse(ContractModel):
     run_id: uuid.UUID
     status: Literal["applied", "replayed"]
+
+
+class UsageReportRequest(ContractModel):
+    session_key: str = Field(min_length=1, max_length=512)
+    agent_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    success: bool
+    duration_ms: int | None = Field(default=None, ge=0)
+    usage: RunUsage
+
+
+class UsageReportResponse(ContractModel):
+    run_id: str
+    status: Literal["applied", "replayed", "ignored"]
 
 
 class SteerRunRequest(ContractModel):
@@ -1862,6 +1878,46 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         "messaging.run.callback", dimensions={"type": event.type, "outcome": "applied" if applied else "replayed"}
     )
     return RunEventResponse(run_id=event.run_id, status="applied" if applied else "replayed")
+
+
+async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageReportResponse:
+    """Usage + product analytics for runs the room contract does not cover (cron, heartbeat, Paperclip)."""
+    if parse_lightbulb_session_key(body.session_key) is not None:
+        put_metric("messaging.usage.callback", dimensions={"outcome": "room"})
+        return UsageReportResponse(run_id=body.run_id, status="ignored")
+    if not await messaging_repo.claim_usage_receipt(owner_id, body.run_id):
+        put_metric("messaging.usage.callback", dimensions={"outcome": "replayed"})
+        return UsageReportResponse(run_id=body.run_id, status="replayed")
+    usage = body.usage
+    cost = usage.estimated_cost_usd
+    raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
+    if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
+        try:
+            await record_usage(
+                owner_id=owner_id,
+                user_id=owner_id,
+                model=usage.model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read=usage.cache_read_tokens,
+                cache_write=usage.cache_write_tokens,
+                raw_cost_microcents=raw_cost_microcents,
+                room_turn=False,
+                event_kind=None,
+            )
+        except Exception:
+            logger.exception("usage record failed")
+    try:
+        run_analytics.schedule_run_completed(
+            owner_id=owner_id,
+            parsed=parse_session_key(body.session_key),
+            payload={"runId": body.run_id, "data": usage.model_dump(by_alias=True)},
+            phase="end" if body.success else "error",
+        )
+    except Exception:
+        logger.exception("run analytics scheduling failed")
+    put_metric("messaging.usage.callback", dimensions={"outcome": "applied"})
+    return UsageReportResponse(run_id=body.run_id, status="applied")
 
 
 async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsage | None) -> None:

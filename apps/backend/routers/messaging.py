@@ -52,6 +52,8 @@ from core.services.messaging import (
     SteerRunResponse,
     TypingRequest,
     UpsertRoomMemberRequest,
+    UsageReportRequest,
+    UsageReportResponse,
     make_live_event,
 )
 
@@ -558,3 +560,9 @@ async def get_agent_message_receipt(owner_id: str, event_id: str, request: Reque
 async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_run_event(owner_id, body)
+
+
+@router.post("/internal/messaging/usage/{owner_id}", response_model=UsageReportResponse)
+async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
+    await _require_hook_token(owner_id, request)
+    return await service.handle_usage_report(owner_id, body)

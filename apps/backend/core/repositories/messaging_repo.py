@@ -1589,6 +1589,22 @@ async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
 
 
+def usage_sk(run_id: str) -> str:
+    return f"USAGE#{run_id}"
+
+
+async def claim_usage_receipt(owner_id: str, run_id: str) -> bool:
+    """First writer wins: the usage callback is at-least-once, the counters are not idempotent."""
+    item = {"pk": owner_pk(owner_id), "sk": usage_sk(run_id), "expiresAt": _expires_at()}
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def has_open_runs(owner_id: str) -> bool:
     """Any ledger row still carrying the sweep marker (removed by ``end_run``)."""
     rows = await _query(owner_pk(owner_id), begins_with="RUN#")

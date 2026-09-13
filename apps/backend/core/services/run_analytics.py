@@ -130,13 +130,13 @@ def schedule_run_completed(
     set), or None when the run was already emitted or the PostHog write key is
     unset. Synchronous and I/O-free — safe on the reader loop.
 
-    ``emit_metric=False`` exists for the one caller that RE-observes runs after
-    the fact (``cron_run_telemetry.sweep_cron_runs``). The PostHog event is
-    idempotent across processes via the deterministic capture uuid below; the
-    CloudWatch metric has no durable dedup, and two backend tasks run the
-    sweeping worker during every rolling deploy. So the metric keeps its
-    "observed live" meaning and PostHog carries the complete count — an
-    under-counted metric beats a double-counted one.
+    ``emit_metric=False`` exists for a later re-observation of a run, not its
+    first live sighting. The PostHog event is idempotent across processes via
+    the deterministic capture uuid below; the CloudWatch metric has no durable
+    dedup, and a re-observing caller can run more than once during a rolling
+    deploy. So the metric keeps its "observed live" meaning and PostHog
+    carries the complete count — an under-counted metric beats a
+    double-counted one.
     """
     run_id = payload.get("runId")
     # Dedup ONCE — this gates BOTH the CloudWatch metric and the PostHog event,

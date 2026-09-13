@@ -21,9 +21,14 @@ export function ParticipantAvatar({ participant, size = "default", showPresence 
     ? ACTIVITY_LABEL[activity as keyof typeof ACTIVITY_LABEL]
     : undefined;
   const online = showPresence && participant.kind === "human" && participant.online === true;
-  return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={online ? "online" : undefined}>
+  // Agents are always reachable, so they always show a presence dot (blue, distinct
+  // from a human's green "online") -- never for offline humans.
+  const isAgent = showPresence && participant.kind === "agent";
+  const presence = online ? "online" : isAgent ? "agent" : undefined;
+  return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={presence}>
     <Identity name={participant.displayName} avatarOnly size={size} />
     {label && <span className="sr-only">{label}</span>}
     {online && <span className="sr-only">Online</span>}
+    {isAgent && <span className="sr-only">Agent, always available</span>}
   </span>;
 }

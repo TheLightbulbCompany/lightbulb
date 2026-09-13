@@ -208,6 +208,16 @@ export const colors = {
   /** @deprecated use `danger` */
   error: palette.danger,
 
+  // Presence dot (DM list avatar, mirrors web's ParticipantAvatar/`--presence*`).
+  /** Agent presence -- always reachable. Alias of `info`, 6.76:1 on cream. */
+  presenceAgent: palette.info,
+  /**
+   * Online-human presence. Alias of `runningGreen`, 5.44:1 on cream. Not yet
+   * wired: RoomMember carries no `online` field on mobile, so this only
+   * lights up once that data reaches the app -- see Avatar.tsx.
+   */
+  presenceOnline: palette.runningGreen,
+
   // ---------------------------------------------------------------------------
   // Teams board — status + priority semantic tokens (Teams v2, contract §3).
   // The board card must make status/priority instantly scannable, so every

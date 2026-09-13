@@ -7,8 +7,16 @@ import { notifyApiError } from "@/lib/notify";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { LobsterGraphView } from "@/components/chat/LobsterGraphView";
 import { useScopedHotkey } from "@/hooks/useScopedHotkey";
+import { FileViewerContent } from "@/components/media/FileViewerContent";
 
 const isSaveHotkey = (e: KeyboardEvent) => (e.metaKey || e.ctrlKey) && e.key === "s";
+
+/** Base64 (as returned by the workspace file-info endpoint) -> a Blob the
+ * browser's native PDF renderer can be pointed at via an object URL. */
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return new Blob([bytes], { type: mimeType });
+}
 
 interface FileContentViewerProps {
   file: FileInfo | null;
@@ -31,6 +39,21 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   React.useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  // PDFs arrive as base64 (like images) — turn them into an object URL for the
+  // browser's native PDF renderer. Rebuilt whenever the selected file changes;
+  // torn down on cleanup so a rapid file switch doesn't leak blob URLs.
+  const pdfContent = file != null && file.binary && file.mime_type === "application/pdf" ? file.content : null;
+  const [pdfUrl, setPdfUrl] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!pdfContent) {
+      setPdfUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(base64ToBlob(pdfContent, "application/pdf"));
+    setPdfUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pdfContent]);
 
   // Sync editor content when a new file loads. Parent is responsible for
   // prompting the user about unsaved changes BEFORE changing the file prop.
@@ -94,6 +117,18 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
           alt={file.name}
           className="max-w-full max-h-[80vh] object-contain rounded-sm border border-[var(--edge)]"
         />
+      </div>
+    );
+  }
+
+  // PDF preview (read-only) — the browser's own PDF renderer via <iframe>,
+  // same as the chat-attachment viewer (FileViewerContent); no pdf.js.
+  if (pdfContent) {
+    return (
+      <div ref={rootRef} className="h-full w-full p-2">
+        {pdfUrl
+          ? <FileViewerContent item={{ contentType: "application/pdf", fileName: file.name, size: file.size, url: pdfUrl }} className="rounded-sm border border-[var(--edge)]" />
+          : <div className="flex items-center justify-center h-full text-[var(--midnight-muted)] text-sm">Loading preview…</div>}
       </div>
     );
   }

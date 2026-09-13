@@ -56,6 +56,18 @@ def _minimal_png() -> bytes:
     return png
 
 
+def _minimal_pdf() -> bytes:
+    """Return a tiny syntactically-valid (single blank page) PDF as bytes."""
+    return (
+        b"%PDF-1.4\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 1 1]>>endobj\n"
+        b"trailer<</Root 1 0 R>>\n"
+        b"%%EOF"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -85,6 +97,7 @@ def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
         docs/
             readme.txt     (text)
         image.png          (1×1 PNG)
+        doc.pdf            (tiny single-page PDF)
         script.py          (text)
         openclaw.json      (visible — paying users see their own config)
         .hidden_file       (visible — agent-managed dotfiles are no longer hidden)
@@ -101,6 +114,7 @@ def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
     (root / "docs").mkdir()
     (root / "docs" / "readme.txt").write_text("Hello world", encoding="utf-8")
     (root / "image.png").write_bytes(_minimal_png())
+    (root / "doc.pdf").write_bytes(_minimal_pdf())
     (root / "script.py").write_text('print("hi")\n', encoding="utf-8")
     (root / "build.lobster").write_text("start -> build -> done\n", encoding="utf-8")
 
@@ -292,6 +306,19 @@ class TestReadFileInfo:
         # Verify it round-trips to valid PNG bytes
         decoded = base64.b64decode(info["content"])
         assert decoded[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_read_pdf_file(self, populated_workspace):
+        """PDF is returned base64-encoded with binary=True, like images —
+        the frontend points its native PDF renderer at it via an object URL.
+        """
+        ws, _ = populated_workspace
+        info = ws.read_file_info(USER_ID, "doc.pdf")
+        assert info["name"] == "doc.pdf"
+        assert info["binary"] is True
+        assert info["mime_type"] == "application/pdf"
+        assert info["content"] is not None
+        decoded = base64.b64decode(info["content"])
+        assert decoded.startswith(b"%PDF-")
 
     def test_read_binary_non_image(self, populated_workspace):
         """Non-image binary file returns content=None, binary=True."""

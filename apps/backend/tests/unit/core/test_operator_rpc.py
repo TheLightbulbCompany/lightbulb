@@ -156,10 +156,10 @@ class TestPerformSignedConnect:
     @pytest.mark.asyncio
     async def test_auth_shaped_rejection_raises_typed_error(self, mock_device_auth_deps):
         """An error code containing AUTH (AUTH_FAILED / AUTH_RATE_LIMITED)
-        must surface as GatewayConnectAuthError so the pool can hold off
-        reconnects — the gateway locks a client scope out for 5 minutes after
-        10 failed auths in 60s, and a plain RuntimeError is indistinguishable
-        from a transient handshake failure."""
+        must surface as GatewayConnectAuthError so the operator-device pairing
+        probe (its only caller) can tell it apart — the gateway locks a client
+        scope out for 5 minutes after 10 failed auths in 60s, and a plain
+        RuntimeError is indistinguishable from a transient handshake failure."""
         ws = AsyncMock()
         ws.recv = AsyncMock(
             side_effect=[
@@ -339,8 +339,7 @@ class TestPerformSignedConnect:
     @pytest.mark.asyncio
     async def test_decrypt_runs_off_the_event_loop_thread(self, operator_seed):
         """GW-2a: the synchronous KMS Decrypt must run in a worker thread, not
-        inline on the connect hot path (which is held under the pool's single
-        lock and would otherwise block the whole event loop for the round trip)."""
+        inline, or it would block the whole event loop for the round trip."""
         import threading
 
         main_thread = threading.current_thread()

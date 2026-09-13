@@ -145,7 +145,7 @@ _INVALIDATES = {
 
 
 async def _invalidate(owner_id: str, method: str) -> None:
-    """Replaces the gateway's `*.changed` broadcasts the pool used to relay. Never raises."""
+    """Replaces the broadcasts the deleted gateway socket used to relay. Never raises."""
     resource = _INVALIDATES.get(method)
     if resource is None:
         return

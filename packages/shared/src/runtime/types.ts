@@ -22,16 +22,3 @@ export interface RuntimeRpcRequest {
 export type RuntimeRpcOutcome<T> =
   | { kind: "result"; value: T }
   | { kind: "operation"; operationId: string };
-
-export type RuntimeApprovalDecision = "allow-once" | "allow-always" | "deny";
-export interface RuntimeApprovalResolveRequest {
-  decision: RuntimeApprovalDecision;
-  kind: "exec" | "plugin";
-}
-
-export type RuntimeQuestionResolveRequest =
-  | {
-      answers: { answers: Record<string, string[]> };
-      secretStoreAllowedHosts?: string[];
-    }
-  | { cancel: true };

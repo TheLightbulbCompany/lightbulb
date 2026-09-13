@@ -58,8 +58,6 @@ export type {
   Question,
   QuestionAnswers,
   QuestionOption,
-  QuestionRecord,
-  QuestionResolvedEvent,
   QuestionSecretStoreBinding,
   QuestionStatus,
 } from "./live/types";
@@ -131,11 +129,6 @@ export type {
 } from "./messaging/types";
 export { MESSAGE_ATTACHMENT_MAX_BYTES } from "./messaging/types";
 export { createRuntimeClient, RuntimeRpcError } from "./runtime/client";
-export type {
-  RuntimeApprovalDecision,
-  RuntimeApprovalResolveRequest,
-  RuntimeQuestionResolveRequest,
-} from "./runtime/types";
 
 export {
   isTextBlock,

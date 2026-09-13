@@ -22,7 +22,7 @@ Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, 
 
 This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
 
-Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and consuming the container's native run/tool events. Those events reach browsers through AppSync, never over a browser socket.
+Each user gets their own isolated OpenClaw container; the backend calls the container's baked lightbulb-channel plugin over HTTP for RPC and readiness, and the container reports run lifecycle and usage back over hook-token routes. Those events reach browsers through AppSync, never over a browser socket.
 
 ## Rebrand — Isol8 → Lightbulb (SHIPPED; residue documented below)
 
@@ -596,7 +596,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop (`startup_containers()` is a no-op — ECS services are always-on; the gateway pool is created lazily on first `get_gateway_pool()`); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions`. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop, which emits `gateway.running.count` from the containers table (`startup_containers()` is a no-op — ECS services are always-on); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions` and no longer closes a pool. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -680,7 +680,7 @@ a key with exactly those six permissions for an owner to paste — see its READM
 
 | File | Purpose |
 |------|---------|
-| `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()` (lazy). `startup_containers()` is a documented no-op; `shutdown_containers()` closes the pool. |
+| `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`. No pool singleton and no startup/shutdown hooks — the backend holds no per-owner connection state to create or tear down. |
 | `ecs_manager.py` | Per-user ECS Fargate lifecycle. Container IP discovery is **Cloud Map** `DiscoverInstances` (`discover_ip`), **not** `describe_tasks`: every per-user service registers into ONE shared Cloud Map service via `serviceRegistries`, and the lookup is scoped to a tenant by filtering the `ECS_SERVICE_NAME` attribute. `HealthStatus="HEALTHY_OR_ELSE_ALL"` because the shared service has no `HealthCheckCustomConfig`, so ECS-registered instances report `UNKNOWN`. **Never cache a container IP across reconnects** — the service is long-lived but the task IP is ephemeral (changes on every deploy / OOM / health-restart / reprovision); a cached dead IP caused a prod outage where the pool showed "connected" and every RPC timed out. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
 | `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. |
 | `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
@@ -689,9 +689,9 @@ a key with exactly those six permissions for an owner to paste — see its READM
 
 | File | Purpose |
 |------|---------|
-| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw **signed-device** handshake (receive `connect.challenge` nonce → sign canonical payload → connect; `minProtocol: 4`), RPC proxy, **trial-only** idle scale-to-zero (`_grace_close`/`_maybe_stop_trial_container` — the general idle reaper was removed at the flat-fee cutover), usage recording inline. It fans nothing out to browsers: transformed run frames are published as `room.run.frame` via `_publish_room_frame` → AppSync. The `_full_content` accumulator widens cumulative frames — OpenClaw clears its text buffer at every `message_start`, so without it a resyncing client's run bubble would show only the text after the last tool call. |
-| `operator_rpc.py` | `perform_signed_connect` + `gateway_rpc_oneshot` (one-shot RPCs outside the pool). |
+| `operator_rpc.py` | `perform_signed_connect` only — the operator-device pairing probe, D's to replace. |
 | `node_connection.py` | Per-user node-host connection for desktop browser-proxy / exec-approval flows. |
+| `core/services/container_rpc.py` | One HTTP POST per RPC to the plugin's `/plugins/lightbulb-channel/rpc`, `wake=False` for read-only probes. Replaces the deleted `GatewayConnectionPool` as the backend's sole way to reach a container. |
 
 ### Services (`core/services/`)
 
@@ -961,7 +961,7 @@ because events are not a substitute for them:
 1. **Machine relay:** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for machine relays only** (its docstring still says "node/operator"; the code admits a third). Its three client kinds are Tauri node hosts (bidirectional `node.invoke`), the desktop local-session relay (`clientId=lightbulb-local-sessions`, enrollment-gated), and Paperclip operators (signed operator RPC).
 2. The `websocket-authorizer` Lambda accepts exactly two credential kinds — paired-device JWTs (EdDSA, `kind=device`) and Paperclip service tokens (HS256) — and **deliberately refuses Clerk browser sessions**. DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → owner; no `chat`/`native_human` rows exist.
 3. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected. Relay replies go out over the Management API (HTTPS POST to `@connections/{id}`).
-4. **Backend → container:** `core/gateway/connection_pool.py` holds OpenClaw's own native authenticated gateway socket. Unrelated to the door above, and unchanged.
+4. **Backend → container:** `core/services/container_rpc.py`, one HTTP request per RPC to the container plugin; the only backend-initiated socket left is the operator-device pairing probe.
 5. **Raw WS door:** the browser live-view panel needs an unbuffered WS the HTTP API can't carry, so `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener (path-capped to `/api/v1/browser-view/*`); the Clerk JWT rides the `Sec-WebSocket-Protocol` offer.
 6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`). (The old VPC Link V1 → NLB chain is GONE.)
 
@@ -1071,7 +1071,7 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 
 ### Usage Flow
 
-1. Agent chat completes → `chat.final` event → `sessions.list` RPC queries token counts
+1. A room run's `run.ended` callback, or the plugin's `agent_end` hook for every other run, carries the session's token counts
 2. `record_usage()` writes DynamoDB atomic counters (owner + per-member) — **analytics only**; billing flows through Metronome, whose sole writer is the meter Lambda
 3. Chat gating is `gate_chat` (provision gate) + `trial_block_reason` (trial cap/expiry) + the Metronome fast-gate for paid credits — there is no `check_budget()` and no Stripe Meters usage reporting
 
@@ -1230,7 +1230,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
 | `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Four tables live elsewhere: `ws-connections` AND `messaging` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
-| `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **NOT autoscaled** — `desiredCount: 1` in both envs, with no scalable target, and that is deliberate: per-owner container WebSockets, `_pending_rpcs`, `_active_runs` and several other maps live in-process, so a second instance would not simply share load (see #1196). Note rolling deploys run at `maxHealthyPercent: 200`, so N is transiently 2 on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
+| `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **NOT autoscaled** — `desiredCount: 1` in both envs, with no scalable target: that stays until sub-project D moves the machine WebSocket relays off the process; the backend itself holds no per-owner state. Note rolling deploys run at `maxHealthyPercent: 200`, so N is transiently 2 on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
 | `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the machine-only Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. **Also the whole messaging plane** (it grew here, not in `database-stack.ts`): the `messaging` table + stream, the AppSync **Event API** with its `rooms`/`users` channel namespaces and OIDC-subscribe/IAM-publish split, the `messaging-projector` Lambda, and `openclaw-work.fifo` + the EventBridge Pipe that feeds it. |
 | `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
 | `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |

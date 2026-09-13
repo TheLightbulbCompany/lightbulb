@@ -64,9 +64,9 @@ from core.services.paperclip_openclaw_pairing import approve_pending_device_from
 
 logger = logging.getLogger(__name__)
 
-# Per-RPC response budget. The pool's default (30s) is sized for contended
-# agents.create calls; these are cheap list/approve reads and a sick container
-# should fail the push fast — the boot import remains behind it.
+# Per-RPC response budget. `container_rpc.call`'s default (30s) is sized for
+# contended agents.create calls; these are cheap list/approve reads and a sick
+# container should fail the push fast — the boot import remains behind it.
 _RPC_TIMEOUT_S = 10
 
 

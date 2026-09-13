@@ -145,24 +145,6 @@ export interface QuestionAnswers {
 
 export type QuestionStatus = "pending" | "answered" | "cancelled" | "expired";
 
-export interface QuestionRecord {
-  id: string;
-  questions: Question[];
-  agentId?: string;
-  sessionKey?: string;
-  runId?: string;
-  createdAtMs: number;
-  expiresAtMs: number;
-  status: QuestionStatus;
-  answers?: QuestionAnswers;
-  resolvedBy?: string;
-}
-
-export type QuestionResolvedEvent =
-  | { id: string; status: "answered"; answers: QuestionAnswers }
-  | { id: string; status: "cancelled" }
-  | { id: string; status: "expired" };
-
 // =============================================================================
 // Live events (spec §8) — the exact founder-release registry.
 // =============================================================================
@@ -180,11 +162,6 @@ export type LiveEventType =
   | "room.subscription.rotated"
   | "room.access.removed"
   | "runtime.operation.changed"
-  | "runtime.approval.requested"
-  | "runtime.approval.resolved"
-  | "runtime.question.requested"
-  | "runtime.question.resolved"
-  | "runtime.progress.changed"
   | "runtime.resource.invalidated"
   | "paperclip.event";
 
@@ -201,11 +178,6 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.subscription.rotated",
   "room.access.removed",
   "runtime.operation.changed",
-  "runtime.approval.requested",
-  "runtime.approval.resolved",
-  "runtime.question.requested",
-  "runtime.question.resolved",
-  "runtime.progress.changed",
   "runtime.resource.invalidated",
   "paperclip.event",
 ]);
@@ -234,8 +206,6 @@ export type RuntimeOperationChanged = {
   result: unknown | null;
   error: { code: string; message: string; retryable: boolean } | null;
 };
-export type RuntimeApprovalResolved = { id: string };
-export type RuntimeProgressChanged = { sessionKey: string; revision: number };
 export type RuntimeResource = "agents" | "config" | "models" | "skills" | "tools" | "health" | "onboarding";
 export type RuntimeResourceInvalidated = { resource: RuntimeResource; resourceId?: string; revision?: number };
 export type PaperclipEventName =
@@ -261,12 +231,6 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
-  // The existing ExecApprovalRequest projection — parsed by useExecApprovals.
-  | LiveEventEnvelope<"runtime.approval.requested", Record<string, unknown>>
-  | LiveEventEnvelope<"runtime.approval.resolved", RuntimeApprovalResolved>
-  | LiveEventEnvelope<"runtime.question.requested", QuestionRecord>
-  | LiveEventEnvelope<"runtime.question.resolved", QuestionResolvedEvent>
-  | LiveEventEnvelope<"runtime.progress.changed", RuntimeProgressChanged>
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
   | LiveEventEnvelope<"paperclip.event", PaperclipEvent>;
 
@@ -379,16 +343,6 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.operationId) && OPERATION_STATES.has(String(payload.state)) && str(payload.updatedAt) &&
         Object.hasOwn(payload, "result") && Object.hasOwn(payload, "error") &&
         (payload.error === null || (isObj(payload.error) && str(payload.error.code) && str(payload.error.message) && typeof payload.error.retryable === "boolean"));
-    case "runtime.approval.requested":
-      return str(payload.id);
-    case "runtime.approval.resolved":
-      return str(payload.id);
-    case "runtime.question.requested":
-      return str(payload.id) && Array.isArray(payload.questions) && payload.questions.length > 0;
-    case "runtime.question.resolved":
-      return str(payload.id) && ["answered", "cancelled", "expired"].includes(String(payload.status));
-    case "runtime.progress.changed":
-      return str(payload.sessionKey) && num(payload.revision);
     case "runtime.resource.invalidated":
       return RUNTIME_RESOURCES.has(String(payload.resource));
     case "paperclip.event":

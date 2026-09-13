@@ -7,24 +7,15 @@ import {
 } from "@lightbulb/shared";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
-import {
-  RoomComposer,
-  useComposerKeyboardOffset,
-} from "../../../../../components/room/RoomComposer";
+import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
@@ -137,7 +128,7 @@ export default function ThreadScreen() {
   );
 
   // Hoisted above the blocked-state early return below — see the room screen.
-  const keyboardOffset = useComposerKeyboardOffset();
+  const insets = useSafeAreaInsets();
 
   // The header — title "Thread", and the back button — belongs to the (app)
   // Stack, which owns this route. A push that deep-links straight into a
@@ -166,8 +157,11 @@ export default function ThreadScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={keyboardOffset}
+      behavior="padding"
+      // See the room screen for why `automaticOffset` plus the negative
+      // safe-area inset is the whole configuration.
+      automaticOffset
+      keyboardVerticalOffset={-insets.bottom}
     >
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle} numberOfLines={1}>

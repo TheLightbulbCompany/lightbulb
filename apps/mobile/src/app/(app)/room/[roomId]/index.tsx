@@ -12,8 +12,6 @@ import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -21,13 +19,15 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
-import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
+import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
@@ -205,7 +205,7 @@ function Conversation() {
   // Hoisted above the blocked-state early return below: a hook called inside
   // the JSX prop would run on the normal render and not on a blocked one,
   // which is a rules-of-hooks violation and a real order change, not a lint nit.
-  const keyboardOffset = useComposerKeyboardOffset();
+  const insets = useSafeAreaInsets();
 
   // On `headerOptions` rather than inline so the blocked-state early return
   // below keeps the header too — a blocked screen with no title and no
@@ -255,8 +255,15 @@ function Conversation() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={keyboardOffset}
+      behavior="padding"
+      // `automaticOffset` asks UIKit where this view actually sits on screen,
+      // so the nav bar's height stops being something we have to guess — the
+      // measured-44pt `useComposerKeyboardOffset` constant died with it.
+      automaticOffset
+      // All that is left is the pairing with the composer's own safe-area
+      // padding: land the composer box `insets.bottom` INTO the keyboard so its
+      // padding lifts the visible bar back flush on top of it.
+      keyboardVerticalOffset={-insets.bottom}
     >
       <Stack.Screen options={headerOptions} />
       {prefsError && (

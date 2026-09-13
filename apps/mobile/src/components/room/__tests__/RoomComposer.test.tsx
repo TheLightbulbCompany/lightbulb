@@ -1,7 +1,7 @@
-import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 import type { RoomMember } from "@lightbulb/shared";
-import { RoomComposer, useComposerKeyboardOffset } from "../RoomComposer";
+import { RoomComposer } from "../RoomComposer";
 
 // `attachments.ts` → `adapter.ts` reaches expo-crypto at import time.
 jest.mock("expo-crypto", () => ({ randomUUID: () => "77777777-7777-4777-8777-777777777777" }));
@@ -179,26 +179,6 @@ describe("RoomComposer", () => {
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     await waitFor(() => expect(screen.getByText("big.png exceeds the 10MB limit")).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
-  });
-});
-
-describe("useComposerKeyboardOffset", () => {
-  beforeEach(() => {
-    mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
-  });
-
-  it("adds the iOS header height to the top inset on an iPhone SE (no home indicator)", async () => {
-    mockInsets = { top: 20, bottom: 0, left: 0, right: 0 };
-    const { result } = await renderHook(() => useComposerKeyboardOffset());
-    // 20 (status-bar inset) + 44 (iOS compact header) - 0 (no bottom inset) = 64.
-    expect(result.current).toBe(64);
-  });
-
-  it("subtracts the home-indicator inset back out on a notched device", async () => {
-    mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
-    const { result } = await renderHook(() => useComposerKeyboardOffset());
-    // 59 (Dynamic Island inset) + 44 (iOS compact header) - 34 (home indicator) = 69.
-    expect(result.current).toBe(69);
   });
 });
 

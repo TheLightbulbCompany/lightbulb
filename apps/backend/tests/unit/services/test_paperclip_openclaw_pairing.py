@@ -213,9 +213,7 @@ async def test_ensure_operator_device_paired_patches_when_only_agent_id_missing(
         claimed_api_key_path=_claimed_path("agent_live"),
     )
 
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.1"
-    )
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
 
     admin.patch_agent.assert_awaited_once()
     assert admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]["agentId"] == "agent_live"
@@ -939,18 +937,6 @@ def _mock_live_pairing_deps(monkeypatch):
     monkeypatch.setattr("core.services.desktop_pair.EfsWorkspaceAdapter", _FakeAdapter)
     monkeypatch.setattr("core.containers.get_workspace", lambda: MagicMock())
 
-    # Live SQLite-store approval (step 1b) is exercised by its own tests below;
-    # default it to "already paired" so the rest of the suite never opens a
-    # websocket. Tests targeting 1b overwrite these after calling this helper.
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing._probe_pairing_request",
-        AsyncMock(return_value=(True, None)),
-    )
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.container_rpc.call",
-        AsyncMock(return_value={}),
-    )
-
     admin = MagicMock()
     admin.patch_agent = AsyncMock()
     monkeypatch.setattr(
@@ -1009,9 +995,7 @@ async def test_ensure_operator_device_paired_merges_and_binds(monkeypatch):
     ident = generate_operator_device()
     agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="service-jwt")
 
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.1"
-    )
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
 
     # 1. Device merged into the container trust store as an operator entry.
     assert ident.device_id in paired
@@ -1057,9 +1041,7 @@ async def test_ensure_operator_device_paired_stages_identity_even_when_token_alr
         config_agent_id="agent_live",
     )
 
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.1"
-    )
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
 
     # No adapterConfig rebind needed, but the identity file is still staged.
     admin.patch_agent.assert_not_awaited()
@@ -1080,9 +1062,7 @@ async def test_ensure_operator_device_paired_staging_failure_is_swallowed(monkey
     agent = _gw_agent("agent_live", pem=private_key_pem(ident), auth_token="service-jwt")
 
     # Must not raise even though the key mint blew up.
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.1"
-    )
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
     # Device still merged + authToken rebound despite the staging failure.
     assert ident.device_id in paired
     assert staged == {}
@@ -1105,9 +1085,7 @@ async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
     sentinel = {"publicKey": ident.public_key_b64, "role": "operator", "_marker": "keep"}
     paired[ident.device_id] = sentinel
 
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.1"
-    )
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
 
     # Existing entry preserved (not clobbered with a fresh entry).
     assert paired[ident.device_id] is sentinel
@@ -1121,7 +1099,7 @@ async def test_ensure_operator_device_paired_skips_non_gateway_adapter(monkeypat
     ident = generate_operator_device()
     agent = _gw_agent("a", pem=private_key_pem(ident), adapter_type="some_other")
 
-    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW", ip="10.0.0.1")
+    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW")
     assert paired == {}
     admin.patch_agent.assert_not_awaited()
     # Non-gateway agents short-circuit before staging.
@@ -1133,7 +1111,7 @@ async def test_ensure_operator_device_paired_skips_without_pem(monkeypatch):
     paired, admin, staged = _mock_live_pairing_deps(monkeypatch)
     agent = _gw_agent("a", pem=None)  # no devicePrivateKeyPem
 
-    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW", ip="10.0.0.1")
+    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW")
     assert paired == {}
     admin.patch_agent.assert_not_awaited()
     assert staged == {}
@@ -1148,179 +1126,21 @@ async def test_ensure_operator_device_paired_token_bind_failure_is_swallowed(mon
     agent = _gw_agent("a", pem=private_key_pem(ident), auth_token="service-jwt")
 
     # Must not raise.
-    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.1")
+    await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW_TOKEN")
     # Device still merged despite the token-bind failure.
     assert ident.device_id in paired
 
 
 # ---------------------------------------------------------------------------
-# Step 1b — live approval into the running gateway's SQLite trust store.
-#
-# OpenClaw 7.2 (#103160) stopped reading devices/paired.json while running, so
-# the file merge above only pairs a device at the NEXT container boot. These
-# tests pin the live channel: probe-as-device -> harvest pending requestId ->
-# device.pair.approve as admin.
+# approve_pending_device_from_rejection — self-heal off a live NOT_PAIRED
+# rejection (Task 1 of the pairing self-heal plan). This is now the ONLY live
+# trust-store pairing channel: ensure_operator_device_paired's probe-as-device
+# step (formerly "Step 1b" here) is gone — the adapter's first connect through
+# the gateway relay opens the pairing window and the relay's NOT_PAIRED hook
+# (routers/gateway_relay.py) approves it via this same helper.
 # ---------------------------------------------------------------------------
 
 _PAIRING_MOD = "core.services.paperclip_openclaw_pairing"
-
-
-def _live_agent():
-    ident = generate_operator_device()
-    return ident, _gw_agent(
-        "agent_live",
-        pem=private_key_pem(ident),
-        auth_token="GW_TOKEN",
-        claimed_api_key_path=_claimed_path("agent_live"),
-        config_agent_id="agent_live",
-    )
-
-
-@pytest.mark.asyncio
-async def test_live_approve_uses_requestid_from_probe(monkeypatch):
-    """Probe rejection carries the pending requestId → approve exactly it."""
-    _mock_live_pairing_deps(monkeypatch)
-    ident, agent = _live_agent()
-    monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(return_value=(False, "req-1")))
-    call = AsyncMock(return_value={"requestId": "req-1", "device": {"deviceId": ident.device_id}})
-    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", call)
-
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
-    )
-
-    call.assert_awaited_once()
-    assert call.await_args.args[0] == "user_1"
-    assert call.await_args.args[1] == "device.pair.approve"
-    assert call.await_args.args[2] == {"requestId": "req-1"}
-
-
-@pytest.mark.asyncio
-async def test_live_approve_already_paired_skips_approve(monkeypatch):
-    """hello-ok from the probe (device already trusted) → no approve RPC."""
-    _mock_live_pairing_deps(monkeypatch)
-    _, agent = _live_agent()
-    monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(return_value=(True, None)))
-    call = AsyncMock()
-    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", call)
-
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
-    )
-
-    call.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_live_approve_lists_when_probe_lacks_requestid(monkeypatch):
-    """Rejection without a requestId → device.pair.list, match by deviceId."""
-    _mock_live_pairing_deps(monkeypatch)
-    ident, agent = _live_agent()
-    monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(return_value=(False, None)))
-
-    calls = []
-
-    async def _call(_owner_id, method, params, **_kwargs):
-        calls.append((method, params))
-        if method == "device.pair.list":
-            return {
-                "pending": [
-                    {"deviceId": "someone-else", "requestId": "req-x"},
-                    {"deviceId": ident.device_id, "requestId": "req-9"},
-                ]
-            }
-        return {"requestId": params["requestId"], "device": {"deviceId": ident.device_id}}
-
-    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
-
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
-    )
-
-    assert calls == [("device.pair.list", {}), ("device.pair.approve", {"requestId": "req-9"})]
-
-
-@pytest.mark.asyncio
-async def test_live_approve_retries_once_on_unknown_requestid(monkeypatch):
-    """The adapter's own retry can supersede the probe's request; one re-list
-    + re-approve of the successor, then stop."""
-    _mock_live_pairing_deps(monkeypatch)
-    ident, agent = _live_agent()
-    monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(return_value=(False, "req-old")))
-
-    calls = []
-
-    async def _call(_owner_id, method, params, **_kwargs):
-        calls.append((method, dict(params)))
-        if method == "device.pair.approve" and params["requestId"] == "req-old":
-            raise RuntimeError("unknown requestId")
-        if method == "device.pair.list":
-            return {"pending": [{"deviceId": ident.device_id, "requestId": "req-new"}]}
-        return {"requestId": params["requestId"], "device": {"deviceId": ident.device_id}}
-
-    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
-
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
-    )
-
-    assert calls == [
-        ("device.pair.approve", {"requestId": "req-old"}),
-        ("device.pair.list", {}),
-        ("device.pair.approve", {"requestId": "req-new"}),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_live_approve_failure_never_breaks_create(monkeypatch):
-    """Live channel down (probe raises) → create still completes, paired.json
-    fallback still landed, adapterConfig bind still ran."""
-    paired, admin, _ = _mock_live_pairing_deps(monkeypatch)
-    ident, agent = _live_agent()
-    agent["adapterConfig"]["authToken"] = "stale"  # force a bind round-trip
-    monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(side_effect=RuntimeError("conn refused")))
-
-    await ensure_operator_device_paired(
-        owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
-    )
-
-    assert ident.device_id in paired
-    admin.patch_agent.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_probe_parses_not_paired_details(monkeypatch):
-    """_probe_pairing_request: NOT_PAIRED rejection → (False, requestId);
-    hello-ok → (True, None)."""
-    from types import SimpleNamespace
-
-    from core.gateway.operator_rpc import GatewayConnectNotPairedError
-    from core.services.paperclip_openclaw_pairing import _probe_pairing_request
-
-    class _FakeWsCtx:
-        async def __aenter__(self):
-            return MagicMock()
-
-        async def __aexit__(self, *args):
-            return False
-
-    monkeypatch.setattr(f"{_PAIRING_MOD}.websockets", SimpleNamespace(connect=lambda uri, **kw: _FakeWsCtx()))
-    ident = generate_operator_device()
-
-    connect = AsyncMock(side_effect=GatewayConnectNotPairedError("nope", details={"requestId": "req-7"}))
-    monkeypatch.setattr(f"{_PAIRING_MOD}.perform_signed_connect", connect)
-    assert await _probe_pairing_request(ip="10.0.0.9", owner_id="o", token="GW", identity=ident) == (False, "req-7")
-    # The probe signs as the AGENT's device, not the backend's.
-    assert connect.await_args.kwargs["identity"] is ident
-
-    monkeypatch.setattr(f"{_PAIRING_MOD}.perform_signed_connect", AsyncMock(return_value={"ok": True}))
-    assert await _probe_pairing_request(ip="10.0.0.9", owner_id="o", token="GW", identity=ident) == (True, None)
-
-
-# ---------------------------------------------------------------------------
-# approve_pending_device_from_rejection — self-heal off a live NOT_PAIRED
-# rejection (Task 1 of the pairing self-heal plan).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

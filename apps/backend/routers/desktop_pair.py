@@ -22,6 +22,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_workspace
 from core.repositories import container_repo
+from core.services.connection_service import ConnectionService
 from core.services.desktop_pair import (
     DesktopPermissionGrant,
     EfsWorkspaceAdapter,
@@ -32,7 +33,6 @@ from core.services.desktop_pair_live import (
     push_desktop_pairing_live,
     push_desktop_revoke_live,
 )
-from core.services.node_proxy import force_close_device
 from core.services import local_sessions
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
@@ -75,6 +75,11 @@ class PairRequest(BaseModel):
 
 class PairResponse(BaseModel):
     gatewayUrl: str
+    # The raw WebSocket gateway relay's door — the node clients dial THIS one
+    # (`bv-` CloudFront/ALB, one backend task pipes both sockets). `gatewayUrl`
+    # above stays on the API Gateway door: the local-session relay still needs
+    # its Management API and reads that field, not this one.
+    relayUrl: str
     gatewayToken: str
     # Container owner (org_id for an org, else the personal user_id). The
     # desktop embeds this in its self-minted device-key WS-upgrade token so the
@@ -146,6 +151,7 @@ async def post_pair(
 
     return PairResponse(
         gatewayUrl=result.gateway_url,
+        relayUrl=settings.GATEWAY_RELAY_URL,
         gatewayToken=result.gateway_token,
         ownerId=owner_id,
         deviceIdMac=result.device_id_mac,
@@ -162,10 +168,19 @@ async def delete_device(
 ) -> None:
     """Revoke a paired device and force-close its live WS session."""
     owner_id = resolve_owner_id(ctx)
+
+    async def _force_close_device(target_device_id: str) -> bool:
+        # The relay pins a device's socket to whichever backend instance
+        # accepted it, so there is no in-process map to pop any more —
+        # deleting the presence row(s) is what force-closes it: the relay's
+        # own 60s refresh notices the row is gone and closes 1008.
+        deleted = await ConnectionService().delete_relay_rows_for_device(owner_id, target_device_id)
+        return deleted > 0
+
     await revoke_desktop_device(
         device_id=device_id,
         workspace=_workspace_adapter(owner_id),
-        force_close_device=force_close_device,
+        force_close_device=_force_close_device,
     )
     # Evict from the RUNNING gateway's SQLite trust store too. The boot
     # import is add-only (existing SQLite rows win), so the JSON removal

@@ -203,16 +203,17 @@ def _ws_gateway_url(env_name: str) -> str:
     """Pick the right WS gateway URL for a seeded agent's
     openclaw-gateway adapter.
 
-    In a deployed env this is ``settings.WS_GATEWAY_URL`` — the value CDK
-    wires from the API-stack WebSocket stage (``wss://ws.<apex>`` in prod,
-    ``wss://ws-{env}.<apex>`` elsewhere), i.e. exactly the host this used to
-    rebuild from ``env_name``. ``env_name`` now only distinguishes "deployed"
-    from "local", where no WS custom domain exists.
+    In a deployed env this is ``settings.GATEWAY_RELAY_URL`` — the raw
+    WebSocket relay on the `bv-` door (``wss://bv.<apex>/api/v1/gateway/ws``
+    in prod, ``wss://bv-{env}.<apex>/api/v1/gateway/ws`` elsewhere) that one
+    backend task pipes end-to-end, not the API Gateway relay the local-session
+    door still uses. ``env_name`` only distinguishes "deployed" from "local",
+    where no custom domain exists.
     """
     if not env_name:
         # Empty env (local dev) — fall back to local WS endpoint.
         return "ws://localhost:8000"
-    return settings.WS_GATEWAY_URL
+    return settings.GATEWAY_RELAY_URL
 
 
 class OrgNotProvisionedError(RuntimeError):

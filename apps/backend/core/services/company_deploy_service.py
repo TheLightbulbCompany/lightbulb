@@ -330,9 +330,7 @@ async def _run_company_deploy(
             # Register the agent in the running container + trust its operator
             # device, exactly like the /teams create path.
             await pair_with_openclaw(owner_id=owner_id, paperclip_agent=pc)
-            await ensure_operator_device_paired(
-                owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token, ip=ip
-            )
+            await ensure_operator_device_paired(owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token)
 
             # Land identity + skill bindings onto EFS + openclaw.json. Company
             # agents are peers in one owner-authored org, so the materializer is

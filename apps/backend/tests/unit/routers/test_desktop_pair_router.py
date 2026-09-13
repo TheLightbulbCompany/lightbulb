@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core.auth import AuthContext, get_current_user
+from core.config import settings
 
 
 @pytest.fixture
@@ -72,6 +73,10 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     assert response.status_code == 200, response.text
     assert response.json() == {
         "gatewayUrl": "wss://ws-dev.isol8.co",
+        # relayUrl is the new raw-WS gateway relay door — a settings-sourced
+        # constant, not derived from pair_desktop_devices (unlike gatewayUrl
+        # above, which the local-session relay still reads via WS_GATEWAY_URL).
+        "relayUrl": settings.GATEWAY_RELAY_URL,
         "gatewayToken": "tok_xyz",
         "ownerId": "org_test",
         "deviceIdMac": "dev_mac_hash",

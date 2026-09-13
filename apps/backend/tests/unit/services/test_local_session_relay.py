@@ -270,7 +270,9 @@ async def test_native_capability_restriction_survives_reconnect_and_heartbeat(tr
 
 @pytest.mark.asyncio
 async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gateway(transport):
-    # Fails if the router routes dedicated traffic through node/operator admission.
+    # Node hosts and Paperclip operators moved to routers/gateway_relay.py; this
+    # router now has no admission path other than local-session, so the old
+    # "must not open node/operator" probes are gone with the code they probed.
     from routers.websocket_chat import router
 
     app = FastAPI()
@@ -292,14 +294,6 @@ async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gatewa
         patch.object(messaging_repo.settings, "WS_ENFORCE_INTERNAL_SECRET", False),
         patch("routers.websocket_chat.get_connection_service", return_value=transport[1]),
         patch("core.services.local_session_relay.get_local_session_relay", return_value=relay(transport)),
-        patch(
-            "routers.websocket_chat.chat_gate.gate_chat",
-            side_effect=AssertionError("gateway must not open"),
-        ),
-        patch("routers.websocket_chat._kick_off_node_connect", side_effect=AssertionError("node must not open")),
-        patch(
-            "routers.websocket_chat._kick_off_operator_connect", side_effect=AssertionError("operator must not open")
-        ),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.post("/ws/connect", headers=headers)).status_code == 200

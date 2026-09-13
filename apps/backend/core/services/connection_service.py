@@ -229,7 +229,11 @@ class ConnectionService:
         to 48h), and a stale row must never veto trial-idle stop for that
         long. ``ttl`` is not on the ``by-owner-id`` GSI's projection, so each
         candidate operator row is fetched individually; a row with no ``ttl``
-        at all is treated as live (over-preserve).
+        at all is treated as live (over-preserve). Same bias if the row is
+        deleted between the GSI read and the follow-up ``get_item`` (a
+        just-closed connection): the vanished item comes back with no ``ttl``
+        attribute, which this method cannot distinguish from "never had one",
+        so it counts as live rather than false-negative a real connection.
         """
         now = int(time.time())
         rows = await self.query_by_owner(owner_id)
@@ -373,6 +377,27 @@ class ConnectionService:
         """Live `node`-typed relay connections for an owner (desktop node
         hosts), used to edge-trigger the node tool-deny-list patch."""
         return sum(1 for _connection_id, _user_id, kind in await self.query_by_owner(owner_id) if kind == "node")
+
+    async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
+        """Force-close a revoked device's live relay presence row(s).
+
+        The `by-owner-id` GSI does not project `deviceId` (only `userId` /
+        `connectionType`), so candidates come from its `node`-typed rows, each
+        fetched in full (`get_connection`, base table) to check `deviceId`
+        before deleting. At most a handful of rows per owner. Returns the
+        number of rows deleted — the desktop-device revoke route uses this in
+        place of the old in-process `force_close_device` socket kill; the
+        relay itself notices within its 60s presence refresh and closes 1008.
+        """
+        deleted = 0
+        for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
+            if kind != "node":
+                continue
+            full = await asyncio.to_thread(self.get_connection, connection_id)
+            if full and full.get("device_id") == device_id:
+                await asyncio.to_thread(self.delete_connection, connection_id)
+                deleted += 1
+        return deleted
 
 
 # ---------------------------------------------------------------------------

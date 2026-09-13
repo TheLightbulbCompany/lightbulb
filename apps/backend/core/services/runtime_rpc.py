@@ -399,7 +399,6 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
         owner_id=owner_id,
         paperclip_agent=paperclip_agent,
         gateway_token=token,
-        ip=ip,
     )
     if meta is not None:
         from core.services.config_patcher import apply_paperclip_meta

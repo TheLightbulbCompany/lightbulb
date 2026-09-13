@@ -250,7 +250,7 @@ async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
     # a stub {"id": ...} no-ops inside the helper.
     assert pair_kwargs["paperclip_agent"] == _FULL_AGENT
     assert pair_kwargs["gateway_token"] == "gwt"
-    assert pair_kwargs["ip"] == "10.0.0.5"
+    assert "ip" not in pair_kwargs
 
 
 @pytest.mark.asyncio

@@ -27,13 +27,7 @@ import logging
 from typing import Any
 
 import httpx
-import websockets
 
-from core.gateway.operator_rpc import (
-    GATEWAY_PORT,
-    GatewayConnectNotPairedError,
-    perform_signed_connect,
-)
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import container_rpc
 from core.services.paperclip_admin_client import (
@@ -447,52 +441,6 @@ async def register_paperclip_agent_devices(
     return entries
 
 
-async def _probe_pairing_request(
-    *,
-    ip: str,
-    owner_id: str,
-    token: str,
-    identity: Any,
-) -> tuple[bool, str | None]:
-    """Connect to the container's gateway AS the agent's operator device.
-
-    On a 7.2 gateway an unpaired device's connect is rejected ``NOT_PAIRED``,
-    which durably creates (or refreshes) a pending pairing request in the
-    gateway's SQLite store and returns its id in the rejection details. That
-    makes this probe the deterministic way to open a pairing window at agent
-    create time — no waiting for the Paperclip adapter's own retry cadence.
-
-    The probe's connect profile (role=operator, client id/mode, platform,
-    no deviceFamily) matches the Paperclip adapter's, because the gateway pins
-    the pending request's metadata and approves exactly the requested
-    role/scopes — a mismatched probe would earn the ADAPTER an interactive
-    metadata/scope-upgrade wall on its first real connect.
-
-    Returns ``(already_paired, request_id)``: hello-ok means the device is
-    already trusted (idempotent re-run, nothing to approve); ``request_id`` is
-    None when the rejection carried no id (caller falls back to
-    ``device.pair.list``).
-    """
-    uri = f"ws://{ip}:{GATEWAY_PORT}"
-    try:
-        # open_timeout=10 matches _DEFAULT_TIMEOUT in core/gateway/operator_rpc.py
-        # (was 5) — a contended container can take longer than 5s just to accept
-        # the TCP/WS handshake, and a probe that times out here looks identical
-        # to a container that's actually down.
-        async with websockets.connect(uri, open_timeout=10, close_timeout=2) as ws:
-            await perform_signed_connect(
-                ws,
-                owner_id=owner_id,
-                token=token,
-                recv_timeout=5,
-                identity=identity,
-            )
-            return True, None
-    except GatewayConnectNotPairedError as e:
-        request_id = e.details.get("requestId")
-        return False, request_id if isinstance(request_id, str) and request_id else None
-
-
 async def _find_pending_request_id(*, owner_id: str, device_id: str, timeout_s: float = 10.0) -> str | None:
     """Locate the pending pairing request for ``device_id`` via ``device.pair.list``."""
     payload = await container_rpc.call(owner_id, "device.pair.list", {}, timeout_s=timeout_s)
@@ -553,12 +501,14 @@ async def approve_pending_device_from_rejection(
     rejection, so the caller's own reconnect (the Paperclip adapter's retry
     loop) lands paired on its very next attempt.
 
-    Distinct from ``ensure_operator_device_paired``: that seam pairs a
-    freshly-created agent's device by PROBING the gateway (connecting AS the
-    device to manufacture a pending request). Here the pending request
-    already exists -- a real connect attempt was just rejected -- so there is
-    nothing to probe. Reuses the same ``_find_pending_request_id`` /
-    ``_approve_pairing_request`` primitives verbatim.
+    This is now the ONLY live trust-store pairing channel: the adapter's own
+    first connect through the gateway relay (routers/gateway_relay.py) opens
+    the pairing window by earning a real NOT_PAIRED rejection, and the relay
+    calls this helper straight off it -- there is no separate probe step
+    manufacturing a pending request. Reuses the same
+    ``_find_pending_request_id`` / ``_approve_pairing_request`` primitives
+    ``ensure_operator_device_paired``'s paired.json fallback merge leaves
+    behind.
 
     ``request_id`` -- prefer the id the rejection payload carried (avoids a
     round trip); fall back to ``device.pair.list`` when it is absent. It can
@@ -583,10 +533,9 @@ async def approve_pending_device_from_rejection(
         resolved_request_id = request_id
         if not resolved_request_id:
             # Short budget: this path only runs because the gateway just
-            # rejected a live connect, i.e. it's already struggling.
-            # Matches _probe_pairing_request's open_timeout/recv_timeout=5
-            # for the same reason -- don't park a task holding admin connects
-            # against a gateway that's already in trouble.
+            # rejected a live connect, i.e. it's already struggling -- don't
+            # park a task holding admin connects against a gateway that's
+            # already in trouble.
             resolved_request_id = await _find_pending_request_id(owner_id=owner_id, device_id=device_id, timeout_s=5.0)
         if not resolved_request_id:
             logger.warning(
@@ -621,10 +570,9 @@ async def ensure_operator_device_paired(
     owner_id: str,
     paperclip_agent: dict[str, Any],
     gateway_token: str,
-    ip: str,
 ) -> None:
-    """Pair ONE post-provision agent's operator device into the RUNNING
-    container's trust store, and bind its connect token to the gateway token.
+    """Pair ONE post-provision agent's operator device's paired.json fallback,
+    and bind its connect token to the gateway token.
 
     ``register_paperclip_agent_devices`` only enumerates the agents that exist
     AT container provision (it feeds the full ``paired.json`` write). An agent
@@ -634,26 +582,27 @@ async def ensure_operator_device_paired(
     relayed connect is therefore rejected NOT_PAIRED (no device entry) with a
     token mismatch (the device signature is computed *over* ``auth.token``,
     which the token-mode gateway requires to equal the container's gateway
-    token). This closes that gap live + idempotently so a freshly-created agent
-    can connect immediately, without waiting for the next reprovision.
+    token).
 
-    Trust lands through two channels because OpenClaw 7.2 (#103160) moved the
-    live trust store into the container's SQLite state DB:
+    Live trust-store pairing is no longer done HERE: the adapter's first
+    connect through the gateway relay opens the pairing window (a real
+    NOT_PAIRED rejection), and the relay approves it immediately via
+    ``approve_pending_device_from_rejection`` — no probe-as-device round trip
+    needed at create time. What THIS function still does live + idempotently:
 
-    1. LIVE — connect to the running gateway AS the new device (the backend
-       minted its key), harvest the pending pairing ``requestId`` from the
-       NOT_PAIRED rejection, and ``device.pair.approve`` it over a
-       backend-signed admin connection. This is what actually pairs the device
-       against a running 7.2 container.
-    2. FALLBACK — merge ``devices/paired.json`` on EFS. The 7.2 gateway never
+    1. FALLBACK — merge ``devices/paired.json`` on EFS. The 7.2 gateway never
        re-reads it while running, but imports it at every boot where it exists
-       (add-only; existing SQLite rows win), so a container that was
-       unreachable during (1) still picks the device up on its next start.
+       (add-only; existing SQLite rows win), so a container that never
+       receives a first connect before its next restart still picks the
+       device up then.
+    2. Bind the agent's adapterConfig (authToken/agentId/claimedApiKeyPath) to
+       the container's current gateway token, and stage its per-agent
+       Paperclip identity file.
 
     Best-effort: every failure is logged, not raised — device pairing must never
     break the user-visible agent create. Callers invoke this right after
     ``pair_with_openclaw`` when the container is reachable; ``gateway_token``
-    and ``ip`` are the same per-container values passed there.
+    is the same per-container value passed there.
     """
     from core.config import settings
     from core.containers import get_workspace
@@ -720,34 +669,6 @@ async def ensure_operator_device_paired(
         logger.warning(
             "ensure_operator_device_paired: paired.json merge failed for agent=%s: %s",
             agent_id,
-            e,
-        )
-
-    # 1b. Live approval into the running gateway's SQLite trust store — the
-    #     channel that actually pairs the device on 7.2 (the file above is only
-    #     read at boot). Probe-as-device → approve pending request as admin.
-    try:
-        already_paired, request_id = await _probe_pairing_request(
-            ip=ip, owner_id=owner_id, token=gateway_token, identity=identity
-        )
-        if not already_paired:
-            if not request_id:
-                request_id = await _find_pending_request_id(owner_id=owner_id, device_id=identity.device_id)
-            if not request_id:
-                raise RuntimeError("no pending pairing request found after probe")
-            await _approve_pairing_request(owner_id=owner_id, device_id=identity.device_id, request_id=request_id)
-            logger.info(
-                "ensure_operator_device_paired: live-approved device %s for agent=%s owner=%s",
-                identity.device_id[:16],
-                agent_id,
-                owner_id,
-            )
-    except Exception as e:  # noqa: BLE001 — best-effort; paired.json + next boot remain behind it
-        logger.warning(
-            "ensure_operator_device_paired: live pairing approval failed for agent=%s owner=%s "
-            "(device pairs at next container boot via paired.json import): %s",
-            agent_id,
-            owner_id,
             e,
         )
 

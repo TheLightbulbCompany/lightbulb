@@ -50,31 +50,32 @@ from core.crypto.operator_device import generate_operator_device, private_key_pe
 
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
 
-# clientId the synthesized adapter URL advertises so the WS gateway routes the
-# connection to the operator relay at $connect (the connect Lambda forwards
-# `?clientId=` as the `x-client-id` header ws_connect classifies on). Distinct
-# from the desktop node-host client ids.
+# clientId the synthesized adapter URL advertises so the gateway relay's
+# upgrade auth (core/services/machine_auth.py) admits it as an operator
+# (a paperclip_service token) rather than a device token. Distinct from the
+# desktop node-host client ids.
 PAPERCLIP_OPERATOR_CLIENT_ID: Final[str] = "paperclip-operator"
 
 
-def build_gateway_url_re(ws_gateway_url: str) -> re.Pattern[str]:
+def build_gateway_url_re(gateway_relay_url: str) -> re.Pattern[str]:
     """Allowlist pattern for an openclaw_gateway adapter URL.
 
-    Matches: wss://ws.<apex> (prod), wss://ws-{env}.<apex> (dev/staging),
-    ws://localhost:{port} (local). Anchored. No path component allowed.
+    Matches: wss://bv.<apex>/api/v1/gateway/ws (prod), wss://bv-{env}.<apex>/api/v1/gateway/ws
+    (dev/staging), ws://localhost:{port} (local, no path). Anchored.
 
-    <apex> is the registrable domain of ``ws_gateway_url`` — the same value CDK
-    hands the WS gateway — so a domain move needs no code change here. The check
-    is fail-CLOSED (``validate_gateway_url`` RAISES, and every agent
-    create/update path calls it), so a ``ws_gateway_url`` with no host drops the
-    hosted branch entirely rather than degrading into a looser pattern.
+    <apex> is the registrable domain of ``gateway_relay_url`` — the same value
+    CDK hands the raw WS gateway relay — so a domain move needs no code change
+    here. The check is fail-CLOSED (``validate_gateway_url`` RAISES, and every
+    agent create/update path calls it), so a ``gateway_relay_url`` with no host
+    drops the hosted branch entirely rather than degrading into a looser
+    pattern.
     """
-    apex = apex_domain(url_host(ws_gateway_url))
-    hosted = rf"wss://ws(?:-[a-z]+)?\.{re.escape(apex)}|" if apex else ""
+    apex = apex_domain(url_host(gateway_relay_url))
+    hosted = rf"wss://bv(?:-[a-z]+)?\.{re.escape(apex)}/api/v1/gateway/ws|" if apex else ""
     return re.compile(rf"\A(?:{hosted}ws://localhost:[0-9]+)\Z")
 
 
-_GATEWAY_URL_RE: Final[re.Pattern[str]] = build_gateway_url_re(settings.WS_GATEWAY_URL)
+_GATEWAY_URL_RE: Final[re.Pattern[str]] = build_gateway_url_re(settings.GATEWAY_RELAY_URL)
 
 # Per-run agent timeout (seconds) + the gateway's wait for that run (ms). The
 # openclaw-gateway adapter defaults BOTH to 120s (build-config.ts —
@@ -197,23 +198,21 @@ def synthesize_openclaw_adapter(
     if not user_id or not isinstance(user_id, str):
         raise AdapterConfigError("user_id is empty or non-string")
 
-    # The Isol8 WS API Gateway authorizer reads the auth token ONLY from
-    # the `?token=` query string (identitySource
-    # `route.request.querystring.token`). The upstream Paperclip
-    # openclaw_gateway adapter sends `authToken` as an Authorization header,
-    # which API Gateway ignores, so the handshake 401s before the authorizer
-    # Lambda runs. Embedding the token in the URL query string is where the
-    # authorizer looks — the same mechanism the browser web-chat client uses.
-    # `authToken` is kept for adapter compatibility; the duplicate header is
-    # harmless because API Gateway authorizes on the query string. The token
-    # is URL-safe (JWT base64url uses only [A-Za-z0-9-_.]), so no escaping is
-    # needed. The full adapterConfig (incl. this URL) is stripped by
-    # `_redact_agent` before any agent record reaches the browser.
+    # The gateway relay's upgrade auth (`machine_auth.verify_upgrade`) reads
+    # the auth token ONLY from the `?token=` query string of the WebSocket
+    # upgrade request. The upstream Paperclip openclaw_gateway adapter sends
+    # `authToken` as an Authorization header, which the raw WS upgrade never
+    # carries to the relay, so embedding the token in the URL query string is
+    # where the relay looks. `authToken` is kept for adapter compatibility;
+    # the duplicate header is harmless. The token is URL-safe (JWT base64url
+    # uses only [A-Za-z0-9-_.]), so no escaping is needed. The full
+    # adapterConfig (incl. this URL) is stripped by `_redact_agent` before any
+    # agent record reaches the browser.
     #
-    # `clientId` routes the connection to the operator relay at $connect — the WS
-    # connect Lambda forwards `?clientId=` as `x-client-id`. It is appended after
-    # `validate_gateway_url` (which checks the bare host), so the allowlist regex
-    # is untouched.
+    # `clientId` tells the relay's upgrade auth to admit this connection as an
+    # operator (a paperclip_service token). It is appended after
+    # `validate_gateway_url` (which checks the bare host+path), so the
+    # allowlist regex is untouched.
     device_pem = device_private_key_pem or private_key_pem(generate_operator_device())
     cfg = {
         "url": f"{gateway_url}?token={service_token}&clientId={PAPERCLIP_OPERATOR_CLIENT_ID}",

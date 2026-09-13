@@ -1,12 +1,13 @@
 """Per-connection side effects of the gateway relay; every function is safe to
 call from the handler that owns the socket.
 
-Moved from `core/services/operator_proxy.py` (`_maybe_disarm_expired_trial`),
-`routers/websocket_chat.py` (`_WAKE_GATED_METHODS`, `_wake_refusal_payload`,
-`_admit_operator_wake`), and `core/services/node_proxy.py`
-(`_publish_node_invalidation` and the first-node/last-node tool-deny-list
-edges, previously tracked by the in-process `_node_count` map and now by the
-`ws-connections` presence rows via `ConnectionService.count_relay_nodes`).
+Moved from the retired API-Gateway operator relay module
+(`_maybe_disarm_expired_trial`), `routers/websocket_chat.py`
+(`_WAKE_GATED_METHODS`, `_wake_refusal_payload`, `_admit_operator_wake`), and
+the retired API-Gateway node relay module (`_publish_node_invalidation` and
+the first-node/last-node tool-deny-list edges, previously tracked by an
+in-process node-count map and now by the `ws-connections` presence rows via
+`ConnectionService.count_relay_nodes`).
 """
 
 from __future__ import annotations
@@ -128,8 +129,11 @@ async def on_node_ready(owner_id: str, user_id: str, device_id: str) -> None:
 
 async def on_node_closed(owner_id: str, user_id: str) -> None:
     if await ConnectionService().count_relay_nodes(owner_id) == 0:
-        # Last node gone: re-disable node tools. Deep-merge replaces the deny
-        # list wholesale — write the full provision-time set (TOOL_DENY_WITH_NODES
-        # = base + "nodes").
-        await patch_openclaw_config(owner_id, {"tools": {"deny": list(TOOL_DENY_WITH_NODES)}})
+        try:
+            # Last node gone: re-disable node tools. Deep-merge replaces the
+            # deny list wholesale — write the full provision-time set
+            # (TOOL_DENY_WITH_NODES = base + "nodes").
+            await patch_openclaw_config(owner_id, {"tools": {"deny": list(TOOL_DENY_WITH_NODES)}})
+        except Exception:  # noqa: BLE001 — container may be down; invalidation must still publish
+            logger.debug("relay_hooks.on_node_closed: deny-list re-patch failed for owner=%s", owner_id, exc_info=True)
     await publish_node_invalidation(owner_id, user_id)

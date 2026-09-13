@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import boto3
 import pytest
 
-from core.config import apex_domain, settings as _settings, url_host
+from core.config import settings as _settings
 from moto import mock_aws
 
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
@@ -153,12 +153,13 @@ def _make_admin_mock() -> MagicMock:
 
 @pytest.mark.parametrize("env", ["prod", "production", "dev", "staging"])
 def test_ws_gateway_url_uses_the_configured_gateway(monkeypatch, env):
-    """Any deployed env returns WS_GATEWAY_URL verbatim — the host CDK wired
-    from the API-stack WebSocket stage, not a locally rebuilt one."""
-    monkeypatch.setattr("core.config.settings.WS_GATEWAY_URL", "wss://ws-dev.isol8.co")
-    assert _ws_gateway_url(env) == "wss://ws-dev.isol8.co"
-    monkeypatch.setattr("core.config.settings.WS_GATEWAY_URL", "wss://ws.isol8.co")
-    assert _ws_gateway_url(env) == "wss://ws.isol8.co"
+    """Any deployed env returns GATEWAY_RELAY_URL verbatim — the raw relay
+    door CDK wired from the api-stack gateway-relay-url output, not a
+    locally rebuilt one."""
+    monkeypatch.setattr("core.config.settings.GATEWAY_RELAY_URL", "wss://bv-dev.isol8.co/api/v1/gateway/ws")
+    assert _ws_gateway_url(env) == "wss://bv-dev.isol8.co/api/v1/gateway/ws"
+    monkeypatch.setattr("core.config.settings.GATEWAY_RELAY_URL", "wss://bv.isol8.co/api/v1/gateway/ws")
+    assert _ws_gateway_url(env) == "wss://bv.isol8.co/api/v1/gateway/ws"
 
 
 def test_ws_gateway_url_empty_falls_back_to_localhost():
@@ -252,10 +253,12 @@ async def test_provision_org_happy_path(repo, monkeypatch):
     # silently fails on every provision.
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     adapter_cfg = agent_kwargs["adapter_config"]
-    # Derived, not literal: the adapter URL is built from the configured gateway
-    # apex, so a literal here would only be a tripwire on the next domain move.
-    _apex = apex_domain(url_host(_settings.WS_GATEWAY_URL))
-    assert adapter_cfg["url"] == f"wss://ws-dev.{_apex}?token={adapter_cfg['authToken']}&clientId=paperclip-operator"
+    # Derived, not literal: the adapter URL is built from the configured relay
+    # URL, so a literal here would only be a tripwire on the next domain move.
+    assert (
+        adapter_cfg["url"]
+        == f"{_settings.GATEWAY_RELAY_URL}?token={adapter_cfg['authToken']}&clientId=paperclip-operator"
+    )
     # "paperclip:" namespaced so the adapter's agent:<agentId>: prefix cannot
     # collide with the owner's /chat "General" session key.
     assert agent_kwargs["adapter_config"]["sessionKey"] == "paperclip:user_owner"

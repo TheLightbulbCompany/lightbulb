@@ -185,7 +185,7 @@ def _install(monkeypatch, h: Harness, plan=None):
     async def fake_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
         h.pair_calls.append(paperclip_agent["id"])
 
-    async def fake_ensure(*, owner_id, paperclip_agent, gateway_token, ip):
+    async def fake_ensure(*, owner_id, paperclip_agent, gateway_token):
         h.ensure_calls.append(paperclip_agent["id"])
 
     async def fake_materialize(*, owner_id, new_agent_id, planned, skill_assets, workspace, apply_aux):

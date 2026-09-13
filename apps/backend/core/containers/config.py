@@ -337,7 +337,7 @@ SESSION_MAX_DISK_MIB = 256
 SESSION_HIGH_WATER_MIB = 204
 
 # ---------------------------------------------------------------------------
-# Tool deny lists — SINGLE SOURCE. node_proxy.py REPLACES tools.deny wholesale
+# Tool deny lists — SINGLE SOURCE. relay_hooks.py REPLACES tools.deny wholesale
 # when a desktop node pairs/unpairs, so it derives both variants from these;
 # a hand-written list anywhere else silently re-enables an entry on the next
 # pair event.
@@ -361,7 +361,7 @@ SESSION_HIGH_WATER_MIB = 204
 #   agent could burn owner spend building widgets nobody can ever see.
 # ---------------------------------------------------------------------------
 TOOL_DENY_BASE = ("canvas", "cron", "tts", "music_generate", "video_generate", "dashboard")
-# The provision-time variant: node tools stay denied until node_proxy flips
+# The provision-time variant: node tools stay denied until relay_hooks flips
 # them on for a paired desktop.
 TOOL_DENY_WITH_NODES = TOOL_DENY_BASE + ("nodes",)
 
@@ -1776,9 +1776,9 @@ def build_openclaw_config_dict(
             # The /8 was correct once. ae2ca6086 (2026-03-24) set
             # gateway.auth.mode = "trusted-proxy" and authenticated by
             # asserting the user in x-forwarded-user, which made the backend a
-            # genuine proxy. That model is gone -- auth.mode is "token" and the
-            # pool does the 4.5 signed-device handshake (operator_rpc
-            # .perform_signed_connect); nothing in the repo emits
+            # genuine proxy. That model is gone -- auth.mode is "token" and
+            # every caller (the RPC pool, the gateway relay) does its own
+            # signed-device handshake; nothing in the repo emits
             # x-forwarded-user any more. The entry outlived its mechanism by
             # five months and sat inert until 8.1 became the first version to
             # read it and draw a conclusion.
@@ -2197,7 +2197,7 @@ def build_openclaw_config_dict(
             # canvas/nodes denials below are unaffected.
             "allow": ["*"],
             # Default denies — see the TOOL_DENY_* module constants for the
-            # per-entry rationale. node_proxy.py toggles "nodes" to enabled
+            # per-entry rationale. relay_hooks.py toggles "nodes" to enabled
             # dynamically when a desktop node pairs (and back on disconnect)
             # by rewriting this list from the same constants.
             "deny": list(TOOL_DENY_WITH_NODES),

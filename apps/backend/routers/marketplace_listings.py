@@ -1087,8 +1087,6 @@ async def deploy_listing(
                 slice_=slice_,
                 tar_bytes=tar_bytes,
                 new_agent_id=new_agent_id,
-                container_ip=container_ip,
-                container_token=container_token,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
             )

@@ -17,7 +17,7 @@ import httpx
 from boto3.dynamodb.types import TypeDeserializer
 
 from core.config import settings
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
 from core.observability.metrics import gauge, put_metric
 from core.repositories import messaging_repo
 from core.services import runtime_rpc
@@ -389,10 +389,6 @@ class OpenClawWorkWorker:
         token = container.get("gateway_token")
         if not isinstance(token, str) or not token:
             raise WorkRetry("gateway token unavailable")
-        pool = get_gateway_pool()
-        # Still the door for exec approvals and questions (sub-project B removes it);
-        # room run frames and usage no longer transit this connection.
-        await pool.ensure_connection(owner_id, ip, token)
         members = with_human_handles(await messaging_repo.list_members(meta["roomId"]))
         body = await build_ingress_body(
             meta=meta, target_agent_id=member["id"], event_kind=event_kind, message=message, members=members

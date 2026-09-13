@@ -5,10 +5,12 @@ readiness inputs into one ``StatusContract``:
 
   1. the ``containers`` row              (``core.repositories.container_repo``)
   2. the ``billing-accounts`` row        (``core.repositories.billing_repo``)
-  3. gateway liveness                    (``core.services.connection_service``,
-                                           DDB-backed -- NOT the in-process
-                                           ``GatewayConnectionPool``, which is
-                                           readiness store R4, now retired)
+  3. gateway liveness                    (``core.services.container_rpc``, a
+                                           direct ``health`` RPC through the
+                                           container plugin -- readiness store
+                                           R4, the old in-process persistent
+                                           socket it used before, is retired
+                                           and deleted)
   4. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
                                            -- carries BOTH ``teams_state`` and
                                            the generation-fenced onboarding
@@ -47,7 +49,6 @@ from typing import Any, Literal, Optional
 from core.billing.metronome_provisioning import is_ledger_eligible
 from core.repositories import billing_repo, container_repo
 from core.repositories.paperclip_repo import ONBOARDING_STATE_DEFAULTS
-from core.services import connection_service
 from core.services.provision_gate import is_subscription_active
 
 logger = logging.getLogger(__name__)
@@ -74,10 +75,10 @@ _NOT_GIVEN: Any = object()
 def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) -> RuntimePhase:
     """Pure ``(container status, gateway liveness) -> runtime phase`` map.
 
-    Mirrors the pre-COMPOSER ``_resolve_cold_start_phase`` in
-    ``routers/container.py`` field-for-field, except the liveness input is
-    now a plain bool sourced from the connection-service DDB table instead
-    of the in-process gateway pool (readiness store R4).
+    The liveness input is a plain bool sourced from a direct ``health`` RPC
+    through the container plugin (``_gateway_reachable``, via
+    ``core.services.container_rpc``) -- no in-process persistent socket
+    involved (readiness store R4 is retired).
 
     INV-6: this function -- and ONLY this function's output
     (``runtime_phase``) -- decides chat availability. It must never take
@@ -98,6 +99,20 @@ def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) ->
     if gateway_connected:
         return "ready"
     return "starting"
+
+
+async def _gateway_reachable(owner_id: str) -> bool:
+    """One ``health`` RPC through the container plugin; any failure reads as not ready."""
+    from core.services import container_rpc
+
+    try:
+        await container_rpc.call(owner_id, "health", timeout_s=2.0, wake=False)
+        return True
+    except Exception as exc:  # noqa: BLE001 — a probe must never break /status
+        # DEBUG, not a stack trace: a booting container failing its probe is
+        # the normal case, not an error.
+        logger.debug("readiness_state: gateway probe failed for owner %s: %s", owner_id, type(exc).__name__)
+        return False
 
 
 def _paperclip_repo():
@@ -173,11 +188,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
 
     if onboarding is _NOT_GIVEN:
         onboarding = await resolve_onboarding_state(owner_id)
-    try:
-        gateway_connected = await connection_service.is_gateway_connected(owner_id)
-    except Exception:  # noqa: BLE001 — liveness read must never break /status
-        logger.info("readiness_state: gateway liveness read failed for owner %s", owner_id, exc_info=True)
-        gateway_connected = False
 
     is_org = owner_id.startswith("org_")
     provider_choice = (account or {}).get("provider_choice")
@@ -228,7 +238,9 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
                 lifecycle = "parked"
                 runtime_phase = "provisioning"
             else:
-                runtime_phase = resolve_runtime_phase(container, gateway_connected)
+                runtime_phase = resolve_runtime_phase(
+                    container, container.get("status") == "running" and await _gateway_reachable(owner_id)
+                )
                 lifecycle = runtime_phase  # "provisioning" | "starting" | "ready"
 
     chat_available = runtime_phase == "ready"  # INV-6: SOLELY runtime_phase.

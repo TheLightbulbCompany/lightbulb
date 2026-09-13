@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from typing import Any
 
 import httpx
@@ -23,7 +22,7 @@ import httpx
 from core.config import settings
 from core.repositories import billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import service_token
+from core.services import container_rpc, service_token
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
@@ -210,27 +209,13 @@ def _is_openclaw_file_lock_timeout(exc: RuntimeError) -> bool:
     return _OPENCLAW_FILE_LOCK_TIMEOUT_MARKER in str(exc).lower()
 
 
-async def delete_runtime_agent_with_lock_retry(
-    *,
-    gateway: Any,
-    owner_id: str,
-    agent_id: str,
-    ip: str,
-    token: str,
-) -> Any:
+async def delete_runtime_agent_with_lock_retry(*, owner_id: str, agent_id: str) -> Any:
     """Delete from a running OpenClaw, retrying only its transient file lock."""
 
     total_attempts = len(_AGENT_DELETE_LOCK_RETRY_DELAYS_S) + 1
     for attempt in range(1, total_attempts + 1):
         try:
-            return await gateway.send_rpc(
-                user_id=owner_id,
-                req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
-                method="agents.delete",
-                params={"agentId": agent_id, "deleteFiles": True},
-                ip=ip,
-                token=token,
-            )
+            return await container_rpc.call(owner_id, "agents.delete", {"agentId": agent_id, "deleteFiles": True})
         except RuntimeError as exc:
             if not _is_openclaw_file_lock_timeout(exc) or attempt == total_attempts:
                 raise
@@ -351,7 +336,7 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     authoritative OpenClaw deletion for its next boot.
     """
 
-    from core.containers import get_ecs_manager, get_gateway_pool, get_workspace
+    from core.containers import get_ecs_manager, get_workspace
     from core.containers.workspace import cleanup_deleted_agent
     from core.services.config_patcher import (
         deregister_lightbulb_agent_account,
@@ -363,26 +348,9 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
     if container is not None and ip:
-        gateway = get_gateway_pool()
-        live_agents = _rows(
-            await gateway.send_rpc(
-                user_id=owner_id,
-                req_id=f"agent-list-before-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
-                method="agents.list",
-                params={},
-                ip=ip,
-                token=container["gateway_token"],
-            ),
-            "agents",
-        )
+        live_agents = _rows(await container_rpc.call(owner_id, "agents.list", {}), "agents")
         if any(agent.get("id") == agent_id for agent in live_agents):
-            await delete_runtime_agent_with_lock_retry(
-                gateway=gateway,
-                owner_id=owner_id,
-                agent_id=agent_id,
-                ip=ip,
-                token=container["gateway_token"],
-            )
+            await delete_runtime_agent_with_lock_retry(owner_id=owner_id, agent_id=agent_id)
 
     # Belt-and-suspenders persistence cleanup: gateway deletion updates a
     # running process, while this guarantees a stopped/restarted container

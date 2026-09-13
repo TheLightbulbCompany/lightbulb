@@ -188,6 +188,16 @@ async def test_duration_ms_from_lifecycle_timestamps():
     assert "duration_ms" not in kwargs["properties"]
 
 
+async def test_duration_ms_from_explicit_field_when_no_timestamps():
+    """The usage-callback path (cron/heartbeat/Paperclip) has no lifecycle
+    startedAt/endedAt -- it reports durationMs directly."""
+    kwargs = await _emit(
+        {"agent_id": "a", "source": "cron"},
+        payload=_payload(run_id="r-cron", durationMs=1200),
+    )
+    assert kwargs["properties"]["duration_ms"] == 1200
+
+
 # ---------------------------------------------------------------------------
 # Paperclip enrichment
 # ---------------------------------------------------------------------------

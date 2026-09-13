@@ -29,6 +29,8 @@ from core.repositories import container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.services.push_service import send_push_to_user
+from core.services import run_analytics
+from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
 
@@ -110,11 +112,6 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "room.subscription.rotated",
         "room.access.removed",
         "runtime.operation.changed",
-        "runtime.approval.requested",
-        "runtime.approval.resolved",
-        "runtime.question.requested",
-        "runtime.question.resolved",
-        "runtime.progress.changed",
         "runtime.resource.invalidated",
         "paperclip.event",
         "room.member.updated",
@@ -474,6 +471,20 @@ class RunEventResponse(ContractModel):
     status: Literal["applied", "replayed"]
 
 
+class UsageReportRequest(ContractModel):
+    session_key: str = Field(min_length=1, max_length=512)
+    agent_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    success: bool
+    duration_ms: int | None = Field(default=None, ge=0)
+    usage: RunUsage
+
+
+class UsageReportResponse(ContractModel):
+    run_id: str
+    status: Literal["applied", "replayed", "ignored"]
+
+
 class SteerRunRequest(ContractModel):
     text: str
 
@@ -507,27 +518,6 @@ class RuntimeRpcResponse(ContractModel):
 
 class RuntimeOperationAccepted(ContractModel):
     operation_id: uuid.UUID
-
-
-class ResolveApprovalRequest(ContractModel):
-    kind: Literal["exec", "plugin"] = "exec"
-    decision: Literal["allow-once", "allow-always", "deny"]
-
-
-class ResolveQuestionRequest(ContractModel):
-    answers: dict[str, Any] | None = None
-    secret_store_allowed_hosts: list[str] | None = None
-    cancel: bool | None = None
-
-    @model_validator(mode="after")
-    def validate_resolution(self) -> "ResolveQuestionRequest":
-        if bool(self.answers is not None) == bool(self.cancel is True):
-            raise ValueError("provide answers or cancel=true")
-        return self
-
-
-class ResolveRuntimeResponse(ContractModel):
-    id: str
 
 
 class RuntimeOperation(ContractModel):
@@ -1890,6 +1880,58 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
     return RunEventResponse(run_id=event.run_id, status="applied" if applied else "replayed")
 
 
+async def _record_run_usage(
+    owner_id: str, user_id: str, usage: RunUsage, *, room_turn: bool, event_kind: str | None
+) -> None:
+    """Shared ``record_usage`` call for the room (``_after_run_ended``) and
+    non-room (``handle_usage_report``) usage paths. Never raises."""
+    cost = usage.estimated_cost_usd
+    raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
+    # No token volume and no billable cost -- nothing to record.
+    if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
+        try:
+            await record_usage(
+                owner_id=owner_id,
+                user_id=user_id,
+                model=usage.model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read=usage.cache_read_tokens,
+                cache_write=usage.cache_write_tokens,
+                raw_cost_microcents=raw_cost_microcents,
+                room_turn=room_turn,
+                event_kind=event_kind,
+            )
+        except Exception:
+            logger.exception("usage record failed")
+
+
+async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageReportResponse:
+    """Usage + product analytics for runs the room contract does not cover (cron, heartbeat, Paperclip)."""
+    if parse_lightbulb_session_key(body.session_key) is not None:
+        put_metric("messaging.usage.callback", dimensions={"outcome": "room"})
+        return UsageReportResponse(run_id=body.run_id, status="ignored")
+    if not await messaging_repo.claim_usage_receipt(owner_id, body.run_id):
+        put_metric("messaging.usage.callback", dimensions={"outcome": "replayed"})
+        return UsageReportResponse(run_id=body.run_id, status="replayed")
+    usage = body.usage
+    await _record_run_usage(owner_id, owner_id, usage, room_turn=False, event_kind=None)
+    data = usage.model_dump(by_alias=True)
+    if body.duration_ms is not None:
+        data["durationMs"] = body.duration_ms
+    try:
+        run_analytics.schedule_run_completed(
+            owner_id=owner_id,
+            parsed=parse_session_key(body.session_key),
+            payload={"runId": body.run_id, "data": data},
+            phase="end" if body.success else "error",
+        )
+    except Exception:
+        logger.exception("run analytics scheduling failed")
+    put_metric("messaging.usage.callback", dimensions={"outcome": "applied"})
+    return UsageReportResponse(run_id=body.run_id, status="applied")
+
+
 async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsage | None) -> None:
     """Usage counters (analytics only; Metronome is billed by the meter Lambda) and the
     failure push. ``outcome`` is the event's own outcome (not re-read off ``row``, which
@@ -1900,25 +1942,9 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
     author = (trigger or {}).get("author") or {}
     member_user_id = author.get("id") if author.get("kind") == "human" else None
     if usage is not None:
-        cost = usage.estimated_cost_usd
-        raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
-        # Same drop rule as the personal-chat path: no token volume and no billable cost.
-        if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
-            try:
-                await record_usage(
-                    owner_id=owner_id,
-                    user_id=member_user_id or owner_id,
-                    model=usage.model,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cache_read=usage.cache_read_tokens,
-                    cache_write=usage.cache_write_tokens,
-                    raw_cost_microcents=raw_cost_microcents,
-                    room_turn=True,
-                    event_kind=row.get("eventKind"),
-                )
-            except Exception:
-                logger.exception("room run usage record failed")
+        await _record_run_usage(
+            owner_id, member_user_id or owner_id, usage, room_turn=True, event_kind=row.get("eventKind")
+        )
     # A completed reply is pushed by the projector on room.message.created; only a
     # failure has no message to carry it.
     if outcome == "error" and member_user_id and member_user_id.startswith("user_"):

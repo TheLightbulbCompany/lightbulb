@@ -67,9 +67,9 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
     """Emit ``agent_run_completed`` for an autonomous run whose lifecycle
     terminal is relayed through this operator adapter.
 
-    The chat reader loop (``connection_pool``) emits run telemetry only while a
-    human is connected, so routine / issue-assignment runs — which drive through
-    THIS relay, not a chat session — finish unseen. The container's
+    The room chat path emits its own run telemetry (``core.services.messaging.
+    handle_run_event``), so routine / issue-assignment runs — which drive through
+    THIS relay, not a chat session — finish unseen otherwise. The container's
     ``event:"agent"`` lifecycle end/error frame flows through here on its way to
     the adapter; tap it and reuse ``run_analytics.schedule_run_completed``,
     whose ``owner:run_id`` dedup means a run also observed by the chat path is
@@ -79,11 +79,10 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
     it spawns is the async part). MUST NEVER raise into the relay push callback.
     """
     try:
-        # Match the chat path's exact gate (connection_pool._handle_message):
-        # an agent run terminal is an event:"agent" frame whose payload is a
-        # lifecycle end/error. Checking event=="agent" (not just stream) keeps
-        # the two emit paths in lockstep if some future frame reuses a
-        # lifecycle-shaped payload for something else.
+        # Match the room chat path's exact gate: an agent run terminal is an
+        # event:"agent" frame whose payload is a lifecycle end/error. Checking
+        # event=="agent" (not just stream) keeps the two emit paths in lockstep
+        # if some future frame reuses a lifecycle-shaped payload for something else.
         if not isinstance(frame, dict) or frame.get("type") != "event" or frame.get("event") != "agent":
             return
         ev = frame.get("payload")
@@ -93,13 +92,12 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
         phase = data.get("phase") if isinstance(data, dict) else None
         if phase not in ("end", "error"):
             return
-        # Local imports: connection_pool is heavy and this keeps the import
-        # graph acyclic (it, in turn, imports services); run_analytics is
-        # deferred the same way the chat path defers it.
-        from core.gateway.connection_pool import _parse_session_key
+        # Local import: run_analytics is deferred the same way the chat path
+        # defers it.
         from core.services import run_analytics
+        from core.services.session_keys import parse_session_key
 
-        parsed = _parse_session_key(ev.get("sessionKey", "") or "")
+        parsed = parse_session_key(ev.get("sessionKey", "") or "")
         task = run_analytics.schedule_run_completed(owner_id=owner_id, parsed=parsed, payload=ev, phase=phase)
         if task is not None:
             _run_telemetry_tasks.add(task)
@@ -342,8 +340,6 @@ async def handle_operator_connect(
                 )
                 healed = await approve_pending_device_from_rejection(
                     owner_id=owner_id,
-                    ip=ip,
-                    gateway_token=container["gateway_token"],
                     device_id=upstream.device_id,
                     request_id=request_id if isinstance(request_id, str) and request_id else None,
                 )

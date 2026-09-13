@@ -1221,6 +1221,30 @@ def handler(event, context):
       severity: "warn",
       description: "Backend push sends to Expo are failing.",
     });
+
+    // -- W77: messaging-rpc-errors (next free id — W73 is already
+    // messaging-live-publish-error). `core/services/container_rpc.py` is the
+    // sole way the backend reaches an owner's container plugin; a sustained
+    // error rate here means real RPCs (agents.*, channels.*, health, ...) are
+    // failing at the plugin, distinct from W70 (unreachable/timeout, not a
+    // failure response).
+    this.createAlarm({
+      id: "W77",
+      name: "messaging-rpc-errors",
+      metricName: "messaging.rpc",
+      dimensions: { outcome: "error" },
+      threshold: 10,
+      periodMinutes: 5,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+      description:
+        "container_rpc calls to owner containers are failing (gateway " +
+        "method errors, not timeouts/unreachable - that's W70) - 10+ in " +
+        "5 min, sustained across 2 periods.",
+    });
   }
 
   /** A 5-minute Sum on a backend-emitted messaging metric, for metric math. */
@@ -1248,7 +1272,7 @@ def handler(event, context):
   private createWarnCustomMetricAlarms(): void {
     const dims = { env: this.envName, service: "lightbulb-backend" };
 
-    // -- Container & gateway (W1-W8) --
+    // -- Container (W1-W8; the gateway ids W5-W8 are retired, see below) --
 
     // W1: container-provision-error-rate (metric math)
     // Backend emits container.provision with status="ok" or status="error"
@@ -1384,129 +1408,24 @@ def handler(event, context):
     //
     // Not redefined: a real "connections dropped while traffic continues" signal
     // needs anomaly detection plus a co-metric for live traffic, and connection
-    // health is ALREADY covered without it — W6 (health-check timeouts), W8
-    // (RPC errors), W54 (reconnect-throttle storm) and P12 (backend-liveness via
-    // gateway.running.count) all fire on a real gateway problem. A gauge falling
-    // to zero because nobody is connected is not one. Deleting is the correct,
-    // minimal fix.
+    // health is ALREADY covered without it — P12 (backend-liveness via
+    // gateway.running.count) only proves the backend process is alive, and W77
+    // (messaging-rpc-errors) is the actual container-reachability alarm. A
+    // gauge falling to zero because nobody is connected is neither. Deleting
+    // is the correct, minimal fix.
 
-    // W6: gateway-health-check-timeout
-    this.createAlarm({
-      id: "W6",
-      name: "gateway-health-check-timeout",
-      metricName: "gateway.health_check.timeout",
-      threshold: 5,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Gateway health check timeouts exceed 5 in 5 min",
-    });
+    // W6 (gateway-health-check-timeout), W7 (gateway-frontend-prune-storm),
+    // W8 (gateway-rpc-error-count), W9 (chat-e2e-latency-p99), W10
+    // (chat-error-rate) and W11 (chat-session-usage-fetch-error) DELETED with
+    // the gateway connection pool (Task 10, stateless-backend): all six were
+    // reading metrics the pool used to emit (gateway.health_check.timeout,
+    // gateway.frontend.prune, gateway.rpc.error, chat.e2e.latency/chat.error
+    // scoped to source=webchat, chat.session_usage.fetch.error), and the pool
+    // is gone — the backend now calls the container plugin over HTTP
+    // (container_rpc) per RPC, with no persistent connection to prune,
+    // reconnect, or health-check on its own timer. Room traffic keeps its own
+    // SLOs (P21 on messaging.reply.latency).
 
-    // W7: gateway-frontend-prune-storm
-    this.createAlarm({
-      id: "W7",
-      name: "gateway-frontend-prune-storm",
-      metricName: "gateway.frontend.prune",
-      threshold: 100,
-      evaluationPeriods: 1,
-      periodMinutes: 60,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description:
-        "Frontend connection prune storm - over 100 in 1 hour",
-    });
-
-    // W8: gateway-rpc-error-count
-    // Was a metric-math RATE with chat.message.count as the denominator, but
-    // RPC volume ≫ chat volume (every chat is many RPCs), so that ratio was
-    // meaningless. No true RPC-total metric is emitted, so this is an ABSOLUTE
-    // error-count threshold on gateway.rpc.error instead.
-    // TODO(observability Phase 2): emit gateway.rpc.count for a true rate.
-    const rpcErrors = new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: "gateway.rpc.error",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
-    });
-    this.createAlarm({
-      id: "W8",
-      name: "gateway-rpc-error-count",
-      description: "Gateway RPC errors exceed 10 in 5 min",
-      metric: rpcErrors,
-      threshold: 10,
-      severity: "warn",
-    });
-
-    // -- Chat (W9-W12) --
-
-    // W9: chat-e2e-latency-p99
-    // FLAPPING FIXED: was 1-of-1, so a single slow datapoint tripped it and it
-    // cleared on the next period, multiplying notifications for a REAL but spiky
-    // prod signal. 3-of-5 over 5-min periods (a 25-min window) requires the p99
-    // to actually sit above the 20s SLO before warning. Missing data = no chats
-    // = NOT_BREACHING (helper default): quiet windows never fire.
-    //
-    // SCOPED to source=webchat. `chat.*` now covers three entry points, and
-    // room traffic has its own latency SLO (P21, on messaging.reply.latency);
-    // folding them together made this alarm's 20s threshold meaningless. The
-    // full set for chat.e2e.latency is [env, service, source], so this binds a
-    // published identity directly.
-    this.createAlarm({
-      id: "W9",
-      name: "chat-e2e-latency-p99",
-      metricName: "chat.e2e.latency",
-      dimensions: { source: "webchat" },
-      statistic: "p99",
-      threshold: 20000,
-      evaluationPeriods: 5,
-      datapointsToAlarm: 3,
-      periodMinutes: 5,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Webchat p99 latency exceeds 20s SLO target",
-    });
-
-    // W10: chat-error-rate (metric math)
-    // BOTH legs scoped to source=webchat, never one: a webchat numerator over
-    // a whole-fleet denominator (or the reverse) is not a narrower alarm, it is
-    // a wrong number. `source` is in the emitter's single-dimension rollup
-    // allowlist, so { env, service, source } is a published identity for both.
-    const webchat = { ...dims, source: "webchat" };
-    const chatErrors = new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: "chat.error",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: webchat,
-    });
-    const chatTotal = new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: "chat.message.count",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: webchat,
-    });
-    const chatErrorRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: { errors: chatErrors, total: chatTotal },
-      period: cdk.Duration.minutes(5),
-    });
-    const w10 = new cloudwatch.Alarm(this, "W10", {
-      alarmName: `${resourcePrefix(this.envName)}W10-chat-error-rate`,
-      alarmDescription: "Webchat error rate exceeds 1%",
-      metric: chatErrorRate,
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w10.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
     // W10b: litestream-put-requests.
     // Litestream's documented failure modes are quiet: the idle-PUT pathology
     // (litestream#1171, ~480 PUT/hr against a DB with zero writes) and
@@ -1534,20 +1453,6 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     litestreamPuts.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
-
-    // W11: chat-session-usage-fetch-error
-    this.createAlarm({
-      id: "W11",
-      name: "chat-session-usage-fetch-error",
-      metricName: "chat.session_usage.fetch.error",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Failed to fetch session usage from container",
-    });
 
     // W12 (chat-bedrock-throttle) DELETED: the custom chat.bedrock.throttle
     // metric was never emitted. Bedrock throttles are covered by the AWS-native
@@ -1722,27 +1627,12 @@ def handler(event, context):
         "A per-user container is dropping Paperclip relay connections >10/15min - agent heartbeats can't stay connected; find the owner via the operator_proxy 'Operator upstream closed' logs",
     });
 
-    // W54: gateway-reconnect-throttle-storm (next free id after W53).
-    // Backend emits gateway.connection{event:reconnect_throttled} in
-    // core/gateway/connection_pool.py:_respect_reconnect_floor when a per-user
-    // reconnect fires inside the sub-second reconnect floor. A healthy fleet
-    // throttles occasionally; a spike means a reconnect storm (a misbehaving
-    // container + frontend exponential reconnect colliding with in-flight
-    // server retries). Same "storm counter" shape as W7 — Sum over a window.
-    this.createAlarm({
-      id: "W54",
-      name: "gateway-reconnect-throttle-storm",
-      metricName: "gateway.connection",
-      threshold: 20,
-      evaluationPeriods: 1,
-      periodMinutes: 15,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { event: "reconnect_throttled" },
-      severity: "warn",
-      description:
-        "Gateway reconnect throttles exceed 20 in 15 min - reconnect storm (misbehaving container burning the open-handshake budget)",
-    });
+    // W54 (gateway-reconnect-throttle-storm) DELETED with the gateway
+    // connection pool (Task 10, stateless-backend): it read
+    // gateway.connection{event:reconnect_throttled}, emitted by the pool's
+    // own reconnect-floor guard (_respect_reconnect_floor). container_rpc
+    // makes one HTTP call per RPC with no persistent per-user connection to
+    // reconnect or throttle.
 
     // W55: metronome-gate-refresh-error.
     // Backend emits metronome.gate.refresh_error (no extra dims) in
@@ -3232,8 +3122,9 @@ def handler(event, _ctx):
     // rooms, DMs and channels, and one that says nothing about whether an
     // agent actually answered anybody. The two questions that matter at the
     // top of the ORR dashboard are: did the message reach an agent, and how
-    // long did the human wait for the reply. Both chat widgets are still on
-    // the dashboard, in Row 3 with the rest of the chat pipeline.
+    // long did the human wait for the reply. The old webchat pair was Row 3;
+    // it was deleted with the gateway connection pool (Task 10,
+    // stateless-backend) — see the note where Row 3 used to be.
     const agentAnsweredRate = new cloudwatch.MathExpression({
       // FILL(zero, 0): a period in which NO message missed its targets
       // publishes no `count_bucket=0` datapoint at all, and CloudWatch
@@ -3285,7 +3176,7 @@ def handler(event, _ctx):
       }),
     );
 
-    // ----- Row 2: Containers & Gateway (4 widgets) -----
+    // ----- Row 2: Containers (2 widgets) -----
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: "Container provisions",
@@ -3319,110 +3210,13 @@ def handler(event, _ctx):
         width: 6,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
-        title: "Gateway connections (open)",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "gateway.connection.open",
-            statistic: "Average",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "Gateway RPC errors",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "gateway.rpc.error",
-            statistic: "Sum",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
     );
 
-    // ----- Row 3: Chat pipeline (3 widgets) -----
-    dashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: "Chat messages & errors",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.message.count",
-            statistic: "Sum",
-            dimensionsMap: dims,
-          }),
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "chat.error",
-            statistic: "Sum",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 8,
-        height: 6,
-      }),
-      // "Bedrock throttles" widget removed — chat.bedrock.throttle is never
-      // emitted; AWS-native Bedrock throttles are on the W46 alarm.
-      //
-      // The two former Row-1 SLO widgets, moved here now that the headline is
-      // the messaging product. Both are scoped to source=webchat (the
-      // dimension the backend adds alongside `room`/`other`), matching W9/W10
-      // — room traffic has its own SLO in Row 1. The p50 line is what the
-      // unscoped "Chat E2E latency" widget used to carry; that widget is gone
-      // rather than sitting next to this one plotting the same p99 twice.
-      new cloudwatch.GraphWidget({
-        title: "Webchat E2E latency (SLO: p99 < 20s)",
-        left: (["p50", "p99"] as const).map(
-          (statistic) =>
-            new cloudwatch.Metric({
-              namespace: "LightbulbAI",
-              metricName: "chat.e2e.latency",
-              statistic,
-              period: cdk.Duration.hours(1),
-              dimensionsMap: { ...dims, source: "webchat" },
-              label: statistic,
-            }),
-        ),
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        // Both legs scoped to webchat, matching W10 — one leg scoped and the
-        // other not would plot a plausible-looking wrong number.
-        title: "Webchat success rate (SLO: 99.5%)",
-        left: [
-          new cloudwatch.MathExpression({
-            // FILL(errors, 0) for the same reason as Row 1: no errors means
-            // no datapoint, which would blank the widget when it is healthy.
-            expression: "100 * (1 - FILL(errors, 0) / IF(total > 0, total, 1))",
-            usingMetrics: {
-              errors: new cloudwatch.Metric({
-                namespace: "LightbulbAI",
-                metricName: "chat.error",
-                statistic: "Sum",
-                dimensionsMap: { ...dims, source: "webchat" },
-              }),
-              total: new cloudwatch.Metric({
-                namespace: "LightbulbAI",
-                metricName: "chat.message.count",
-                statistic: "Sum",
-                dimensionsMap: { ...dims, source: "webchat" },
-              }),
-            },
-            period: cdk.Duration.hours(1),
-          }),
-        ],
-        width: 8,
-        height: 6,
-      }),
-    );
+    // Row 3 (Chat pipeline: "Chat messages & errors", "Webchat E2E latency",
+    // "Webchat success rate") DELETED with the gateway connection pool (Task
+    // 10, stateless-backend) — all three plotted the pool-era webchat surface
+    // (chat.e2e.latency/chat.error scoped to source=webchat, matching the
+    // deleted W9/W10 alarms), which no longer exists as a distinct RPC path.
 
     // ----- Row 3.5: Runtime gauges (2 widgets) -----
     // Backend-liveness heartbeat is the P12 alarm; these widgets are for

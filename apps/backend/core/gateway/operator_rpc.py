@@ -9,26 +9,20 @@ sign the connect challenge with the per-container Ed25519 operator device.
 
 That signed handshake used to be copy-pasted into four places (the connection
 pool, the recovery endpoint, the credential-revoke service, and the
-gateway-restart endpoint). This module is the single canonical implementation
-they all share:
-
-- ``perform_signed_connect`` runs the challenge → sign → hello-ok handshake on
-  an already-open websocket. The long-lived connection pool uses this directly
-  (it keeps the socket open afterwards and streams events).
-- ``gateway_rpc_oneshot`` opens a short-lived websocket, runs
-  ``perform_signed_connect``, sends a single RPC, and returns its payload. The
-  one-shot operator calls (revoke, recover, restart) use this.
+gateway-restart endpoint). ``perform_signed_connect`` is the single canonical
+implementation: it runs the challenge → sign → hello-ok handshake on an
+already-open websocket. Everything but the operator-device pairing probe now
+reaches the gateway over HTTP via ``core.services.container_rpc``; the probe
+still needs a real signed device connect (sub-project D replaces it).
 
 ``GATEWAY_PORT`` lives here (not imported from ``core.containers.ecs_manager``)
-to avoid a gateway → containers import cycle, mirroring the long-standing local
-definition in ``connection_pool``.
+to avoid a gateway → containers import cycle.
 """
 
 import asyncio
 import json
 import uuid
 
-import websockets
 
 GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
@@ -49,7 +43,8 @@ class GatewayConnectAuthError(RuntimeError):
 
     Retrying these with the same credentials cannot succeed, and each retry
     counts toward the gateway's lockout (10 failed auths in 60s → 5-minute
-    IP+credential-scope lockout), so the connection pool needs to tell them
+    IP+credential-scope lockout), so the operator-device pairing probe (its
+    only caller, in ``paperclip_openclaw_pairing.py``) needs to tell them
     apart from transient handshake failures. ``retry_after_ms`` carries the
     gateway's own hint (the remaining lockout window) when it sends one.
     Subclasses RuntimeError so pre-existing broad handlers keep working.
@@ -184,11 +179,10 @@ async def perform_signed_connect(
                 f"Container row for owner {owner_id} missing operator_priv_key_enc "
                 "(pre-4.5 provision — reprovision required)"
             )
-        # KMS Decrypt is a SYNCHRONOUS boto3 call. This handshake runs on the
-        # connect hot path (held under the pool's single lock), so calling it
-        # inline blocks the whole event loop for the round trip — one slow KMS
-        # response stalls every user on this backend task. Offload to a worker
-        # thread. (GW-2a.)
+        # KMS Decrypt is a SYNCHRONOUS boto3 call, so calling it inline blocks
+        # the whole event loop for the round trip — one slow KMS response
+        # stalls every user on this backend task. Offload to a worker thread.
+        # (GW-2a.)
         seed_bytes = await asyncio.to_thread(
             kms_secrets.decrypt_bytes,
             enc_seed,
@@ -275,49 +269,3 @@ async def perform_signed_connect(
         ):
             raise RuntimeError("Gateway trusted-profile handshake proof is invalid")
     return resp
-
-
-async def gateway_rpc_oneshot(
-    ip: str,
-    *,
-    owner_id: str,
-    token: str,
-    method: str,
-    params: dict | None = None,
-    caps: list[str] | None = None,
-    open_timeout: float = _DEFAULT_TIMEOUT,
-    recv_timeout: float = _DEFAULT_TIMEOUT,
-    rpc_timeout: float = _DEFAULT_TIMEOUT,
-    scopes=None,
-    identity=None,
-    trusted_broker_profile_id: str | None = None,
-) -> dict:
-    """Open a short-lived signed connection, send one RPC, return its payload.
-
-    Used by the rare one-shot operator calls (credential revoke, recovery,
-    gateway restart). Raises ``RuntimeError`` if the handshake fails or the RPC
-    response is not ``ok``.
-    """
-    uri = f"ws://{ip}:{GATEWAY_PORT}"
-    async with websockets.connect(uri, open_timeout=open_timeout, close_timeout=5) as ws:
-        await perform_signed_connect(
-            ws,
-            owner_id=owner_id,
-            token=token,
-            caps=caps,
-            recv_timeout=recv_timeout,
-            scopes=scopes,
-            identity=identity,
-            trusted_broker_profile_id=trusted_broker_profile_id,
-        )
-
-        req_id = str(uuid.uuid4())
-        await ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params or {}}))
-
-        # Skip event broadcasts until the matching response arrives.
-        while True:
-            data = json.loads(await asyncio.wait_for(ws.recv(), timeout=rpc_timeout))
-            if data.get("type") == "res" and data.get("id") == req_id:
-                if not data.get("ok"):
-                    raise RuntimeError(data.get("error", {}).get("message", f"{method} rejected"))
-                return data.get("payload", {})

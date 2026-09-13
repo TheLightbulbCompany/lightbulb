@@ -150,7 +150,7 @@ def test_member_rejected_mutating_another_users_key(method):
     "key",
     [
         # Real OpenClaw key shapes (agent:<agentId>:...) for paperclip/cron
-        # sessions -- see connection_pool._parse_session_key. These live on
+        # sessions -- see session_keys.parse_session_key. These live on
         # the shared per-owner container but are never owned by a /chat
         # member, so the ownership guard must reject a member's attempt to
         # mutate them.

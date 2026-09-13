@@ -1,12 +1,11 @@
 """Tests for the shared signed operator-connect helper.
 
 `core.gateway.operator_rpc` is the single canonical place that performs the
-OpenClaw 4.5 signed-device connect handshake. The connection pool, the
-credential-revoke service, the recovery endpoint, and the gateway-restart
-endpoint all route their signed connect through it instead of carrying their
-own copy.
+OpenClaw 4.5 signed-device connect handshake. The operator-device pairing
+probe is its sole remaining caller — every other gateway RPC now goes over
+HTTP via `core.services.container_rpc`.
 
-These tests stub the same dependencies the pool's handshake test stubs:
+These tests stub the same dependencies the pairing probe's handshake stubs:
 
 - ``container_repo.get_by_owner_id`` → a row carrying an
   ``operator_priv_key_enc`` ciphertext (opaque; KMS is mocked).
@@ -51,19 +50,6 @@ def mock_device_auth_deps(operator_seed):
         }
         mock_decrypt.return_value = operator_seed
         yield mock_get, mock_decrypt
-
-
-class _FakeWsCM:
-    """Minimal async-context-manager wrapper around a fake websocket."""
-
-    def __init__(self, ws):
-        self._ws = ws
-
-    async def __aenter__(self):
-        return self._ws
-
-    async def __aexit__(self, *exc):
-        return False
 
 
 # --------------------------------------------------------------------------
@@ -170,10 +156,10 @@ class TestPerformSignedConnect:
     @pytest.mark.asyncio
     async def test_auth_shaped_rejection_raises_typed_error(self, mock_device_auth_deps):
         """An error code containing AUTH (AUTH_FAILED / AUTH_RATE_LIMITED)
-        must surface as GatewayConnectAuthError so the pool can hold off
-        reconnects — the gateway locks a client scope out for 5 minutes after
-        10 failed auths in 60s, and a plain RuntimeError is indistinguishable
-        from a transient handshake failure."""
+        must surface as GatewayConnectAuthError so the operator-device pairing
+        probe (its only caller) can tell it apart — the gateway locks a client
+        scope out for 5 minutes after 10 failed auths in 60s, and a plain
+        RuntimeError is indistinguishable from a transient handshake failure."""
         ws = AsyncMock()
         ws.recv = AsyncMock(
             side_effect=[
@@ -353,8 +339,7 @@ class TestPerformSignedConnect:
     @pytest.mark.asyncio
     async def test_decrypt_runs_off_the_event_loop_thread(self, operator_seed):
         """GW-2a: the synchronous KMS Decrypt must run in a worker thread, not
-        inline on the connect hot path (which is held under the pool's single
-        lock and would otherwise block the whole event loop for the round trip)."""
+        inline, or it would block the whole event loop for the round trip."""
         import threading
 
         main_thread = threading.current_thread()
@@ -467,75 +452,3 @@ class TestPerformSignedConnect:
                     scopes=scopes,
                     trusted_broker_profile_id="profile_test",
                 )
-
-
-# --------------------------------------------------------------------------
-# gateway_rpc_oneshot
-# --------------------------------------------------------------------------
-
-
-class TestGatewayRpcOneshot:
-    @pytest.mark.asyncio
-    async def test_returns_payload_on_success(self, mock_device_auth_deps):
-        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
-        ws = AsyncMock()
-        ws.recv = AsyncMock(
-            side_effect=[
-                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
-                json.dumps({"ok": True}),
-                json.dumps({"type": "res", "id": str(fixed), "ok": True, "payload": {"status": "ok"}}),
-            ]
-        )
-        with (
-            patch.object(operator_rpc.websockets, "connect", return_value=_FakeWsCM(ws)),
-            patch.object(operator_rpc.uuid, "uuid4", return_value=fixed),
-        ):
-            payload = await operator_rpc.gateway_rpc_oneshot(
-                "10.0.0.1", owner_id="test-user", token="t", method="health"
-            )
-        assert payload == {"status": "ok"}
-        # The RPC frame was actually sent.
-        rpc_frame = json.loads(ws.send.call_args_list[-1][0][0])
-        assert rpc_frame["method"] == "health"
-
-    @pytest.mark.asyncio
-    async def test_raises_on_rpc_error(self, mock_device_auth_deps):
-        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
-        ws = AsyncMock()
-        ws.recv = AsyncMock(
-            side_effect=[
-                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
-                json.dumps({"ok": True}),
-                json.dumps({"type": "res", "id": str(fixed), "ok": False, "error": {"message": "nope"}}),
-            ]
-        )
-        with (
-            patch.object(operator_rpc.websockets, "connect", return_value=_FakeWsCM(ws)),
-            patch.object(operator_rpc.uuid, "uuid4", return_value=fixed),
-        ):
-            with pytest.raises(RuntimeError, match="nope"):
-                await operator_rpc.gateway_rpc_oneshot(
-                    "10.0.0.1", owner_id="test-user", token="t", method="config.apply"
-                )
-
-    @pytest.mark.asyncio
-    async def test_skips_event_broadcasts_before_response(self, mock_device_auth_deps):
-        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
-        ws = AsyncMock()
-        ws.recv = AsyncMock(
-            side_effect=[
-                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
-                json.dumps({"ok": True}),
-                json.dumps({"event": "health", "payload": {"noise": True}}),  # broadcast, ignored
-                json.dumps({"type": "res", "id": "other-id", "ok": True, "payload": {}}),  # not ours
-                json.dumps({"type": "res", "id": str(fixed), "ok": True, "payload": {"v": 1}}),
-            ]
-        )
-        with (
-            patch.object(operator_rpc.websockets, "connect", return_value=_FakeWsCM(ws)),
-            patch.object(operator_rpc.uuid, "uuid4", return_value=fixed),
-        ):
-            payload = await operator_rpc.gateway_rpc_oneshot(
-                "10.0.0.1", owner_id="test-user", token="t", method="health"
-            )
-        assert payload == {"v": 1}

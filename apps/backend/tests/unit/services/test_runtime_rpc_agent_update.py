@@ -118,12 +118,10 @@ class _CountingName(str):
 @pytest.mark.asyncio
 async def test_execute_normalizes_agent_name_once_before_both_writes(monkeypatch):
     _CountingName.strip_calls = 0
-    monkeypatch.setattr(runtime_rpc, "_running_container", AsyncMock(return_value=({"gateway_token": "token"}, "ip")))
     mirror = AsyncMock()
     monkeypatch.setattr(runtime_rpc, "_mirror_agent_update", mirror)
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={})
-    monkeypatch.setattr(runtime_rpc, "get_gateway_pool", lambda: pool)
+    call_mock = AsyncMock(return_value={})
+    monkeypatch.setattr(runtime_rpc.container_rpc, "call", call_mock)
     supplied = {"agentId": "a1", "name": _CountingName("  Ada  ")}
 
     await runtime_rpc.execute_sync(
@@ -136,19 +134,17 @@ async def test_execute_normalizes_agent_name_once_before_both_writes(monkeypatch
 
     assert _CountingName.strip_calls == 1
     assert mirror.await_args.args[1]["name"] == "Ada"
-    assert pool.send_rpc.await_args.kwargs["params"]["name"] == "Ada"
+    assert call_mock.await_args.args[2]["name"] == "Ada"
     assert supplied["name"] == "  Ada  "
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["", "   "])
 async def test_execute_rejects_empty_agent_name_at_rpc_boundary(monkeypatch, name):
-    monkeypatch.setattr(runtime_rpc, "_running_container", AsyncMock(return_value=({"gateway_token": "token"}, "ip")))
     mirror = AsyncMock()
     monkeypatch.setattr(runtime_rpc, "_mirror_agent_update", mirror)
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={})
-    monkeypatch.setattr(runtime_rpc, "get_gateway_pool", lambda: pool)
+    call_mock = AsyncMock(return_value={})
+    monkeypatch.setattr(runtime_rpc.container_rpc, "call", call_mock)
 
     with pytest.raises(ApiProblem) as exc_info:
         await runtime_rpc.execute_sync(
@@ -161,7 +157,7 @@ async def test_execute_rejects_empty_agent_name_at_rpc_boundary(monkeypatch, nam
 
     assert exc_info.value.error.code == "INVALID_REQUEST"
     mirror.assert_not_awaited()
-    pool.send_rpc.assert_not_awaited()
+    call_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

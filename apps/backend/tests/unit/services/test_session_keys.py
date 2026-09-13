@@ -1,4 +1,4 @@
-"""Tests for _parse_session_key pure function."""
+"""Tests for parse_session_key pure function."""
 
 import os
 
@@ -6,7 +6,7 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from core.gateway.connection_pool import _parse_session_key  # noqa: E402
+from core.services.session_keys import parse_session_key  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ from core.gateway.connection_pool import _parse_session_key  # noqa: E402
     ],
 )
 def test_parse_session_key(session_key, expected):
-    result = _parse_session_key(session_key)
+    result = parse_session_key(session_key)
     assert result == expected
 
 
@@ -132,7 +132,7 @@ def test_cron_session_is_not_webchat():
     """Cron sessions must not be classified as webchat — their events should
     not be forwarded to frontends (a cron chat.final would terminate an
     active user's streaming session)."""
-    result = _parse_session_key("agent:main:cron:dfb80362-1cdb-4089-b778-27a5f51d765a")
+    result = parse_session_key("agent:main:cron:dfb80362-1cdb-4089-b778-27a5f51d765a")
     assert result["source"] == "cron"
     assert result["source"] not in ("webchat", "dm", "group", "channel")
     assert "member_id" not in result
@@ -144,7 +144,7 @@ def test_paperclip_issue_session_is_not_webchat():
     returned source='unknown' with no member_id, which the gateway fan-out
     treats as a personal session and BROADCASTS to every member of the org —
     leaking one issue's stream into every member's /chat."""
-    result = _parse_session_key("agent:friday:paperclip:issue:ADM-455")
+    result = parse_session_key("agent:friday:paperclip:issue:ADM-455")
     assert result["source"] == "paperclip"
     assert result["source"] not in ("webchat", "dm", "group", "channel")
     assert "member_id" not in result
@@ -154,7 +154,7 @@ def test_paperclip_issue_session_is_not_webchat():
 def test_four_part_webchat_is_not_isolated_source():
     """The 4-part key must classify as webchat, not 'unknown' — otherwise
     _handle_message treats it as isolated and silently drops streamed frames."""
-    parsed = _parse_session_key("agent:luna:user_1:3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+    parsed = parse_session_key("agent:luna:user_1:3f2504e0-4f89-41d3-9a0c-0305e82c3301")
     assert parsed["source"] == "webchat"
     assert parsed["source"] not in ("paperclip", "unknown")
 
@@ -163,6 +163,6 @@ def test_group_key_does_not_return_literal_channel_as_member_id():
     """Regression test for the pre-existing parser bug where group session
     keys wrote member:telegram:{period}. The new parser must NOT expose
     'telegram' (or any channel name) as a member_id anywhere."""
-    result = _parse_session_key("agent:main:telegram:group:-100123")
+    result = parse_session_key("agent:main:telegram:group:-100123")
     assert result.get("source") == "group"
     assert "member_id" not in result

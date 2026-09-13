@@ -10,8 +10,8 @@ import pytest
 from fastapi import HTTPException
 
 from core.auth import AuthContext
+from core.services.messaging import ApiProblem
 from core.services.stripe_webhook_handlers import CONVERSION_GUARD_SECONDS
-from routers.container import _resolve_cold_start_phase
 
 
 @pytest.fixture
@@ -173,39 +173,6 @@ def _stub_trial_armer(request):
             yield
 
 
-class TestColdStartPhaseResolver:
-    """Pure unit tests for the (DDB status, pool state) -> phase mapping.
-
-    Drives the frontend stepper. The "starting" phase is the most-visible
-    one for users today since it covers the 5+min sidecars.channels wedge.
-    """
-
-    @staticmethod
-    def _pool(connected: bool):
-        return SimpleNamespace(is_user_connected=lambda _uid: connected)
-
-    @pytest.mark.parametrize("status", ["provisioning", "stopped", "error", None, ""])
-    def test_anything_not_running_is_provisioning(self, status):
-        container = {"status": status} if status is not None else {}
-        assert _resolve_cold_start_phase(container, self._pool(False), "u_1") == "provisioning"
-
-    def test_running_without_gateway_handshake_is_starting(self):
-        # Covers the gap that takes the longest in practice today —
-        # ECS task is up but openclaw is still in plugins.bootstrap or
-        # the sidecars.channels wedge.
-        container = {"status": "running"}
-        assert _resolve_cold_start_phase(container, self._pool(False), "u_1") == "starting"
-
-    def test_running_with_gateway_handshake_is_ready(self):
-        container = {"status": "running"}
-        assert _resolve_cold_start_phase(container, self._pool(True), "u_1") == "ready"
-
-    def test_none_container_is_provisioning(self):
-        # Defensive: status route may briefly hit this if the DDB row is
-        # being written concurrently with a poll. Don't crash.
-        assert _resolve_cold_start_phase(None, self._pool(False), "u_1") == "provisioning"
-
-
 @pytest.mark.asyncio
 async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
     import boto3
@@ -226,10 +193,17 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
             resolve_running_container=AsyncMock(side_effect=lambda _: (row, "10.0.0.1")),
             has_live_service=AsyncMock(return_value=True),
         )
+        gateway_reachable = {"v": False}
+
+        async def _health(*_a, **_kw):
+            if not gateway_reachable["v"]:
+                raise ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
+            return {"ok": True}
+
         with (
             patch.object(billing_repo, "_get_table", return_value=table),
             patch("routers.container.get_ecs_manager", return_value=ecs),
-            patch("core.services.connection_service.is_gateway_connected", AsyncMock(return_value=False)) as connected,
+            patch("core.services.container_rpc.call", AsyncMock(side_effect=_health)),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
             patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
         ):
@@ -239,7 +213,7 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
                 assert result["runtime_phase"] == phase
                 assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
             row["status"] = "running"
-            connected.return_value = True
+            gateway_reachable["v"] = True
             with patch("core.repositories.billing_repo.time.time", return_value=1_000):
                 result = await container_status(_workspace_auth(), wake="0", flow=None)
             assert result["runtime_phase"] == "ready"
@@ -280,7 +254,7 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
         with (
             patch.object(billing_repo, "_get_table", return_value=table),
             patch("routers.container.get_ecs_manager", return_value=ecs),
-            patch("core.services.connection_service.is_gateway_connected", AsyncMock(return_value=True)),
+            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
             patch(
                 "routers.container.arm_workspace_trial_if_unset",
@@ -297,7 +271,7 @@ class TestContainerStatusPhaseField:
     """Verify the /status response actually carries the phase."""
 
     @pytest.mark.asyncio
-    @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+    @patch("core.services.container_rpc.call", new_callable=AsyncMock)
     @patch("routers.container.get_ecs_manager")
     async def test_phase_starting_when_running_but_no_pool(self, mock_get_ecs, mock_gateway_connected, async_client):
         mock_ecs = AsyncMock()
@@ -313,14 +287,14 @@ class TestContainerStatusPhaseField:
                 "10.0.1.5",
             )
         )
-        mock_gateway_connected.return_value = False
+        mock_gateway_connected.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         assert response.json()["runtime_phase"] == "starting"
 
     @pytest.mark.asyncio
-    @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+    @patch("core.services.container_rpc.call", new_callable=AsyncMock)
     @patch("routers.container.get_ecs_manager")
     async def test_phase_ready_when_pool_connected(self, mock_get_ecs, mock_gateway_connected, async_client):
         mock_ecs = AsyncMock()
@@ -336,11 +310,12 @@ class TestContainerStatusPhaseField:
                 "10.0.1.5",
             )
         )
-        mock_gateway_connected.return_value = True
+        mock_gateway_connected.return_value = {"ok": True}
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         assert response.json()["runtime_phase"] == "ready"
+        mock_gateway_connected.assert_awaited_once_with("org_test_456", "health", timeout_s=2.0, wake=False)
 
 
 class TestContainerStatus:
@@ -634,8 +609,8 @@ class TestContainerStatusGate:
                 new_callable=AsyncMock,
             ) as mock_gate,
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
@@ -718,8 +693,8 @@ class TestContainerStatusGate:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
@@ -1189,7 +1164,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
-            patch("routers.container._safe_phase", return_value="ready"),
+            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
         ):
             result = await container_status(_org_member_auth())
 
@@ -1231,7 +1206,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
-            patch("routers.container._safe_phase", return_value="ready"),
+            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
         ):
             await container_status(_org_admin_auth())
 
@@ -1262,9 +1237,9 @@ class TestGatewayRestart:
 
     @pytest.fixture
     def mock_call_gateway_rpc(self):
-        # gateway_restart now lives in container_recover and reaches the gateway
-        # through the shared signed one-shot helper.
-        with patch("routers.container_recover.gateway_rpc_oneshot", new_callable=AsyncMock) as mock_rpc:
+        # gateway_restart now lives in container_recover and reaches the
+        # gateway through container_rpc.call.
+        with patch("routers.container_recover.container_rpc.call", new_callable=AsyncMock) as mock_rpc:
             mock_rpc.return_value = {}
             yield mock_rpc
 
@@ -1284,18 +1259,17 @@ class TestGatewayRestart:
     async def test_gateway_restart_success(
         self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
     ):
-        """Happy path: should return ok=true and call config.apply via the
-        signed one-shot (config.apply is operator.admin-reserved)."""
+        """Happy path: should return ok=true and call config.apply via
+        container_rpc.call (config.apply is operator.admin-reserved)."""
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
         mock_call_gateway_rpc.assert_awaited_once()
         call = mock_call_gateway_rpc.await_args
-        assert call.args[0] == "10.0.1.5"  # ip (positional)
-        assert call.kwargs["token"] == "test-gw-token"
-        assert call.kwargs["method"] == "config.apply"
-        assert call.kwargs["params"] == {"raw": '{"gateway":{"mode":"local"}}'}
-        assert call.kwargs["owner_id"]  # signed handshake is scoped to the owner
+        assert call.args[0]  # owner_id (positional)
+        assert call.args[1] == "config.apply"
+        assert call.args[2] == {"raw": '{"gateway":{"mode":"local"}}'}
+        assert call.kwargs["timeout_s"] == 30.0
 
     @pytest.mark.asyncio
     async def test_gateway_restart_no_container(self, async_client, mock_ecs_manager, mock_call_gateway_rpc):
@@ -1310,11 +1284,21 @@ class TestGatewayRestart:
     async def test_gateway_restart_gateway_unreachable(
         self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
     ):
-        """Should return 502 when gateway refuses connection."""
-        mock_call_gateway_rpc.side_effect = ConnectionRefusedError()
+        """Should return 502 when the gateway is unreachable."""
+        mock_call_gateway_rpc.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 502
         assert "Gateway is not responding" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_gateway_restart_times_out(
+        self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
+    ):
+        """Should return 502 when the gateway RPC times out."""
+        mock_call_gateway_rpc.side_effect = TimeoutError()
+        response = await async_client.post("/api/v1/container/gateway/restart")
+        assert response.status_code == 502
+        assert "Gateway restart timed out" in response.json()["detail"]
 
 
 class TestContainerStatusTrialConversion:
@@ -1371,7 +1355,11 @@ class TestContainerStatusTrialConversion:
             patch("routers.container.get_ecs_manager", return_value=TestContainerStatusTrialConversion._ecs(row)),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
-            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch(
+                "core.services.container_rpc.call",
+                new_callable=AsyncMock,
+                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
+            ),
             patch("routers.container.container_repo", new=repo),
             patch.object(handlers, "container_repo", new=repo),
             patch.object(
@@ -1599,7 +1587,11 @@ class TestContainerStatusTrialBedrockRestore:
             patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=AsyncMock(return_value=0)),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch(
+                "core.services.container_rpc.call",
+                new_callable=AsyncMock,
+                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
+            ),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
         ):
             result = await container_status(_workspace_auth())
@@ -1633,7 +1625,7 @@ class TestContainerStatusTrialBedrockRestore:
                 new=AsyncMock(return_value=None),
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as restore,
-            patch("routers.container._safe_phase", return_value="ready"),
+            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
@@ -1670,7 +1662,11 @@ class TestContainerStatusTrialBedrockRestore:
                 new=AsyncMock(side_effect=RuntimeError("boom")),
             ),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch(
+                "core.services.container_rpc.call",
+                new_callable=AsyncMock,
+                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
+            ),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
         ):
             result = await container_status(_workspace_auth())  # must not raise
@@ -1803,7 +1799,11 @@ class TestContainerStatusHonestError:
             patch("routers.container.get_ecs_manager", return_value=cls._ecs(row, has_live=has_live)),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
-            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch(
+                "core.services.container_rpc.call",
+                new_callable=AsyncMock,
+                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
+            ),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
         )
 
@@ -1952,8 +1952,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -1979,8 +1979,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
@@ -2009,8 +2009,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -2046,8 +2046,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -2077,8 +2077,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
             patch(
@@ -2120,8 +2120,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
             patch(
@@ -2165,8 +2165,8 @@ class TestContainerStatusTeamsStatus:
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=True),
+                "core.services.container_rpc.call",
+                new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -2213,10 +2213,7 @@ class TestContainerStatusOnboarded:
         repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
         with (
             patch("routers.container.get_ecs_manager", return_value=self._running_ecs()),
-            patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
-            ),
+            patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):

@@ -32,8 +32,8 @@ stores with no single owner):
    itself) — no longer imports ``paperclip_repo`` or ``billing_repo``
    directly. It may still import ``container_repo`` (for provisioning
    mutations unrelated to readiness composition — auto-retry dispatch,
-   stale-lease detection) and ``connection_service`` is untouched there
-   entirely; the READINESS verdict itself comes from
+   stale-lease detection); it never composes gateway liveness itself
+   either — the READINESS verdict itself comes from
    ``readiness_state.compute_status``.
 3. ``core/services/readiness_state.py`` itself is verified to actually
    import all four stores (a sanity check that the composer is doing its
@@ -51,7 +51,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _STORE_MODULES = {
     "container_repo": "core.repositories.container_repo",
     "billing_repo": "core.repositories.billing_repo",
-    "connection_service": "core.services.connection_service",
+    "container_rpc": "core.services.container_rpc",
     "paperclip_repo": "core.repositories.paperclip_repo",
 }
 
@@ -86,7 +86,7 @@ def test_readiness_state_module_exists_and_imports_all_four_stores():
     stores = _imported_stores(path)
     assert stores == set(_STORE_MODULES), (
         "readiness_state.py must import all four readiness inputs "
-        f"(container_repo, billing_repo, connection_service, paperclip_repo); got {stores}"
+        f"(container_repo, billing_repo, container_rpc, paperclip_repo); got {stores}"
     )
 
 

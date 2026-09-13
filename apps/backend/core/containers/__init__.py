@@ -10,15 +10,12 @@ discovery for routing.
 import logging
 from typing import Optional
 
-from core.gateway.connection_pool import GatewayConnectionPool
-
 from core.containers.ecs_manager import EcsManager, EcsManagerError
 from core.containers.workspace import Workspace, WorkspaceError, get_workspace
 
 logger = logging.getLogger(__name__)
 
 _ecs_manager: Optional[EcsManager] = None
-_gateway_pool: Optional[GatewayConnectionPool] = None
 
 
 def get_ecs_manager() -> EcsManager:
@@ -29,48 +26,11 @@ def get_ecs_manager() -> EcsManager:
     return _ecs_manager
 
 
-def get_gateway_pool() -> GatewayConnectionPool:
-    """Get the gateway connection pool singleton (GatewayConnectionPool)."""
-    global _gateway_pool
-    if _gateway_pool is None:
-        _gateway_pool = GatewayConnectionPool()
-    return _gateway_pool
-
-
-def get_gateway_pool_if_started() -> GatewayConnectionPool | None:
-    """The pool singleton if already constructed, else None (no construction).
-
-    Read paths that only consult tracked run/connection state use this: when
-    no pool exists there is nothing tracked yet, so None is the answer — and
-    a cold process avoids paying singleton construction (boto3 setup, ~2s)
-    inside a latency-measured request.
-    """
-    return _gateway_pool
-
-
-async def startup_containers() -> None:
-    """No-op: ECS Services are always-on; no reconciliation needed at startup."""
-    logger.info("Container startup: ECS services are always-on, nothing to reconcile")
-
-
-async def shutdown_containers() -> None:
-    """Close gateway connection pool; ECS Services keep running."""
-    global _gateway_pool
-    if _gateway_pool is not None:
-        await _gateway_pool.close_all()
-        _gateway_pool = None
-    logger.info("Container shutdown complete")
-
-
 __all__ = [
     "EcsManager",
     "EcsManagerError",
     "Workspace",
     "WorkspaceError",
-    "GatewayConnectionPool",
     "get_ecs_manager",
-    "get_gateway_pool",
     "get_workspace",
-    "startup_containers",
-    "shutdown_containers",
 ]

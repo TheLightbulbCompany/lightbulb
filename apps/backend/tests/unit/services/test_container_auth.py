@@ -43,9 +43,7 @@ async def test_running_container_calls_logout_for_openai():
         patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
     ):
         assert await revoke_provider_auth_in_container("org_1") is True
-        # The shared signed one-shot re-loads the seed from the container row,
-        # so the wrapper takes (ip, owner_id, token, provider).
-        logout.assert_awaited_once_with("10.0.0.5", "org_1", "tok", "openai")
+        logout.assert_awaited_once_with("org_1", "openai")
 
 
 @pytest.mark.asyncio

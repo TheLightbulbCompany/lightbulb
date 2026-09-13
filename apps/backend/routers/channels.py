@@ -8,7 +8,6 @@ Exposes:
 """
 
 import logging
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -22,7 +21,7 @@ from core.auth import (
 from core.observability.metrics import put_metric
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import channel_link_repo
-from core.services import channel_link_service
+from core.services import channel_link_service, container_rpc
 from core.services.config_patcher import (
     delete_openclaw_config_path,
     delete_provider_level_channel_secrets,
@@ -77,44 +76,26 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
 
     can_create_bots = (not auth.is_org_context) or auth.is_org_admin
 
-    # Try to get live bot usernames from channels.status probe via the
-    # gateway pool. This calls getMe() / /users/@me on each provider and
+    # Try to get live bot usernames from a channels.status probe via
+    # container_rpc. This calls getMe() / /users/@me on each provider and
     # returns the actual bot handle (e.g. @Isol8DevBot). Falls back to
     # agent_id if the container isn't reachable or the probe fails.
     bot_usernames: dict[str, dict[str, str]] = {}  # provider -> accountId -> username
     try:
-        from core.containers import get_ecs_manager, get_gateway_pool
-
-        ecs_manager = get_ecs_manager()
-        container, ip = await ecs_manager.resolve_running_container(owner_id)
-        if container and ip:
-            pool = get_gateway_pool()
-            status = await pool.send_rpc(
-                user_id=owner_id,
-                # Unique per call — a constant id (this was previously
-                # `links-me-{owner_id}`) collides in the per-owner pending-RPC
-                # map when two of the owner's tabs probe at once. The pool now
-                # namespaces the wire id defensively too, but don't ship a
-                # constant one for future direct callers to trip over.
-                req_id=f"links-me-{uuid.uuid4().hex}",
-                method="channels.status",
-                params={"probe": True},
-                ip=ip,
-                token=container["gateway_token"],
-            )
-            for prov, accts in (status or {}).get("channelAccounts", {}).items():
-                if not isinstance(accts, list):
+        status = await container_rpc.call(owner_id, "channels.status", {"probe": True}, wake=False)
+        for prov, accts in (status or {}).get("channelAccounts", {}).items():
+            if not isinstance(accts, list):
+                continue
+            bot_usernames[prov] = {}
+            for acct in accts:
+                if not isinstance(acct, dict):
                     continue
-                bot_usernames[prov] = {}
-                for acct in accts:
-                    if not isinstance(acct, dict):
-                        continue
-                    acct_id = acct.get("accountId", "")
-                    probe = acct.get("probe") or {}
-                    bot = probe.get("bot") or {} if isinstance(probe, dict) else {}
-                    username = bot.get("username", "") if isinstance(bot, dict) else ""
-                    if acct_id and username:
-                        bot_usernames[prov][acct_id] = username
+                acct_id = acct.get("accountId", "")
+                probe = acct.get("probe") or {}
+                bot = probe.get("bot") or {} if isinstance(probe, dict) else {}
+                username = bot.get("username", "") if isinstance(bot, dict) else ""
+                if acct_id and username:
+                    bot_usernames[prov][acct_id] = username
     except Exception as e:
         put_metric("channel.rpc", dimensions={"provider": "all", "status": "error"})
         logger.debug("channels.status probe failed for links/me (using fallback): %s", e)

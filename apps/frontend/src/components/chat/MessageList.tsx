@@ -48,10 +48,9 @@ import type {
   RenderSide,
   HistoryMessage,
 } from "@/hooks/internal/types";
-// Approval rendering moved to ExecApprovalDialog (mounted at chat-shell level
-// via useExecApprovals). Tool activity is rendered by ToolActivityTrace, which
-// represents execution state only — running / done / error. See
-// ExecApprovalDialog.tsx for the modal that surfaces pending exec approvals.
+// Exec approvals no longer render in chat — that rail was deleted with the
+// gateway pool. Tool activity is rendered by ToolActivityTrace, which
+// represents execution state only — running / done / error.
 
 interface MessageListProps {
   renderGroups: RenderGroup[];

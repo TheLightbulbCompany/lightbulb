@@ -31,15 +31,22 @@ def mock_ecs():
 
 @pytest.fixture
 def mock_pool():
-    with patch("core.containers.get_gateway_pool") as m:
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={})
-        m.return_value = pool
+    """Adapts container_rpc.call's ``(owner_id, method, params, *, timeout_s)``
+    shape onto the old pool-style ``dispatch_rpc(owner_id=, method=, params=)``
+    call the tests below assert on, so only this fixture needed to change."""
+    pool = MagicMock()
+    pool.dispatch_rpc = AsyncMock(return_value={})
+
+    async def _call(owner_id, method, params, **_kwargs):
+        return await pool.dispatch_rpc(owner_id=owner_id, method=method, params=params)
+
+    with patch("core.services.desktop_pair_live.container_rpc.call", new_callable=AsyncMock) as call:
+        call.side_effect = _call
         yield pool
 
 
 def rpc_calls(pool, method: str) -> list:
-    return [c for c in pool.send_rpc.await_args_list if c.kwargs.get("method") == method]
+    return [c for c in pool.dispatch_rpc.await_args_list if c.kwargs.get("method") == method]
 
 
 # ---------------------------------------------------------------- push (pair endpoint)
@@ -60,7 +67,7 @@ async def test_push_approves_only_matching_pending_devices(mock_ecs, mock_pool):
             }
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value={}):
         ok = await push_desktop_pairing_live(owner_id="user_1", device_ids={"dev_mac", "dev_cli"})
 
@@ -81,7 +88,7 @@ async def test_push_approves_pending_node_surface_within_grant(mock_ecs, mock_po
             return {"pending": [{"requestId": "surf-1", "nodeId": "dev_cli", "commands": ["system.run"]}]}
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     nodes_file = {"dev_cli": {"commands": ["system.run", "system.which"]}}
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value=nodes_file):
         ok = await push_desktop_pairing_live(owner_id="user_1", device_ids={"dev_cli"})
@@ -98,14 +105,14 @@ async def test_push_no_rpc_when_container_not_running(mock_ecs, mock_pool):
     ok = await push_desktop_pairing_live(owner_id="user_1", device_ids={"dev_mac"})
 
     assert ok is False
-    mock_pool.send_rpc.assert_not_awaited()
+    mock_pool.dispatch_rpc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_push_swallows_rpc_failure(mock_ecs, mock_pool):
     """A gateway RPC failure never raises out of the push — the pair request
     must still succeed and the boot import remains the fallback."""
-    mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("gateway exploded"))
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=RuntimeError("gateway exploded"))
 
     ok = await push_desktop_pairing_live(owner_id="user_1", device_ids={"dev_mac"})
 
@@ -126,7 +133,7 @@ async def test_push_one_device_approve_failure_does_not_drop_the_other(mock_ecs,
             raise RuntimeError("unknown requestId")
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value={}):
         ok = await push_desktop_pairing_live(owner_id="user_1", device_ids={"dev_mac", "dev_cli"})
 
@@ -156,10 +163,10 @@ async def test_surface_approval_blocks_commands_beyond_grant(mock_pool):
             }
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     nodes_file = {"dev_cli": {"commands": ["system.run"]}}
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value=nodes_file):
-        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_cli")
+        ok = await approve_pending_node_surface(owner_id="user_1", device_id="dev_cli")
 
     assert ok is False
     assert rpc_calls(mock_pool, "node.pair.approve") == []
@@ -188,10 +195,10 @@ async def test_surface_approval_allows_the_81_sidecars_unconditional_declaration
             return {"pending": [{"requestId": "surf-1", "nodeId": "dev_cli", "commands": declared}]}
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     nodes_file = {"dev_cli": {"commands": list(DESKTOP_CLI_COMMANDS)}}
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value=nodes_file):
-        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_cli")
+        ok = await approve_pending_node_surface(owner_id="user_1", device_id="dev_cli")
 
     assert ok is True
     approves = rpc_calls(mock_pool, "node.pair.approve")
@@ -224,10 +231,10 @@ async def test_surface_approval_still_lands_on_a_partial_grant(mock_pool):
             return {"pending": [{"requestId": "surf-1", "nodeId": "dev_cli", "commands": declared}]}
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     nodes_file = {"dev_cli": {"commands": list(DESKTOP_CLI_BROWSER_COMMANDS)}}
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value=nodes_file):
-        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_cli")
+        ok = await approve_pending_node_surface(owner_id="user_1", device_id="dev_cli")
 
     assert ok is True
     approves = rpc_calls(mock_pool, "node.pair.approve")
@@ -249,10 +256,10 @@ async def test_surface_approval_refuses_the_all_denied_grant(mock_pool):
             return {"pending": [{"requestId": "surf-1", "nodeId": "dev_cli", "commands": declared}]}
         return {}
 
-    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=_rpc)
     nodes_file = {"dev_cli": {"commands": []}}
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value=nodes_file):
-        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_cli")
+        ok = await approve_pending_node_surface(owner_id="user_1", device_id="dev_cli")
 
     assert ok is False
     assert rpc_calls(mock_pool, "node.pair.approve") == []
@@ -263,22 +270,22 @@ async def test_surface_approval_skips_device_not_in_backend_file(mock_pool):
     """A node the owner never paired through /desktop/pair gets no approval —
     and no RPC is even attempted (the gate fails closed before the list)."""
     with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value={}):
-        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_rogue")
+        ok = await approve_pending_node_surface(owner_id="user_1", device_id="dev_rogue")
 
     assert ok is False
-    mock_pool.send_rpc.assert_not_awaited()
+    mock_pool.dispatch_rpc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_surface_approval_noop_when_nothing_pending(mock_pool):
     """Idempotent: an already-approved (or boot-folded) surface has no pending
     request — the call is a clean no-op."""
-    mock_pool.send_rpc = AsyncMock(return_value={"pending": []})
+    mock_pool.dispatch_rpc = AsyncMock(return_value={"pending": []})
     with patch(
         "core.services.desktop_pair_live._read_backend_pairing_file",
         return_value={"dev_cli": {"commands": ["system.run"]}},
     ):
-        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_cli")
+        ok = await approve_pending_node_surface(owner_id="user_1", device_id="dev_cli")
 
     assert ok is False
     assert rpc_calls(mock_pool, "node.pair.approve") == []
@@ -300,8 +307,6 @@ async def test_heal_skips_device_not_in_backend_file():
     ):
         healed = await heal_desktop_device_not_paired(
             owner_id="user_1",
-            ip=IP,
-            gateway_token="tok123",
             device_id="dev_rogue",
             request_id="req-1",
         )
@@ -325,8 +330,6 @@ async def test_heal_approves_backend_paired_device():
     ):
         healed = await heal_desktop_device_not_paired(
             owner_id="user_1",
-            ip=IP,
-            gateway_token="tok123",
             device_id="dev_mac",
             request_id="req-1",
         )
@@ -334,8 +337,6 @@ async def test_heal_approves_backend_paired_device():
     assert healed is True
     approve.assert_awaited_once_with(
         owner_id="user_1",
-        ip=IP,
-        gateway_token="tok123",
         device_id="dev_mac",
         request_id="req-1",
     )
@@ -347,9 +348,7 @@ async def test_heal_without_device_id_is_a_noop():
         "core.services.desktop_pair_live.approve_pending_device_from_rejection",
         AsyncMock(),
     ) as approve:
-        healed = await heal_desktop_device_not_paired(
-            owner_id="user_1", ip=IP, gateway_token="tok123", device_id=None, request_id=None
-        )
+        healed = await heal_desktop_device_not_paired(owner_id="user_1", device_id=None, request_id=None)
 
     assert healed is False
     approve.assert_not_awaited()
@@ -374,7 +373,7 @@ async def test_revoke_eviction_treats_unknown_device_as_done(mock_ecs, mock_pool
     """An already-absent device is the desired end state, not a failure."""
     from core.services.desktop_pair_live import push_desktop_revoke_live
 
-    mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("unknown deviceId"))
+    mock_pool.dispatch_rpc = AsyncMock(side_effect=RuntimeError("unknown deviceId"))
 
     ok = await push_desktop_revoke_live(owner_id="user_1", device_id="dev_gone")
 
@@ -390,4 +389,4 @@ async def test_revoke_eviction_no_rpc_when_container_not_running(mock_ecs, mock_
     ok = await push_desktop_revoke_live(owner_id="user_1", device_id="dev_mac")
 
     assert ok is False
-    mock_pool.send_rpc.assert_not_awaited()
+    mock_pool.dispatch_rpc.assert_not_awaited()

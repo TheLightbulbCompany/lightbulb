@@ -25,9 +25,6 @@ Depends on injected collaborators so unit tests can mock them:
     (from core.services.config_patcher)
   - pair_fn: async callable
     (from core.services.paperclip_openclaw_pairing.pair_with_openclaw)
-  - gateway_pool_factory: callable returning the gateway pool singleton;
-    lazy-imported by default so import-time test bootstrap doesn't drag
-    in the whole containers module.
 """
 
 from __future__ import annotations
@@ -377,19 +374,10 @@ class CatalogService:
         workspace,
         apply_deploy_aux_mutations: Callable[..., Awaitable[None]],
         pair_fn: Callable[..., Awaitable[None]],
-        gateway_pool_factory: Callable[[], Any] | None = None,
     ):
         self._workspace = workspace
         self._apply_aux = apply_deploy_aux_mutations
         self._pair_fn = pair_fn
-        self._gateway_pool_factory = gateway_pool_factory
-
-    def _get_gateway_pool(self):
-        if self._gateway_pool_factory is not None:
-            return self._gateway_pool_factory()
-        from core.containers import get_gateway_pool
-
-        return get_gateway_pool()
 
     async def deploy_from_artifact(
         self,
@@ -399,8 +387,6 @@ class CatalogService:
         manifest: dict,
         slice_: dict,
         tar_bytes: bytes,
-        container_ip: str,
-        container_token: str,
         new_agent_id: str | None = None,
         listing_id: str | None = None,
         seller_id: str | None = None,
@@ -424,10 +410,6 @@ class CatalogService:
           5. Append cron jobs.
 
         Args:
-            container_ip / container_token: resolved by the caller via
-                ``ecs_manager.resolve_running_container(owner_id)``. No
-                defaults — a deploy without a reachable container is
-                not a supported mode.
             new_agent_id: pinned buyer-side OpenClaw agent_id. Marketplace
                 deploys pass Paperclip's freshly-minted UUID so the two
                 systems share the same id. Defaults to a locally-generated
@@ -634,9 +616,6 @@ class CatalogService:
             await self._pair_fn(
                 owner_id=owner_id,
                 paperclip_agent=paperclip_agent,
-                gateway_pool=self._get_gateway_pool(),
-                ip=container_ip,
-                token=container_token,
                 extra_update_fields=extra_update_fields,
             )
 

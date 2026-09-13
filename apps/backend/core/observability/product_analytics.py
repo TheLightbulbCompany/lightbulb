@@ -112,7 +112,7 @@ def capture_product_event(
 # blocking condition holds (the daily cap, an expired local trial), so
 # without this an owner stuck behind either block would spam the same
 # event on every retry. Insertion-ordered dict used as a bounded FIFO set
-# — same idiom as ``connection_pool.GatewayConnection._side_run_ids``.
+# — same idiom as ``run_analytics._seen_run_ids``.
 # In-process, SINGLE-BACKEND-INSTANCE scope: a restart (or a fleet running
 # more than one backend task) simply re-fires the event once more per
 # instance — acceptable for a funnel count, where "roughly once a day"

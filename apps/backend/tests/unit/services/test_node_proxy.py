@@ -36,15 +36,6 @@ def mock_ecs():
 
 
 @pytest.fixture
-def mock_pool():
-    with patch("core.services.node_proxy.get_gateway_pool") as m:
-        pool = MagicMock()
-        pool.broadcast_to_member = AsyncMock()
-        m.return_value = pool
-        yield pool
-
-
-@pytest.fixture
 def mock_upstream():
     with patch("core.services.node_proxy.NodeUpstreamConnection") as cls:
         upstream = AsyncMock()
@@ -63,7 +54,7 @@ def mock_config_patcher():
 
 
 @pytest.mark.asyncio
-async def test_connect_stores_user_node(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_connect_stores_user_node(mock_ecs, mock_upstream, mock_config_patcher):
     """handle_node_connect stores the user_id -> nodeId mapping (under cli bucket for node-host)."""
     mgmt = MagicMock()
 
@@ -80,7 +71,7 @@ async def test_connect_stores_user_node(mock_ecs, mock_pool, mock_upstream, mock
 
 
 @pytest.mark.asyncio
-async def test_connect_increments_node_count(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_connect_increments_node_count(mock_ecs, mock_upstream, mock_config_patcher):
     """First node connection for an owner patches config to enable node tools."""
     mgmt = MagicMock()
 
@@ -109,7 +100,6 @@ async def test_connect_increments_node_count(mock_ecs, mock_pool, mock_upstream,
 @pytest.mark.asyncio
 async def test_disconnect_decrements_and_patches_on_zero(
     mock_ecs,
-    mock_pool,
     mock_upstream,
     mock_config_patcher,
 ):
@@ -147,7 +137,6 @@ async def test_disconnect_decrements_and_patches_on_zero(
 @pytest.mark.asyncio
 async def test_disconnect_broadcasts_to_member(
     mock_ecs,
-    mock_pool,
     mock_upstream,
     mock_config_patcher,
     monkeypatch,
@@ -189,7 +178,6 @@ async def test_disconnect_broadcasts_to_member(
 @pytest.mark.asyncio
 async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
     mock_ecs,
-    mock_pool,
     mock_upstream,
     mock_config_patcher,
 ):
@@ -212,8 +200,6 @@ async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
         connect_params={},
         management_api=mgmt,
     )
-    mock_pool.broadcast_to_member.reset_mock()
-
     # The old socket's close event fires after the reconnect landed.
     await handle_node_disconnect("conn_old", "org_123", "user_alice")
 
@@ -222,12 +208,9 @@ async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
     assert stored is not None
     assert stored["connection_id"] == "conn_new"
 
-    # And no phantom "disconnected" must have been emitted.
-    mock_pool.broadcast_to_member.assert_not_called()
-
 
 @pytest.mark.asyncio
-async def test_disconnect_is_idempotent_on_double_call(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_disconnect_is_idempotent_on_double_call(mock_ecs, mock_upstream, mock_config_patcher):
     """Both the upstream-died callback AND the desktop ws_disconnect path
     can trigger handle_node_disconnect for the same connection. Calling
     twice must not double-decrement _node_count (ref counter) — the
@@ -252,20 +235,16 @@ async def test_disconnect_is_idempotent_on_double_call(mock_ecs, mock_pool, mock
     # Second disconnect (simulates the upstream-died callback racing the
     # desktop ws_disconnect, or vice versa). MUST be a no-op.
     mock_config_patcher.reset_mock()
-    mock_pool.broadcast_to_member.reset_mock()
     await handle_node_disconnect("conn_x", "org_dbl", "user_a")
 
     # Ref count unchanged (no double-decrement into negative territory).
     assert _node_count.get("org_dbl", 0) == 0
-    # No extra config patch, no extra broadcast.
+    # No extra config patch.
     mock_config_patcher.assert_not_called()
-    mock_pool.broadcast_to_member.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_upstream_closed_callback_cleans_up_user_state(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher, monkeypatch
-):
+async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_upstream, mock_config_patcher, monkeypatch):
     """When the upstream WS dies (container restart, net drop), the
     callback installed in handle_node_connect must tear down _user_nodes
     and publish a node-health invalidation — otherwise the agent keeps
@@ -311,7 +290,7 @@ async def test_upstream_closed_callback_cleans_up_user_state(
 
 
 @pytest.mark.asyncio
-async def test_force_close_device_closes_matching_upstream(mock_ecs, mock_pool, mock_config_patcher):
+async def test_force_close_device_closes_matching_upstream(mock_ecs, mock_config_patcher):
     """force_close_device routes through handle_node_disconnect so per-user
     state (upstream registry, _user_nodes bucket, _node_count) is torn down
     in one place. Without that, a revoke on a live device leaves the agent
@@ -350,7 +329,7 @@ async def test_force_close_device_no_match_returns_false():
 
 
 @pytest.mark.asyncio
-async def test_force_close_device_handles_close_exception(mock_ecs, mock_pool, mock_config_patcher):
+async def test_force_close_device_handles_close_exception(mock_ecs, mock_config_patcher):
     """If upstream.close() raises, the cleanup path still completes and
     the registry / per-user state is cleared (best-effort revocation).
     """
@@ -377,7 +356,7 @@ async def test_force_close_device_handles_close_exception(mock_ecs, mock_pool, m
 
 
 @pytest.mark.asyncio
-async def test_force_close_device_finds_device_in_mac_bucket(mock_ecs, mock_pool, mock_config_patcher):
+async def test_force_close_device_finds_device_in_mac_bucket(mock_ecs, mock_config_patcher):
     """Devices in the Mac bucket can also be force-closed; the per-user
     state lookup must traverse both cli and mac slots.
     """
@@ -402,7 +381,7 @@ async def test_force_close_device_finds_device_in_mac_bucket(mock_ecs, mock_pool
 
 
 @pytest.mark.asyncio
-async def test_force_close_device_clears_patched_sessions_for_cli_revoke(mock_ecs, mock_pool, mock_config_patcher):
+async def test_force_close_device_clears_patched_sessions_for_cli_revoke(mock_ecs, mock_config_patcher):
     """Revoking a CLI device must clear that user's patched sessions —
     otherwise chat keeps trying to route exec through the dead nodeId.
     A direct _node_upstreams.pop bypasses clear_patched_sessions_for_user
@@ -424,11 +403,15 @@ async def test_force_close_device_clears_patched_sessions_for_cli_revoke(mock_ec
         },
     }
     _node_count["org_42"] = 1
-    # send_rpc is best-effort inside handle_node_disconnect; stub it so the
-    # ECS resolve path is never invoked.
-    mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("container down"))
-
-    closed = await force_close_device("dev_cli")
+    # The sessions.patch clear-exec RPC is best-effort inside
+    # handle_node_disconnect; stub it to fail so the cleanup path is
+    # exercised without a real container.
+    with patch(
+        "core.services.node_proxy.container_rpc.call",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("container down"),
+    ):
+        closed = await force_close_device("dev_cli")
     assert closed is True
     # Patched session pin was cleared as part of the cleanup.
     assert _patched_sessions.get("agent:a1:user_alice") is None
@@ -473,7 +456,7 @@ def test_get_user_cli_node_none_when_missing():
 # ---------------------------------------------------------------------------
 
 
-async def test_handle_node_connect_slots_cli_into_cli_bucket(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_handle_node_connect_slots_cli_into_cli_bucket(mock_ecs, mock_upstream, mock_config_patcher):
     """node-host client -> _user_nodes[user_id]["cli"]"""
     mock_upstream.device_id = "dev_cli_hash"
     mgmt = MagicMock()
@@ -497,7 +480,7 @@ async def test_handle_node_connect_slots_cli_into_cli_bucket(mock_ecs, mock_pool
     assert "mac" not in entry
 
 
-async def test_handle_node_connect_slots_mac_into_mac_bucket(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_handle_node_connect_slots_mac_into_mac_bucket(mock_ecs, mock_upstream, mock_config_patcher):
     """openclaw-macos client -> _user_nodes[user_id]["mac"]"""
     mock_upstream.device_id = "dev_mac_hash"
     mgmt = MagicMock()
@@ -519,9 +502,7 @@ async def test_handle_node_connect_slots_mac_into_mac_bucket(mock_ecs, mock_pool
     assert "cli" not in entry
 
 
-async def test_handle_node_connect_unknown_client_id_defaults_to_cli(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
-):
+async def test_handle_node_connect_unknown_client_id_defaults_to_cli(mock_ecs, mock_upstream, mock_config_patcher):
     """Unknown/missing clientId defaults to cli bucket (safe fallback)."""
     mock_upstream.device_id = "dev_unknown"
     mgmt = MagicMock()
@@ -538,9 +519,7 @@ async def test_handle_node_connect_unknown_client_id_defaults_to_cli(
     assert entry["cli"]["deviceId"] == "dev_unknown"
 
 
-async def test_handle_node_disconnect_owning_close_finds_in_cli_bucket(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
-):
+async def test_handle_node_disconnect_owning_close_finds_in_cli_bucket(mock_ecs, mock_upstream, mock_config_patcher):
     """Disconnect with connection_id that matches the CLI bucket triggers cleanup."""
     # Pre-populate with both buckets (manual state — bypasses handle_node_connect)
     _user_nodes["u"] = {
@@ -560,7 +539,7 @@ async def test_handle_node_disconnect_owning_close_finds_in_cli_bucket(
 
 
 async def test_handle_node_disconnect_removes_user_entry_when_last_bucket_closes(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+    mock_ecs, mock_upstream, mock_config_patcher
 ):
     """When the last bucket closes, the user_id entry itself is removed."""
     _user_nodes["u"] = {
@@ -582,9 +561,7 @@ async def test_handle_node_disconnect_removes_user_entry_when_last_bucket_closes
 # ---------------------------------------------------------------------------
 
 
-async def test_handle_node_connect_bucket_entry_has_no_nodeid_alias(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
-):
+async def test_handle_node_connect_bucket_entry_has_no_nodeid_alias(mock_ecs, mock_upstream, mock_config_patcher):
     """Task 13 removes the transient `nodeId` legacy alias the bucket
     used to carry for websocket_chat session-binding. Callers must read
     `deviceId` directly now."""
@@ -605,9 +582,7 @@ async def test_handle_node_connect_bucket_entry_has_no_nodeid_alias(
     )
 
 
-async def test_mac_only_disconnect_does_not_clear_patched_sessions(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
-):
+async def test_mac_only_disconnect_does_not_clear_patched_sessions(mock_ecs, mock_upstream, mock_config_patcher):
     """Patched sessions reference the CLI device for exec routing. A
     Mac-only disconnect must NOT clobber the user's exec session pin —
     otherwise the next chat send would re-issue the bind RPC needlessly
@@ -645,7 +620,7 @@ async def test_mac_only_disconnect_does_not_clear_patched_sessions(
     assert _patched_sessions.get("agent:a1:user_alice") == "dev_cli"
 
 
-async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_upstream, mock_config_patcher):
     """The CLI-bucket close path must still clear patched sessions —
     exec is bound to CLI, so when the CLI socket drops the bound
     execNode is dead and we need to re-patch on next chat."""
@@ -666,17 +641,16 @@ async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_pool, mock_
     _node_upstreams["c_cli"] = fake
     _node_count["org_42"] = 1
 
-    # gateway-pool.send_rpc is invoked while clearing — mock_pool already
-    # has it stubbed via AsyncMock attribute lookup; ensure it doesn't blow up.
-    mock_pool.send_rpc = AsyncMock()
-
-    await handle_node_disconnect(connection_id="c_cli", owner_id="org_42", user_id="user_alice")
+    # The sessions.patch clear-exec RPC is invoked while clearing; stub it
+    # so it doesn't blow up against no real container.
+    with patch("core.services.node_proxy.container_rpc.call", new_callable=AsyncMock):
+        await handle_node_disconnect(connection_id="c_cli", owner_id="org_42", user_id="user_alice")
 
     # CLI gone, patched-session pin gone.
     assert _patched_sessions.get("agent:a1:user_alice") is None
 
 
-async def test_reconnect_strips_every_legacy_desktop_suffix(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_reconnect_strips_every_legacy_desktop_suffix(mock_ecs, mock_upstream, mock_config_patcher):
     """A device registered under an earlier brand reconnects with that suffix
     already on its name. Recognising only the CURRENT one would compound it —
     "Alice | Lightbulb AI Desktop | Lightbulb Desktop" — forever."""
@@ -700,7 +674,7 @@ async def test_reconnect_strips_every_legacy_desktop_suffix(mock_ecs, mock_pool,
         assert params["client"]["displayName"] == "Alice | Lightbulb Desktop"
 
 
-async def test_reconnect_leaves_an_owner_chosen_name_alone(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_reconnect_leaves_an_owner_chosen_name_alone(mock_ecs, mock_upstream, mock_config_patcher):
     params = {"role": "node", "client": {"id": "node-host", "displayName": "Alice's studio box"}}
     await handle_node_connect(
         owner_id="owner_42",
@@ -720,7 +694,7 @@ async def test_reconnect_leaves_an_owner_chosen_name_alone(mock_ecs, mock_pool, 
 
 
 @pytest.mark.asyncio
-async def test_not_paired_rejection_triggers_gated_self_heal(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_not_paired_rejection_triggers_gated_self_heal(mock_ecs, mock_upstream, mock_config_patcher):
     """A NOT_PAIRED handshake rejection approves the pending pairing request
     (gated inside heal_desktop_device_not_paired) and still propagates."""
     mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected"))
@@ -744,8 +718,6 @@ async def test_not_paired_rejection_triggers_gated_self_heal(mock_ecs, mock_pool
 
     heal.assert_awaited_once_with(
         owner_id="org_123",
-        ip="10.0.1.1",
-        gateway_token="tok123",
         device_id="abc123def456",
         request_id="req-77",
     )
@@ -755,7 +727,7 @@ async def test_not_paired_rejection_triggers_gated_self_heal(mock_ecs, mock_pool
 
 
 @pytest.mark.asyncio
-async def test_non_pairing_rejection_does_not_self_heal(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_non_pairing_rejection_does_not_self_heal(mock_ecs, mock_upstream, mock_config_patcher):
     mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected"))
     mock_upstream.rejection_error = {"code": "AUTH_FAILED"}
 
@@ -773,9 +745,7 @@ async def test_non_pairing_rejection_does_not_self_heal(mock_ecs, mock_pool, moc
 
 
 @pytest.mark.asyncio
-async def test_successful_connect_approves_pending_node_surface(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
-):
+async def test_successful_connect_approves_pending_node_surface(mock_ecs, mock_upstream, mock_config_patcher):
     """After a successful node handshake the pending command surface (the 8.x
     gateway's second pairing gate) is approved for the connected device."""
     with patch(
@@ -790,12 +760,7 @@ async def test_successful_connect_approves_pending_node_surface(
             management_api=MagicMock(),
         )
 
-    approve.assert_awaited_once_with(
-        owner_id="org_123",
-        ip="10.0.1.1",
-        gateway_token="tok123",
-        device_id="abc123def456",
-    )
+    approve.assert_awaited_once_with(owner_id="org_123", device_id="abc123def456")
 
 
 @pytest.mark.parametrize(
@@ -806,7 +771,7 @@ async def test_successful_connect_approves_pending_node_surface(
     ],
 )
 @pytest.mark.asyncio
-async def test_connect_fails_closed_when_no_container_ip(mock_pool, mock_config_patcher, resolved):
+async def test_connect_fails_closed_when_no_container_ip(mock_config_patcher, resolved):
     """No running container IP must fail closed instead of building
     ws://None:<port> (socket.gaierror) -- the prod regression this guards.
 

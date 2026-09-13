@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 from typing import Any
 
 import httpx
@@ -32,12 +31,11 @@ import websockets
 
 from core.gateway.operator_rpc import (
     GATEWAY_PORT,
-    GatewayConnectAuthError,
     GatewayConnectNotPairedError,
-    gateway_rpc_oneshot,
     perform_signed_connect,
 )
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import container_rpc
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     PaperclipApiError,
@@ -61,8 +59,8 @@ TERMINATED_AGENT_STATUS = "terminated"
 _PAIR_MAX_ATTEMPTS = 2
 _PAIR_RETRY_BACKOFF_S = 0.5
 
-# The default gateway RPC timeout (``_RPC_TIMEOUT`` = 30s in
-# connection_pool.py) is too short for these two RPCs specifically: the
+# The default gateway RPC timeout (``container_rpc.call``'s own 30s default)
+# is too short for these two RPCs specifically: the
 # 2026-08-06 incident measured contended ``agents.create`` calls completing
 # in 39-51s when three marketplace hires landed on one container at once.
 # A client-side timeout there does NOT mean the container gave up — it means
@@ -495,32 +493,9 @@ async def _probe_pairing_request(
         return False, request_id if isinstance(request_id, str) and request_id else None
 
 
-async def _find_pending_request_id(
-    *,
-    ip: str,
-    owner_id: str,
-    token: str,
-    device_id: str,
-    open_timeout: float = 10,
-    recv_timeout: float = 10,
-    rpc_timeout: float = 10,
-) -> str | None:
-    """Locate the pending pairing request for ``device_id`` via ``device.pair.list``.
-
-    Timeout defaults (10s) match ``gateway_rpc_oneshot``'s own defaults, which
-    preserves today's behaviour for existing callers. ``approve_pending_device_from_rejection``
-    overrides these to a shorter budget -- see its call site.
-    """
-    payload = await gateway_rpc_oneshot(
-        ip,
-        owner_id=owner_id,
-        token=token,
-        method="device.pair.list",
-        params={},
-        open_timeout=open_timeout,
-        recv_timeout=recv_timeout,
-        rpc_timeout=rpc_timeout,
-    )
+async def _find_pending_request_id(*, owner_id: str, device_id: str, timeout_s: float = 10.0) -> str | None:
+    """Locate the pending pairing request for ``device_id`` via ``device.pair.list``."""
+    payload = await container_rpc.call(owner_id, "device.pair.list", {}, timeout_s=timeout_s)
     for req in payload.get("pending") or []:
         if isinstance(req, dict) and str(req.get("deviceId", "")).strip() == device_id:
             request_id = req.get("requestId")
@@ -530,38 +505,23 @@ async def _find_pending_request_id(
 
 async def _approve_pairing_request(
     *,
-    ip: str,
     owner_id: str,
-    token: str,
     device_id: str,
     request_id: str,
-    open_timeout: float = 10,
-    recv_timeout: float = 10,
-    rpc_timeout: float = 10,
+    timeout_s: float = 10.0,
 ) -> None:
-    """Approve one pending pairing request over a backend-signed admin connection.
+    """Approve one pending pairing request over the owner's container.
 
     The Paperclip adapter's own retry loop can supersede the probe's request
     between probe and approve (the gateway replaces incompatible pending
     requests atomically), so an "unknown requestId" rejection gets ONE re-list
     + re-approve of the successor request, then stops — the paired.json
     fallback and the next create/reprovision remain behind it.
-
-    Timeout defaults (10s) match ``gateway_rpc_oneshot``'s own defaults, which
-    preserves today's behaviour for existing callers. ``approve_pending_device_from_rejection``
-    overrides these to a shorter budget -- see its call site.
     """
     for attempt in (1, 2):
         try:
-            payload = await gateway_rpc_oneshot(
-                ip,
-                owner_id=owner_id,
-                token=token,
-                method="device.pair.approve",
-                params={"requestId": request_id},
-                open_timeout=open_timeout,
-                recv_timeout=recv_timeout,
-                rpc_timeout=rpc_timeout,
+            payload = await container_rpc.call(
+                owner_id, "device.pair.approve", {"requestId": request_id}, timeout_s=timeout_s
             )
             approved_id = str(((payload or {}).get("device") or {}).get("deviceId", "")).strip()
             if approved_id and approved_id != device_id:
@@ -574,25 +534,10 @@ async def _approve_pairing_request(
                     owner_id,
                 )
             return
-        except GatewayConnectAuthError:
-            # Structural, not incidental: never retry an auth failure into a
-            # second admin connect -- the gateway locks out after 10 failed
-            # auths in 60s, for 5 minutes. (GatewayConnectAuthError subclasses
-            # RuntimeError, so without this clause the retry below would only
-            # avoid it by string-matching "unknown requestId" out of luck.)
-            raise
         except RuntimeError as e:
             if attempt == 2 or "unknown requestId" not in str(e):
                 raise
-            fresh = await _find_pending_request_id(
-                ip=ip,
-                owner_id=owner_id,
-                token=token,
-                device_id=device_id,
-                open_timeout=open_timeout,
-                recv_timeout=recv_timeout,
-                rpc_timeout=rpc_timeout,
-            )
+            fresh = await _find_pending_request_id(owner_id=owner_id, device_id=device_id, timeout_s=timeout_s)
             if not fresh or fresh == request_id:
                 raise
             request_id = fresh
@@ -601,8 +546,6 @@ async def _approve_pairing_request(
 async def approve_pending_device_from_rejection(
     *,
     owner_id: str,
-    ip: str,
-    gateway_token: str,
     device_id: str | None,
     request_id: str | None,
 ) -> bool:
@@ -627,11 +570,7 @@ async def approve_pending_device_from_rejection(
 
     Never raises: called from an exception handler on an already-failed
     connect, so an approval failure here must not mask or replace the
-    original rejection. Does NOT retry on ``GatewayConnectAuthError`` -- the
-    gateway locks out after repeated failed auths (10 in 60s -> 5 minutes),
-    and this whole path already fires off a live rejection, so compounding it
-    with another failed admin auth only digs the lockout hole deeper. Returns
-    True iff an approval RPC actually landed.
+    original rejection. Returns True iff an approval RPC actually landed.
     """
     if not device_id:
         logger.warning(
@@ -646,18 +585,9 @@ async def approve_pending_device_from_rejection(
             # Short budget: this path only runs because the gateway just
             # rejected a live connect, i.e. it's already struggling.
             # Matches _probe_pairing_request's open_timeout/recv_timeout=5
-            # for the same reason -- don't park a task for up to ~2 minutes
-            # (the gateway_rpc_oneshot defaults) holding admin connects
+            # for the same reason -- don't park a task holding admin connects
             # against a gateway that's already in trouble.
-            resolved_request_id = await _find_pending_request_id(
-                ip=ip,
-                owner_id=owner_id,
-                token=gateway_token,
-                device_id=device_id,
-                open_timeout=5,
-                recv_timeout=5,
-                rpc_timeout=5,
-            )
+            resolved_request_id = await _find_pending_request_id(owner_id=owner_id, device_id=device_id, timeout_s=5.0)
         if not resolved_request_id:
             logger.warning(
                 "approve_pending_device_from_rejection: no pending pairing request found for device=%s owner=%s",
@@ -666,24 +596,8 @@ async def approve_pending_device_from_rejection(
             )
             return False
         await _approve_pairing_request(
-            ip=ip,
-            owner_id=owner_id,
-            token=gateway_token,
-            device_id=device_id,
-            request_id=resolved_request_id,
-            open_timeout=5,
-            recv_timeout=5,
-            rpc_timeout=5,
+            owner_id=owner_id, device_id=device_id, request_id=resolved_request_id, timeout_s=5.0
         )
-    except GatewayConnectAuthError as e:
-        logger.warning(
-            "approve_pending_device_from_rejection: admin auth failed for device=%s owner=%s -- not retrying "
-            "(gateway lockout guard): %s",
-            device_id[:16],
-            owner_id,
-            e,
-        )
-        return False
     except Exception as e:  # noqa: BLE001 — never-raise contract; caller's reconnect loop is the real recovery
         logger.warning(
             "approve_pending_device_from_rejection: self-heal approval failed for device=%s owner=%s: %s",
@@ -818,18 +732,10 @@ async def ensure_operator_device_paired(
         )
         if not already_paired:
             if not request_id:
-                request_id = await _find_pending_request_id(
-                    ip=ip, owner_id=owner_id, token=gateway_token, device_id=identity.device_id
-                )
+                request_id = await _find_pending_request_id(owner_id=owner_id, device_id=identity.device_id)
             if not request_id:
                 raise RuntimeError("no pending pairing request found after probe")
-            await _approve_pairing_request(
-                ip=ip,
-                owner_id=owner_id,
-                token=gateway_token,
-                device_id=identity.device_id,
-                request_id=request_id,
-            )
+            await _approve_pairing_request(owner_id=owner_id, device_id=identity.device_id, request_id=request_id)
             logger.info(
                 "ensure_operator_device_paired: live-approved device %s for agent=%s owner=%s",
                 identity.device_id[:16],
@@ -908,9 +814,6 @@ async def pair_with_openclaw(
     *,
     owner_id: str,
     paperclip_agent: dict[str, Any],
-    gateway_pool: Any,
-    ip: str,
-    token: str,
     extra_update_fields: dict[str, Any] | None = None,
 ) -> None:
     """Pair one Paperclip agent with the owner's OpenClaw container.
@@ -934,9 +837,8 @@ async def pair_with_openclaw(
     provision-time openclaw.json write).
 
     Other errors propagate so the caller (an HTTP handler or RPC
-    interceptor) can return them to the user. Container reachability
-    is the caller's responsibility — this helper assumes the gateway
-    pool can reach the owner's container.
+    interceptor) can return them to the user. Container reachability is
+    ``container_rpc.call``'s concern, not this helper's.
 
     On success, also registers the agent's Lightbulb channel account +
     binding (``config_patcher.register_lightbulb_agent_account``) — this is
@@ -951,10 +853,6 @@ async def pair_with_openclaw(
     failure propagates like any other pairing failure, so the caller's
     existing retry/rollback posture (deferred pairing, deploy rollback)
     covers it too.
-
-    Note: ``gateway_pool.send_rpc`` takes a ``user_id`` kwarg by name,
-    but the gateway pool is keyed by container owner. Always pass the
-    owner_id there.
     """
     pc_uuid = paperclip_agent["id"]
     friendly_name = paperclip_agent.get("name") or pc_uuid
@@ -982,15 +880,7 @@ async def pair_with_openclaw(
     for attempt in range(1, _PAIR_MAX_ATTEMPTS + 1):
         try:
             try:
-                await gateway_pool.send_rpc(
-                    user_id=owner_id,  # gateway pool is keyed by owner_id
-                    req_id=f"pair-create-{secrets.token_hex(8)}",
-                    method="agents.create",
-                    params=create_params,
-                    ip=ip,
-                    token=token,
-                    timeout=_PAIR_RPC_TIMEOUT_S,
-                )
+                await container_rpc.call(owner_id, "agents.create", create_params, timeout_s=_PAIR_RPC_TIMEOUT_S)
             except RuntimeError as e:
                 # OpenClaw returns INVALID_REQUEST with "already exists" when the
                 # agent is registered. Fall through to the rename rather than
@@ -1007,15 +897,7 @@ async def pair_with_openclaw(
 
             while True:
                 try:
-                    await gateway_pool.send_rpc(
-                        user_id=owner_id,  # gateway pool is keyed by owner_id
-                        req_id=f"pair-update-{secrets.token_hex(8)}",
-                        method="agents.update",
-                        params=update_params,
-                        ip=ip,
-                        token=token,
-                        timeout=_PAIR_RPC_TIMEOUT_S,
-                    )
+                    await container_rpc.call(owner_id, "agents.update", update_params, timeout_s=_PAIR_RPC_TIMEOUT_S)
                     from core.services.config_patcher import register_lightbulb_agent_account
 
                     await register_lightbulb_agent_account(owner_id, pc_uuid)

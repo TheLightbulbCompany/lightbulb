@@ -45,6 +45,7 @@ from routers import (
     desktop_auth,
     desktop_pair,
     devices,
+    gateway_relay,
     google_accounts,
     hooks_credentials,
     hooks_proxy,
@@ -791,6 +792,11 @@ app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messagin
 # Container browser live-view relay (direct browser WS via the ALB, like the
 # paperclip_proxy relay — NOT the API Gateway WebSocket path above)
 app.include_router(browser_view.router, prefix="/api/v1/browser-view", tags=["browser-view"])
+
+# Raw WebSocket relay for machine clients (desktop node hosts, Paperclip
+# operators) — same door pattern as browser_view above, not the API Gateway
+# WebSocket path.
+app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

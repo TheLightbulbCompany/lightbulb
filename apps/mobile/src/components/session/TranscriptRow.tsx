@@ -2,7 +2,7 @@ import {
   GLYPH, lifecycleLabel, toolHeader, toolRowView,
   type LocalSessionProvider, type ToolTranscriptRow, type TranscriptRow,
 } from "@lightbulb/shared";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
@@ -19,7 +19,7 @@ function time(ts?: string): string | null {
  * web NativeSessionTranscript. `name` resolves a prompt's author: null is the
  * session owner, otherwise a room member's id.
  */
-export function TranscriptRowView({ provider, row, name }: {
+export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name }: {
   provider: LocalSessionProvider;
   row: TranscriptRow;
   name: (who: string | null) => string;
@@ -72,7 +72,7 @@ export function TranscriptRowView({ provider, row, name }: {
       return label ? <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{label}</Text> : null;
     }
   }
-}
+});
 
 function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolTranscriptRow }) {
   const [open, setOpen] = useState(false);

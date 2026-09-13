@@ -3,11 +3,10 @@ import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, 
 
 jest.setTimeout(20000);
 
-const mockPush = jest.fn();
 jest.mock("expo-router", () => {
   const { useEffect } = require("react");
   return {
-    router: { push: (...args: unknown[]) => mockPush(...args), back: jest.fn(), canGoBack: () => true, replace: jest.fn() },
+    router: { push: jest.fn(), back: jest.fn(), canGoBack: () => true, replace: jest.fn() },
     Stack: { Screen: () => null },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
     useLocalSearchParams: () => ({ roomId: "room-1", sessionId: "sess-1" }),
@@ -87,7 +86,6 @@ describe("session screen", () => {
     mockScope += 1;
     mockSession = base;
     mockEvents = events;
-    mockPush.mockClear();
     mockListResources.mockClear();
     mockListEvents.mockClear();
     mockSubmit.mockReset();

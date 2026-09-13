@@ -41,10 +41,11 @@ export default function SessionScreen() {
       return () => setFocused(false);
     }, []),
   );
-  // A backgrounded app stops tailing; jest-expo reports an undefined state, which counts as active.
+  // Only a backgrounded app stops tailing — "inactive" (app switcher, a system
+  // sheet) keeps it live. Both the initial state and the listener use this same rule.
   const [appActive, setAppActive] = useState(AppState.currentState !== "background");
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
+    const subscription = AppState.addEventListener("change", (state) => setAppActive(state !== "background"));
     return () => subscription.remove();
   }, []);
   const live = focused && appActive;
@@ -159,12 +160,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
     >
       <View style={styles.summary}>
         <View style={styles.summaryLine}>
-          {/* The text right beside it already states the status in words (and, while a
-              turn is open, so does WorkingRow's own "Working" label below) — the dot's
-              built-in accessibilityLabel would otherwise duplicate one of those. */}
-          <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-            <SessionStatusDot status={session.status} />
-          </View>
+          <SessionStatusDot status={session.status} />
           <Text style={styles.summaryText} numberOfLines={1}>
             {ownerName} · {sessionStatus[session.status]}{session.cwdName ? ` · ~/${session.cwdName}` : ""}
           </Text>
@@ -176,7 +172,6 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
       </View>
       <FlatList
         ref={listRef}
-        testID="session-transcript"
         data={rows}
         keyExtractor={(row) => String(row.seq)}
         contentContainerStyle={[styles.list, rows.length === 0 && styles.listEmpty]}

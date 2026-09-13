@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import { LogoMark } from "../../components/LogoMark";
-import { colors, spacing, type } from "../../config/theme";
+import { LogoMark } from "../../../components/LogoMark";
+import { colors, spacing, type } from "../../../config/theme";
 
 /**
  * Mentions of you and replies to threads you posted in. Phase B owns the feed

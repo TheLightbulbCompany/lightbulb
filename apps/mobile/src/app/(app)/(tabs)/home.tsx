@@ -13,13 +13,13 @@ import {
   View,
 } from "react-native";
 
-import { usePulse } from "../../components/chat/usePulse";
-import { LogoMark } from "../../components/LogoMark";
-import { NewMessageSheet } from "../../components/room/NewMessageSheet";
-import { RoomActionsSheet } from "../../components/room/RoomActionsSheet";
-import { RoomRow, byRecency, otherMembers } from "../../components/room/RoomRow";
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
-import { useMobileRooms } from "../../lib/rooms";
+import { usePulse } from "../../../components/chat/usePulse";
+import { LogoMark } from "../../../components/LogoMark";
+import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
+import { RoomActionsSheet } from "../../../components/room/RoomActionsSheet";
+import { RoomRow, byRecency, otherMembers } from "../../../components/room/RoomRow";
+import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { useMobileRooms } from "../../../lib/rooms";
 
 /** One flattened list entry — a section header, or a conversation. */
 type Row = { kind: "header"; title: string } | { kind: "room"; room: RoomSummary };

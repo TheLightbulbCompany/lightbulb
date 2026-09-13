@@ -3,7 +3,7 @@ import { router, type Href } from "expo-router";
 import { Fragment, type ComponentProps } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { colors, fonts, radii, spacing } from "../../../config/theme";
 
 interface MoreRow {
   label: string;
@@ -13,8 +13,8 @@ interface MoreRow {
 }
 
 // An iOS tab bar fits four tabs, and Slack's four are Home · DMs · Activity ·
-// More. These three route trees keep their `Tabs.Screen` registration (hidden
-// with `href: null`) so every deep link and push target still resolves; this
+// More. These three route trees are PUSHED screens on the (app) stack — not
+// hidden tabs — so each one arrives with a real native back button, and this
 // screen is the only way a user reaches them.
 const ROWS: MoreRow[] = [
   {

@@ -181,11 +181,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "bootstrap.state": [["status"]],
   "channel.configure": [["provider", "status"]],
   "channel.rpc": [["provider", "status"]],
-  // `source` (webchat | room | other) added by the 2026-09-12 gateway task.
-  "chat.e2e.latency": [["source"]],
-  "chat.error": [["reason", "reclassified", "source"]],
-  "chat.message.count": [["source"]],
-  "chat.session_usage.fetch.error": [[]],
   "company_stripe.account.created": [[]],
   "container.efs.access_point": [["op", "status"]],
   "container.error_state": [[]],
@@ -195,11 +190,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "debug.endpoint.prod_hit": [["endpoint"]],
   "gateway.cold_start.count": [["outcome"]],
   "gateway.cold_start.latency": [[]],
-  "gateway.connection": [["event"], ["active_runs", "event"], ["error_class", "event"]],
-  "gateway.connection.open": [[]],
-  "gateway.frontend.prune": [[]],
-  "gateway.health_check.timeout": [[]],
-  "gateway.rpc.error": [["method"]],
   "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---

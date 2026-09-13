@@ -929,12 +929,17 @@ come back over HTTP (`POST /api/v1/internal/messaging/agent-messages/{ownerId}`,
 hook token) through the same canonical writer humans use. Execution is
 at-least-once, not exactly-once.
 
-**Backend↔container transport is unchanged.** `core/gateway/connection_pool.py`
-still holds the persistent OpenClaw gateway WebSocket, subscribes per room
-session (`sessions.messages.subscribe`), and transforms native events into the
-run frames (`run_active` → `chunk` / `thinking` / `tool_*` → `done` →
-`run_ended`) — they now leave as ephemeral `room.run.frame` AppSync events
-instead of browser socket pushes.
+**Room turns are asynchronous (spec `2026-09-12-async-turn-contract-design.md`).** The
+consumer POSTs the ingress body with a `run` contract and gets `202 accepted` in
+milliseconds; the container runs the turn, publishes the run frames itself to
+`/ws/<workspaceId>/rooms/…` with its task role, and reports `run.started` /
+`run.heartbeat` / `run.ended {outcome, usage}` to
+`POST /api/v1/internal/messaging/runs/{ownerId}/events` (hook token). The ledger row
+`OWNER#<owner>/RUN#<runId>` is the only run state; a one-minute sweeper closes runs that
+never started (120 s) or stopped heartbeating (90 s) with an `error` + `run_ended` pair.
+Abort and steer are HTTP calls to `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`.
+Control RPCs, readiness (`health`) and abort/steer are HTTP calls into the plugin;
+non-room usage arrives on `POST /internal/messaging/usage/{ownerId}`.
 
 **Listen modes.** Every agent member carries `active` / `mentions` / `observe`
 (humans carry none). `select_dispatch_targets` is the one place that reads them:

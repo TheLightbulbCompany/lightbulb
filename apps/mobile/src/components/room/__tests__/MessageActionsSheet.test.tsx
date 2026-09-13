@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
+import * as Haptics from "expo-haptics";
 
 // `mock`-prefixed because babel-plugin-jest-hoist rejects any other out-of-scope
 // name a factory reaches for, and referenced lazily for the same reason the rest
@@ -47,6 +48,9 @@ describe("MessageActionsSheet", () => {
     expect(onReact).toHaveBeenCalledWith("🎉", true);
     await fireEvent.press(screen.getByLabelText("Remove 👍 reaction"));
     expect(onReact).toHaveBeenCalledWith("👍", false);
+    // A reaction pick is a selection change, not a plain tap — Slack-style
+    // selection haptic, once per toggle.
+    expect(Haptics.selectionAsync).toHaveBeenCalledTimes(2);
   });
 
   it("copies the message text", async () => {

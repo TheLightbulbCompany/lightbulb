@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { hapticImpact, hapticSelection } from "../../lib/haptics";
 import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
@@ -104,7 +105,10 @@ function MessageReactions({
         return (
           <Pressable
             key={emoji}
-            onPress={() => onToggle(emoji, !selected)}
+            onPress={() => {
+              hapticSelection();
+              onToggle(emoji, !selected);
+            }}
             accessibilityRole="button"
             accessibilityLabel={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`}
             accessibilityState={{ selected }}
@@ -175,6 +179,9 @@ export function MessageGroup({
         style={[collapsed ? styles.collapsed : styles.group, mentionsMe && styles.mentionsMe]}
         onLongPress={() => {
           setTimeShown(true);
+          // Fired here, same frame as the caller opening the actions sheet —
+          // not after it mounts, so the tap and the buzz land together.
+          hapticImpact();
           onLongPress?.();
         }}
         delayLongPress={300}

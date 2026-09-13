@@ -146,8 +146,15 @@ const palette = {
   // #faf7f2; on the manual's cream they are cream OVER cream, which composites
   // to exactly the page colour and makes press feedback a no-op. A row that
   // draws no background of its own can only be marked by a surface STEP.
-  /** Row press feedback — the one surface step. */
-  rowPressed: "#fafafa",
+  /**
+   * Row press feedback — a REAL step, not the one-surface hover tint. Was
+   * `#fafafa` (Δ from cream: 5,5,5 → ~2%, invisible on iOS — Slack darkens a
+   * pressed row unmistakably). Now the same grey as `edge`: Δ from cream
+   * 27,27,24 → 10.6% / 10.6% / 9.4% (min 9.4%), clearing the ≥8% floor and
+   * dark enough that `rowActive` still reads as a distinct, lighter step
+   * underneath a press.
+   */
+  rowPressed: "#e4e4e7",
   /** Row selected — the second step, so selected still reads under a press. */
   rowActive: "#ededed",
   /**

@@ -5,6 +5,7 @@ import type { ComponentProps } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { hapticSelection } from "../../lib/haptics";
 import { messageUrl } from "../../lib/webLinks";
 import { BottomSheet } from "../ui/BottomSheet";
 
@@ -95,6 +96,7 @@ export function MessageActionsSheet({
                 <Pressable
                   key={emoji}
                   onPress={() => {
+                    hapticSelection();
                     onReact(emoji, !active);
                     onClose();
                   }}

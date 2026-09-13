@@ -23,7 +23,8 @@ export const GLYPH = {
 
 // Strips terminal escape sequences (color codes, cursor moves) that ride
 // along in raw tool output — they render as garbage in a <pre>.
-const ANSI_RE = /\[[0-9;?]*[ -/]*[@-~]/g;
+// The \x1b escape is written textually on purpose so the raw control byte never lives in source.
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_RE, "");
 }

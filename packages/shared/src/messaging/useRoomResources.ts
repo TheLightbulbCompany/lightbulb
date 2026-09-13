@@ -135,12 +135,16 @@ export function useLocalSessionHistory(
       const page = await client.listLocalSessionEvents(roomId, sessionId, after, limit);
       if (run !== generation.current) return;
       const incoming = page.events.filter(event => event.seq > after && (direction !== "older" || event.seq < first));
-      const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
-      for (const event of incoming) merged.set(event.seq, event);
-      const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
-      // ponytail: 200 events retained; navigation reloads discarded regions from canonical history.
-      rows.current = direction === "older" ? ordered.slice(0, 200) : ordered.slice(-200);
-      setEvents(rows.current);
+      // A "newer"/"older" poll with nothing new keeps the existing array reference
+      // so unchanged rows skip re-rendering (the 1s busy tail polls every second).
+      if (direction === "latest" || incoming.length > 0) {
+        const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
+        for (const event of incoming) merged.set(event.seq, event);
+        const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
+        // ponytail: 200 events retained; navigation reloads discarded regions from canonical history.
+        rows.current = direction === "older" ? ordered.slice(0, 200) : ordered.slice(-200);
+        setEvents(rows.current);
+      }
       follow.current = direction !== "older" && page.nextAfterSeq === null;
       setMore(direction === "older" || page.nextAfterSeq !== null);
       initialized.current = true;

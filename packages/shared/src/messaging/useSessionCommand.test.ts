@@ -24,9 +24,13 @@ const get = vi.fn();
 const client = { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: submit, getLocalSessionCommand: get } as unknown as RoomResourceSource["client"];
 const onAccessLost = vi.fn();
 const onSent = vi.fn();
-const hook = (s: LocalSession = session) => renderHook(() => useSessionCommand(client, "room", s, { uuid: () => "req-1", onAccessLost, onSent }));
+// A counter (not a fixed id) so a test can prove retry() reuses the id minted
+// for the original send instead of asking uuid() for a fresh one.
+let uuidCounter = 0;
+const uuid = () => `req-${++uuidCounter}`;
+const hook = (s: LocalSession = session) => renderHook(() => useSessionCommand(client, "room", s, { uuid, onAccessLost, onSent }));
 
-afterEach(() => { cleanup(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); });
+afterEach(() => { cleanup(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
 
 describe("labels", () => {
   it("labels a session by provider and title, and gates sending on verified control", () => {
@@ -65,12 +69,14 @@ describe("useSessionCommand", () => {
     expect(result.current.attempt).toMatchObject({ state: "rejected", error: "Session changed or is offline. Refresh before sending again." });
     submit.mockRejectedValueOnce(new ApiError(503, null));
     await act(async () => { result.current.send("again"); });
+    expect(submit).toHaveBeenLastCalledWith("room", session.sessionId, expect.objectContaining({ requestId: "req-2", text: "again" }));
     expect(result.current.attempt).toMatchObject({ state: "uncertain", error: "Delivery unknown. Check delivery or retry the same request; it may already have been admitted." });
     expect(result.current.locked).toBe(true);
     expect(result.current.canCheck).toBe(true);
     submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request));
     await act(async () => { result.current.retry(); });
-    expect(submit).toHaveBeenLastCalledWith("room", session.sessionId, expect.objectContaining({ requestId: "req-1", text: "again" }));
+    // The retry re-sends the SAME request (req-2), it never mints a fresh id (req-3).
+    expect(submit).toHaveBeenLastCalledWith("room", session.sessionId, expect.objectContaining({ requestId: "req-2", text: "again" }));
     expect(result.current.attempt?.state).toBe("received");
   });
 

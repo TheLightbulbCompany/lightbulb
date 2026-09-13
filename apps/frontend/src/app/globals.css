@@ -156,12 +156,22 @@
  * app/chat/layout.tsx. `light` + `full` is the default; the blocks below are
  * ordered so later ones win on equal specificity.
  *
- * Contrast, measured on the pane each token sits on (AA floor 4.5:1 text,
- * 3:1 non-text):
- *   light  fg 16.4  fg-soft 8.1  fg-mute 4.7  link 7.7  alert 6.1  live 4.6
- *   dark   fg 13.8  fg-soft 7.6  fg-mute 4.6  link 7.5  alert 5.9  live 7.9
- * fg-mute and light --live are the tightest; re-measure them if a ladder step
- * moves.
+ * Contrast: every text token is checked against EVERY plane it can sit on —
+ * pane, sidebar, raised, selected AND rail — not just the pane. A token that
+ * clears 4.5:1 on white can fail badly on the rail: --fg-mute at #6E7A88 read
+ * 4.37 on the pane and 3.24 on the rail, which is what the sidebar's section
+ * labels actually sit on. §06 says this explicitly and it is easy to skip.
+ *
+ * Worst-plane ratios after solving (AA floor 4.5 for text):
+ *   light/full   fg-mute 4.67  link 4.96  alert 4.65  live 4.68  brand 4.70
+ *   light/focus  fg-mute 4.63  link 4.98  alert 4.67  live 4.70  brand 5.75
+ *   dark/full    fg-mute 4.66  link 5.92  alert 4.65  live 5.55  brand 7.60
+ *   dark/focus   fg-mute 4.65  link 6.32  alert 4.71  live 5.92  brand 6.54
+ * --fg never drops below 10.85 and --fg-soft below 5.36 (light/full, on the
+ * rail) — both well clear, but nowhere near the 8:1 an earlier draft claimed.
+ *
+ * src/__tests__/chatThemeContrast.test.ts recomputes all 140 pairs, so a
+ * hand-edit that breaks one fails the build rather than shipping.
  */
 :root[data-chat-theme] {
   /* ── Ladder: light ── */
@@ -174,16 +184,16 @@
   /* ── Type ── */
   --fg:      #161C24;
   --fg-soft: #4D5866;
-  --fg-mute: #6E7A88;
+  --fg-mute: #57616C;
 
   /* ── Semantic: constant across focus ── */
   --link:   #1E52CC;
   --on-link:#FFFFFF;
-  --alert:  #B4402C;
-  --live:   #1F8A5B;
+  --alert:  #A83C29;
+  --live:   #186D48;
 
   /* ── Hue: the one layer focus drains ── */
-  --brand: #9A6B14;
+  --brand: #7F5810;
   --agent-tint-1: #8A5A12;
   --agent-tint-2: #1E52CC;
   --agent-tint-3: #1C7350;
@@ -204,11 +214,11 @@
 
   --fg:      #E9EEF4;
   --fg-soft: #A7B4C4;
-  --fg-mute: #7D8B9C;
+  --fg-mute: #939EAD;
 
   --link:   #8FB0FF;
   --on-link:#0C121A;
-  --alert:  #E4705E;
+  --alert:  #E7806F;
   --live:   #4BC08A;
 
   --brand: #F0C34E;
@@ -232,7 +242,7 @@
 
   --fg:      #1A1A1C;
   --fg-soft: #52525A;
-  --fg-mute: #70707A;
+  --fg-mute: #606069;
 
   --brand: #52525A;
   --agent-tint-1: #6E6E78;
@@ -253,7 +263,7 @@
 
   --fg:      #ECECEE;
   --fg-soft: #B4B4B8;
-  --fg-mute: #8A8A90;
+  --fg-mute: #97979C;
 
   --brand: #B4B4B8;
   --agent-tint-1: #9B9BA2;

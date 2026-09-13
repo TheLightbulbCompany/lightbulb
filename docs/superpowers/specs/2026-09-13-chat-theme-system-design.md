@@ -88,16 +88,16 @@ Light rail→sidebar→pane is a ~7% ladder where today's is 2% and shared.
 |---|---|---|
 | `--fg` | `#161C24` | `#E9EEF4` |
 | `--fg-soft` | `#4D5866` | `#A7B4C4` |
-| `--fg-mute` | `#6E7A88` | `#7D8B9C` |
+| `--fg-mute` | `#57616C` | `#939EAD` |
 
 ### Semantic (never varies with focus)
 
 | Token | Light | Dark | Means |
 |---|---|---|---|
-| `--link` | `#1E52CC` | `#8FB0FF` | links, `@mentions`, Send |
-| `--alert` | `#B4402C` | `#E4705E` | unread counts, the New divider |
-| `--live` | `#1F8A5B` | `#4BC08A` | human online, run succeeded |
-| `--brand` | `#9A6B14` | `#F0C34E` | logo tile, trial bar, mentions-you stripe |
+| `--link` | `#1E52CC` | `#8FB0FF` | links, `@mentions`, Send, the New divider |
+| `--alert` | `#A83C29` | `#E7806F` | unread counts and badges |
+| `--live` | `#186D48` | `#4BC08A` | human online, run succeeded |
+| `--brand` | `#7F5810` | `#F0C34E` | logo tile, trial bar, mentions-you stripe |
 
 `--brand` is the hue layer's one participant in content; under focus it resolves
 to `--fg-soft` in both themes.
@@ -116,22 +116,32 @@ presence and identity mean different things and must not compete.
 
 ### Contrast
 
-Measured against the pane each color sits on. Floor is 4.5:1 for text, 3:1
-non-text, matching the bars already documented in `globals.css`.
+**Corrected after measurement.** The first cut of this table was measured
+against the message pane only, and was wrong: five of seven text tokens failed
+AA on some other plane. `--fg-mute` at `#6E7A88` read 4.37:1 on the pane and
+**3.24:1 on the rail** — and the rail is where the sidebar's section labels
+actually sit. `globals.css` has said "checked on EVERY step a token can sit on"
+since the brand palette landed; the check simply was not mechanical.
+
+The numbers below are now the **worst plane** for each token across pane,
+sidebar, raised, selected and rail. AA floor 4.5:1.
+
+Worst case across both accent states, per theme:
 
 | Role | Dark | Light |
 |---|---|---|
-| Body text | 13.8:1 | 16.4:1 |
-| Secondary | 7.6:1 | 8.1:1 |
-| Metadata | 4.6:1 | 4.7:1 |
-| Links / mentions | 7.5:1 | 7.7:1 |
-| Brand accent | 9.6:1 | 5.3:1 |
-| Alert | 5.9:1 | 6.1:1 |
-| Live | 7.9:1 | 4.6:1 |
+| Body text (`--fg`) | 10.85 | 12.69 |
+| Secondary (`--fg-soft`) | 6.01 | 5.36 |
+| Metadata (`--fg-mute`) | 4.65 | 4.63 |
+| Links / mentions | 5.92 | 4.96 |
+| Alert | 4.65 | 4.65 |
+| Live | 5.55 | 4.68 |
+| Brand accent | 6.54 | 4.70 |
 
-Metadata (4.6 / 4.7) and light Live (4.6) are the tightest values; they clear AA
-but leave little headroom, so they are the values to re-measure if any ladder
-step moves.
+Agent initials on their tint clear 5.04:1 at worst.
+
+`src/__tests__/chatThemeContrast.test.ts` recomputes all 140 token/plane pairs
+plus the tints on every run, so this cannot silently regress again.
 
 ## 5. Where the tokens live
 

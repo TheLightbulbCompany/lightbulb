@@ -251,7 +251,6 @@ class SecurityHeadersMiddleware:
 async def _running_count_gauge_loop():
     """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream."""
     from core.observability.metrics import gauge
-    from core.repositories import container_repo
 
     while True:
         try:

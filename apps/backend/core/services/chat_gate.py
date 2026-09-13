@@ -1,14 +1,13 @@
 """Pre-chat hard-stop for card-3 (bedrock_claude) users and the free-tier
-``trial_local`` daily cost cap, moved intact from the gateway pool."""
+``trial_local`` daily cost cap."""
 
 from __future__ import annotations
 
 # The user-facing text for each way an owner can run out of Isol8 budget.
-# ONE copy, shared by gate_chat's pre-send refusal and the gateway's mid-run
-# reclassification: a turn refused before it starts and a turn refused halfway
-# through are the same event to the user and must never drift into two wordings.
-# The web card renders from `code` alone (see ChatErrorCard); these strings are
-# what non-web surfaces — Paperclip run rows, logs, the wake refusal frame — show.
+# gate_chat's pre-send refusal is the sole reader (the gateway's own mid-run
+# reclassification is gone). The web card renders from `code` alone (see
+# ChatErrorCard); these strings are what non-web surfaces — Paperclip run
+# rows, logs, the wake refusal frame — show.
 BUDGET_BLOCK_MESSAGES = {
     "trial_expired": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
     "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",

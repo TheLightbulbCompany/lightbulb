@@ -43,7 +43,8 @@ class GatewayConnectAuthError(RuntimeError):
 
     Retrying these with the same credentials cannot succeed, and each retry
     counts toward the gateway's lockout (10 failed auths in 60s → 5-minute
-    IP+credential-scope lockout), so the connection pool needs to tell them
+    IP+credential-scope lockout), so the operator-device pairing probe (its
+    only caller, in ``paperclip_openclaw_pairing.py``) needs to tell them
     apart from transient handshake failures. ``retry_after_ms`` carries the
     gateway's own hint (the remaining lockout window) when it sends one.
     Subclasses RuntimeError so pre-existing broad handlers keep working.
@@ -178,11 +179,10 @@ async def perform_signed_connect(
                 f"Container row for owner {owner_id} missing operator_priv_key_enc "
                 "(pre-4.5 provision — reprovision required)"
             )
-        # KMS Decrypt is a SYNCHRONOUS boto3 call. This handshake runs on the
-        # connect hot path (held under the pool's single lock), so calling it
-        # inline blocks the whole event loop for the round trip — one slow KMS
-        # response stalls every user on this backend task. Offload to a worker
-        # thread. (GW-2a.)
+        # KMS Decrypt is a SYNCHRONOUS boto3 call, so calling it inline blocks
+        # the whole event loop for the round trip — one slow KMS response
+        # stalls every user on this backend task. Offload to a worker thread.
+        # (GW-2a.)
         seed_bytes = await asyncio.to_thread(
             kms_secrets.decrypt_bytes,
             enc_seed,

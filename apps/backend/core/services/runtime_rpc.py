@@ -130,8 +130,8 @@ _MUTATING_METHODS = frozenset(
 )
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
 _RPC_TIMEOUT_S = 30.0
-# Replaces the gateway pool's `*.changed` broadcasts: a mutating method that
-# lands here invalidates the named resource for every open frontend tab.
+# A mutating method that lands here invalidates the named resource for every
+# open frontend tab (the prior per-connection `*.changed` broadcast is gone).
 _INVALIDATES = {
     "agents.update": "agents",
     "agents.delete": "agents",

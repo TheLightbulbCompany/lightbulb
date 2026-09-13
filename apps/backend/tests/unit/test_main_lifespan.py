@@ -118,3 +118,29 @@ async def test_resume_wake_resize_transitions_tolerates_ddb_failure():
         await _resume_wake_resize_transitions()
 
         mock_get_ecs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_running_count_gauge_loop_emits_running_count():
+    """One iteration of the gateway.running.count gauge loop must read the
+    running-container count and emit it -- the P12 backend-liveness canary
+    depends on this metric arriving every 60s."""
+    from main import _running_count_gauge_loop
+
+    class _StopLoop(Exception):
+        pass
+
+    async def _stop_after_first_pass(*_a, **_kw):
+        raise _StopLoop()
+
+    rows = [{"owner_id": "user_a"}, {"owner_id": "user_b"}]
+
+    with (
+        patch("main.container_repo.get_by_status", new_callable=AsyncMock, return_value=rows),
+        patch("core.observability.metrics.gauge") as mock_gauge,
+        patch("main.asyncio.sleep", _stop_after_first_pass),
+    ):
+        with pytest.raises(_StopLoop):
+            await _running_count_gauge_loop()
+
+    mock_gauge.assert_called_once_with("gateway.running.count", 2)

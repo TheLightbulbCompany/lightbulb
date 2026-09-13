@@ -65,9 +65,9 @@ _ROUTINE_RUN_SOURCES = frozenset({"schedule", "webhook", "manual", "api"})
 _ENRICH_TIMEOUT_S = 5.0
 
 # Bounded FIFO set of already-emitted owner:runId pairs (same idiom as
-# GatewayConnection._side_run_ids / product_analytics._daily_dedup_seen).
-# Owner-scoped because runId is supplied by the owner's own container — one
-# owner's colliding id must not suppress another owner's event.
+# product_analytics._daily_dedup_seen). Owner-scoped because runId is
+# supplied by the owner's own container — one owner's colliding id must not
+# suppress another owner's event.
 _SEEN_RUN_IDS_CAP = 4096
 _seen_run_ids: dict[str, None] = {}
 

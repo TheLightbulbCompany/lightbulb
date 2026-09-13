@@ -1,4 +1,4 @@
-"""Parsers for OpenClaw session keys, moved intact from the gateway pool."""
+"""Parsers for OpenClaw session keys."""
 
 from __future__ import annotations
 

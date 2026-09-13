@@ -7,10 +7,10 @@ readiness inputs into one ``StatusContract``:
   2. the ``billing-accounts`` row        (``core.repositories.billing_repo``)
   3. gateway liveness                    (``core.services.container_rpc``, a
                                            direct ``health`` RPC through the
-                                           container plugin -- NOT the old
-                                           in-process gateway connection pool,
-                                           which is readiness store R4, now
-                                           retired and deleted)
+                                           container plugin -- readiness store
+                                           R4, the old in-process persistent
+                                           socket it used before, is retired
+                                           and deleted)
   4. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
                                            -- carries BOTH ``teams_state`` and
                                            the generation-fenced onboarding
@@ -78,8 +78,8 @@ def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) ->
     Mirrors the pre-COMPOSER ``_resolve_cold_start_phase`` in
     ``routers/container.py`` field-for-field, except the liveness input is
     now a plain bool sourced from a direct ``health`` RPC through the
-    container plugin (``_gateway_reachable``) instead of the in-process
-    gateway pool (readiness store R4).
+    container plugin (``_gateway_reachable``) instead of the old in-process
+    persistent socket (readiness store R4).
 
     INV-6: this function -- and ONLY this function's output
     (``runtime_phase``) -- decides chat availability. It must never take

@@ -3,7 +3,18 @@
 
 from __future__ import annotations
 
-from core.gateway.connection_pool import BUDGET_BLOCK_MESSAGES
+# The user-facing text for each way an owner can run out of Isol8 budget.
+# ONE copy, shared by gate_chat's pre-send refusal and the gateway's mid-run
+# reclassification: a turn refused before it starts and a turn refused halfway
+# through are the same event to the user and must never drift into two wordings.
+# The web card renders from `code` alone (see ChatErrorCard); these strings are
+# what non-web surfaces — Paperclip run rows, logs, the wake refusal frame — show.
+BUDGET_BLOCK_MESSAGES = {
+    "trial_expired": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+    "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    "out_of_credits": "You're out of Claude credits. Top up to continue.",
+    "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
+}
 
 
 async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:

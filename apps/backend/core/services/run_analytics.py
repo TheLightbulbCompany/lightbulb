@@ -1,8 +1,9 @@
 """One server-side PostHog event per completed agent run: ``agent_run_completed``.
 
-Emitted from the gateway pool's agent-event lifecycle terminal branch
-(``GatewayConnection._emit_run_completed``) — the one signal billing already
-trusts for EVERY session type (webchat, channel, cron, Paperclip issue). It
+Emitted from the run-completion callers (the room chat path's
+``handle_run_event``, the operator relay tap, and the usage callback for
+non-room runs) — the one signal billing already trusts for EVERY session
+type (webchat, channel, cron, Paperclip issue). It
 carries the owner, initiation type (autonomous vs human), trigger provider and
 outcome, powering the activation gate, the North Star (successful autonomous
 runs / active owner / week) and retention cohorts.

@@ -21,11 +21,6 @@ from fastapi.responses import JSONResponse
 
 from core.auth import get_current_user
 from core.config import settings
-from core.containers import (
-    get_gateway_pool,
-    startup_containers,
-    shutdown_containers,
-)
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
@@ -254,16 +249,14 @@ class SecurityHeadersMiddleware:
 
 
 async def _running_count_gauge_loop():
-    """Periodically emit the gateway running-count gauges.
+    """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream."""
+    from core.observability.metrics import gauge
+    from core.repositories import container_repo
 
-    Replaces the old _safe_idle_checker — flat-fee cutover removed
-    scale-to-zero, but the W5 alarm on gateway.connection.open still
-    expects a steady metric stream.
-    """
     while True:
         try:
-            pool = get_gateway_pool()
-            await pool.emit_running_gauges()
+            rows = await container_repo.get_by_status("running")
+            gauge("gateway.running.count", len(rows))
         except Exception:
             logger.warning("running_gauges loop iteration failed", exc_info=True)
         await asyncio.sleep(60)
@@ -392,7 +385,6 @@ async def lifespan(app: FastAPI):
     # lifespan (e.g. one ASGI test client per hypothesis example) never inherits a
     # stale "shutting down" from a prior shutdown.
     set_shutting_down(False)
-    await startup_containers()
     await _resume_wake_resize_transitions()
 
     from core.services.durable_activity import run_trial_idle_sweeper
@@ -449,7 +441,6 @@ async def lifespan(app: FastAPI):
     idle_sweeper_stop.set()
     run_sweeper_stop.set()
     gauge_task.cancel()
-    containers_shutdown = False
     try:
         async with asyncio.timeout(20):
             cleanup = [
@@ -463,8 +454,6 @@ async def lifespan(app: FastAPI):
             if broker is not None:
                 cleanup.append(broker.shutdown())
             await asyncio.gather(*cleanup, return_exceptions=True)
-            await shutdown_containers()
-            containers_shutdown = True
     except asyncio.TimeoutError:
         logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
         for task in (scheduled_worker_task, openclaw_work_task, idle_sweeper_task, run_sweeper_task, gauge_task):
@@ -483,8 +472,6 @@ async def lifespan(app: FastAPI):
             from core.services.teams_event_broker import set_broker
 
             set_broker(None)
-        if not containers_shutdown:
-            await shutdown_containers()
 
 
 openapi_tags = [

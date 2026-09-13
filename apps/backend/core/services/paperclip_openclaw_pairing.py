@@ -59,8 +59,8 @@ TERMINATED_AGENT_STATUS = "terminated"
 _PAIR_MAX_ATTEMPTS = 2
 _PAIR_RETRY_BACKOFF_S = 0.5
 
-# The default gateway RPC timeout (``_RPC_TIMEOUT`` = 30s in
-# connection_pool.py) is too short for these two RPCs specifically: the
+# The default gateway RPC timeout (``container_rpc.call``'s own 30s default)
+# is too short for these two RPCs specifically: the
 # 2026-08-06 incident measured contended ``agents.create`` calls completing
 # in 39-51s when three marketplace hires landed on one container at once.
 # A client-side timeout there does NOT mean the container gave up — it means

@@ -7,7 +7,7 @@ repos (container_repo, PaperclipRepo) and a patched table for the plain
 put-based billing_repo writers, with publish_status_changed itself mocked
 at each repo module's imported name -- this file only pins THAT it is
 called (and with the right owner_id), not its own internals (covered by
-test_status_events.py and test_connection_pool_broadcast_to_owner.py).
+test_status_events.py).
 """
 
 import os

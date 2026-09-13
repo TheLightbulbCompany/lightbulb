@@ -5,10 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# get_gateway_pool() lazily constructs a ManagementApiClient that
-# requires WS_MANAGEMENT_API_URL — set a bogus value so the singleton
-# can be built. The pool is never actually used because
-# pair_with_openclaw is monkeypatched in every test below.
+# Some imports transitively construct a ManagementApiClient, which requires
+# WS_MANAGEMENT_API_URL — set a bogus value so construction never raises.
+# pair_with_openclaw is monkeypatched in every test below regardless.
 os.environ.setdefault(
     "WS_MANAGEMENT_API_URL",
     "https://test.execute-api.us-east-1.amazonaws.com/test",

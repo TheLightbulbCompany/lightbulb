@@ -155,8 +155,8 @@ def test_dedup_is_independent_per_owner_and_per_event():
 
 def test_dedup_set_is_bounded_fifo():
     """Insert past the cap and confirm the oldest entries are evicted (not
-    an unbounded per-process leak) -- same idiom as connection_pool's
-    ``_side_run_ids``."""
+    an unbounded per-process leak) -- same idiom as run_analytics's
+    ``_seen_run_ids``."""
     _reset_dedup()
     with (
         patch.object(product_analytics, "utc_today", return_value="2026-07-11"),

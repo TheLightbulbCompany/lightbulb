@@ -1397,10 +1397,9 @@ async def test_approve_pending_device_from_rejection_never_raises_on_failure(mon
 @pytest.mark.asyncio
 async def test_approve_pending_device_from_rejection_no_device_id_is_noop(monkeypatch):
     """No deviceId in the rejection payload -> nothing to approve; must not
-    attempt any RPC and must not raise. Stubs gateway_rpc_oneshot to raise if
+    attempt any RPC and must not raise. Stubs container_rpc.call to raise if
     called, so a regression of the early return would fail on the assertion
-    below instead of hanging ~10s trying a real connect to 10.0.0.9:18789 and
-    then failing on an incidental TypeError."""
+    below instead of a real RPC attempt."""
 
     async def _call_should_not_be_called(*args, **kwargs):
         raise AssertionError("container_rpc.call must not be called when device_id is None")

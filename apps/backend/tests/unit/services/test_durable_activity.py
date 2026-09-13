@@ -42,4 +42,7 @@ async def test_an_open_ledger_run_vetoes_the_idle_stop(has_open_runs, stopped):
     finally:
         for p in patches:
             p.stop()
-    assert ecs.stop_user_service.await_count == (1 if stopped else 0)
+    if stopped:
+        ecs.stop_user_service.assert_awaited_once_with("user_1", reason="trial_idle")
+    else:
+        ecs.stop_user_service.assert_not_awaited()

@@ -7,10 +7,10 @@ readiness inputs into one ``StatusContract``:
   2. the ``billing-accounts`` row        (``core.repositories.billing_repo``)
   3. gateway liveness                    (``core.services.container_rpc``, a
                                            direct ``health`` RPC through the
-                                           container plugin -- NOT the
-                                           in-process ``GatewayConnectionPool``,
+                                           container plugin -- NOT the old
+                                           in-process gateway connection pool,
                                            which is readiness store R4, now
-                                           retired)
+                                           retired and deleted)
   4. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
                                            -- carries BOTH ``teams_state`` and
                                            the generation-fenced onboarding
@@ -109,8 +109,10 @@ async def _gateway_reachable(owner_id: str) -> bool:
     try:
         await container_rpc.call(owner_id, "health", timeout_s=2.0, wake=False)
         return True
-    except Exception:  # noqa: BLE001 — a probe must never break /status
-        logger.info("readiness_state: gateway probe failed for owner %s", owner_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — a probe must never break /status
+        # DEBUG, not a stack trace: a booting container failing its probe is
+        # the normal case, not an error.
+        logger.debug("readiness_state: gateway probe failed for owner %s: %s", owner_id, type(exc).__name__)
         return False
 
 

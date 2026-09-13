@@ -188,11 +188,24 @@ describe("conversation screen", () => {
   it("shows the author name once per run and a day divider above the first message", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    expect(screen.getAllByText("Friday")).toHaveLength(1);
+    // "Friday" is both this fixture's agent display name AND, on some run
+    // dates, the weekday-name label the date divider renders for a message a
+    // few days old (2026-09-11 is a Friday; whenever "now" lands 2-6 days
+    // later, dateDividerLabel returns "Friday" too). A plain
+    // getAllByText("Friday") then matches both and this assertion fails by
+    // calendar date, not by anything the screen got wrong. MessageGroup's
+    // author label is the one rendered single-line (numberOfLines={1}); the
+    // divider label isn't — filter on that structural signal instead of the
+    // text the two coincidentally share.
+    const fridayNodes = screen.getAllByText("Friday");
+    const authorNames = fridayNodes.filter((node) => node.props.numberOfLines === 1);
+    expect(authorNames).toHaveLength(1);
     expect(screen.getByTestId("room-timeline")).toBeTruthy();
-    expect(
-      screen.getByText(dateDividerLabel(new Date("2026-09-11T10:00:00Z"), new Date())),
-    ).toBeTruthy();
+    const dividerLabel = dateDividerLabel(new Date("2026-09-11T10:00:00Z"), new Date());
+    const dividerNodes = screen
+      .getAllByText(dividerLabel)
+      .filter((node) => node.props.numberOfLines !== 1);
+    expect(dividerNodes).toHaveLength(1);
   });
 
   it("draws the New messages line at the read cursor the room opened with", async () => {

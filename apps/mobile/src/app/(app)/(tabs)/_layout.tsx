@@ -51,13 +51,13 @@ export default function TabsLayout() {
         <NativeTabs.Trigger name="home">
           <NativeTabs.Trigger.Icon sf={{ default: "house", selected: "house.fill" }} />
           <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
-          {/* No children at zero, not "0": expo-router sets `badgeValue` to
-              `String(children)` whenever children is truthy and only consults
-              `hidden` when there are none (`appendBadgeOptions`), so a "0"
-              child draws a "0" badge. */}
-          <NativeTabs.Trigger.Badge hidden={unread === 0}>
-            {unread > 0 ? String(unread) : undefined}
-          </NativeTabs.Trigger.Badge>
+          {/* No Badge element at all at zero, not a "0" child and not
+              `hidden`: expo-router sets `badgeValue = String(children)` for
+              any truthy child and only consults `hidden` when there is none
+              (`appendBadgeOptions`), so "0" drew a "0" badge. */}
+          {unread > 0 && (
+            <NativeTabs.Trigger.Badge>{String(unread)}</NativeTabs.Trigger.Badge>
+          )}
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="dms">
           <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} />

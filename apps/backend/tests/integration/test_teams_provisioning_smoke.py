@@ -52,9 +52,11 @@ from core.encryption import encrypt  # noqa: E402
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo  # noqa: E402
 from core.services.paperclip_admin_client import PaperclipAdminClient  # noqa: E402
 
-# The adapter allowlist derives from settings.WS_GATEWAY_URL; derive the fixture
-# host from the same place so it cannot drift out of the allowlist.
-GW_APEX = apex_domain(url_host(_settings.WS_GATEWAY_URL))
+# The adapter allowlist derives from settings.GATEWAY_RELAY_URL (the machine
+# relay, sub-project D task 5) -- NOT WS_GATEWAY_URL, which is the retired
+# API-Gateway door the synthesized adapter no longer points at. Derive the
+# fixture host from the same place so it cannot drift out of the allowlist.
+GW_APEX = apex_domain(url_host(_settings.GATEWAY_RELAY_URL))
 
 PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
 
@@ -62,7 +64,9 @@ PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
 # url synthesized by the BFF or the test (correctly) fails.
 # Mirrors build_gateway_url_re(); derives the apex so it cannot drift from the
 # real allowlist when the product domain moves.
-_GATEWAY_URL_RE = re.compile(rf"\A(?:wss://ws(?:-[a-z]+)?\.{re.escape(GW_APEX)}|ws://localhost:[0-9]+)\Z")
+_GATEWAY_URL_RE = re.compile(
+    rf"\A(?:wss://bv(?:-[a-z]+)?\.{re.escape(GW_APEX)}/api/v1/gateway/ws|ws://localhost:[0-9]+)\Z"
+)
 
 
 @pytest.fixture
@@ -154,7 +158,7 @@ def smoke_env(mocked_paperclip_transport):
     - patches ``core.services.paperclip_user_session.get_user_session_cookie``'s
       Clerk email resolver dependency by patching ``core.services.clerk_admin.get_user``.
     - sets ENVIRONMENT='dev' so ``_ws_gateway_url`` resolves
-      to ``wss://ws-dev.<configured apex>`` (in the allowlist).
+      to ``wss://bv-dev.<configured apex>/api/v1/gateway/ws`` (in the allowlist).
     """
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
@@ -369,9 +373,10 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     # the gateway handshake with — minted at synth time as a PKCS8 PEM.
     assert adapter_config["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
 
-    # 3. URL matches the gateway allowlist (env=dev -> wss://ws-dev.<configured apex>).
-    # The URL now carries the auth token in the query string (so the WS API
-    # Gateway authorizer, which reads ?token=, accepts the connection).
+    # 3. URL matches the gateway allowlist (env=dev -> wss://bv-dev.<configured apex>/api/v1/gateway/ws).
+    # The URL carries the auth token in the query string (so the raw WS
+    # relay, routers/gateway_relay.py -> machine_auth.verify_upgrade, which
+    # reads ?token=, accepts the connection).
     url = adapter_config["url"]
     base, _, query = url.partition("?")
     assert _GATEWAY_URL_RE.match(base), f"adapterConfig.url base must match the gateway allowlist; got {base!r}"

@@ -19,12 +19,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from core.config import settings
 from core.services.connection_service import ConnectionService
-from core.services.management_api_client import ManagementApiClient
 
 logger = logging.getLogger(__name__)
 
 _connection_service: ConnectionService | None = None
-_management_api_client: ManagementApiClient | None = None
 _singleton_lock = asyncio.Lock()
 
 
@@ -35,15 +33,6 @@ async def get_connection_service() -> ConnectionService:
             if _connection_service is None:
                 _connection_service = ConnectionService()
     return _connection_service
-
-
-async def get_management_api_client() -> ManagementApiClient:
-    global _management_api_client
-    if _management_api_client is None:
-        async with _singleton_lock:
-            if _management_api_client is None:
-                _management_api_client = ManagementApiClient()
-    return _management_api_client
 
 
 def require_ws_internal_caller(

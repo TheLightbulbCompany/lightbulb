@@ -618,14 +618,14 @@ async def test_fetch_propagates_unexpected_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name():
+async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name(monkeypatch):
     """pair_with_openclaw sends two RPCs:
     1. agents.create with name=<paperclip_uuid> (so OpenClaw uses the
        UUID as the on-disk agentId).
     2. agents.update with name=<friendly_name> to fix the display."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    call = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     await pair_with_openclaw(
         owner_id="user_abc",
@@ -634,25 +634,20 @@ async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name()
             "name": "Code Reviewer",
             "role": "engineer",
         },
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
     )
 
-    assert pool.send_rpc.await_count == 2
+    assert call.await_count == 2
 
-    create_call = pool.send_rpc.await_args_list[0]
-    assert create_call.kwargs["method"] == "agents.create"
-    assert create_call.kwargs["params"]["name"] == pc_uuid
-    assert create_call.kwargs["params"]["workspace"] == (f"/home/node/.openclaw/workspace-{pc_uuid}")
-    # The pool's user_id kwarg is actually owner_id under the hood —
-    # the existing gateway pool's signature is what it is.
-    assert create_call.kwargs["user_id"] == "user_abc"
+    create_call = call.await_args_list[0]
+    assert create_call.args[0] == "user_abc"
+    assert create_call.args[1] == "agents.create"
+    assert create_call.args[2]["name"] == pc_uuid
+    assert create_call.args[2]["workspace"] == (f"/home/node/.openclaw/workspace-{pc_uuid}")
 
-    update_call = pool.send_rpc.await_args_list[1]
-    assert update_call.kwargs["method"] == "agents.update"
-    assert update_call.kwargs["params"]["agentId"] == pc_uuid
-    assert update_call.kwargs["params"]["name"] == "Code Reviewer"
+    update_call = call.await_args_list[1]
+    assert update_call.args[1] == "agents.update"
+    assert update_call.args[2]["agentId"] == pc_uuid
+    assert update_call.args[2]["name"] == "Code Reviewer"
 
 
 @pytest.mark.asyncio
@@ -661,76 +656,69 @@ async def test_pair_registers_lightbulb_channel_account(monkeypatch):
     routes through, so it — not each individual caller — registers the new
     agent's Lightbulb channel account + binding on success."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.container_rpc.call",
+        AsyncMock(return_value={"ok": True, "agentId": pc_uuid}),
+    )
     register_mock = AsyncMock()
     monkeypatch.setattr("core.services.config_patcher.register_lightbulb_agent_account", register_mock)
 
     await pair_with_openclaw(
         owner_id="user_abc",
         paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
     )
 
     register_mock.assert_awaited_once_with("user_abc", pc_uuid)
 
 
 @pytest.mark.asyncio
-async def test_pair_passes_longer_timeout_on_both_rpcs():
+async def test_pair_passes_longer_timeout_on_both_rpcs(monkeypatch):
     """Both the agents.create and agents.update RPCs must carry the pairing
     module's longer timeout (~90s), not the gateway pool's default 30s —
     the 2026-08-06 incident measured contended agents.create calls taking
     39-51s, well past the default."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    call = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     await pair_with_openclaw(
         owner_id="user_abc",
         paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
     )
 
-    assert pool.send_rpc.await_count == 2
-    for call in pool.send_rpc.await_args_list:
-        assert call.kwargs["timeout"] == _PAIR_RPC_TIMEOUT_S == 90
+    assert call.await_count == 2
+    for one_call in call.await_args_list:
+        assert one_call.kwargs["timeout_s"] == _PAIR_RPC_TIMEOUT_S == 90
 
 
 @pytest.mark.asyncio
-async def test_pair_already_exists_still_applies_update_to_heal():
+async def test_pair_already_exists_still_applies_update_to_heal(monkeypatch):
     """If agents.create returns 'already exists' (idempotent reprovision /
     a prior attempt that lost its update response), fall through to the
     agents.update so a stranded name=<uuid> gets renamed to the friendly
     name. The update is itself idempotent."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-    def _side(*_args, **kwargs):
+    def _side(_owner_id, method, _params, **_kwargs):
         # create raises "already exists"; update succeeds.
-        if kwargs.get("method") == "agents.create":
+        if method == "agents.create":
             raise RuntimeError('{"code":-32602,"message":"agent \\"' + pc_uuid + '\\" already exists"}')
         return {"ok": True}
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=_side)
+    call = AsyncMock(side_effect=_side)
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     # Should not raise — idempotent.
     await pair_with_openclaw(
         owner_id="org_xyz",
         paperclip_agent={"id": pc_uuid, "name": "Friday", "role": "ceo"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
     )
 
     # Create raised "already exists" but the update still ran to heal the name.
-    assert pool.send_rpc.await_count == 2
-    update_call = pool.send_rpc.await_args_list[1]
-    assert update_call.kwargs["method"] == "agents.update"
-    assert update_call.kwargs["params"]["name"] == "Friday"
+    assert call.await_count == 2
+    update_call = call.await_args_list[1]
+    assert update_call.args[1] == "agents.update"
+    assert update_call.args[2]["name"] == "Friday"
 
 
 @pytest.mark.asyncio
@@ -750,20 +738,17 @@ async def test_pair_retries_once_on_timeout_then_succeeds(monkeypatch):
             raise TimeoutError()  # first create's response is lost
         return {"ok": True}
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=_side)
+    call = AsyncMock(side_effect=_side)
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     await pair_with_openclaw(
         owner_id="user_abc",
         paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
     )
 
     # attempt 1: create (timeout). attempt 2: create + update (ok). = 3 RPCs.
-    assert pool.send_rpc.await_count == 3
-    assert pool.send_rpc.await_args_list[-1].kwargs["method"] == "agents.update"
+    assert call.await_count == 3
+    assert call.await_args_list[-1].args[1] == "agents.update"
 
 
 @pytest.mark.asyncio
@@ -775,43 +760,37 @@ async def test_pair_raises_after_exhausting_timeout_retries(monkeypatch):
     monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=TimeoutError())
+    call = AsyncMock(side_effect=TimeoutError())
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     with pytest.raises(TimeoutError):
         await pair_with_openclaw(
             owner_id="user_abc",
             paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-            gateway_pool=pool,
-            ip="10.0.0.5",
-            token="gw_token",
         )
 
     # Two create attempts (the bounded retry), both timed out.
-    assert pool.send_rpc.await_count == 2
+    assert call.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_pair_does_not_retry_non_timeout_error():
+async def test_pair_does_not_retry_non_timeout_error(monkeypatch):
     """A genuine protocol/schema RuntimeError (not 'already exists', not a
     timeout) propagates immediately — retrying a deterministic rejection
     would just stall the Hire."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=RuntimeError("INVALID_REQUEST: bad workspace"))
+    call = AsyncMock(side_effect=RuntimeError("INVALID_REQUEST: bad workspace"))
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     with pytest.raises(RuntimeError, match="bad workspace"):
         await pair_with_openclaw(
             owner_id="user_abc",
             paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-            gateway_pool=pool,
-            ip="10.0.0.5",
-            token="gw_token",
         )
 
     # No retry: single create attempt.
-    assert pool.send_rpc.await_count == 1
+    assert call.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -828,30 +807,27 @@ async def test_pair_retries_update_on_agent_not_found_then_succeeds(monkeypatch)
 
     update_calls = {"n": 0}
 
-    def _side(*_args, **kwargs):
-        if kwargs.get("method") == "agents.update":
+    def _side(_owner_id, method, _params, **_kwargs):
+        if method == "agents.update":
             update_calls["n"] += 1
             if update_calls["n"] <= 2:
                 raise RuntimeError('{"code": "INVALID_REQUEST", "message": "agent \\"' + pc_uuid + '\\" not found"}')
         return {"ok": True}
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=_side)
+    call = AsyncMock(side_effect=_side)
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     await pair_with_openclaw(
         owner_id="user_abc",
         paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
     )
 
     # create ✓, update ✗ (not found), update ✗ (not found), update ✓ — the
     # create is never re-sent on a not-found rename.
-    assert pool.send_rpc.await_count == 4
-    assert pool.send_rpc.await_args_list[0].kwargs["method"] == "agents.create"
-    for call in pool.send_rpc.await_args_list[1:]:
-        assert call.kwargs["method"] == "agents.update"
+    assert call.await_count == 4
+    assert call.await_args_list[0].args[1] == "agents.create"
+    for one_call in call.await_args_list[1:]:
+        assert one_call.args[1] == "agents.update"
 
 
 @pytest.mark.asyncio
@@ -864,68 +840,59 @@ async def test_pair_raises_after_exhausting_update_not_found_retries(monkeypatch
     monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-    def _side(*_args, **kwargs):
-        if kwargs.get("method") == "agents.update":
+    def _side(_owner_id, method, _params, **_kwargs):
+        if method == "agents.update":
             raise RuntimeError('{"code": "INVALID_REQUEST", "message": "agent \\"' + pc_uuid + '\\" not found"}')
         return {"ok": True}
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=_side)
+    call = AsyncMock(side_effect=_side)
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     with pytest.raises(RuntimeError, match="not found"):
         await pair_with_openclaw(
             owner_id="user_abc",
             paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
-            gateway_pool=pool,
-            ip="10.0.0.5",
-            token="gw_token",
         )
 
     # create + initial update + 2 bounded retries = 4 RPCs total.
-    assert pool.send_rpc.await_count == 4
+    assert call.await_count == 4
 
 
 @pytest.mark.asyncio
-async def test_pair_with_extra_update_fields_none_preserves_existing_behavior():
+async def test_pair_with_extra_update_fields_none_preserves_existing_behavior(monkeypatch):
     """extra_update_fields=None (default) -> agents.update RPC params
     contain only agentId + name, identical to today. Backwards
     compatibility for the chat-side caller (_intercept_agents_create)
     that doesn't supply extras."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    call = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     await pair_with_openclaw(
         owner_id="user_abc",
         paperclip_agent={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
         # Note: NOT passing extra_update_fields — exercises default arg.
     )
 
-    update_call = pool.send_rpc.await_args_list[1]
-    assert update_call.kwargs["params"] == {
+    update_call = call.await_args_list[1]
+    assert update_call.args[2] == {
         "agentId": pc_uuid,
         "name": "Code Reviewer",
     }
 
 
 @pytest.mark.asyncio
-async def test_pair_with_extra_update_fields_threads_into_update_rpc():
+async def test_pair_with_extra_update_fields_threads_into_update_rpc(monkeypatch):
     """extra_update_fields is merged into the agents.update RPC params
     so marketplace deploys can carry the full slice-derived agent entry
     (identity, skills, reasoningDefault, etc.) through the same call."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    call = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.container_rpc.call", call)
 
     await pair_with_openclaw(
         owner_id="user_abc",
         paperclip_agent={"id": pc_uuid, "name": "Ray", "role": "general"},
-        gateway_pool=pool,
-        ip="10.0.0.5",
-        token="gw_token",
         extra_update_fields={
             "identity": {"emoji": "🍃", "vibe": "calm"},
             "skills": ["resy"],
@@ -936,8 +903,8 @@ async def test_pair_with_extra_update_fields_threads_into_update_rpc():
         },
     )
 
-    update_call = pool.send_rpc.await_args_list[1]
-    params = update_call.kwargs["params"]
+    update_call = call.await_args_list[1]
+    params = update_call.args[2]
     # Caller-supplied agentId/name are clobbered — the helper is the
     # single source of truth for those.
     assert params["agentId"] == pc_uuid
@@ -980,7 +947,7 @@ def _mock_live_pairing_deps(monkeypatch):
         AsyncMock(return_value=(True, None)),
     )
     monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.gateway_rpc_oneshot",
+        "core.services.paperclip_openclaw_pairing.container_rpc.call",
         AsyncMock(return_value={}),
     )
 
@@ -1215,18 +1182,17 @@ async def test_live_approve_uses_requestid_from_probe(monkeypatch):
     _mock_live_pairing_deps(monkeypatch)
     ident, agent = _live_agent()
     monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(return_value=(False, "req-1")))
-    oneshot = AsyncMock(return_value={"requestId": "req-1", "device": {"deviceId": ident.device_id}})
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", oneshot)
+    call = AsyncMock(return_value={"requestId": "req-1", "device": {"deviceId": ident.device_id}})
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", call)
 
     await ensure_operator_device_paired(
         owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
     )
 
-    oneshot.assert_awaited_once()
-    assert oneshot.await_args.args[0] == "10.0.0.9"
-    assert oneshot.await_args.kwargs["method"] == "device.pair.approve"
-    assert oneshot.await_args.kwargs["params"] == {"requestId": "req-1"}
-    assert oneshot.await_args.kwargs["token"] == "GW_TOKEN"
+    call.assert_awaited_once()
+    assert call.await_args.args[0] == "user_1"
+    assert call.await_args.args[1] == "device.pair.approve"
+    assert call.await_args.args[2] == {"requestId": "req-1"}
 
 
 @pytest.mark.asyncio
@@ -1235,14 +1201,14 @@ async def test_live_approve_already_paired_skips_approve(monkeypatch):
     _mock_live_pairing_deps(monkeypatch)
     _, agent = _live_agent()
     monkeypatch.setattr(f"{_PAIRING_MOD}._probe_pairing_request", AsyncMock(return_value=(True, None)))
-    oneshot = AsyncMock()
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", oneshot)
+    call = AsyncMock()
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", call)
 
     await ensure_operator_device_paired(
         owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
     )
 
-    oneshot.assert_not_awaited()
+    call.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1254,7 +1220,7 @@ async def test_live_approve_lists_when_probe_lacks_requestid(monkeypatch):
 
     calls = []
 
-    async def _oneshot(ip, *, method, params, **kwargs):
+    async def _call(_owner_id, method, params, **_kwargs):
         calls.append((method, params))
         if method == "device.pair.list":
             return {
@@ -1265,7 +1231,7 @@ async def test_live_approve_lists_when_probe_lacks_requestid(monkeypatch):
             }
         return {"requestId": params["requestId"], "device": {"deviceId": ident.device_id}}
 
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
 
     await ensure_operator_device_paired(
         owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
@@ -1284,7 +1250,7 @@ async def test_live_approve_retries_once_on_unknown_requestid(monkeypatch):
 
     calls = []
 
-    async def _oneshot(ip, *, method, params, **kwargs):
+    async def _call(_owner_id, method, params, **_kwargs):
         calls.append((method, dict(params)))
         if method == "device.pair.approve" and params["requestId"] == "req-old":
             raise RuntimeError("unknown requestId")
@@ -1292,7 +1258,7 @@ async def test_live_approve_retries_once_on_unknown_requestid(monkeypatch):
             return {"pending": [{"deviceId": ident.device_id, "requestId": "req-new"}]}
         return {"requestId": params["requestId"], "device": {"deviceId": ident.device_id}}
 
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
 
     await ensure_operator_device_paired(
         owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN", ip="10.0.0.9"
@@ -1363,16 +1329,14 @@ async def test_approve_pending_device_from_rejection_uses_payload_request_id(mon
     -- no device.pair.list round trip needed."""
     calls = []
 
-    async def _oneshot(ip, *, method, params, **kwargs):
+    async def _call(_owner_id, method, params, **_kwargs):
         calls.append((method, dict(params)))
         return {"requestId": params["requestId"], "device": {"deviceId": "dev_stranded"}}
 
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
 
     healed = await approve_pending_device_from_rejection(
         owner_id="owner_x",
-        ip="10.0.0.9",
-        gateway_token="GW_TOKEN",
         device_id="dev_stranded",
         request_id="req-99",
     )
@@ -1388,18 +1352,16 @@ async def test_approve_pending_device_from_rejection_falls_back_when_request_id_
     approving it."""
     calls = []
 
-    async def _oneshot(ip, *, method, params, **kwargs):
+    async def _call(_owner_id, method, params, **_kwargs):
         calls.append((method, dict(params)))
         if method == "device.pair.list":
             return {"pending": [{"deviceId": "dev_stranded", "requestId": "req-listed"}]}
         return {"requestId": params["requestId"], "device": {"deviceId": "dev_stranded"}}
 
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
 
     healed = await approve_pending_device_from_rejection(
         owner_id="owner_x",
-        ip="10.0.0.9",
-        gateway_token="GW_TOKEN",
         device_id="dev_stranded",
         request_id=None,
     )
@@ -1425,8 +1387,6 @@ async def test_approve_pending_device_from_rejection_never_raises_on_failure(mon
 
     healed = await approve_pending_device_from_rejection(
         owner_id="owner_z",
-        ip="10.0.0.9",
-        gateway_token="GW_TOKEN",
         device_id="dev_abc",
         request_id="req-1",
     )
@@ -1443,16 +1403,14 @@ async def test_approve_pending_device_from_rejection_no_retry_on_auth_error(monk
 
     attempts = {"n": 0}
 
-    async def _oneshot(ip, *, method, params, **kwargs):
+    async def _call(_owner_id, _method, _params, **_kwargs):
         attempts["n"] += 1
         raise GatewayConnectAuthError("bad admin token", code="AUTH_FAILED")
 
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call)
 
     healed = await approve_pending_device_from_rejection(
         owner_id="owner_z",
-        ip="10.0.0.9",
-        gateway_token="GW_TOKEN",
         device_id="dev_abc",
         request_id="req-1",
     )
@@ -1469,15 +1427,13 @@ async def test_approve_pending_device_from_rejection_no_device_id_is_noop(monkey
     below instead of hanging ~10s trying a real connect to 10.0.0.9:18789 and
     then failing on an incidental TypeError."""
 
-    async def _oneshot_should_not_be_called(*args, **kwargs):
-        raise AssertionError("gateway_rpc_oneshot must not be called when device_id is None")
+    async def _call_should_not_be_called(*args, **kwargs):
+        raise AssertionError("container_rpc.call must not be called when device_id is None")
 
-    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot_should_not_be_called)
+    monkeypatch.setattr(f"{_PAIRING_MOD}.container_rpc.call", _call_should_not_be_called)
 
     healed = await approve_pending_device_from_rejection(
         owner_id="owner_z",
-        ip="10.0.0.9",
-        gateway_token="GW_TOKEN",
         device_id=None,
         request_id="req-1",
     )

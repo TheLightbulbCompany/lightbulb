@@ -587,7 +587,7 @@ async def container_status(
         and owner_id not in _browser_restore_inflight
     ):
         _browser_restore_inflight.add(owner_id)
-        asyncio.create_task(_browser_state_restore(owner_id, container_ip, container["gateway_token"]))
+        asyncio.create_task(_browser_state_restore(owner_id))
 
     return _status_response(contract)
 
@@ -646,7 +646,7 @@ async def _pool_self_heal_connect(pool, owner_id: str, ip: str, token: str) -> N
         _self_heal_inflight.discard(owner_id)
 
 
-async def _browser_state_restore(owner_id: str, ip: str, token: str) -> None:
+async def _browser_state_restore(owner_id: str) -> None:
     """Background best-effort browser-session restore for the status poll.
 
     ``restore_browser_state`` is a fast no-op (one EFS stat) when no snapshot
@@ -656,7 +656,7 @@ async def _browser_state_restore(owner_id: str, ip: str, token: str) -> None:
     from core.services.browser_state import restore_browser_state
 
     try:
-        await restore_browser_state(owner_id, ip, token)
+        await restore_browser_state(owner_id)
     except Exception:  # noqa: BLE001 — best-effort; restore already swallows
         logger.info("status-poll browser-state restore failed owner=%s", owner_id)
     finally:

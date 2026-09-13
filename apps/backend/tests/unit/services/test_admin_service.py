@@ -671,15 +671,16 @@ async def test_list_user_agents_returns_none_when_no_container():
     assert result["container_status"] == "none"
 
 
-def _fake_pool(send_rpc_callable):
-    """Build a fake gateway pool whose send_rpc is the given AsyncMock-like
-    callable. Uses MagicMock instead of `type(...)` so the function isn't
-    bound as a method and self isn't auto-injected."""
-    from unittest.mock import MagicMock
+def _fake_call(rpc_callable):
+    """container_rpc.call stand-in: adapts its (owner_id, method, params,
+    *, timeout_s) positional shape onto the pool-style
+    ``rpc_callable(method=..., params=...)`` callables the tests below build,
+    so only this helper needed to change."""
 
-    pool = MagicMock()
-    pool.send_rpc = send_rpc_callable
-    return pool
+    async def _call(owner_id, method, params, **_kwargs):
+        return await rpc_callable(method=method, params=params)
+
+    return AsyncMock(side_effect=_call)
 
 
 def _fake_ecs(container_token="t", ip="10.0.0.1"):
@@ -701,7 +702,7 @@ async def test_list_user_agents_handles_gateway_timeout(monkeypatch):
         await asyncio.sleep(1.0)
         return {"agents": []}
 
-    pool = _fake_pool(slow_rpc)
+    call = _fake_call(slow_rpc)
     ecs = _fake_ecs()
 
     with (
@@ -710,7 +711,7 @@ async def test_list_user_agents_handles_gateway_timeout(monkeypatch):
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=pool),
+        patch("core.services.admin_service.container_rpc.call", call),
     ):
         result = await admin_service.list_user_agents("u1")
 
@@ -722,7 +723,7 @@ async def test_list_user_agents_handles_gateway_timeout(monkeypatch):
 async def test_list_user_agents_returns_agents_on_running_container():
     from core.services import admin_service
 
-    pool = _fake_pool(AsyncMock(return_value={"agents": [{"agent_id": "a", "name": "Agent A"}], "cursor": None}))
+    call = _fake_call(AsyncMock(return_value={"agents": [{"agent_id": "a", "name": "Agent A"}], "cursor": None}))
     ecs = _fake_ecs()
 
     with (
@@ -731,7 +732,7 @@ async def test_list_user_agents_returns_agents_on_running_container():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=pool),
+        patch("core.services.admin_service.container_rpc.call", call),
     ):
         result = await admin_service.list_user_agents("u1")
 
@@ -762,7 +763,7 @@ async def test_get_agent_detail_redacts_config_secrets():
     async def fake_rpc(**kwargs):
         return rpc_results[kwargs["method"]]
 
-    pool = _fake_pool(fake_rpc)
+    call = _fake_call(fake_rpc)
     ecs = _fake_ecs()
 
     with (
@@ -771,7 +772,7 @@ async def test_get_agent_detail_redacts_config_secrets():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=pool),
+        patch("core.services.admin_service.container_rpc.call", call),
     ):
         result = await admin_service.get_agent_detail("u1", "a")
 

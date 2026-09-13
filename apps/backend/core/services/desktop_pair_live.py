@@ -56,9 +56,9 @@ import asyncio
 import json
 import logging
 import os
-import secrets
 
 from core.observability.metrics import put_metric
+from core.services import container_rpc
 from core.services.desktop_pair import NODE_COMMANDS_DECLARED_UNCONDITIONALLY
 from core.services.paperclip_openclaw_pairing import approve_pending_device_from_rejection
 
@@ -89,27 +89,15 @@ def _read_backend_pairing_file(owner_id: str, subdir: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-async def _pool_rpc(*, owner_id: str, ip: str, token: str, method: str, params: dict) -> dict:
-    """One RPC over the pooled backend operator connection (admin scopes)."""
-    from core.containers import get_gateway_pool
-
-    payload = await get_gateway_pool().send_rpc(
-        user_id=owner_id,  # the pool is keyed by container owner
-        req_id=f"desktop-pair-{secrets.token_hex(8)}",
-        method=method,
-        params=params,
-        ip=ip,
-        token=token,
-        timeout=_RPC_TIMEOUT_S,
-    )
+async def _pool_rpc(*, owner_id: str, method: str, params: dict) -> dict:
+    """One admin-scoped RPC to the owner's container."""
+    payload = await container_rpc.call(owner_id, method, params, timeout_s=_RPC_TIMEOUT_S)
     return payload if isinstance(payload, dict) else {}
 
 
 async def heal_desktop_device_not_paired(
     *,
     owner_id: str,
-    ip: str,
-    gateway_token: str,
     device_id: str | None,
     request_id: str | None,
 ) -> bool:
@@ -140,8 +128,6 @@ async def heal_desktop_device_not_paired(
         return False
     return await approve_pending_device_from_rejection(
         owner_id=owner_id,
-        ip=ip,
-        gateway_token=gateway_token,
         device_id=device_id,
         request_id=request_id,
     )
@@ -150,8 +136,6 @@ async def heal_desktop_device_not_paired(
 async def approve_pending_node_surface(
     *,
     owner_id: str,
-    ip: str,
-    gateway_token: str,
     device_id: str,
 ) -> bool:
     """Approve the pending node command surface for one backend-paired device.
@@ -174,7 +158,7 @@ async def approve_pending_node_surface(
         entry = nodes.get(device_id)
         if not isinstance(entry, dict):
             return False
-        payload = await _pool_rpc(owner_id=owner_id, ip=ip, token=gateway_token, method="node.pair.list", params={})
+        payload = await _pool_rpc(owner_id=owner_id, method="node.pair.list", params={})
         pending = next(
             (
                 p
@@ -231,8 +215,6 @@ async def approve_pending_node_surface(
             return False
         await _pool_rpc(
             owner_id=owner_id,
-            ip=ip,
-            token=gateway_token,
             method="node.pair.approve",
             params={"requestId": pending["requestId"]},
         )
@@ -277,17 +259,8 @@ async def push_desktop_revoke_live(*, owner_id: str, device_id: str) -> bool:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
         if not container or not ip:
             return False
-        token = container.get("gateway_token")
-        if not token:
-            return False
         try:
-            await _pool_rpc(
-                owner_id=owner_id,
-                ip=ip,
-                token=token,
-                method="device.pair.remove",
-                params={"deviceId": device_id},
-            )
+            await _pool_rpc(owner_id=owner_id, method="device.pair.remove", params={"deviceId": device_id})
         except RuntimeError as e:
             if "unknown deviceId" in str(e):
                 return True  # already absent — the desired end state
@@ -333,11 +306,8 @@ async def push_desktop_pairing_live(*, owner_id: str, device_ids: set[str]) -> b
                 owner_id,
             )
             return False
-        token = container.get("gateway_token")
-        if not token:
-            return False
 
-        payload = await _pool_rpc(owner_id=owner_id, ip=ip, token=token, method="device.pair.list", params={})
+        payload = await _pool_rpc(owner_id=owner_id, method="device.pair.list", params={})
         for req in payload.get("pending") or []:
             if not isinstance(req, dict):
                 continue
@@ -346,13 +316,7 @@ async def push_desktop_pairing_live(*, owner_id: str, device_ids: set[str]) -> b
             if req_device_id not in device_ids or not request_id:
                 continue
             try:
-                await _pool_rpc(
-                    owner_id=owner_id,
-                    ip=ip,
-                    token=token,
-                    method="device.pair.approve",
-                    params={"requestId": request_id},
-                )
+                await _pool_rpc(owner_id=owner_id, method="device.pair.approve", params={"requestId": request_id})
                 logger.info(
                     "push_desktop_pairing_live: approved pending device=%s owner=%s",
                     req_device_id[:16],
@@ -367,7 +331,7 @@ async def push_desktop_pairing_live(*, owner_id: str, device_ids: set[str]) -> b
                 )
 
         for device_id in device_ids:
-            await approve_pending_node_surface(owner_id=owner_id, ip=ip, gateway_token=token, device_id=device_id)
+            await approve_pending_node_surface(owner_id=owner_id, device_id=device_id)
 
         put_metric("desktop_pair.live_push")
         return True

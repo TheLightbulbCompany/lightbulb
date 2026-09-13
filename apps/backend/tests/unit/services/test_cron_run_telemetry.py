@@ -55,7 +55,7 @@ async def _sweep(entries, *, rpc=None):
     with (
         patch.object(cron_run_telemetry.container_repo, "get_by_status", AsyncMock(return_value=[{"owner_id": OWNER}])),
         patch.object(cron_run_telemetry, "get_ecs_manager", return_value=ecs),
-        patch.object(cron_run_telemetry, "gateway_rpc_oneshot", oneshot),
+        patch.object(cron_run_telemetry.container_rpc, "call", oneshot),
         patch.object(run_analytics, "capture_product_event", side_effect=lambda **kw: captured.append(kw)),
         patch.object(run_analytics, "_is_internal_owner", AsyncMock(return_value=False)),
         patch.object(run_analytics, "put_metric") as run_metric,
@@ -89,8 +89,8 @@ async def test_unattended_cron_run_emits_agent_run_completed():
     # Deterministic capture uuid -> PostHog can drop a cross-process re-offer.
     assert captured[0]["event_uuid"]
 
-    params = oneshot.await_args.kwargs["params"]
-    assert oneshot.await_args.kwargs["method"] == "cron.runs"
+    params = oneshot.await_args.args[2]
+    assert oneshot.await_args.args[1] == "cron.runs"
     assert params["scope"] == "all"
     assert params["statuses"] == ["ok", "error"]
     assert params["limit"] <= 200  # CronRunsParamsSchema cap
@@ -175,7 +175,7 @@ async def test_unreachable_container_is_skipped_without_an_rpc():
     with (
         patch.object(cron_run_telemetry.container_repo, "get_by_status", AsyncMock(return_value=[{"owner_id": OWNER}])),
         patch.object(cron_run_telemetry, "get_ecs_manager", return_value=ecs),
-        patch.object(cron_run_telemetry, "gateway_rpc_oneshot", oneshot),
+        patch.object(cron_run_telemetry.container_rpc, "call", oneshot),
     ):
         await cron_run_telemetry.sweep_cron_runs()
     oneshot.assert_not_awaited()

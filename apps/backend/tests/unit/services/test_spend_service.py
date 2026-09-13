@@ -1,12 +1,14 @@
 """spend_service — provider-aware spend summary building blocks."""
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from core.billing.metronome_client import MetronomeClient
 from core.services import spend_service
+from core.services.messaging import ApiProblem
 
 
 DRAFT_INVOICE = {
@@ -175,17 +177,20 @@ AUTH_STATUS_RESULT = {
 
 
 def _patch_gateway(rpc_result=None, rpc_error=None, container=("c", "10.0.0.1")):
-    """Patch the ecs/pool accessors spend_service uses for the OAuth branch."""
-    ecs = AsyncMock()
-    ecs.resolve_running_container.return_value = ({"gateway_token": "tok"}, container[1]) if container else (None, None)
-    pool = AsyncMock()
+    """Patch container_rpc.call for the OAuth branch. ``container=None``
+    simulates an unreachable container the same way container_rpc.call
+    itself reports one -- by raising. The second element is a no-op so every
+    ``with p1, p2:`` call site below stays unchanged."""
+    call = AsyncMock()
     if rpc_error:
-        pool.send_rpc.side_effect = rpc_error
+        call.side_effect = rpc_error
+    elif container is None:
+        call.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "no container", retryable=True)
     else:
-        pool.send_rpc.return_value = rpc_result
+        call.return_value = rpc_result
     return (
-        patch.object(spend_service, "_ecs_manager", return_value=ecs),
-        patch.object(spend_service, "_gateway_pool", return_value=pool),
+        patch.object(spend_service.container_rpc, "call", call),
+        contextlib.nullcontext(),
     )
 
 
@@ -355,24 +360,6 @@ async def test_summary_oauth_degrades_when_authstatus_rpc_hangs():
     with p1, p2:
         payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
     assert payload == {"mode": "tokens_only"}
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_uses_unique_req_id_per_call():
-    """Finding P2: a fixed req_id keyed only on owner_id lets two
-    overlapping /billing/spend requests for the same owner cross-deliver
-    responses in the gateway pool's _pending_rpcs (keyed by req_id)."""
-    p1, p2 = _patch_gateway(rpc_result=AUTH_STATUS_RESULT)
-    with p1, p2:
-        await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-        pool = spend_service._gateway_pool()
-        first_req_id = pool.send_rpc.call_args.kwargs["req_id"]
-
-        await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-        second_req_id = pool.send_rpc.call_args.kwargs["req_id"]
-
-    assert first_req_id != second_req_id
-    assert first_req_id.startswith("spend-authstatus-")
 
 
 @pytest.mark.asyncio

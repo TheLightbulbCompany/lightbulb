@@ -428,8 +428,6 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 slice_=slice_,
                 tar_bytes=tar_bytes,
                 new_agent_id=agent_id,
-                container_ip=container_ip,
-                container_token=container["gateway_token"],
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
             )

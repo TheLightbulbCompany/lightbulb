@@ -46,7 +46,7 @@ from pathlib import Path
 import httpx
 
 from core.config import settings
-from core.containers import get_ecs_manager, get_gateway_pool, get_workspace
+from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
@@ -285,7 +285,6 @@ async def _run_company_deploy(
             return
 
         slug_to_id: dict[str, str] = {}
-        gateway_pool = get_gateway_pool()
         workspace = get_workspace()
 
         for planned in plan.agents:
@@ -330,13 +329,7 @@ async def _run_company_deploy(
 
             # Register the agent in the running container + trust its operator
             # device, exactly like the /teams create path.
-            await pair_with_openclaw(
-                owner_id=owner_id,
-                paperclip_agent=pc,
-                gateway_pool=gateway_pool,
-                ip=ip,
-                token=gateway_token,
-            )
+            await pair_with_openclaw(owner_id=owner_id, paperclip_agent=pc)
             await ensure_operator_device_paired(
                 owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token, ip=ip
             )

@@ -75,8 +75,6 @@ async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypa
     # Container key is owner_id (org_id for org members).
     assert kwargs["owner_id"] == "org_xyz"
     assert kwargs["paperclip_agent"]["id"] == pc_uuid
-    assert kwargs["ip"] == "10.0.0.5"
-    assert kwargs["token"] == "gw_token"
 
 
 @pytest.mark.asyncio

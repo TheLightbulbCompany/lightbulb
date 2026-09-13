@@ -20,11 +20,11 @@ State:
 """
 
 import logging
-from uuid import uuid4
 
 from core.gateway.node_connection import NodeUpstreamConnection
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
 from core.observability.metrics import put_metric
+from core.services import container_rpc
 from core.services.config_patcher import patch_openclaw_config
 from core.services.desktop_pair_live import (
     approve_pending_node_surface,
@@ -272,8 +272,6 @@ async def handle_node_connect(
                 request_id = details.get("requestId")
                 healed = await heal_desktop_device_not_paired(
                     owner_id=owner_id,
-                    ip=ip,
-                    gateway_token=container["gateway_token"],
                     device_id=upstream.device_id,
                     request_id=request_id if isinstance(request_id, str) and request_id else None,
                 )
@@ -358,12 +356,7 @@ async def handle_node_connect(
     # owner's granted command set; never raises). The gateway updates the
     # connected session in place, no reconnect needed.
     if upstream.device_id:
-        await approve_pending_node_surface(
-            owner_id=owner_id,
-            ip=ip,
-            gateway_token=container["gateway_token"],
-            device_id=upstream.device_id,
-        )
+        await approve_pending_node_surface(owner_id=owner_id, device_id=upstream.device_id)
 
     return hello
 
@@ -440,23 +433,13 @@ async def handle_node_disconnect(
         else:
             cleared_sessions = []
         if cleared_sessions:
-            pool = get_gateway_pool()
             # Best-effort: clear execNode on sessions. If container is down, skip.
             for sk in cleared_sessions:
                 try:
-                    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-                    # req_id MUST be unique per call — the connection pool's
-                    # pending-response map is keyed on it and a duplicate ID
-                    # orphans the earlier future, hanging one caller 30s.
-                    await pool.send_rpc(
-                        user_id=owner_id,
-                        req_id=f"clear-exec-{uuid4()}",
-                        method="sessions.patch",
-                        # OpenClaw's sessions.patch takes `key`, not `sessionKey`
-                        # (openclaw/src/gateway/server-methods/sessions.ts).
-                        params={"key": sk, "execNode": None, "execHost": None},
-                        ip=ip,
-                        token=container["gateway_token"],
+                    # OpenClaw's sessions.patch takes `key`, not `sessionKey`
+                    # (openclaw/src/gateway/server-methods/sessions.ts).
+                    await container_rpc.call(
+                        owner_id, "sessions.patch", {"key": sk, "execNode": None, "execHost": None}
                     )
                 except Exception:
                     logger.debug(

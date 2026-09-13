@@ -55,9 +55,9 @@ import logging
 import time
 
 from core.containers import get_ecs_manager
-from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
+from core.services import container_rpc
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,8 @@ _LOOKBACK_S = 2 * 60 * 60
 # further would spend real time chasing runs we would rather under-count.
 _PAGE_LIMIT = 200
 
-# Per-owner budget. gateway_rpc_oneshot defaults to 10s on each of
-# open/recv/rpc, which across the fleet would stall the shared worker loop.
+# Per-owner budget, well under the pool's default — a wedged container must
+# not stall the shared worker loop.
 _RPC_TIMEOUT_S = 5.0
 
 
@@ -100,23 +100,23 @@ async def sweep_cron_runs() -> None:
         try:
             # Re-resolve the task IP every pass: the row is long-lived but the
             # IP is ephemeral, and a cached dead IP is a known prod outage
-            # (see ecs_manager.discover_ip).
+            # (see ecs_manager.discover_ip). Kept as an explicit pre-check
+            # (rather than letting container_rpc.call resolve it) so a
+            # container that just went cold is silently skipped, never woken
+            # — this sweep's whole point is to leave a scaled-to-zero box
+            # asleep.
             container, ip = await ecs.resolve_running_container(owner_id)
             if container is None or not ip:
                 continue
-            page = await gateway_rpc_oneshot(
-                ip,
-                owner_id=owner_id,
-                token=container["gateway_token"],
-                method="cron.runs",
+            page = await container_rpc.call(
+                owner_id,
+                "cron.runs",
                 # scope "all" is refused for a cron-SCOPED caller; the backend
                 # operator device carries no cron caller scope, so it is
                 # allowed. "skipped" entries never executed, so they are not
                 # runs and are filtered server-side.
-                params={"scope": "all", "limit": _PAGE_LIMIT, "statuses": ["ok", "error"]},
-                open_timeout=_RPC_TIMEOUT_S,
-                recv_timeout=_RPC_TIMEOUT_S,
-                rpc_timeout=_RPC_TIMEOUT_S,
+                {"scope": "all", "limit": _PAGE_LIMIT, "statuses": ["ok", "error"]},
+                timeout_s=_RPC_TIMEOUT_S,
             )
             offered += _offer_page(owner_id, page, cutoff_ms, run_analytics)
         except Exception:

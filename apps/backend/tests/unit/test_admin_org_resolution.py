@@ -249,21 +249,21 @@ async def test_get_agent_detail_uses_org_id_for_container_lookup():
 
 
 @pytest.mark.asyncio
-async def test_list_user_agents_uses_unique_req_ids_per_call():
-    """P1: concurrent admin agents.list calls on the same org must NOT
-    overwrite each other in the gateway's pending-RPC dict. The deterministic
-    req_id (admin-agents-list-{owner_id}) collided; add uuid4 entropy."""
+async def test_list_user_agents_concurrent_calls_on_the_same_org_both_land():
+    """Concurrent admin agents.list calls on the same org must both complete.
+    (Formerly pinned a gateway-pool req_id-uniqueness invariant; container_rpc
+    is one HTTP request per call, so there is no shared pending-RPC dict left
+    to collide on.)"""
     from core.services import admin_service
 
     org = {"id": "org_abc", "slug": "acme", "name": "Acme", "role": "org:admin"}
 
-    captured_req_ids: list[str] = []
+    call_count = {"n": 0}
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
-        captured_req_ids.append(req_id)
+    async def fake_call(_owner_id, _method, _params, **_kwargs):
+        call_count["n"] += 1
         return {"agents": [], "cursor": None}
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -280,7 +280,7 @@ async def test_list_user_agents_uses_unique_req_ids_per_call():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", AsyncMock(side_effect=fake_call)),
     ):
         results = await asyncio.gather(
             admin_service.list_user_agents("user_abc"),
@@ -288,12 +288,7 @@ async def test_list_user_agents_uses_unique_req_ids_per_call():
         )
 
     assert len(results) == 2
-    assert len(captured_req_ids) == 2
-    # Both req_ids must share the admin-agents-list-{owner_id} prefix but
-    # differ in the trailing uuid4 slug.
-    for rid in captured_req_ids:
-        assert rid.startswith("admin-agents-list-org_abc-")
-    assert captured_req_ids[0] != captured_req_ids[1]
+    assert call_count["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -307,11 +302,10 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
 
     captured_params: list[dict] = []
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, _method, params, **_kwargs):
         captured_params.append(params)
         return {"agents": [{"id": "agt_1"}], "cursor": None}
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -328,7 +322,7 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", AsyncMock(side_effect=fake_call)),
     ):
         result = await admin_service.list_user_agents("user_abc", cursor="abc", limit=25)
 
@@ -368,10 +362,9 @@ async def test_get_agent_detail_redacts_secrets_in_config_raw_envelope():
         "config.get": raw_envelope,  # envelope form — the bug path
     }
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         return rpc_results[method]
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -388,7 +381,7 @@ async def test_get_agent_detail_redacts_secrets_in_config_raw_envelope():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -416,10 +409,9 @@ async def test_get_agent_detail_handles_malformed_config_raw_envelope():
         "config.get": {"raw": "not valid json {{{", "hash": "abc"},
     }
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         return rpc_results[method]
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -436,7 +428,7 @@ async def test_get_agent_detail_handles_malformed_config_raw_envelope():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -463,10 +455,9 @@ async def test_get_agent_detail_normalizes_sessions_list_array_response():
         "config.get": {},
     }
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         return rpc_results[method]
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -483,7 +474,7 @@ async def test_get_agent_detail_normalizes_sessions_list_array_response():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -511,10 +502,9 @@ async def test_get_agent_detail_normalizes_skills_status_array_response():
         "config.get": {},
     }
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         return rpc_results[method]
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -531,7 +521,7 @@ async def test_get_agent_detail_normalizes_skills_status_array_response():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -540,22 +530,22 @@ async def test_get_agent_detail_normalizes_skills_status_array_response():
 
 
 @pytest.mark.asyncio
-async def test_get_agent_detail_uses_unique_req_ids_per_call():
-    """P1: _rpc in get_agent_detail issued 4 RPCs with deterministic
-    admin-{suffix}-{agent_id} ids. Concurrent detail loads on the same agent
-    would clobber each other. Each call must carry uuid4 entropy."""
+async def test_get_agent_detail_concurrent_calls_on_the_same_agent_both_land():
+    """Concurrent admin detail loads on the same agent must both complete,
+    each issuing its own 4 RPCs. (Formerly pinned a gateway-pool req_id-
+    uniqueness invariant; container_rpc is one HTTP request per call, so
+    there is no shared pending-RPC dict left to collide on.)"""
     from core.services import admin_service
 
     org = {"id": "org_abc", "slug": "acme", "name": "Acme", "role": "org:admin"}
 
-    captured_req_ids: list[str] = []
+    call_count = {"n": 0}
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
-        captured_req_ids.append(req_id)
+    async def fake_call(_owner_id, _method, _params, **_kwargs):
+        call_count["n"] += 1
         # Return a plausibly-shaped dict so get_agent_detail doesn't error.
         return {"agent": {}, "sessions": [], "skills": [], "config": {}}
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -572,7 +562,7 @@ async def test_get_agent_detail_uses_unique_req_ids_per_call():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,
@@ -583,12 +573,8 @@ async def test_get_agent_detail_uses_unique_req_ids_per_call():
             admin_service.get_agent_detail("user_abc", "agt_1"),
         )
 
-    # 4 RPCs per detail call * 2 concurrent calls = 8 unique ids.
-    assert len(captured_req_ids) == 8
-    assert len(set(captured_req_ids)) == 8, f"req_ids collided: {captured_req_ids}"
-    # All still carry the admin-{suffix}-{agent_id} prefix.
-    for rid in captured_req_ids:
-        assert rid.startswith("admin-") and "-agt_1-" in rid
+    # 4 RPCs per detail call * 2 concurrent calls.
+    assert call_count["n"] == 8
 
 
 @pytest.mark.asyncio
@@ -838,24 +824,17 @@ class TestAdminMutationOwnerResolution:
         )
 
     @pytest.mark.asyncio
-    async def test_agent_clear_sessions_uses_org_owner_id_and_unique_req_id(self, async_client, admin_env, org_mode):
-        import re
-
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"cleared": 3})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
-        ):
+    async def test_agent_clear_sessions_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        call = AsyncMock(return_value={"cleared": 3})
+        with patch("routers.admin.container_rpc.call", call):
             res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/clear-sessions")
 
         assert res.status_code == 200
-        ecs.resolve_running_container.assert_awaited_once_with("org_abc")
-        kwargs = pool.send_rpc.await_args.kwargs
-        assert kwargs["user_id"] == "org_abc"
-        assert re.fullmatch(r"admin-agent-clear-agt_42-[0-9a-f]{8}", kwargs["req_id"])
+        call.assert_awaited_once()
+        args = call.await_args.args
+        assert args[0] == "org_abc"
+        assert args[1] == "sessions.clear"
+        assert args[2].get("agent_id") == "agt_42"
 
     # -- Account mutations MUST NOT resolve (regression guard) ---------------
 
@@ -912,11 +891,10 @@ async def test_get_agent_detail_uses_correct_rpc_methods():
 
     captured_methods: list[str] = []
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         captured_methods.append(method)
         return {"sessions": [], "skills": []}
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -933,7 +911,7 @@ async def test_get_agent_detail_uses_correct_rpc_methods():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,
@@ -960,11 +938,10 @@ async def test_get_agent_detail_uses_camelcase_params():
     # method -> params, captured per-call.
     captured: dict[str, dict] = {}
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         captured[method] = params
         return {"sessions": [], "skills": []}
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -981,7 +958,7 @@ async def test_get_agent_detail_uses_camelcase_params():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,
@@ -1033,7 +1010,7 @@ async def test_get_agent_detail_filters_sessions_by_agent_client_side():
         ]
     }
 
-    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+    async def fake_call(_owner_id, method, params, **_kwargs):  # noqa: ARG001
         if method == "sessions.list":
             return seeded_sessions
         if method == "skills.status":
@@ -1044,7 +1021,6 @@ async def test_get_agent_detail_filters_sessions_by_agent_client_side():
             return {"id": "agt_1", "name": "Test Agent"}
         return {}
 
-    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
     fake_ecs = type(
         "FakeECS",
         (),
@@ -1061,7 +1037,7 @@ async def test_get_agent_detail_filters_sessions_by_agent_client_side():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.container_rpc.call", fake_call),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,

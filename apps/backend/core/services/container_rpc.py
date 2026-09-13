@@ -1,7 +1,7 @@
 """One HTTP request per gateway RPC, to the container's baked lightbulb-channel plugin.
 
-Replaces the per-owner gateway WebSocket pool. ``call`` raises exactly what the pool's
-``send_rpc`` raised so every caller's ``except`` chain is unchanged.
+Replaces the per-owner gateway WebSocket pool. ``call`` raises the same exception
+shapes the pool's RPC method used to, so every caller's ``except`` chain is unchanged.
 """
 
 from __future__ import annotations

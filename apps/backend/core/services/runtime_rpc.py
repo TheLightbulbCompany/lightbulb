@@ -12,7 +12,6 @@ import httpx
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
-from core.containers import get_gateway_pool
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
 from core.services import container_rpc
@@ -395,14 +394,7 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
         model=model,
         meta=meta,
     )
-    pool = get_gateway_pool()
-    await pair_with_openclaw(
-        owner_id=owner_id,
-        paperclip_agent=paperclip_agent,
-        gateway_pool=pool,
-        ip=ip,
-        token=token,
-    )
+    await pair_with_openclaw(owner_id=owner_id, paperclip_agent=paperclip_agent)
     # pair_with_openclaw above also registers the agent's Lightbulb channel
     # account + binding — see its docstring.
     await ensure_operator_device_paired(

@@ -13,38 +13,27 @@ that provider (``stopReason: "auth-revoked"``) — a true revoke with no restart
 
 ``operator.admin`` REQUIRES the signed operator-device handshake (the gateway
 strips self-declared scopes from clients that present only the shared token —
-see core/crypto/operator_device.py). The signed connect + one-shot RPC is the
-shared ``core.gateway.operator_rpc.gateway_rpc_oneshot`` helper, which loads the
-per-container Ed25519 device seed (KMS-decrypted from the container row) and
-signs the connect.
+see core/crypto/operator_device.py). The request itself goes over
+``core.services.container_rpc.call``, the HTTP route to the container's baked
+``lightbulb-channel`` plugin, like any other gateway RPC.
 """
 
 import asyncio
 import logging
 
 from core.containers import get_ecs_manager
-from core.gateway.operator_rpc import gateway_rpc_oneshot
+from core.services import container_rpc
 
 logger = logging.getLogger(__name__)
 
 _WS_TIMEOUT = 10
 
 
-async def _logout_provider_via_gateway(ip: str, owner_id: str, token: str, provider: str) -> None:
-    """Signed ``models.authLogout`` one-shot — drop ``provider``'s credential
-    from the running gateway's live auth store (grants ``operator.admin`` via
-    the signed device handshake). Raises on any failure (the caller treats
+async def _logout_provider_via_gateway(owner_id: str, provider: str) -> None:
+    """``models.authLogout`` — drop ``provider``'s credential from the running
+    gateway's live auth store. Raises on any failure (the caller treats
     failure as best-effort)."""
-    await gateway_rpc_oneshot(
-        ip,
-        owner_id=owner_id,
-        token=token,
-        method="models.authLogout",
-        params={"provider": provider},
-        open_timeout=_WS_TIMEOUT,
-        recv_timeout=_WS_TIMEOUT,
-        rpc_timeout=_WS_TIMEOUT,
-    )
+    await container_rpc.call(owner_id, "models.authLogout", {"provider": provider}, timeout_s=_WS_TIMEOUT)
 
 
 async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "openai") -> bool:
@@ -80,7 +69,7 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
         return False
 
     try:
-        await _logout_provider_via_gateway(ip, owner_id, token, provider)
+        await _logout_provider_via_gateway(owner_id, provider)
         logger.info(
             "revoked_provider_auth_in_container",
             extra={"owner_id": owner_id, "provider": provider},

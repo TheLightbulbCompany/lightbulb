@@ -1262,9 +1262,9 @@ class TestGatewayRestart:
 
     @pytest.fixture
     def mock_call_gateway_rpc(self):
-        # gateway_restart now lives in container_recover and reaches the gateway
-        # through the shared signed one-shot helper.
-        with patch("routers.container_recover.gateway_rpc_oneshot", new_callable=AsyncMock) as mock_rpc:
+        # gateway_restart now lives in container_recover and reaches the
+        # gateway through container_rpc.call.
+        with patch("routers.container_recover.container_rpc.call", new_callable=AsyncMock) as mock_rpc:
             mock_rpc.return_value = {}
             yield mock_rpc
 
@@ -1284,18 +1284,17 @@ class TestGatewayRestart:
     async def test_gateway_restart_success(
         self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
     ):
-        """Happy path: should return ok=true and call config.apply via the
-        signed one-shot (config.apply is operator.admin-reserved)."""
+        """Happy path: should return ok=true and call config.apply via
+        container_rpc.call (config.apply is operator.admin-reserved)."""
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
         mock_call_gateway_rpc.assert_awaited_once()
         call = mock_call_gateway_rpc.await_args
-        assert call.args[0] == "10.0.1.5"  # ip (positional)
-        assert call.kwargs["token"] == "test-gw-token"
-        assert call.kwargs["method"] == "config.apply"
-        assert call.kwargs["params"] == {"raw": '{"gateway":{"mode":"local"}}'}
-        assert call.kwargs["owner_id"]  # signed handshake is scoped to the owner
+        assert call.args[0]  # owner_id (positional)
+        assert call.args[1] == "config.apply"
+        assert call.args[2] == {"raw": '{"gateway":{"mode":"local"}}'}
+        assert call.kwargs["timeout_s"] == 30.0
 
     @pytest.mark.asyncio
     async def test_gateway_restart_no_container(self, async_client, mock_ecs_manager, mock_call_gateway_rpc):

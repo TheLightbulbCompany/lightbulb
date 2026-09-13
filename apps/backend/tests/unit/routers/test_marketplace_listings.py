@@ -517,10 +517,6 @@ def test_deploy_free_listing_succeeds(
     # Slice fetched from S3 and forwarded so the buyer's openclaw.json gets
     # patched (i.e. the agent auto-registers).
     assert kwargs["slice_"] == real_slice
-    # Container ip + token resolved from ecs_manager and threaded to the
-    # catalog so it can drive ``agents.create`` / ``agents.update`` RPCs.
-    assert kwargs["container_ip"] == "10.0.0.1"
-    assert kwargs["container_token"] == "gw-tok"
     assert kwargs["listing_id"] == "lst_1"
     # The deployed agent's operator device is paired into the running container
     # + its authToken bound, so Paperclip's first relayed wake isn't rejected

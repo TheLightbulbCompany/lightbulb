@@ -14,20 +14,24 @@ import pytest
 
 import core.services.browser_state as bs
 from core.containers.workspace import WorkspaceError
+from core.services.messaging import ApiProblem
 
 
-def _ecs(container, ip):
-    m = MagicMock()
-    m.resolve_running_container = AsyncMock(return_value=(container, ip))
-    return m
+def _running_container_mock(container, ip):
+    """container_rpc.running_container stand-in: raises for a cold container
+    (mirroring the real ApiProblem it raises), resolves otherwise. The snapshot
+    pre-check only cares whether this raises, not the returned tuple."""
+    if container is None or ip is None:
+        return AsyncMock(side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "no container", retryable=True))
+    return AsyncMock(return_value=(container, ip))
 
 
-def _pool_from_routes(routes):
-    """Pool whose send_rpc dispatches on the browser.request path, recording
-    every call. ``routes`` maps (METHOD, path) -> return value or Exception."""
+def _call_from_routes(routes):
+    """container_rpc.call stand-in that dispatches on the browser.request path,
+    recording every call. ``routes`` maps (METHOD, path) -> return value or Exception."""
     calls = []
 
-    async def _send_rpc(*, user_id, req_id, method, params, ip, token, timeout=None):
+    async def _call(owner_id, method, params, **_kwargs):
         assert method == "browser.request"
         key = (params["method"], params["path"])
         calls.append({"key": key, "params": params})
@@ -36,10 +40,9 @@ def _pool_from_routes(routes):
             raise val
         return val
 
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=_send_rpc)
-    pool._calls = calls
-    return pool
+    mock = AsyncMock(side_effect=_call)
+    mock._calls = calls
+    return mock
 
 
 def _workspace():
@@ -59,12 +62,12 @@ def _workspace():
 async def test_snapshot_cold_container_is_noop():
     ws = _workspace()
     with (
-        patch.object(bs, "get_ecs_manager", return_value=_ecs(None, None)),
-        patch.object(bs, "get_gateway_pool") as pool,
+        patch.object(bs.container_rpc, "running_container", _running_container_mock(None, None)),
+        patch.object(bs.container_rpc, "call") as call,
         patch.object(bs, "get_workspace", return_value=ws),
     ):
         assert await bs.snapshot_browser_state("org_1") is False
-        pool.assert_not_called()
+        call.assert_not_called()
         ws.write_file.assert_not_called()
 
 
@@ -75,11 +78,12 @@ async def test_snapshot_writes_cookies_and_local():
         ("GET", "/cookies"): {"ok": True, "targetId": "t", "cookies": cookies},
         ("GET", "/storage/local"): {"ok": True, "targetId": "t", "values": {"k": "v"}},
     }
-    pool = _pool_from_routes(routes)
     ws = _workspace()
     with (
-        patch.object(bs, "get_ecs_manager", return_value=_ecs({"gateway_token": "tok"}, "10.0.0.9")),
-        patch.object(bs, "get_gateway_pool", return_value=pool),
+        patch.object(
+            bs.container_rpc, "running_container", _running_container_mock({"gateway_token": "tok"}, "10.0.0.9")
+        ),
+        patch.object(bs.container_rpc, "call", _call_from_routes(routes)),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
         assert await bs.snapshot_browser_state("org_1") is True
@@ -105,8 +109,10 @@ async def test_snapshot_empty_capture_does_not_clobber():
     }
     ws = _workspace()
     with (
-        patch.object(bs, "get_ecs_manager", return_value=_ecs({"gateway_token": "t"}, "10.0.0.1")),
-        patch.object(bs, "get_gateway_pool", return_value=_pool_from_routes(routes)),
+        patch.object(
+            bs.container_rpc, "running_container", _running_container_mock({"gateway_token": "t"}, "10.0.0.1")
+        ),
+        patch.object(bs.container_rpc, "call", _call_from_routes(routes)),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
         assert await bs.snapshot_browser_state("org_1") is False
@@ -122,8 +128,10 @@ async def test_snapshot_partial_when_one_get_fails():
     }
     ws = _workspace()
     with (
-        patch.object(bs, "get_ecs_manager", return_value=_ecs({"gateway_token": "t"}, "10.0.0.1")),
-        patch.object(bs, "get_gateway_pool", return_value=_pool_from_routes(routes)),
+        patch.object(
+            bs.container_rpc, "running_container", _running_container_mock({"gateway_token": "t"}, "10.0.0.1")
+        ),
+        patch.object(bs.container_rpc, "call", _call_from_routes(routes)),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
         assert await bs.snapshot_browser_state("org_1") is True
@@ -139,8 +147,10 @@ async def test_snapshot_both_gets_fail_is_noop():
     }
     ws = _workspace()
     with (
-        patch.object(bs, "get_ecs_manager", return_value=_ecs({"gateway_token": "t"}, "10.0.0.1")),
-        patch.object(bs, "get_gateway_pool", return_value=_pool_from_routes(routes)),
+        patch.object(
+            bs.container_rpc, "running_container", _running_container_mock({"gateway_token": "t"}, "10.0.0.1")
+        ),
+        patch.object(bs.container_rpc, "call", _call_from_routes(routes)),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
         assert await bs.snapshot_browser_state("org_1") is False
@@ -157,11 +167,11 @@ async def test_restore_no_snapshot_is_fast_noop():
     ws = _workspace()
     ws.read_file.side_effect = WorkspaceError("not found")
     with (
-        patch.object(bs, "get_gateway_pool") as pool,
+        patch.object(bs.container_rpc, "call") as call,
         patch.object(bs, "get_workspace", return_value=ws),
     ):
-        assert await bs.restore_browser_state("org_1", "10.0.0.1", "tok") is False
-        pool.assert_not_called()
+        assert await bs.restore_browser_state("org_1") is False
+        call.assert_not_called()
         ws.delete_file.assert_not_called()
 
 
@@ -179,17 +189,17 @@ async def test_restore_applies_then_consumes():
         ("POST", "/cookies/set"): {"ok": True},
         ("POST", "/storage/local/set"): {"ok": True},
     }
-    pool = _pool_from_routes(routes)
+    call = _call_from_routes(routes)
     ws = _workspace()
     ws.read_file.return_value = json.dumps(state)
     with (
-        patch.object(bs, "get_gateway_pool", return_value=pool),
+        patch.object(bs.container_rpc, "call", call),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
-        assert await bs.restore_browser_state("org_1", "10.0.0.1", "tok") is True
+        assert await bs.restore_browser_state("org_1") is True
 
-    cookie_sets = [c for c in pool._calls if c["key"] == ("POST", "/cookies/set")]
-    local_sets = [c for c in pool._calls if c["key"] == ("POST", "/storage/local/set")]
+    cookie_sets = [c for c in call._calls if c["key"] == ("POST", "/cookies/set")]
+    local_sets = [c for c in call._calls if c["key"] == ("POST", "/storage/local/set")]
     assert len(cookie_sets) == 2
     assert len(local_sets) == 1
     # Each cookie is wrapped in {"cookie": ...}; session cookie preserved.
@@ -204,11 +214,11 @@ async def test_restore_corrupt_json_is_discarded():
     ws = _workspace()
     ws.read_file.return_value = "{not json"
     with (
-        patch.object(bs, "get_gateway_pool") as pool,
+        patch.object(bs.container_rpc, "call") as call,
         patch.object(bs, "get_workspace", return_value=ws),
     ):
-        assert await bs.restore_browser_state("org_1", "10.0.0.1", "tok") is False
-        pool.assert_not_called()
+        assert await bs.restore_browser_state("org_1") is False
+        call.assert_not_called()
         ws.delete_file.assert_called_once_with("org_1", bs.STATE_PATH)
 
 
@@ -217,14 +227,14 @@ async def test_restore_is_best_effort_per_cookie():
     # First cookie POST raises; restore continues and still consumes the file.
     state = {"cookies": [{"name": "a", "value": "1"}, {"name": "b", "value": "2"}]}
     routes = {("POST", "/cookies/set"): RuntimeError("rejected")}
-    pool = _pool_from_routes(routes)
+    call = _call_from_routes(routes)
     ws = _workspace()
     ws.read_file.return_value = json.dumps(state)
     with (
-        patch.object(bs, "get_gateway_pool", return_value=pool),
+        patch.object(bs.container_rpc, "call", call),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
         # Zero applied → returns False, but still deletes (reachable, best shot).
-        assert await bs.restore_browser_state("org_1", "10.0.0.1", "tok") is False
-    assert len([c for c in pool._calls if c["key"] == ("POST", "/cookies/set")]) == 2
+        assert await bs.restore_browser_state("org_1") is False
+    assert len([c for c in call._calls if c["key"] == ("POST", "/cookies/set")]) == 2
     ws.delete_file.assert_called_once()

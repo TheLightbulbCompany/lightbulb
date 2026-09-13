@@ -40,10 +40,6 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
     ledger.setdefault("created", [])
     ledger.setdefault("ended", [])
 
-    class FakePool:
-        async def ensure_connection(self, *_args):
-            return None
-
     class FakeManager:
         async def resolve_running_container(self, _owner):
             return {"gateway_token": "gw"}, "10.0.0.9"
@@ -72,7 +68,6 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
         return {"version": 1}
 
     monkeypatch.setattr(work, "get_ecs_manager", lambda: FakeManager())
-    monkeypatch.setattr(work, "get_gateway_pool", lambda: FakePool())
     monkeypatch.setattr(work.messaging_repo, "get_member", fake_get_member)
     monkeypatch.setattr(work.messaging_repo, "list_members", fake_list_members)
     monkeypatch.setattr(work, "build_ingress_body", fake_body)

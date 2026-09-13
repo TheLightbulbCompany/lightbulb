@@ -79,12 +79,14 @@ async def test_delete_everywhere_removes_runtime_config_workspace_then_paperclip
     events: list[str] = []
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "token"}, "10.0.0.7"))
-    gateway = MagicMock()
-    gateway.send_rpc = AsyncMock(
-        side_effect=lambda **kwargs: (
-            {"agents": [{"id": "retiring"}]} if kwargs["method"] == "agents.list" else events.append("gateway")
-        )
-    )
+
+    async def _gw_call(_owner_id, method, _params, **_kwargs):
+        if method == "agents.list":
+            return {"agents": [{"id": "retiring"}]}
+        events.append("gateway")
+        return {}
+
+    gw_call = AsyncMock(side_effect=_gw_call)
     workspace = MagicMock()
     workspace.remove_template_sidecar = MagicMock(side_effect=lambda *_: events.append("sidecar"))
 
@@ -111,7 +113,7 @@ async def test_delete_everywhere_removes_runtime_config_workspace_then_paperclip
             new=AsyncMock(return_value={"issues_reassigned": 1, "routines_archived": 1}),
         ),
         patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_gateway_pool", return_value=gateway),
+        patch.object(lifecycle.container_rpc, "call", gw_call),
         patch("core.containers.get_workspace", return_value=workspace),
         patch(
             "core.services.config_patcher.remove_from_openclaw_config_list",
@@ -135,10 +137,10 @@ async def test_delete_everywhere_removes_runtime_config_workspace_then_paperclip
 
     assert events == ["gateway", "config", "sidecar", "workspace", "paperclip"]
     assert result["deleted"] is True
-    assert [call.kwargs["method"] for call in gateway.send_rpc.await_args_list] == ["agents.list", "agents.delete"]
-    rpc = gateway.send_rpc.await_args_list[1].kwargs
-    assert rpc["method"] == "agents.delete"
-    assert rpc["params"] == {"agentId": "retiring", "deleteFiles": True}
+    assert [call.args[1] for call in gw_call.await_args_list] == ["agents.list", "agents.delete"]
+    delete_call = gw_call.await_args_list[1]
+    assert delete_call.args[1] == "agents.delete"
+    assert delete_call.args[2] == {"agentId": "retiring", "deleteFiles": True}
 
 
 @pytest.mark.asyncio
@@ -146,8 +148,7 @@ async def test_delete_everywhere_retries_after_runtime_agent_is_already_absent()
     events: list[str] = []
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "token"}, "10.0.0.7"))
-    gateway = MagicMock()
-    gateway.send_rpc = AsyncMock(return_value={"agents": [{"id": "friday"}]})
+    gw_call = AsyncMock(return_value={"agents": [{"id": "friday"}]})
     workspace = MagicMock()
     workspace.remove_template_sidecar = MagicMock(side_effect=lambda *_: events.append("sidecar"))
 
@@ -164,7 +165,7 @@ async def test_delete_everywhere_retries_after_runtime_agent_is_already_absent()
         patch("core.services.paperclip_openclaw_pairing.is_seeded_agent", new=AsyncMock(return_value=False)),
         patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_gateway_pool", return_value=gateway),
+        patch.object(lifecycle.container_rpc, "call", gw_call),
         patch("core.containers.get_workspace", return_value=workspace),
         patch(
             "core.services.config_patcher.remove_from_openclaw_config_list",
@@ -184,8 +185,8 @@ async def test_delete_everywhere_retries_after_runtime_agent_is_already_absent()
 
     assert result["deleted"] is True
     assert events == ["config", "sidecar", "workspace", "paperclip"]
-    gateway.send_rpc.assert_awaited_once()
-    assert gateway.send_rpc.await_args.kwargs["method"] == "agents.list"
+    gw_call.assert_awaited_once()
+    assert gw_call.await_args.args[1] == "agents.list"
 
 
 @pytest.mark.asyncio
@@ -193,8 +194,7 @@ async def test_delete_everywhere_retries_transient_openclaw_file_lock():
     events: list[str] = []
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "token"}, "10.0.0.7"))
-    gateway = MagicMock()
-    gateway.send_rpc = AsyncMock(
+    gw_call = AsyncMock(
         side_effect=[
             {"agents": [{"id": "retiring"}]},
             RuntimeError(
@@ -211,7 +211,7 @@ async def test_delete_everywhere_retries_transient_openclaw_file_lock():
         patch("core.services.paperclip_openclaw_pairing.is_seeded_agent", new=AsyncMock(return_value=False)),
         patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_gateway_pool", return_value=gateway),
+        patch.object(lifecycle.container_rpc, "call", gw_call),
         patch("core.containers.get_workspace", return_value=workspace),
         patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep,
         patch(
@@ -236,14 +236,12 @@ async def test_delete_everywhere_retries_transient_openclaw_file_lock():
 
     assert result["deleted"] is True
     assert events == ["config", "sidecar", "workspace", "paperclip"]
-    assert [call.kwargs["method"] for call in gateway.send_rpc.await_args_list] == [
+    assert [call.args[1] for call in gw_call.await_args_list] == [
         "agents.list",
         "agents.delete",
         "agents.delete",
     ]
     retry_sleep.assert_awaited_once_with(0.25)
-    delete_calls = gateway.send_rpc.await_args_list[1:]
-    assert delete_calls[0].kwargs["req_id"] != delete_calls[1].kwargs["req_id"]
 
 
 @pytest.mark.asyncio
@@ -251,8 +249,7 @@ async def test_delete_everywhere_exhausts_file_lock_retries_before_cleanup():
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "token"}, "10.0.0.7"))
     lock_error = RuntimeError("code=file_lock_timeout")
-    gateway = MagicMock()
-    gateway.send_rpc = AsyncMock(
+    gw_call = AsyncMock(
         side_effect=[
             {"agents": [{"id": "retiring"}]},
             lock_error,
@@ -265,7 +262,7 @@ async def test_delete_everywhere_exhausts_file_lock_retries_before_cleanup():
         patch("core.services.paperclip_openclaw_pairing.is_seeded_agent", new=AsyncMock(return_value=False)),
         patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_gateway_pool", return_value=gateway),
+        patch.object(lifecycle.container_rpc, "call", gw_call),
         patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep,
         patch(
             "core.services.config_patcher.remove_from_openclaw_config_list",
@@ -278,27 +275,23 @@ async def test_delete_everywhere_exhausts_file_lock_retries_before_cleanup():
 
     assert retry_sleep.await_args_list[0].args == (0.25,)
     assert retry_sleep.await_args_list[1].args == (1.0,)
-    assert gateway.send_rpc.await_count == 4
+    assert gw_call.await_count == 4
     remove_config.assert_not_awaited()
     delete_paperclip.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_delete_runtime_agent_does_not_retry_unrelated_gateway_error():
-    gateway = MagicMock()
-    gateway.send_rpc = AsyncMock(side_effect=RuntimeError("gateway unavailable"))
+    gw_call = AsyncMock(side_effect=RuntimeError("gateway unavailable"))
 
-    with patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep:
+    with (
+        patch.object(lifecycle.container_rpc, "call", gw_call),
+        patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep,
+    ):
         with pytest.raises(RuntimeError, match="gateway unavailable"):
-            await lifecycle.delete_runtime_agent_with_lock_retry(
-                gateway=gateway,
-                owner_id="owner",
-                agent_id="retiring",
-                ip="10.0.0.7",
-                token="token",
-            )
+            await lifecycle.delete_runtime_agent_with_lock_retry(owner_id="owner", agent_id="retiring")
 
-    gateway.send_rpc.assert_awaited_once()
+    gw_call.assert_awaited_once()
     retry_sleep.assert_not_awaited()
 
 

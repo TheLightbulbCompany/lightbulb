@@ -14,18 +14,17 @@ Display-only. The provision/chat gates never read this module; a failure
 here must never block anything — every branch degrades, never raises.
 """
 
-import asyncio
 import logging
 import re
 import time
 from dataclasses import dataclass
-from uuid import uuid4
 
 import httpx
 
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
+from core.services import container_rpc
 
 logger = logging.getLogger(__name__)
 
@@ -202,12 +201,6 @@ def _ecs_manager():
     return get_ecs_manager()
 
 
-def _gateway_pool():
-    from core.containers import get_gateway_pool
-
-    return get_gateway_pool()
-
-
 async def _oauth_quota_payload(owner_id: str) -> dict | None:
     """ChatGPT plan-quota windows via the container's models.authStatus RPC.
 
@@ -216,31 +209,7 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
     falls back to tokens_only. OpenClaw caches upstream 60s; no cache here.
     """
     try:
-        container, ip = await _ecs_manager().resolve_running_container(owner_id)
-        if not container or not ip:
-            return None
-        # The pool's send_rpc has no timeout param of its own — it awaits
-        # GatewayConnection.wait_for_response's default _RPC_TIMEOUT (30s).
-        # This probe is display-only (feeds /billing/spend, which mobile's
-        # usage screen Promise.all's alongside the token summary), so it
-        # must not hold that endpoint open for the pool's full RPC budget
-        # if a container accepts models.authStatus but never answers.
-        result = await asyncio.wait_for(
-            _gateway_pool().send_rpc(
-                user_id=owner_id,
-                # A fresh id per call, not one keyed on owner_id: overlapping
-                # /billing/spend requests for the same owner would otherwise
-                # share a req_id, and the gateway pool's _pending_rpcs dict
-                # (keyed by req_id) could deliver one caller's response future
-                # to the other.
-                req_id=f"spend-authstatus-{uuid4().hex}",
-                method="models.authStatus",
-                params={},
-                ip=ip,
-                token=container["gateway_token"],
-            ),
-            timeout=5.0,
-        )
+        result = await container_rpc.call(owner_id, "models.authStatus", {}, timeout_s=5.0)
         for provider in (result or {}).get("providers") or []:
             if provider.get("provider") not in _OAUTH_PROVIDER_IDS:
                 continue

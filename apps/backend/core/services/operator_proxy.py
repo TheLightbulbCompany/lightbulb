@@ -341,8 +341,6 @@ async def handle_operator_connect(
                 )
                 healed = await approve_pending_device_from_rejection(
                     owner_id=owner_id,
-                    ip=ip,
-                    gateway_token=container["gateway_token"],
                     device_id=upstream.device_id,
                     request_id=request_id if isinstance(request_id, str) and request_id else None,
                 )

@@ -38,6 +38,8 @@ import {
 } from "react-native";
 
 import { WEB_ORIGIN } from "../../config/domain";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { readAiConsent, writeAiConsent } from "../../lib/aiConsent";
 
@@ -63,6 +65,8 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
 
   // undefined = keychain not read yet. Distinct from `false` (asked, declined
   // or never answered): only `true` may render children.
+  // Hoisted above every early return: hooks must run in the same order each render.
+  const insets = useSafeAreaInsets();
   const [granted, setGranted] = useState<boolean | undefined>(undefined);
   const [saving, setSaving] = useState(false);
 
@@ -100,7 +104,9 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
   return (
     <ScrollView
       style={styles.page}
-      contentContainerStyle={styles.content}
+      // This screen mounts above the navigator, so no header pushes it below
+      // the status bar / Dynamic Island — it has to honour the inset itself.
+      contentContainerStyle={[styles.content, { paddingTop: spacing.xl + insets.top }]}
       testID="ai-consent-gate"
     >
       <Text style={styles.title}>Before you start</Text>

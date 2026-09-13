@@ -146,8 +146,15 @@ const palette = {
   // #faf7f2; on the manual's cream they are cream OVER cream, which composites
   // to exactly the page colour and makes press feedback a no-op. A row that
   // draws no background of its own can only be marked by a surface STEP.
-  /** Row press feedback — the one surface step. */
-  rowPressed: "#fafafa",
+  /**
+   * Row press feedback — a REAL step, not the one-surface hover tint. Was
+   * `#fafafa` (Δ from cream: 5,5,5 → ~2%, invisible on iOS — Slack darkens a
+   * pressed row unmistakably). Now the same grey as `edge`: Δ from cream
+   * 27,27,24 → 10.6% / 10.6% / 9.4% (min 9.4%), clearing the ≥8% floor and
+   * dark enough that `rowActive` still reads as a distinct, lighter step
+   * underneath a press.
+   */
+  rowPressed: "#e4e4e7",
   /** Row selected — the second step, so selected still reads under a press. */
   rowActive: "#ededed",
   /**
@@ -295,6 +302,25 @@ export const type = {
     fontSize: 12,
     lineHeight: 16,
     color: colors.muted,
+  },
+  /**
+   * Navigation chrome — a custom `headerTitle`, and anything else drawn INSIDE
+   * a native nav bar. Deliberately carries NO `fontFamily`: an iOS nav bar has
+   * to draw in the system font (SF) or the whole screen reads as a web view,
+   * and 17/600 is what UIKit itself uses for a title. Brand fonts stay in
+   * CONTENT — this is the one exemption, and it is a subtraction, not a literal.
+   */
+  navTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: "600",
+    color: colors.ink,
+  },
+  /** The second line of a two-line nav title (member counts and the like). */
+  navMeta: {
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.mute,
   },
   /** Small uppercase labels — Source Sans 3 500, 10px, tracked 0.19em (§03/§06). */
   overline: {

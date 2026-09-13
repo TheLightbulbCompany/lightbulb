@@ -85,7 +85,7 @@ const mockRefreshRooms = jest.fn();
 const mockSetRoomPrefs = jest.fn(async (_roomId: string, _prefs: unknown) => {});
 const mockMarkUnread = jest.fn(async (_roomId: string) => {});
 let mockRoomsState: Record<string, unknown> = {};
-jest.mock("../../../lib/rooms", () => ({
+jest.mock("../../../../lib/rooms", () => ({
   useMobileRooms: () => ({
     rooms: mockRooms,
     directoryRoomDetails: mockDetails,
@@ -98,7 +98,7 @@ jest.mock("../../../lib/rooms", () => ({
     ...mockRoomsState,
   }),
 }));
-jest.mock("../../../components/room/NewMessageSheet", () => {
+jest.mock("../../../../components/room/NewMessageSheet", () => {
   const { Text: RNText } = require("react-native");
   return {
     NewMessageSheet: ({

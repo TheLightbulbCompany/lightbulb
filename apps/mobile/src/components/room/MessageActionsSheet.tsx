@@ -5,6 +5,7 @@ import type { ComponentProps } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { hapticSelection } from "../../lib/haptics";
 import { messageUrl } from "../../lib/webLinks";
 import { BottomSheet } from "../ui/BottomSheet";
 
@@ -21,9 +22,9 @@ interface ActionRow {
  * The long-press sheet: the fixed reaction bar over Reply in thread / Copy text
  * / Mark unread / Copy link.
  *
- * Mounted conditionally by its callers (`{target && <MessageActionsSheet …>}`),
- * so `visible` is a literal — the caller dropping the target IS the dismissal.
- * The cost is no slide-out; the card appears and vanishes.
+ * Kept mounted by its callers and toggled via `visible` (BottomSheet's own
+ * contract), so closing — from a row action, the scrim, or a drag — always
+ * plays the sheet's spring-out before `onClose` runs.
  *
  * `onReplyInThread` and `onMarkUnread` are optional and their rows are omitted
  * without them — the same `!inThread` gate the web applies to both. Inside a
@@ -38,6 +39,7 @@ export function MessageActionsSheet({
   message,
   currentUserId,
   roomId,
+  visible = true,
   onClose,
   onReact,
   onReplyInThread,
@@ -46,6 +48,13 @@ export function MessageActionsSheet({
   message: CanonicalRoomMessage;
   currentUserId: string;
   roomId: string;
+  /**
+   * Defaults to `true` for backward compatibility — a caller that still
+   * conditionally mounts this component (the old `{target && <.../>}` shape)
+   * gets its old always-open behaviour. A caller that keeps it mounted and
+   * toggles this instead gets BottomSheet's spring open/close.
+   */
+  visible?: boolean;
   onClose: () => void;
   onReact: (emoji: string, active: boolean) => void;
   onReplyInThread?: () => void;
@@ -76,7 +85,7 @@ export function MessageActionsSheet({
   ];
 
   return (
-    <BottomSheet visible onClose={onClose} closeLabel="Close message actions">
+    <BottomSheet visible={visible} onClose={onClose} closeLabel="Close message actions">
       <View style={styles.card}>
         <View style={styles.handle} />
         {deleted ? null : (
@@ -87,6 +96,7 @@ export function MessageActionsSheet({
                 <Pressable
                   key={emoji}
                   onPress={() => {
+                    hapticSelection();
                     onReact(emoji, !active);
                     onClose();
                   }}

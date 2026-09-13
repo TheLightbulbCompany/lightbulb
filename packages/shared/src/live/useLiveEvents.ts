@@ -17,6 +17,8 @@ export interface UseLiveEventsOptions {
 
 export interface UseLiveEventsResult {
   liveConnected: boolean;
+  /** The socket is up but the active room's own subscription has not been acked yet. */
+  roomSubscriptionPending: boolean;
   connectionRevision: number;
   liveChannels: readonly string[];
   lastError: LiveErrorKind | null;
@@ -77,9 +79,18 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
     clientRef.current?.setChannels(desired);
   }, [userChannel, roomChannel]);
 
-  const liveConnected = enabled && !!config && status.connected && desired.every((channel) => status.liveChannels.includes(channel));
+  // "Connected" is the socket being up with the user's own channel live. It is
+  // NOT "every channel I currently want is acked": a freshly claimed room
+  // spends a few frames between subscribe and subscribe_success, and treating
+  // that window as a disconnect made every room open flash "Reconnecting live
+  // updates" — the socket had never dropped. That pending window is exposed
+  // separately as `roomSubscriptionPending` for callers that care.
+  const socketLive = enabled && !!config && status.connected;
+  const liveConnected = socketLive && (!userChannel || status.liveChannels.includes(userChannel));
+  const roomSubscriptionPending = socketLive && !!roomChannel && !status.liveChannels.includes(roomChannel);
   return {
     liveConnected,
+    roomSubscriptionPending,
     connectionRevision: status.ackCount,
     liveChannels: status.liveChannels,
     lastError,

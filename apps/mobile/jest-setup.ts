@@ -1,3 +1,18 @@
+// react-native-gesture-handler's own jest setup: swaps its native module for a
+// JS-only stand-in so `Gesture.Pan()`/`GestureDetector` (BottomSheet's
+// drag-to-dismiss) can be driven in tests via `fireGestureHandler`.
+import "react-native-gesture-handler/jestSetup";
+
+// react-native-reanimated: activates the manual mock at
+// __mocks__/react-native-reanimated.js (see that file's header comment for
+// why — neither the real package nor its own shipped `/mock` load cleanly
+// under jest on this installed version). Covers `useSharedValue` /
+// `useAnimatedStyle` / `withSpring` / `Animated.createAnimatedComponent`, so
+// `lib/pressScale.ts`'s icon-button scale-on-press runs on it too — extend
+// that mock file, not this line, if another branch's reanimated usage needs
+// more surface.
+jest.mock("react-native-reanimated");
+
 // react-native's own FileReader (used by blobToDataUri, which the attachment
 // viewer's file-caching also goes through) isn't polyfilled by this jest
 // environment — jest-expo's preset runs on Node, not jsdom, so `Blob` is
@@ -142,4 +157,34 @@ jest.mock(
 // that assert WHAT was copied re-mock it with their own spy.
 jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }), {
   virtual: true,
+});
+
+// Haptics: a real dep, mocked so no suite reaches the native Taptic engine.
+// Suites asserting a specific call re-mock it with their own spy (matching
+// `lib/haptics.ts`'s two-call surface).
+jest.mock(
+  "expo-haptics",
+  () => ({
+    impactAsync: jest.fn(async () => {}),
+    selectionAsync: jest.fn(async () => {}),
+    ImpactFeedbackStyle: { Light: "light", Medium: "medium", Heavy: "heavy" },
+  }),
+  { virtual: true },
+);
+
+// react-native-keyboard-controller: a real NATIVE dep (the composer on both
+// room screens rides its keyboard observer). Global, because the provider is
+// mounted at the app root and the KAV wraps both room screens.
+//
+// Deliberately an INLINE stub rather than the library's shipped
+// `react-native-keyboard-controller/jest` mock: that file is ESM and drags a
+// chain of untransformed imports into every suite that touches it. Only the
+// two components the app actually renders need standing in for.
+jest.mock("react-native-keyboard-controller", () => {
+  // Required inside the factory: jest hoists jest.mock above the imports.
+  const { View } = require("react-native");
+  return {
+    KeyboardProvider: ({ children }: { children?: unknown }) => children,
+    KeyboardAvoidingView: View,
+  };
 });

@@ -112,10 +112,20 @@ describe("useLiveEvents", () => {
     });
     await flush();
     expect(first.subscriptions().map((subscription) => subscription.channel)).toEqual([userChannel, roomA]);
+    // Nothing acked yet: not connected, and the room is pending.
     expect(result.current.liveConnected).toBe(false);
+    expect(result.current.roomSubscriptionPending).toBe(true);
+
+    // The user channel acking is what "connected" means. The room's own
+    // subscribe_success may still be in flight — that is NOT a disconnect.
+    const userSubscription = first.subscriptions().find((subscription) => subscription.channel === userChannel)!;
+    act(() => first.receive({ type: "subscribe_success", id: userSubscription.id }));
+    expect(result.current.liveConnected).toBe(true);
+    expect(result.current.roomSubscriptionPending).toBe(true);
 
     act(() => acknowledgeSubscriptions(first));
     expect(result.current.liveConnected).toBe(true);
+    expect(result.current.roomSubscriptionPending).toBe(false);
 
     const roomSubscription = first.subscriptions().find((subscription) => subscription.channel === roomA)!;
     const event = {
@@ -139,7 +149,11 @@ describe("useLiveEvents", () => {
     await flush();
     expect(first.sent).toContainEqual({ type: "unsubscribe", id: roomSubscription.id });
     const roomBSubscription = first.subscriptions().find((subscription) => subscription.channel === roomB)!;
+    // Switching rooms re-enters the pending window without ever "disconnecting".
+    expect(result.current.liveConnected).toBe(true);
+    expect(result.current.roomSubscriptionPending).toBe(true);
     act(() => first.receive({ type: "subscribe_success", id: roomBSubscription.id }));
+    expect(result.current.roomSubscriptionPending).toBe(false);
 
     rerender({ ...options, roomChannel: null });
     expect(first.sent).toContainEqual({ type: "unsubscribe", id: roomBSubscription.id });

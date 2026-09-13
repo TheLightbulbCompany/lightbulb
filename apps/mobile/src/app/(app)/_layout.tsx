@@ -1,53 +1,47 @@
 import { useAuth } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
-import * as Notifications from "expo-notifications";
-import { Redirect, Tabs } from "expo-router";
-import { StyleSheet, type ColorValue } from "react-native";
-import { useEffect, useState, type ComponentProps } from "react";
+import { Redirect, Stack } from "expo-router";
+import { getFocusedRouteNameFromRoute } from "expo-router/react-navigation";
 
 import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { PushRegistration } from "../../components/push/PushRegistration";
-import { colors, fonts } from "../../config/theme";
+import { colors } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
-import { useMobileRooms } from "../../lib/rooms";
-import { badgeCount, useChannelMentions } from "../../lib/unreadBadge";
 import { LiveEventsProvider } from "../../providers/live-events";
 
-// Feather glyphs for each top-level tab, mirroring the web sidebar sections.
-function tabIcon(name: ComponentProps<typeof Feather>["name"]) {
-  return function TabIcon({ color, size }: { color: ColorValue; size: number }) {
-    return <Feather name={name} size={size} color={color} />;
-  };
-}
+/**
+ * Deep-link anchor. A cold start on `/(app)/room/<id>` (a tapped push) builds
+ * the stack as [(tabs), room], so the native back button pops to Home instead
+ * of stranding the reader on a rootless screen — which is what the deleted
+ * `HeaderBack` component existed to paper over.
+ */
+export const unstable_settings = { anchor: "(tabs)" };
+
+/** The tab bar's four roots, by route name, for the shared stack header. */
+const TAB_TITLES: Record<string, string> = {
+  home: "Home",
+  dms: "DMs",
+  activity: "Activity",
+  more: "More",
+};
 
 /**
- * The unread number, Slack's way: DMs and mentions only, muted rooms excluded.
- * Renders nothing — it lives inside LiveEventsProvider (the room machine needs
- * that context) and lifts the count out to the layout, which is the component
- * that owns the Tabs.Screen options.
+ * Everything signed-in is a NATIVE STACK, and the tab bar is its first screen.
  *
- * It also owns the app-icon badge, because the same number belongs on both and
- * the projector sends no `badge` in its push payload.
+ * That ordering is the whole point: a conversation, a Teams issue or a Control
+ * panel is now PUSHED over the tabs — slide-in, parallax, interactive
+ * edge-swipe back and a real back button, all from UIKit — where it used to be
+ * a tab switch into a hidden tab, which expo-router's JS tabs render with
+ * `animation: 'none'`. Nothing below draws its own header: the four tab roots
+ * share this stack's, and every other screen gets its own pushed one.
+ *
+ * Navigation chrome deliberately carries NO `fontFamily`: the system font is
+ * what makes an iOS nav bar read as an iOS nav bar. Brand fonts stay in content.
+ * Likewise no `headerStyle.backgroundColor` and no `headerShadowVisible: false`
+ * — the default translucent/glass bar is the native one.
  */
-function TabBadge({ onCount }: { onCount: (total: number) => void }) {
-  const { rooms } = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const mentions = useChannelMentions(rooms);
-  const total = badgeCount(rooms, mentions);
-  useEffect(() => {
-    onCount(total);
-    void Notifications.setBadgeCountAsync(total).catch(() => {});
-  }, [onCount, total]);
-  return null;
-}
-
-// Tab shell mirroring the web sidebar's top-level sections, gated on Clerk
-// auth (the mobile equivalent of the web's middleware route protection).
-// LiveEventsProvider sits inside the auth gate so AppSync subscriptions only
-// exist for signed-in users.
 export default function AppLayout() {
   const { isSignedIn, isLoaded } = useAuth();
-  const [unread, setUnread] = useState(0);
   if (!isLoaded) return null;
   if (!isSignedIn) return <Redirect href="/(auth)/sign-in" />;
 
@@ -63,90 +57,50 @@ export default function AppLayout() {
           5.1.1(i)/5.1.2(i)). */}
       <AiConsentGate>
         <ProvisionGate>
-          {/* Inside the gate: an owner with no workspace yet has no rooms to
-              count, and the list fetch would only 403 in a retry loop. */}
-          <TabBadge onCount={setUnread} />
-          <Tabs
-            // A conversation is pushed onto this navigator, so "back" out of
-            // one must land on the tab it was opened FROM (Home or DMs), not
-            // always the first tab.
-            backBehavior="history"
+          <Stack
             screenOptions={{
-              headerShown: true,
-              sceneStyle: { backgroundColor: colors.cream },
-              headerStyle: {
-                backgroundColor: colors.cream,
-                borderBottomWidth: StyleSheet.hairlineWidth,
-                borderBottomColor: colors.border,
-              },
-              headerShadowVisible: false,
-              headerTitleStyle: {
-                fontFamily: fonts.sansSemiBold,
-                fontSize: 17,
-                color: colors.ink,
-              },
               headerTintColor: colors.forest,
-              tabBarStyle: {
-                backgroundColor: colors.cream,
-                borderTopWidth: StyleSheet.hairlineWidth,
-                borderTopColor: colors.border,
-              },
-              tabBarActiveTintColor: colors.forest,
-              tabBarInactiveTintColor: colors.muted,
-              tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: 11 },
+              contentStyle: { backgroundColor: colors.cream },
             }}
           >
-            {/* Slack's four: Home · DMs · Activity · More. An iOS tab bar does
-                not fit more, so Teams, Control and Settings stay REGISTERED
-                below with `href: null` — hidden from the bar, but every route,
-                deep link and push target still resolves — and `more` is the
-                door to them. */}
-            <Tabs.Screen
-              name="home"
-              options={{
-                title: "Home",
-                tabBarIcon: tabIcon("home"),
-                tabBarBadge: unread || undefined,
-              }}
+            {/* One header for the four tab roots, titled by whichever is
+                focused. A nested navigator cannot set its parent's options, and
+                a Stack per tab would be four files of pure chrome. */}
+            <Stack.Screen
+              name="(tabs)"
+              options={({ route }) => ({
+                // undefined until the tab navigator has state — i.e. the first
+                // render, which is always Home.
+                title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "home"] ?? "Home",
+              })}
             />
-            <Tabs.Screen
-              name="dms"
-              options={{ title: "DMs", tabBarIcon: tabIcon("message-square") }}
-            />
-            <Tabs.Screen
-              name="activity"
-              options={{ title: "Activity", tabBarIcon: tabIcon("at-sign") }}
-            />
-            <Tabs.Screen
-              name="more"
-              options={{ title: "More", tabBarIcon: tabIcon("more-horizontal") }}
-            />
-            <Tabs.Screen
-              name="teams"
-              // The teams tab is a nested Stack (teams/_layout.tsx); it owns its
-              // own inbox + pushed issue-detail headers, so suppress the Tabs
-              // header to avoid stacking two.
-              options={{ href: null, title: "Teams", headerShown: false }}
-            />
-            <Tabs.Screen
-              name="control"
-              // The control tab is a nested Stack (control/_layout.tsx); it owns
-              // its own per-panel headers, so suppress the Tabs header to avoid
-              // stacking two.
-              options={{ href: null, title: "Control", headerShown: false }}
-            />
-            <Tabs.Screen name="settings" options={{ href: null, title: "Settings" }} />
-            {/* Legacy agent route — resolves that agent's DM and replaces itself
-                with the room route. Navigation only, not a tab. */}
-            <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
-            {/* Conversations live in their own Stack (room/_layout.tsx) so a
-                thread pushes over the room; it owns its headers, and the tab
-                bar is hidden because a conversation is a full-screen detail. */}
-            <Tabs.Screen
-              name="room"
-              options={{ href: null, headerShown: false, tabBarStyle: { display: "none" } }}
-            />
-          </Tabs>
+            {/* The conversation and its threads. Both set their own title from
+                the room (`Stack.Screen` inside the screen body). */}
+            <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
+            <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
+            {/* Teams and Control were nested Stacks inside hidden tabs; folded
+                in here, a push from More lands on a normally pushed screen. */}
+            <Stack.Screen name="teams/index" options={{ title: "Teams" }} />
+            <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
+            <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
+            <Stack.Screen name="teams/routines" options={{ title: "Routines" }} />
+            <Stack.Screen name="control/index" options={{ title: "Control" }} />
+            <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
+            <Stack.Screen name="control/agents" options={{ title: "Agents" }} />
+            <Stack.Screen name="control/agent-detail" options={{ title: "Agent" }} />
+            <Stack.Screen name="control/skills" options={{ title: "Skills" }} />
+            <Stack.Screen name="control/sessions" options={{ title: "Sessions" }} />
+            <Stack.Screen name="control/channels" options={{ title: "Channels" }} />
+            <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
+            <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
+            <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
+            <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
+            <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
+            <Stack.Screen name="settings" options={{ title: "Settings" }} />
+            {/* Legacy agent route — resolves that agent's DM and replaces
+                itself with the room route. */}
+            <Stack.Screen name="agent/[agentId]" options={{ title: "Chat" }} />
+          </Stack>
         </ProvisionGate>
       </AiConsentGate>
     </LiveEventsProvider>

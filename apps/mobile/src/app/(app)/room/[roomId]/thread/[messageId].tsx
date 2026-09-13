@@ -5,27 +5,17 @@ import {
   runView,
   type CanonicalRoomMessage,
 } from "@lightbulb/shared";
-import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
-import { HeaderBack } from "../../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
-import {
-  RoomComposer,
-  useComposerKeyboardOffset,
-} from "../../../../../components/room/RoomComposer";
+import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
@@ -83,6 +73,8 @@ export default function ThreadScreen() {
   // readSeq is null on purpose: a thread has no "New messages" line in Slack,
   // and the room's own read cursor counts the room's sequence, not this thread's.
   const items = useMemo(() => buildTimeline(replies, { readSeq: null }), [replies]);
+  // Reversed for the inverted list below — see the room screen's own note.
+  const newestFirst = useMemo(() => [...items].reverse(), [items]);
   const runs = useMemo(
     () => rooms.runs.filter((run) => run.threadRootMessageId === messageId).map(runView),
     [rooms.runs, messageId],
@@ -104,8 +96,12 @@ export default function ThreadScreen() {
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
-  // The message a long press is acting on; dropping it dismisses the sheet.
+  // The message a long press is acting on; dropping it starts the sheet's
+  // close animation. `lastActionTarget` keeps the sheet's content stable
+  // through that close — see the room screen's identical pattern.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
+  const lastActionTarget = useRef<CanonicalRoomMessage | null>(null);
+  if (actionTarget) lastActionTarget.current = actionTarget;
 
   // The messageId of the most recent failed reaction toggle (mirrors the web's
   // single `reactionError` string state) — cleared UNCONDITIONALLY at the start
@@ -132,16 +128,12 @@ export default function ThreadScreen() {
   );
 
   // Hoisted above the blocked-state early return below — see the room screen.
-  const keyboardOffset = useComposerKeyboardOffset();
+  const insets = useSafeAreaInsets();
 
-  const headerOptions = {
-    title: "Thread",
-    // A push can deep-link straight into a thread, with no room beneath it to
-    // pop back to — hence the explicit fallback. On `headerOptions` rather than
-    // inline so the blocked-state early return below keeps it: a blocked screen
-    // with no way out is worse than the state it is reporting.
-    headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}`} />,
-  };
+  // The header — title "Thread", and the back button — belongs to the (app)
+  // Stack, which owns this route. A push that deep-links straight into a
+  // thread still gets a working back: the Stack's `anchor` puts the tabs
+  // beneath it on a cold start.
 
   // Same guard as the room screen (search `room-blocked` in web's RoomPanel):
   // a reader with no access, or a room that failed to open, replaces the
@@ -154,7 +146,6 @@ export default function ThreadScreen() {
         : "unavailable" as const;
     return (
       <View style={styles.container}>
-        <Stack.Screen options={headerOptions} />
         <RoomBlockedState
           state={blockedState}
           onRetry={blockedState === "unavailable" ? rooms.refreshRoom : undefined}
@@ -166,10 +157,12 @@ export default function ThreadScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={keyboardOffset}
+      behavior="padding"
+      // See the room screen for why `automaticOffset` plus the negative
+      // safe-area inset is the whole configuration.
+      automaticOffset
+      keyboardVerticalOffset={-insets.bottom}
     >
-      <Stack.Screen options={headerOptions} />
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle} numberOfLines={1}>
           {subtitle}
@@ -177,12 +170,32 @@ export default function ThreadScreen() {
       </View>
       <FlatList
         testID="thread-timeline"
-        data={items}
+        // Inverted, like the room's timeline: a new reply or run frame appears
+        // at the bottom with no scroll animation. Header and footer swap with
+        // it — the header draws at the BOTTOM of an inverted list.
+        inverted
+        data={newestFirst}
         keyExtractor={(item) => item.key}
         contentContainerStyle={styles.list}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
+          <View>
+            <LocalMessageRows
+              rows={rows}
+              onRetry={(clientMessageId) => void retry(clientMessageId)}
+              downloadAttachment={rooms.downloadAttachment}
+              members={members ?? []}
+              currentUserId={userId ?? ""}
+            />
+            {runs.map((run) => (
+              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
+            ))}
+          </View>
+        }
+        // The thread ROOT, pinned above its replies — so, on an inverted list,
+        // the footer.
+        ListFooterComponent={
           root ? (
             <View>
               <MessageGroup
@@ -216,20 +229,6 @@ export default function ThreadScreen() {
             </View>
           )
         }
-        ListFooterComponent={
-          <View>
-            <LocalMessageRows
-              rows={rows}
-              onRetry={(clientMessageId) => void retry(clientMessageId)}
-              downloadAttachment={rooms.downloadAttachment}
-              members={members ?? []}
-              currentUserId={userId ?? ""}
-            />
-            {runs.map((run) => (
-              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
-            ))}
-          </View>
-        }
         renderItem={({ item }) => {
           if (item.kind === "date") {
             return (
@@ -259,22 +258,30 @@ export default function ThreadScreen() {
           );
         }}
       />
-      {actionTarget && (
-        <MessageActionsSheet
-          message={actionTarget}
-          currentUserId={userId ?? ""}
-          roomId={roomId}
-          onClose={() => setActionTarget(null)}
-          // Reaction failures surface inline under the message (see
-          // `reactionErrorMessageId` above), matching the web's `reactionError`.
-          onReact={(emoji, active) => reactToMessage(actionTarget.messageId, emoji, active)}
-          // No Reply in thread and no Mark unread — the web's `!inThread` rule.
-          // A reply cannot root a nested thread, and the read cursor is per room,
-          // so marking unread here is undone the moment the conversation behind
-          // this screen is re-focused; the action stays thread-hidden until
-          // per-thread read state exists (Phase B, needs a backend field).
-        />
-      )}
+      {(() => {
+        // Local const so TS narrows it through the closure below — see the
+        // room screen's identical pattern for why `actionTarget` itself must
+        // not be read inside it.
+        const sheetMessage = lastActionTarget.current;
+        if (!sheetMessage) return null;
+        return (
+          <MessageActionsSheet
+            message={sheetMessage}
+            visible={actionTarget !== null}
+            currentUserId={userId ?? ""}
+            roomId={roomId}
+            onClose={() => setActionTarget(null)}
+            // Reaction failures surface inline under the message (see
+            // `reactionErrorMessageId` above), matching the web's `reactionError`.
+            onReact={(emoji, active) => reactToMessage(sheetMessage.messageId, emoji, active)}
+            // No Reply in thread and no Mark unread — the web's `!inThread` rule.
+            // A reply cannot root a nested thread, and the read cursor is per room,
+            // so marking unread here is undone the moment the conversation behind
+            // this screen is re-focused; the action stays thread-hidden until
+            // per-thread read state exists (Phase B, needs a backend field).
+          />
+        );
+      })()}
       {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
@@ -292,7 +299,8 @@ export default function ThreadScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.cream },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
+  // `paddingTop` draws at the bottom on an inverted list — see the room screen.
+  list: { paddingHorizontal: spacing.lg, paddingTop: spacing.xl },
   subtitleRow: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,

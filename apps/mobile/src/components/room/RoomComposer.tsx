@@ -11,7 +11,6 @@ import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,6 +20,12 @@ import {
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
 } from "react-native";
+import Reanimated, {
+  interpolateColor,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
@@ -33,32 +38,22 @@ import { Avatar } from "./Avatar";
 /** Web composer parity: at most four images on one message. */
 const MAX_PHOTOS = 4;
 
-// iOS's compact navigation-bar height / Android's default toolbar height.
-// expo-router 57 vendors react-navigation and exports no useHeaderHeight,
-// and @react-navigation/elements is not resolvable from apps/mobile — so
-// this is the measured default for the header room/_layout.tsx configures.
-// ponytail: a magic constant; it only moves if that header grows a large
-// title or a subtitle row.
-// The Android branch is currently inert: both call sites pass
-// `behavior={Platform.OS === "ios" ? "padding" : undefined}`, and an
-// `undefined` behavior applies no padding at all, so `keyboardVerticalOffset`
-// (and this constant) has no effect off iOS today — same as the `90` this
-// replaces. Kept for whichever screen adds real Android KAV behavior next.
-const HEADER_BASE = Platform.OS === "ios" ? 44 : 56;
-
 /**
- * `KeyboardAvoidingView`'s `behavior="padding"` pads by
- * `keyboardHeight - viewTop + keyboardVerticalOffset`, and the view's frame
- * is measured BELOW the navigation header — so the offset adds the header
- * height back, plus the top safe-area inset the header itself sits under.
- * `- insets.bottom` is paired with the composer's own bottom padding (below):
- * the KAV lands the composer box `insets.bottom` INTO the keyboard, and the
- * padding lifts the visible card back to sit flush on it.
+ * Both springs are CRITICALLY damped (`dampingRatio: 1`) — neither is a
+ * momentum gesture, so neither may overshoot. A focus ring that bounces past
+ * its colour, or a button that springs back bigger than it started, reads as a
+ * toy. Reanimated treats `duration` as PERCEPTUAL (actual ≈ 1.5×).
  */
-export function useComposerKeyboardOffset(): number {
-  const insets = useSafeAreaInsets();
-  return insets.top + HEADER_BASE - insets.bottom;
-}
+const FOCUS_SPRING = { duration: 200, dampingRatio: 1 } as const;
+/** Press-down has to land under the finger, so it is the faster of the two. */
+const PRESS_SPRING = { duration: 120, dampingRatio: 1 } as const;
+/** Pressed size for the send button — Apple's own press scale, near enough. */
+const PRESS_SCALE = 0.96;
+
+/** Five lines of the input's own 22pt leading, then it scrolls. */
+const INPUT_MAX_LINES = 5;
+
+const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
 
 function ReconnectingBanner() {
   const pulse = usePulse(true, 0.3, 700);
@@ -117,11 +112,27 @@ export function RoomComposer({
   const [text, setText] = useState("");
   // Null until the field reports a collapsed caret: no caret, no typeahead.
   const [caret, setCaret] = useState<number | null>(null);
-  const [focused, setFocused] = useState(false);
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Focus and press live on the UI thread as shared values, not in React state:
+  // the bar's hairline used to hard-swap between two StyleSheet entries on a
+  // `focused` boolean, which is a visual jump, and a state flip cannot be
+  // interrupted mid-way when focus bounces.
+  const focusProgress = useSharedValue(0);
+  const sendScale = useSharedValue(1);
+  const barStyle = useAnimatedStyle(() => ({
+    borderTopColor: interpolateColor(
+      focusProgress.value,
+      [0, 1],
+      [colors.edge, colors.forestFocusBorder],
+    ),
+  }));
+  const sendStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: sendScale.value }],
+  }));
 
   const trigger = activeTrigger(text, caret);
   // The web composer's filter, verbatim: a member answers to their handle and
@@ -229,9 +240,9 @@ export function RoomComposer({
   }, [hasContent, busy, disabled, body, members, pending, onSend, onTypingChange]);
 
   return (
-    <View
+    <Reanimated.View
       testID="composer-outer"
-      style={[styles.outer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}
+      style={[styles.outer, barStyle, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}
     >
       {reconnecting && <ReconnectingBanner />}
       {(mentionOptions.length > 0 || emojiOptions.length > 0) && (
@@ -282,7 +293,7 @@ export function RoomComposer({
           ))}
         </ScrollView>
       )}
-      <View style={[styles.card, focused && styles.cardFocused]}>
+      <View style={styles.card}>
         {error && <Text style={styles.error}>{error}</Text>}
         <AttachmentChips attachments={pending} onRemove={removeAttachment} />
         <View style={styles.inputZone}>
@@ -298,9 +309,11 @@ export function RoomComposer({
             onSelectionChange={onSelectionChange}
             multiline
             editable={!disabled && !sending}
-            onFocus={() => setFocused(true)}
+            onFocus={() => {
+              focusProgress.value = withSpring(1, FOCUS_SPRING);
+            }}
             onBlur={() => {
-              setFocused(false);
+              focusProgress.value = withSpring(0, FOCUS_SPRING);
               onTypingChange?.(false);
             }}
           />
@@ -330,8 +343,20 @@ export function RoomComposer({
               <Feather name="square" size={14} color={colors.white} />
             </Pressable>
           ) : (
-            <Pressable
-              style={[styles.sendButton, (!hasContent || disabled) && styles.sendDisabled]}
+            <AnimatedPressable
+              style={[
+                styles.sendButton,
+                (!hasContent || disabled) && styles.sendDisabled,
+                sendStyle,
+              ]}
+              // Press-DOWN feedback, not a delayed opacity on release: the
+              // button has to answer the finger before the send even starts.
+              onPressIn={() => {
+                sendScale.value = withSpring(PRESS_SCALE, PRESS_SPRING);
+              }}
+              onPressOut={() => {
+                sendScale.value = withSpring(1, PRESS_SPRING);
+              }}
               onPress={() => void submit()}
               disabled={!hasContent || disabled || busy}
               accessibilityRole="button"
@@ -342,18 +367,23 @@ export function RoomComposer({
               ) : (
                 <Feather name="arrow-up" size={16} color={colors.white} />
               )}
-            </Pressable>
+            </AnimatedPressable>
           )}
         </View>
       </View>
-    </View>
+    </Reanimated.View>
   );
 }
 
 const styles = StyleSheet.create({
+  // A flat bar on the page ground, delineated by one hairline against the
+  // timeline above it — not a card floating over it. `borderTopColor` is left
+  // to the animated style (it springs on focus); this is only its width.
   outer: {
     paddingHorizontal: spacing.sm,
+    paddingTop: spacing.sm,
     backgroundColor: colors.cream,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   strip: {
     gap: spacing.sm,
@@ -386,24 +416,10 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   glyph: { fontSize: 18, lineHeight: 22 },
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    shadowColor: colors.ink,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-    elevation: 3,
-  },
-  cardFocused: {
-    borderColor: colors.forestFocusBorder,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    elevation: 4,
-  },
+  // No radius, no border, no shadow — the shadow and the 1pt ring were what
+  // made the composer read as a floating card rather than Slack's input bar.
+  // The bar's own hairline (`outer`) is the only delineation now.
+  card: {},
   error: {
     fontFamily: fonts.sansMedium,
     fontSize: 12,
@@ -412,12 +428,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-  inputZone: { paddingHorizontal: spacing.sm, paddingTop: spacing.sm },
+  inputZone: { paddingHorizontal: spacing.sm },
   input: {
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 22,
-    maxHeight: 200,
+    maxHeight: 22 * INPUT_MAX_LINES,
     color: colors.ink,
     paddingTop: 0,
     paddingBottom: 0,

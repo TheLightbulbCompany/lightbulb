@@ -59,6 +59,7 @@ async def test_first_report_records_usage_and_analytics():
         "run-1",
         "cron",
     )
+    assert kwargs["payload"]["data"]["durationMs"] == 1200
 
 
 @pytest.mark.asyncio

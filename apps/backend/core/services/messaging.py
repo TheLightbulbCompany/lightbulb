@@ -1880,6 +1880,32 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
     return RunEventResponse(run_id=event.run_id, status="applied" if applied else "replayed")
 
 
+async def _record_run_usage(
+    owner_id: str, user_id: str, usage: RunUsage, *, room_turn: bool, event_kind: str | None
+) -> None:
+    """Shared ``record_usage`` call for the room (``_after_run_ended``) and
+    non-room (``handle_usage_report``) usage paths. Never raises."""
+    cost = usage.estimated_cost_usd
+    raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
+    # No token volume and no billable cost -- nothing to record.
+    if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
+        try:
+            await record_usage(
+                owner_id=owner_id,
+                user_id=user_id,
+                model=usage.model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read=usage.cache_read_tokens,
+                cache_write=usage.cache_write_tokens,
+                raw_cost_microcents=raw_cost_microcents,
+                room_turn=room_turn,
+                event_kind=event_kind,
+            )
+        except Exception:
+            logger.exception("usage record failed")
+
+
 async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageReportResponse:
     """Usage + product analytics for runs the room contract does not cover (cron, heartbeat, Paperclip)."""
     if parse_lightbulb_session_key(body.session_key) is not None:
@@ -1889,29 +1915,15 @@ async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageR
         put_metric("messaging.usage.callback", dimensions={"outcome": "replayed"})
         return UsageReportResponse(run_id=body.run_id, status="replayed")
     usage = body.usage
-    cost = usage.estimated_cost_usd
-    raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
-    if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
-        try:
-            await record_usage(
-                owner_id=owner_id,
-                user_id=owner_id,
-                model=usage.model,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cache_read=usage.cache_read_tokens,
-                cache_write=usage.cache_write_tokens,
-                raw_cost_microcents=raw_cost_microcents,
-                room_turn=False,
-                event_kind=None,
-            )
-        except Exception:
-            logger.exception("usage record failed")
+    await _record_run_usage(owner_id, owner_id, usage, room_turn=False, event_kind=None)
+    data = usage.model_dump(by_alias=True)
+    if body.duration_ms is not None:
+        data["durationMs"] = body.duration_ms
     try:
         run_analytics.schedule_run_completed(
             owner_id=owner_id,
             parsed=parse_session_key(body.session_key),
-            payload={"runId": body.run_id, "data": usage.model_dump(by_alias=True)},
+            payload={"runId": body.run_id, "data": data},
             phase="end" if body.success else "error",
         )
     except Exception:
@@ -1930,25 +1942,9 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
     author = (trigger or {}).get("author") or {}
     member_user_id = author.get("id") if author.get("kind") == "human" else None
     if usage is not None:
-        cost = usage.estimated_cost_usd
-        raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
-        # Same drop rule as the personal-chat path: no token volume and no billable cost.
-        if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
-            try:
-                await record_usage(
-                    owner_id=owner_id,
-                    user_id=member_user_id or owner_id,
-                    model=usage.model,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cache_read=usage.cache_read_tokens,
-                    cache_write=usage.cache_write_tokens,
-                    raw_cost_microcents=raw_cost_microcents,
-                    room_turn=True,
-                    event_kind=row.get("eventKind"),
-                )
-            except Exception:
-                logger.exception("room run usage record failed")
+        await _record_run_usage(
+            owner_id, member_user_id or owner_id, usage, room_turn=True, event_kind=row.get("eventKind")
+        )
     # A completed reply is pushed by the projector on room.message.created; only a
     # failure has no message to carry it.
     if outcome == "error" and member_user_id and member_user_id.startswith("user_"):

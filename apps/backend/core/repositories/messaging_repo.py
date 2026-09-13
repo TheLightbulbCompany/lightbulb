@@ -21,8 +21,9 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
+    OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
 
-Only ``WORK#``, ``LIVE#`` and ``RUN#`` rows carry ``expiresAt`` (7 days). Every read
+``WORK#``, ``LIVE#``, ``RUN#`` and ``USAGE#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
 (``by-member``) and ``list_overdue_runs`` (``by-run-deadline``) and nowhere else.
 """

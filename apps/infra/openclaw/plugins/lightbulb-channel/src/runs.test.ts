@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { HEARTBEAT_MS, createRunCallbacks, createRunSupervisor, postToBackend, transformAgentEvent, usageFromEntry } from "./runs.js";
 
@@ -24,6 +25,31 @@ const RUN3 = { ...RUN, runId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" };
 const ENTRY = { sessionId: "session-1", model: "claude-sonnet-4-6", inputTokens: 1200, outputTokens: 300, cacheRead: 5000, cacheWrite: 100, estimatedCostUsd: 0.0123 };
 /** A turn that never settles, so the run it belongs to stays the session's running one. */
 const pending = () => vi.fn(() => new Promise<"dispatched">(() => {}));
+
+/**
+ * Models the gateway's root-work fence around a plugin HTTP route
+ * (dist/route-auth-D4jqHPuM.mjs `runWithGatewayBoundaryWorkAdmission`): the admission
+ * store is released in a `finally` the moment the handler's promise settles.
+ */
+const rootWork = new AsyncLocalStorage<{ released: boolean }>();
+async function underAdmission<T>(handler: () => Promise<T>): Promise<T> {
+  const store = { released: false };
+  try {
+    return await rootWork.run(store, handler);
+  } finally {
+    store.released = true;
+  }
+}
+/**
+ * What the gateway does when a turn dispatches: a released root closes subordinate work
+ * admission, so the enqueue rejects (dist/command-queue-CH3iJffU.mjs:594 ->
+ * dist/gateway-work-admission-CeH7QzKc.mjs `isGatewaySubordinateWorkAdmissionClosed`).
+ */
+const dispatchTurn = async (): Promise<"dispatched"> => {
+  await new Promise((r) => setImmediate(r));
+  if (rootWork.getStore()?.released) throw new Error("Gateway is draining; new tasks are not accepted");
+  return "dispatched";
+};
 
 function harness() {
   let listener: ((evt: any) => void) | undefined;
@@ -189,6 +215,28 @@ describe("run supervisor", () => {
     await h.settle();
     expect(third).toHaveBeenCalledOnce();
     expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN3.runId);
+  });
+
+  it("runs the turn inside the ingress handler's still-live work admission", async () => {
+    const h = harness();
+    await underAdmission(() => h.runs.start(RUN, dispatchTurn));
+    expect(h.sent().find((e: any) => e.type === "run.ended")).toMatchObject({ runId: RUN.runId, outcome: "completed" });
+  });
+
+  it("resumes a queued turn inside its own handler's admission, not its predecessor's", async () => {
+    const h = harness();
+    let releaseFirst!: () => void;
+    const first = underAdmission(() => h.runs.start(RUN, async () => {
+      await new Promise<void>((r) => { releaseFirst = r; });
+      return "dispatched";
+    }));
+    await h.settle();
+    const second = underAdmission(() => h.runs.start(RUN2, dispatchTurn));
+    await h.settle();
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(h.sent().filter((e: any) => e.type === "run.ended").map((e: any) => [e.runId, e.outcome]))
+      .toEqual([[RUN.runId, "completed"], [RUN2.runId, "completed"]]);
   });
 
   it("attributes an overlapping event to the running run, not the queued one", async () => {

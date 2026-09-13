@@ -109,43 +109,6 @@ export const CHAT_FRAME_TYPES: ReadonlySet<string> = new Set<ChatIncomingMessage
 ]);
 
 // =============================================================================
-// Structured questions (OpenClaw `ask_user` / `secrets` tools). Mirrors
-// upstream packages/gateway-protocol/src/schema/questions.ts; keep in step.
-// =============================================================================
-
-export interface QuestionOption {
-  label: string;
-  description?: string;
-}
-
-export interface QuestionSecretStoreBinding {
-  /** Store entry name, `^[A-Z][A-Z0-9_]{0,127}$`. */
-  name: string;
-  kind: "secret" | "env";
-  allowedHosts?: string[];
-  reason?: string;
-}
-
-export interface Question {
-  questionId: string;
-  header: string;
-  question: string;
-  options: QuestionOption[];
-  multiSelect?: boolean;
-  isOther?: boolean;
-  isSecret?: boolean;
-  secretStore?: QuestionSecretStoreBinding;
-  secretStoreExisting?: { updatedAtMs: number; updatedBy?: string };
-}
-
-/** Note the double nesting — `question.resolve` takes `{answers: {answers}}`. */
-export interface QuestionAnswers {
-  answers: Record<string, string[]>;
-}
-
-export type QuestionStatus = "pending" | "answered" | "cancelled" | "expired";
-
-// =============================================================================
 // Live events (spec §8) — the exact founder-release registry.
 // =============================================================================
 

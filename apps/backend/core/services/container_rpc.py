@@ -53,14 +53,28 @@ def _unavailable() -> ApiProblem:
 
 
 async def call(
-    owner_id: str, method: str, params: dict | None = None, *, timeout_s: float = 30.0, wake: bool = True
+    owner_id: str,
+    method: str,
+    params: dict | None = None,
+    *,
+    timeout_s: float = 30.0,
+    wake: bool = True,
+    target: tuple[dict, str] | None = None,
 ) -> Any:
-    container, ip = await running_container(owner_id, wake=wake)
+    """``target``, when given, is an already-resolved ``(container, ip)`` pair
+    (e.g. from a prior ``running_container`` call) -- skips resolution so a
+    caller making many calls for one owner pays one DDB read + one Cloud Map
+    lookup, not one per call."""
     started = time.perf_counter()
     outcome = "unavailable"
     try:
+        container, ip = target if target is not None else await running_container(owner_id, wake=wake)
+        # margin bounds the HTTP-transport ceiling just above the plugin's own
+        # timeoutMs (== timeout_s): the plugin's own 504 must fire first on a
+        # slow RPC, not httpx aborting the connection out from under it.
+        margin = min(5.0, timeout_s)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s + 5.0, connect=5.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s + margin, connect=margin)) as client:
                 response = await client.post(
                     f"http://{ip}:{GATEWAY_PORT}{RPC_PATH}",
                     json={"method": method, "params": params or {}, "timeoutMs": int(timeout_s * 1000)},

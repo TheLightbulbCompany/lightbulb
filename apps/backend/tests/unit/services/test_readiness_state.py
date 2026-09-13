@@ -181,6 +181,42 @@ class TestComputeStatusLifecycleScenarios:
         assert contract["runtime_phase"] == "ready"
         assert contract["chat_available"] is True
 
+    @pytest.mark.asyncio
+    async def test_stopped_container_never_awaits_the_gateway_probe(self):
+        """A stopped container is "provisioning" regardless of gateway
+        liveness -- resolve_runtime_phase never even looks at it for a
+        non-running status, so compute_status must not spend an RPC finding
+        out. (onboarding={} passed explicitly to skip the paperclip read
+        entirely -- irrelevant to this scenario.)"""
+        container = {"status": "stopped"}
+        mock_call = AsyncMock(return_value={"ok": True})
+        with (
+            patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
+            patch("core.services.container_rpc.call", mock_call),
+            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
+        ):
+            contract = await readiness_state.compute_status("user_x", container=container, onboarding={})
+        assert contract["runtime_phase"] == "provisioning"
+        mock_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_parked_row_never_awaits_the_gateway_probe(self):
+        """A parked row short-circuits to lifecycle="parked" before the
+        gateway-liveness branch is ever reached."""
+        container = {"status": "stopped", "stop_reason": "trial_idle"}
+        mock_call = AsyncMock(return_value={"ok": True})
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=_account(subscription_status="trial_local")),
+            ),
+            patch("core.services.container_rpc.call", mock_call),
+            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=True)),
+        ):
+            contract = await readiness_state.compute_status("user_x", container=container, onboarding={})
+        assert contract["lifecycle"] == "parked"
+        mock_call.assert_not_awaited()
+
 
 class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
     """INV-6: onboarding status never gates chat — a degraded/awaiting-brief

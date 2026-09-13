@@ -199,6 +199,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.dispatch.targets": [["count_bucket", "room_kind", "source"]],
   "messaging.mention.unresolved": [["reason"]],
   "messaging.reply.latency": [["event_kind", "matched", "room_kind"]],
+  // core/services/container_rpc.py — one HTTP RPC per call to the container
+  // plugin. "method" is not a rollup dimension, so it only publishes with the
+  // full set or the outcome-only rollup, never alone.
+  "messaging.rpc": [["outcome", "method"], ["outcome"]],
   // core/services/openclaw_work.py — the work-queue worker.
   "messaging.worker.alive": [[]],
   "messaging.work.queue_wait": [["kind"]],
@@ -324,9 +328,10 @@ describe("ObservabilityStack", () => {
   test("creates at least 65 CloudWatch alarms", () => {
     const alarms = template.findResources("AWS::CloudWatch::Alarm");
     const count = Object.keys(alarms).length;
-    // 75 alarms: 11 page + 21 warn custom (28 minus the 7 gateway-pool-era
-    // ids deleted in Task 10, stateless-backend) + 3 x 7 per-table DDB
-    // + remaining AWS-native + 2 cost
+    // 76 alarms: 11 page + 22 warn custom (28 minus the 7 gateway-pool-era ids
+    // deleted in Task 10, plus W77-messaging-rpc-errors added in the
+    // whole-branch review fix round) + 3 x 7 per-table DDB + remaining
+    // AWS-native + 2 cost
     expect(count).toBeGreaterThanOrEqual(65);
   });
 

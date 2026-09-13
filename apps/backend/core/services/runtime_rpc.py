@@ -78,8 +78,6 @@ _PROXY_ALLOWED_METHODS = frozenset(
         "health",
         "models.authStatus",
         "models.list",
-        "progressCard.get",
-        "question.list",
         "sessions.branches.list",
         "sessions.branches.switch",
         "sessions.delete",

@@ -75,11 +75,10 @@ _NOT_GIVEN: Any = object()
 def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) -> RuntimePhase:
     """Pure ``(container status, gateway liveness) -> runtime phase`` map.
 
-    Mirrors the pre-COMPOSER ``_resolve_cold_start_phase`` in
-    ``routers/container.py`` field-for-field, except the liveness input is
-    now a plain bool sourced from a direct ``health`` RPC through the
-    container plugin (``_gateway_reachable``) instead of the old in-process
-    persistent socket (readiness store R4).
+    The liveness input is a plain bool sourced from a direct ``health`` RPC
+    through the container plugin (``_gateway_reachable``, via
+    ``core.services.container_rpc``) -- no in-process persistent socket
+    involved (readiness store R4 is retired).
 
     INV-6: this function -- and ONLY this function's output
     (``runtime_phase``) -- decides chat availability. It must never take

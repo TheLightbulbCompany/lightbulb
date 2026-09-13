@@ -31,10 +31,10 @@ def _call_from_routes(routes):
     recording every call. ``routes`` maps (METHOD, path) -> return value or Exception."""
     calls = []
 
-    async def _call(owner_id, method, params, **_kwargs):
+    async def _call(owner_id, method, params, **kwargs):
         assert method == "browser.request"
         key = (params["method"], params["path"])
-        calls.append({"key": key, "params": params})
+        calls.append({"key": key, "params": params, "kwargs": kwargs})
         val = routes.get(key)
         if isinstance(val, Exception):
             raise val
@@ -193,6 +193,9 @@ async def test_restore_applies_then_consumes():
     ws = _workspace()
     ws.read_file.return_value = json.dumps(state)
     with (
+        patch.object(
+            bs.container_rpc, "running_container", _running_container_mock({"gateway_token": "t"}, "10.0.0.1")
+        ),
         patch.object(bs.container_rpc, "call", call),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
@@ -231,6 +234,9 @@ async def test_restore_is_best_effort_per_cookie():
     ws = _workspace()
     ws.read_file.return_value = json.dumps(state)
     with (
+        patch.object(
+            bs.container_rpc, "running_container", _running_container_mock({"gateway_token": "t"}, "10.0.0.1")
+        ),
         patch.object(bs.container_rpc, "call", call),
         patch.object(bs, "get_workspace", return_value=ws),
     ):
@@ -238,3 +244,35 @@ async def test_restore_is_best_effort_per_cookie():
         assert await bs.restore_browser_state("org_1") is False
     assert len([c for c in call._calls if c["key"] == ("POST", "/cookies/set")]) == 2
     ws.delete_file.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_restore_resolves_once_and_reuses_target_for_every_call():
+    """A restore with several cookies must resolve the running container ONCE
+    (one DDB read + one Cloud Map lookup) and reuse that same (container, ip)
+    target for every cookie/localStorage call -- not once per call."""
+    state = {
+        "cookies": [{"name": n, "value": "v"} for n in ("a", "b", "c", "d", "e")],
+        "local": {"k1": "v1", "k2": "v2"},
+    }
+    routes = {
+        ("POST", "/cookies/set"): {"ok": True},
+        ("POST", "/storage/local/set"): {"ok": True},
+    }
+    call = _call_from_routes(routes)
+    target = ({"gateway_token": "t"}, "10.0.0.1")
+    running_container = AsyncMock(return_value=target)
+    ws = _workspace()
+    ws.read_file.return_value = json.dumps(state)
+    with (
+        patch.object(bs.container_rpc, "running_container", running_container),
+        patch.object(bs.container_rpc, "call", call),
+        patch.object(bs, "get_workspace", return_value=ws),
+    ):
+        assert await bs.restore_browser_state("org_1") is True
+
+    running_container.assert_awaited_once_with("org_1", wake=False)
+    assert len(call._calls) == 7  # 5 cookies + 2 local keys
+    for c in call._calls:
+        assert c["kwargs"]["wake"] is False
+        assert c["kwargs"]["target"] is target

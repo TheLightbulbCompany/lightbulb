@@ -115,3 +115,48 @@ async def test_wake_false_never_dispatches_a_wake_for_a_stopped_container():
         await container_rpc.call("owner_1", "health", wake=False)
     assert exc.value.error.code == "RUNTIME_UNAVAILABLE"
     wake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_running_container_still_emits_the_unavailable_metric():
+    """A no-container/stopped/missing-token failure must emit
+    messaging.rpc{outcome:"unavailable"} and a latency sample like every other
+    outcome -- resolution used to happen before the timer started, so this
+    path emitted nothing."""
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(None, None))
+    with (
+        patch("core.services.container_rpc.get_ecs_manager", return_value=manager),
+        patch(
+            "core.services.container_rpc.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("core.services.container_rpc.put_metric") as mock_put_metric,
+        pytest.raises(ApiProblem),
+    ):
+        await container_rpc.call("owner_1", "health", wake=False)
+    calls = {c.args[0]: c.kwargs for c in mock_put_metric.call_args_list}
+    assert calls["messaging.rpc"]["dimensions"] == {"outcome": "unavailable", "method": "health"}
+    assert "messaging.rpc.latency" in calls
+
+
+@pytest.mark.asyncio
+async def test_http_timeout_ceiling_is_bounded_above_the_plugin_timeout():
+    """A short probe (timeout_s=2.0) must not carry the old flat 5s margin --
+    margin = min(5.0, timeout_s), so a 2s probe gets a 4s ceiling, not 7s."""
+    seen = {}
+    handler = lambda r: httpx.Response(200, json={"ok": True, "payload": None})  # noqa: E731
+
+    def factory(**kw):
+        seen["timeout"] = kw["timeout"]
+        return _RealAsyncClient(transport=httpx.MockTransport(handler), **kw)
+
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(CONTAINER, "10.0.0.9"))
+    with (
+        patch("core.services.container_rpc.get_ecs_manager", return_value=manager),
+        patch("core.services.container_rpc.httpx.AsyncClient", factory),
+    ):
+        await container_rpc.call("owner_1", "health", timeout_s=2.0)
+    assert seen["timeout"] == httpx.Timeout(4.0, connect=2.0)

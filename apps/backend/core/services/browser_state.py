@@ -79,13 +79,21 @@ _MAX_COOKIES = 500
 _MAX_LOCAL_KEYS = 500
 
 
-async def _browser_request(*, owner_id: str, method: str, path: str, body: dict | None = None):
+async def _browser_request(
+    *, owner_id: str, method: str, path: str, body: dict | None = None, target: tuple[dict, str] | None = None
+):
     """One ``browser.request`` gateway RPC. Returns the route's response body
-    (e.g. ``{ok, targetId, cookies}``); raises on transport/RPC error."""
+    (e.g. ``{ok, targetId, cookies}``); raises on transport/RPC error. Always
+    ``wake=False`` -- the snapshot/restore path must never be able to start a
+    container. ``target``, when given, is an already-resolved
+    ``(container, ip)`` pair, so a caller making many calls for one owner
+    resolves once instead of once per call."""
     params: dict = {"method": method, "path": path}
     if body is not None:
         params["body"] = body
-    return await container_rpc.call(owner_id, "browser.request", params, timeout_s=_RPC_TIMEOUT_S)
+    return await container_rpc.call(
+        owner_id, "browser.request", params, timeout_s=_RPC_TIMEOUT_S, wake=False, target=target
+    )
 
 
 async def snapshot_browser_state(owner_id: str) -> bool:
@@ -106,8 +114,9 @@ async def snapshot_browser_state(owner_id: str) -> bool:
     async def _get(path: str):
         return await _browser_request(owner_id=owner_id, method="GET", path=path)
 
-    # Both GETs share the one persistent connection; run them concurrently to
-    # halve the worst-case delay added before the roll.
+    # Run both GETs concurrently to halve the worst-case delay added before
+    # the roll (each is its own HTTP request to the container plugin now --
+    # no persistent connection to share).
     cookies_res, local_res = await asyncio.gather(_get("/cookies"), _get("/storage/local"), return_exceptions=True)
 
     if isinstance(cookies_res, dict) and isinstance(cookies_res.get("cookies"), list) and cookies_res["cookies"]:
@@ -168,6 +177,16 @@ async def restore_browser_state(owner_id: str) -> bool:
         _safe_delete(ws, owner_id)
         return False
 
+    # Resolve ONCE (one DDB read + one Cloud Map lookup) and reuse for every
+    # cookie/localStorage call below -- a real session can carry hundreds of
+    # cookies, and resolving per-call would multiply that into hundreds of
+    # redundant lookups for the same owner in the same restore.
+    try:
+        target = await container_rpc.running_container(owner_id, wake=False)
+    except Exception as exc:  # noqa: BLE001 — best-effort; caller already gated on ready, but resolution can still fail transiently
+        logger.info("browser-state restore: resolve failed for %s: %s", owner_id, exc)
+        return False
+
     applied_cookies = 0
     applied_local = 0
 
@@ -177,7 +196,9 @@ async def restore_browser_state(owner_id: str) -> bool:
             if not isinstance(cookie, dict):
                 continue
             try:
-                await _browser_request(owner_id=owner_id, method="POST", path="/cookies/set", body={"cookie": cookie})
+                await _browser_request(
+                    owner_id=owner_id, method="POST", path="/cookies/set", body={"cookie": cookie}, target=target
+                )
                 applied_cookies += 1
             except Exception as exc:  # noqa: BLE001 — per-cookie best-effort
                 logger.info("browser-state restore: cookie set failed for %s: %s", owner_id, exc)
@@ -189,7 +210,11 @@ async def restore_browser_state(owner_id: str) -> bool:
                 continue
             try:
                 await _browser_request(
-                    owner_id=owner_id, method="POST", path="/storage/local/set", body={"key": key, "value": value}
+                    owner_id=owner_id,
+                    method="POST",
+                    path="/storage/local/set",
+                    body={"key": key, "value": value},
+                    target=target,
                 )
                 applied_local += 1
             except Exception as exc:  # noqa: BLE001 — per-key best-effort

@@ -1221,6 +1221,30 @@ def handler(event, context):
       severity: "warn",
       description: "Backend push sends to Expo are failing.",
     });
+
+    // -- W77: messaging-rpc-errors (next free id — W73 is already
+    // messaging-live-publish-error). `core/services/container_rpc.py` is the
+    // sole way the backend reaches an owner's container plugin; a sustained
+    // error rate here means real RPCs (agents.*, channels.*, health, ...) are
+    // failing at the plugin, distinct from W70 (unreachable/timeout, not a
+    // failure response).
+    this.createAlarm({
+      id: "W77",
+      name: "messaging-rpc-errors",
+      metricName: "messaging.rpc",
+      dimensions: { outcome: "error" },
+      threshold: 10,
+      periodMinutes: 5,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+      description:
+        "container_rpc calls to owner containers are failing (gateway " +
+        "method errors, not timeouts/unreachable - that's W70) - 10+ in " +
+        "5 min, sustained across 2 periods.",
+    });
   }
 
   /** A 5-minute Sum on a backend-emitted messaging metric, for metric math. */
@@ -1385,9 +1409,10 @@ def handler(event, context):
     // Not redefined: a real "connections dropped while traffic continues" signal
     // needs anomaly detection plus a co-metric for live traffic, and connection
     // health is ALREADY covered without it — P12 (backend-liveness via
-    // gateway.running.count) fires on a real gateway problem. A gauge falling
-    // to zero because nobody is connected is not one. Deleting is the correct,
-    // minimal fix.
+    // gateway.running.count) only proves the backend process is alive, and W77
+    // (messaging-rpc-errors) is the actual container-reachability alarm. A
+    // gauge falling to zero because nobody is connected is neither. Deleting
+    // is the correct, minimal fix.
 
     // W6 (gateway-health-check-timeout), W7 (gateway-frontend-prune-storm),
     // W8 (gateway-rpc-error-count), W9 (chat-e2e-latency-p99), W10

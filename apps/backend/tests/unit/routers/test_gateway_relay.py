@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,6 +38,7 @@ class FakeUpstream:
 
     def __init__(self):
         self.sent, self._queue = [], asyncio.Queue()
+        self.close_code = None
 
     async def send(self, frame):
         self.sent.append(frame)
@@ -173,3 +175,141 @@ def test_not_paired_from_the_container_triggers_the_self_heal():
             assert json.loads(ws.receive_text())["error"]["code"] == "NOT_PAIRED"  # still forwarded
             upstream.feed(None)
     heal.assert_awaited_once_with(owner_id="org_1", device_id="a" * 64, request_id="req-1")
+
+
+# --- Task 3 review fix round ---
+
+
+def test_revoked_presence_closes_the_socket_1008(monkeypatch):
+    monkeypatch.setattr(gateway_relay, "_REFRESH_SECONDS", 0)
+    upstream = FakeUpstream()
+    patches, svc = _patches(NODE, upstream)
+    svc.refresh_relay_presence = AsyncMock(return_value=False)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                ws.receive_text()
+    assert exc.value.code == 1008
+
+
+def test_operator_not_paired_unpaired_device_is_refused():
+    """The deviceId in a NOT_PAIRED frame is untrusted (the operator's own
+    identity carries no device_id) — it must be backend-paired before any
+    approve RPC runs."""
+    upstream = FakeUpstream()
+    patches, _ = _patches(OPERATOR, upstream)
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6],
+        patch("routers.gateway_relay._read_backend_pairing_file", return_value={}),
+        patch("routers.gateway_relay.approve_pending_device_from_rejection", new_callable=AsyncMock) as approve,
+    ):
+        with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=paperclip-operator") as ws:
+            upstream.feed(
+                '{"type":"res","id":"1","ok":false,"error":{"code":"NOT_PAIRED","details":{"requestId":"req-1","deviceId":"'
+                + "b" * 64
+                + '"}}}'
+            )
+            ws.receive_text()
+            upstream.feed(None)
+    approve.assert_not_awaited()
+
+
+def test_operator_not_paired_approves_once_even_if_the_frame_repeats():
+    upstream = FakeUpstream()
+    patches, _ = _patches(OPERATOR, upstream)
+    frame = (
+        '{"type":"res","id":"1","ok":false,"error":{"code":"NOT_PAIRED","details":{"requestId":"req-1","deviceId":"'
+        + "b" * 64
+        + '"}}}'
+    )
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6],
+        patch("routers.gateway_relay._read_backend_pairing_file", return_value={"b" * 64: {}}),
+        patch(
+            "routers.gateway_relay.approve_pending_device_from_rejection", new_callable=AsyncMock, return_value=True
+        ) as approve,
+    ):
+        with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=paperclip-operator") as ws:
+            upstream.feed(frame)
+            ws.receive_text()
+            upstream.feed(frame)
+            ws.receive_text()
+            upstream.feed(None)
+    approve.assert_awaited_once_with(owner_id="org_1", device_id="b" * 64, request_id="req-1")
+
+
+def test_node_ready_and_closed_hooks_fire_for_a_node():
+    # Both assertions are on finally-block behavior (on_node_closed only runs
+    # after the presence delete), so the test must not exit `with ws:` until
+    # the SERVER has closed on its own -- a client-initiated disconnect (just
+    # falling out of the block) can race the relay's own teardown and return
+    # before its finally block has run.
+    upstream = FakeUpstream()
+    patches, _ = _patches(NODE, upstream)
+    with patches[0], patches[1], patches[2], patches[3], patches[4] as on_ready, patches[5] as on_closed, patches[6]:
+        with pytest.raises(WebSocketDisconnect):
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
+                ws.receive_text()
+                upstream.feed(None)
+                ws.receive_text()  # blocks until the relay's own close (1000) propagates
+    on_ready.assert_awaited_once_with("org_1", "user_1", "a" * 64)
+    on_closed.assert_awaited_once_with("org_1", "user_1")
+
+
+def test_trailing_slash_route_is_accepted():
+    patches, _ = _patches(OPERATOR, FakeUpstream(), container=(None, None))
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as wake:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws/?token=x&clientId=paperclip-operator"):
+                pass
+    assert exc.value.code == 1013
+    wake.assert_awaited_once_with("org_1", door="relay")
+
+
+def test_upstream_close_code_propagates_to_the_client():
+    upstream = FakeUpstream()
+    patches, _ = _patches(NODE, upstream)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                upstream.close_code = 4401
+                upstream.feed(None)
+                ws.receive_text()  # blocks until the relay's own close (now 4401) propagates
+    assert exc.value.code == 4401
+
+
+def test_leg_exception_closes_1011_and_logs_it(caplog):
+    upstream = FakeUpstream()
+    upstream.send = AsyncMock(side_effect=RuntimeError("boom"))
+    patches, _ = _patches(NODE, upstream)
+    with caplog.at_level(logging.WARNING, logger="routers.gateway_relay"):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                    ws.send_text('{"type":"req","id":"1","method":"connect","params":{}}')
+                    ws.receive_text()
+    assert exc.value.code == 1011
+    assert any("relay leg failed" in r.message for r in caplog.records)
+
+
+def test_stopped_container_node_connect_never_wakes():
+    patches, _ = _patches(NODE, FakeUpstream(), container=(None, None))
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as wake:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos"):
+                pass
+    assert exc.value.code == 1013
+    wake.assert_not_awaited()

@@ -5,6 +5,7 @@ import logging
 
 from core.observability.logging import (
     JsonFormatter,
+    RedactTokenFilter,
     bind_request_context,
     configure_logging,
     request_id_var,
@@ -98,6 +99,46 @@ def test_bind_request_context_user_optional():
     assert request_id_var.get() == "req-only"
     assert user_id_var.get() is None
     request_id_var.set(None)
+
+
+def test_redact_token_filter_scrubs_message():
+    """The relay's ?token=<jwt> query string, wherever it lands in the raw
+    message, must never reach the log output."""
+    record = _make_record("GET /api/v1/gateway/ws?token=abc.def.ghi&clientId=paperclip-operator 403")
+    filtered = RedactTokenFilter().filter(record)
+    assert filtered is True
+    assert "token=REDACTED" in record.msg
+    assert "abc.def.ghi" not in record.msg
+
+
+def test_redact_token_filter_scrubs_args():
+    """Uvicorn's WS handshake log formats as `logger.info('%s - "%s" %d', addr,
+    request_line, status)` -- the token-bearing request line is in args, not
+    the format string itself."""
+    record = logging.LogRecord(
+        "uvicorn.error",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s" %d',
+        ("127.0.0.1:1234", "GET /api/v1/gateway/ws?token=SECRET-JWT&clientId=node-host HTTP/1.1", 101),
+        None,
+    )
+    RedactTokenFilter().filter(record)
+    assert "token=REDACTED" in record.args[1]
+    assert "SECRET-JWT" not in record.args[1]
+    assert record.args[0] == "127.0.0.1:1234" and record.args[2] == 101
+
+
+def test_redact_token_filter_is_a_noop_without_a_token():
+    record = _make_record("plain message, nothing to redact")
+    RedactTokenFilter().filter(record)
+    assert record.msg == "plain message, nothing to redact"
+
+
+def test_configure_logging_installs_the_uvicorn_token_redaction_filter():
+    configure_logging()
+    assert any(isinstance(f, RedactTokenFilter) for f in logging.getLogger("uvicorn.error").filters)
 
 
 def test_configure_logging_quiets_httpx_request_urls():

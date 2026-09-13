@@ -21,21 +21,21 @@ from core.containers import get_ecs_manager
 from core.observability.metrics import put_metric
 from core.services import machine_auth, relay_hooks
 from core.services.connection_service import ConnectionService
+from core.services.container_rpc import GATEWAY_PORT
 from core.services.container_wake import request_wake_silent
-from core.services.desktop_pair_live import heal_desktop_device_not_paired
+from core.services.desktop_pair_live import _read_backend_pairing_file, heal_desktop_device_not_paired
 from core.services.paperclip_openclaw_pairing import approve_pending_device_from_rejection
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-GATEWAY_PORT = 18789
 _WS_MAX_FRAME_SIZE = 10 * 1024 * 1024
 _PARSE_LIMIT = 64 * 1024
 _REFRESH_SECONDS = 60
 
 
 def _parse(frame: str) -> dict | None:
-    if len(frame) > _PARSE_LIMIT:
+    if len(frame.encode()) > _PARSE_LIMIT:
         return None
     try:
         body = json.loads(frame)
@@ -49,16 +49,32 @@ def _parse(frame: str) -> dict | None:
 async def gateway_relay_ws(websocket: WebSocket) -> None:
     token = websocket.query_params.get("token", "")
     client_id = websocket.query_params.get("clientId", "")
-    identity = await machine_auth.verify_upgrade(token, client_id)
+    try:
+        identity = await machine_auth.verify_upgrade(token, client_id)
+    except Exception:  # noqa: BLE001 — verify_upgrade documents "never raises"; defend anyway
+        logger.warning("relay upgrade auth error", exc_info=True)
+        put_metric("relay.connect", dimensions={"kind": "unknown", "outcome": "error"})
+        await websocket.close(code=1011, reason="Internal error")
+        return
     if identity is None:
         put_metric("relay.connect", dimensions={"kind": "unknown", "outcome": "unauthorized"})
         await websocket.close(code=1008, reason="Unauthorized")
         return
     owner_id, kind = identity.owner_id, identity.kind
 
-    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+    try:
+        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("relay container resolve error owner=%s", owner_id, exc_info=True)
+        put_metric("relay.connect", dimensions={"kind": kind, "outcome": "error"})
+        await websocket.close(code=1011, reason="Internal error")
+        return
     if container is None or ip is None:
-        outcome = await request_wake_silent(owner_id, door="relay")
+        # RULING D14: only an operator connect wakes a stopped container. A
+        # node's own reconnect (a laptop coming back from sleep) never did
+        # before this relay and must not start now — it would re-provision a
+        # parked trial container forever.
+        outcome = await request_wake_silent(owner_id, door="relay") if kind == "operator" else "skipped_node"
         if kind == "operator":
             await relay_hooks.maybe_disarm_expired_trial(owner_id)
         put_metric("relay.connect", dimensions={"kind": kind, "outcome": f"wake_{outcome}"})
@@ -75,6 +91,9 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
 
     close_code = 1000
     node_ready = False
+    not_paired_healed = False
+    legs: set[asyncio.Task] = set()
+    refresher: asyncio.Task | None = None
     try:
         async with ws_connect(
             f"ws://{ip}:{GATEWAY_PORT}", max_size=_WS_MAX_FRAME_SIZE, open_timeout=10, close_timeout=5
@@ -112,7 +131,7 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
                     return
 
             async def upstream_to_client() -> None:
-                nonlocal node_ready
+                nonlocal node_ready, not_paired_healed
                 try:
                     async for frame in upstream:
                         if isinstance(frame, bytes):
@@ -124,13 +143,20 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
                             continue
                         error = body.get("error") if isinstance(body.get("error"), dict) else None
                         if error and error.get("code") == "NOT_PAIRED":
-                            details = error.get("details") if isinstance(error.get("details"), dict) else {}
-                            request_id = details.get("requestId") if isinstance(details.get("requestId"), str) else None
-                            device_id = identity.device_id or (
-                                details.get("deviceId") if isinstance(details.get("deviceId"), str) else None
-                            )
-                            if device_id:
-                                await _self_heal(kind, owner_id, device_id, request_id)
+                            # Once per connection (spec §4.5): a looping client
+                            # that keeps getting rejected must not hammer the
+                            # self-heal RPCs on every retry.
+                            if not not_paired_healed:
+                                not_paired_healed = True
+                                details = error.get("details") if isinstance(error.get("details"), dict) else {}
+                                request_id = (
+                                    details.get("requestId") if isinstance(details.get("requestId"), str) else None
+                                )
+                                device_id = identity.device_id or (
+                                    details.get("deviceId") if isinstance(details.get("deviceId"), str) else None
+                                )
+                                if device_id:
+                                    await _self_heal(kind, owner_id, device_id, request_id)
                         elif (
                             kind == "node"
                             and not node_ready
@@ -139,7 +165,10 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
                             and body["payload"].get("type") == "hello-ok"
                         ):
                             node_ready = True
-                            await relay_hooks.on_node_ready(owner_id, identity.user_id, identity.device_id or "")
+                            try:
+                                await relay_hooks.on_node_ready(owner_id, identity.user_id, identity.device_id or "")
+                            except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
+                                logger.warning("relay on_node_ready hook failed owner=%s", owner_id, exc_info=True)
                 except (WebSocketDisconnect, ConnectionClosed):
                     return
 
@@ -160,13 +189,37 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
             done, pending = await asyncio.wait(legs | {refresher}, return_when=asyncio.FIRST_COMPLETED)
             if refresher in done:
                 close_code = 1008
+            for task in done:
+                if task is refresher or task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None:
+                    logger.warning("relay leg failed kind=%s", kind, exc_info=exc)
+                    close_code = 1011
             for task in pending:
                 task.cancel()
             await asyncio.gather(*legs, refresher, return_exceptions=True)
+
+            # Propagate the container's own close code (e.g. a deploy/restart
+            # closing 4401/1001) to the client instead of always reporting our
+            # generic 1000 — spec §4.4/§6 "same code". 1005/1006 are the
+            # websockets library's synthetic "no close frame at all" markers
+            # and must never be forwarded as if the peer sent them.
+            code = upstream.close_code
+            if code and 1000 <= code < 5000 and code not in (1005, 1006):
+                close_code = code
     except Exception:  # noqa: BLE001 — never let a relay error take the worker down
         logger.warning("relay error kind=%s", kind, exc_info=True)
         close_code = 1011
     finally:
+        # A drain/shutdown cancellation can interrupt this coroutine at any
+        # await above, before the normal pending-task cancel+gather runs —
+        # leaving the legs/refresher orphaned. Cancel them unconditionally
+        # here first so the presence delete + relay.close below still run on
+        # a bounded, predictable path regardless of how we got here.
+        for task in (*legs, *((refresher,) if refresher is not None else ())):
+            if not task.done():
+                task.cancel()
         try:
             await asyncio.to_thread(connections.delete_connection, connection_id)
         except Exception:  # noqa: BLE001
@@ -188,6 +241,23 @@ async def _self_heal(kind: str, owner_id: str, device_id: str, request_id: str |
         if kind == "node":
             healed = await heal_desktop_device_not_paired(owner_id=owner_id, device_id=device_id, request_id=request_id)
         else:
+            # The operator's MachineIdentity carries no device_id of its own
+            # (machine_auth._operator always sets device_id=None) — this
+            # deviceId comes entirely from the container's own NOT_PAIRED
+            # frame, i.e. untrusted input. Gate it exactly like the node
+            # branch: only a device id the OWNER actually paired (the
+            # backend-written devices/paired.json) may be auto-approved, or a
+            # compromised or buggy container could mint trust for an
+            # arbitrary device id.
+            devices = await asyncio.to_thread(_read_backend_pairing_file, owner_id, "devices")
+            if device_id not in devices:
+                logger.warning(
+                    "relay operator self-heal: device=%s owner=%s is not backend-paired — refusing",
+                    device_id[:16],
+                    owner_id,
+                )
+                put_metric("relay.not_paired_selfheal", dimensions={"kind": kind, "outcome": "unpaired_device"})
+                return
             healed = await approve_pending_device_from_rejection(
                 owner_id=owner_id, device_id=device_id, request_id=request_id
             )

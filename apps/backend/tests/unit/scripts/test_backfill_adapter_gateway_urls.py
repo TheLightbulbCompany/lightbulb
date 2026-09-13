@@ -23,6 +23,11 @@ AGENTS = {
             "adapterConfig": {"url": "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws?token=t&clientId=paperclip-operator"},
         },
         {"id": "ag-3", "adapterType": "other", "adapterConfig": {}},
+        {
+            "id": "ag-4",
+            "adapterType": "openclaw_gateway",
+            "adapterConfig": {"url": "ws://localhost:8000", "agentId": "y"},
+        },
     ]
 }
 
@@ -85,3 +90,38 @@ async def test_list_agents_called_with_keyword_args_and_bare_list_shape_accepted
         changed = await script.main(apply=False)
     assert changed == 1
     admin.list_agents.assert_awaited_once_with(session_cookie="cookie", company_id="co-1")
+
+
+@pytest.mark.asyncio
+async def test_localhost_adapter_is_never_patched():
+    """ws://localhost:<port> is the legitimate local-dev shape
+    (paperclip_provisioning._ws_gateway_url("")), still accepted by the
+    paperclip_adapter_config.py allowlist -- the backfill must leave it
+    alone rather than rewriting it onto the relay."""
+    agents = {
+        "agents": [
+            {
+                "id": "ag-local",
+                "adapterType": "openclaw_gateway",
+                "adapterConfig": {"url": "ws://localhost:8000", "agentId": "z"},
+            },
+        ]
+    }
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value=agents)
+    admin.patch_agent = AsyncMock()
+    http = MagicMock()
+    http.aclose = AsyncMock()
+    with (
+        patch("scripts.backfill_adapter_gateway_urls._companies", new_callable=AsyncMock, return_value=["co-1"]),
+        patch(
+            "scripts.backfill_adapter_gateway_urls._open_admin_session",
+            new_callable=AsyncMock,
+            return_value=(http, admin, "cookie"),
+        ),
+        patch("scripts.backfill_adapter_gateway_urls.settings") as settings,
+    ):
+        settings.GATEWAY_RELAY_URL = "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws"
+        changed = await script.main(apply=True)
+    assert changed == 0
+    admin.patch_agent.assert_not_awaited()

@@ -224,11 +224,13 @@ fn send_auth_token(
     // malformed and AWS ELB rejects with HTTP 400 before API Gateway ever
     // sees it. Browsers normalize this implicitly — native WS clients do
     // not.
-    // clientId is surfaced to the $connect Lambda and on to the backend's
-    // ws_connect, which uses it to skip the synthetic Ed25519 challenge for
-    // the Tauri-mac process. The real challenge is the upstream container's
-    // challenge, signed by Tauri-mac locally with the Mac-slot Keychain key
-    // in node_client::perform_handshake.
+    // clientId picks the verification branch in routers/gateway_relay.py's
+    // `/ws` handler -> machine_auth.verify_upgrade: "openclaw-macos" is in
+    // NODE_CLIENT_IDS, so the relay checks this JWT as a paired-device EdDSA
+    // credential rather than a Paperclip operator's HS256 service token. The
+    // real challenge is the upstream container's challenge, signed by
+    // Tauri-mac locally with the Mac-slot Keychain key in
+    // node_client::perform_handshake.
     let new_gateway_url = format!("{}/?token={}&clientId=openclaw-macos", ws_url, token);
 
     // Decide what to do with this token. See `AuthAction` for the cases.

@@ -53,7 +53,10 @@ async def main(apply: bool) -> int:
                     continue
                 cfg = agent.get("adapterConfig") or {}
                 url = cfg.get("url") or ""
-                if url.startswith(base):
+                if url.startswith(base) or url.startswith("ws://localhost"):
+                    # Already on the relay, or a legitimate local-dev adapter
+                    # (paperclip_provisioning._ws_gateway_url("") shape, still
+                    # accepted by the paperclip_adapter_config.py allowlist).
                     continue
                 changed += 1
                 print(f"{'PATCH' if apply else 'would patch'} company={company_id} agent={agent['id']}")

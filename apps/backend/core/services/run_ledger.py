@@ -8,7 +8,7 @@ import logging
 import time
 
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.repositories import container_repo, messaging_repo
 from core.services.messaging import publish_run_error_frames
 
 logger = logging.getLogger(__name__)
@@ -43,10 +43,25 @@ async def sweep_runs_once() -> int:
     return closed
 
 
+async def admitted(name: str, *, interval_s: int) -> bool:
+    """Pass admission plus its metric. See container_repo.try_claim_pass.
+
+    A local copy of update_service.admitted, not an import: each admission
+    point emits through its OWN module's put_metric so it stays independently
+    patchable in tests, same shape either way.
+    """
+    won = await container_repo.try_claim_pass(name, interval_s=interval_s)
+    put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "won" if won else "lost"})
+    return won
+
+
 async def run_ledger_sweeper(stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
-            await sweep_runs_once()
+            # end_run's conditional (messaging_repo.py:1685) remains the
+            # correctness boundary; admission only stops the duplicate GSI query.
+            if await admitted("run_ledger", interval_s=_SWEEP_SECONDS):
+                await sweep_runs_once()
         except Exception:
             put_metric("messaging.run.swept", dimensions={"error": "sweep_error"})
             logger.warning("run ledger sweep failed", exc_info=True)

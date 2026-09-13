@@ -351,6 +351,7 @@ async def test_run_scheduled_worker_applies_due_task_refreshes_sequentially(monk
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", AsyncMock())
     monkeypatch.setattr(update_service, "_rollup_pass", AsyncMock())
+    monkeypatch.setattr(update_service.container_repo, "try_claim_pass", AsyncMock(return_value=True))
     monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
 
     with pytest.raises(_StopLoop):
@@ -396,21 +397,23 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
         "get_due_scheduled",
         AsyncMock(return_value=[]),
     )
+    monkeypatch.setattr(update_service.container_repo, "try_claim_pass", AsyncMock(return_value=True))
     monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
 
     with pytest.raises(_StopLoop):
         await update_service.run_scheduled_worker()
 
-    assert retry_calls == 1, "retry pass must run every iteration"
-    assert purge_calls == 1, "purge pass must run on first iteration (last_purge_pass_at=0)"
+    assert retry_calls == 1, "retry pass must run every iteration it wins admission"
+    assert purge_calls == 1, "purge pass runs when admitted (cadence lives on the admission row now)"
     recover.assert_awaited_once()
 
 
 async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
-    """On the *second* iteration purge should NOT run (still within 24h).
+    """On the *second* iteration purge should NOT run: admission refuses it.
 
-    Strategy: monkeypatch ``time.monotonic`` so the elapsed delta on the
-    second iteration is < 24h, then stop after two iterations.
+    Cadence now lives on the try_claim_pass row, not a process clock -- stub
+    it to admit the purge pass once, then refuse it, while every other pass
+    (retry) is admitted every iteration.
     """
     purge_calls = 0
     retry_calls = 0
@@ -434,25 +437,13 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
             # Stop after second iteration completes.
             raise _StopLoop()
 
-    # First iteration: now - last_purge_pass_at (=0) must be >= 24h so
-    # purge runs and last_purge_pass_at gets set. Second iteration:
-    # now - last_purge_pass_at must be < 24h so purge is skipped.
-    interval = update_service._PURGE_PASS_INTERVAL_SECONDS
-    monotonic_values = iter(
-        [
-            interval + 100.0,  # iter 1: triggers purge, sets last_purge_pass_at = this
-            interval + 200.0,  # iter 2: delta=100s, well below interval -> skip
-            interval + 300.0,
-            interval + 400.0,
-            interval + 500.0,
-        ]
-    )
+    # First check admits the purge pass; the second (same 24h window) refuses it.
+    purge_admissions = iter([True, False])
 
-    def fake_monotonic():
-        try:
-            return next(monotonic_values)
-        except StopIteration:
-            return interval + 1000.0
+    async def fake_try_claim_pass(name, *, interval_s):
+        if name == "paperclip_purge":
+            return next(purge_admissions)
+        return True  # every other pass (retry, due_updates, rollup) wins every tick
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
@@ -463,19 +454,19 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
         "get_due_scheduled",
         AsyncMock(return_value=[]),
     )
+    monkeypatch.setattr(update_service.container_repo, "try_claim_pass", fake_try_claim_pass)
     monkeypatch.setattr(update_service.asyncio, "wait_for", fake_wait)
-    monkeypatch.setattr(update_service.time, "monotonic", fake_monotonic)
 
     with pytest.raises(_StopLoop):
         await update_service.run_scheduled_worker()
 
-    assert retry_calls == 2, "retry pass runs every loop iteration"
-    assert purge_calls == 1, "purge pass runs only on first iteration"
+    assert retry_calls == 2, "retry pass wins admission every loop iteration"
+    assert purge_calls == 1, "purge pass runs only when admission wins its window"
 
 
 async def test_run_scheduled_worker_rollup_pass_hourly_cadence(monkeypatch):
-    """Rollup pass runs on the first iteration, is skipped within the hour,
-    and runs again once the hour has elapsed."""
+    """Rollup pass runs when admitted, is skipped when admission refuses it,
+    and runs again once admission wins again."""
     rollup_calls = 0
 
     async def fake_rollup():
@@ -493,16 +484,13 @@ async def test_run_scheduled_worker_rollup_pass_hourly_cadence(monkeypatch):
         if wait_count >= 3:
             raise _StopLoop()
 
-    interval = update_service._ROLLUP_PASS_INTERVAL_SECONDS
-    # Iter 1: sentinel 0.0 -> runs, stamps t0. Iter 2: +60s -> skipped.
-    # Iter 3: +interval+60s -> runs again.
-    monotonic_values = iter([1000.0, 1060.0, 1000.0 + interval + 60.0])
+    # Iter 1: admitted -> runs. Iter 2: refused -> skipped. Iter 3: admitted again -> runs.
+    rollup_admissions = iter([True, False, True])
 
-    def fake_monotonic():
-        try:
-            return next(monotonic_values)
-        except StopIteration:
-            return 1000.0 + interval + 120.0
+    async def fake_try_claim_pass(name, *, interval_s):
+        if name == "owner_day_rollup":
+            return next(rollup_admissions)
+        return True
 
     monkeypatch.setattr(update_service, "_rollup_pass", fake_rollup)
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
@@ -513,13 +501,13 @@ async def test_run_scheduled_worker_rollup_pass_hourly_cadence(monkeypatch):
         "get_due_scheduled",
         AsyncMock(return_value=[]),
     )
+    monkeypatch.setattr(update_service.container_repo, "try_claim_pass", fake_try_claim_pass)
     monkeypatch.setattr(update_service.asyncio, "wait_for", fake_wait)
-    monkeypatch.setattr(update_service.time, "monotonic", fake_monotonic)
 
     with pytest.raises(_StopLoop):
         await update_service.run_scheduled_worker()
 
-    assert rollup_calls == 2, "rollup pass: first iteration + after the hour elapsed"
+    assert rollup_calls == 2, "rollup pass: first admitted iteration + after admission wins again"
 
 
 # ----------------------------------------------------------------------

@@ -22,6 +22,9 @@ async def test_worker_exits_cleanly_on_stop_without_cancel(monkeypatch):
     monkeypatch.setattr(us, "_paperclip_purge_pass", AsyncMock(), raising=False)
     monkeypatch.setattr(us, "_rollup_pass", AsyncMock(), raising=False)
     monkeypatch.setattr(us.update_repo, "get_due_scheduled", AsyncMock(return_value=[]))
+    # Every pass now enters only behind admission -- admit unconditionally so
+    # the retry pass this test cares about actually runs.
+    monkeypatch.setattr(us.container_repo, "try_claim_pass", AsyncMock(return_value=True))
 
     # Clear any Event left bound to a previous test's loop; run_scheduled_worker
     # creates a fresh, loop-bound one.

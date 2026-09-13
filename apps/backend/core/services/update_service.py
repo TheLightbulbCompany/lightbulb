@@ -1012,19 +1012,32 @@ async def _rollup_pass() -> None:
             logger.exception("rollup refresh failed (owner=%s)", owner_id)
 
 
+async def admitted(name: str, *, interval_s: int) -> bool:
+    """Pass admission plus its metric. See container_repo.try_claim_pass."""
+    won = await container_repo.try_claim_pass(name, interval_s=interval_s)
+    put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "won" if won else "lost"})
+    return won
+
+
 async def run_scheduled_worker() -> None:
     """Background worker: poll for due scheduled updates and apply them.
 
-    Runs every 60 seconds indefinitely. Each iteration also runs the
-    Paperclip retry pass (every loop), the Paperclip purge pass
-    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h), and the owner-day
-    rollup pass (once per ``_ROLLUP_PASS_INTERVAL_SECONDS`` -- 1h).
+    Runs every 60 seconds indefinitely. Each iteration enters its four passes
+    (due-update apply, Paperclip retry, Paperclip purge, owner-day rollup)
+    only on the instance that wins ``admitted()`` for that pass's window that
+    tick -- at desiredCount >= 2 the loser scans nothing, instead of every
+    instance re-scanning the same rows. Cadence for the daily purge and hourly
+    rollup lives on the admission row (``interval_s``), not a process-local
+    clock, so a deploy no longer forces an immediate run.
+
+    Deliberately NOT admitted: the heartbeat metric just below (this loop's
+    own liveness canary) and ``_recover_stale_task_definition_refreshes``
+    (custody recovery, not a scan -- admitting it would only lengthen its
+    recovery tail).
     """
     logger.info("Scheduled update worker started")
     global _worker_stop
     _worker_stop = asyncio.Event()  # bind to the loop running this worker
-    last_purge_pass_at: float = 0.0  # epoch seconds; 0 forces a run on first iteration
-    last_rollup_pass_at: float = 0.0  # same sentinel idiom as the purge pass
     while not _worker_stop.is_set():
         try:
             put_metric("update.scheduled_worker.heartbeat")
@@ -1035,45 +1048,42 @@ async def run_scheduled_worker() -> None:
                 await _recover_stale_task_definition_refreshes()
             except Exception:
                 logger.exception("task-definition refresh recovery pass crashed")
-            due_updates = await update_repo.get_due_scheduled()
-            if due_updates:
-                logger.info("Found %d due scheduled updates", len(due_updates))
-            for update in due_updates:
-                owner_id = update["owner_id"]
-                update_id = update["update_id"]
-                try:
-                    await apply_update(owner_id, update_id)
-                except Exception:
-                    logger.exception("Error applying scheduled update %s (owner=%s)", update_id, owner_id)
 
-            # T13: Paperclip retry pass — runs every loop so retryable
+            if await admitted("due_updates", interval_s=_WORKER_INTERVAL_S):
+                due_updates = await update_repo.get_due_scheduled()
+                if due_updates:
+                    logger.info("Found %d due scheduled updates", len(due_updates))
+                for update in due_updates:
+                    owner_id = update["owner_id"]
+                    update_id = update["update_id"]
+                    try:
+                        await apply_update(owner_id, update_id)
+                    except Exception:
+                        logger.exception("Error applying scheduled update %s (owner=%s)", update_id, owner_id)
+
+            # T13: Paperclip retry pass — admitted every loop so retryable
             # failures recover within a minute of the upstream issue clearing.
-            try:
-                await _paperclip_provision_retry_pass()
-            except Exception:
-                logger.exception("paperclip_provision_retry_pass crashed")
+            if await admitted("paperclip_retry", interval_s=_WORKER_INTERVAL_S):
+                try:
+                    await _paperclip_provision_retry_pass()
+                except Exception:
+                    logger.exception("paperclip_provision_retry_pass crashed")
 
-            # T13: Paperclip purge pass — runs once per day. The first
-            # iteration after process start always runs (last_purge_pass_at=0.0
-            # is the sentinel; time.monotonic() is process uptime, which on a
-            # fresh container is small so the delta-check alone wouldn't
-            # trigger).
-            now = time.monotonic()
-            if last_purge_pass_at == 0.0 or now - last_purge_pass_at >= _PURGE_PASS_INTERVAL_SECONDS:
+            # T13: Paperclip purge pass — admitted once per
+            # _PURGE_PASS_INTERVAL_SECONDS (24h), fleet-wide.
+            if await admitted("paperclip_purge", interval_s=_PURGE_PASS_INTERVAL_SECONDS):
                 try:
                     await _paperclip_purge_pass()
                 except Exception:
                     logger.exception("paperclip_purge_pass crashed")
-                last_purge_pass_at = now
 
-            # P0c: owner-day rollup pass — runs once per hour, same
-            # monotonic-interval idiom as the purge pass above.
-            if last_rollup_pass_at == 0.0 or now - last_rollup_pass_at >= _ROLLUP_PASS_INTERVAL_SECONDS:
+            # P0c: owner-day rollup pass — admitted once per
+            # _ROLLUP_PASS_INTERVAL_SECONDS (1h), fleet-wide.
+            if await admitted("owner_day_rollup", interval_s=_ROLLUP_PASS_INTERVAL_SECONDS):
                 try:
                     await _rollup_pass()
                 except Exception:
                     logger.exception("rollup_pass crashed")
-                last_rollup_pass_at = now
         except Exception:
             put_metric("update.scheduled_worker.error")
             logger.exception("Error in scheduled update worker loop")

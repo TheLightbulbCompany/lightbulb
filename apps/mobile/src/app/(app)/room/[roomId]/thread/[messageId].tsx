@@ -82,6 +82,8 @@ export default function ThreadScreen() {
   // readSeq is null on purpose: a thread has no "New messages" line in Slack,
   // and the room's own read cursor counts the room's sequence, not this thread's.
   const items = useMemo(() => buildTimeline(replies, { readSeq: null }), [replies]);
+  // Reversed for the inverted list below — see the room screen's own note.
+  const newestFirst = useMemo(() => [...items].reverse(), [items]);
   const runs = useMemo(
     () => rooms.runs.filter((run) => run.threadRootMessageId === messageId).map(runView),
     [rooms.runs, messageId],
@@ -174,12 +176,32 @@ export default function ThreadScreen() {
       </View>
       <FlatList
         testID="thread-timeline"
-        data={items}
+        // Inverted, like the room's timeline: a new reply or run frame appears
+        // at the bottom with no scroll animation. Header and footer swap with
+        // it — the header draws at the BOTTOM of an inverted list.
+        inverted
+        data={newestFirst}
         keyExtractor={(item) => item.key}
         contentContainerStyle={styles.list}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
+          <View>
+            <LocalMessageRows
+              rows={rows}
+              onRetry={(clientMessageId) => void retry(clientMessageId)}
+              downloadAttachment={rooms.downloadAttachment}
+              members={members ?? []}
+              currentUserId={userId ?? ""}
+            />
+            {runs.map((run) => (
+              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
+            ))}
+          </View>
+        }
+        // The thread ROOT, pinned above its replies — so, on an inverted list,
+        // the footer.
+        ListFooterComponent={
           root ? (
             <View>
               <MessageGroup
@@ -212,20 +234,6 @@ export default function ThreadScreen() {
               </Pressable>
             </View>
           )
-        }
-        ListFooterComponent={
-          <View>
-            <LocalMessageRows
-              rows={rows}
-              onRetry={(clientMessageId) => void retry(clientMessageId)}
-              downloadAttachment={rooms.downloadAttachment}
-              members={members ?? []}
-              currentUserId={userId ?? ""}
-            />
-            {runs.map((run) => (
-              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
-            ))}
-          </View>
         }
         renderItem={({ item }) => {
           if (item.kind === "date") {
@@ -297,7 +305,8 @@ export default function ThreadScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.cream },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
+  // `paddingTop` draws at the bottom on an inverted list — see the room screen.
+  list: { paddingHorizontal: spacing.lg, paddingTop: spacing.xl },
   subtitleRow: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,

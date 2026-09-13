@@ -47,7 +47,7 @@ async def test_running_container_dispatches_ensure_user_ready_for_org_admin():
     with (
         patch("routers.container.get_ecs_manager", return_value=ecs),
         patch("routers.container.resolve_owner_id", return_value="org_xyz"),
-        patch("routers.container._safe_phase", return_value="ready"),
+        patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
         patch("routers.container.asyncio.create_task", side_effect=capture_task),
     ):
         await container_mod.container_status(auth=_org_admin_auth())
@@ -74,7 +74,7 @@ async def test_running_container_dispatches_ensure_user_ready_for_org_member():
     with (
         patch("routers.container.get_ecs_manager", return_value=ecs),
         patch("routers.container.resolve_owner_id", return_value="org_xyz"),
-        patch("routers.container._safe_phase", return_value="ready"),
+        patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
         patch("routers.container.asyncio.create_task", side_effect=capture_task),
     ):
         await container_mod.container_status(auth=_org_member_auth())

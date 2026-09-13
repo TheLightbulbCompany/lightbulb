@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.services import readiness_state
+from core.services.messaging import ApiProblem
 
 
 def _account(**overrides) -> dict:
@@ -68,9 +69,15 @@ async def _compute(
                 "user_id": None,
             }
         )
+
+    async def _health(*_a, **_kw):
+        if not gateway_connected:
+            raise ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
+        return {"ok": True}
+
     with (
         patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=account)),
-        patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=gateway_connected)),
+        patch("core.services.container_rpc.call", new=AsyncMock(side_effect=_health)),
         patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
         patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=parked)),
     ):
@@ -287,7 +294,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
             patch(
                 "core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(side_effect=RuntimeError("ddb down"))
             ),
-            patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=True)),
+            patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):
@@ -296,8 +303,8 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
 
     @pytest.mark.asyncio
     async def test_gateway_liveness_read_failure_defaults_to_not_connected(self):
-        """A DDB liveness read failure must never raise, and must fail
-        toward "not ready" (starting), never a false "ready"."""
+        """A health-probe failure must never raise, and must fail toward
+        "not ready" (starting), never a false "ready"."""
         container = {"status": "running", "substatus": None}
         paperclip_repo = MagicMock()
         paperclip_repo.get_onboarding_state = AsyncMock(
@@ -324,8 +331,8 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
         with (
             patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
             patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(side_effect=RuntimeError("ddb down")),
+                "core.services.container_rpc.call",
+                new=AsyncMock(side_effect=RuntimeError("gateway probe down")),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
@@ -441,7 +448,7 @@ class TestResolveOnboardingStateThreading:
         }
         with (
             patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
-            patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=True)),
+            patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):
@@ -481,7 +488,7 @@ class TestResolveOnboardingStateThreading:
         container = {"status": "running", "substatus": None}
         with (
             patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
-            patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=True)),
+            patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):

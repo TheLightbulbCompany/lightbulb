@@ -369,9 +369,11 @@ class GatewayConnection:
             if connected:
                 if self._liveness_dead:
                     return
-                await self._conn_svc.mark_gateway_connected(self.owner_id, conn_token=self._liveness_token)
-            else:
-                await self._conn_svc.mark_gateway_disconnected(self.owner_id, conn_token=self._liveness_token)
+                # mark_gateway_connected retired (Task 8) -- readiness now
+                # probes the container directly via container_rpc; nothing
+                # reads this DDB row any more. This whole pool is deleted
+                # in Task 9.
+            # else: mark_gateway_disconnected retired (Task 8), same reason.
         if not connected:
             # Terminal delete has now landed on the server STRICTLY AFTER any
             # in-flight refresh (the refresh holds _liveness_lock across its
@@ -422,8 +424,9 @@ class GatewayConnection:
             while True:
                 await asyncio.sleep(_LIVENESS_REFRESH_SECONDS)
                 async with self._liveness_lock:
-                    if self.is_alive and not self._liveness_dead:
-                        await self._conn_svc.refresh_gateway_liveness(self.owner_id, conn_token=self._liveness_token)
+                    # refresh_gateway_liveness retired (Task 8); see
+                    # _write_liveness's deletion note.
+                    pass
         except asyncio.CancelledError:
             raise
 

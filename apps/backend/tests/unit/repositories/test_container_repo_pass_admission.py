@@ -107,3 +107,46 @@ async def test_a_botocore_error_with_no_response_code_also_fails_closed():
     the tick's remaining passes. The criterion is ANY failure -> not admitted."""
     with patch.object(container_repo, "_get_table", return_value=_table(NoCredentialsError())):
         assert await container_repo.try_claim_pass("paperclip_purge", interval_s=86_400) is False
+
+
+@pytest.mark.asyncio
+async def test_a_persistent_fault_emits_its_own_outcome_fault_metric():
+    """The callers' own admitted() wrapper only ever emits won/lost from the
+    boolean, so a throttle (or any other real DynamoDB error) is invisible to
+    it -- indistinguishable from ordinary contention. try_claim_pass must
+    surface it directly."""
+    boom = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+    with (
+        patch.object(container_repo, "_get_table", return_value=_table(boom)),
+        patch.object(container_repo, "put_metric") as mock_metric,
+    ):
+        assert await container_repo.try_claim_pass("owner_day_rollup", interval_s=3600) is False
+    mock_metric.assert_called_once_with(
+        "lifecycle.pass.claimed", dimensions={"pass": "owner_day_rollup", "outcome": "fault"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_botocore_error_also_emits_outcome_fault():
+    with (
+        patch.object(container_repo, "_get_table", return_value=_table(NoCredentialsError())),
+        patch.object(container_repo, "put_metric") as mock_metric,
+    ):
+        assert await container_repo.try_claim_pass("paperclip_purge", interval_s=86_400) is False
+    mock_metric.assert_called_once_with(
+        "lifecycle.pass.claimed", dimensions={"pass": "paperclip_purge", "outcome": "fault"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_ordinary_contention_emits_no_fault_metric():
+    """ConditionalCheckFailedException is expected contention, not a fault --
+    the caller's own metric already reports it as "lost" (see
+    test_pass_admission_wiring.test_admission_emits_won_and_lost); try_claim_pass
+    must not double-report it as a fault."""
+    with (
+        patch.object(container_repo, "_get_table", return_value=_table(_conditional_failure())),
+        patch.object(container_repo, "put_metric") as mock_metric,
+    ):
+        assert await container_repo.try_claim_pass("paperclip_purge", interval_s=86_400) is False
+    mock_metric.assert_not_called()

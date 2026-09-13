@@ -9,6 +9,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.observability.metrics import put_metric
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -680,8 +681,21 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
             ExpressionAttributeValues={":now": stamp, ":cutoff": stamp - int(interval_s)},
         )
         return True
-    except Exception:
-        # Conditional refusal AND any AWS SDK fault both fail closed -- see docstring.
+    except ClientError as e:
+        # Conditional refusal (contention -- another instance already won this
+        # window) fails closed same as any other fault, but is NOT itself a
+        # fault: the callers' own metric already reports it as "lost". Any
+        # other ClientError (throttling, a real DynamoDB error) is a fault the
+        # callers' boolean-only metric can't see, so log + emit it here.
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("pass admission fault name=%s: %s", name, e)
+            put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "fault"})
+        return False
+    except Exception as e:
+        # BotoCoreError (endpoint/connect/read timeouts, NoCredentialsError, ...)
+        # carries no Error code, so it can't be ClientError -- always a fault.
+        logger.warning("pass admission fault name=%s: %s", name, e)
+        put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "fault"})
         return False
 
 

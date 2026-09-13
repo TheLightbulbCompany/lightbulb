@@ -33,6 +33,7 @@ from core.services.credentials import (
     registry,
 )
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
+from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_lifecycle import owner_lifecycle_guard
 
@@ -789,8 +790,13 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     # also serializes against a concurrent provision or resize for the same
     # owner, which is deliberate: that race is the same bug class the old
     # per-provider lock was too narrow to catch.
-    async with owner_lifecycle_guard(owner_id):
-        await _disconnect_teardown(owner_id, provider, p)
+    try:
+        async with owner_lifecycle_guard(owner_id):
+            await _disconnect_teardown(owner_id, provider, p)
+    except SidecarLockTimeoutError:
+        # Nothing is written before the guard, so this is a clean no-op --
+        # tell the caller to retry rather than surface a raw 500.
+        raise HTTPException(status_code=409, detail="busy")
     return {"status": "disconnected", "provider": provider}
 
 
@@ -1034,28 +1040,34 @@ async def oauth_callback(
     # same per-owner guard), so a disconnect landing mid-connect cannot be undone
     # by this callback finishing its writes afterwards. Taken AFTER the exchange
     # network call, never around it.
-    async with owner_lifecycle_guard(owner_id):
-        # Agent-started flow landing on a provider that went live in between
-        # (the owner connected via the tab during the state TTL): drop it. The
-        # agent may start a missing connection, never rebind a live one — judged
-        # here, under the same lock the writes take, not at mint time.
-        if origin == "container" and await _is_connected(owner_id, prov):
-            return _done("error=already_connected")
-        # Retain the credential in Secrets Manager only when the backend is the
-        # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
-        # container, so the backend stores nothing and the EFS keyring written by
-        # apply_connection is the sole durable copy. Mark connected only after
-        # wiring succeeds.
-        if _retains_secret(p):
-            await integration_secret_store.put(owner_id, prov, credential)
-        try:
-            connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
-        except Exception:
-            await _remove_materialized_artifacts(owner_id, p, credential)
+    try:
+        async with owner_lifecycle_guard(owner_id):
+            # Agent-started flow landing on a provider that went live in between
+            # (the owner connected via the tab during the state TTL): drop it. The
+            # agent may start a missing connection, never rebind a live one — judged
+            # here, under the same lock the writes take, not at mint time.
+            if origin == "container" and await _is_connected(owner_id, prov):
+                return _done("error=already_connected")
+            # Retain the credential in Secrets Manager only when the backend is the
+            # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
+            # container, so the backend stores nothing and the EFS keyring written by
+            # apply_connection is the sole durable copy. Mark connected only after
+            # wiring succeeds.
             if _retains_secret(p):
-                await integration_secret_store.delete(owner_id, prov)
-            return _done("error=apply_failed")
-        await integrations_repo.put_status(owner_id, prov, "connected")
+                await integration_secret_store.put(owner_id, prov, credential)
+            try:
+                connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
+            except Exception:
+                await _remove_materialized_artifacts(owner_id, p, credential)
+                if _retains_secret(p):
+                    await integration_secret_store.delete(owner_id, prov)
+                return _done("error=apply_failed")
+            await integrations_repo.put_status(owner_id, prov, "connected")
+    except SidecarLockTimeoutError:
+        # The OAuth state is already consumed at this point, so nothing is
+        # written before the guard -- land back on the connections page with a
+        # retryable error instead of a raw 500.
+        return _done("error=busy")
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

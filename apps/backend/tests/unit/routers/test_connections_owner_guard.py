@@ -4,7 +4,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.config import settings
+from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.owner_lifecycle import owner_lifecycle_guard
+
+
+@asynccontextmanager
+async def _timing_out_guard(owner_id):
+    raise SidecarLockTimeoutError("timed out")
+    yield  # pragma: no cover - unreachable, keeps this a generator
 
 
 @pytest.mark.asyncio
@@ -92,3 +99,60 @@ def test_the_old_per_provider_lock_module_cannot_be_imported():
     # is gone from the codebase -- doesn't itself trip a repo-wide grep for it.
     with pytest.raises(ModuleNotFoundError):
         __import__("core.services.credentials." + "connection" + "_lock")
+
+
+@pytest.mark.asyncio
+async def test_callback_redirects_busy_on_guard_timeout(async_client, monkeypatch):
+    """A guard timeout must land a clean redirect, not a raw 500 -- the OAuth
+    state is already consumed by this point, and nothing is written before
+    the guard, so this is a clean no-op the user can retry."""
+    from routers import connections
+
+    monkeypatch.setattr(connections.oauth_dance, "exchange", AsyncMock(return_value=("org_1", "google", {}, None)))
+    monkeypatch.setattr("routers.connections.owner_lifecycle_guard", _timing_out_guard)
+
+    with (
+        patch("routers.connections.apply_connection") as mock_apply,
+        patch("routers.connections.integration_secret_store") as mock_store,
+        patch("routers.connections.integrations_repo") as mock_repo,
+    ):
+        mock_apply.apply_connection = AsyncMock(return_value="user@example.com")
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        response = await async_client.get(
+            "/api/v1/oauth/google/callback?code=abc&state=st1",
+            follow_redirects=False,
+        )
+
+    assert response.status_code in (302, 307)
+    assert "error=busy" in response.headers["location"]
+    # No partial write: the timeout fires on guard entry, before the body runs.
+    mock_store.put.assert_not_called()
+    mock_apply.apply_connection.assert_not_called()
+    mock_repo.put_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_returns_busy_on_guard_timeout(async_client, monkeypatch):
+    """Same guard, same failure mode, on the DELETE route -- existing error
+    form here is an HTTPException, not a redirect."""
+    from routers import connections
+    from core.services.credentials.registry import OpenclawPath, Provider, Wiring
+
+    synthetic = Provider(
+        key="synth",
+        display_name="Synthetic",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(openclaw_paths=[OpenclawPath(path="mcp.servers.synth.env.SYNTH_API_KEY", source="input.token")]),
+    )
+    monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
+    monkeypatch.setattr("routers.connections.owner_lifecycle_guard", _timing_out_guard)
+    teardown = AsyncMock()
+    monkeypatch.setattr("routers.connections._disconnect_teardown", teardown)
+
+    response = await async_client.delete("/api/v1/connections/synth")
+
+    assert response.status_code == 409
+    teardown.assert_not_called()

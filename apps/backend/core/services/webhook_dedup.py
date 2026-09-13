@@ -732,7 +732,8 @@ async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int |
     """
     now = int(time.time())
     try:
-        _table().put_item(
+        await run_in_thread(
+            _table().put_item,
             Item={
                 "event_id": event_id,
                 "source": source,
@@ -774,6 +775,12 @@ def idempotency(*, header: str = "Idempotency-Key", ttl_s: int = 60) -> Callable
     Fails CLOSED: a dedup-table fault raises and the request fails. An admin
     mutation that cannot be deduped should not run. Requests with no header
     bypass entirely, as before.
+
+    A handler that raises keeps its claim: the record was already written
+    before the handler ran, so a same-key retry 409s until that claim's TTL
+    expires -- deliberate, since releasing the claim on failure reintroduces
+    the double-click race this decorator exists to close. The 409 means "this
+    key was already claimed", not "the mutation succeeded".
     """
 
     def decorator(handler: Callable) -> Callable:

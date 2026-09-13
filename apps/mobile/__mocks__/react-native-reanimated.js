@@ -44,6 +44,15 @@ function interpolate(value, inputRange, outputRange) {
   return y0 + t * (y1 - y0);
 }
 
+// Endpoint-accurate only: RoomComposer's focus ring springs between exactly
+// two colours, and a test asserts WHICH end a progress lands on — never the
+// blend halfway between them (the real one parses and mixes colour channels).
+// Give it a real mixer if a suite ever needs a midpoint.
+function interpolateColor(value, inputRange, outputRange) {
+  const index = inputRange.findIndex((stop) => value <= stop);
+  return outputRange[index === -1 ? outputRange.length - 1 : index];
+}
+
 const Extrapolation = { CLAMP: "clamp", EXTEND: "extend", IDENTITY: "identity" };
 
 // Identity: the real `runOnJS` marshals a worklet-thread call back to the JS
@@ -72,6 +81,7 @@ module.exports = {
   withSpring,
   withTiming,
   interpolate,
+  interpolateColor,
   Extrapolation,
   runOnJS,
   useEvent,

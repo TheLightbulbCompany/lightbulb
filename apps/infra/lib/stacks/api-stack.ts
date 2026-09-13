@@ -648,6 +648,10 @@ export class ApiStack extends cdk.Stack {
     });
     this.messagingProjectorFunctionName = `${resourcePrefix(env)}messaging-projector`;
     messagingTable.grantReadData(projectorFn);
+    // Read-only otherwise; the one write is the conditional workspaceId heal
+    // stamp on a legacy META row (attribute_not_exists guarded, so this can
+    // never clobber a concurrent writer) — see _workspace_id_for_meta.
+    messagingTable.grant(projectorFn, "dynamodb:UpdateItem");
     // Expo push tokens live on the users table, owned by DatabaseStack. Imported
     // by name so the projector needs no cross-stack prop (read-only: token
     // pruning would need a writer).

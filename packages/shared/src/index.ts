@@ -117,6 +117,8 @@ export type {
   ToolTranscriptRow,
   TranscriptRow,
 } from "./messaging/localSessionTranscript";
+export { accessLost, useLocalSessionHistory, useRoomResources } from "./messaging/useRoomResources";
+export type { RoomResourceSource } from "./messaging/useRoomResources";
 export type {
   LocalSession,
   LocalSessionCommand,

@@ -3,14 +3,13 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, Link2 } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { CreateMessageRequest, ListenMode, MemberPrefsRequest, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
+import type { CreateMessageRequest, ListenMode, MemberPrefsRequest, MemberRef, RoomResourceSource, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import type { RoomResourceSource } from "@/hooks/useRoomResources";
 import { RoomResources } from "./RoomResources";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";

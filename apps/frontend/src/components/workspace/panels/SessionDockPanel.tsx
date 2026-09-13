@@ -2,10 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
-import type { RoomMember } from "@lightbulb/shared";
+import { useRoomResources, type RoomMember } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { useRoomResources } from "@/hooks/useRoomResources";
 import { LocalSessionPanel, sessionLabel } from "@/components/messaging/LocalSessionPanel";
 import { useDockPanelParams } from "./useDockPanelParams";
 

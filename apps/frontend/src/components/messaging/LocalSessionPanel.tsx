@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { ApiError, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt } from "@lightbulb/shared";
+import { ApiError, accessLost, useLocalSessionHistory, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type RoomResourceSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { accessLost, useLocalSessionHistory, type RoomResourceSource } from "@/hooks/useRoomResources";
 import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, type Person } from "./NativeSessionTranscript";

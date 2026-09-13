@@ -1,7 +1,7 @@
 import Feather from "@expo/vector-icons/Feather";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors, radii } from "../../config/theme";
+import { colors, fonts, radii } from "../../config/theme";
 
 /**
  * The conversation header's star/mute icon pair — RoomHeader.tsx's own icon
@@ -16,15 +16,39 @@ export function RoomHeaderActions({
   disabled,
   onToggleStar,
   onToggleMute,
+  onOpenDevices,
+  liveSessions = 0,
 }: {
   starred: boolean;
   muted: boolean;
   disabled?: boolean;
   onToggleStar: () => void;
   onToggleMute: () => void;
+  /** Present only on rooms that can show shared devices & sessions. */
+  onOpenDevices?: () => void;
+  /** Sessions working or waiting for approval; drawn as a badge. */
+  liveSessions?: number;
 }) {
   return (
     <View style={styles.row}>
+      {onOpenDevices && (
+        <Pressable
+          onPress={onOpenDevices}
+          disabled={disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={liveSessions > 0 ? `Devices & sessions, ${liveSessions} live` : "Devices & sessions"}
+          accessibilityState={{ disabled: !!disabled }}
+          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+        >
+          <Feather name="terminal" size={18} color={colors.inkSoft} />
+          {liveSessions > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{liveSessions > 9 ? "9+" : String(liveSessions)}</Text>
+            </View>
+          )}
+        </Pressable>
+      )}
       <Pressable
         onPress={onToggleStar}
         disabled={disabled}
@@ -61,4 +85,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   buttonPressed: { backgroundColor: colors.rowPressed },
+  badge: {
+    position: "absolute",
+    top: 3,
+    right: 3,
+    minWidth: 14,
+    height: 14,
+    borderRadius: 7,
+    paddingHorizontal: 3,
+    backgroundColor: colors.green,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgeText: { fontFamily: fonts.sansSemiBold, fontSize: 9, lineHeight: 11, color: colors.white },
 });

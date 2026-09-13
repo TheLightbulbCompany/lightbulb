@@ -4,6 +4,7 @@ import {
   buildTimeline,
   roomDisplayName,
   runView,
+  useRoomResources,
   type CanonicalRoomMessage,
   type MemberPrefsRequest,
   type TimelineItem,
@@ -33,6 +34,7 @@ import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
+import { liveSessionCount } from "../../../../lib/localSessions";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
@@ -71,6 +73,12 @@ function Conversation() {
     }, [roomId]),
   );
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused });
+
+  // The header badge: shared sessions working right now. The same 5s cadence
+  // the web room tab pays; paused while a pushed screen (thread, devices,
+  // session) has focus, since each of those polls for itself.
+  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: focused && !!roomId });
+  const liveSessions = liveSessionCount(resources.data?.sessions);
 
   // selectRoom's identity changes with every message (it closes over
   // markVisibleRead), and each call bumps the hook's selection-cancellation
@@ -219,6 +227,8 @@ function Conversation() {
         starred={!!rooms.activeRoom?.starred}
         muted={!!rooms.activeRoom?.muted}
         disabled={!rooms.activeRoom}
+        liveSessions={liveSessions}
+        onOpenDevices={() => router.push(`/(app)/room/${roomId}/devices`)}
         onToggleStar={() => void savePrefs({ starred: !rooms.activeRoom?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !rooms.activeRoom?.muted }, MUTE_FAILED)}
       />

@@ -18,6 +18,7 @@ DELIVERY_KEY = "33333333-3333-4333-8333-333333333333"
 OLD_DELIVERY_KEY = "44444444-4444-4444-8444-444444444444"
 CHANNEL_KEY = "55555555-5555-4555-8555-555555555555"
 EVENT_ID = "66666666-6666-4666-8666-666666666666"
+ATTACHMENT_ID = "77777777-7777-4777-8777-777777777777"
 WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 OWNER_ID = "org_owner"
 USER_ID = "user_alice"
@@ -197,6 +198,43 @@ class ProjectorTests(unittest.TestCase):
         self.assertEqual(event["payload"]["messageSeq"], 1)
         self.assertNotIn("deliveryKey", event["payload"])
         self.assertTrue(index._ddb_client.calls[0]["ConsistentRead"])
+
+    @patch("index._publish")
+    def test_image_message_publishes_its_attachments(self, publish):
+        # The live payload is what a client renders from. Dropping `attachments`
+        # here made every image message arrive with none: the shared guard
+        # allows `attachments === undefined`, so the event validated, merged
+        # over the HTTP copy that DID carry them, and the thumbnail vanished.
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        item = message_item()
+        item["text"] = ""
+        item["attachments"] = [
+            {"id": ATTACHMENT_ID, "fileName": "Screenshot.png", "contentType": "image/png", "size": 58573}
+        ]
+        index.process_record(stream_record(item))
+
+        self.assertEqual(publish.call_args.args[1]["payload"]["attachments"], item["attachments"])
+
+    @patch("index._publish")
+    def test_message_without_attachments_omits_the_key(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        index.process_record(stream_record(message_item()))
+        self.assertNotIn("attachments", publish.call_args.args[1]["payload"])
+
+    @patch("index._publish")
+    def test_malformed_attachment_fails_the_record_and_publishes_nothing(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        item = message_item()
+        item["attachments"] = [{"id": ATTACHMENT_ID, "fileName": "x.png", "contentType": "image/png", "size": 0}]
+        result = index.handler({"Records": [stream_record(item, "42")]}, object())
+        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "42"}]})
+        publish.assert_not_called()
 
     @patch("index._publish")
     def test_room_meta_without_workspace_id_fails_the_record_and_publishes_nothing(self, publish):

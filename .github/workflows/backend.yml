@@ -14,6 +14,7 @@ on:
       - 'apps/infra/lib/stacks/bedrock-gate-stack.ts'
       - 'apps/infra/lambda/ses-inbound/**'
       - 'apps/infra/lambda/ws-connect/**'
+      - 'apps/infra/lambda/messaging-projector/**'
       - '.github/workflows/backend.yml'
 
 # Supersede in-flight runs for the same PR. Every push to a branch used to
@@ -117,6 +118,17 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
         run: uv run pytest ../infra/lambda/ws-connect -v
+        working-directory: apps/backend
+
+      # Fourth one in the same state, and the reason an image-attachment
+      # regression reached production: this Lambda builds the live payload every
+      # browser and phone renders a new message from, and its tests ran nowhere.
+      - name: Run messaging-projector Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run pytest ../infra/lambda/messaging-projector -v
         working-directory: apps/backend
 
       - name: Upload coverage

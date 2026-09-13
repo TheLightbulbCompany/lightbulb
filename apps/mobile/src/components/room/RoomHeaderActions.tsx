@@ -41,11 +41,11 @@ export function RoomHeaderActions({
         accessibilityRole="button"
         accessibilityLabel={starred ? "Unstar this conversation" : "Star this conversation"}
         accessibilityState={{ selected: starred, disabled: !!disabled }}
-        style={({ pressed }: { pressed: boolean }) => [
-          styles.button,
-          pressed && styles.buttonPressed,
-          starScale.style,
-        ]}
+        // An ARRAY, never a function: reanimated only attaches an animated
+        // style it can see in the prop itself, and a function style is opaque
+        // to it — the scale would silently never run. The scale is the press
+        // feedback; a background tint on top of it would be two signals.
+        style={[styles.button, starScale.style]}
       >
         <Feather name="star" size={18} color={colors.inkSoft} />
       </AnimatedPressable>
@@ -61,11 +61,7 @@ export function RoomHeaderActions({
         accessibilityRole="button"
         accessibilityLabel={muted ? "Unmute this conversation" : "Mute this conversation"}
         accessibilityState={{ selected: muted, disabled: !!disabled }}
-        style={({ pressed }: { pressed: boolean }) => [
-          styles.button,
-          pressed && styles.buttonPressed,
-          muteScale.style,
-        ]}
+        style={[styles.button, muteScale.style]}
       >
         <Feather name={muted ? "bell-off" : "bell"} size={18} color={colors.inkSoft} />
       </AnimatedPressable>
@@ -82,5 +78,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  buttonPressed: { backgroundColor: colors.rowPressed },
 });

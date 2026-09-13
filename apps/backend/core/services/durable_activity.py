@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 
 from core.containers import get_ecs_manager
+from core.dynamodb import plain
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.connection_service import ConnectionService
@@ -17,16 +18,32 @@ _SWEEP_SECONDS = 60
 
 
 def _activity_epoch(row: dict) -> int:
-    value = row.get("last_interactive_at")
+    # DynamoDB never hands back a numeric attribute as int/float -- boto3's
+    # resource API deserializes every `N` as decimal.Decimal, which is NOT a
+    # numbers.Real/int/float instance. `plain()` is the repo's existing
+    # Decimal -> int/float converter (core/dynamodb.py); without it this
+    # check silently missed every real last_interactive_at and fell through
+    # to the updated_at/created_at fallback below, disabling trial
+    # scale-to-zero fleet-wide.
+    value = plain(row.get("last_interactive_at"))
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return int(value)
-    for field in ("updated_at", "created_at"):
-        raw = row.get(field)
-        if isinstance(raw, str):
-            try:
-                return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
-            except ValueError:
-                pass
+    # No recorded interaction ever (legacy row, or nobody has messaged this
+    # container yet): fall back to created_at only, never updated_at.
+    # updated_at is a generic write timestamp touched by unrelated writers
+    # (gate-token swaps, task-def refreshes, bedrock_revoked flips) -- and,
+    # self-referentially, by this sweep's OWN try_claim_idle_stop claim. A
+    # row without last_interactive_at would otherwise never go idle: each
+    # claim attempt re-stamps updated_at, which this function would then read
+    # back as "just active", vetoing the very claim that wrote it.
+    # created_at never changes after the row is created, so it carries no
+    # such feedback loop.
+    raw = row.get("created_at")
+    if isinstance(raw, str):
+        try:
+            return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            pass
     return int(time.time())
 
 

@@ -38,13 +38,51 @@ def human(user_id: str, name: str, joined_seq: int = 1) -> dict:
     }
 
 
-def handles(members: list[dict]) -> dict[str, str | None]:
-    return {row["id"]: row.get("mentionHandle") for row in messaging.with_human_handles(members)}
+def handles(members: list[dict], emails: dict[str, str] | None = None) -> dict[str, str | None]:
+    return {row["id"]: row.get("mentionHandle") for row in messaging.with_human_handles(members, emails)}
 
 
 def test_every_human_member_gets_a_handle_from_their_display_name():
     resolved = handles([human("user_a", "Prasiddha Parthsarthy"), agent(AGENT_ID, "Friday", "friday")])
     assert resolved == {"user_a": "prasiddha-parthsarthy", AGENT_ID: "friday"}
+
+
+def test_human_handle_prefers_the_email_local_part_over_display_name():
+    resolved = handles(
+        [human("user_a", "Prasiddha Parthsarthy")],
+        emails={"user_a": "prasiddha@gmail.com"},
+    )
+    assert resolved == {"user_a": "prasiddha"}
+
+
+def test_human_with_no_email_on_record_falls_back_to_display_name():
+    resolved = handles([human("user_a", "Prasiddha Parthsarthy")], emails={})
+    assert resolved == {"user_a": "prasiddha-parthsarthy"}
+
+
+def test_two_humans_sharing_an_email_local_part_collide_in_join_order():
+    members = [human("user_b", "Bee", joined_seq=1), human("user_a", "Ay", joined_seq=2)]
+    emails = {"user_b": "aden@example.com", "user_a": "aden@another.example.com"}
+    resolved = handles(members, emails)
+    assert resolved["user_b"] == "aden"  # earlier joiner wins the bare handle
+    assert resolved["user_a"].startswith("aden-")
+    assert resolved["user_a"] != "aden"
+
+
+def test_email_local_part_colliding_with_an_agent_handle_is_suffixed():
+    resolved = handles(
+        [human("user_a", "Someone Else"), agent(AGENT_ID, "Friday", "friday")],
+        emails={"user_a": "friday@example.com"},
+    )
+    assert resolved[AGENT_ID] == "friday"
+    assert resolved["user_a"].startswith("friday-")
+    assert resolved["user_a"] != "friday"
+
+
+def test_email_local_part_with_dot_and_plus_tag_normalises_to_a_legal_handle():
+    resolved = handles([human("user_a", "Ignored Name")], emails={"user_a": "first.last+tag@example.com"})
+    assert resolved["user_a"] == "first-last-tag"
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", resolved["user_a"])
 
 
 def test_human_colliding_with_an_agent_is_suffixed_and_the_agent_keeps_its_handle():
@@ -89,9 +127,8 @@ def test_parse_agent_mentions_resolves_a_human_handle():
     assert messaging.parse_agent_mentions("nobody here", members) == ([], [])
 
 
-@pytest.mark.asyncio
-async def test_messaging_member_listing_carries_the_human_handle(monkeypatch):
-    meta = {
+def _room_detail_meta() -> dict:
+    return {
         "roomId": ROOM_ID,
         "kind": "channel",
         "name": "general",
@@ -101,12 +138,46 @@ async def test_messaging_member_listing_carries_the_human_handle(monkeypatch):
         "deliveryKey": str(uuid.UUID(int=8)),
         "createdAt": "2026-09-10T00:00:00Z",
     }
+
+
+@pytest.mark.asyncio
+async def test_messaging_member_listing_carries_the_human_handle(monkeypatch):
+    from core.repositories import user_repo
+
     members = [human("user_a", "Aden Kim"), agent(AGENT_ID, "Friday", "friday")]
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
     monkeypatch.setattr(messaging.messaging_repo, "get_read_cursor", AsyncMock(return_value=0))
+    # No email on record -- falls back to the display-name derivation.
+    monkeypatch.setattr(user_repo, "get", AsyncMock(return_value=None))
 
-    detail = await messaging._room_detail(meta, "user_a", members[0])
+    detail = await messaging._room_detail(_room_detail_meta(), "user_a", members[0])
     assert {row.id: row.mention_handle for row in detail.members} == {"user_a": "aden-kim", AGENT_ID: "friday"}
+
+
+@pytest.mark.asyncio
+async def test_messaging_member_listing_uses_the_users_row_email(monkeypatch):
+    from core.repositories import user_repo
+
+    members = [human("user_a", "Aden Kim"), agent(AGENT_ID, "Friday", "friday")]
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(messaging.messaging_repo, "get_read_cursor", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        user_repo,
+        "get",
+        AsyncMock(side_effect=lambda user_id: {"email": "prasiddha@gmail.com"} if user_id == "user_a" else None),
+    )
+
+    detail = await messaging._room_detail(_room_detail_meta(), "user_a", members[0])
+    assert {row.id: row.mention_handle for row in detail.members} == {"user_a": "prasiddha", AGENT_ID: "friday"}
+
+
+@pytest.mark.asyncio
+async def test_human_emails_lookup_failure_falls_back_instead_of_raising(monkeypatch):
+    from core.repositories import user_repo
+
+    monkeypatch.setattr(user_repo, "get", AsyncMock(side_effect=RuntimeError("table not found")))
+    resolved = await messaging.human_emails([human("user_a", "Aden Kim")])
+    assert resolved == {}
 
 
 @pytest.mark.asyncio

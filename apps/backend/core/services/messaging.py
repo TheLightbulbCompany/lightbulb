@@ -690,6 +690,16 @@ def _handle_candidate(name: str, member_id: str, *, prefix: str = "agent") -> st
     return candidate or f"{prefix}-{_uuid_hex_prefix(member_id)}"
 
 
+def _email_local_part(email: str | None) -> str | None:
+    """The part before ``@`` -- ``_handle_candidate`` does the rest (lowercase,
+    charset, length cap), so ``first.last+tag`` still normalises to a legal
+    handle exactly like a display name would."""
+    if not email or "@" not in email:
+        return None
+    local = email.split("@", 1)[0].strip()
+    return local or None
+
+
 def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
     """Derive workspace-unique, deterministic handles over canonical ID order."""
     candidates: dict[str, str] = {}
@@ -709,21 +719,25 @@ def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
     return handles
 
 
-def with_human_handles(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def with_human_handles(members: list[dict[str, Any]], emails: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Room members with every human carrying a mention handle.
 
-    Agent handles stay workspace-derived and never move to make room for a
-    human; humans claim their candidate in join order, falling back to the same
-    collision suffix agents use. Join order is what keeps a sitting member's
-    handle: a later "Aden" is the one that gets suffixed, so a stored ``@aden``
-    never silently re-points at a newcomer.
+    The candidate is the local part of the human's email (``prasiddha@gmail.com``
+    -> ``prasiddha``) when ``emails`` has one for them; a human absent from
+    ``emails`` (no email on record) falls back to today's display-name
+    derivation. Agent handles stay workspace-derived and never move to make
+    room for a human; humans claim their candidate in join order, falling back
+    to the same collision suffix agents use. Join order is what keeps a
+    sitting member's handle: a later "Aden" is the one that gets suffixed, so a
+    stored ``@aden`` never silently re-points at a newcomer.
 
     ponytail: derived per room, per read. One person can read as ``@aden`` here
-    and ``@aden-1f2e3d4c`` next door, and a Clerk rename or a departure still
-    moves handles under already-stored text. Upgrade path: persist the human's
-    handle on the member row and re-stamp it exactly as agents do through
-    ``messaging_repo.upsert_member(handle_updates=...)``.
+    and ``@aden-1f2e3d4c`` next door, and an email change, display-name rename,
+    or departure still moves handles under already-stored text. Upgrade path:
+    persist the human's handle on the member row and re-stamp it exactly as
+    agents do through ``messaging_repo.upsert_member(handle_updates=...)``.
     """
+    emails = emails or {}
     taken = {str(row["mentionHandle"]) for row in members if row.get("kind") == "agent" and row.get("mentionHandle")}
     handles: dict[str, str] = {}
     humans = sorted(
@@ -732,12 +746,37 @@ def with_human_handles(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
     for row in humans:
         user_id = str(row["id"])
-        candidate = _handle_candidate(str(row.get("displayName") or user_id), user_id, prefix="user")
+        source = _email_local_part(emails.get(user_id)) or str(row.get("displayName") or user_id)
+        candidate = _handle_candidate(source, user_id, prefix="user")
         if candidate in taken:
             candidate = f"{candidate[:23]}-{_uuid_hex_prefix(user_id)}"
         taken.add(candidate)
         handles[user_id] = candidate
     return [{**row, "mentionHandle": handles[str(row["id"])]} if row.get("kind") == "human" else row for row in members]
+
+
+async def human_emails(members: list[dict[str, Any]]) -> dict[str, str]:
+    """Email addresses of every human member, keyed by user id, for
+    :func:`with_human_handles`. Reads the users table -- never Clerk, so this
+    stays safe on a per-message or per-room-read path. A missing row, a row
+    with no email column, or a failed lookup is simply absent from the
+    result -- the caller's handle derivation falls back to the display name
+    for those rather than failing the read or dropping the member."""
+    from core.repositories import user_repo
+
+    human_ids = sorted({str(row["id"]) for row in members if row.get("kind") == "human"})
+    if not human_ids:
+        return {}
+
+    async def _lookup(user_id: str) -> dict | None:
+        try:
+            return await user_repo.get(user_id)
+        except Exception:
+            logger.warning("human_emails lookup failed", extra={"user_id": user_id}, exc_info=True)
+            return None
+
+    rows = await asyncio.gather(*(_lookup(user_id) for user_id in human_ids))
+    return {user_id: row["email"] for user_id, row in zip(human_ids, rows) if row and row.get("email")}
 
 
 def canonical_message(item: dict[str, Any], *, original_request: bool = False) -> CanonicalMessage:
@@ -1039,10 +1078,11 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_cursor(meta["roomId"], user_id),
     )
+    emails = await human_emails(members)
     return RoomDetail(
         **_room_summary_fields(meta, member, last_read),
         delivery_key=meta["deliveryKey"],
-        members=[_room_member(row) for row in with_human_handles(members)],
+        members=[_room_member(row) for row in with_human_handles(members, emails)],
         last_read_seq=last_read,
         created_at=meta["createdAt"],
         pinned_message_ids=[str(value) for value in meta.get("pinnedMessageIds", [])],
@@ -1090,11 +1130,12 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
                 messaging_repo.get_read_cursor(room_id, user_id),
                 messaging_repo.list_members(room_id),
             )
-        if member is None:
-            return None
+            if member is None:
+                return None
+            emails = await human_emails(members)
         return RoomSummary(
             **_room_summary_fields(meta, member, last_read),
-            members=[_room_member(item) for item in with_human_handles(members)],
+            members=[_room_member(item) for item in with_human_handles(members, emails)],
             last_read_seq=last_read,
         )
 
@@ -1979,7 +2020,8 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    members = with_human_handles(await messaging_repo.list_members(room_id))
+    room_members = await messaging_repo.list_members(room_id)
+    members = with_human_handles(room_members, await human_emails(room_members))
     mentions, unresolved = parse_agent_mentions(request.text, members)
     targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)

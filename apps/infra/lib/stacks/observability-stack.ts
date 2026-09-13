@@ -1672,7 +1672,7 @@ def handler(event, context):
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
       description:
-        "A per-user container is dropping Paperclip relay connections >10/15min - agent heartbeats can't stay connected; find the owner via the operator_proxy 'Operator upstream closed' logs",
+        "A per-user container is dropping Paperclip relay connections >10/15min - agent heartbeats can't stay connected; find the owner via the relay.close logs",
     });
 
     // W54 (gateway-reconnect-throttle-storm) DELETED with the gateway

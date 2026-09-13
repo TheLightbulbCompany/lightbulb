@@ -89,10 +89,16 @@ def _operator(token: str, client_id: str) -> MachineIdentity | None:
         claims = service_token.verify(token)
     except (jwt.PyJWTError, RuntimeError):
         return None
+    sub = claims.get("sub")
+    if not sub:
+        # Defense in depth below service_token.verify's own "Missing sub
+        # claim" guard -- fail CLOSED (caller reports 1008) rather than a
+        # KeyError the caller would report as 1011.
+        return None
     return MachineIdentity(
-        user_id=claims["sub"],
+        user_id=sub,
         org_id="",
-        owner_id=claims["sub"],
+        owner_id=sub,
         kind="operator",
         auth_kind="paperclip_service",
         client_id=client_id,

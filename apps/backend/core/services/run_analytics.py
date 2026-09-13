@@ -135,16 +135,10 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
     if not settings.POSTHOG_PROJECT_WRITE_KEY:
         return None
 
-    # Dispatch-time actor stamping (record_run_actor) was retired with the
-    # operator relay tap; no caller stamps this any more, so it is always
-    # unset. Left in props for wire-shape stability.
-    actor = None
-
     props: dict = {
         "run_id": run_id,
         "agent_id": parsed.get("agent_id"),
         "outcome": outcome,
-        "actor": actor,
         "trigger_provider": None,
         "channel": None,
         "is_nightly_ceo": False,

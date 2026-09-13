@@ -69,3 +69,41 @@ async def test_on_node_closed_publishes_invalidation_even_when_the_patch_fails()
         await relay_hooks.on_node_closed("o", "u")
     patch_cfg.assert_awaited_once()
     publish.assert_awaited_once_with("o", "u")
+
+
+@pytest.mark.asyncio
+async def test_on_node_closed_floors_the_count_when_the_own_row_failed_to_delete():
+    """stale_row_undeleted=True: the caller's own presence-row delete failed,
+    so count_relay_nodes still counts THIS closing connection -- on_node_closed
+    must subtract it (floored at 0) rather than under-detecting "last node"."""
+    with (
+        patch("core.services.relay_hooks.ConnectionService") as svc_cls,
+        patch("core.services.relay_hooks.patch_openclaw_config", new_callable=AsyncMock) as patch_cfg,
+        patch("core.services.relay_hooks.publish_node_invalidation", new_callable=AsyncMock),
+    ):
+        # DB still shows 1 row (this connection's own, undeleted) -- with the
+        # floor applied that is the true count of 0, so the repatch must fire.
+        svc_cls.return_value.count_relay_nodes = AsyncMock(return_value=1)
+        await relay_hooks.on_node_closed("o", "u", stale_row_undeleted=True)
+    patch_cfg.assert_awaited_once()
+
+    with (
+        patch("core.services.relay_hooks.ConnectionService") as svc_cls,
+        patch("core.services.relay_hooks.patch_openclaw_config", new_callable=AsyncMock) as patch_cfg,
+        patch("core.services.relay_hooks.publish_node_invalidation", new_callable=AsyncMock),
+    ):
+        # 0 rows even before the floor -- max(0-1, 0) stays 0, never negative.
+        svc_cls.return_value.count_relay_nodes = AsyncMock(return_value=0)
+        await relay_hooks.on_node_closed("o", "u", stale_row_undeleted=True)
+    patch_cfg.assert_awaited_once()
+
+    with (
+        patch("core.services.relay_hooks.ConnectionService") as svc_cls,
+        patch("core.services.relay_hooks.patch_openclaw_config", new_callable=AsyncMock) as patch_cfg,
+        patch("core.services.relay_hooks.publish_node_invalidation", new_callable=AsyncMock),
+    ):
+        # 2 rows, one undeleted -> floored count is 1, another node is still
+        # live, so the repatch must NOT fire.
+        svc_cls.return_value.count_relay_nodes = AsyncMock(return_value=2)
+        await relay_hooks.on_node_closed("o", "u", stale_row_undeleted=True)
+    patch_cfg.assert_not_awaited()

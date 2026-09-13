@@ -127,8 +127,14 @@ async def on_node_ready(owner_id: str, user_id: str, device_id: str) -> None:
     await publish_node_invalidation(owner_id, user_id)
 
 
-async def on_node_closed(owner_id: str, user_id: str) -> None:
-    if await ConnectionService().count_relay_nodes(owner_id) == 0:
+async def on_node_closed(owner_id: str, user_id: str, *, stale_row_undeleted: bool = False) -> None:
+    """``stale_row_undeleted``: the caller's own presence-row delete failed,
+    so `count_relay_nodes` still counts THIS closing connection's row --
+    subtract it (floored at 0) rather than undercounting "last node gone"."""
+    count = await ConnectionService().count_relay_nodes(owner_id)
+    if stale_row_undeleted:
+        count = max(count - 1, 0)
+    if count == 0:
         try:
             # Last node gone: re-disable node tools. Deep-merge replaces the
             # deny list wholesale — write the full provision-time set

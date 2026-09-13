@@ -276,7 +276,7 @@ def test_node_ready_and_closed_hooks_fire_for_a_node():
                 upstream.feed(None)
                 ws.receive_text()  # blocks until the relay's own close (1000) propagates
     on_ready.assert_awaited_once_with("org_1", "user_1", "a" * 64)
-    on_closed.assert_awaited_once_with("org_1", "user_1")
+    on_closed.assert_awaited_once_with("org_1", "user_1", stale_row_undeleted=False)
 
 
 def test_trailing_slash_route_is_accepted():
@@ -323,3 +323,77 @@ def test_stopped_container_node_connect_never_wakes():
                 pass
     assert exc.value.code == 1013
     wake.assert_not_awaited()
+
+
+# --- Whole-branch review fix round ---
+
+
+def test_revoke_wins_the_close_code_over_a_same_batch_leg_failure():
+    """When the presence refresher's revoke and a leg's exception land in the
+    SAME asyncio.wait(FIRST_COMPLETED) batch, 1008 (revoked) must win over
+    1011 (leg failure) -- presence loss is the stronger, more specific
+    signal. Two trivial tasks that resolve without ever awaiting anything
+    real complete before asyncio.wait is even entered (one asyncio.sleep(0)
+    lets them both run), so they land in the SAME `done` set deterministically
+    -- no timing race in the test itself."""
+
+    async def revoked():
+        return None
+
+    async def failed():
+        raise RuntimeError("boom")
+
+    async def run():
+        refresher = asyncio.create_task(revoked())
+        leg = asyncio.create_task(failed())
+        await asyncio.sleep(0)  # let both trivial tasks run to completion first
+        done, _ = await asyncio.wait({refresher, leg}, return_when=asyncio.FIRST_COMPLETED)
+        assert refresher in done and leg in done  # the race this test targets
+        code = gateway_relay._pick_close_code(done, refresher)
+        leg.exception()  # consume, or asyncio logs "exception never retrieved"
+        return code
+
+    assert asyncio.run(run()) == 1008
+
+
+def test_pick_close_code_returns_1011_for_a_leg_failure_alone():
+    async def failed():
+        raise RuntimeError("boom")
+
+    async def run():
+        leg = asyncio.create_task(failed())
+        await asyncio.sleep(0)
+        done, _ = await asyncio.wait({leg}, return_when=asyncio.FIRST_COMPLETED)
+        return gateway_relay._pick_close_code(done, None)
+
+    assert asyncio.run(run()) == 1011
+
+
+def test_presence_write_failure_closes_1011_and_never_dials_upstream():
+    upstream = FakeUpstream()
+    patches, svc = _patches(NODE, upstream)
+    svc.put_relay_presence = AsyncMock(side_effect=RuntimeError("ddb down"))
+    with patches[0], patches[1], patches[2], patches[3] as ws_connect_mock, patches[4], patches[5], patches[6]:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos"):
+                pass
+    assert exc.value.code == 1011
+    ws_connect_mock.assert_not_called()  # fail closed -- never opens the upstream leg
+
+
+def test_delete_connection_failure_still_floors_the_node_count():
+    """A finally-block delete_connection failure must not silently skip the
+    last-node re-patch decision -- on_node_closed is told the row may still
+    be sitting in DDB via stale_row_undeleted=True (relay_hooks own test
+    covers the count-flooring math; this proves the flag is threaded)."""
+    upstream = FakeUpstream()
+    patches, svc = _patches(NODE, upstream)
+    svc.delete_connection = MagicMock(side_effect=RuntimeError("ddb down"))
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as on_closed, patches[6]:
+        with pytest.raises(WebSocketDisconnect):
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
+                ws.receive_text()
+                upstream.feed(None)
+                ws.receive_text()  # blocks until the relay's own close propagates
+    on_closed.assert_awaited_once_with("org_1", "user_1", stale_row_undeleted=True)

@@ -114,18 +114,6 @@ async def test_channel_and_cron_props_attached():
 
 
 # ---------------------------------------------------------------------------
-# actor — dispatch-time stamping (record_run_actor) was retired with the
-# operator relay tap; no caller stamps it any more, so it is always None.
-# ---------------------------------------------------------------------------
-
-
-async def test_actor_is_always_none():
-    """No dispatch site stamps the actor any more — always None."""
-    kwargs = await _emit({"agent_id": "a", "source": "cron", "cron_id": "c"})
-    assert kwargs["properties"]["actor"] is None
-
-
-# ---------------------------------------------------------------------------
 # Outcome mapping + duration
 # ---------------------------------------------------------------------------
 

@@ -689,8 +689,9 @@ a key with exactly those six permissions for an owner to paste — see its READM
 
 | File | Purpose |
 |------|---------|
-| `operator_rpc.py` | `perform_signed_connect` only — the operator-device pairing probe, D's to replace. |
-| `node_connection.py` | Per-user node-host connection for desktop browser-proxy / exec-approval flows. |
+| `routers/gateway_relay.py` | Raw WebSocket relay on the `bv-` door for machine clients (desktop node hosts, Paperclip operators) — one backend task pipes both sockets for the connection's life; the OpenClaw handshake and the NOT_PAIRED self-heal are its only two frame hooks. Replaces the deleted `operator_rpc.py`/`node_connection.py`. |
+| `core/services/machine_auth.py` | In-process port of the `websocket-authorizer` Lambda's device-JWT and Paperclip-service-token verifiers — the relay's upgrade auth. |
+| `core/services/relay_hooks.py` | Per-connection side effects the relay handler calls: node deny-list edges, the operator wake/chat-gate check, the NOT_PAIRED self-heal, trial disarm. |
 | `core/services/container_rpc.py` | One HTTP POST per RPC to the plugin's `/plugins/lightbulb-channel/rpc`, `wake=False` for read-only probes. Replaces the deleted `GatewayConnectionPool` as the backend's sole way to reach a container. |
 
 ### Services (`core/services/`)
@@ -726,8 +727,6 @@ you cannot guess from the filename:
   **should** go through here, but two predate it and still hit `api.clerk.com`
   inline via httpx: `routers/billing.py` and `routers/desktop_auth.py`. A
   fleet-wide change to how we call Clerk has to touch all three.
-- `node_proxy.py` — per-user node-host tracking. Lives in services/, not
-  routers/, despite the name; `routers/websocket_chat.py` consumes it directly.
 - `key_service.py` — BYO LLM keys. Stored **solely in AWS Secrets Manager**
   (`lightbulb/{env}/user-keys/{user}/{provider}`), referenced by the ECS task def;
   no DynamoDB copy is kept.
@@ -966,7 +965,7 @@ because events are not a substitute for them:
 1. **Machine relay (local-session only):** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for the desktop local-session relay only** (`clientId=lightbulb-local-sessions`, enrollment-gated). Tauri node hosts and Paperclip operators moved off this door onto the raw WS relay (item 5) and no longer traverse API Gateway at all.
 2. The `websocket-authorizer` Lambda accepts exactly **one** credential kind — paired-device JWTs (EdDSA, `kind=device`) — and **deliberately refuses Clerk browser sessions**. Paperclip service tokens are no longer accepted here either: operators verify their own (still HS256) service tokens on the raw WS relay instead, via `core/services/machine_auth.py`. `ws-connect` narrows further, refusing any device token whose `clientId` isn't `lightbulb-local-sessions`. DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → owner; no `chat`/`native_human` rows exist.
 3. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected. Relay replies go out over the Management API (HTTPS POST to `@connections/{id}`) — the only traffic left on this path is the local-session relay.
-4. **Backend → container:** `core/services/container_rpc.py`, one HTTP request per RPC to the container plugin; the only backend-initiated socket left is the operator-device pairing probe.
+4. **Backend → container:** `core/services/container_rpc.py`, one HTTP request per RPC to the container plugin — no backend-initiated socket remains; the operator-device pairing probe (`perform_signed_connect`) was deleted with `core/gateway/operator_rpc.py`.
 5. **Raw WS door:** `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener, forwarding two path-capped routes: the browser live-view panel's unbuffered WS (`/api/v1/browser-view/*`; the Clerk JWT rides the `Sec-WebSocket-Protocol` offer) and the **machine gateway relay** (`/api/v1/gateway/*`, `routers/gateway_relay.py`) — desktop node hosts and Paperclip operators dial this door directly with a device or service token as a `token`/`clientId` query pair; one backend task pipes both the client and upstream-container sockets for the connection's life, with only a TTL presence row (`ConnectionService`) surviving in DynamoDB.
 6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`). (The old VPC Link V1 → NLB chain is GONE.)
 

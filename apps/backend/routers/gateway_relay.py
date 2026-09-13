@@ -46,6 +46,21 @@ def _close_code_bucket(code: int) -> str:
     return "other"
 
 
+def _pick_close_code(done: set[asyncio.Task], refresher: asyncio.Task | None) -> int | None:
+    """Decide the close-code override from one asyncio.wait(FIRST_COMPLETED)
+    batch. Revoke (1008) wins over a leg failure (1011) when both land in the
+    SAME batch — presence loss is the stronger, more specific signal, and a
+    revoked client should never see "internal error" instead of "revoked".
+    Returns None when nothing in `done` calls for an override.
+    """
+    if refresher is not None and refresher in done:
+        return 1008
+    for task in done:
+        if task is not refresher and not task.cancelled() and task.exception() is not None:
+            return 1011
+    return None
+
+
 def _parse(frame: str) -> dict | None:
     # Cheap char-count pre-check before the (allocating) UTF-8 encode: a
     # frame already over the limit in characters is over it in bytes too
@@ -101,9 +116,15 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
     connection_id = f"relay#{uuid.uuid4()}"
     try:
         await connections.put_relay_presence(connection_id=connection_id, identity=identity)
-    except Exception:  # noqa: BLE001 — presence is best-effort; the relay still serves
+    except Exception:  # noqa: BLE001
+        # Fail CLOSED, not best-effort: a connection with no presence row is
+        # invisible to count_relay_nodes() (the first-node deny-list patch
+        # never fires) and to revoke (nothing to delete, nothing to notice
+        # gone). The client's own reconnect loop retries.
         logger.warning("relay presence write failed kind=%s", kind, exc_info=True)
-        put_metric("relay.presence", dimensions={"outcome": "put_error"})
+        put_metric("relay.presence", dimensions={"outcome": "error"})
+        await websocket.close(code=1011, reason="Internal error")
+        return
 
     close_code = 1000
     node_ready = False
@@ -203,15 +224,15 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
             legs = {asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())}
             refresher = asyncio.create_task(refresh_presence())
             done, pending = await asyncio.wait(legs | {refresher}, return_when=asyncio.FIRST_COMPLETED)
-            if refresher in done:
-                close_code = 1008
+            decided = _pick_close_code(done, refresher)
+            if decided is not None:
+                close_code = decided
             for task in done:
                 if task is refresher or task.cancelled():
                     continue
                 exc = task.exception()
                 if exc is not None:
                     logger.warning("relay leg failed kind=%s", kind, exc_info=exc)
-                    close_code = 1011
             for task in pending:
                 task.cancel()
             await asyncio.gather(*legs, refresher, return_exceptions=True)
@@ -239,13 +260,19 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
         for task in (*legs, *((refresher,) if refresher is not None else ())):
             if not task.done():
                 task.cancel()
+        delete_failed = False
         try:
             await asyncio.to_thread(connections.delete_connection, connection_id)
         except Exception:  # noqa: BLE001
+            delete_failed = True
+            logger.warning("relay presence delete failed kind=%s", kind, exc_info=True)
             put_metric("relay.presence", dimensions={"outcome": "delete_error"})
         if kind == "node" and node_ready:
             try:
-                await relay_hooks.on_node_closed(owner_id, identity.user_id)
+                # This row may still be sitting in DDB if the delete above
+                # failed — tell the hook so its last-node count doesn't count
+                # the connection that is, in fact, closing right now.
+                await relay_hooks.on_node_closed(owner_id, identity.user_id, stale_row_undeleted=delete_failed)
             except Exception:  # noqa: BLE001
                 logger.warning("relay node-closed hook failed", exc_info=True)
         put_metric("relay.close", dimensions={"kind": kind, "code": _close_code_bucket(close_code)})

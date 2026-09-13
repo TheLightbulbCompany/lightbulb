@@ -172,3 +172,21 @@ async def test_operator_token_wrong_kind_or_missing_sub_rejected():
         side_effect=jwt.InvalidTokenError("Missing sub claim"),
     ):
         assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None
+
+
+@pytest.mark.asyncio
+async def test_operator_identity_rejects_a_claims_dict_with_no_sub():
+    """Defense in depth below service_token.verify's own "Missing sub claim"
+    guard: if verify() ever returns a dict with no `sub` (or an empty one),
+    _operator must fail CLOSED (None -> caller reports 1008) instead of
+    KeyError-ing (which the caller would report as 1011)."""
+    with patch(
+        "core.services.machine_auth.service_token.verify",
+        return_value={"kind": "paperclip_service"},
+    ):
+        assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None
+    with patch(
+        "core.services.machine_auth.service_token.verify",
+        return_value={"kind": "paperclip_service", "sub": ""},
+    ):
+        assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None

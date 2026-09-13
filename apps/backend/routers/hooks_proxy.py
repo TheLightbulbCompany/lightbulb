@@ -29,8 +29,10 @@ container until the headers came out. Nothing upstream needs the
 caller's IP; the hook token is the whole trust model.
 
 **Rate limit.** In-process sliding-window bucket, 60/min per ``owner_id``.
-Fine for the current single-task backend; needs DDB-backed counter when
-we scale out (flagged in the spec, not v1 work).
+RULING D17: per-instance window, so at desiredCount 2-4 (D's autoscale
+range) each instance keeps its own bucket and the effective per-owner
+ceiling is 2-4x this value, not a hard cap -- needs a DDB-backed counter
+to be a real one (flagged in the spec, not v1 work).
 """
 
 import hmac
@@ -51,7 +53,8 @@ GATEWAY_PORT = 18789
 RATE_LIMIT_PER_MINUTE = 60
 
 # Module-level so the bucket survives across requests inside one process.
-# Multi-task fleets get independent buckets — fine for v1, flagged in spec.
+# Multi-task fleets get independent buckets (RULING D17: 2-4x ceiling at
+# desiredCount 2-4) — flagged in spec, not v1 work.
 _RATE = RateBucket(RATE_LIMIT_PER_MINUTE)
 
 # Module-level instance so tests can patch

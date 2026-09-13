@@ -928,11 +928,15 @@ class EcsManager:
         both read the same old revision and the last register would silently
         drop the other's secret. One lock per owner makes them take turns.
         """
-        # ponytail: in-process lock. The backend runs one instance
-        # (desiredCount 1); the only overlap is the second task during a
-        # rolling deploy, and two Slack installs for one owner landing in that
-        # window is the case this deliberately leaves open. A DDB fence is the
-        # upgrade if that ever bites.
+        # ponytail: in-process lock, belt-and-suspenders over the real
+        # cross-instance guard. @serialize_owner_lifecycle (owner_lifecycle_
+        # guard) is an EFS-backed fcntl lock held for the whole describe ->
+        # mutate -> register -> update-service body below, so at
+        # desiredCount 2+ a second instance's call for the same owner
+        # already blocks on THAT guard, not this lock. The fleet-roll path
+        # (prepare_config_lock_protocol_task_definition ->
+        # resize_user_container) goes through the same decorator. No DDB
+        # fence needed on top.
         async with _owner_task_def_lock(owner_id):
             return await self._refresh_task_definition_locked(
                 owner_id, extra_secrets=extra_secrets, drop_secrets=drop_secrets

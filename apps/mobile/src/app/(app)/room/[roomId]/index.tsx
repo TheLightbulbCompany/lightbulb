@@ -32,6 +32,7 @@ import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
+import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
@@ -175,6 +176,7 @@ function Conversation() {
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  const jumpScale = usePressScale();
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const next = contentSize.height - layoutMeasurement.height - contentOffset.y < BOTTOM_SLACK;
@@ -345,14 +347,16 @@ function Conversation() {
         }}
       />
       {!atBottom && (
-        <Pressable
-          style={styles.jump}
+        <AnimatedPressable
+          style={[styles.jump, jumpScale.style]}
           onPress={() => listRef.current?.scrollToEnd({ animated: true })}
+          onPressIn={jumpScale.onPressIn}
+          onPressOut={jumpScale.onPressOut}
           accessibilityRole="button"
           accessibilityLabel="Jump to latest"
         >
           <Feather name="arrow-down" size={16} color={colors.white} />
-        </Pressable>
+        </AnimatedPressable>
       )}
       {(() => {
         // A local const so TS can narrow it through the closures below —

@@ -19,6 +19,7 @@ import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
 import { RoomActionsSheet } from "../../../components/room/RoomActionsSheet";
 import { RoomRow, byRecency, otherMembers } from "../../../components/room/RoomRow";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
 import { useMobileRooms } from "../../../lib/rooms";
 
 /** One flattened list entry — a section header, or a conversation. */
@@ -80,6 +81,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const [actionRoom, setActionRoom] = useState<RoomSummary | null>(null);
   const lastActionRoom = useRef<RoomSummary | null>(null);
   if (actionRoom) lastActionRoom.current = actionRoom;
+  const pencilScale = usePressScale();
 
   const details = rooms.directoryRoomDetails;
   // A DM's name lives on the room DETAIL's member list, not on the summary.
@@ -142,14 +144,16 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
             returnKeyType="search"
           />
         </View>
-        <Pressable
+        <AnimatedPressable
           onPress={() => setPickerOpen(true)}
+          onPressIn={pencilScale.onPressIn}
+          onPressOut={pencilScale.onPressOut}
           accessibilityRole="button"
           accessibilityLabel="New message"
-          style={({ pressed }) => [styles.pencil, pressed && styles.pencilPressed]}
+          style={[styles.pencil, pencilScale.style]}
         >
           <Feather name="edit-2" size={16} color={colors.cream} />
-        </Pressable>
+        </AnimatedPressable>
       </View>
       <FlatList
         data={data}
@@ -283,8 +287,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  pencilPressed: { opacity: 0.85 },
-
   list: { paddingBottom: spacing.xl },
   listGrow: { flexGrow: 1 },
   sectionRow: {

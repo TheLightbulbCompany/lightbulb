@@ -387,8 +387,9 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
   listEmpty: { flexGrow: 1 },
   headerTitle: { alignItems: "center" },
-  headerName: { fontFamily: fonts.sansSemiBold, fontSize: 17, lineHeight: 22, color: colors.ink },
-  headerMeta: { fontFamily: fonts.sans, fontSize: 11, lineHeight: 14, color: colors.mute },
+  // System font, not Source Sans 3 — see `type.navTitle`.
+  headerName: type.navTitle,
+  headerMeta: type.navMeta,
   prefsError: {
     fontFamily: fonts.sans,
     fontSize: 13,

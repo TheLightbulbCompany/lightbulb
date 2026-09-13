@@ -36,7 +36,8 @@ const MAX_PHOTOS = 4;
 // iOS's compact navigation-bar height / Android's default toolbar height.
 // expo-router 57 vendors react-navigation and exports no useHeaderHeight,
 // and @react-navigation/elements is not resolvable from apps/mobile — so
-// this is the measured default for the header room/_layout.tsx configures.
+// this is the measured default for the header the (app) Stack draws over
+// both room screens.
 // ponytail: a magic constant; it only moves if that header grows a large
 // title or a subtitle row.
 // The Android branch is currently inert: both call sites pass
@@ -47,10 +48,31 @@ const MAX_PHOTOS = 4;
 const HEADER_BASE = Platform.OS === "ios" ? 44 : 56;
 
 /**
- * `KeyboardAvoidingView`'s `behavior="padding"` pads by
- * `keyboardHeight - viewTop + keyboardVerticalOffset`, and the view's frame
- * is measured BELOW the navigation header — so the offset adds the header
- * height back, plus the top safe-area inset the header itself sits under.
+ * Re-derived after the room moved from a nested Stack's ROOT to a PUSHED
+ * screen of the (app) Stack, and the header lost its opaque `backgroundColor`
+ * for the native translucent one.
+ *
+ * `KeyboardAvoidingView` pads by `frame.y + frame.height - keyboardScreenY +
+ * keyboardVerticalOffset`, where `frame` is `onLayout`'s layout — PARENT-
+ * relative, not screen-relative (RN 0.86 `_relativeKeyboardHeight`). The KAV
+ * is the screen's root view, so `frame.y ≈ 0` and the offset has to add back
+ * however far down the screen the parent's origin sits.
+ *
+ * That distance is unchanged at `insets.top + 44`:
+ *  - react-native-screens lays screen content BELOW the navigation bar unless
+ *    `headerTransparent` is set. It is NOT set — a glass bar is still an
+ *    inset bar, it only paints differently — so the content frame starts at
+ *    the bar's bottom exactly as it did under the opaque one.
+ *  - The bar is still the 44pt standard one. Gaining a back button (a pushed
+ *    screen has one; a Stack root did not) does not change its height, and
+ *    neither `headerLargeTitle` nor a subtitle row is configured.
+ *  - The tab bar is not under either room screen in either structure: today
+ *    they are pushed OVER the tabs, before they were a tab with
+ *    `tabBarStyle: { display: "none" }`.
+ *
+ * So the value stands; only the reasoning moved. Setting `headerTransparent`
+ * is what would invalidate it — that would zero the header term.
+ *
  * `- insets.bottom` is paired with the composer's own bottom padding (below):
  * the KAV lands the composer box `insets.bottom` INTO the keyboard, and the
  * padding lifts the visible card back to sit flush on it.

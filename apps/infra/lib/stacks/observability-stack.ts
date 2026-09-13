@@ -900,18 +900,19 @@ def handler(event, context):
       alarmName: `${resourcePrefix(this.envName)}P12-backend-liveness`,
       alarmDescription:
         "PAGE: at least one backend instance has stopped emitting its 60 s " +
-        "heartbeat. Samples per healthy ALB target have fallen below 7 " +
+        "heartbeat. Samples per healthy ALB target have fallen below 8 " +
         "(healthy is ~10).",
       metric: new cloudwatch.MathExpression({
         expression: "beats / hosts",
         usingMetrics: { beats: heartbeatMetric, hosts: healthyHosts },
         period: cdk.Duration.minutes(10),
       }),
-      // ponytail: 7 is the calibrated middle -- healthy reads ~10/instance,
-      // one dead loop of two reads ~5. Retune here, not by changing the
-      // expression, if deploy churn or a period change moves the healthy
-      // baseline.
-      threshold: 7,
+      // ponytail: 8, not 7 -- prod autoscales 2-4 (C6), and one dead loop of
+      // FOUR reads 7.5 (3 alive / 4 hosts * ~10), which 7 would not catch.
+      // 8 catches one dead loop at every N in range while healthy (~10) never
+      // trips it. Retune here, not by changing the expression, if deploy
+      // churn or a period change moves the healthy baseline.
+      threshold: 8,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       // Legit liveness check: missing data IS the failure signal.

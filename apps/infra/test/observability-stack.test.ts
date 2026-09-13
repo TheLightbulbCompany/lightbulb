@@ -190,9 +190,11 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "debug.endpoint.prod_hit": [["endpoint"]],
   "gateway.cold_start.count": [["outcome"]],
   "gateway.cold_start.latency": [[]],
-  // main.py:_running_count_gauge_loop -- tagged with the emitting ECS task id
-  // so P12 can divide the fleet sample count by HealthyHostCount (C5).
-  "gateway.running.count": [["instance"]],
+  // main.py:_running_count_gauge_loop. P12 divides the fleet sample count by
+  // HealthyHostCount (C5) but binds only {env, service} -- the emitting ECS
+  // task id is a log field (running_count), not a metric dimension, since it
+  // is a new identity per task per deploy (the _DENIED_DIMENSIONS class).
+  "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
@@ -729,7 +731,7 @@ describe("ObservabilityStack", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "lightbulb-dev-P12-backend-liveness",
       ComparisonOperator: "LessThanThreshold",
-      Threshold: 7,
+      Threshold: 8,
       TreatMissingData: "breaching",
       Metrics: Match.arrayWith([
         Match.objectLike({ Id: "beatsPerInstance", Expression: "beats / hosts" }),

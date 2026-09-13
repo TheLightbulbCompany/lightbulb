@@ -2,14 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Shipped, Task 7 step 1.** Tasks 1–6 are DONE (commits `179b13d98` P12, `d8740710e`
-> `run.completed` pin, `c48d610a1` `try_claim_pass`, `d54881b00` passes behind admission,
-> `74c7d6084` `connection_lock` deleted, `75e7857f9` admin idempotency; SHAs as landed on
-> `arch/lifecycle-multi-instance` after its rebase onto `main`). Two review rounds produced
-> follow-up fix commits that supersede a couple of this plan's illustrative code snippets —
-> see the "Review round" notes in Task 3 and before the Pre-flight seam table — and this
-> document is left otherwise as originally written and reviewed, corrected only where a
-> snippet or a reference stopped matching what shipped.
+> **Shipped, Task 7 step 1, then a whole-branch PR review round.** Tasks 1–6 are DONE
+> (commits `179b13d98` P12, `d8740710e` `run.completed` pin, `c48d610a1` `try_claim_pass`,
+> `d54881b00` passes behind admission, `74c7d6084` `connection_lock` deleted, `75e7857f9`
+> admin idempotency; SHAs as landed on `arch/lifecycle-multi-instance` after its rebase onto
+> `main`). Two implementation-phase review rounds produced follow-up fix commits that
+> supersede a couple of this plan's illustrative code snippets — see the "Review round" notes
+> in Task 3 and before the Pre-flight seam table. A THIRD round, an Opus whole-branch review
+> of the opened PR (#2602), found Task 1's own shipped design still had two problems this
+> plan's Task 1 section (below) does not reflect: the `instance` value belongs on a
+> **structured log field**, not a metric **dimension** (a new CloudWatch identity per task per
+> deploy — the same class `_DENIED_DIMENSIONS` already refuses for `container_id`; the code
+> was fixed, not just documented), and the P12 threshold needed **8, not 7**, to still catch
+> one dead instance at prod's N = 4 autoscaling ceiling (one dead loop of four reads 7.5).
+> Task 1's prose below is LEFT AS ORIGINALLY WRITTEN AND REVIEWED — it describes what Task 1
+> shipped as of the first review round, not the corrected final state; read it alongside the
+> spec's own "review round" corrections in §8, which are current.
 
 **Goal:** Make the backend's periodic lifecycle work cheap and honest at `desiredCount >= 2` — one pass admission per window instead of N duplicate scans, cadence on a durable row instead of a process clock, the two in-process mutual-exclusion maps replaced by mechanisms that already work across processes, and a P12 liveness alarm that can still see a dead instance when there are two.
 

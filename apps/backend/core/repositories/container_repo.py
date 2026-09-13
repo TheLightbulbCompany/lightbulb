@@ -806,9 +806,12 @@ async def try_claim_owner_deploy(
     extracted anything) and both mint an agent. That is how prod grew "Pulse 2":
     the second deploy started 35s before the first wrote its sidecar, back when
     the sidecar landed at the END of the deploy. The backend runs several ECS
-    tasks behind an ALB (the two prod deploys landed on different ones), so the
-    in-memory ``services/idempotency`` cache cannot fence this — it has to be a
-    conditional write. It rides the existing per-owner ``containers`` row rather
+    tasks behind an ALB (the two prod deploys landed on different ones), so an
+    in-process, per-instance cache cannot fence this — it has to be a
+    conditional write. (``core/services/idempotency.py`` was exactly such a
+    cache, kept for admin write handlers; sub-project C deleted it for this
+    same reason -- see ``webhook_dedup.idempotency()``.) It rides the existing
+    per-owner ``containers`` row rather
     than a new table, matching ``try_claim_provision`` /
     ``try_consume_daily_email_send`` on the same row.
 

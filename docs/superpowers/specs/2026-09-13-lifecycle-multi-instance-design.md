@@ -12,12 +12,17 @@ Read against `arch/stateless-backend` @ `673c23b66` (post-B, pre-D-merge). Sourc
 §10, B spec §3 "Untouched until C" and §13, D's `preflight-report.md` §"parked items" and
 its three unlisted N=2 hazards.
 
-> **Corrected at commit time (Task 7 step 1).** Five claims in the original draft did not
-> survive contact with the code and are fixed in place below rather than left standing:
-> the §4 admission window's boundary condition, §8's metadata-endpoint and `run_completed`
-> claims, §11's reference to a test file that never existed, §12's `asyncio.Lock` criterion
-> (five more correct guards found on the tree), and §10.1's branch base. Each correction is
-> marked inline.
+> **Corrected at commit time (Task 7 step 1), then again in whole-branch review.** Five
+> claims in the original draft did not survive contact with the code: the §4 admission
+> window's boundary condition, §8's metadata-endpoint and `run_completed` claims, §11's
+> reference to a test file that never existed, §12's `asyncio.Lock` criterion (five more
+> correct guards found on the tree), and §10.1's branch base. A whole-branch (Opus) review of
+> PR #2602 then found three more, all in §8: the ECS task id was, at that point, a metric
+> *dimension* on `gateway.running.count` rather than a log field (a new CloudWatch identity
+> per task per deploy — the code was fixed, not just the doc), the P12 threshold needed 8 not
+> 7 to catch a dead instance at prod's N = 4 ceiling, and `schedule_run_completed`'s caller
+> count was wrong (two callers, not one, until sub-project D deletes the second). Every
+> correction is marked inline, tagged either "Task 7 step 1" or "review round".
 
 ---
 
@@ -149,7 +154,7 @@ flips prod to 2–4. C changes nothing about the policy itself, but C5 is its pr
 | `sweep_trial_idle_once` (`durable_activity.py`), `sweep_runs_once` (`run_ledger.py`) | same, behind the same lease. The per-row claims inside (`try_claim_idle_stop`, `end_run`'s conditional) stay — the lease removes duplicate *scans*, it is not the correctness boundary and must not become one. |
 | `routers/connections.py:788` (`_disconnect_teardown`) and `:1033` (the OAuth callback write section) | `async with owner_lifecycle_guard(owner_id):` — same placement, same width, still taken **after** the provider network call, never around it. |
 | the twelve `@idempotency()` admin handlers | a `Depends` (or a thin decorator of the same shape) that claims `admin:{handler_id}:{key}` and raises `409` when the claim is refused. |
-| `_running_count_gauge_loop`'s `gauge("gateway.running.count", …)` | same gauge, plus an `instance` dimension (§8). Behind the lease it would emit once per minute total — which is what P12 wants — but the *liveness* reading needs one sample per instance, so this loop deliberately stays unleased and gains a dimension instead. |
+| `_running_count_gauge_loop`'s `gauge("gateway.running.count", …)` | same gauge, unchanged dimensions; the emitting instance rides a log field, not a metric dimension (§8). Behind the lease it would emit once per minute total — which is what P12 wants — but the *liveness* reading needs one sample per instance, so this loop deliberately stays unleased. |
 
 ### Kept, deliberately
 
@@ -162,12 +167,16 @@ flips prod to 2–4. C changes nothing about the policy itself, but C5 is its pr
   backend that dies between `try_claim_provision` and `_start`.
 - **`try_claim_owner_deploy` / `extend_owner_deploy_claim` / `release_owner_deploy_claim`**
   — named in B's "Untouched until C", inspected, and left alone. It is already a fenced
-  conditional write on the `containers` row, already owner-wide, already documents that "the
-  backend runs several ECS tasks behind an ALB … so the in-memory `services/idempotency`
-  cache cannot fence this". Its `DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S` relationship is
-  asserted by a test. Nothing about N ≥ 2 changes it. **Note the irony worth keeping in the
-  PR description:** this docstring is the repo's own argument for §3's `idempotency.py`
-  deletion, written long before anyone acted on it.
+  conditional write on the `containers` row, already owner-wide, and its docstring already
+  argued that "the backend runs several ECS tasks behind an ALB … so an in-process,
+  per-instance cache cannot fence this" *(correction, review round: the docstring named
+  `services/idempotency` specifically, pointing at a module this same PR deletes; reworded
+  in place to the general argument and a forward pointer to `webhook_dedup.idempotency()`,
+  since a live docstring should not cite a dead module path)*. Its
+  `DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S` relationship is asserted by a test. Nothing about
+  N ≥ 2 changes it. **Note the irony worth keeping in the PR description:** this docstring's
+  argument is the repo's own case for §3's `idempotency.py` deletion, made long before anyone
+  acted on it.
 - **`try_claim_daily_system_notice`, `try_consume_daily_email_send`, `try_claim_idle_stop`,
   `idle_stop_claim_current`** — the existing conditional-write idiom on the `containers`
   row. §4's lease is modelled on `try_claim_daily_system_notice` and adds no new pattern.
@@ -340,39 +349,54 @@ a failure — that is the one frontend change C carries.
 metadata-endpoint reader to `core/observability/` that does not exist there and described
 `run_completed`'s dedup mechanism inaccurately.)*
 
-- `gauge("gateway.running.count", …)` gains an `instance` dimension: the ECS task id read
-  from `os.environ["HOSTNAME"]` — Fargate sets `HOSTNAME` to the task id, and this is the
-  same source already relied on with exactly this comment at
-  `core/services/provisioning_workflow.py:67-68`. `core/observability/` (`e2e_correlation.py`,
-  `logging.py`, `metrics.py`, `middleware.py`, `product_analytics.py`) reads no metadata
-  endpoint and never has — there is no precedent there to point to.
-  A **per-instance CloudWatch alarm is not expressible**: an alarm binds a fixed
+- `os.environ["HOSTNAME"]` (Fargate sets it to the task id — the same source already relied
+  on with exactly this comment at `core/services/provisioning_workflow.py:67-68`) is read on
+  every tick of `_running_count_gauge_loop`, but is **not** a dimension on
+  `gauge("gateway.running.count", …)` *(correction, review round: an earlier version of this
+  loop added `instance` as a metric dimension — that is a new CloudWatch metric identity per
+  task per deploy, the same unbounded-cardinality class `core/observability/metrics.py`'s
+  `_DENIED_DIMENSIONS` already refuses for `container_id`)*. It rides a structured log field
+  instead (`logger.info("running_count", extra={"instance": ..., "count": ...})`), so a dead
+  loop is still attributable in Logs Insights without minting a fresh metric identity every
+  deploy. `core/observability/` (`e2e_correlation.py`, `logging.py`, `metrics.py`,
+  `middleware.py`, `product_analytics.py`) reads no metadata endpoint and never has — there
+  is no precedent there to point to; `HOSTNAME` is.
+  A **per-instance CloudWatch alarm is not expressible** regardless: an alarm binds a fixed
   `dimensionsMap` at synth time, ECS task ids are unknown then and change on every deploy,
   and `SEARCH` is rejected outright on metric alarms (`core/observability/metrics.py:60-66`
   carries this same scar). P12 instead becomes **instance-count-independent**: a
   `cloudwatch.MathExpression` divides the fleet `SampleCount(gateway.running.count)` over
-  `{env, service}` by `Minimum(AWS/ApplicationELB HealthyHostCount)` on the backend's own
-  target group — `Minimum`, not `Average`, because a rolling deploy runs at
-  `maxHealthyPercent: 200` and `Average` would dilute the ratio with the transient extra
-  tasks' partially-filled sample windows. Healthy reads ~10 samples per instance per 10-minute
-  window; the alarm fires below 7, so one dead loop of two (~5) pages while a halved rate at
-  N = 1 does not apply here (there is nothing to divide by at N = 1 changing). The `instance`
-  dimension is for diagnosis on a dashboard or in Logs Insights, not for the alarm's own
-  binding. `_running_count_gauge_loop` stays unleased for exactly this reason — it is the
-  liveness canary, and a leased canary proves only that *some* instance is alive.
-- `run_completed` is **already** single-emit at N ≥ 2, and needs no code change. Its only
-  surviving emitter is `run_analytics.schedule_run_completed` (`run_analytics.py:158`),
-  called from exactly one caller, `core/services/messaging.py`'s `handle_usage_report`
-  (the path documented for "cron, heartbeat, Paperclip" runs — the room-turn contract emits
-  usage elsewhere). `handle_usage_report` is gated by `messaging_repo.claim_usage_receipt`
-  — a conditional `PutItem` that admits a given `(owner_id, run_id)` at most once
-  fleet-wide — *before* it schedules the metric, so a replay short-circuits to
-  `status: "replayed"` and never re-emits. It is **not** emitted off `end_run`: the ledger's
-  own terminal-state gate (`messaging_repo.end_run`'s conditional) feeds a different metric,
-  `messaging.run.ended`, on a separate call path. `run_analytics._seen_run_ids` is a
-  per-process accelerator only and is not what prevents a cross-instance double-emit — the
-  durable receipt is. Task 2 adds the regression test that pins this and corrects the one
-  stale comment that used to claim otherwise.
+  `{env, service}` (the only identity it ever binds) by `Minimum(AWS/ApplicationELB
+  HealthyHostCount)` on the backend's own target group — `Minimum`, not `Average`, because a
+  rolling deploy runs at `maxHealthyPercent: 200` and `Average` would dilute the ratio with
+  the transient extra tasks' partially-filled sample windows. Healthy reads ~10 samples per
+  instance per 10-minute window; the alarm fires below 8 *(correction, review round: was 7 —
+  prod autoscales 2-4 per C6, and one dead loop of FOUR reads 7.5 (3 alive / 4 hosts * ~10),
+  which 7 does not catch; 8 catches one dead loop at every N in range)*, so one dead loop of
+  two (~5) or of four (~7.5) both page while a halved rate at N = 1 does not apply here (there
+  is nothing to divide by at N = 1 changing). `_running_count_gauge_loop` stays unleased for
+  exactly this reason — it is the liveness canary, and a leased canary proves only that *some*
+  instance is alive.
+- `run_completed` is **already** single-emit at N ≥ 2 on the path this project touches, and
+  needs no code change here. Its emitter, `run_analytics.schedule_run_completed`
+  (`run_analytics.py:158`), has **two** callers on this branch today *(correction, review
+  round: an earlier draft of this bullet said "exactly one caller" — verify with `grep -rn
+  "schedule_run_completed(" apps/backend/core/services` before trusting either count)*:
+  `core/services/messaging.py`'s `handle_usage_report` (the path documented for "cron,
+  heartbeat, Paperclip" runs — the room-turn contract emits usage elsewhere), which is gated
+  by `messaging_repo.claim_usage_receipt` — a conditional `PutItem` that admits a given
+  `(owner_id, run_id)` at most once fleet-wide — *before* it schedules the metric, so a replay
+  short-circuits to `status: "replayed"` and never re-emits; and `core/services/operator_proxy.py:101`,
+  guarded only by `run_analytics._seen_run_ids`, a **per-process** accelerator that is not a
+  cross-instance guard. **`operator_proxy.py` is deleted by sub-project D (PR #2603)** — until
+  that merges, the second caller is a real (if narrow — it fires on the machine-relay's own
+  autonomous-run path, not the room-turn contract this project's suite exercises)
+  double-count exposure at N ≥ 2, which is exactly why **C5 gates the prod `desiredCount`
+  flip on D having landed first**, not on this project's own merge. It is **not** emitted off
+  `end_run`: the ledger's own terminal-state gate (`messaging_repo.end_run`'s conditional)
+  feeds a different metric, `messaging.run.ended`, on a separate call path. Task 2 adds the
+  regression test that pins the `handle_usage_report` path and corrects the one stale comment
+  that used to claim `_seen_run_ids` was the cross-instance guard.
 - One new metric, `lifecycle.pass.claimed`, dimensioned by pass name and `won`/`lost`/`fault`
   (`fault` added during review so a persistent DynamoDB error is distinguishable from
   ordinary contention on the same tick). A pass whose `won` count drops to zero fleet-wide is

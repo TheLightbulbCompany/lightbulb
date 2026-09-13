@@ -122,21 +122,26 @@ async def test_resume_wake_resize_transitions_tolerates_ddb_failure():
 
 
 @pytest.mark.asyncio
-async def test_running_count_gauge_loop_tags_the_emitting_instance(monkeypatch):
-    """P12 cannot tell a dead instance from a halved rate without this dimension."""
+async def test_running_count_gauge_loop_logs_the_emitting_instance(monkeypatch):
+    """The ECS task id is a log field, not a metric dimension -- it is a new
+    CloudWatch identity per task per deploy, the same class _DENIED_DIMENSIONS
+    refuses for container_id. P12 still binds the plain {env, service} gauge."""
     import main
 
     monkeypatch.setenv("HOSTNAME", "task-abc123")
-    seen: list[tuple[str, float, dict | None]] = []
+    gauge_calls: list[tuple[str, float, dict | None]] = []
+    log_calls: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(
         "core.observability.metrics.gauge",
-        lambda name, value, dimensions=None: seen.append((name, value, dimensions)),
+        lambda name, value, dimensions=None: gauge_calls.append((name, value, dimensions)),
     )
+    monkeypatch.setattr(main.logger, "info", lambda *a, **kw: log_calls.append((a, kw)))
     monkeypatch.setattr(main.container_repo, "get_by_status", AsyncMock(return_value=[{"owner_id": "o1"}]))
     monkeypatch.setattr(main.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError))
     with pytest.raises(asyncio.CancelledError):
         await main._running_count_gauge_loop()
-    assert seen == [("gateway.running.count", 1, {"instance": "task-abc123"})]
+    assert gauge_calls == [("gateway.running.count", 1, None)]
+    assert log_calls == [(("running_count",), {"extra": {"instance": "task-abc123", "count": 1}})]
 
 
 @pytest.mark.asyncio
@@ -145,13 +150,11 @@ async def test_running_count_gauge_loop_falls_back_off_ecs(monkeypatch):
     import main
 
     monkeypatch.delenv("HOSTNAME", raising=False)
-    seen = []
-    monkeypatch.setattr(
-        "core.observability.metrics.gauge",
-        lambda name, value, dimensions=None: seen.append(dimensions),
-    )
+    log_calls = []
+    monkeypatch.setattr("core.observability.metrics.gauge", lambda name, value, dimensions=None: None)
+    monkeypatch.setattr(main.logger, "info", lambda *a, **kw: log_calls.append((a, kw)))
     monkeypatch.setattr(main.container_repo, "get_by_status", AsyncMock(return_value=[]))
     monkeypatch.setattr(main.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError))
     with pytest.raises(asyncio.CancelledError):
         await main._running_count_gauge_loop()
-    assert seen == [{"instance": "local"}]
+    assert log_calls == [(("running_count",), {"extra": {"instance": "local", "count": 0}})]

@@ -101,6 +101,22 @@ export type {
   UseRoomsOptions,
   UseRoomsResult,
 } from "./messaging/useRooms";
+export {
+  GLYPH,
+  buildRows,
+  diffLines,
+  fullOutput,
+  lifecycleLabel,
+  stripAnsi,
+  toolHeader,
+  toolRowView,
+} from "./messaging/localSessionTranscript";
+export type {
+  LocalSessionProvider,
+  ToolRowView,
+  ToolTranscriptRow,
+  TranscriptRow,
+} from "./messaging/localSessionTranscript";
 export type {
   LocalSession,
   LocalSessionCommand,

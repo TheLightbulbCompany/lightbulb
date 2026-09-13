@@ -169,6 +169,9 @@
   --info: #1e52cc;
   --on-info: #ffffff;
   --presence: #1fa463;
+  /* Agents are always reachable, so their dot is blue (== --info), never the
+     human online/offline green — see ParticipantAvatar. */
+  --presence-agent: var(--info);
 }
 .dark:has(.workspace-shell), .dark .workspace-shell {
   --cream: #1c1c20;
@@ -184,6 +187,7 @@
   --info: #8fb0ff;
   --on-info: #1c1c20;
   --presence: #3fbf7f;
+  --presence-agent: var(--info);
 }
 
 :root {

@@ -8,7 +8,8 @@
  * existing stream/tool/run reducers keep working on the same variants.
  */
 
-import type { CanonicalRoomMessage } from "../messaging/types";
+import type { CanonicalRoomMessage, MessageAttachment } from "../messaging/types";
+import { MESSAGE_ATTACHMENT_MAX_BYTES } from "../messaging/types";
 
 /** OpenClaw tool result content blocks — text blocks or image refs. Image
  *  data is replaced with `{ bytes, omitted: true }` by OpenClaw's sanitizer. */
@@ -339,9 +340,12 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
   return typeof value.text === "string" && Array.isArray(value.mentions) && value.mentions.every(memberRef) &&
     nullableString(value.replyToMessageId) && nullableString(value.threadRootMessageId) &&
     str(value.createdAt) && nullableString(value.runId) && (value.attachments === undefined || (
-      Array.isArray(value.attachments) && value.attachments.length <= 4 && value.attachments.every((item) => isObj(item) &&
-        str(item.id) && text(item.fileName) && ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(String(item.contentType)) &&
-        typeof item.size === "number" && Number.isInteger(item.size) && item.size > 0 && item.size <= 5 * 1024 * 1024)
+      Array.isArray(value.attachments) && value.attachments.length <= 4 && value.attachments.every((item) => {
+        if (!isObj(item) || !str(item.id) || !text(item.fileName)) return false;
+        const maxBytes = MESSAGE_ATTACHMENT_MAX_BYTES[item.contentType as MessageAttachment["contentType"]];
+        return maxBytes !== undefined &&
+          typeof item.size === "number" && Number.isInteger(item.size) && item.size > 0 && item.size <= maxBytes;
+      })
     ));
 }
 

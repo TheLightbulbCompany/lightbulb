@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import { activeTrigger, applyCompletion, resolveTypedMentions, searchEmoji, type CompletionTrigger, type CreateMessageRequest, type ImageAttachment, type MemberRef, type RoomKind } from "@lightbulb/shared";
+import { activeTrigger, applyCompletion, resolveTypedMentions, searchEmoji, type CompletionTrigger, type CreateMessageRequest, type MessageAttachment, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -28,7 +28,7 @@ export interface RoomComposerProps {
   disabled?: boolean;
   label?: string;
   onTypingChange?: (typing: boolean) => void;
-  onUploadAttachment?: (image: File) => Promise<ImageAttachment>;
+  onUploadAttachment?: (image: File) => Promise<MessageAttachment>;
   onEditLast?: () => void;
   dropTargetRef?: RefObject<HTMLElement | null>;
   roomKind?: RoomKind;
@@ -108,7 +108,7 @@ function ComposerAttempt({
   const retryLocked = useRef(false);
   const imageInput = useRef<HTMLInputElement>(null);
   const previews = useRef(new Set<string>());
-  const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: ImageAttachment; error?: string }>>([]);
+  const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: MessageAttachment; error?: string }>>([]);
   const evidenceVersion = useRef(0);
   const [dropping, setDropping] = useState(false);
   const dragDepthRef = useRef(0);

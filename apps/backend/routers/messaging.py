@@ -42,7 +42,7 @@ from core.services.messaging import (
     ReadCursorResponse,
     RoomDetail,
     RoomListResponse,
-    ImageAttachment,
+    MessageAttachment,
     RunEventRequest,
     RunEventResponse,
     RunStatusResponse,
@@ -341,7 +341,7 @@ async def unpin_room_message(room_id: str, message_id: str, auth: AuthContext = 
     return await service.set_pin(auth, room_id, message_id, False)
 
 
-@router.post("/messaging/rooms/{room_id}/attachments", response_model=ImageAttachment, status_code=201)
+@router.post("/messaging/rooms/{room_id}/attachments", response_model=MessageAttachment, status_code=201)
 async def upload_room_attachment(
     room_id: str,
     image: UploadFile = File(...),
@@ -349,14 +349,17 @@ async def upload_room_attachment(
 ):
     owner_id = resolve_owner_id(auth)
     await service.require_room_member(owner_id, auth.user_id, room_id)
-    data = await image.read(service.IMAGE_MAX_BYTES + 1)
+    # Read up to the largest per-type cap (not the old flat image cap) --
+    # otherwise a legitimate PDF gets silently truncated before validation
+    # ever sees its true size.
+    data = await image.read(service.ATTACHMENT_MAX_BYTES + 1)
     try:
-        # Off the event loop: this writes the image to EFS (NFS).
+        # Off the event loop: this writes the attachment to EFS (NFS).
         return await run_in_thread(
-            service.store_image_attachment,
+            service.store_attachment,
             owner_id,
             room_id,
-            image.filename or "image",
+            image.filename or "attachment",
             image.content_type or "",
             data,
         )
@@ -372,7 +375,7 @@ async def get_room_attachment(
 ):
     owner_id = resolve_owner_id(auth)
     await service.require_room_member(owner_id, auth.user_id, room_id)
-    attachment, data = await run_in_thread(service.load_image_attachment, owner_id, room_id, attachment_id)
+    attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
     return Response(
         content=data,
         media_type=attachment.content_type,

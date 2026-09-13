@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ImageAttachment } from "@lightbulb/shared";
+import type { MessageAttachment } from "@lightbulb/shared";
 import { RoomComposer } from "../RoomComposer";
 
-const attachment: ImageAttachment = { id: "att-1", fileName: "shot.png", contentType: "image/png", size: 8 };
+const attachment: MessageAttachment = { id: "att-1", fileName: "shot.png", contentType: "image/png", size: 8 };
 
-function Harness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<ImageAttachment> }) {
+function Harness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<MessageAttachment> }) {
   const [text, setText] = useState("");
   return <RoomComposer text={text} onTextChange={setText} members={[]}
     clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
@@ -15,7 +15,7 @@ function Harness({ onUploadAttachment }: { onUploadAttachment: (file: File) => P
 
 // A stand-in for the real external drop zone (RoomPanel passes its message
 // history container as dropTargetRef) — a sibling node outside the <form>.
-function ExternalHarness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<ImageAttachment> }) {
+function ExternalHarness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<MessageAttachment> }) {
   const [text, setText] = useState("");
   const historyRef = useRef<HTMLDivElement>(null);
   return <>

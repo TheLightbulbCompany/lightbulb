@@ -43,7 +43,20 @@ EventKind = Literal["user_request", "room_event"]
 
 MESSAGE_TEXT_MAX_BYTES = 100_000
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
-IMAGE_MAX_COUNT = 4
+# A PDF is a document, not a photo: a real scanned contract or slide deck runs
+# well past 5 MiB. 20 MiB is generous enough for that while still bounded --
+# this route reads the whole file off EFS and serves it back through the API
+# on every read, so it is deliberately not "generous" beyond that.
+PDF_MAX_BYTES = 20 * 1024 * 1024
+ATTACHMENT_MAX_BYTES_BY_TYPE = {
+    "image/png": IMAGE_MAX_BYTES,
+    "image/jpeg": IMAGE_MAX_BYTES,
+    "image/webp": IMAGE_MAX_BYTES,
+    "image/gif": IMAGE_MAX_BYTES,
+    "application/pdf": PDF_MAX_BYTES,
+}
+ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
+ATTACHMENT_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
 ROOM_TOPIC_MAX_CHARS = 250
 MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
@@ -301,7 +314,7 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
-    attachments: list["ImageAttachment"] = Field(default_factory=list, max_length=IMAGE_MAX_COUNT)
+    attachments: list["MessageAttachment"] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
     reactions: dict[str, list[str]] = Field(default_factory=dict)
     reaction_revision: int = Field(default=0, ge=0)
     message_revision: int = Field(default=0, ge=0)
@@ -309,11 +322,11 @@ class CanonicalMessage(ContractModel):
     deleted_at: datetime | None = None
 
 
-class ImageAttachment(ContractModel):
+class MessageAttachment(ContractModel):
     id: uuid.UUID
     file_name: str = Field(min_length=1, max_length=256)
-    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
-    size: int = Field(gt=0, le=IMAGE_MAX_BYTES)
+    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"]
+    size: int = Field(gt=0)
 
     @field_validator("file_name")
     @classmethod
@@ -326,6 +339,16 @@ class ImageAttachment(ContractModel):
             raise ValueError("fileName is invalid")
         return value
 
+    @model_validator(mode="after")
+    def validate_size_for_type(self) -> "MessageAttachment":
+        # Pydantic's `le=` can't be a single constant any more -- the cap is
+        # per content type (a real PDF is bigger than a photo), so it has to
+        # live here instead of on the `size` field.
+        cap = ATTACHMENT_MAX_BYTES_BY_TYPE[self.content_type]
+        if self.size > cap:
+            raise ValueError(f"size must be at most {cap} bytes for {self.content_type}")
+        return self
+
 
 class CreateMessageRequest(ContractModel):
     client_message_id: uuid.UUID
@@ -333,7 +356,7 @@ class CreateMessageRequest(ContractModel):
     mentions: list[MemberRef] = Field(default_factory=list, max_length=32)
     reply_to_message_id: uuid.UUID | None
     thread_root_message_id: uuid.UUID | None
-    attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=IMAGE_MAX_COUNT)
+    attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
 
     @field_validator("text")
     @classmethod
@@ -753,25 +776,29 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
     )
 
 
-_IMAGE_SIGNATURES = {
+_ATTACHMENT_SIGNATURES = {
     "image/png": (b"\x89PNG\r\n\x1a\n", ".png"),
     "image/jpeg": (b"\xff\xd8\xff", ".jpg"),
     "image/gif": ((b"GIF87a", b"GIF89a"), ".gif"),
     "image/webp": (b"RIFF", ".webp"),
+    "application/pdf": (b"%PDF-", ".pdf"),
 }
 
 
-def validate_image_bytes(content_type: str, data: bytes) -> str:
-    expected = _IMAGE_SIGNATURES.get(content_type)
-    if not expected or not data or len(data) > IMAGE_MAX_BYTES:
-        raise ValueError("image must be PNG, JPEG, WebP, or GIF and at most 5 MiB")
+def validate_attachment_bytes(content_type: str, data: bytes) -> str:
+    expected = _ATTACHMENT_SIGNATURES.get(content_type)
+    cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type)
+    if not expected or not cap or not data or len(data) > cap:
+        raise ValueError(
+            "attachment must be PNG, JPEG, WebP, GIF, or PDF, and at most 5 MiB for images or 20 MiB for PDF"
+        )
     signature, suffix = expected
     signatures = signature if isinstance(signature, tuple) else (signature,)
     valid = any(data.startswith(value) for value in signatures)
     if content_type == "image/webp":
         valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
     if not valid:
-        raise ValueError("image bytes do not match the declared content type")
+        raise ValueError("attachment bytes do not match the declared content type")
     return suffix
 
 
@@ -779,16 +806,14 @@ def attachment_dir(room_id: str) -> str:
     return f"media/messaging/attachments/{uuid.UUID(room_id)}"
 
 
-def store_image_attachment(
-    owner_id: str, room_id: str, file_name: str, content_type: str, data: bytes
-) -> ImageAttachment:
-    suffix = validate_image_bytes(content_type, data)
+def store_attachment(owner_id: str, room_id: str, file_name: str, content_type: str, data: bytes) -> MessageAttachment:
+    suffix = validate_attachment_bytes(content_type, data)
     attachment_id = uuid.uuid4()
     safe_name = "".join(
         char for char in PurePath(file_name).name if ord(char) >= 0x20 and ord(char) != 0x7F and char not in "/\\"
     ).strip()
-    safe_name = safe_name.encode("utf-8")[:255].decode("utf-8", "ignore") or f"image{suffix}"
-    attachment = ImageAttachment(id=attachment_id, file_name=safe_name, content_type=content_type, size=len(data))
+    safe_name = safe_name.encode("utf-8")[:255].decode("utf-8", "ignore") or f"attachment{suffix}"
+    attachment = MessageAttachment(id=attachment_id, file_name=safe_name, content_type=content_type, size=len(data))
     root = attachment_dir(room_id)
     workspace = get_workspace()
     expected_root = workspace.user_path(owner_id).resolve() / root
@@ -802,7 +827,7 @@ def store_image_attachment(
     return attachment
 
 
-def load_image_attachment(owner_id: str, room_id: str, attachment_id: str) -> tuple[ImageAttachment, bytes]:
+def load_attachment(owner_id: str, room_id: str, attachment_id: str) -> tuple[MessageAttachment, bytes]:
     normalized = str(uuid.UUID(attachment_id))
     root = attachment_dir(room_id)
     workspace = get_workspace()
@@ -810,22 +835,22 @@ def load_image_attachment(owner_id: str, room_id: str, attachment_id: str) -> tu
         expected_root = workspace.user_path(owner_id).resolve() / root
         metadata_path = workspace._resolve_user_file(owner_id, f"{root}/{normalized}.json")
         metadata_path.relative_to(expected_root)
-        metadata = ImageAttachment.model_validate_json(metadata_path.read_text())
+        metadata = MessageAttachment.model_validate_json(metadata_path.read_text())
         if str(metadata.id) != normalized:
             raise ValueError("attachment metadata mismatch")
-        suffix = _IMAGE_SIGNATURES[metadata.content_type][1]
+        suffix = _ATTACHMENT_SIGNATURES[metadata.content_type][1]
         path = workspace._resolve_user_file(owner_id, f"{root}/{normalized}{suffix}")
         path.relative_to(expected_root)
         with path.open("rb") as handle:
-            data = handle.read(IMAGE_MAX_BYTES + 1)
+            data = handle.read(ATTACHMENT_MAX_BYTES_BY_TYPE[metadata.content_type] + 1)
     except (WorkspaceError, OSError, ValueError, KeyError) as exc:
-        raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment not found.") from exc
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
     try:
-        validate_image_bytes(metadata.content_type, data)
+        validate_attachment_bytes(metadata.content_type, data)
         if len(data) != metadata.size:
             raise ValueError("attachment size mismatch")
     except ValueError as exc:
-        raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment is invalid.") from exc
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment is invalid.") from exc
     return metadata, data
 
 
@@ -1682,16 +1707,16 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
     room_kind = _room_kind(meta)
-    # EFS is NFS. These reads open and read whole image files, so running them
-    # inline blocked the event loop -- every other request on the process, not
-    # just this send -- for the duration of the slowest one.
+    # EFS is NFS. These reads open and read whole attachment files, so running
+    # them inline blocked the event loop -- every other request on the
+    # process, not just this send -- for the duration of the slowest one.
     # `return_exceptions=True` so a second bad attachment id in the same request
     # does not leave its exception unretrieved -- these are concurrent now, and
     # the default would propagate the first and drop the rest, which asyncio
     # then logs as "exception was never retrieved". The caller still sees the
     # first failure, exactly as it did when this was a serial comprehension.
     loaded = await asyncio.gather(
-        *(run_in_thread(load_image_attachment, owner_id, room_id, str(value)) for value in request.attachment_ids),
+        *(run_in_thread(load_attachment, owner_id, room_id, str(value)) for value in request.attachment_ids),
         return_exceptions=True,
     )
     for result in loaded:

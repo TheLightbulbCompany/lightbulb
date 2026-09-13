@@ -20,8 +20,12 @@ jest.mock("expo-router/unstable-native-tabs", () => {
   function TriggerLabel({ children }: { children?: ReactNode }) {
     return <Text>{children}</Text>;
   }
+  // Mirrors expo-router's `appendBadgeOptions`: a truthy child ALWAYS draws
+  // (`badgeValue = String(children)`, `hidden` not consulted); only a
+  // childless badge honours `hidden`. A `"0"` child is a "0" badge on device.
   function TriggerBadge({ hidden, children }: { hidden?: boolean; children?: ReactNode }) {
-    return hidden ? null : <Text testID="tab-badge">{children}</Text>;
+    if (children) return <Text testID="tab-badge">{String(children)}</Text>;
+    return hidden ? null : <Text testID="tab-badge"> </Text>;
   }
   Trigger.Icon = TriggerIcon;
   Trigger.Label = TriggerLabel;

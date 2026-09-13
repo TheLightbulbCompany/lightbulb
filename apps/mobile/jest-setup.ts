@@ -1,3 +1,15 @@
+// react-native-gesture-handler's own jest setup: swaps its native module for a
+// JS-only stand-in so `Gesture.Pan()`/`GestureDetector` (BottomSheet's
+// drag-to-dismiss) can be driven in tests via `fireGestureHandler`.
+import "react-native-gesture-handler/jestSetup";
+
+// react-native-reanimated: activates the manual mock at
+// __mocks__/react-native-reanimated.js (see that file's header comment for
+// why — neither the real package nor its own shipped `/mock` load cleanly
+// under jest on this installed version). Extend that mock file, not this
+// line, if another branch's reanimated usage needs more surface.
+jest.mock("react-native-reanimated");
+
 // react-native's own FileReader (used by blobToDataUri, which the attachment
 // viewer's file-caching also goes through) isn't polyfilled by this jest
 // environment — jest-expo's preset runs on Node, not jsdom, so `Blob` is

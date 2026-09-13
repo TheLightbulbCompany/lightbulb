@@ -24,7 +24,6 @@ import {
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
-import { HeaderBack } from "../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
@@ -195,13 +194,12 @@ function Conversation() {
   // which is a rules-of-hooks violation and a real order change, not a lint nit.
   const keyboardOffset = useComposerKeyboardOffset();
 
+  // On `headerOptions` rather than inline so the blocked-state early return
+  // below keeps the header too — a blocked screen with no title and no
+  // star/mute is worse than the state it is reporting. The back button is the
+  // (app) Stack's own: the room is a PUSHED screen now, not a Stack root.
   const headerOptions = {
     title,
-    // The room is this Stack's root, so nothing draws a back button for it.
-    // It lives on `headerOptions` rather than inline so the blocked-state
-    // early return below keeps it too — a blocked screen with no way out is
-    // worse than the state it is reporting.
-    headerLeft: () => <HeaderBack fallback="/(app)/home" />,
     headerTitle: () => (
       <View style={styles.headerTitle}>
         <Text style={styles.headerName} numberOfLines={1}>

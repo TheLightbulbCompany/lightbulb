@@ -5,7 +5,7 @@ import {
   runView,
   type CanonicalRoomMessage,
 } from "@lightbulb/shared";
-import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
@@ -18,7 +18,6 @@ import {
 } from "react-native";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
-import { HeaderBack } from "../../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
@@ -134,14 +133,10 @@ export default function ThreadScreen() {
   // Hoisted above the blocked-state early return below — see the room screen.
   const keyboardOffset = useComposerKeyboardOffset();
 
-  const headerOptions = {
-    title: "Thread",
-    // A push can deep-link straight into a thread, with no room beneath it to
-    // pop back to — hence the explicit fallback. On `headerOptions` rather than
-    // inline so the blocked-state early return below keeps it: a blocked screen
-    // with no way out is worse than the state it is reporting.
-    headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}`} />,
-  };
+  // The header — title "Thread", and the back button — belongs to the (app)
+  // Stack, which owns this route. A push that deep-links straight into a
+  // thread still gets a working back: the Stack's `anchor` puts the tabs
+  // beneath it on a cold start.
 
   // Same guard as the room screen (search `room-blocked` in web's RoomPanel):
   // a reader with no access, or a room that failed to open, replaces the
@@ -154,7 +149,6 @@ export default function ThreadScreen() {
         : "unavailable" as const;
     return (
       <View style={styles.container}>
-        <Stack.Screen options={headerOptions} />
         <RoomBlockedState
           state={blockedState}
           onRetry={blockedState === "unavailable" ? rooms.refreshRoom : undefined}
@@ -169,7 +163,6 @@ export default function ThreadScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={keyboardOffset}
     >
-      <Stack.Screen options={headerOptions} />
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle} numberOfLines={1}>
           {subtitle}

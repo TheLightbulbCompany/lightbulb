@@ -1,7 +1,33 @@
+import os
+
+import boto3
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
+from moto import mock_aws
 from unittest.mock import MagicMock, patch
 from core.repositories import container_repo
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+
+@pytest.fixture
+def dynamodb_table():
+    """Real (moto) conditional-write semantics -- a MagicMock can't validate the
+    ConditionExpression boundary, only a real (or moto-emulated) DynamoDB can."""
+    with mock_aws():
+        client = boto3.resource("dynamodb", region_name="us-east-1")
+        table = client.create_table(
+            TableName="test-containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.meta.client.get_waiter("table_exists").wait(TableName="test-containers")
+        with (
+            patch("core.dynamodb._table_prefix", "test-"),
+            patch("core.dynamodb._dynamodb_resource", client),
+        ):
+            yield table
 
 
 def _table(side_effect=None):
@@ -59,3 +85,25 @@ async def test_scan_all_hides_the_reserved_pass_rows_from_fleet_consumers():
     kwargs = table.scan.call_args.kwargs
     assert "begins_with" in kwargs["FilterExpression"]
     assert container_repo.PASS_KEY_PREFIX in kwargs["ExpressionAttributeValues"].values()
+
+
+@pytest.mark.asyncio
+async def test_admits_at_exactly_interval_s_elapsed(dynamodb_table):
+    """The boundary case a strict `<` got wrong: refused one second before the
+    window closes, admitted exactly AT interval_s. A pass whose interval
+    equals its caller's tick (due_updates, paperclip_retry, trial_idle,
+    run_ledger -- all 60s) would otherwise only ever re-admit every OTHER
+    tick."""
+    t = 1_700_000_000
+    assert await container_repo.try_claim_pass("run_ledger", interval_s=60, now=t) is True
+    assert await container_repo.try_claim_pass("run_ledger", interval_s=60, now=t + 59) is False
+    assert await container_repo.try_claim_pass("run_ledger", interval_s=60, now=t + 60) is True
+
+
+@pytest.mark.asyncio
+async def test_a_botocore_error_with_no_response_code_also_fails_closed():
+    """NoCredentialsError (and endpoint/connect/read timeouts) carry no
+    ``Error`` code, so an `except ClientError` alone lets them escape and abort
+    the tick's remaining passes. The criterion is ANY failure -> not admitted."""
+    with patch.object(container_repo, "_get_table", return_value=_table(NoCredentialsError())):
+        assert await container_repo.try_claim_pass("paperclip_purge", interval_s=86_400) is False

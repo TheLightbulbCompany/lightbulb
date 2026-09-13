@@ -22,6 +22,9 @@ async def test_worker_exits_cleanly_on_stop_without_cancel(monkeypatch):
     monkeypatch.setattr(us, "_paperclip_purge_pass", AsyncMock(), raising=False)
     monkeypatch.setattr(us, "_rollup_pass", AsyncMock(), raising=False)
     monkeypatch.setattr(us.update_repo, "get_due_scheduled", AsyncMock(return_value=[]))
+    # Also real DynamoDB today (a Scan) if left unmocked -- not behind
+    # admission (it's custody recovery, not a scan), so it needs its own stub.
+    monkeypatch.setattr(us, "_recover_stale_task_definition_refreshes", AsyncMock(), raising=False)
     # Every pass now enters only behind admission -- admit unconditionally so
     # the retry pass this test cares about actually runs.
     monkeypatch.setattr(us.container_repo, "try_claim_pass", AsyncMock(return_value=True))

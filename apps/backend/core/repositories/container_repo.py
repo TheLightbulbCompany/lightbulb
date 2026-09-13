@@ -642,7 +642,10 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
     """Admit at most one instance into periodic pass ``name`` per ``interval_s`` window.
 
     ONE conditional write on a fixed-key row: set ``last_run_at`` only when it is
-    absent or older than ``now - interval_s``. Modelled on
+    absent or at/older than ``now - interval_s`` (``<=``, not ``<`` -- with a
+    strict less-than, a pass whose interval equals its caller's tick, e.g. the
+    60 s worker passes and sweepers, would never see ``elapsed == interval_s``
+    admitted and would only fire every other tick). Modelled on
     ``try_claim_daily_system_notice`` and adds no new pattern.
 
     This is PASS ADMISSION, not a lease. It admits a *scan*; it holds custody of
@@ -653,12 +656,15 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
     Cadence lives on the row, not in a process frame, so ``interval_s`` -- not
     process uptime -- decides a daily purge and a deploy no longer forces one.
 
-    FAILS CLOSED, unlike ``try_claim_daily_system_notice``: a DynamoDB fault
-    skips this tick rather than admitting every instance. A skipped 60 s sweep
-    costs a minute of latency on a trial park or a swept run; a fleet-wide
-    fail-open costs N x every scan in the product exactly when DynamoDB is
-    already unhappy. ``tests/unit/repositories/test_container_repo_pass_admission.py``
-    asserts the difference so nobody "fixes" it.
+    FAILS CLOSED, unlike ``try_claim_daily_system_notice``: ANY fault (a
+    conditional refusal, a ``ClientError``, or a ``BotoCoreError`` -- endpoint/
+    connect/read timeouts, ``NoCredentialsError``, none of which carry an
+    ``Error`` code so ``ClientError`` alone would miss them) skips this tick
+    rather than admitting every instance. A skipped 60 s sweep costs a minute
+    of latency on a trial park or a swept run; a fleet-wide fail-open costs
+    N x every scan in the product exactly when DynamoDB is already unhappy.
+    ``tests/unit/repositories/test_container_repo_pass_admission.py`` asserts
+    the difference so nobody "fixes" it.
 
     ponytail: one reserved-key row per pass name, all on the containers table.
     Fine at ~6 writes/min fleet-wide; give it its own table only if that stops
@@ -670,12 +676,13 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
             _get_table().update_item,
             Key={"owner_id": f"{PASS_KEY_PREFIX}{name}"},
             UpdateExpression="SET last_run_at = :now",
-            ConditionExpression="attribute_not_exists(last_run_at) OR last_run_at < :cutoff",
+            ConditionExpression="attribute_not_exists(last_run_at) OR last_run_at <= :cutoff",
             ExpressionAttributeValues={":now": stamp, ":cutoff": stamp - int(interval_s)},
         )
         return True
-    except ClientError:
-        return False  # conditional refusal AND fault both fail closed -- see docstring
+    except Exception:
+        # Conditional refusal AND any AWS SDK fault both fail closed -- see docstring.
+        return False
 
 
 # How long a marketplace-deploy claim stays exclusive before another deploy may

@@ -37,25 +37,22 @@ def test_valid_clerk_browser_jwt_is_denied_without_jwks_lookup():
     assert _effect(authz.handler(_event(token), None)) == "Deny"
 
 
-def test_signed_paperclip_service_token_remains_admitted(monkeypatch):
-    secret = "paperclip-test-signing-key"
-    monkeypatch.setattr(authz, "PAPERCLIP_SERVICE_TOKEN_KEY", secret)
+def test_signed_paperclip_service_token_is_now_denied():
+    """Paperclip operators moved to the raw WS relay (routers/gateway_relay.py)
+    and verify their own service tokens via core/services/machine_auth.py — the
+    API Gateway Lambda authorizer no longer accepts this credential kind at all."""
+    assert not hasattr(authz, "_try_service_token")
+    assert not hasattr(authz, "PAPERCLIP_SERVICE_TOKEN_KEY")
     token = jwt.encode(
         {
             "sub": "owner_123",
             "kind": "paperclip_service",
             "exp": int(time.time()) + 60,
         },
-        secret,
+        "paperclip-test-signing-key",
         algorithm="HS256",
     )
-    policy = authz.handler(_event(token), None)
-    assert _effect(policy) == "Allow"
-    assert policy["context"] == {
-        "userId": "owner_123",
-        "orgId": "",
-        "authKind": "paperclip_service",
-    }
+    assert _effect(authz.handler(_event(token), None)) == "Deny"
 
 
 def test_missing_or_unknown_token_is_denied():

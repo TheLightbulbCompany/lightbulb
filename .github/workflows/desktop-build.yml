@@ -213,7 +213,7 @@ jobs:
         # These default to dev in lib.rs, but set them explicitly so the
         # dev/prod split is visible here and can't silently regress.
         LIGHTBULB_API_BASE: https://api-dev.flickmeon.ai
-        LIGHTBULB_WS_URL: wss://ws-dev.flickmeon.ai
+        LIGHTBULB_WS_URL: wss://bv-dev.flickmeon.ai/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
@@ -408,7 +408,7 @@ jobs:
         # app's "computer access" half pairs against dev while the chat UI +
         # Friday run on prod — they never connect.
         LIGHTBULB_API_BASE: https://api.flickmeon.ai
-        LIGHTBULB_WS_URL: wss://ws.flickmeon.ai
+        LIGHTBULB_WS_URL: wss://bv.flickmeon.ai/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail

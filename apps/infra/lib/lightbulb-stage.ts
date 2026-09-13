@@ -227,6 +227,7 @@ export class LightbulbStage extends cdk.Stage {
       },
       managementApiUrl: api.managementApiUrl,
       webSocketUrl: api.webSocketUrl,
+      gatewayRelayUrl: api.gatewayRelayUrl,
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,

@@ -871,6 +871,10 @@ def handler(event, context):
     // of arithmetically indistinguishable from a healthy single instance.
     // The `instance` dimension main.py now tags the gauge with is for
     // diagnosis on a dashboard / Logs Insights, not for this alarm's binding.
+    //
+    // Deliberately instance-blind: it only proves SOME task is alive out of
+    // N. W78 (backend-healthy-hosts) is the instance-aware companion — it
+    // catches "one of two" where this only catches "all dead".
     const reaperDims = { env: this.envName, service: "lightbulb-backend" };
 
     const heartbeatMetric = new cloudwatch.Metric({
@@ -1825,6 +1829,35 @@ def handler(event, context):
       threshold: 5,
       evaluationPeriods: 5,
       datapointsToAlarm: 3,
+      severity: "warn",
+    });
+
+    // W78: backend-healthy-hosts (ruling D8, sub-project D machine relay).
+    // The backend went from a fixed desiredCount:1 to autoscaled 2-4
+    // (service-stack.ts) — P12 (gateway.running.count heartbeat) catches
+    // "every task is dead" but is instance-blind, so it cannot see one of N
+    // healthy tasks disappear. This alarm is the instance-aware companion:
+    // Minimum HealthyHostCount on the backend target group, 2-of-2 five-minute
+    // periods so a single deploy's transient dip (old task draining before the
+    // new one is healthy) does not warn-then-clear.
+    this.createAlarm({
+      id: "W78",
+      name: "backend-healthy-hosts",
+      description:
+        "Fewer than 2 healthy backend targets for 10 min (2 consecutive " +
+        "5-min periods) - a deploy is stuck, a task is crash-looping, or " +
+        "autoscaling can't keep up.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ApplicationELB",
+        metricName: "HealthyHostCount",
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { LoadBalancer: albFullName, TargetGroup: tgFullName },
+      }),
+      threshold: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
       severity: "warn",
     });
 

@@ -247,6 +247,12 @@ export class ApiStack extends cdk.Stack {
   public readonly appsyncEventApiId: string;
   public readonly wsApiId: string;
   public readonly wsStage: string;
+  /** Machine relay (desktop node hosts + Paperclip operators) WS endpoint on
+   * the bv- door: wss://{browserViewDomain}/api/v1/gateway/ws. Set alongside
+   * BrowserViewUrlOutput below; falls back to a fixed dev URL on the
+   * no-cert/no-zone synth path (unit tests, unknown envs) so this is never
+   * `undefined` in service-stack's ECS env map. */
+  public readonly gatewayRelayUrl: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -1570,6 +1576,17 @@ def handler(event, context):
         description: "Container-browser live view relay endpoint",
         exportName: `lightbulb-${env}-browser-view-url`,
       });
+
+      this.gatewayRelayUrl = `wss://${browserViewDomain}/api/v1/gateway/ws`;
+      new cdk.CfnOutput(this, "GatewayRelayUrlOutput", {
+        value: this.gatewayRelayUrl,
+        description: "Machine relay (desktop node hosts + Paperclip operators) WS endpoint",
+        exportName: `lightbulb-${env}-gateway-relay-url`,
+      });
+    } else {
+      // No cert/zone (unit-test synth, unknown envs): a fixed dev-shaped
+      // fallback so service-stack's ECS env map never sees `undefined`.
+      this.gatewayRelayUrl = "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws";
     }
   }
 }

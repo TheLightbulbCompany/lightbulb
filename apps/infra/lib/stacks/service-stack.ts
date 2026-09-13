@@ -160,6 +160,10 @@ export interface ServiceStackProps extends cdk.StackProps {
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
    * know where to connect. Sourced from ApiStack.webSocketUrl. */
   webSocketUrl: string;
+  /** Public wss:// machine relay endpoint (desktop node hosts + Paperclip
+   * operators) returned by /api/v1/desktop/pair's relayUrl field. Sourced
+   * from ApiStack.gatewayRelayUrl. */
+  gatewayRelayUrl: string;
   connectionsTableName: string;
   wsApiId: string;
   wsStage: string;
@@ -1342,6 +1346,7 @@ export class ServiceStack extends cdk.Stack {
       LITESTREAM_BUCKET: `lightbulb-${env}-openclaw-replicas`,
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
+      GATEWAY_RELAY_URL: props.gatewayRelayUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
       MESSAGING_TABLE: props.messagingTableName,
       OPENCLAW_WORK_QUEUE_URL: props.openClawWorkQueueUrl,
@@ -2337,12 +2342,11 @@ export class ServiceStack extends cdk.Stack {
       serviceName: `lightbulb-${env}-backend`,
       cluster: props.container.cluster,
       taskDefinition: taskDef,
-      desiredCount: 1,
-      // Rolling deploy as a clean handoff: at desiredCount=1, keeping 100%
-      // healthy forces ECS to bring the new task to healthy BEFORE stopping
-      // the old one, and 200% gives the headroom to run both at once. So a
-      // deploy has no outage window. Circuit breaker still rolls back a bad
-      // rollout.
+      desiredCount: 2,
+      // Rolling deploy as a clean handoff: keeping 100% healthy forces ECS to
+      // bring new tasks to healthy BEFORE stopping old ones, and 200% gives
+      // the headroom to run both generations at once. So a deploy has no
+      // outage window. Circuit breaker still rolls back a bad rollout.
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
@@ -2354,6 +2358,15 @@ export class ServiceStack extends cdk.Stack {
 
     // Register with ALB target group
     this.service.attachToApplicationTargetGroup(props.targetGroup);
+
+    // Horizontal autoscaling: the machine relay (sub-project D) moved every
+    // remaining piece of per-connection state that made a second instance
+    // unsafe (node/operator sockets, RPC waiters) out of process and onto
+    // DynamoDB (TTL presence rows, claim leases) — see CLAUDE.md's
+    // WebSocket Architecture section. 2-4 tasks, scaling on CPU.
+    this.service
+      .autoScaleTaskCount({ minCapacity: 2, maxCapacity: 4 })
+      .scaleOnCpuUtilization("Cpu", { targetUtilizationPercent: 60 });
 
     // -------------------------------------------------------------------------
     // Tags

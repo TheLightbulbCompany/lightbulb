@@ -193,7 +193,12 @@ export class NetworkStack extends cdk.Stack {
     });
     browserViewListener.addAction("BrowserViewRelay", {
       priority: 10,
-      conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/browser-view/*"])],
+      // The raw machine-relay WS door (routers/gateway_relay.py — desktop
+      // node hosts + Paperclip operators) rides this same bv- listener
+      // alongside the browser-view live view; both are Clerk/device/service
+      // authenticated at the application layer, so one forward rule covers
+      // both paths without widening what an in-VPC caller can reach.
+      conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/browser-view/*", "/api/v1/gateway/*"])],
       action: elbv2.ListenerAction.forward([targetGroup]),
     });
 

@@ -37,6 +37,13 @@ use crate::pair_client::PairResponse;
 /// re-pair, because the SERVER-side command surface changed and there is no
 /// other way to reach an already-paired Mac.
 ///
+/// 2 -> 3: adds `relay_url` (the CLI node's loopback proxy now dials the raw
+/// WS relay on `bv-` instead of `gateway_url`'s API Gateway door — see the
+/// machine relay design). A pre-3 file has no `relay_url` key, so
+/// `serde_json` already refuses to deserialize it as the current shape; the
+/// version bump documents that refusal instead of leaving it as an accident
+/// of a missing required field.
+///
 /// `nodes/paired.json` — the gateway's approval surface — is written only by
 /// `POST /desktop/pair`, and that endpoint is called only from
 /// `bootstrap::run_bootstrap`. Every relaunch after the first replays this
@@ -50,7 +57,7 @@ use crate::pair_client::PairResponse;
 ///
 /// Discarding this file costs one re-pair round trip on next launch and
 /// nothing else: device identity lives in the Keychain, not here.
-const STORE_VERSION: u32 = 2;
+const STORE_VERSION: u32 = 3;
 
 const FILE_NAME: &str = "pair_state.json";
 
@@ -63,6 +70,7 @@ pub struct PairState {
     pub device_id_mac: String,
     pub device_id_cli: String,
     pub gateway_url: String,
+    pub relay_url: String,
     pub gateway_token: String,
     pub display_name: String,
 }
@@ -75,6 +83,7 @@ impl PairState {
             device_id_mac: resp.device_id_mac.clone(),
             device_id_cli: resp.device_id_cli.clone(),
             gateway_url: resp.gateway_url.clone(),
+            relay_url: resp.relay_url.clone(),
             gateway_token: resp.gateway_token.clone(),
             display_name: display_name.to_string(),
         }
@@ -86,6 +95,7 @@ impl PairState {
     pub fn to_pair_response(&self) -> PairResponse {
         PairResponse {
             gateway_url: self.gateway_url.clone(),
+            relay_url: self.relay_url.clone(),
             gateway_token: self.gateway_token.clone(),
             owner_id: self.owner_id.clone(),
             device_id_mac: self.device_id_mac.clone(),
@@ -158,6 +168,7 @@ mod tests {
             device_id_mac: "mac-id".into(),
             device_id_cli: "cli-id".into(),
             gateway_url: "wss://ws-dev.flickmeon.ai".into(),
+            relay_url: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws".into(),
             gateway_token: "gw-tok".into(),
             display_name: "Test Mac".into(),
         }

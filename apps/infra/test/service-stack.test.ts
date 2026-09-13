@@ -96,6 +96,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
+    gatewayRelayUrl: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws",
     connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
@@ -177,16 +178,53 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   test("backend service uses rolling deploy that starts new before stopping old", () => {
-    // At desiredCount=1, MinimumHealthyPercent=100 forces ECS to keep the old
-    // task healthy until the new task is healthy (MaximumPercent=200 gives it
-    // the headroom to run both at once), so a deploy is a clean handoff with no
+    // MinimumHealthyPercent=100 forces ECS to keep the old generation healthy
+    // until the new generation is healthy (MaximumPercent=200 gives it the
+    // headroom to run both at once), so a deploy is a clean handoff with no
     // outage window. Circuit breaker stays on so a bad rollout auto-rolls back.
     template.hasResourceProperties("AWS::ECS::Service", {
+      DesiredCount: 2,
       DeploymentConfiguration: {
         MinimumHealthyPercent: 100,
         MaximumPercent: 200,
         DeploymentCircuitBreaker: { Enable: true, Rollback: true },
       },
+    });
+  });
+
+  test("backend service autoscales 2-4 on CPU", () => {
+    // Sub-project D moved the remaining per-connection state that made a
+    // second instance unsafe (node/operator sockets, RPC waiters) out of
+    // process and onto DynamoDB, so the backend can now run N>=2.
+    template.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", {
+      MinCapacity: 2,
+      MaxCapacity: 4,
+      ServiceNamespace: "ecs",
+    });
+    template.hasResourceProperties("AWS::ApplicationAutoScaling::ScalingPolicy", {
+      PolicyType: "TargetTrackingScaling",
+      TargetTrackingScalingPolicyConfiguration: Match.objectLike({
+        TargetValue: 60,
+        PredefinedMetricSpecification: Match.objectLike({
+          PredefinedMetricType: "ECSServiceAverageCPUUtilization",
+        }),
+      }),
+    });
+  });
+
+  test("backend task carries the gateway relay URL", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: "GATEWAY_RELAY_URL",
+              Value: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws",
+            }),
+          ]),
+        }),
+      ]),
     });
   });
 

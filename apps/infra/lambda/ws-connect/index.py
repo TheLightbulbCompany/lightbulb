@@ -49,24 +49,22 @@ def handler(event, context):
 
     # clientId is untrusted query input. It is admitted only when it matches the
     # already-verified credential kind from the Lambda authorizer context.
+    #
+    # This door now admits ONLY the desktop local-session relay. Tauri node
+    # hosts and Paperclip operators dial the raw WS relay instead
+    # (routers/gateway_relay.py, wss://bv[-env].flickmeon.ai/api/v1/gateway/ws)
+    # and never reach $connect any more.
     qs = event.get("queryStringParameters") or {}
     client_id = qs.get("clientId")
     auth_kind = authorizer.get("authKind", "")
     device_id = authorizer.get("deviceId", "")
     if not user_id:
         return {"statusCode": 403}
-    if auth_kind == "device":
-        if client_id not in ("node-host", "openclaw-macos", "lightbulb-local-sessions") or not device_id:
-            return {"statusCode": 403}
-        connection_type = "local-session" if client_id == "lightbulb-local-sessions" else "node"
-    elif auth_kind == "paperclip_service":
-        if client_id != "paperclip-operator" or device_id:
-            return {"statusCode": 403}
-        connection_type = "operator"
-    else:
+    if auth_kind != "device" or client_id != "lightbulb-local-sessions" or not device_id:
         # Clerk browser sessions, missing provenance, unknown client IDs, and
-        # cross-kind combinations all fail before a connection row is written.
+        # any other client id all fail before a connection row is written.
         return {"statusCode": 403}
+    connection_type = "local-session"
 
     table.put_item(
         Item={
@@ -77,7 +75,7 @@ def handler(event, context):
             "connectionType": connection_type,
             "authKind": auth_kind,
             "clientId": client_id,
-            **({"deviceId": device_id} if auth_kind == "device" else {}),
+            "deviceId": device_id,
             "connectedAt": str(event["requestContext"].get("connectedAt", "")),
         }
     )
@@ -88,10 +86,9 @@ def handler(event, context):
         "x-org-id": org_id or "",
         "x-auth-kind": auth_kind,
         "x-client-id": client_id,
+        "x-verified-device-id": device_id,
         "Content-Type": "application/json",
     }
-    if auth_kind == "device":
-        headers["x-verified-device-id"] = device_id
     ws_secret = _get_ws_internal_secret()
     if ws_secret:
         headers["x-lightbulb-ws-internal"] = ws_secret
@@ -105,11 +102,9 @@ def handler(event, context):
         )
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        if connection_type == "local-session":
-            # Unlike node/operator startup, canonical mac enrollment is admission.
-            # A failed handshake must not leave a usable local-session connection.
-            table.delete_item(Key={"connectionId": connection_id})
-            return {"statusCode": 403 if getattr(e, "code", None) == 403 else 503}
-        logger.warning("Failed to notify backend of connect: %s", e)
+        # Canonical mac enrollment is admission — a failed handshake must not
+        # leave a usable local-session connection.
+        table.delete_item(Key={"connectionId": connection_id})
+        return {"statusCode": 403 if getattr(e, "code", None) == 403 else 503}
 
     return {"statusCode": 200}

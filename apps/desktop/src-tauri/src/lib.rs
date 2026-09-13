@@ -217,7 +217,7 @@ fn send_auth_token(
         *current = token.clone();
     }
 
-    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
+    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://bv-dev.flickmeon.ai/api/v1/gateway/ws");
     // Use an explicit "/" path before the query. tokio-tungstenite builds
     // the HTTP upgrade request line from the URL's path+query; if the URL
     // is `wss://host?token=…` (no slash), the resulting request line is
@@ -705,7 +705,7 @@ async fn start_from_persisted_state(
     // on this path ever depends on a webview JWT. Publishing also flips
     // send_auth_token into its rotate-only branch, so a later webview JWT
     // just refreshes the URL cell instead of re-bootstrapping.
-    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
+    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://bv-dev.flickmeon.ai/api/v1/gateway/ws");
     let shared_url = Arc::new(RwLock::new(format!(
         "{}/?clientId=openclaw-macos",
         ws_url

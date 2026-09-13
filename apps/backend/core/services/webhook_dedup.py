@@ -18,14 +18,17 @@ idempotency contract is testable in isolation.
 from __future__ import annotations
 
 import enum
+import functools
 import hashlib
 import logging
 import os
 import time
 import uuid
+from typing import Callable
 
 import boto3
 from botocore.exceptions import ClientError
+from fastapi import HTTPException
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -751,3 +754,42 @@ async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int |
             e,
         )
         raise
+
+
+def idempotency(*, header: str = "Idempotency-Key", ttl_s: int = 60) -> Callable:
+    """Refuse a repeated ``Idempotency-Key`` on an admin write handler with 409.
+
+    Replaces the in-memory TTL cache that used to live in its own predecessor
+    module: a module-level dict is per-instance, so at desiredCount >= 2 two
+    clicks landing on two tasks BOTH executed. The repo's own
+    ``container_repo.try_claim_owner_deploy`` docstring made this argument
+    long before anyone acted on it.
+
+    **Contract change.** A repeat key used to re-serve the first response; it is
+    now refused. Preserving replay means persisting response bodies, and the
+    twelve handlers behind this are container / billing / fleet mutations whose
+    services are individually claim- or condition-guarded -- the value was always
+    "don't run it twice", never "give me the same body twice".
+
+    Fails CLOSED: a dedup-table fault raises and the request fails. An admin
+    mutation that cannot be deduped should not run. Requests with no header
+    bypass entirely, as before.
+    """
+
+    def decorator(handler: Callable) -> Callable:
+        handler_id = f"{handler.__module__}.{handler.__qualname__}"
+
+        @functools.wraps(handler)
+        async def wrapped(*args, **kwargs):
+            request = kwargs.get("request")
+            key = request.headers.get(header) if request is not None and hasattr(request, "headers") else None
+            if not key:
+                return await handler(*args, **kwargs)
+            seen = await record_event_or_skip(f"admin:{handler_id}:{key}", source="admin", ttl_seconds=ttl_s)
+            if seen is WebhookDedupResult.ALREADY_SEEN:
+                raise HTTPException(status_code=409, detail="duplicate Idempotency-Key")
+            return await handler(*args, **kwargs)
+
+        return wrapped
+
+    return decorator

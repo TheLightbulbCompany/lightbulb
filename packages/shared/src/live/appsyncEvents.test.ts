@@ -260,6 +260,60 @@ describe("subscriptions", () => {
     client.close();
   });
 
+  it("a rejected subscription closes the socket and resubscribes on the reconnect", async () => {
+    // Prod 2026-09-13: one transient SubscribeClientError left the socket acked
+    // with no live channel, so nothing ever resubscribed and the tab showed
+    // "Reconnecting live updates" until reload.
+    const { client, statuses } = setup();
+    client.setChannels([ROOM]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    ws.receive({ type: "subscribe_error", id: ws.sentOf("subscribe")[0].id });
+    expect(ws.closes).toEqual([{ code: 4002, reason: "subscribe rejected" }]);
+    expect(statuses.at(-1)?.connected).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    const second = FakeSocket.instances[1];
+    expect(second).toBeDefined();
+    second.open();
+    second.ack();
+    await flush();
+    expect(second.sentOf("subscribe").map((s) => s.channel)).toEqual([ROOM]);
+    second.ackSubscribe(ROOM);
+    expect(statuses.at(-1)?.liveChannels).toEqual([ROOM]);
+    client.close();
+  });
+
+  it("backs off when the rejection repeats, and resets once the channel goes live", async () => {
+    const { client } = setup({ random: () => 1 - Number.EPSILON }); // worst-case delay
+    client.setChannels([ROOM]);
+    await flush();
+    const reject = (ws: FakeSocket) => ws.receive({ type: "subscribe_error", id: ws.sentOf("subscribe")[0].id });
+    const cycle = async (ws: FakeSocket) => {
+      ws.open();
+      ws.ack();
+      await flush();
+      return ws;
+    };
+    reject(await cycle(FakeSocket.instances[0])); // attempt 0 → [0, 500ms)
+    await vi.advanceTimersByTimeAsync(500);
+    expect(FakeSocket.instances).toHaveLength(2);
+    reject(await cycle(FakeSocket.instances[1])); // attempt 1 → [0, 1000ms): an ACK must not reset it
+    await vi.advanceTimersByTimeAsync(500);
+    expect(FakeSocket.instances).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(FakeSocket.instances).toHaveLength(3);
+    // A fully live cycle is what proves the connection works — that resets it.
+    const third = await cycle(FakeSocket.instances[2]);
+    third.ackSubscribe(ROOM);
+    third.drop();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(FakeSocket.instances).toHaveLength(4);
+    client.close();
+  });
+
   it("closes every subscription on sign-out / close and ignores frames afterwards", async () => {
     const { client, events } = setup();
     client.setChannels([USER]);
@@ -398,7 +452,7 @@ describe("keepalive and reconnect", () => {
     client.close();
   });
 
-  it("reconnects with full-jitter backoff (500ms→30s cap), a fresh token, resubscribes, and resets on ACK", async () => {
+  it("reconnects with full-jitter backoff (500ms→30s cap), a fresh token, resubscribes, and resets once live", async () => {
     const random = vi.fn(() => 1 - Number.EPSILON); // worst-case delay each attempt
     const { client, getToken, statuses } = setup({ random });
     client.setChannels([USER]);
@@ -436,6 +490,7 @@ describe("keepalive and reconnect", () => {
     // drop waits < 500ms again.
     expect(settled.sentOf("subscribe").map((s) => s.channel)).toEqual([USER]);
     expect(statuses.at(-1)?.ackCount).toBe(2);
+    settled.ackSubscribe(USER);
     settled.drop();
     await vi.advanceTimersByTimeAsync(500);
     expect(FakeSocket.instances.length).toBeGreaterThan(9);

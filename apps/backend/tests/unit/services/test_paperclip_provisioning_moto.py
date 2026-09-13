@@ -1571,3 +1571,69 @@ async def test_provision_member_concurrent_retries_after_pre_signup_failure_sign
     assert retry.sign_in_user.await_count == 1
     assert winner_row.status == "active" and winner_row.paperclip_user_id == "pc_user_member"
     assert loser_row.status == "active" and loser_row.paperclip_user_id == "pc_user_member"
+
+
+async def test_provision_member_repoints_personal_row_when_already_a_paperclip_member(repo):
+    """Prod defect 2026-09-13: an org member whose DDB row still points at
+    their PERSONAL company 403s on every Teams route, forever.
+
+    ``routers/teams/deps.py:134`` compares ``repo.get(auth.user_id).org_id``
+    against the active owner, so a stale personal row is a hard 403. The
+    self-heal (``_ensure_paperclip_for_member`` -> ``provision_member``) is
+    supposed to re-point that row, but when the user is ALREADY in the org's
+    Paperclip company the accept-invite call answers 409 ("You already belong
+    to this company" — paperclip ``server/src/routes/access.ts``), the chain
+    aborts before the final ``repo.put``, and the caller swallows the 409 as
+    an idempotent no-op. The Paperclip side is correct; the DDB row — the only
+    thing Teams reads — never converges.
+
+    A 409 there means the join is already done, so there is nothing left to do
+    on Paperclip: persist the row at this org and let Teams work.
+    """
+    await _seed_owner(repo)
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_member",
+            org_id="user_member",  # stale personal-workspace row
+            company_id="co_personal",
+            paperclip_user_id="pc_user_member",
+            paperclip_password_encrypted=encrypt("member-password-plain"),
+            paperclip_email="member@acme.test",
+            service_token_encrypted=encrypt("svc-token-personal"),
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    admin = _make_admin_mock()
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session"})
+    admin.accept_invite = AsyncMock(
+        side_effect=PaperclipApiError(
+            "You already belong to this company",
+            status_code=409,
+            body={"error": "You already belong to this company"},
+        )
+    )
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_member(
+        owner_id="org_acme",
+        user_id="user_member",
+        email="member@acme.test",
+        owner_email="owner@acme.test",
+    )
+
+    assert row.org_id == "org_acme"
+    assert row.company_id == "co_acme"
+    persisted = await repo.get("user_member")
+    assert persisted is not None
+    assert persisted.org_id == "org_acme"
+    assert persisted.company_id == "co_acme"
+    assert persisted.status == "active"
+    # Adopted, not re-signed-up: the member already had a Better Auth account.
+    admin.sign_up_user.assert_not_awaited()
+    assert persisted.paperclip_user_id == "pc_user_member"

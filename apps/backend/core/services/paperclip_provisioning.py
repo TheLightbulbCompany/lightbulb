@@ -977,12 +977,35 @@ class PaperclipProvisioning:
             #    approved (Paperclip auto-approves human accepts, so the
             #    standalone approve only fires as a fallback — see
             #    _accept_invite_and_ensure_approved).
-            await self._accept_invite_and_ensure_approved(
-                member_session_cookie=member_session_cookie,
-                approver_session_cookie=owner_session_cookie,
-                company_id=company_id,
-                invite_token=invite_token,
-            )
+            #
+            #    409 = "You already belong to this company"
+            #    (paperclip server/src/routes/access.ts). That is the JOIN
+            #    already being done, not a failure — and it is the ONLY thing
+            #    standing between a stale row and a working Teams surface.
+            #    Prod 2026-09-13: a member whose row still pointed at their
+            #    personal company 403'd on every Teams route
+            #    (routers/teams/deps.py compares row.org_id to the active
+            #    owner) because this raise aborted the chain before step 7's
+            #    repo.put — the only write that re-points the row — and the
+            #    caller swallowed the 409 as an idempotent no-op. Forever.
+            #    Swallowing it here converges the row on the next request.
+            try:
+                await self._accept_invite_and_ensure_approved(
+                    member_session_cookie=member_session_cookie,
+                    approver_session_cookie=owner_session_cookie,
+                    company_id=company_id,
+                    invite_token=invite_token,
+                )
+            except PaperclipApiError as e:
+                if e.status_code != 409:
+                    raise
+                logger.info(
+                    "paperclip_provisioning.provision_member: %s already belongs to company %s "
+                    "— persisting row at owner_id %s",
+                    user_id,
+                    company_id,
+                    owner_id,
+                )
 
             # 6. Mint the member's OpenClaw service-token JWT.
             #

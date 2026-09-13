@@ -27,7 +27,6 @@ from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
-    connection_lock,
     integration_secret_store,
     oauth_app_store,
     oauth_dance,
@@ -35,6 +34,7 @@ from core.services.credentials import (
 )
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 from core.services.google_identity import seed_agent_google_identity
+from core.services.owner_lifecycle import owner_lifecycle_guard
 
 logger = logging.getLogger(__name__)
 
@@ -782,10 +782,14 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         await _disconnect_one_google_account(owner_id, p, account)
         return {"status": "disconnected", "provider": provider, "account": account}
     # Serialize the teardown against an in-flight connect: the OAuth callback
-    # takes the same per-owner lock around its write section, so whichever runs
+    # takes the same per-owner guard around its write section, so whichever runs
     # second sees the other's completed state and a disconnect can no longer be
-    # undone by a callback still finishing its writes.
-    async with connection_lock.connection_lock(owner_id, provider):
+    # undone by a callback still finishing its writes. Cross-process (an EFS
+    # file lock) and per-OWNER now, not per-(owner, provider) -- a disconnect
+    # also serializes against a concurrent provision or resize for the same
+    # owner, which is deliberate: that race is the same bug class the old
+    # per-provider lock was too narrow to catch.
+    async with owner_lifecycle_guard(owner_id):
         await _disconnect_teardown(owner_id, provider, p)
     return {"status": "disconnected", "provider": provider}
 
@@ -1027,10 +1031,10 @@ async def oauth_callback(
         return _done("error=oauth_exchange")
     p = registry.get_provider(prov)
     # Serialize the connect writes against a concurrent disconnect (both take the
-    # same per-owner lock), so a disconnect landing mid-connect cannot be undone
+    # same per-owner guard), so a disconnect landing mid-connect cannot be undone
     # by this callback finishing its writes afterwards. Taken AFTER the exchange
     # network call, never around it.
-    async with connection_lock.connection_lock(owner_id, prov):
+    async with owner_lifecycle_guard(owner_id):
         # Agent-started flow landing on a provider that went live in between
         # (the owner connected via the tab during the state TTL): drop it. The
         # agent may start a missing connection, never rebind a live one — judged

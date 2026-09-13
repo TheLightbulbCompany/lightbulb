@@ -105,16 +105,24 @@ def test_stopped_container_wakes_and_closes_1013():
 
 
 def test_frames_are_piped_verbatim_and_presence_is_written_then_deleted():
+    # The delete_connection assertion below is on finally-block behavior, so
+    # (same as test_node_ready_and_closed_hooks_fire_for_a_node) the test must
+    # not exit `with ws:` until the SERVER has closed on its own -- a
+    # client-initiated disconnect can race the relay's own teardown and
+    # return before its finally block (and therefore delete_connection) has
+    # run.
     upstream = FakeUpstream()
     patches, svc = _patches(NODE, upstream)
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-        with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
-            ws.send_text('{"type":"req","id":"1","method":"connect","params":{"role":"node"}}')
-            upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
-            assert json.loads(ws.receive_text())["payload"]["type"] == "hello-ok"
-            upstream.feed(b"\x00\x01")
-            assert ws.receive_bytes() == b"\x00\x01"
-            upstream.feed(None)
+        with pytest.raises(WebSocketDisconnect):
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                ws.send_text('{"type":"req","id":"1","method":"connect","params":{"role":"node"}}')
+                upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
+                assert json.loads(ws.receive_text())["payload"]["type"] == "hello-ok"
+                upstream.feed(b"\x00\x01")
+                assert ws.receive_bytes() == b"\x00\x01"
+                upstream.feed(None)
+                ws.receive_text()  # blocks until the relay's own close (1000) propagates
     assert upstream.sent[0] == '{"type":"req","id":"1","method":"connect","params":{"role":"node"}}'
     row = svc.put_relay_presence.await_args.kwargs
     assert row["identity"] == NODE and row["connection_id"].startswith("relay#")
@@ -192,10 +200,12 @@ def test_revoked_presence_closes_the_socket_1008(monkeypatch):
     assert exc.value.code == 1008
 
 
-def test_operator_not_paired_unpaired_device_is_refused():
+def test_operator_not_paired_routes_through_the_same_self_heal_gate_as_a_node():
     """The deviceId in a NOT_PAIRED frame is untrusted (the operator's own
-    identity carries no device_id) — it must be backend-paired before any
-    approve RPC runs."""
+    identity carries no device_id) — the operator goes through the EXACT
+    same backend-paired gate as a node's, via heal_desktop_device_not_paired
+    (the "must be backend-paired before any approve RPC runs" gate is that
+    function's own concern; see tests/unit/services/test_desktop_pair_live.py)."""
     upstream = FakeUpstream()
     patches, _ = _patches(OPERATOR, upstream)
     with (
@@ -206,8 +216,9 @@ def test_operator_not_paired_unpaired_device_is_refused():
         patches[4],
         patches[5],
         patches[6],
-        patch("routers.gateway_relay._read_backend_pairing_file", return_value={}),
-        patch("routers.gateway_relay.approve_pending_device_from_rejection", new_callable=AsyncMock) as approve,
+        patch(
+            "routers.gateway_relay.heal_desktop_device_not_paired", new_callable=AsyncMock, return_value=False
+        ) as heal,
     ):
         with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=paperclip-operator") as ws:
             upstream.feed(
@@ -217,7 +228,7 @@ def test_operator_not_paired_unpaired_device_is_refused():
             )
             ws.receive_text()
             upstream.feed(None)
-    approve.assert_not_awaited()
+    heal.assert_awaited_once_with(owner_id="org_1", device_id="b" * 64, request_id="req-1")
 
 
 def test_operator_not_paired_approves_once_even_if_the_frame_repeats():
@@ -236,10 +247,9 @@ def test_operator_not_paired_approves_once_even_if_the_frame_repeats():
         patches[4],
         patches[5],
         patches[6],
-        patch("routers.gateway_relay._read_backend_pairing_file", return_value={"b" * 64: {}}),
         patch(
-            "routers.gateway_relay.approve_pending_device_from_rejection", new_callable=AsyncMock, return_value=True
-        ) as approve,
+            "routers.gateway_relay.heal_desktop_device_not_paired", new_callable=AsyncMock, return_value=True
+        ) as heal,
     ):
         with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=paperclip-operator") as ws:
             upstream.feed(frame)
@@ -247,7 +257,7 @@ def test_operator_not_paired_approves_once_even_if_the_frame_repeats():
             upstream.feed(frame)
             ws.receive_text()
             upstream.feed(None)
-    approve.assert_awaited_once_with(owner_id="org_1", device_id="b" * 64, request_id="req-1")
+    heal.assert_awaited_once_with(owner_id="org_1", device_id="b" * 64, request_id="req-1")
 
 
 def test_node_ready_and_closed_hooks_fire_for_a_node():

@@ -23,8 +23,7 @@ from core.services import machine_auth, relay_hooks
 from core.services.connection_service import ConnectionService
 from core.services.container_rpc import GATEWAY_PORT
 from core.services.container_wake import request_wake_silent
-from core.services.desktop_pair_live import _read_backend_pairing_file, heal_desktop_device_not_paired
-from core.services.paperclip_openclaw_pairing import approve_pending_device_from_rejection
+from core.services.desktop_pair_live import heal_desktop_device_not_paired
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,10 +31,27 @@ router = APIRouter()
 _WS_MAX_FRAME_SIZE = 10 * 1024 * 1024
 _PARSE_LIMIT = 64 * 1024
 _REFRESH_SECONDS = 60
+# relay.close's `code` dimension: bucket to the codes this relay actually
+# distinguishes plus one 4xxx catch-all. A raw code would blow up dimension
+# cardinality — upstream can close with any of ~70 defined codes plus
+# arbitrary app-specific ones in 4000-4999.
+_KNOWN_CLOSE_CODES = frozenset({1000, 1001, 1008, 1011, 1013})
+
+
+def _close_code_bucket(code: int) -> str:
+    if code in _KNOWN_CLOSE_CODES:
+        return str(code)
+    if 4000 <= code < 5000:
+        return "4xxx"
+    return "other"
 
 
 def _parse(frame: str) -> dict | None:
-    if len(frame.encode()) > _PARSE_LIMIT:
+    # Cheap char-count pre-check before the (allocating) UTF-8 encode: a
+    # frame already over the limit in characters is over it in bytes too
+    # (encode() only ever grows byte count relative to char count), so this
+    # short-circuits the copy for the common case of a wildly oversized frame.
+    if len(frame) > _PARSE_LIMIT or len(frame.encode()) > _PARSE_LIMIT:
         return None
     try:
         body = json.loads(frame)
@@ -204,9 +220,12 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
             # closing 4401/1001) to the client instead of always reporting our
             # generic 1000 — spec §4.4/§6 "same code". 1005/1006 are the
             # websockets library's synthetic "no close frame at all" markers
-            # and must never be forwarded as if the peer sent them.
+            # and must never be forwarded as if the peer sent them. Only
+            # overwrite the DEFAULT 1000 — a 1011 (leg failure) or 1008
+            # (presence revoked) already decided above is a stronger signal
+            # than whatever the upstream container happened to close with.
             code = upstream.close_code
-            if code and 1000 <= code < 5000 and code not in (1005, 1006):
+            if close_code == 1000 and code and 1000 <= code < 5000 and code not in (1005, 1006):
                 close_code = code
     except Exception:  # noqa: BLE001 — never let a relay error take the worker down
         logger.warning("relay error kind=%s", kind, exc_info=True)
@@ -229,7 +248,7 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
                 await relay_hooks.on_node_closed(owner_id, identity.user_id)
             except Exception:  # noqa: BLE001
                 logger.warning("relay node-closed hook failed", exc_info=True)
-        put_metric("relay.close", dimensions={"kind": kind, "code": str(close_code)})
+        put_metric("relay.close", dimensions={"kind": kind, "code": _close_code_bucket(close_code)})
         try:
             await websocket.close(code=close_code)
         except Exception:  # noqa: BLE001 — already closed by the client
@@ -237,30 +256,17 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
 
 
 async def _self_heal(kind: str, owner_id: str, device_id: str, request_id: str | None) -> None:
+    # Both kinds share the same gate and the same approve call —
+    # heal_desktop_device_not_paired requires the deviceId to already be in
+    # the owner's backend-written devices/paired.json (the artifact of the
+    # Clerk-authed /desktop/pair flow) before approving anything. That gate
+    # matters just as much for an operator: the operator's MachineIdentity
+    # carries no device_id of its own (machine_auth._operator always sets
+    # device_id=None), so this deviceId comes entirely from the container's
+    # own NOT_PAIRED frame — untrusted input a compromised or buggy container
+    # could use to mint trust for an arbitrary device id if it weren't gated.
     try:
-        if kind == "node":
-            healed = await heal_desktop_device_not_paired(owner_id=owner_id, device_id=device_id, request_id=request_id)
-        else:
-            # The operator's MachineIdentity carries no device_id of its own
-            # (machine_auth._operator always sets device_id=None) — this
-            # deviceId comes entirely from the container's own NOT_PAIRED
-            # frame, i.e. untrusted input. Gate it exactly like the node
-            # branch: only a device id the OWNER actually paired (the
-            # backend-written devices/paired.json) may be auto-approved, or a
-            # compromised or buggy container could mint trust for an
-            # arbitrary device id.
-            devices = await asyncio.to_thread(_read_backend_pairing_file, owner_id, "devices")
-            if device_id not in devices:
-                logger.warning(
-                    "relay operator self-heal: device=%s owner=%s is not backend-paired — refusing",
-                    device_id[:16],
-                    owner_id,
-                )
-                put_metric("relay.not_paired_selfheal", dimensions={"kind": kind, "outcome": "unpaired_device"})
-                return
-            healed = await approve_pending_device_from_rejection(
-                owner_id=owner_id, device_id=device_id, request_id=request_id
-            )
+        healed = await heal_desktop_device_not_paired(owner_id=owner_id, device_id=device_id, request_id=request_id)
         put_metric("relay.not_paired_selfheal", dimensions={"kind": kind, "outcome": "healed" if healed else "failed"})
     except Exception:  # noqa: BLE001
         put_metric("relay.not_paired_selfheal", dimensions={"kind": kind, "outcome": "error"})

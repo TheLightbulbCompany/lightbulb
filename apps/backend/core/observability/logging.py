@@ -153,7 +153,13 @@ def configure_logging(level: str = "INFO") -> None:
 
     # See RedactTokenFilter — uvicorn's own WS handshake log writes the
     # gateway relay's ?token=<jwt> in plaintext, independent of any flag.
-    logging.getLogger("uvicorn.error").addFilter(RedactTokenFilter())
+    # Idempotent: configure_logging can run more than once in a process
+    # (tests, a reload), and logging.Filter has no identity/equality check on
+    # add, so a naive addFilter would stack a duplicate on every call and
+    # redact-then-double-redact instead of no-op.
+    uvicorn_error = logging.getLogger("uvicorn.error")
+    if not any(isinstance(f, RedactTokenFilter) for f in uvicorn_error.filters):
+        uvicorn_error.addFilter(RedactTokenFilter())
 
 
 def bind_request_context(request_id: str, user_id: str | None = None) -> None:

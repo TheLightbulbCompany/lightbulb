@@ -141,6 +141,17 @@ def test_configure_logging_installs_the_uvicorn_token_redaction_filter():
     assert any(isinstance(f, RedactTokenFilter) for f in logging.getLogger("uvicorn.error").filters)
 
 
+def test_configure_logging_is_idempotent_about_the_redaction_filter():
+    """Repeat calls (tests, a reload) must not stack a duplicate filter --
+    logging.Filter has no add-time identity check, so a naive addFilter would
+    keep appending one every call."""
+    configure_logging()
+    configure_logging()
+    configure_logging()
+    filters = [f for f in logging.getLogger("uvicorn.error").filters if isinstance(f, RedactTokenFilter)]
+    assert len(filters) == 1
+
+
 def test_configure_logging_quiets_httpx_request_urls():
     """httpx's INFO line is the full request URL, query string and all.
 

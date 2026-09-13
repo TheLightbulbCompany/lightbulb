@@ -330,8 +330,6 @@ async def _register_built_agent(
                 slice_=slice_,
                 tar_bytes=package.tarball_bytes,
                 new_agent_id=new_agent_id,
-                container_ip=container_ip,
-                container_token=container_token,
             )
 
         # Register the new agent's operator device into the running container's

@@ -122,8 +122,23 @@ call), `operator_proxy.py` (except its `parse_session_key` import; its
 `core/gateway/node_connection.py`, and
 `operator_rpc.perform_signed_connect` with its one caller
 `paperclip_openclaw_pairing._probe_pairing_request` (it connects *as the agent's operator
-device* to open a pairing window; that is the operator-device identity D redesigns). Their
-in-process maps are why `desiredCount` stays 1 in prod until D.
+device* to open a pairing window; that is the operator-device identity D redesigns).
+`core/services/credentials/connection_lock.py` (a per-(owner, provider) in-process
+`asyncio.Lock` serializing connect/disconnect -- a race across two instances can
+resurrect a revoked credential) and `core/services/idempotency.py` (an in-memory
+`Idempotency-Key` cache on admin container/billing mutations) are the same class:
+correct only because the backend is single-instance. Their in-process maps are why
+`desiredCount` stays 1 in prod until D.
+
+Two more things D's `desiredCount` flip breaks that are NOT in-process state, just
+tuned for one instance: P12 (backend-liveness) alarms on `SampleCount < 5` over a
+5-minute window, which cannot tell "one of two instances died" from "the survivor's
+sample rate halved" -- it needs a per-instance dimension or a different statistic
+once N > 1. And `run_completed` (the autonomous-run reliability metric feeding W67)
+may double-count the same run across instances once more than one can pick up work
+for the same owner -- the deleted `emit_metric` flag on the old pool's usage path
+existed for exactly this de-dup problem and will need an equivalent before D flips
+the count.
 
 ### Untouched until C
 
@@ -202,6 +217,19 @@ Scope coverage is a code fact, not a spike: a `trusted-operator` route receives
 (`plugin-route-runtime-scopes` → `method-scopes`), which is every scope an allowlisted
 method can require. The runtime proof is the dev pass of §10 after the cutover deploy.
 
+**Accepted risk.** `gatewayRuntimeScopeSurface: "trusted-operator"` grants every
+operator scope to ANY caller holding the container's gateway bearer token --
+including a process running inside the container itself, not just the backend. The
+old pool required the backend-held Ed25519 device seed for the signed-device
+handshake, a credential the container never had; the plugin route has no equivalent
+per-caller distinction, only the one shared bearer token. Accepted because: the
+token is already the plugin's ingress credential (a compromised container can reach
+the plugin's other routes regardless), and the backend's own `_PROXY_ALLOWED_METHODS`
+allowlist remains the actual policy edge for backend-originated calls -- this narrows
+what the BACKEND can be tricked into forwarding, not what a rogue in-container
+process can call directly. D revisits the trust model when it redesigns the
+operator-device identity.
+
 ## 5. Resource invalidation for backend-driven mutations
 
 `runtime_rpc.execute_sync` publishes `runtime.resource.invalidated {resource}` to the
@@ -222,11 +250,12 @@ error?, durationMs?}`; ctx: `{agentId?, sessionKey?}`): when `ctx.sessionKey`,
 session key (`agent:<agentId>:lightbulb:channel:<roomId>`, the shape the plugin itself
 builds) it reads `getSessionEntry({agentId, sessionKey, readConsistency:
 "latest"})` (the same read A's supervisor does) and POSTs
-`{sessionKey, agentId, runId, success, error?, durationMs?, usage: {inputTokens,
+`{sessionKey, agentId, runId, success, durationMs?, usage: {inputTokens,
 outputTokens, cacheRead, cacheWrite, estimatedCostUsd, model}}` to
 `POST /api/v1/internal/messaging/usage/{ownerId}` (hook token, three attempts like A's
-callbacks; `error` is the gateway's classification string, never message text). The
-backend route:
+callbacks). No `error` field: `UsageReportRequest` (`core/services/messaging.py`) is
+`extra="forbid"` and carries no such field, and the shipped plugin omits it -- the
+event's own `error?` never leaves the container. The backend route:
 
 - ignores a room session key defensively (A's `run.ended` recorded it);
 - claims a receipt `OWNER#{ownerId}` / `USAGE#{runId}` (conditional put, 7-day TTL,
@@ -240,6 +269,10 @@ backend route:
   is identical by construction.
 
 Billing truth stays the Bedrock meter Lambda; this is analytics only.
+
+Non-room usage is attributed to the owner (`record_usage(owner_id, user_id=owner_id,
+…)` above) -- an org webchat key carrying a member id collapses to the owner. Accepted:
+webchat is retired, so this only affects the historical/edge case, never a live path.
 
 ## 7. Readiness, trial idle
 

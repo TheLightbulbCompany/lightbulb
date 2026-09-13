@@ -288,14 +288,15 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   // merely time-boxed. A free-tier wake reads `parked` for ONE poll and then
   // spends the next 30-90s in `starting`: the wake dispatch writes
   // status="provisioning" immediately, and the backend maps every non-running
-  // status to phase="provisioning" (see routers/container.py +
-  // _resolve_cold_start_phase), so ECS placement, ENI attach and the gateway
-  // handshake all read as `starting`. Behind that sits the live tab navigator
-  // with a composer draft, a loaded message list, a scroll position and a
-  // navigation stack. Same story for an idle scale-to-zero restart, and for
-  // the documented case where /container/status reports `starting` over a
-  // perfectly working container because the answering backend task holds no
-  // pool connection. On a genuine FIRST cold start none of that exists yet —
+  // status to phase="provisioning" (see core/services/readiness_state.py's
+  // resolve_runtime_phase), so ECS placement, ENI attach and the container's
+  // `health` probe (over container_rpc, per request -- no persistent
+  // connection to hold) all read as `starting`. Behind that sits the live tab
+  // navigator with a composer draft, a loaded message list, a scroll position
+  // and a navigation stack. Same story for an idle scale-to-zero restart, and
+  // for the documented case where /container/status reports `starting` over a
+  // perfectly working container because that per-request health probe hasn't
+  // landed yet. On a genuine FIRST cold start none of that exists yet —
   // nothing to lose, and the stepper is the only thing to look at — so the
   // promotion still happens there and only there.
   //

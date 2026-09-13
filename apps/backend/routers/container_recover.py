@@ -16,6 +16,7 @@ of one blocking behind an advisory lock; the only remaining cost of
 concurrency is a redundant (harmless, read-only) gateway health probe.
 """
 
+import asyncio
 import json
 import logging
 
@@ -24,9 +25,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
 from core.containers.config import read_openclaw_config_from_efs
-from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.repositories import container_repo
-from core.services import provision_gate, trial_cap
+from core.services import container_rpc, provision_gate, trial_cap
+from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision
 from core.services.stripe_webhook_handlers import conversion_guard_active
 from routers.container import _owner_role
@@ -36,30 +37,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _call_gateway_rpc(
-    ip: str,
-    owner_id: str,
-    token: str,
-    method: str,
-    params: dict | None = None,
-) -> dict:
-    """Short-lived signed RPC to the owner's gateway container.
-
-    Thin wrapper over the shared `gateway_rpc_oneshot` helper, keeping
-    recovery's tight timeouts: a wedged gateway should fail fast so the
-    recovery flow escalates to restart / reprovision rather than hanging the
-    request.
-    """
-    return await gateway_rpc_oneshot(
-        ip,
-        owner_id=owner_id,
-        token=token,
-        method=method,
-        params=params,
-        open_timeout=5,
-        recv_timeout=5,
-        rpc_timeout=10,
-    )
+async def _call_gateway_rpc(owner_id: str, method: str, params: dict | None = None) -> dict:
+    """Recovery keeps a tight budget: a wedged gateway must fail fast so the flow escalates."""
+    return await container_rpc.call(owner_id, method, params, timeout_s=10.0)
 
 
 @router.post(
@@ -172,7 +152,6 @@ async def container_recover(
         }
 
     # 3. Container is running -> check gateway health
-    token = container.get("gateway_token", "")
     if not ip:
         # Same trial predicate the stopped/error wake enforces above: this
         # branch reprovisions too (a force=True start), and the meter
@@ -204,7 +183,7 @@ async def container_recover(
 
     # Try gateway health check
     try:
-        health = await _call_gateway_rpc(ip, owner_id, token, "health")
+        health = await _call_gateway_rpc(owner_id, "health")
         if health.get("ok"):
             return {
                 "action": "none",
@@ -217,7 +196,7 @@ async def container_recover(
     # 4. Gateway is down -> try restart via update.run RPC
     logger.info("Recovering owner %s: gateway restart", owner_id)
     try:
-        await _call_gateway_rpc(ip, owner_id, token, "update.run")
+        await _call_gateway_rpc(owner_id, "update.run")
         return {
             "action": "gateway_restart",
             "state": "GATEWAY_DOWN_DEAD",
@@ -263,26 +242,17 @@ async def gateway_restart(
         raise HTTPException(status_code=502, detail="Container gateway is starting up")
 
     try:
-        # config.apply is an operator.admin-reserved method, so this must use
-        # the signed one-shot (a token-only connect would have its scope
-        # stripped and the apply rejected). OpenClaw 9.3 requires the complete
-        # raw document; an inherited empty params object is schema-invalid.
+        # OpenClaw 9.3 requires the complete raw document; an inherited empty
+        # params object is schema-invalid.
         config = await read_openclaw_config_from_efs(owner_id)
         if not isinstance(config, dict):
             raise RuntimeError("OpenClaw config is unavailable")
-        await gateway_rpc_oneshot(
-            ip,
-            owner_id=owner_id,
-            token=container["gateway_token"],
-            method="config.apply",
-            params={"raw": json.dumps(config, separators=(",", ":"))},
-            open_timeout=30,
-            recv_timeout=10,
-            rpc_timeout=30,
+        await container_rpc.call(
+            owner_id, "config.apply", {"raw": json.dumps(config, separators=(",", ":"))}, timeout_s=30.0
         )
-    except ConnectionRefusedError:
+    except (ApiProblem, ConnectionRefusedError):
         raise HTTPException(status_code=502, detail="Gateway is not responding")
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         raise HTTPException(status_code=502, detail="Gateway restart timed out")
     except Exception as e:
         logger.error("Gateway restart failed for user %s: %s", owner_id, e)

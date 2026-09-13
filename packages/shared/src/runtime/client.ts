@@ -1,11 +1,6 @@
 import type { ApiMethods } from "../api/client";
 import { ApiError } from "../api/error";
-import type {
-  RuntimeApprovalResolveRequest,
-  RuntimeOperation,
-  RuntimeQuestionResolveRequest,
-  RuntimeRpcOutcome,
-} from "./types";
+import type { RuntimeOperation, RuntimeRpcOutcome } from "./types";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -73,8 +68,6 @@ async function translate<T>(request: Promise<unknown>): Promise<T> {
 export interface RuntimeClient {
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<RuntimeRpcOutcome<T>>;
   getOperation(operationId: string): Promise<RuntimeOperation>;
-  resolveApproval(approvalId: string, request: RuntimeApprovalResolveRequest): Promise<void>;
-  resolveQuestion(questionId: string, request: RuntimeQuestionResolveRequest): Promise<void>;
 }
 
 export function createRuntimeClient(api: ApiMethods, uuid: () => string): RuntimeClient {
@@ -96,11 +89,5 @@ export function createRuntimeClient(api: ApiMethods, uuid: () => string): Runtim
     getOperation: (operationId) => translate<RuntimeOperation>(
       api.get(`/runtime/operations/${encodeURIComponent(operationId)}`),
     ),
-    async resolveApproval(approvalId, request) {
-      await translate(api.post(`/runtime/approvals/${encodeURIComponent(approvalId)}/resolve`, request));
-    },
-    async resolveQuestion(questionId, request) {
-      await translate(api.post(`/runtime/questions/${encodeURIComponent(questionId)}/resolve`, request));
-    },
   };
 }

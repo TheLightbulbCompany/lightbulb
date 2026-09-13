@@ -292,7 +292,10 @@ async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gatewa
         patch.object(messaging_repo.settings, "WS_ENFORCE_INTERNAL_SECRET", False),
         patch("routers.websocket_chat.get_connection_service", return_value=transport[1]),
         patch("core.services.local_session_relay.get_local_session_relay", return_value=relay(transport)),
-        patch("routers.websocket_chat.get_gateway_pool", side_effect=AssertionError("gateway must not open")),
+        patch(
+            "routers.websocket_chat.chat_gate.gate_chat",
+            side_effect=AssertionError("gateway must not open"),
+        ),
         patch("routers.websocket_chat._kick_off_node_connect", side_effect=AssertionError("node must not open")),
         patch(
             "routers.websocket_chat._kick_off_operator_connect", side_effect=AssertionError("operator must not open")

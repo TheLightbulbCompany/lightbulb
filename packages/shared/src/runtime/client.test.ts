@@ -57,14 +57,6 @@ describe("runtime HTTP client", () => {
     expect(JSON.stringify(error)).not.toContain("Bearer");
   });
 
-  it("uses dedicated approval and question resolution endpoints", async () => {
-    const { client, methods } = setup(null);
-    await client.resolveApproval("approval-1", { decision: "allow-once", kind: "exec" });
-    await client.resolveQuestion("question-1", { answers: { answers: { choice: ["yes"] } } });
-    expect(methods.post).toHaveBeenNthCalledWith(1, "/runtime/approvals/approval-1/resolve", { decision: "allow-once", kind: "exec" });
-    expect(methods.post).toHaveBeenNthCalledWith(2, "/runtime/questions/question-1/resolve", { answers: { answers: { choice: ["yes"] } } });
-  });
-
   it("rejects malformed success bodies instead of leaking server payloads", async () => {
     const { client } = setup({ ok: true });
     const error = await client.rpc("health").catch((value) => value);

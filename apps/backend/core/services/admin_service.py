@@ -23,14 +23,13 @@ _with_timeout. Slow Stripe doesn't starve other panels.
 import asyncio
 import json
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from core import openclaw_version
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
-from core.services import clerk_admin, cloudwatch_logs, cloudwatch_url, posthog_admin
+from core.services import clerk_admin, cloudwatch_logs, cloudwatch_url, container_rpc, posthog_admin
 from core.services.admin_redact import redact_openclaw_config
 from core.services.provision_dispatch import describe_dispatch_execution
 from core.services.provision_gate import Gate, probe_provision_gate
@@ -469,12 +468,6 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     if not container or not ip:
         return {"agents": [], "cursor": None, "container_status": "unreachable", "org": org_context}
 
-    pool = get_gateway_pool()
-    # uuid4 entropy in req_id: after switching to owner_id, all members of an
-    # org share a single gateway connection whose pending-RPC dict is keyed by
-    # req_id. A deterministic id would let concurrent admin requests overwrite
-    # each other's futures (intermittent timeouts / mismatched responses).
-    nonce = uuid.uuid4().hex[:8]
     # OpenClaw's agents.list schema rejects unknown keys (INVALID_REQUEST on
     # cursor/limit). Match the main-app call site (useAgents.ts →
     # useGatewayRpc("agents.list")) which passes no params and receives the
@@ -483,14 +476,7 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     _ = (cursor, limit)
     try:
         result = await asyncio.wait_for(
-            pool.send_rpc(
-                user_id=owner_id,
-                req_id=f"admin-agents-list-{owner_id}-{nonce}",
-                method="agents.list",
-                params={},
-                ip=ip,
-                token=container["gateway_token"],
-            ),
+            container_rpc.call(owner_id, "agents.list", {}),
             timeout=_GATEWAY_RPC_TIMEOUT_S,  # read at call time so tests can monkeypatch
         )
     except asyncio.TimeoutError:
@@ -544,22 +530,8 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     if not container or not ip:
         return {"error": "container_unreachable", "org": org_context}
 
-    pool = get_gateway_pool()
-    token = container["gateway_token"]
-
-    async def _rpc(method: str, params: dict, suffix: str) -> Any:
-        # uuid4 entropy in req_id: same org → shared gateway connection whose
-        # pending-RPC dict is keyed by req_id. Deterministic ids collide on
-        # concurrent detail loads for the same agent (see list_user_agents).
-        nonce = uuid.uuid4().hex[:8]
-        return await pool.send_rpc(
-            user_id=owner_id,
-            req_id=f"admin-{suffix}-{agent_id}-{nonce}",
-            method=method,
-            params=params,
-            ip=ip,
-            token=token,
-        )
+    async def _rpc(method: str, params: dict) -> Any:
+        return await container_rpc.call(owner_id, method, params)
 
     # RPC method names + param shapes are anchored to the main-app call sites
     # so admin and main-app always speak the same wire contract to OpenClaw.
@@ -580,7 +552,7 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     try:
         identity, sessions_raw, skills, config = await asyncio.wait_for(
             asyncio.gather(
-                _rpc("agent.identity.get", {"agentId": agent_id}, "identity"),
+                _rpc("agent.identity.get", {"agentId": agent_id}),
                 _rpc(
                     "sessions.list",
                     {
@@ -590,10 +562,9 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
                         "includeDerivedTitles": True,
                         "includeLastMessage": True,
                     },
-                    "sessions",
                 ),
-                _rpc("skills.status", {"agentId": agent_id}, "skills"),
-                _rpc("config.get", {}, "config"),
+                _rpc("skills.status", {"agentId": agent_id}),
+                _rpc("config.get", {}),
             ),
             timeout=_GATEWAY_RPC_TIMEOUT_S,  # read at call time so tests can monkeypatch
         )

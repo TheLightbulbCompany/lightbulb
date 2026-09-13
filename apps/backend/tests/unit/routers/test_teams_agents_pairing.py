@@ -5,10 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# get_gateway_pool() lazily constructs a ManagementApiClient that
-# requires WS_MANAGEMENT_API_URL — set a bogus value so the singleton
-# can be built. The pool is never actually used because
-# pair_with_openclaw is monkeypatched in every test below.
+# Some imports transitively construct a ManagementApiClient, which requires
+# WS_MANAGEMENT_API_URL — set a bogus value so construction never raises.
+# pair_with_openclaw is monkeypatched in every test below regardless.
 os.environ.setdefault(
     "WS_MANAGEMENT_API_URL",
     "https://test.execute-api.us-east-1.amazonaws.com/test",
@@ -75,8 +74,6 @@ async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypa
     # Container key is owner_id (org_id for org members).
     assert kwargs["owner_id"] == "org_xyz"
     assert kwargs["paperclip_agent"]["id"] == pc_uuid
-    assert kwargs["ip"] == "10.0.0.5"
-    assert kwargs["token"] == "gw_token"
 
 
 @pytest.mark.asyncio

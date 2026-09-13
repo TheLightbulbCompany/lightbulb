@@ -1069,22 +1069,15 @@ class TestAgentClearSessions:
 
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"cleared": 7})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
-        ):
+        call = AsyncMock(return_value={"cleared": 7})
+        with patch("routers.admin.container_rpc.call", call):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")
         assert res.status_code == 200
-        pool.send_rpc.assert_awaited_once()
-        kwargs = pool.send_rpc.await_args.kwargs
-        assert kwargs.get("method") == "sessions.clear"
-        assert kwargs.get("user_id") == "u_target"
-        params = kwargs.get("params") or {}
-        assert params.get("agent_id") == "agent_42"
+        call.assert_awaited_once()
+        args = call.await_args.args
+        assert args[0] == "u_target"
+        assert args[1] == "sessions.clear"
+        assert args[2].get("agent_id") == "agent_42"
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
@@ -1093,14 +1086,8 @@ class TestAgentClearSessions:
 
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"cleared": 7})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
-        ):
+        call = AsyncMock(return_value={"cleared": 7})
+        with patch("routers.admin.container_rpc.call", call):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")
         assert res.status_code == 200
         kwargs = mock_audit_repo.await_args.kwargs

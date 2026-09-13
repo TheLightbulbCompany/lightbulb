@@ -51,12 +51,7 @@ LIVE_EVENT_TYPES = frozenset(
         "room.subscription.rotated",
         "room.typing.changed",
         "paperclip.event",
-        "runtime.approval.requested",
-        "runtime.approval.resolved",
         "runtime.operation.changed",
-        "runtime.progress.changed",
-        "runtime.question.requested",
-        "runtime.question.resolved",
         "runtime.resource.invalidated",
     }
 )

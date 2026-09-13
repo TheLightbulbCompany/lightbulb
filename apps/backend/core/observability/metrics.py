@@ -157,5 +157,5 @@ def timing(name: str, dimensions: dict[str, str] | None = None) -> Iterator[None
 
 
 def gauge(name: str, value: float, dimensions: dict[str, str] | None = None) -> None:
-    """Emit a point-in-time gauge value (e.g., connection pool size)."""
+    """Emit a point-in-time gauge value (e.g., running-container count)."""
     put_metric(name, value=value, unit="Count", dimensions=dimensions)

@@ -10,7 +10,7 @@ This module also owns the pure billing-state predicates that
 ``is_subscription_active``, ``is_paid_subscription``, ``is_trial_blocked``,
 and ``has_always_on_entitlement``. They live here so every site that asks
 "is this billing account currently usable?" (or "is it paid?") hits
-the same code path — see the call sites in ``core.gateway.connection_pool``,
+the same code path — see the call sites in ``core.services.chat_gate``,
 ``routers.config``, ``routers.hooks_proxy``, and ``routers.billing``.
 """
 

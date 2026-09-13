@@ -239,8 +239,6 @@ async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
     kwargs = catalog.deploy_from_artifact.await_args.kwargs
     assert kwargs["new_agent_id"] == _AGENT_ID
     assert kwargs["owner_id"] == "user_x"
-    assert kwargs["container_ip"] == "10.0.0.5"
-    assert kwargs["container_token"] == "gwt"
     assert kwargs["tar_bytes"] == b"tar"
     assert kwargs["listing_id"] == _PUBLISHED["listing_id"]
     assert kwargs["seller_id"] == _PUBLISHED["seller_id"]
@@ -1107,7 +1105,6 @@ async def test_a_failed_sidecar_unlink_keeps_the_paperclip_row(delete_pc, monkey
         workspace=workspace,
         apply_deploy_aux_mutations=AsyncMock(return_value=None),
         pair_fn=AsyncMock(return_value=None),
-        gateway_pool_factory=MagicMock(),
     )
     monkeypatch.setattr("core.services.catalog_service.get_catalog_service", lambda: catalog)
     monkeypatch.setattr(

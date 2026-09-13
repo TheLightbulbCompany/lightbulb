@@ -5,13 +5,11 @@
  * and platform-parameterized data hooks.
  *
  * This barrel is the package's public surface: every line here is imported by
- * `apps/frontend`, `apps/mobile` or both — with two deliberate exceptions that
- * have no consumer yet and must NOT be pruned: everything originating in
+ * `apps/frontend`, `apps/mobile` or both — with one deliberate exception that
+ * has no consumer yet and must NOT be pruned: everything originating in
  * `messaging/{useRooms,timeline,mentions}.ts`, held for the mobile port onto the
- * shared room machine, and the approvals/questions rail (`Question*`, the
- * runtime approval/question resolve requests), kept pending the owner's call on
- * a renderer. Internals stay internal — import them relatively from inside the
- * package instead of re-exporting them here.
+ * shared room machine. Internals stay internal — import them relatively from
+ * inside the package instead of re-exporting them here.
  */
 export type { PlatformAdapter } from "./adapter";
 
@@ -51,18 +49,7 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 
 export { accumulateStreamText } from "./live/streamText";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type {
-  ChatIncomingMessage,
-  LiveEvent,
-  LiveEventOf,
-  Question,
-  QuestionAnswers,
-  QuestionOption,
-  QuestionRecord,
-  QuestionResolvedEvent,
-  QuestionSecretStoreBinding,
-  QuestionStatus,
-} from "./live/types";
+export type { ChatIncomingMessage, LiveEvent, LiveEventOf } from "./live/types";
 export { createMessagingClient } from "./messaging/client";
 export {
   GROUP_WINDOW_MS,
@@ -152,11 +139,6 @@ export type {
 } from "./messaging/types";
 export { MESSAGE_ATTACHMENT_MAX_BYTES } from "./messaging/types";
 export { createRuntimeClient, RuntimeRpcError } from "./runtime/client";
-export type {
-  RuntimeApprovalDecision,
-  RuntimeApprovalResolveRequest,
-  RuntimeQuestionResolveRequest,
-} from "./runtime/types";
 
 export {
   isTextBlock,

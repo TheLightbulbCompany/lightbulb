@@ -10,13 +10,8 @@ ROW = {"owner_id": "user_1", "status": "running", "last_interactive_at": 0}
 
 
 def _patches(*, has_open_runs: bool):
-    pool = MagicMock()
-    pool.has_active_runs.return_value = False
-    pool.is_parked.return_value = False
-    pool.close_idle_user = AsyncMock(return_value=True)
     connections = MagicMock()
     connections.has_live_operator_connection = AsyncMock(return_value=False)
-    connections.get_live_gateway_conn_token = AsyncMock(return_value=None)
     ecs = MagicMock()
     ecs.stop_user_service = AsyncMock()
     return ecs, [
@@ -31,7 +26,6 @@ def _patches(*, has_open_runs: bool):
         ),
         patch.object(durable_activity.messaging_repo, "has_open_runs", AsyncMock(return_value=has_open_runs)),
         patch.object(durable_activity, "ConnectionService", MagicMock(return_value=connections)),
-        patch.object(durable_activity, "get_gateway_pool", MagicMock(return_value=pool)),
         patch.object(durable_activity, "get_ecs_manager", MagicMock(return_value=ecs)),
         patch.object(durable_activity, "put_metric", MagicMock()),
     ]
@@ -48,4 +42,7 @@ async def test_an_open_ledger_run_vetoes_the_idle_stop(has_open_runs, stopped):
     finally:
         for p in patches:
             p.stop()
-    assert ecs.stop_user_service.await_count == (1 if stopped else 0)
+    if stopped:
+        ecs.stop_user_service.assert_awaited_once_with("user_1", reason="trial_idle")
+    else:
+        ecs.stop_user_service.assert_not_awaited()

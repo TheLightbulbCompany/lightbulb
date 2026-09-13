@@ -21,8 +21,9 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
+    OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
 
-Only ``WORK#``, ``LIVE#`` and ``RUN#`` rows carry ``expiresAt`` (7 days). Every read
+``WORK#``, ``LIVE#``, ``RUN#`` and ``USAGE#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
 (``by-member``) and ``list_overdue_runs`` (``by-run-deadline``) and nowhere else.
 """
@@ -1587,6 +1588,22 @@ async def create_run(
 
 async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
+
+
+def usage_sk(run_id: str) -> str:
+    return f"USAGE#{run_id}"
+
+
+async def claim_usage_receipt(owner_id: str, run_id: str) -> bool:
+    """First writer wins: the usage callback is at-least-once, the counters are not idempotent."""
+    item = {"pk": owner_pk(owner_id), "sk": usage_sk(run_id), "expiresAt": _expires_at()}
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 async def has_open_runs(owner_id: str) -> bool:

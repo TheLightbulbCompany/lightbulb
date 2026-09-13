@@ -1,8 +1,9 @@
 """One server-side PostHog event per completed agent run: ``agent_run_completed``.
 
-Emitted from the gateway pool's agent-event lifecycle terminal branch
-(``GatewayConnection._emit_run_completed``) — the one signal billing already
-trusts for EVERY session type (webchat, channel, cron, Paperclip issue). It
+Emitted from the run-completion callers (the room chat path's
+``handle_run_event``, the operator relay tap, and the usage callback for
+non-room runs) — the one signal billing already trusts for EVERY session
+type (webchat, channel, cron, Paperclip issue). It
 carries the owner, initiation type (autonomous vs human), trigger provider and
 outcome, powering the activation gate, the North Star (successful autonomous
 runs / active owner / week) and retention cohorts.
@@ -64,9 +65,9 @@ _ROUTINE_RUN_SOURCES = frozenset({"schedule", "webhook", "manual", "api"})
 _ENRICH_TIMEOUT_S = 5.0
 
 # Bounded FIFO set of already-emitted owner:runId pairs (same idiom as
-# GatewayConnection._side_run_ids / product_analytics._daily_dedup_seen).
-# Owner-scoped because runId is supplied by the owner's own container — one
-# owner's colliding id must not suppress another owner's event.
+# product_analytics._daily_dedup_seen). Owner-scoped because runId is
+# supplied by the owner's own container — one owner's colliding id must not
+# suppress another owner's event.
 _SEEN_RUN_IDS_CAP = 4096
 _seen_run_ids: dict[str, None] = {}
 
@@ -117,26 +118,16 @@ def _coarse_source(source: str) -> str:
     return "unknown"
 
 
-def schedule_run_completed(
-    *, owner_id: str, parsed: dict, payload: dict, phase: str, emit_metric: bool = True
-) -> asyncio.Task | None:
+def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase: str) -> asyncio.Task | None:
     """Emit a run-completion terminal to CloudWatch and PostHog (both gated).
 
     ``parsed`` is the ``_parse_session_key`` dict for the event's sessionKey;
     ``phase`` is ``"end"`` or ``"error"``. Deduped on ``owner:run_id`` so a run
     seen by both the chat reader loop and the operator relay tap emits once.
-    Fires the ``run.completed`` CloudWatch metric (unless ``emit_metric`` is
-    False); returns the PostHog enrichment+capture task (for the caller's drain
-    set), or None when the run was already emitted or the PostHog write key is
-    unset. Synchronous and I/O-free — safe on the reader loop.
-
-    ``emit_metric=False`` exists for the one caller that RE-observes runs after
-    the fact (``cron_run_telemetry.sweep_cron_runs``). The PostHog event is
-    idempotent across processes via the deterministic capture uuid below; the
-    CloudWatch metric has no durable dedup, and two backend tasks run the
-    sweeping worker during every rolling deploy. So the metric keeps its
-    "observed live" meaning and PostHog carries the complete count — an
-    under-counted metric beats a double-counted one.
+    Fires the ``run.completed`` CloudWatch metric; returns the PostHog
+    enrichment+capture task (for the caller's drain set), or None when the run
+    was already emitted or the PostHog write key is unset. Synchronous and
+    I/O-free — safe on the reader loop.
     """
     run_id = payload.get("runId")
     # Dedup ONCE — this gates BOTH the CloudWatch metric and the PostHog event,
@@ -164,8 +155,7 @@ def schedule_run_completed(
     # ``source`` is intentionally coarse — webchat / channel / cron / paperclip;
     # the fine-grained routine-vs-issue split needs the async Paperclip join and
     # stays in PostHog. For storm detection, paperclip+failure is the signal.
-    if emit_metric:
-        put_metric("run.completed", dimensions={"outcome": outcome, "source": _coarse_source(parsed.get("source", ""))})
+    put_metric("run.completed", dimensions={"outcome": outcome, "source": _coarse_source(parsed.get("source", ""))})
 
     # PostHog product event — fine-grained, gated on the analytics write key.
     if not settings.POSTHOG_PROJECT_WRITE_KEY:
@@ -186,9 +176,13 @@ def schedule_run_completed(
         "is_nightly_ceo": False,
         "enrichment_failed": False,
     }
-    started, ended = data.get("startedAt"), data.get("endedAt")
-    if isinstance(started, (int, float)) and isinstance(ended, (int, float)):
-        props["duration_ms"] = int(ended - started)
+    duration_ms = data.get("durationMs")
+    if isinstance(duration_ms, int) and not isinstance(duration_ms, bool) and duration_ms >= 0:
+        props["duration_ms"] = duration_ms
+    else:
+        started, ended = data.get("startedAt"), data.get("endedAt")
+        if isinstance(started, (int, float)) and isinstance(ended, (int, float)):
+            props["duration_ms"] = int(ended - started)
 
     source = parsed.get("source", "")
     issue_id = parsed.get("issue_id")

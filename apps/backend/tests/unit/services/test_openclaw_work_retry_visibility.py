@@ -24,8 +24,6 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     event = "22222222-2222-4222-8222-222222222222"
     meta = {"ownerId": "owner_test", "roomId": room, "workspaceId": WS, "deliveryKey": KEY}
     member = {"id": "friday"}
-    pool = Mock(ensure_connection=AsyncMock())
-    monkeypatch.setattr(work, "get_gateway_pool", lambda: pool)
     manager = Mock(resolve_running_container=AsyncMock(return_value=({"gateway_token": "dummy"}, "127.0.0.1")))
     monkeypatch.setattr(work, "get_ecs_manager", lambda: manager)
     monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
@@ -122,10 +120,6 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     hold the FIFO group for 300s — the plugin dedupes by eventId, so retry soon."""
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
 
-    class FakePool:
-        async def ensure_connection(self, *_args):
-            return None
-
     class FakeManager:
         async def resolve_running_container(self, _owner):
             return {"gateway_token": "gw"}, "10.0.0.9"
@@ -134,7 +128,6 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
         raise httpx.ReadTimeout("read timed out")
 
     monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
-    monkeypatch.setattr("core.services.openclaw_work.get_gateway_pool", lambda: FakePool())
     monkeypatch.setattr(worker, "_post", fake_post)
 
     async def fake_list_members(_room_id):
@@ -180,10 +173,6 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     ended = []
     metrics = []
 
-    class FakePool:
-        async def ensure_connection(self, *_args):
-            return None
-
     class FakeManager:
         async def resolve_running_container(self, _owner):
             return {"gateway_token": "gw"}, "10.0.0.9"
@@ -211,7 +200,6 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
         return {"runId": run_id}
 
     monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
-    monkeypatch.setattr("core.services.openclaw_work.get_gateway_pool", lambda: FakePool())
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.list_members", fake_list_members)
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
     monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)

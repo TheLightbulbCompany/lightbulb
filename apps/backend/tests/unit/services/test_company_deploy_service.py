@@ -161,7 +161,6 @@ def _install(monkeypatch, h: Harness, plan=None):
 
     # Container reachability.
     monkeypatch.setattr(svc, "get_ecs_manager", lambda: FakeEcs(h.container, h.ip))
-    monkeypatch.setattr(svc, "get_gateway_pool", lambda: object())
     monkeypatch.setattr(svc, "get_workspace", lambda: object())
 
     # Company resolution.
@@ -183,7 +182,7 @@ def _install(monkeypatch, h: Harness, plan=None):
     )
 
     # Pairing + materialize.
-    async def fake_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def fake_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
         h.pair_calls.append(paperclip_agent["id"])
 
     async def fake_ensure(*, owner_id, paperclip_agent, gateway_token, ip):
@@ -502,7 +501,7 @@ async def test_run_company_deploy_never_raises_and_rolls_back(monkeypatch):
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
         raise RuntimeError("pair exploded")
 
     monkeypatch.setattr(svc, "pair_with_openclaw", boom)
@@ -531,7 +530,7 @@ async def test_run_company_deploy_timeout_keeps_both_sides_of_the_install(monkey
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
         raise TimeoutError()
 
     monkeypatch.setattr(svc, "pair_with_openclaw", boom)
@@ -566,12 +565,10 @@ async def test_timeout_on_the_last_agent_still_unwinds_the_earlier_ones(monkeypa
 
     real_pair = svc.pair_with_openclaw
 
-    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
         if paperclip_agent["id"] == "pc_10":
             raise TimeoutError()
-        return await real_pair(
-            owner_id=owner_id, paperclip_agent=paperclip_agent, gateway_pool=gateway_pool, ip=ip, token=token
-        )
+        return await real_pair(owner_id=owner_id, paperclip_agent=paperclip_agent)
 
     monkeypatch.setattr(svc, "pair_with_openclaw", boom)
 
@@ -598,7 +595,7 @@ async def test_rollback_keeps_the_row_when_the_unwind_itself_raises(monkeypatch)
     h.unwind_raises = RuntimeError("efs stalled")
     _install(monkeypatch, h, plan=plan)
 
-    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
         raise RuntimeError("pair blew up")
 
     monkeypatch.setattr(svc, "pair_with_openclaw", boom)
@@ -789,7 +786,7 @@ async def test_claim_released_with_the_failure_as_cause(monkeypatch):
     _install(monkeypatch, h, plan=_simple_plan())
     boom = RuntimeError("pair failed")
 
-    async def fail_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def fail_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
         raise boom
 
     monkeypatch.setattr(svc, "pair_with_openclaw", fail_pair)
@@ -853,7 +850,7 @@ async def test_failure_does_not_burn_the_company_slot(monkeypatch):
     h = Harness()
     _install(monkeypatch, h, plan=_simple_plan())
 
-    async def fail_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def fail_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
         raise RuntimeError("pair failed")
 
     monkeypatch.setattr(svc, "pair_with_openclaw", fail_pair)

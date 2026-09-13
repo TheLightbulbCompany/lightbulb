@@ -181,11 +181,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "bootstrap.state": [["status"]],
   "channel.configure": [["provider", "status"]],
   "channel.rpc": [["provider", "status"]],
-  // `source` (webchat | room | other) added by the 2026-09-12 gateway task.
-  "chat.e2e.latency": [["source"]],
-  "chat.error": [["reason", "reclassified", "source"]],
-  "chat.message.count": [["source"]],
-  "chat.session_usage.fetch.error": [[]],
   "company_stripe.account.created": [[]],
   "container.efs.access_point": [["op", "status"]],
   "container.error_state": [[]],
@@ -195,11 +190,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "debug.endpoint.prod_hit": [["endpoint"]],
   "gateway.cold_start.count": [["outcome"]],
   "gateway.cold_start.latency": [[]],
-  "gateway.connection": [["event"], ["active_runs", "event"], ["error_class", "event"]],
-  "gateway.connection.open": [[]],
-  "gateway.frontend.prune": [[]],
-  "gateway.health_check.timeout": [[]],
-  "gateway.rpc.error": [["method"]],
   "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
@@ -209,6 +199,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.dispatch.targets": [["count_bucket", "room_kind", "source"]],
   "messaging.mention.unresolved": [["reason"]],
   "messaging.reply.latency": [["event_kind", "matched", "room_kind"]],
+  // core/services/container_rpc.py — one HTTP RPC per call to the container
+  // plugin. "method" is not a rollup dimension, so it only publishes with the
+  // full set or the outcome-only rollup, never alone.
+  "messaging.rpc": [["outcome", "method"], ["outcome"]],
   // core/services/openclaw_work.py — the work-queue worker.
   "messaging.worker.alive": [[]],
   "messaging.work.queue_wait": [["kind"]],
@@ -287,7 +281,7 @@ type MetricBinding = {
  * Every Isol8-namespace metric an alarm binds, from BOTH shapes CloudFormation
  * renders: a plain metric alarm (Namespace/MetricName/Dimensions at the top
  * level) and a metric-math alarm (nested under Metrics[].MetricStat.Metric —
- * where W1 and W10 live). Search-expression alarms carry no MetricStat and are
+ * where W1 lives). Search-expression alarms carry no MetricStat and are
  * skipped: they match on dimension VALUES, so there is no set to check.
  */
 function isol8MetricBindings(template: Template): MetricBinding[] {
@@ -334,8 +328,10 @@ describe("ObservabilityStack", () => {
   test("creates at least 65 CloudWatch alarms", () => {
     const alarms = template.findResources("AWS::CloudWatch::Alarm");
     const count = Object.keys(alarms).length;
-    // 82 alarms: 11 page + 28 warn custom + 3 x 7 per-table DDB
-    // + remaining AWS-native + 2 cost
+    // 76 alarms: 11 page + 22 warn custom (28 minus the 7 gateway-pool-era ids
+    // deleted in Task 10, plus W77-messaging-rpc-errors added in the
+    // whole-branch review fix round) + 3 x 7 per-table DDB + remaining
+    // AWS-native + 2 cost
     expect(count).toBeGreaterThanOrEqual(65);
   });
 
@@ -649,50 +645,20 @@ describe("ObservabilityStack", () => {
     ).toHaveLength(1);
   });
 
-  // Two of the three alarms issue #1486 found dead. They are correct BECAUSE
-  // put_metric emits the [env, service] rollup — pin the binding so a future
-  // "let me add a dimension to this alarm" quietly kills them again.
-  //
-  // W10 (chat.error) left this set: it now scopes to source=webchat, which is
-  // a published per-dimension rollup, and is covered by the source assertions
-  // below instead.
-  test("W2/W8 watch the env+service rollup, with no extra dimensions", () => {
-    const rollupOnly = isol8MetricBindings(template).filter((b) =>
-      ["container.lifecycle.latency", "gateway.rpc.error"].includes(
-        b.metricName,
-      ),
+  // Of the three alarms issue #1486 found dead, only W2
+  // (container.lifecycle.latency) remains bound to this env+service-only
+  // rollup — pin the binding so a future "let me add a dimension to this
+  // alarm" quietly kills it again. W8 (gateway.rpc.error) and W10
+  // (chat.error) are both gone: W10 left this set when it was rescoped to
+  // source=webchat, and both W8 and W10 were then deleted outright with the
+  // gateway connection pool (Task 10, stateless-backend).
+  test("W2 watches the env+service rollup, with no extra dimensions", () => {
+    const rollupOnly = isol8MetricBindings(template).filter(
+      (b) => b.metricName === "container.lifecycle.latency",
     );
-    expect(rollupOnly.map((b) => b.metricName).sort()).toEqual([
-      "container.lifecycle.latency",
-      "gateway.rpc.error",
-    ]);
+    expect(rollupOnly).toHaveLength(1);
     for (const b of rollupOnly) {
       expect(b.extraDims).toEqual([]);
-    }
-  });
-
-  // W9/W10 are the WEBCHAT SLOs — room traffic has its own latency page (P21),
-  // and folding the two together made the 20s/1% thresholds meaningless.
-  // BOTH of W10's legs must carry the dimension: scoping only the numerator or
-  // only the denominator yields a plausible-looking wrong ratio, which is
-  // worse than either whole number.
-  test("W9/W10 scope every chat.* leg to source=webchat", () => {
-    const chatBindings = isol8MetricBindings(template).filter(
-      (b) =>
-        b.alarm.includes("chat-e2e-latency") || b.alarm.includes("chat-error-rate"),
-    );
-    expect(chatBindings).toHaveLength(3); // W9 latency + W10 errors + W10 total
-    for (const b of chatBindings) {
-      expect(b.extraDims).toEqual(["source"]);
-    }
-    for (const alarmName of [
-      "lightbulb-dev-W9-chat-e2e-latency-p99",
-      "lightbulb-dev-W10-chat-error-rate",
-    ]) {
-      const alarm = Object.values(
-        template.findResources("AWS::CloudWatch::Alarm"),
-      ).find((r: any) => r.Properties.AlarmName === alarmName) as any;
-      expect(JSON.stringify(alarm)).toContain('"Value":"webchat"');
     }
   });
 

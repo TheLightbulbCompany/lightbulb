@@ -9,20 +9,19 @@ accept an Idempotency-Key header to short-circuit double clicks.
 
 Read endpoints delegate to admin_service (composition layer).
 Mutation endpoints call the underlying service (ecs_manager,
-billing_service, clerk_admin, gateway_pool, config_patcher) directly —
+billing_service, clerk_admin, container_rpc, config_patcher) directly —
 admin_service intentionally doesn't compose those because each is a
 distinct side-effect.
 """
 
 import logging
 import time
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, is_org_owner_id, require_platform_admin
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
 from core.repositories import (  # noqa: F401 — admin_actions_repo is patch target for tests
     admin_actions_repo,
     container_repo,
@@ -33,6 +32,7 @@ from core.services import (
     admin_service,
     billing_service,
     clerk_admin,
+    container_rpc,
     system_health,
 )
 from core.services.account_wipe import (
@@ -46,6 +46,7 @@ from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
+from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision
 from core.services.update_service import (
     TASKDEF_ROLL_CHANGE_KEYS,
@@ -729,39 +730,13 @@ async def admin_config_patch(
     return {"status": "patched"}
 
 
-async def _admin_agent_rpc(
-    *,
-    user_id: str,
-    agent_id: str,
-    method: str,
-    req_prefix: str,
-) -> dict:
-    """Send a gateway RPC for an admin-initiated per-agent action.
-
-    Container / gateway pool keyed on owner_id. For org members that's
-    the org_id — resolve before the ECS / gateway dispatch so we don't
-    send the RPC to a non-existent personal-mode container.
-
-    uuid4 entropy: org members share a single gateway connection whose
-    pending-RPC dict is keyed by req_id. Deterministic ids (e.g.
-    ``admin-agent-delete-{agent_id}``) collide when two admins click on
-    the same shared agent concurrently.
-    """
+async def _admin_agent_rpc(*, user_id: str, agent_id: str, method: str) -> dict:
+    """One gateway RPC for an admin-initiated per-agent action, keyed on the owner."""
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    pool = get_gateway_pool()
-    ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(owner_id)
-    if not container or not ip:
-        raise HTTPException(status_code=409, detail="container_not_running")
-    nonce = uuid.uuid4().hex[:8]
-    return await pool.send_rpc(
-        user_id=owner_id,
-        req_id=f"{req_prefix}{agent_id}-{nonce}",
-        method=method,
-        params={"agent_id": agent_id},
-        ip=ip,
-        token=container["gateway_token"],
-    )
+    try:
+        return await container_rpc.call(owner_id, method, {"agent_id": agent_id}, wake=False)
+    except ApiProblem as exc:
+        raise HTTPException(status_code=409, detail="container_not_running") from exc
 
 
 @router.post(
@@ -795,12 +770,7 @@ async def admin_agent_clear_sessions(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    return await _admin_agent_rpc(
-        user_id=user_id,
-        agent_id=agent_id,
-        method="sessions.clear",
-        req_prefix="admin-agent-clear-",
-    )
+    return await _admin_agent_rpc(user_id=user_id, agent_id=agent_id, method="sessions.clear")
 
 
 # ---------------------------------------------------------------------------

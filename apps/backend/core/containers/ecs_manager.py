@@ -58,12 +58,12 @@ PER_USER_MEMORY_MIB = "4096"
 # Per-user containers launch on Fargate Spot (~70% cheaper than on-demand).
 # Interruption is survivable by design: SINGLE_WRITER_DEPLOYMENT_CONFIG means
 # the replacement task only starts after the reclaimed one fully stops (no
-# EFS double-writer), EFS state persists, and the gateway pool reconnects on
-# the next status poll. When Spot capacity is unavailable ECS places nothing
-# and reports no failure, so two fallbacks cover it: create_service retries
-# with on-demand if the cluster rejects the strategy, and
-# _await_running_transition flips a service with zero placed tasks to
-# on-demand after SPOT_PLACEMENT_FALLBACK_S.
+# EFS double-writer), EFS state persists, and readiness probes the new task's
+# health through container_rpc on the next status poll. When Spot capacity is
+# unavailable ECS places nothing and reports no failure, so two fallbacks
+# cover it: create_service retries with on-demand if the cluster rejects the
+# strategy, and _await_running_transition flips a service with zero placed
+# tasks to on-demand after SPOT_PLACEMENT_FALLBACK_S.
 SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
 ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
 SPOT_PLACEMENT_FALLBACK_S = 300.0

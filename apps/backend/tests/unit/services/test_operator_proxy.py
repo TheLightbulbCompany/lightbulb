@@ -213,8 +213,6 @@ async def test_not_paired_rejection_triggers_self_heal_approval(mock_ecs, mock_u
     heal.assert_awaited_once()
     kwargs = heal.await_args.kwargs
     assert kwargs["owner_id"] == "owner_x"
-    assert kwargs["ip"] == "10.0.1.7"  # from mock_ecs.resolve_running_container
-    assert kwargs["gateway_token"] == "tok123"  # from mock_ecs's container row
     assert kwargs["device_id"] == "dev_stranded"
     assert kwargs["request_id"] == "req-99"
     # The original failure still propagates and the upstream is still rolled

@@ -48,16 +48,13 @@ def _make_service(call_order: list[str] | None = None):
 
     workspace.read_cron_jobs = MagicMock(return_value=[])
     workspace.cleanup_agent_dirs = MagicMock(return_value=None)
-    gateway_pool = MagicMock()
-    gateway_pool_factory = MagicMock(return_value=gateway_pool)
 
     svc = CatalogService(
         workspace=workspace,
         apply_deploy_aux_mutations=apply_aux,
         pair_fn=pair_fn,
-        gateway_pool_factory=gateway_pool_factory,
     )
-    return svc, workspace, apply_aux, pair_fn, gateway_pool
+    return svc, workspace, apply_aux, pair_fn, None
 
 
 def _slice_with_agent(**overrides):
@@ -109,8 +106,6 @@ async def test_deploy_calls_pair_before_aux_merge():
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -134,8 +129,6 @@ async def test_deploy_pairs_with_the_deployed_agent_id_and_owner():
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -157,7 +150,7 @@ async def test_deploy_pair_extras_limited_to_agents_update_schema():
     nested ``identity`` block) — everything else rides on the file-merge
     path (the ``agent_entry`` arg to ``apply_deploy_aux_mutations``).
     """
-    svc, _ws, _aux, pair_fn, gateway_pool = _make_service()
+    svc, _ws, _aux, pair_fn, _gw = _make_service()
 
     slice_ = _slice_with_agent()
     # Seller stored these fields on their agent — they MUST NOT leak
@@ -172,17 +165,12 @@ async def test_deploy_pair_extras_limited_to_agents_update_schema():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.5",
-        container_token="tok-xyz",
         new_agent_id="paperclip-uuid-7777",
     )
 
     pair_fn.assert_awaited_once()
     kw = pair_fn.await_args.kwargs
     assert kw["owner_id"] == "user_buyer"
-    assert kw["ip"] == "10.0.0.5"
-    assert kw["token"] == "tok-xyz"
-    assert kw["gateway_pool"] is gateway_pool
     assert kw["paperclip_agent"] == {
         "id": "paperclip-uuid-7777",
         "name": "Demo",
@@ -225,8 +213,6 @@ async def test_deploy_file_merges_full_agent_entry_into_agents_list():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.5",
-        container_token="tok",
         new_agent_id="agent_new",
     )
 
@@ -266,8 +252,6 @@ async def test_deploy_falls_back_to_identity_name_for_display():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.5",
-        container_token="tok",
         new_agent_id="agent_xyz",
     )
 
@@ -295,8 +279,6 @@ async def test_deploy_backfills_entry_name_from_manifest():
         manifest={"name": "Lex the Legal Bot", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.5",
-        container_token="tok",
         new_agent_id="agent_xyz",
     )
 
@@ -320,8 +302,6 @@ async def test_deploy_returns_dropped_keys():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.5",
-        container_token="tok",
         new_agent_id="agent_new",
     )
     assert result["agent_entry_keys_dropped"] == ["archetype"]
@@ -334,8 +314,6 @@ async def test_deploy_returns_dropped_keys():
         manifest={"name": "Demo", "version": 1},
         slice_={"plugins": {}},
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.5",
-        container_token="tok",
         new_agent_id="agent_new2",
     )
     assert result_clean["agent_entry_keys_dropped"] == []
@@ -359,8 +337,6 @@ async def test_deploy_pair_failure_propagates_and_skips_aux():
             manifest={"name": "Demo", "version": 1},
             slice_=_slice_with_agent(),
             tar_bytes=b"<gz>",
-            container_ip="10.0.0.1",
-            container_token="tok",
             new_agent_id="agent_abc",
         )
 
@@ -386,8 +362,6 @@ async def test_deploy_aux_failure_leaves_workspace_intact_for_live_agent():
             manifest={"name": "Demo", "version": 1},
             slice_=_slice_with_agent(),
             tar_bytes=b"<gz>",
-            container_ip="10.0.0.1",
-            container_token="tok",
             new_agent_id="agent_abc",
         )
 
@@ -408,8 +382,6 @@ async def test_deploy_legacy_slice_with_no_agent_skips_pair_and_aux():
         manifest={"name": "Legacy", "version": 1},
         slice_={},
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_legacy",
     )
     assert result["config_registered"] is False
@@ -433,8 +405,6 @@ async def test_deploy_completion_marker_failure_propagates_for_caller_unwind():
             manifest={"name": "Demo", "version": 1},
             slice_=_slice_with_agent(),
             tar_bytes=b"<gz>",
-            container_ip="10.0.0.1",
-            container_token="tok",
             new_agent_id="agent_abc",
         )
 
@@ -465,8 +435,6 @@ async def _deploy_minimal(svc, tar_bytes: bytes) -> dict:
         manifest={"name": "Demo", "version": 1},
         slice_={},
         tar_bytes=tar_bytes,
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -550,8 +518,6 @@ async def test_deploy_pins_containment_on_agent_entry():
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_new",
     )
     entry = apply_aux.await_args.kwargs["agent_entry"]
@@ -577,8 +543,6 @@ async def test_deploy_containment_overrides_seller_authored_values():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_new",
     )
     entry = apply_aux.await_args.kwargs["agent_entry"]
@@ -612,8 +576,6 @@ async def test_deploy_uses_supplied_new_agent_id_in_sentinel_substitution():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_xyz",
     )
 
@@ -650,8 +612,6 @@ async def test_deploy_normalizes_legacy_workspaces_sentinel_form():
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_xyz",
     )
 
@@ -677,8 +637,6 @@ async def test_deploy_generates_uuid_when_new_agent_id_omitted():
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
     )
     assert result["agent_id"].startswith("agent_")
     assert len(result["agent_id"]) > len("agent_")
@@ -718,8 +676,6 @@ async def test_deploy_carries_cron_jobs_with_remapped_id_and_agent():
             manifest={"name": "Demo", "version": 1},
             slice_=slice_,
             tar_bytes=b"<gz>",
-            container_ip="10.0.0.1",
-            container_token="tok",
         )
     finally:
         cp.append_cron_jobs = original
@@ -784,8 +740,6 @@ async def test_crash_after_cron_append_retries_without_duplicate(monkeypatch):
             manifest={"name": "Demo", "version": 1},
             slice_=slice_,
             tar_bytes=b"<gz>",
-            container_ip="10.0.0.1",
-            container_token="tok",
             new_agent_id="agent_abc",
         )
 
@@ -795,8 +749,6 @@ async def test_crash_after_cron_append_retries_without_duplicate(monkeypatch):
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -814,8 +766,6 @@ async def test_deploy_sidecar_records_canonical_marketplace_identity():
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
         listing_id="listing_1",
         seller_id="seller_1",
@@ -846,8 +796,6 @@ async def test_deploy_does_not_emit_the_funnel_event_itself(monkeypatch):
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
         seller_id="seller_1",
     )
@@ -920,8 +868,6 @@ async def test_deploy_uses_owner_id_for_all_efs_writes():
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
     assert ws.extract_tarball_to_workspace.call_args.kwargs["user_id"] == "org_xyz"
@@ -1025,8 +971,6 @@ async def test_deploy_coerces_decimal_version_in_sidecar():
         manifest={"name": "Demo", "version": Decimal("1")},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_test",
     )
     ws.write_template_sidecar.assert_called_once()
@@ -1075,8 +1019,6 @@ async def test_deploy_reconciles_integration_servers(monkeypatch):
         manifest={"name": "Demo", "version": 1},
         slice_=slice_,
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -1104,8 +1046,6 @@ async def test_deploy_reconcile_failure_does_not_abort(monkeypatch):
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -1146,8 +1086,6 @@ async def test_deploy_enables_acp_when_required(monkeypatch):
         manifest={"name": "Demo", "version": 1, "requires_acp": True},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -1175,8 +1113,6 @@ async def test_deploy_skips_acp_when_provider_has_no_harness(monkeypatch):
         manifest={"name": "Demo", "version": 1, "requires_acp": True},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -1197,8 +1133,6 @@ async def test_deploy_no_acp_when_not_required(monkeypatch):
         manifest={"name": "Demo", "version": 1},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -1230,8 +1164,6 @@ async def test_deploy_acp_failure_does_not_abort(monkeypatch):
         manifest={"name": "Demo", "version": 1, "requires_acp": True},
         slice_=_slice_with_agent(),
         tar_bytes=b"<gz>",
-        container_ip="10.0.0.1",
-        container_token="tok",
         new_agent_id="agent_abc",
     )
 
@@ -1326,7 +1258,6 @@ async def test_unwind_removes_the_sidecar_even_when_both_other_legs_fail(tmp_pat
         workspace=ws,
         apply_deploy_aux_mutations=AsyncMock(return_value=None),
         pair_fn=AsyncMock(return_value=None),
-        gateway_pool_factory=MagicMock(),
     )
     monkeypatch.setattr(
         "core.services.config_patcher.remove_from_openclaw_config_list",
@@ -1421,8 +1352,6 @@ async def test_sidecar_survives_a_pair_timeout_so_the_retry_can_see_the_install(
             manifest={"name": "Demo", "version": 3},
             slice_=_slice_with_agent(),
             tar_bytes=b"<gz>",
-            container_ip="10.0.0.1",
-            container_token="tok",
             new_agent_id="agent_abc",
         )
 

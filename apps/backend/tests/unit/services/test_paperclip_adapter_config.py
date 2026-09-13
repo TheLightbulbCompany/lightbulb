@@ -262,7 +262,7 @@ def test_fallback_session_key_cannot_collide_with_a_human_general_session():
     fallback would therefore collide with ``agent:<agentId>:<user_id>`` and
     load a human's private session history as Paperclip context.
     """
-    from core.gateway.connection_pool import _parse_session_key
+    from core.services.session_keys import parse_session_key as _parse_session_key
 
     agent_id, user_id = "agent-xyz", "user_2abc"
     cfg = synthesize_openclaw_adapter(

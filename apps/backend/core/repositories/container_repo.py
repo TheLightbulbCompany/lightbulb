@@ -63,6 +63,10 @@ async def get_by_status(status: str) -> list[dict]:
     Follows DynamoDB's LastEvaluatedKey. Query responses are capped at 1 MB,
     so a single call only returns the first page — the reaper (and any other
     caller that iterates the full set for correctness) needs every row.
+
+    Needs no pass-admission filter (unlike ``scan_all``): a pass row (see
+    ``try_claim_pass``) carries no ``status`` attribute, so it is absent from
+    the sparse ``status-index`` GSI in the first place.
     """
     table = _get_table()
     items: list[dict] = []
@@ -87,12 +91,20 @@ async def scan_all(*, consistent: bool = False) -> list[dict]:
 
     Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
     Not for hot paths -- DDB Scan is expensive at scale.
+
+    Filters out pass-admission rows (``try_claim_pass``'s reserved
+    ``__pass__#<name>`` keys) so no fleet consumer -- update_service's
+    task-definition-refresh queuing, ecs_ops, the break-glass and
+    litestream-policy scripts -- ever mistakes one for an owner's container.
+    One guard here instead of one per caller.
     """
     table = _get_table()
     items: list[dict] = []
     last_evaluated_key: dict | None = None
     while True:
         kwargs: dict = {"ConsistentRead": True} if consistent else {}
+        kwargs["FilterExpression"] = "NOT begins_with(owner_id, :pass_prefix)"
+        kwargs["ExpressionAttributeValues"] = {":pass_prefix": PASS_KEY_PREFIX}
         if last_evaluated_key is not None:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         response = await run_in_thread(table.scan, **kwargs)
@@ -618,6 +630,52 @@ async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = 
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return False
         return True  # fail open — see docstring
+
+
+# Reserved owner_id prefix for pass-admission rows (see try_claim_pass). Never a
+# real owner_id (Clerk ids never contain "#"), so scan_all's filter cannot
+# collide with an owner row.
+PASS_KEY_PREFIX = "__pass__#"
+
+
+async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) -> bool:
+    """Admit at most one instance into periodic pass ``name`` per ``interval_s`` window.
+
+    ONE conditional write on a fixed-key row: set ``last_run_at`` only when it is
+    absent or older than ``now - interval_s``. Modelled on
+    ``try_claim_daily_system_notice`` and adds no new pattern.
+
+    This is PASS ADMISSION, not a lease. It admits a *scan*; it holds custody of
+    nothing. Every per-row claim inside every pass stays the correctness
+    boundary, so a wrong, stale or unreachable row degrades to exactly what the
+    code did before this existed: a duplicate scan.
+
+    Cadence lives on the row, not in a process frame, so ``interval_s`` -- not
+    process uptime -- decides a daily purge and a deploy no longer forces one.
+
+    FAILS CLOSED, unlike ``try_claim_daily_system_notice``: a DynamoDB fault
+    skips this tick rather than admitting every instance. A skipped 60 s sweep
+    costs a minute of latency on a trial park or a swept run; a fleet-wide
+    fail-open costs N x every scan in the product exactly when DynamoDB is
+    already unhappy. ``tests/unit/repositories/test_container_repo_pass_admission.py``
+    asserts the difference so nobody "fixes" it.
+
+    ponytail: one reserved-key row per pass name, all on the containers table.
+    Fine at ~6 writes/min fleet-wide; give it its own table only if that stops
+    being true.
+    """
+    stamp = int(time.time()) if now is None else int(now)
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{PASS_KEY_PREFIX}{name}"},
+            UpdateExpression="SET last_run_at = :now",
+            ConditionExpression="attribute_not_exists(last_run_at) OR last_run_at < :cutoff",
+            ExpressionAttributeValues={":now": stamp, ":cutoff": stamp - int(interval_s)},
+        )
+        return True
+    except ClientError:
+        return False  # conditional refusal AND fault both fail closed -- see docstring
 
 
 # How long a marketplace-deploy claim stays exclusive before another deploy may

@@ -149,8 +149,14 @@ function Conversation() {
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
-  // The message a long press is acting on; dropping it dismisses the sheet.
+  // The message a long press is acting on; dropping it starts the sheet's
+  // close animation. `lastActionTarget` keeps the sheet's content stable
+  // through that close — BottomSheet stays mounted and is only ever toggled
+  // via `visible`, so `MessageActionsSheet` needs a non-null `message` for
+  // its whole exit animation, not just up to the moment the target clears.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
+  const lastActionTarget = useRef<CanonicalRoomMessage | null>(null);
+  if (actionTarget) lastActionTarget.current = actionTarget;
 
   // The messageId of the most recent failed reaction toggle (mirrors the web's
   // single `reactionError` string state) — cleared UNCONDITIONALLY at the start
@@ -348,25 +354,35 @@ function Conversation() {
           <Feather name="arrow-down" size={16} color={colors.white} />
         </Pressable>
       )}
-      {actionTarget && (
-        <MessageActionsSheet
-          message={actionTarget}
-          currentUserId={userId ?? ""}
-          roomId={roomId}
-          onClose={() => setActionTarget(null)}
-          // ponytail: mark-unread's rejection is still swallowed, so a failed
-          // mark-unread just looks like nothing happened; the upgrade is an
-          // inline error or a toast. Reaction failures now surface (see
-          // `reactionErrorMessageId` above), matching the web's `reactionError`.
-          onReact={(emoji, active) => reactToMessage(actionTarget.messageId, emoji, active)}
-          onReplyInThread={() =>
-            router.push(`/(app)/room/${roomId}/thread/${actionTarget.messageId}`)
-          }
-          onMarkUnread={() =>
-            void rooms.markUnread(roomId, actionTarget.messageSeq).catch(() => {})
-          }
-        />
-      )}
+      {(() => {
+        // A local const so TS can narrow it through the closures below —
+        // `lastActionTarget.current` itself doesn't narrow across a nested
+        // arrow function boundary, and these must never read `actionTarget`
+        // directly: it clears to null the instant a row closes the sheet,
+        // before BottomSheet's exit animation finishes.
+        const sheetMessage = lastActionTarget.current;
+        if (!sheetMessage) return null;
+        return (
+          <MessageActionsSheet
+            message={sheetMessage}
+            visible={actionTarget !== null}
+            currentUserId={userId ?? ""}
+            roomId={roomId}
+            onClose={() => setActionTarget(null)}
+            // ponytail: mark-unread's rejection is still swallowed, so a failed
+            // mark-unread just looks like nothing happened; the upgrade is an
+            // inline error or a toast. Reaction failures now surface (see
+            // `reactionErrorMessageId` above), matching the web's `reactionError`.
+            onReact={(emoji, active) => reactToMessage(sheetMessage.messageId, emoji, active)}
+            onReplyInThread={() =>
+              router.push(`/(app)/room/${roomId}/thread/${sheetMessage.messageId}`)
+            }
+            onMarkUnread={() =>
+              void rooms.markUnread(roomId, sheetMessage.messageSeq).catch(() => {})
+            }
+          />
+        );
+      })()}
       {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}

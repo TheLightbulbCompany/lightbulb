@@ -103,8 +103,12 @@ export default function ThreadScreen() {
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
-  // The message a long press is acting on; dropping it dismisses the sheet.
+  // The message a long press is acting on; dropping it starts the sheet's
+  // close animation. `lastActionTarget` keeps the sheet's content stable
+  // through that close — see the room screen's identical pattern.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
+  const lastActionTarget = useRef<CanonicalRoomMessage | null>(null);
+  if (actionTarget) lastActionTarget.current = actionTarget;
 
   // The messageId of the most recent failed reaction toggle (mirrors the web's
   // single `reactionError` string state) — cleared UNCONDITIONALLY at the start
@@ -252,22 +256,30 @@ export default function ThreadScreen() {
           );
         }}
       />
-      {actionTarget && (
-        <MessageActionsSheet
-          message={actionTarget}
-          currentUserId={userId ?? ""}
-          roomId={roomId}
-          onClose={() => setActionTarget(null)}
-          // Reaction failures surface inline under the message (see
-          // `reactionErrorMessageId` above), matching the web's `reactionError`.
-          onReact={(emoji, active) => reactToMessage(actionTarget.messageId, emoji, active)}
-          // No Reply in thread and no Mark unread — the web's `!inThread` rule.
-          // A reply cannot root a nested thread, and the read cursor is per room,
-          // so marking unread here is undone the moment the conversation behind
-          // this screen is re-focused; the action stays thread-hidden until
-          // per-thread read state exists (Phase B, needs a backend field).
-        />
-      )}
+      {(() => {
+        // Local const so TS narrows it through the closure below — see the
+        // room screen's identical pattern for why `actionTarget` itself must
+        // not be read inside it.
+        const sheetMessage = lastActionTarget.current;
+        if (!sheetMessage) return null;
+        return (
+          <MessageActionsSheet
+            message={sheetMessage}
+            visible={actionTarget !== null}
+            currentUserId={userId ?? ""}
+            roomId={roomId}
+            onClose={() => setActionTarget(null)}
+            // Reaction failures surface inline under the message (see
+            // `reactionErrorMessageId` above), matching the web's `reactionError`.
+            onReact={(emoji, active) => reactToMessage(sheetMessage.messageId, emoji, active)}
+            // No Reply in thread and no Mark unread — the web's `!inThread` rule.
+            // A reply cannot root a nested thread, and the read cursor is per room,
+            // so marking unread here is undone the moment the conversation behind
+            // this screen is re-focused; the action stays thread-hidden until
+            // per-thread read state exists (Phase B, needs a backend field).
+          />
+        );
+      })()}
       {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}

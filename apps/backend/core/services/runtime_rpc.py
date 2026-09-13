@@ -15,12 +15,14 @@ from core.config import settings
 from core.containers import get_gateway_pool
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services.container_rpc import running_container as _running_container
+from core.services import container_rpc
+from core.services.live_events import publish_owner_users
 from core.services.messaging import (
     ApiProblem,
     RuntimeOperationAccepted,
     RuntimeRpcRequest,
     RuntimeRpcResponse,
+    make_live_event,
     runtime_operation,
 )
 from core.services.paperclip_admin_client import (
@@ -128,6 +130,30 @@ _MUTATING_METHODS = frozenset(
     }
 )
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
+_RPC_TIMEOUT_S = 30.0
+# Replaces the gateway pool's `*.changed` broadcasts: a mutating method that
+# lands here invalidates the named resource for every open frontend tab.
+_INVALIDATES = {
+    "agents.update": "agents",
+    "agents.delete": "agents",
+    "config.set": "config",
+    "config.patch": "config",
+    "skills.install": "skills",
+    "skills.update": "skills",
+    "skills.proposals.apply": "skills",
+    "skills.proposals.reject": "skills",
+}
+
+
+async def _invalidate(owner_id: str, method: str) -> None:
+    """Replaces the gateway's `*.changed` broadcasts the pool used to relay. Never raises."""
+    resource = _INVALIDATES.get(method)
+    if resource is None:
+        return
+    try:
+        await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": resource}))
+    except Exception:
+        logger.warning("resource invalidation publish failed resource=%s", resource, exc_info=True)
 
 
 def _user_owns_session_key(key: Any, user_id: str) -> bool:
@@ -291,29 +317,24 @@ async def execute_sync(
         if not isinstance(agent_id, str) or not agent_id:
             raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
         try:
-            return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+            result = await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
-    container, ip = await _running_container(owner_id)
-    token = container["gateway_token"]
+        await _invalidate(owner_id, method)
+        return result
     if method == "agents.create":
-        return await _create_agent(owner_id, user_id, _sanitize_agent_create(params), ip, token)
+        container, ip = await container_rpc.running_container(owner_id)
+        return await _create_agent(owner_id, user_id, _sanitize_agent_create(params), ip, container["gateway_token"])
     if method == "agents.update":
         try:
             await _mirror_agent_update(owner_id, params)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
     try:
-        pool = get_gateway_pool()
-        result = await pool.send_rpc(
-            user_id=owner_id,
-            req_id=request_id,
-            method=method,
-            params=params,
-            ip=ip,
-            token=token,
-        )
+        result = await container_rpc.call(owner_id, method, params, timeout_s=_RPC_TIMEOUT_S)
     except asyncio.CancelledError:
+        raise
+    except ApiProblem:
         raise
     except asyncio.TimeoutError as exc:
         raise ApiProblem(
@@ -335,6 +356,7 @@ async def execute_sync(
             details={"method": method},
         ) from exc
 
+    await _invalidate(owner_id, method)
     if method == "sessions.list":
         result = _filter_sessions_for_user(result, user_id)
     elif method == "sessions.search":
@@ -491,44 +513,6 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any]) -> None:
             "EFS Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True
         )
     params.pop("params", None)
-
-
-async def execute_control(
-    auth: AuthContext,
-    *,
-    method: str,
-    params: dict[str, Any],
-) -> Any:
-    """Call one dedicated, body-whitelisted approval/question method."""
-    if method not in {"exec.approval.resolve", "plugin.approval.resolve", "question.resolve"}:
-        raise ValueError("unsupported runtime control method")
-    owner_id = resolve_owner_id(auth)
-    container, ip = await _running_container(owner_id)
-    try:
-        return await get_gateway_pool().send_rpc(
-            user_id=owner_id,
-            req_id=str(uuid.uuid4()),
-            method=method,
-            params=params,
-            ip=ip,
-            token=container["gateway_token"],
-        )
-    except asyncio.TimeoutError as exc:
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE",
-            "The runtime request timed out.",
-            retryable=True,
-            retry_after=3,
-        ) from exc
-    except RuntimeError as exc:
-        raise _normalize_gateway_error(method, exc) from exc
-    except Exception as exc:
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE",
-            "The runtime request failed.",
-            retryable=True,
-            retry_after=3,
-        ) from exc
 
 
 async def get_operation(auth: AuthContext, operation_id: str):

@@ -60,11 +60,11 @@ async def test_publish_user_event_org_owner_without_member_fans_out_to_all_users
 
     monkeypatch.setattr("core.services.live_events.publish_owner_users", fake_publish_owner_users)
 
-    await conn._publish_user_event("runtime.approval.requested", {"foo": "bar"})
+    await conn._publish_user_event("runtime.resource.invalidated", {"resource": "agents"})
 
     assert len(calls) == 1
     assert calls[0][0] == "org_abc123"
-    assert calls[0][1]["type"] == "runtime.approval.requested"
+    assert calls[0][1]["type"] == "runtime.resource.invalidated"
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_publish_user_event_user_owner_uses_single_user_path(monkeypatch):
     monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: FakePublisher())
     monkeypatch.setattr("core.services.live_events.publish_owner_users", fake_publish_owner_users)
 
-    await conn._publish_user_event("runtime.approval.requested", {"foo": "bar"})
+    await conn._publish_user_event("runtime.resource.invalidated", {"resource": "agents"})
 
     assert single_calls == [("user_abc123", "user_abc123", single_calls[0][2])]
     assert fanout_calls == []

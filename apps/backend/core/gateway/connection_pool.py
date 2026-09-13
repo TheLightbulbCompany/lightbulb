@@ -1486,33 +1486,25 @@ class GatewayConnection:
                     put_metric("chat.run.abandoned")
             return
 
+        # Approval/question/progress live-event forwarding was retired with the
+        # unconsumed approval/question rail (core.services.runtime_rpc's
+        # execute_control and its two HTTP routes) -- those types are no longer
+        # in USER_LIVE_EVENT_TYPES, so forwarding them here would raise inside
+        # make_live_event and crash the reader loop. The native approval-aware
+        # run bookkeeping (`_mark_awaiting_approval`, the "agent" stream branch
+        # above) is untouched; only this now-dead LiveEvent notification goes.
         nested_request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
         event_session = session_key or nested_request.get("sessionKey", "")
-        if event_name in {"exec.approval.requested", "plugin.approval.requested"}:
-            await self._publish_user_event("runtime.approval.requested", payload, event_session)
-        elif event_name in {"exec.approval.resolved", "plugin.approval.resolved"}:
-            await self._publish_user_event("runtime.approval.resolved", {"id": payload.get("id")}, event_session)
-        elif event_name == "question.requested":
-            await self._publish_user_event("runtime.question.requested", payload, event_session)
-        elif event_name == "question.resolved":
-            await self._publish_user_event("runtime.question.resolved", payload, event_session)
-        elif event_name == "progressCard.changed":
-            await self._publish_user_event(
-                "runtime.progress.changed",
-                {"sessionKey": payload.get("sessionKey"), "revision": payload.get("revision")},
-                event_session,
-            )
-        else:
-            resources = {
-                "agents.changed": "agents",
-                "config.changed": "config",
-                "models.changed": "models",
-                "skills.changed": "skills",
-                "tools.changed": "tools",
-            }
-            resource = resources.get(event_name)
-            if resource:
-                await self._publish_user_event("runtime.resource.invalidated", {"resource": resource}, event_session)
+        resources = {
+            "agents.changed": "agents",
+            "config.changed": "config",
+            "models.changed": "models",
+            "skills.changed": "skills",
+            "tools.changed": "tools",
+        }
+        resource = resources.get(event_name)
+        if resource:
+            await self._publish_user_event("runtime.resource.invalidated", {"resource": resource}, event_session)
 
     async def _reader_loop(self) -> None:
         """Background task: read all messages from gateway WebSocket."""

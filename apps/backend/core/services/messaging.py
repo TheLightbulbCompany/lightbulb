@@ -110,11 +110,6 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "room.subscription.rotated",
         "room.access.removed",
         "runtime.operation.changed",
-        "runtime.approval.requested",
-        "runtime.approval.resolved",
-        "runtime.question.requested",
-        "runtime.question.resolved",
-        "runtime.progress.changed",
         "runtime.resource.invalidated",
         "paperclip.event",
         "room.member.updated",
@@ -507,27 +502,6 @@ class RuntimeRpcResponse(ContractModel):
 
 class RuntimeOperationAccepted(ContractModel):
     operation_id: uuid.UUID
-
-
-class ResolveApprovalRequest(ContractModel):
-    kind: Literal["exec", "plugin"] = "exec"
-    decision: Literal["allow-once", "allow-always", "deny"]
-
-
-class ResolveQuestionRequest(ContractModel):
-    answers: dict[str, Any] | None = None
-    secret_store_allowed_hosts: list[str] | None = None
-    cancel: bool | None = None
-
-    @model_validator(mode="after")
-    def validate_resolution(self) -> "ResolveQuestionRequest":
-        if bool(self.answers is not None) == bool(self.cancel is True):
-            raise ValueError("provide answers or cancel=true")
-        return self
-
-
-class ResolveRuntimeResponse(ContractModel):
-    id: str
 
 
 class RuntimeOperation(ContractModel):

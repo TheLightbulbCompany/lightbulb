@@ -858,8 +858,19 @@ def handler(event, context):
     // as a generic BACKEND-LIVENESS check: the backend metrics loop still emits
     // gateway.running.count every ~60s regardless of workload, so absence of
     // samples means the backend's metrics loop is dead. Expect ~10 samples per
-    // 10-min window when healthy; threshold 5 tolerates one skipped cycle.
+    // 10-min window when healthy per instance.
     // Companion P13 (reaper-crash) was deleted with the reaper.
+    //
+    // At N >= 2 a per-instance ALARM is not expressible: a CloudWatch alarm
+    // binds a fixed dimensionsMap at synth time, ECS task ids are unknown
+    // then and change on every deploy, and SEARCH is rejected outright on
+    // metric alarms (core/observability/metrics.py:60-66 carries this same
+    // scar). So the fleet SampleCount is divided by the live instance count
+    // (AWS/ApplicationELB HealthyHostCount, which W28 below also binds) --
+    // instance-count-independent, so one dead loop of two is visible instead
+    // of arithmetically indistinguishable from a healthy single instance.
+    // The `instance` dimension main.py now tags the gauge with is for
+    // diagnosis on a dashboard / Logs Insights, not for this alarm's binding.
     const reaperDims = { env: this.envName, service: "lightbulb-backend" };
 
     const heartbeatMetric = new cloudwatch.Metric({
@@ -870,19 +881,52 @@ def handler(event, context):
       dimensionsMap: reaperDims,
     });
 
+    // Minimum, not Average: a rolling deploy runs at maxHealthyPercent: 200,
+    // so Average would count the transient extra tasks in the denominator
+    // while their sample windows are only partly filled, dipping the ratio
+    // into a false page.
+    const healthyHosts = new cloudwatch.Metric({
+      namespace: "AWS/ApplicationELB",
+      metricName: "HealthyHostCount",
+      statistic: "Minimum",
+      period: cdk.Duration.minutes(10),
+      dimensionsMap: {
+        LoadBalancer: props.alb.loadBalancerFullName,
+        TargetGroup: props.targetGroup.targetGroupFullName,
+      },
+    });
+
     const heartbeatAlarm = new cloudwatch.Alarm(this, "BackendLivenessAlarm", {
       alarmName: `${resourcePrefix(this.envName)}P12-backend-liveness`,
       alarmDescription:
-        "PAGE: backend metrics loop has emitted no heartbeat in 10 minutes. " +
-        "The backend emits gateway.running.count every ~60s regardless of " +
-        "workload, so absence of samples = the backend metrics loop is dead.",
-      metric: heartbeatMetric,
-      threshold: 5,
+        "PAGE: at least one backend instance has stopped emitting its 60 s " +
+        "heartbeat. Samples per healthy ALB target have fallen below 8 " +
+        "(healthy is ~10).",
+      metric: new cloudwatch.MathExpression({
+        expression: "beats / hosts",
+        usingMetrics: { beats: heartbeatMetric, hosts: healthyHosts },
+        period: cdk.Duration.minutes(10),
+      }),
+      // ponytail: 8, not 7 -- prod autoscales 2-4 (C6), and one dead loop of
+      // FOUR reads 7.5 (3 alive / 4 hosts * ~10), which 7 would not catch.
+      // 8 catches one dead loop at every N in range while healthy (~10) never
+      // trips it. Retune here, not by changing the expression, if deploy
+      // churn or a period change moves the healthy baseline.
+      threshold: 8,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       // Legit liveness check: missing data IS the failure signal.
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
+    // MathExpression has no way to name its own top-level entry (CDK always
+    // auto-generates "expr_N" for it -- only usingMetrics keys become their
+    // own ids), so the ratio's rendered Metrics[0].Id is renamed here rather
+    // than via a second wrapper MathExpression, which would add a redundant
+    // expression layer computing the same value twice.
+    (heartbeatAlarm.node.defaultChild as cloudwatch.CfnAlarm).addPropertyOverride(
+      "Metrics.0.Id",
+      "beatsPerInstance",
+    );
     heartbeatAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );

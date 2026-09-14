@@ -41,13 +41,14 @@ schema = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
 def _isolate_lifespan_background_workers(monkeypatch):
     """Schemathesis enters FastAPI lifespan for every generated ASGI request."""
     import main
-    from core.services import durable_activity, openclaw_work, provision_dispatch
+    from core.services import durable_activity, openclaw_work, provision_dispatch, run_ledger
 
     monkeypatch.setattr(main, "_resume_wake_resize_transitions", _no_background_work)
     monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
     monkeypatch.setattr(main, "_build_teams_event_broker", _no_background_work)
     monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
     monkeypatch.setattr(durable_activity, "run_trial_idle_sweeper", _no_background_work)
+    monkeypatch.setattr(run_ledger, "run_ledger_sweeper", _no_background_work)
     monkeypatch.setattr(openclaw_work, "get_openclaw_work_worker", _NoopOpenClawWorkWorker)
     monkeypatch.setattr(provision_dispatch, "handoff_inflight_provisions", _no_background_work)
 

@@ -95,10 +95,23 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         put_metric("gateway.trial_scale_to_zero", dimensions={"trigger": "durable_activity"})
 
 
+async def admitted(name: str, *, interval_s: int) -> bool:
+    """Pass admission plus its metric. See container_repo.try_claim_pass.
+
+    A local copy of update_service.admitted, not an import: each admission
+    point emits through its OWN module's put_metric so it stays independently
+    patchable in tests, same shape either way.
+    """
+    won = await container_repo.try_claim_pass(name, interval_s=interval_s)
+    put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "won" if won else "lost"})
+    return won
+
+
 async def run_trial_idle_sweeper(stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
-            await sweep_trial_idle_once()
+            if await admitted("trial_idle", interval_s=_SWEEP_SECONDS):
+                await sweep_trial_idle_once()
         except Exception:
             put_metric("gateway.trial_scale_to_zero", dimensions={"trigger": "sweep_error"})
         try:

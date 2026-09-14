@@ -1,7 +1,7 @@
 """Unit tests for the Stripe webhook event-dedup helper."""
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -151,6 +151,33 @@ async def test_non_conditional_client_error_logs_and_reraises(monkeypatch, caplo
     # WARNING carries the event_id + source for diagnosis.
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any("evt_throttled" in m and "stripe" in m for m in warnings), warnings
+
+
+@pytest.mark.asyncio
+async def test_put_item_is_offloaded_to_a_thread(monkeypatch):
+    """The admin idempotency claim (and every other caller) reaches this on the
+    request-handling event loop -- the blocking boto3 PutItem must not run on
+    it directly, exactly like the sibling `_claim_active_top_up` PutItem."""
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+
+    fake_table = MagicMock()
+
+    async def fake_run_in_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    with (
+        patch("core.services.webhook_dedup._table", return_value=fake_table),
+        patch("core.services.webhook_dedup.run_in_thread", AsyncMock(side_effect=fake_run_in_thread)) as mock_run,
+    ):
+        result = await record_event_or_skip("evt_offloaded", source="admin")
+
+    assert result is WebhookDedupResult.RECORDED
+    mock_run.assert_awaited_once()
+    # The offloaded call is the mocked table's put_item, with the same
+    # conditional-write shape as before.
+    assert mock_run.call_args.args[0] == fake_table.put_item
+    assert mock_run.call_args.kwargs["ConditionExpression"] == "attribute_not_exists(event_id)"
+    fake_table.put_item.assert_called_once()
 
 
 @pytest.mark.asyncio

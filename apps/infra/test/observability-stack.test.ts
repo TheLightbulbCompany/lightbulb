@@ -190,6 +190,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "debug.endpoint.prod_hit": [["endpoint"]],
   "gateway.cold_start.count": [["outcome"]],
   "gateway.cold_start.latency": [[]],
+  // main.py:_running_count_gauge_loop. P12 divides the fleet sample count by
+  // HealthyHostCount (C5) but binds only {env, service} -- the emitting ECS
+  // task id is a log field (running_count), not a metric dimension, since it
+  // is a new identity per task per deploy (the _DENIED_DIMENSIONS class).
   "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
@@ -723,14 +727,35 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
+  test("P12 divides the heartbeat by the live instance count", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "gateway.running.count",
-      Namespace: "LightbulbAI",
-      Statistic: "SampleCount",
+      AlarmName: "lightbulb-dev-P12-backend-liveness",
       ComparisonOperator: "LessThanThreshold",
-      Threshold: 5,
+      Threshold: 8,
       TreatMissingData: "breaching",
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Id: "beatsPerInstance", Expression: "beats / hosts" }),
+        Match.objectLike({
+          Id: "beats",
+          MetricStat: Match.objectLike({
+            Stat: "SampleCount",
+            Metric: Match.objectLike({
+              Namespace: "LightbulbAI",
+              MetricName: "gateway.running.count",
+            }),
+          }),
+        }),
+        Match.objectLike({
+          Id: "hosts",
+          MetricStat: Match.objectLike({
+            Stat: "Minimum",
+            Metric: Match.objectLike({
+              Namespace: "AWS/ApplicationELB",
+              MetricName: "HealthyHostCount",
+            }),
+          }),
+        }),
+      ]),
     });
   });
 

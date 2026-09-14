@@ -9,6 +9,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.observability.metrics import put_metric
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,10 @@ async def get_by_status(status: str) -> list[dict]:
     Follows DynamoDB's LastEvaluatedKey. Query responses are capped at 1 MB,
     so a single call only returns the first page — the reaper (and any other
     caller that iterates the full set for correctness) needs every row.
+
+    Needs no pass-admission filter (unlike ``scan_all``): a pass row (see
+    ``try_claim_pass``) carries no ``status`` attribute, so it is absent from
+    the sparse ``status-index`` GSI in the first place.
     """
     table = _get_table()
     items: list[dict] = []
@@ -87,12 +92,20 @@ async def scan_all(*, consistent: bool = False) -> list[dict]:
 
     Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
     Not for hot paths -- DDB Scan is expensive at scale.
+
+    Filters out pass-admission rows (``try_claim_pass``'s reserved
+    ``__pass__#<name>`` keys) so no fleet consumer -- update_service's
+    task-definition-refresh queuing, ecs_ops, the break-glass and
+    litestream-policy scripts -- ever mistakes one for an owner's container.
+    One guard here instead of one per caller.
     """
     table = _get_table()
     items: list[dict] = []
     last_evaluated_key: dict | None = None
     while True:
         kwargs: dict = {"ConsistentRead": True} if consistent else {}
+        kwargs["FilterExpression"] = "NOT begins_with(owner_id, :pass_prefix)"
+        kwargs["ExpressionAttributeValues"] = {":pass_prefix": PASS_KEY_PREFIX}
         if last_evaluated_key is not None:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         response = await run_in_thread(table.scan, **kwargs)
@@ -620,6 +633,72 @@ async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = 
         return True  # fail open — see docstring
 
 
+# Reserved owner_id prefix for pass-admission rows (see try_claim_pass). Never a
+# real owner_id (Clerk ids never contain "#"), so scan_all's filter cannot
+# collide with an owner row.
+PASS_KEY_PREFIX = "__pass__#"
+
+
+async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) -> bool:
+    """Admit at most one instance into periodic pass ``name`` per ``interval_s`` window.
+
+    ONE conditional write on a fixed-key row: set ``last_run_at`` only when it is
+    absent or at/older than ``now - interval_s`` (``<=``, not ``<`` -- with a
+    strict less-than, a pass whose interval equals its caller's tick, e.g. the
+    60 s worker passes and sweepers, would never see ``elapsed == interval_s``
+    admitted and would only fire every other tick). Modelled on
+    ``try_claim_daily_system_notice`` and adds no new pattern.
+
+    This is PASS ADMISSION, not a lease. It admits a *scan*; it holds custody of
+    nothing. Every per-row claim inside every pass stays the correctness
+    boundary, so a wrong, stale or unreachable row degrades to exactly what the
+    code did before this existed: a duplicate scan.
+
+    Cadence lives on the row, not in a process frame, so ``interval_s`` -- not
+    process uptime -- decides a daily purge and a deploy no longer forces one.
+
+    FAILS CLOSED, unlike ``try_claim_daily_system_notice``: ANY fault (a
+    conditional refusal, a ``ClientError``, or a ``BotoCoreError`` -- endpoint/
+    connect/read timeouts, ``NoCredentialsError``, none of which carry an
+    ``Error`` code so ``ClientError`` alone would miss them) skips this tick
+    rather than admitting every instance. A skipped 60 s sweep costs a minute
+    of latency on a trial park or a swept run; a fleet-wide fail-open costs
+    N x every scan in the product exactly when DynamoDB is already unhappy.
+    ``tests/unit/repositories/test_container_repo_pass_admission.py`` asserts
+    the difference so nobody "fixes" it.
+
+    ponytail: one reserved-key row per pass name, all on the containers table.
+    Fine at ~6 writes/min fleet-wide; give it its own table only if that stops
+    being true.
+    """
+    stamp = int(time.time()) if now is None else int(now)
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{PASS_KEY_PREFIX}{name}"},
+            UpdateExpression="SET last_run_at = :now",
+            ConditionExpression="attribute_not_exists(last_run_at) OR last_run_at <= :cutoff",
+            ExpressionAttributeValues={":now": stamp, ":cutoff": stamp - int(interval_s)},
+        )
+        return True
+    except ClientError as e:
+        # Conditional refusal (contention -- another instance already won this
+        # window) fails closed same as any other fault, but is NOT itself a
+        # fault: the callers' own metric already reports it as "lost". Any
+        # other ClientError (throttling, a real DynamoDB error) is a fault the
+        # callers' boolean-only metric can't see, so log + emit it here.
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("pass admission fault name=%s: %s", name, e)
+            put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "fault"})
+        return False
+    except Exception as e:
+        # BotoCoreError (endpoint/connect/read timeouts, NoCredentialsError, ...)
+        # carries no Error code, so it can't be ClientError -- always a fault.
+        logger.warning("pass admission fault name=%s: %s", name, e)
+        put_metric("lifecycle.pass.claimed", dimensions={"pass": name, "outcome": "fault"})
+        return False
+
+
 # How long a marketplace-deploy claim stays exclusive before another deploy may
 # take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
 # a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so
@@ -727,9 +806,12 @@ async def try_claim_owner_deploy(
     extracted anything) and both mint an agent. That is how prod grew "Pulse 2":
     the second deploy started 35s before the first wrote its sidecar, back when
     the sidecar landed at the END of the deploy. The backend runs several ECS
-    tasks behind an ALB (the two prod deploys landed on different ones), so the
-    in-memory ``services/idempotency`` cache cannot fence this — it has to be a
-    conditional write. It rides the existing per-owner ``containers`` row rather
+    tasks behind an ALB (the two prod deploys landed on different ones), so an
+    in-process, per-instance cache cannot fence this — it has to be a
+    conditional write. (``core/services/idempotency.py`` was exactly such a
+    cache, kept for admin write handlers; sub-project C deleted it for this
+    same reason -- see ``webhook_dedup.idempotency()``.) It rides the existing
+    per-owner ``containers`` row rather
     than a new table, matching ``try_claim_provision`` /
     ``try_consume_daily_email_send`` on the same row.
 

@@ -45,7 +45,7 @@ from core.services.account_wipe import (
 from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
-from core.services.idempotency import idempotency
+from core.services.webhook_dedup import idempotency
 from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision
 from core.services.update_service import (

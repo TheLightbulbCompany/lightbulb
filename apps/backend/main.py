@@ -5,6 +5,7 @@ load_dotenv()
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from core.observability.logging import configure_logging
@@ -249,13 +250,26 @@ class SecurityHeadersMiddleware:
 
 
 async def _running_count_gauge_loop():
-    """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream."""
+    """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream.
+
+    P12 binds the fleet {env, service} identity only -- the emitting ECS task id is
+    NOT a metric dimension: it is a new CloudWatch metric identity per task per
+    deploy, the same unbounded-cardinality class core/observability/metrics.py's
+    _DENIED_DIMENSIONS already refuses for container_id. It rides a structured log
+    field instead, so a dead loop is still attributable in Logs Insights without
+    minting a fresh metric identity on every deploy. This loop deliberately stays
+    UNADMITTED (no pass-admission lease): it is the liveness canary, and a canary
+    admitted once per window only proves that *some* instance is alive, not that
+    this one is.
+    """
     from core.observability.metrics import gauge
 
+    instance = os.getenv("HOSTNAME") or "local"
     while True:
         try:
             rows = await container_repo.get_by_status("running")
             gauge("gateway.running.count", len(rows))
+            logger.info("running_count", extra={"instance": instance, "count": len(rows)})
         except Exception:
             logger.warning("running_gauges loop iteration failed", exc_info=True)
         await asyncio.sleep(60)

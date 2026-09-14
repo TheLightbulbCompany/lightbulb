@@ -23,6 +23,15 @@ from core.services.credentials import registry
 from routers import connections
 
 
+@pytest.fixture(autouse=True)
+def _owner_lifecycle_guard_efs_scratch(tmp_path, monkeypatch):
+    """Disconnect and the OAuth callback now take owner_lifecycle_guard (a real,
+    cross-process EFS file lock) around their write sections -- point it at a
+    scratch dir so every test in this file that reaches either write section
+    doesn't need a real EFS mount."""
+    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+
+
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
     validate ``auth_scheme`` (vercel_cli = ``Bearer <key>``) and sends the

@@ -23,6 +23,17 @@ BODY = UsageReportRequest(
 )
 
 
+def _zero_usage() -> RunUsage:
+    return RunUsage(
+        model="unknown",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        estimated_cost_usd=None,
+    )
+
+
 def _patches(claimed=True):
     return (
         patch(
@@ -98,3 +109,27 @@ async def test_zero_usage_skips_counters_but_still_emits_analytics():
         assert (await messaging.handle_usage_report("org_1", empty)).status == "applied"
     record.assert_not_awaited()
     assert analytics.call_args.kwargs["phase"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_usage_report_emits_run_completed_once_across_instances(monkeypatch):
+    """The durable receipt, not the per-process _seen_run_ids cache, is what keeps
+    run.completed single-emit at desiredCount >= 2. Replay must not re-emit."""
+    calls = []
+    monkeypatch.setattr(
+        "core.services.messaging.run_analytics.schedule_run_completed",
+        lambda **kw: calls.append(kw["payload"]["runId"]),
+    )
+    # First writer wins; the SECOND call models the other instance.
+    claims = iter([True, False])
+    monkeypatch.setattr(
+        "core.repositories.messaging_repo.claim_usage_receipt",
+        AsyncMock(side_effect=lambda *a, **k: next(claims)),
+    )
+    body = UsageReportRequest(
+        session_key="agent:friday:cron:o1", agent_id="friday", run_id="r1", success=True, usage=_zero_usage()
+    )
+    first = await messaging.handle_usage_report("o1", body)
+    second = await messaging.handle_usage_report("o1", body)
+    assert (first.status, second.status) == ("applied", "replayed")
+    assert calls == ["r1"]

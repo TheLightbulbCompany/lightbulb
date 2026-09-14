@@ -6,9 +6,10 @@ Each of the 15 mutation endpoints under test must:
   1. Be gated by `Depends(require_platform_admin)` (403 for non-admins)
   2. Be decorated with `@audit_admin_action("...")` so a row lands in
      admin_actions DDB synchronously (fail-closed)
-  3. Accept an optional `Idempotency-Key` header (CEO D1) — the same key
-     within a 60s window returns the cached response and short-circuits
-     the underlying side effect
+  3. Accept an optional `Idempotency-Key` header (CEO D1) — a repeat key
+     within the claim TTL is refused with 409 and never re-runs the
+     underlying side effect (C4: a durable claim on the shared dedup table,
+     not a replayed response)
 
 Endpoints (15 total):
 
@@ -79,6 +80,25 @@ def non_admin_env(app):
         app.dependency_overrides.pop(get_current_user, None)
 
 
+@pytest.fixture(autouse=True)
+def dedup_claims(monkeypatch):
+    """Fake conditional claim backing @idempotency (core.services.webhook_dedup)
+    for these tests -- the first call for a given key RECORDS, every repeat is
+    ALREADY_SEEN. Real dedup semantics without a real DynamoDB table."""
+    from core.services import webhook_dedup
+
+    seen: set[str] = set()
+
+    async def fake_record(event_id, *, source, ttl_seconds=None):
+        if event_id in seen:
+            return webhook_dedup.WebhookDedupResult.ALREADY_SEEN
+        seen.add(event_id)
+        return webhook_dedup.WebhookDedupResult.RECORDED
+
+    monkeypatch.setattr(webhook_dedup, "record_event_or_skip", fake_record)
+    return seen
+
+
 @pytest.fixture
 def mock_audit_repo():
     """Patch admin_actions_repo.create — assert per-endpoint that it ran.
@@ -138,8 +158,7 @@ class TestContainerReprovision:
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/reprovision", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/reprovision", headers=headers)
         assert r1.status_code == 200
-        assert r2.status_code == 200
-        assert r1.json() == r2.json()
+        assert r2.status_code == 409
         assert ecs.reprovision_for_user.await_count == 1
 
 
@@ -181,7 +200,7 @@ class TestContainerStop:
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/stop", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/stop", headers=headers)
         assert r1.status_code == 200
-        assert r1.json() == r2.json()
+        assert r2.status_code == 409
         assert ecs.stop_user_service.await_count == 1
 
 
@@ -225,7 +244,8 @@ class TestContainerStart:
             headers = {"Idempotency-Key": "start-key-1"}
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/start", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/start", headers=headers)
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert ecs.start_user_service.await_count == 1
 
 
@@ -269,7 +289,8 @@ class TestContainerResize:
             headers = {"Idempotency-Key": "resize-key-1"}
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/resize", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/resize", headers=headers)
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert ecs.reapply_standard_sizing.await_count == 1
 
 
@@ -428,7 +449,8 @@ class TestContainerForceApplyImageUpdate:
                 json=body,
                 headers=headers,
             )
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert mock_apply.await_count == 1
 
 
@@ -499,7 +521,8 @@ class TestContainerReapplyConfig:
             headers = {"Idempotency-Key": "reapply-key-1"}
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config", headers=headers)
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert mock_reapply.await_count == 1
 
 
@@ -636,7 +659,8 @@ class TestBillingCancelSubscription:
                 "/api/v1/admin/users/u_target/billing/cancel-subscription",
                 headers=headers,
             )
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert billing.cancel_subscription_for_owner.await_count == 1
 
 
@@ -680,7 +704,8 @@ class TestBillingPauseSubscription:
                 "/api/v1/admin/users/u_target/billing/pause-subscription",
                 headers=headers,
             )
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert billing.pause_subscription_for_owner.await_count == 1
 
 
@@ -766,7 +791,8 @@ class TestBillingIssueCredit:
                 json=body,
                 headers=headers,
             )
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert billing.issue_credit_for_owner.await_count == 1
 
 
@@ -824,7 +850,8 @@ class TestBillingMarkInvoiceResolved:
                 json=body,
                 headers=headers,
             )
-        assert r1.json() == r2.json()
+        assert r1.status_code == 200
+        assert r2.status_code == 409
         assert billing.mark_invoice_resolved.await_count == 1
 
 

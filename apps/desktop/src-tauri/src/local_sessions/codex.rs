@@ -345,9 +345,286 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     })
 }
 
+/// Replace one of the user's own Codex files atomically, keeping its mode.
+/// Not `private_write`: these are the user's configuration, not our 0600 state,
+/// and a 0600 rewrite of a file Codex shares would be a surprise.
+fn replace(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mode = fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map_or(0o600, |meta| meta.mode() & 0o777);
+    let temp = path.with_file_name(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(&temp)
+        .map_err(|e| e.to_string())
+        .and_then(|mut file| {
+            file.write_all(contents)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| e.to_string())
+        })
+        .and_then(|()| fs::rename(&temp, path).map_err(|e| e.to_string()));
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
+}
+
+/// Add or update one `[hooks.state."<key>"]` trust block, leaving every other
+/// line of `config.toml` byte-for-byte alone.
+fn upsert_trust(config: &str, key: &str, hash: &str) -> String {
+    let header = format!("[hooks.state.\"{key}\"]");
+    let trusted = format!("trusted_hash = \"{hash}\"");
+    let mut lines: Vec<String> = config.lines().map(str::to_owned).collect();
+    match lines.iter().position(|line| line.trim() == header) {
+        Some(start) => {
+            let block = &lines[start + 1..];
+            // Bounded by the next table header: a block of ours that somehow
+            // lost its hash must never rewrite the next table's.
+            let end = block
+                .iter()
+                .position(|line| line.trim_start().starts_with('['))
+                .unwrap_or(block.len());
+            match block[..end]
+                .iter()
+                .position(|line| line.trim_start().starts_with("trusted_hash"))
+            {
+                Some(at) => lines[start + 1 + at] = trusted,
+                None => lines.insert(start + 1, trusted),
+            }
+        }
+        None => lines.extend([String::new(), header, trusted]),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Drop one `[hooks.state."<key>"]` block: its header, the lines up to the next
+/// table, and the blank line `upsert_trust` put in front of it.
+fn remove_trust(config: &str, key: &str) -> String {
+    let header = format!("[hooks.state.\"{key}\"]");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropping = false;
+    for line in config.lines() {
+        if line.trim() == header {
+            if kept.last().is_some_and(|line| line.trim().is_empty()) {
+                kept.pop();
+            }
+            dropping = true;
+            continue;
+        }
+        if dropping {
+            if !line.trim_start().starts_with('[') {
+                continue;
+            }
+            dropping = false;
+        }
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// Install (or remove) the lifecycle hooks in `~/.codex/hooks.json` together
+/// with the `config.toml` trust entries Codex requires before it will run them
+/// -- an untrusted group is skipped silently, so the two must move as one.
+pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> Result<()> {
+    let dir = home.join(".codex");
+    if !dir.is_dir() {
+        return Ok(()); // Codex is not installed on this Mac.
+    }
+    let path = dir.join("hooks.json");
+    let mut doc: Value = if path.try_exists().map_err(|e| e.to_string())? {
+        serde_json::from_reader(secure_file(&path)?.take(1024 * 1024))
+            .map_err(|_| "invalid Codex hooks")?
+    } else if enabled {
+        json!({})
+    } else {
+        return Ok(());
+    };
+    if !doc.is_object() {
+        return Err("invalid Codex hooks".into());
+    }
+    if doc.get("hooks").is_none() {
+        doc["hooks"] = json!({});
+    }
+    // Every launch re-asserts these, and a no-op must not rewrite (and
+    // reformat) files the user owns.
+    let original = doc.clone();
+    let command = super::claude::hook_command(executable, "codex")?;
+    let hooks = doc["hooks"].as_object_mut().ok_or("invalid Codex hooks")?;
+    // key -> hash to trust, or None to untrust.
+    let mut trust: Vec<(String, Option<String>)> = Vec::new();
+    for (event, _) in super::claude::HOOK_EVENTS {
+        let Some(label) = lifecycle::codex_event_label(event) else {
+            continue;
+        };
+        // Codex forces SessionEnd synchronous and normalizes its missing
+        // timeout to 1; every other event normalizes to the written value.
+        let (timeout, is_async) = if event == "SessionEnd" {
+            (1, false)
+        } else {
+            (5, true)
+        };
+        let entry =
+            json!({"hooks":[{"type":"command","command":command,"timeout":timeout,"async":is_async}]});
+        let slot = if enabled {
+            Some(hooks.entry(event).or_insert_with(|| json!([])))
+        } else {
+            hooks.get_mut(event)
+        };
+        let Some(slot) = slot else { continue };
+        let entries = slot.as_array_mut().ok_or("invalid Codex hooks")?;
+        // The trust key carries the group's index, so it is read before the
+        // removal and, when enabling, re-read after the re-append.
+        let found = entries.iter().position(|existing| existing == &entry);
+        entries.retain(|existing| existing != &entry);
+        if enabled {
+            entries.push(entry);
+        }
+        // Never guess an index when disabling: `<hooks.json>:<event>:0:0` is a
+        // real key that another tool's first group may own.
+        let index = if enabled {
+            Some(entries.len() - 1)
+        } else {
+            found
+        };
+        if entries.is_empty() {
+            hooks.remove(event);
+        }
+        if let Some(index) = index {
+            trust.push((
+                lifecycle::codex_trust_key(&path, label, index),
+                enabled.then(|| {
+                    lifecycle::codex_trust_hash(label, None, &command, timeout, is_async, None)
+                }),
+            ));
+        }
+    }
+    if doc != original {
+        replace(
+            &path,
+            &serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
+        )?;
+    }
+    if trust.is_empty() {
+        return Ok(());
+    }
+    let config = dir.join("config.toml");
+    let mut text = if config.try_exists().map_err(|e| e.to_string())? {
+        let mut text = String::new();
+        secure_file(&config)?
+            .take(1024 * 1024)
+            .read_to_string(&mut text)
+            .map_err(|_| "invalid Codex config")?;
+        text
+    } else if enabled {
+        String::new()
+    } else {
+        return Ok(());
+    };
+    let original = text.clone();
+    for (key, hash) in &trust {
+        text = match hash {
+            Some(hash) => upsert_trust(&text, key, hash),
+            None => remove_trust(&text, key),
+        };
+    }
+    if text == original {
+        return Ok(());
+    }
+    replace(&config, text.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_sessions_codex_hooks_install_trust_and_remove() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(codex.join("config.toml"), "model = \"x\"\n\n[hooks.state]\n\n[hooks.state.\"other:stop:0:0\"]\ntrusted_hash = \"sha256:aa\"\n").unwrap();
+        fs::write(
+            codex.join("hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"theirs"}]}]}}"#,
+        )
+        .unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let hooks: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        assert_eq!(
+            hooks["hooks"]["Stop"].as_array().unwrap().len(),
+            2,
+            "theirs kept, ours appended"
+        );
+        assert_eq!(hooks["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 1);
+        let config = fs::read_to_string(codex.join("config.toml")).unwrap();
+        let key = format!("{}:stop:1:0", codex.join("hooks.json").display());
+        assert!(config.contains(&format!("[hooks.state.\"{key}\"]")));
+        let expected = lifecycle::codex_trust_hash(
+            "stop",
+            None,
+            "'/app' local-session-hook codex",
+            5,
+            true,
+            None,
+        );
+        assert!(config.contains(&format!("trusted_hash = \"{expected}\"")));
+        assert!(config.contains("other:stop:0:0"));
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap(); // idempotent
+        assert_eq!(
+            fs::read_to_string(codex.join("config.toml"))
+                .unwrap()
+                .matches(&key)
+                .count(),
+            1
+        );
+        configure_hooks(home.path(), Path::new("/app"), false).unwrap();
+        let hooks: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        assert_eq!(hooks["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        assert!(hooks["hooks"].get("SessionEnd").is_none());
+        let config = fs::read_to_string(codex.join("config.toml")).unwrap();
+        assert!(
+            !config.contains(&key)
+                && config.contains("other:stop:0:0")
+                && config.starts_with("model = \"x\"")
+        );
+
+        // Codex installed, but no hooks.json or config.toml written yet.
+        let fresh = tempfile::tempdir().unwrap();
+        fs::create_dir_all(fresh.path().join(".codex")).unwrap();
+        configure_hooks(fresh.path(), Path::new("/app"), true).unwrap();
+        let hooks: Value = serde_json::from_str(
+            &fs::read_to_string(fresh.path().join(".codex/hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "'/app' local-session-hook codex"
+        );
+        assert!(
+            hooks["hooks"].get("Notification").is_none(),
+            "Codex has no Notification event"
+        );
+        let config = fs::read_to_string(fresh.path().join(".codex/config.toml")).unwrap();
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
+
+        // No Codex on this Mac: nothing to install, and not an error.
+        let bare = tempfile::tempdir().unwrap();
+        configure_hooks(bare.path(), Path::new("/app"), true).unwrap();
+        assert!(!bare.path().join(".codex").exists());
+    }
+
     #[test]
     fn local_sessions_codex_items_become_terminal_items() {
         let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0","source":"cli"}});

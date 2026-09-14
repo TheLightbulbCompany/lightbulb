@@ -221,7 +221,8 @@ impl Controller {
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
         let _guard = self.mutation.lock().await;
-        let path = state_dir(app)?.join("enrollment.json");
+        let dir = state_dir(app)?;
+        let path = dir.join("enrollment.json");
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
             return Ok(());
         }
@@ -240,6 +241,11 @@ impl Controller {
         }
         let revision = self.revision.load(Ordering::SeqCst);
         let prepared = self.prepare(app, &enrollment)?;
+        let notes = reassert(&dir);
+        if !notes.is_empty() {
+            *self.status.lock().map_err(|_| "sharing state unavailable")? =
+                format!("Local sharing resumed; {}.", notes.join("; "));
+        }
         self.publish(None, enrollment, prepared, revision)
     }
 }
@@ -431,6 +437,10 @@ pub async fn local_sessions_set(
             {
                 claude::configure_hooks(&settings, &installed, false)?;
             }
+            // Codex removal is best effort: its hooks are inert once this
+            // executable stops answering, and an absent or hand-edited Codex
+            // config must not be reported as a Claude settings failure.
+            let _ = codex::configure_hooks(&home()?, &installed, false);
             Ok(())
         })?;
         // Skill removal is tracked separately from hook cleanup so a failure in
@@ -542,14 +552,25 @@ pub async fn local_sessions_set(
                 claude::configure_hooks(&settings, &executable, true)?;
                 private_write(&hook_record, &executable)?;
             }
+            if installed != executable {
+                // Codex hooks naming a moved executable would run a dead path.
+                if let Ok(home) = home() {
+                    let _ = codex::configure_hooks(&home, &installed, false);
+                }
+            }
             state.prepare(&app, &enrollment)
         },
         |prepared, active| state.publish(Some(&path), active, prepared, revision),
     )
     .await?;
-    if let Err(reason) = home().and_then(|h| install_skill(&dir, &h)) {
-        *state.status.lock().map_err(|_| "sharing state unavailable")? =
-            format!("Sharing enabled; the lightbulb-session-sharing skill was not installed ({reason}). Claude/Codex still receive labelled teammate messages.");
+    // Codex hooks and the skill are reported, never fatal: the Claude path that
+    // just came up does not depend on either.
+    let notes = reassert(&dir);
+    if !notes.is_empty() {
+        *state.status.lock().map_err(|_| "sharing state unavailable")? = format!(
+            "Sharing enabled; {}. Claude/Codex still receive labelled teammate messages.",
+            notes.join("; ")
+        );
     }
     Ok(revision)
 }
@@ -670,6 +691,41 @@ pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
     }
     fs::remove_file(&record).map_err(|_| "skill state cleanup failed")?;
     Ok(())
+}
+
+/// Re-assert both providers' hooks and the bundled skill for an enrollment that
+/// is already enabled. Providers are installed, upgraded and hand-edited between
+/// launches, so a resume rewrites them rather than trusting the install that
+/// consent performed. Returns the failures for the status line; none is fatal.
+fn reassert(state_dir: &Path) -> Vec<String> {
+    let record = state_dir.join("hook-executable.json");
+    let installed: PathBuf = match private_read(&record) {
+        Ok(installed) => installed,
+        Err(_) => match std::env::current_exe() {
+            Ok(executable) => executable,
+            Err(_) => return vec!["the desktop executable is unavailable".into()],
+        },
+    };
+    let home = match home() {
+        Ok(home) => home,
+        Err(reason) => return vec![reason],
+    };
+    let mut notes = Vec::new();
+    let settings = home.join(".claude/settings.json");
+    if settings.parent().is_some_and(|parent| parent.is_dir()) {
+        if let Err(reason) = claude::configure_hooks(&settings, &installed, true) {
+            notes.push(format!("Claude hooks were not installed ({reason})"));
+        }
+    }
+    if let Err(reason) = codex::configure_hooks(&home, &installed, true) {
+        notes.push(format!("Codex hooks were not installed ({reason})"));
+    }
+    if let Err(reason) = install_skill(state_dir, &home) {
+        notes.push(format!(
+            "the lightbulb-session-sharing skill was not installed ({reason})"
+        ));
+    }
+    notes
 }
 
 async fn enroll_remote(token: &str, body: Value) -> Result<Value> {

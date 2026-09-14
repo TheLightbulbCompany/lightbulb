@@ -148,8 +148,13 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     // Messaging never needs the container: the workspace renders mid-boot,
     // with the agents banner instead of the setup card.
     expect(screen.getByText("workspace")).toBeInTheDocument();
-    expect(screen.getByText(/Your agents are getting ready/i)).toBeInTheDocument();
-    expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/You can keep messaging in the meantime/i)).toBeInTheDocument();
+    // The banner now names the live step too, so "is the card gone?" has to be
+    // asked of something only the card renders — its rotating-ideas eyebrow.
+    expect(screen.queryByText(/try asking your agent to/i)).not.toBeInTheDocument();
+    // …and the banner is carrying real progress while it waits.
+    expect(screen.getByText(/finishing touches/i)).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "5");
 
     // The container finishes booting. Nothing else happens: no click, no
     // reload, no websocket push — only the status poll, whose cadence is 5s
@@ -157,7 +162,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     body = READY;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
 
-    await vi.waitFor(() => expect(screen.queryByText(/Your agents are getting ready/i)).not.toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.queryByText(/keep messaging in the meantime/i)).not.toBeInTheDocument());
     expect(screen.getByText("workspace")).toBeInTheDocument();
   });
 });

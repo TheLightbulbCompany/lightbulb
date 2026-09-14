@@ -76,35 +76,33 @@ from core.services.entitlement_teardown import still_entitled
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
-# Piped into a deployed backend task via ECS exec, this script may run against an
-# image that predates ``clerk_admin.create_organization`` — fall back to an inline
-# copy of that one POST so the migration does not have to wait for a promotion.
-try:
-    from core.services.clerk_admin import SlugTakenError, create_organization
-except ImportError:  # pragma: no cover — only the deployed-image path
 
-    class SlugTakenError(Exception):
-        pass
+# Piped into a deployed backend task via ECS exec, this script cannot rely on the
+# image's ``clerk_admin.create_organization`` (its signature has already changed once
+# underneath a run), so the one POST it needs is inlined here.
+class SlugTakenError(Exception):
+    pass
 
-    async def create_organization(*, name: str, created_by: str, slug: str | None = None):
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.clerk.com/v1/organizations",
-                headers={
-                    "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "lightbulb-backend/1.0",
-                },
-                json={"name": name, "created_by": created_by, **({"slug": slug} if slug else {})},
-            )
-        if resp.status_code == 422 and any(
-            e.get("code") in ("form_identifier_exists", "duplicate_record") for e in (resp.json().get("errors") or [])
-        ):
-            raise SlugTakenError(slug)
-        if resp.status_code >= 400:
-            print(f"  clerk POST /organizations -> {resp.status_code} {resp.text[:300]}", flush=True)
-            return None
-        return resp.json()
+
+async def create_organization(*, name: str, created_by: str, slug: str | None = None):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            "https://api.clerk.com/v1/organizations",
+            headers={
+                "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
+                "Content-Type": "application/json",
+                "User-Agent": "lightbulb-backend/1.0",
+            },
+            json={"name": name, "created_by": created_by, **({"slug": slug} if slug else {})},
+        )
+    if resp.status_code == 422 and any(
+        e.get("code") in ("form_identifier_exists", "duplicate_record") for e in (resp.json().get("errors") or [])
+    ):
+        raise SlugTakenError(slug)
+    if resp.status_code >= 400:
+        print(f"  clerk POST /organizations -> {resp.status_code} {resp.text[:300]}", flush=True)
+        return None
+    return resp.json()
 
 
 _SLUG_INVALID_RE = re.compile(r"[^a-z0-9]+")

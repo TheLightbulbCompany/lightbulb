@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
 from botocore.exceptions import ClientError
@@ -17,6 +18,18 @@ from core.auth import AuthContext, resolve_owner_id
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
 from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
 from core.services.local_session_grants import AgentInvocation
+
+STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "ended"]
+# What a device may claim. `offline` is the backend's verdict on a lapsed lease and
+# `ended` is written by the ended frame; neither is ever a status the device reports.
+INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]
+
+
+def iso(epoch: int | None) -> str | None:
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")]
 DeviceId = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -95,7 +108,7 @@ class SessionRegistration(ContractModel):
     native_conversation_id: OpaqueId
     generation: OpaqueId
     provider_version: Annotated[str, Field(min_length=1, max_length=128)]
-    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"] = "offline"
+    status: STATUSES = "offline"
     control_unavailable_reason: ControlUnavailableReason | None = None
     active_turn_id: OpaqueId | None = None
     capabilities: Capabilities = Field(default_factory=Capabilities)
@@ -113,7 +126,7 @@ class LocalSession(ContractModel):
     human_user_id: str
     provider: Literal["claude", "codex"]
     generation: str
-    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
+    status: STATUSES
     provider_version: str
     control_unavailable_reason: ControlUnavailableReason | None = None
     active_turn_id: str | None
@@ -122,6 +135,9 @@ class LocalSession(ContractModel):
     latest_event_seq: int = Field(default=0, ge=0)
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
+    last_event_at: str | None = None
+    ended_at: str | None = None
+    last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
 
 
 class PairedNode(ContractModel):
@@ -385,6 +401,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             "sessionId": sid,
             "revision": str(uuid.uuid4()),
             "commandSeq": (previous or {}).get("commandSeq", 0),
+            "lastEventAt": int(time.time()),
         }
         try:
             await repo.put_session(row, previous, enrollment)
@@ -409,7 +426,7 @@ async def authorize_session(auth: Caller, room_id: str, session_id: str) -> tupl
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
 
-async def list_resources(auth: Caller, room_id: str) -> RoomResources:
+async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = False) -> RoomResources:
     owner = caller_owner(auth)
     room_id = validate_uuid(room_id, label="room ID")
     await require_caller(auth, room_id)
@@ -467,7 +484,11 @@ async def list_resources(auth: Caller, room_id: str) -> RoomResources:
                 row, _ = await authorize_session(auth, room_id, projection["sessionId"])
                 public = dict(row)
                 public["latestEventSeq"] = row.get("eventSeq", 0)
-                if row["onlineUntil"] <= int(time.time()):
+                public["lastEventAt"] = iso(row.get("lastEventAt"))
+                public["endedAt"] = iso(row.get("endedAt"))
+                if row.get("endedAt") is not None:
+                    public["status"] = "ended"
+                elif row["onlineUntil"] <= int(time.time()):
                     public["status"] = "offline"
                 if not row["capabilitiesVerified"]:
                     public["capabilities"] = Capabilities().model_dump(by_alias=True)
@@ -475,6 +496,14 @@ async def list_resources(auth: Caller, room_id: str) -> RoomResources:
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
+    live = sorted((s for s in sessions if s.status != "ended"), key=lambda s: s.last_event_at or "", reverse=True)
+    if include_ended:
+        recent = sorted(
+            (s for s in sessions if s.status == "ended"), key=lambda s: s.last_event_at or "", reverse=True
+        )[:20]
+        sessions = live + recent
+    else:
+        sessions = live
     await require_caller(auth, room_id)
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
 
@@ -493,6 +522,8 @@ async def list_events(
 def _require_control(row: dict, request: LocalSessionCommand) -> None:
     if row["generation"] != request.expected_generation:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session generation changed.")
+    if row.get("endedAt") is not None:
+        raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
     if row["status"] == "offline" or row["onlineUntil"] <= int(time.time()):
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.")
     caps = row["capabilities"]

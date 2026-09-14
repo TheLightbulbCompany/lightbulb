@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import boto3
@@ -22,6 +23,12 @@ from tests.unit.services import test_local_sessions as registry_tests
 from tests.unit.services.test_local_sessions import ALICE, BOB, CLI, MAC, OTHER_ROOM, OWNER, ROOM, command
 
 db = registry_tests.db
+# The desktop's Rust tests assert the same documents; Rust-versus-Python skew has cost a prod outage.
+FIXTURES = Path(__file__).resolve().parents[5] / "packages" / "shared" / "fixtures" / "local-session-frames"
+
+
+def fixture(name: str) -> dict:
+    return json.loads((FIXTURES / f"{name}.json").read_text())
 
 
 @pytest.fixture
@@ -111,6 +118,23 @@ def registration(**changes):
     )
     session.update(changes)
     return {"type": "local.session.register", "session": session}
+
+
+def heartbeat(sid, **changes):
+    """The golden device frame, defaulted to what `start()` registered: silent about every field.
+
+    Labels are omit-means-unchanged on the wire, so the silent shape nulls them.
+    """
+    frame = fixture("device-heartbeat")
+    defaults = {
+        "sessionId": sid,
+        "generation": "generation-1",
+        "activeTurnId": "turn-1",
+        "title": None,
+        "cwdName": None,
+    }
+    frame["sessions"][0].update({**defaults, **changes})
+    return frame
 
 
 async def start(transport):
@@ -252,14 +276,7 @@ async def test_native_capability_restriction_survives_reconnect_and_heartbeat(tr
     public = (await service.list_resources(BOB, ROOM)).sessions[0]
     assert public.capabilities.send_mode == "queue"
     await relay(transport).handle_message(
-        "conn-1",
-        {
-            "type": "local.session.heartbeat",
-            "sessionId": sid,
-            "generation": "generation-1",
-            "status": "unknown",
-            "controlUnavailableReason": "runtime-unverified",
-        },
+        "conn-1", heartbeat(sid, status="unknown", controlUnavailableReason="runtime-unverified")
     )
     public = (await service.list_resources(BOB, ROOM)).sessions[0]
     assert public.capabilities.send_mode == "none"
@@ -351,9 +368,7 @@ async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hin
     # Removing owner membership removes this room from eligible hint channels.
     db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{ALICE.user_id}"})
     transport[4].clear()
-    await relay(transport).handle_message(
-        "conn-1", {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-1", "status": "idle"}
-    )
+    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
     assert all(ROOM not in hint["channel"] for hint in transport[4])
 
 
@@ -368,15 +383,11 @@ async def test_registration_server_bounds_compatibility_liveness_and_reconnect(t
             await relay(transport).handle_message("conn-1", registration(**changes))
     connect(transport, "conn-2", "2000")
     assert (await relay(transport).handle_message("conn-2", registration()))["sessionId"] == sid
-    for cid, payload in (
-        ("conn-1", registration()),
-        (
-            "conn-1",
-            {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-1", "status": "idle"},
-        ),
-    ):
-        with pytest.raises(ApiProblem):
-            await relay(transport).handle_message(cid, payload)
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", registration())
+    # The superseded connection cannot renew the session the replacement now owns.
+    ack = await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
+    assert ack["rejected"] == [sid]
     # Deleted older connection cannot affect the replacement.
     transport[0].delete_item(Key={"connectionId": "conn-1"})
     assert (await repo.get_session(OWNER, sid))["connectionId"] == "conn-2"
@@ -395,10 +406,7 @@ async def test_registration_server_bounds_compatibility_liveness_and_reconnect(t
         Key={"owner_id": OWNER}, UpdateExpression="REMOVE paired_devices.#mac", ExpressionAttributeNames={"#mac": MAC}
     )
     with pytest.raises(ApiProblem):
-        await relay(transport).handle_message(
-            "conn-2",
-            {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-2", "status": "idle"},
-        )
+        await relay(transport).handle_message("conn-2", heartbeat(sid, generation="generation-2", status="idle"))
 
 
 @pytest.mark.asyncio
@@ -731,23 +739,17 @@ async def test_native_successor_unblocks_new_input_without_replaying_old_unknown
     await service.submit_command(BOB, ROOM, sid, request)
     transport[3].clear()
     with patch.object(transport[2], "send_message_async", return_value=current_outcome == "dispatched") as post:
-        response = await relay(transport).handle_message(
-            "conn-1",
-            {
-                "type": "local.session.heartbeat",
-                "sessionId": sid,
-                "generation": "generation-2",
-                "status": "busy",
-                "activeTurnId": "turn-1",
-            },
-        )
+        response = await relay(transport).handle_message("conn-1", heartbeat(sid, generation="generation-2"))
     assert post.await_count == 1
     assert post.call_args.args[1]["command"]["requestId"] == "new-generation"
-    assert response["reconcile"] == {
-        "requestId": "new-generation",
-        "generation": "generation-2",
-        "state": current_outcome,
-    }
+    assert response["reconcile"] == [
+        {
+            "sessionId": sid,
+            "requestId": "new-generation",
+            "generation": "generation-2",
+            "state": current_outcome,
+        }
+    ]
     assert (await repo.get_command(OWNER, sid, "same-generation"))["state"] == "rejected"
     assert (await service.submit_command(BOB, ROOM, sid, command(service))).state == "unknown"
     with pytest.raises(ApiProblem):
@@ -764,74 +766,54 @@ async def test_native_successor_unblocks_new_input_without_replaying_old_unknown
             "providerMessageId": "native-2",
         },
     )
-    response = await relay(transport).handle_message(
-        "conn-1",
-        {
-            "type": "local.session.heartbeat",
-            "sessionId": sid,
-            "generation": "generation-2",
-            "status": "busy",
-            "activeTurnId": "turn-1",
-        },
-    )
-    assert response["reconcile"] == {"requestId": "request-1", "generation": "generation-1", "state": "unknown"}
+    response = await relay(transport).handle_message("conn-1", heartbeat(sid, generation="generation-2"))
+    assert response["reconcile"] == [
+        {"sessionId": sid, "requestId": "request-1", "generation": "generation-1", "state": "unknown"}
+    ]
 
 
 @pytest.mark.asyncio
-async def test_unchanged_heartbeat_renews_lease_dispatches_and_reconciles_without_hint_fanout(transport):
+async def test_unchanged_device_heartbeat_keeps_last_event_at_and_sends_no_hint(transport):
     with patch("time.time", return_value=10000):
         sid = await start(transport)
         await service.submit_command(BOB, ROOM, sid, command(service))
     before = await repo.get_session(OWNER, sid)
     transport[4].clear()
     with patch("time.time", return_value=10010):
-        response = await relay(transport).handle_message(
-            "conn-1",
-            {
-                "type": "local.session.heartbeat",
-                "sessionId": sid,
-                "generation": "generation-1",
-                "status": "busy",
-                "activeTurnId": "turn-1",
-            },
-        )
+        response = await relay(transport).handle_message("conn-1", heartbeat(sid))
     after = await repo.get_session(OWNER, sid)
     assert after["onlineUntil"] > before["onlineUntil"]
     assert after["revision"] != before["revision"]
-    assert response["type"] == "local.session.heartbeat.ack" and response["serverTime"] == 10010
-    assert response["reconcile"]["requestId"] == "request-1"
+    # The lease and delivery advance; activity and the room's refetch do not.
+    assert after["lastEventAt"] == 10000
+    assert response["type"] == "local.device.heartbeat.ack" and response["serverTime"] == 10010
+    assert response["reconcile"] == [
+        {"sessionId": sid, "requestId": "request-1", "generation": "generation-1", "state": "dispatched"}
+    ]
     assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "dispatched"
     assert transport[4] == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["status", "active-turn", "workspace", "control", "expired", "offline"])
+@pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "expired"])
 async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport, change):
     with patch("time.time", return_value=10000):
         sid = await start(transport)
-        if change == "offline":
-            await relay(transport).handle_message("conn-1", registration(status="offline"))
     row = await repo.get_session(OWNER, sid)
-    body = {
-        "type": "local.session.heartbeat",
-        "sessionId": sid,
-        "generation": "generation-1",
-        "status": "busy",
-        "activeTurnId": "turn-1",
+    changes = {
+        "status": {"status": "idle"},
+        "active-turn": {"activeTurnId": "turn-2"},
+        "control": {"controlUnavailableReason": "endpoint-unavailable"},
+        "workspace": {"workspace": {"revision": 1, "coverage": "bounded", "changed": True, "overlap": False}},
     }
-    if change == "status":
-        body["status"] = "idle"
-    if change == "active-turn":
-        body["activeTurnId"] = "turn-2"
-    if change == "workspace":
-        body["workspace"] = {"revision": 1, "coverage": "bounded", "changed": True, "overlap": False}
-    if change == "control":
-        body["controlUnavailableReason"] = "endpoint-unavailable"
     transport[4].clear()
     with patch("time.time", return_value=row["onlineUntil"] + 1 if change == "expired" else 10010):
-        response = await relay(transport).handle_message("conn-1", body)
-    assert response["type"] == "local.session.heartbeat.ack"
+        response = await relay(transport).handle_message("conn-1", heartbeat(sid, **changes.get(change, {})))
+    assert response["type"] == "local.device.heartbeat.ack"
     assert transport[4]
+    # A workspace scan is worth a refetch, but it is not the user doing something.
+    after = await repo.get_session(OWNER, sid)
+    assert after["lastEventAt"] == (10000 if change in {"workspace", "expired"} else 10010)
 
 
 @pytest.mark.asyncio
@@ -847,29 +829,10 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
     transport[4].clear()
     # activeTurnId matches the registered value: this heartbeat is silent about
     # everything except title/cwdName, which is the one omission under test.
-    await relay(transport).handle_message(
-        "conn-1",
-        {
-            "type": "local.session.heartbeat",
-            "sessionId": sid,
-            "generation": "generation-1",
-            "status": "busy",
-            "activeTurnId": "turn-1",
-        },
-    )
+    await relay(transport).handle_message("conn-1", heartbeat(sid))
     assert (await repo.get_session(OWNER, sid))["title"] == "Desktop and mobile notifications"
     assert transport[4] == []
-    await relay(transport).handle_message(
-        "conn-1",
-        {
-            "type": "local.session.heartbeat",
-            "sessionId": sid,
-            "generation": "generation-1",
-            "status": "busy",
-            "activeTurnId": "turn-1",
-            "title": "Renamed by the harness",
-        },
-    )
+    await relay(transport).handle_message("conn-1", heartbeat(sid, title="Renamed by the harness"))
     assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
     assert any(ROOM in hint["channel"] for hint in transport[4])
 
@@ -1089,3 +1052,130 @@ async def test_cursor_conflict_is_logged_with_reason_and_seqs_but_never_text(tra
     assert conflict.levelno == logging.WARNING
     assert conflict.reason == "cursor" and conflict.expected == 1 and conflict.got == 5 and conflict.sid == sid
     assert "private transcript" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_renews_listed_sessions_and_rejects_foreign_or_ended(transport, db):
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    before = await repo.get_session(OWNER, sid)
+    frame = heartbeat(sid, status="idle")
+    frame["sessions"].append({**frame["sessions"][0], "sessionId": "not-mine", "generation": "x"})
+    with patch("time.time", return_value=10010):
+        response = await relay(transport).handle_message("conn-1", frame)
+    after = await repo.get_session(OWNER, sid)
+    assert after["onlineUntil"] == 10010 + 30 > before["onlineUntil"]
+    assert after["status"] == "idle" and after["lastEventAt"] == 10010
+    assert response["type"] == "local.device.heartbeat.ack"
+    assert response["rejected"] == ["not-mine"]
+    assert response["serverTime"] == 10010
+    assert set(response) == set(fixture("device-heartbeat-ack"))
+
+
+@pytest.mark.asyncio
+async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    transport[4].clear()
+    frame = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
+    with patch("time.time", return_value=10006):
+        first = await relay(transport).handle_message("conn-1", frame)
+        hinted = len(transport[4])
+        second = await relay(transport).handle_message("conn-1", frame)
+    row = await repo.get_session(OWNER, sid)
+    assert row["endedAt"] == 10005 and row["status"] == "ended" and row["lastEventAt"] == 10005
+    assert first == second == {**fixture("session-ended-ack"), "sessionId": sid}
+    assert hinted and len(transport[4]) == hinted
+    assert (await service.list_resources(BOB, ROOM, include_ended=True)).sessions[0].status == "ended"
+    # A device heartbeat that still lists the ended session gets it back as rejected,
+    # and must not renew the lease of a session the desktop has stopped owning.
+    with patch("time.time", return_value=10007):
+        ack = await relay(transport).handle_message("conn-1", heartbeat(sid))
+    assert ack["rejected"] == [sid]
+    assert (await repo.get_session(OWNER, sid))["onlineUntil"] == row["onlineUntil"]
+    # A resumed conversation re-registers under the same id and un-ends.
+    with patch("time.time", return_value=10008):
+        await relay(transport).handle_message("conn-1", registration())
+    resumed = await repo.get_session(OWNER, sid)
+    assert "endedAt" not in resumed and "endedReason" not in resumed
+    assert resumed["status"] == "busy" and resumed["lastEventAt"] == 10008
+    # A device clock ahead of the server cannot park a session in the future.
+    with patch("time.time", return_value=10009):
+        await relay(transport).handle_message("conn-1", {**frame, "endedAt": 99999999})
+    clamped = await repo.get_session(OWNER, sid)
+    assert clamped["endedAt"] == clamped["lastEventAt"] == 10009
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_caps_one_frame_and_consecutive_frames_both_renew(transport):
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+        other = await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2"))
+    frame = heartbeat(sid)
+    frame["sessions"] = [{**frame["sessions"][0], "sessionId": f"session-{n}"} for n in range(25)]
+    # The cap must reject the extra entries, not the whole envelope: 25 entries are ~5 KB.
+    assert len(json.dumps(frame).encode()) < 16 * 1024
+    with pytest.raises(ApiProblem) as excinfo:
+        await relay(transport).handle_message("conn-1", frame)
+    assert excinfo.value.error.code == "INVALID_REQUEST"
+    # A device with more mirrors than one frame carries splits them; each frame stands alone.
+    with patch("time.time", return_value=10010):
+        await relay(transport).handle_message("conn-1", heartbeat(sid))
+        await relay(transport).handle_message("conn-1", heartbeat(other["sessionId"]))
+    assert (await repo.get_session(OWNER, sid))["onlineUntil"] == 10040
+    assert (await repo.get_session(OWNER, other["sessionId"]))["onlineUntil"] == 10040
+
+
+@pytest.mark.asyncio
+async def test_legacy_per_session_heartbeat_is_rejected(transport):
+    sid = await start(transport)
+    with pytest.raises(ApiProblem) as excinfo:
+        await relay(transport).handle_message(
+            "conn-1",
+            {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-1", "status": "busy"},
+        )
+    assert excinfo.value.error.code == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_device_input_cannot_claim_a_server_owned_status(transport):
+    # offline is the backend's verdict on a lapsed lease and ended is written by the
+    # ended frame; a device claiming either would forge a state it does not own.
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    for frame in (heartbeat(sid, status="ended"), heartbeat(sid, status="offline"), registration(status="offline")):
+        with pytest.raises(ApiProblem) as excinfo:
+            await relay(transport).handle_message("conn-1", frame)
+        assert excinfo.value.error.code == "INVALID_REQUEST"
+    assert (await repo.get_session(OWNER, sid))["status"] == "busy"
+    # The service-side registration model still defaults to offline: it is not device input.
+    assert (
+        service.SessionRegistration(
+            provider="codex",
+            profileFingerprint="f" * 64,
+            nativeConversationId="t",
+            generation="g",
+            providerVersion="1.0",
+        ).status
+        == "offline"
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_and_events_stamp_last_event_at(transport):
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10000
+    with patch("time.time", return_value=10020):
+        await relay(transport).handle_message(
+            "conn-1",
+            {
+                "type": "local.session.events",
+                "sessionId": sid,
+                "generation": "generation-1",
+                "batchId": "batch-1",
+                "afterSeq": 0,
+                "events": [{"kind": "text", "role": "assistant", "text": "done", "truncated": False}],
+            },
+        )
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020

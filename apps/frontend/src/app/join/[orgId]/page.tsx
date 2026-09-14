@@ -90,6 +90,7 @@ export default function JoinWorkspacePage() {
   // Redeem is idempotent server-side, but StrictMode's double-invoke would
   // still fire two POSTs; one attempt per bump.
   const ran = useRef(-1);
+  const redeemed = useRef(false);
 
   useEffect(() => {
     if (!token || typeof window === "undefined") return;
@@ -98,6 +99,15 @@ export default function JoinWorkspacePage() {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
   }, [token, tokenStorageKey]);
+
+  useEffect(
+    () => () => {
+      // Keep the captured token available while the success state renders.
+      // Navigation unmounts this page, which is the safe point to discard it.
+      if (redeemed.current) window.sessionStorage.removeItem(tokenStorageKey);
+    },
+    [tokenStorageKey],
+  );
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn || !orgListLoaded || !setActive || !orgId || !token) return;
@@ -116,10 +126,10 @@ export default function JoinWorkspacePage() {
         // the surface that resolves memberships, so fall through to it.
         try {
           await setActive({ organization: result.org_id });
-          window.sessionStorage.removeItem(tokenStorageKey);
+          redeemed.current = true;
           router.push("/chat");
         } catch {
-          window.sessionStorage.removeItem(tokenStorageKey);
+          redeemed.current = true;
           router.push("/onboarding");
         }
       })

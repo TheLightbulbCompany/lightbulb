@@ -2,7 +2,7 @@ import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { roomDisplayName, type RoomSummary } from "@lightbulb/shared";
 import { router } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -13,13 +13,14 @@ import {
   View,
 } from "react-native";
 
-import { usePulse } from "../../components/chat/usePulse";
-import { LogoMark } from "../../components/LogoMark";
-import { NewMessageSheet } from "../../components/room/NewMessageSheet";
-import { RoomActionsSheet } from "../../components/room/RoomActionsSheet";
-import { RoomRow, byRecency, otherMembers } from "../../components/room/RoomRow";
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
-import { useMobileRooms } from "../../lib/rooms";
+import { usePulse } from "../../../components/chat/usePulse";
+import { LogoMark } from "../../../components/LogoMark";
+import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
+import { RoomActionsSheet } from "../../../components/room/RoomActionsSheet";
+import { RoomRow, byRecency, otherMembers } from "../../../components/room/RoomRow";
+import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
+import { useMobileRooms } from "../../../lib/rooms";
 
 /** One flattened list entry — a section header, or a conversation. */
 type Row = { kind: "header"; title: string } | { kind: "room"; room: RoomSummary };
@@ -73,8 +74,14 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
-  // The room a long press is acting on; dropping it dismisses the sheet.
+  // The room a long press is acting on; dropping it starts the sheet's close
+  // animation. `lastActionRoom` keeps the sheet's content stable through that
+  // close — RoomActionsSheet stays mounted and is only ever toggled via
+  // `visible`, so it needs a non-null `room` for its whole exit animation.
   const [actionRoom, setActionRoom] = useState<RoomSummary | null>(null);
+  const lastActionRoom = useRef<RoomSummary | null>(null);
+  if (actionRoom) lastActionRoom.current = actionRoom;
+  const pencilScale = usePressScale();
 
   const details = rooms.directoryRoomDetails;
   // A DM's name lives on the room DETAIL's member list, not on the summary.
@@ -137,14 +144,16 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
             returnKeyType="search"
           />
         </View>
-        <Pressable
+        <AnimatedPressable
           onPress={() => setPickerOpen(true)}
+          onPressIn={pencilScale.onPressIn}
+          onPressOut={pencilScale.onPressOut}
           accessibilityRole="button"
           accessibilityLabel="New message"
-          style={({ pressed }) => [styles.pencil, pressed && styles.pencilPressed]}
+          style={[styles.pencil, pencilScale.style]}
         >
           <Feather name="edit-2" size={16} color={colors.cream} />
-        </Pressable>
+        </AnimatedPressable>
       </View>
       <FlatList
         data={data}
@@ -221,14 +230,21 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           router.push(`/(app)/room/${roomId}`);
         }}
       />
-      {actionRoom && (
-        <RoomActionsSheet
-          room={actionRoom}
-          onClose={() => setActionRoom(null)}
-          onSetPrefs={(prefs) => rooms.setRoomPrefs(actionRoom.roomId, prefs)}
-          onMarkUnread={() => rooms.markUnread(actionRoom.roomId)}
-        />
-      )}
+      {(() => {
+        // Local const so TS narrows it through the closures below — see the
+        // room screen's identical `sheetMessage` pattern.
+        const sheetRoom = lastActionRoom.current;
+        if (!sheetRoom) return null;
+        return (
+          <RoomActionsSheet
+            room={sheetRoom}
+            visible={actionRoom !== null}
+            onClose={() => setActionRoom(null)}
+            onSetPrefs={(prefs) => rooms.setRoomPrefs(sheetRoom.roomId, prefs)}
+            onMarkUnread={() => rooms.markUnread(sheetRoom.roomId)}
+          />
+        );
+      })()}
     </View>
   );
 }
@@ -271,8 +287,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  pencilPressed: { opacity: 0.85 },
-
   list: { paddingBottom: spacing.xl },
   listGrow: { flexGrow: 1 },
   sectionRow: {

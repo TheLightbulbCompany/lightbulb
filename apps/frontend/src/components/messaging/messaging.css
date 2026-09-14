@@ -42,7 +42,7 @@
 .room-message > .participant-avatar { border-radius: 6px; }
 .room-message [role="img"] > .overflow-hidden { width: 36px; height: 36px; border-radius: 6px; font-size: .8125rem; }
 .room-history .room-message { margin: 0 calc(-1 * var(--room-gutter)); padding-inline: var(--room-gutter); }
-.room-message:hover, .room-message:focus-within { background: var(--cream-deep); }
+.room-message:hover, .room-message:focus-within { background: var(--plane-hover); }
 .room-message-actions { position: absolute; top: -14px; right: var(--room-gutter, 0px); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); opacity: 0; pointer-events: none; }
 .room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
 .room-message-actions button { border-radius: 4px; }
@@ -63,7 +63,7 @@
 .room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; height: 28px; }
 .room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
 .room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
-.room-composer { position: relative; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0 20px 16px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 8px; background: var(--background); }
+.room-composer { position: relative; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0 20px 16px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 8px; background: var(--plane-raised); }
 .room-composer:focus-within { border-color: var(--ring); }
 .room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
 .room-drop-hint { padding: 0 4px; }
@@ -168,15 +168,20 @@
 }
 .participant-avatar[data-agent-state="attention"] { box-shadow: 0 0 0 2px var(--err); }
 .participant-avatar[data-agent-state="paused"] { box-shadow: 0 0 0 2px var(--warn); }
-/* Presence dot for people: bottom-right of the avatar, ringed in the surface it
-   sits on so it reads as attached. Where it shows is decided by the
-   ParticipantAvatar `showPresence` prop (single faces only), not here. */
-.participant-avatar[data-presence="online"]::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; background: var(--presence); box-shadow: 0 0 0 2px var(--background); }
-.room-directory .participant-avatar[data-presence="online"]::after { box-shadow: 0 0 0 2px var(--muted); }
+/* Presence dot: bottom-right of the avatar, ringed in the surface it sits on
+   so it reads as attached. Green for an online human, blue for an agent
+   (always reachable). Where it shows is decided by the ParticipantAvatar
+   `showPresence` prop (single faces only), not here. */
+.participant-avatar[data-presence="online"]::after, .participant-avatar[data-presence="agent"]::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 2px var(--background); }
+.participant-avatar[data-presence="online"]::after { background: var(--presence); }
+.participant-avatar[data-presence="agent"]::after { background: var(--presence-agent); }
+.room-directory .participant-avatar[data-presence="online"]::after, .room-directory .participant-avatar[data-presence="agent"]::after { box-shadow: 0 0 0 2px var(--muted); }
 @keyframes agent-activity-halo {
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
 }
-.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; overflow-x: hidden; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--muted); }
+/* Plane 2 of 3. Named directly rather than through --muted so it can never
+   drift back onto the rail's colour — see the ladder in globals.css. */
+.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; overflow-x: hidden; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--plane-sidebar); }
 .room-directory-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 /* The title shrinks and ellipsizes before the sidebar is forced wider than its
    box; the actions cluster never shrinks, and only wraps to a second line

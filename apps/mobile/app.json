@@ -3,7 +3,7 @@
     "name": "Lightbulb",
     "slug": "isol8-mobile",
     "owner": "thelightbulbcompany",
-    "version": "0.4.1",
+    "version": "0.4.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "flickmeon",
@@ -36,7 +36,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#e2dece",
+          "backgroundColor": "#ffffff",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 96
         }

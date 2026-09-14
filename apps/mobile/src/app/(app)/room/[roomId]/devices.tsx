@@ -4,7 +4,6 @@ import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
-import { HeaderBack } from "../../../../components/room/HeaderBack";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { SessionStatusDot } from "../../../../components/session/SessionStatusDot";
 import { colors, fonts, radii, spacing } from "../../../../config/theme";
@@ -36,8 +35,8 @@ export default function DevicesScreen() {
   const sections = resources.data ? deviceSections(resources.data, (human) => memberName(members, human)) : [];
 
   const headerOptions = {
+    // The back button is the (app) Stack's own: this is a pushed screen.
     title: "Devices & sessions",
-    headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}`} />,
   };
 
   if (rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {

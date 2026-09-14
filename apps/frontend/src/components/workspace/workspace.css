@@ -339,7 +339,11 @@
   padding: 12px 4px;
   min-height: 0;
   overflow-y: auto;
-  background: var(--cream-deep);
+  /* The rail is its OWN plane, one step below the sidebar. It used to paint
+     --cream-deep, the exact colour .room-directory paints, so the rail and the
+     sidebar were a single undifferentiated surface sitting 2% from the message
+     pane. That was the flatness. */
+  background: var(--plane-rail);
   border-right: 1px solid var(--edge);
 }
 .workspace-rail > button,
@@ -380,6 +384,12 @@
 .workspace-rail > a:hover,
 .workspace-rail > button[aria-current="page"] {
   color: var(--midnight);
+  background: var(--cream-deeper);
+}
+/* An engaged toggle (dark on, focus on) reads in the hue layer, so it stays
+   distinguishable from the merely-hovered state above. */
+.workspace-rail > button[aria-pressed="true"] {
+  color: var(--brand);
   background: var(--cream-deeper);
 }
 .workspace-rail > button:disabled { opacity: 0.5; cursor: not-allowed; }

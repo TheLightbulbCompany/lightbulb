@@ -25,6 +25,7 @@ from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
     ApiProblem,
     canonical_message,
+    human_emails,
     json_body_size,
     make_live_event,
     with_human_handles,
@@ -389,7 +390,8 @@ class OpenClawWorkWorker:
         token = container.get("gateway_token")
         if not isinstance(token, str) or not token:
             raise WorkRetry("gateway token unavailable")
-        members = with_human_handles(await messaging_repo.list_members(meta["roomId"]))
+        room_members = await messaging_repo.list_members(meta["roomId"])
+        members = with_human_handles(room_members, await human_emails(room_members))
         body = await build_ingress_body(
             meta=meta, target_agent_id=member["id"], event_kind=event_kind, message=message, members=members
         )

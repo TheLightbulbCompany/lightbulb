@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 import type { CanonicalRoomMessage, MessageAttachment, RoomMember } from "@lightbulb/shared";
+import * as Haptics from "expo-haptics";
 
 import { colors } from "../../../config/theme";
 import { MessageGroup } from "../MessageGroup";
@@ -78,6 +79,7 @@ describe("MessageGroup reactions", () => {
     );
     await fireEvent.press(screen.getByLabelText("Remove 👍 reaction, 2"));
     expect(onToggleReaction).toHaveBeenCalledWith("👍", false);
+    expect(Haptics.selectionAsync).toHaveBeenCalledTimes(1);
   });
 
   it("hides reactions on a deleted message even if reaction data is present", async () => {
@@ -275,6 +277,13 @@ describe("MessageGroup attachments", () => {
     await fireEvent(screen.getByText("Friday"), "longPress");
     expect(onLongPress).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText("Close")).toBeNull();
+    // Fires exactly once, and strictly before the caller's own handler (same
+    // frame as the actions sheet is about to present, not after it mounts).
+    expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
+    expect(Haptics.impactAsync).toHaveBeenCalledWith(Haptics.ImpactFeedbackStyle.Medium);
+    const hapticOrder = (Haptics.impactAsync as jest.Mock).mock.invocationCallOrder[0];
+    const longPressOrder = onLongPress.mock.invocationCallOrder[0];
+    expect(hapticOrder).toBeLessThan(longPressOrder);
   });
 
   it("pages between several attachments with an n of m indicator", async () => {

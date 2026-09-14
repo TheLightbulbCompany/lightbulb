@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
+import * as Haptics from "expo-haptics";
 
 // `mock`-prefixed because babel-plugin-jest-hoist rejects any other out-of-scope
 // name a factory reaches for, and referenced lazily for the same reason the rest
@@ -47,6 +48,9 @@ describe("MessageActionsSheet", () => {
     expect(onReact).toHaveBeenCalledWith("🎉", true);
     await fireEvent.press(screen.getByLabelText("Remove 👍 reaction"));
     expect(onReact).toHaveBeenCalledWith("👍", false);
+    // A reaction pick is a selection change, not a plain tap — Slack-style
+    // selection haptic, once per toggle.
+    expect(Haptics.selectionAsync).toHaveBeenCalledTimes(2);
   });
 
   it("copies the message text", async () => {
@@ -148,5 +152,37 @@ describe("MessageActionsSheet", () => {
     // The sheet is still open and still useful.
     expect(screen.getByText("Copy text")).toBeTruthy();
     expect(screen.getByText("Copy link")).toBeTruthy();
+  });
+
+  // The room screens now keep this component mounted and toggle `visible`
+  // instead of conditionally rendering it (`{target && <.../>}`) — that old
+  // shape gave BottomSheet no chance to animate out. This proves `visible`
+  // is forwarded, not hardcoded, so the SAME instance can go hidden then
+  // visible again via nothing but a prop change.
+  it("stays mounted and honors visible toggles instead of a hardcoded open state", async () => {
+    const onClose = jest.fn();
+    const { rerender } = await render(
+      <MessageActionsSheet
+        message={message}
+        currentUserId="user-a"
+        roomId="room-1"
+        visible={false}
+        onClose={onClose}
+        onReact={() => {}}
+      />,
+    );
+    expect(screen.queryByText("Copy text")).toBeNull();
+
+    await rerender(
+      <MessageActionsSheet
+        message={message}
+        currentUserId="user-a"
+        roomId="room-1"
+        visible
+        onClose={onClose}
+        onReact={() => {}}
+      />,
+    );
+    expect(screen.getByText("Copy text")).toBeTruthy();
   });
 });

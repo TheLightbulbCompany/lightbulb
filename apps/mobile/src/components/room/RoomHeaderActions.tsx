@@ -1,7 +1,9 @@
 import Feather from "@expo/vector-icons/Feather";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii } from "../../config/theme";
+import { hapticSelection } from "../../lib/haptics";
+import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
 
 /**
  * The conversation header's star/mute icon pair — RoomHeader.tsx's own icon
@@ -29,17 +31,25 @@ export function RoomHeaderActions({
   /** Sessions working or waiting for approval; drawn as a badge. */
   liveSessions?: number;
 }) {
+  const devicesScale = usePressScale();
+  const starScale = usePressScale();
+  const muteScale = usePressScale();
   return (
     <View style={styles.row}>
       {onOpenDevices && (
-        <Pressable
-          onPress={onOpenDevices}
+        <AnimatedPressable
+          onPress={() => {
+            hapticSelection();
+            onOpenDevices();
+          }}
+          onPressIn={devicesScale.onPressIn}
+          onPressOut={devicesScale.onPressOut}
           disabled={disabled}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={liveSessions > 0 ? `Devices & sessions, ${liveSessions} live` : "Devices & sessions"}
           accessibilityState={{ disabled: !!disabled }}
-          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+          style={[styles.button, devicesScale.style]}
         >
           <Feather name="terminal" size={18} color={colors.inkSoft} />
           {liveSessions > 0 && (
@@ -47,30 +57,44 @@ export function RoomHeaderActions({
               <Text style={styles.badgeText}>{liveSessions > 9 ? "9+" : String(liveSessions)}</Text>
             </View>
           )}
-        </Pressable>
+        </AnimatedPressable>
       )}
-      <Pressable
-        onPress={onToggleStar}
+      <AnimatedPressable
+        onPress={() => {
+          hapticSelection();
+          onToggleStar();
+        }}
+        onPressIn={starScale.onPressIn}
+        onPressOut={starScale.onPressOut}
         disabled={disabled}
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={starred ? "Unstar this conversation" : "Star this conversation"}
         accessibilityState={{ selected: starred, disabled: !!disabled }}
-        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+        // An ARRAY, never a function: reanimated only attaches an animated
+        // style it can see in the prop itself, and a function style is opaque
+        // to it — the scale would silently never run. The scale is the press
+        // feedback; a background tint on top of it would be two signals.
+        style={[styles.button, starScale.style]}
       >
         <Feather name="star" size={18} color={colors.inkSoft} />
-      </Pressable>
-      <Pressable
-        onPress={onToggleMute}
+      </AnimatedPressable>
+      <AnimatedPressable
+        onPress={() => {
+          hapticSelection();
+          onToggleMute();
+        }}
+        onPressIn={muteScale.onPressIn}
+        onPressOut={muteScale.onPressOut}
         disabled={disabled}
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={muted ? "Unmute this conversation" : "Mute this conversation"}
         accessibilityState={{ selected: muted, disabled: !!disabled }}
-        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+        style={[styles.button, muteScale.style]}
       >
         <Feather name={muted ? "bell-off" : "bell"} size={18} color={colors.inkSoft} />
-      </Pressable>
+      </AnimatedPressable>
     </View>
   );
 }
@@ -84,7 +108,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  buttonPressed: { backgroundColor: colors.rowPressed },
   badge: {
     position: "absolute",
     top: 3,

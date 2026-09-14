@@ -23,20 +23,24 @@ const MUTE_FAILED = "The notification setting could not be saved.";
  * RoomDirectoryRow's order and wording. Leave channel stays out for now (task
  * 6 brief) — that needs a confirm dialog this sheet doesn't have yet.
  *
- * Mirrors MessageActionsSheet's shape: mounted conditionally by the caller
- * (`{target && <RoomActionsSheet …>}`), so dropping the target dismisses it.
- * Unlike Mark unread (fire-and-forget, same as the message sheet elsewhere in
- * this app), Star/Mute keep the sheet open on failure and show the web's own
- * copy inline — there is nowhere else on the room list for that error to
- * land, and this sheet has the room a native header doesn't.
+ * Mirrors MessageActionsSheet's shape: kept mounted by the caller and toggled
+ * via `visible` (BottomSheet's own contract), so closing always plays the
+ * sheet's spring-out before `onClose` runs. Unlike Mark unread
+ * (fire-and-forget, same as the message sheet elsewhere in this app),
+ * Star/Mute keep the sheet open on failure and show the web's own copy
+ * inline — there is nowhere else on the room list for that error to land,
+ * and this sheet has the room a native header doesn't.
  */
 export function RoomActionsSheet({
   room,
+  visible = true,
   onClose,
   onSetPrefs,
   onMarkUnread,
 }: {
   room: RoomSummary;
+  /** See MessageActionsSheet's `visible` — same default-true contract. */
+  visible?: boolean;
   onClose: () => void;
   onSetPrefs: (prefs: MemberPrefsRequest) => Promise<unknown>;
   onMarkUnread: () => void | Promise<unknown>;
@@ -82,7 +86,7 @@ export function RoomActionsSheet({
   ];
 
   return (
-    <BottomSheet visible onClose={onClose} closeLabel="Close conversation actions">
+    <BottomSheet visible={visible} onClose={onClose} closeLabel="Close conversation actions">
       <View style={styles.card}>
         <View style={styles.handle} />
         {rows.map(({ icon, label, run }) => (

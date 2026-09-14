@@ -1,4 +1,5 @@
 import { Identity, type IdentityProps } from "@/components/teams/shared/components/Identity";
+import { agentTint } from "@/lib/agentTint";
 import type { DirectoryParticipant, RoomParticipant } from "./types";
 
 const ACTIVITY_LABEL = {
@@ -21,9 +22,19 @@ export function ParticipantAvatar({ participant, size = "default", showPresence 
     ? ACTIVITY_LABEL[activity as keyof typeof ACTIVITY_LABEL]
     : undefined;
   const online = showPresence && participant.kind === "human" && participant.online === true;
-  return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={online ? "online" : undefined}>
-    <Identity name={participant.displayName} avatarOnly size={size} />
+  // Agents are always reachable, so they always show a presence dot (blue, distinct
+  // from a human's green "online") -- never for offline humans.
+  const isAgent = showPresence && participant.kind === "agent";
+  const presence = online ? "online" : isAgent ? "agent" : undefined;
+  // Identity tint is keyed off kind, not showPresence: a face in a stacked
+  // facepile hides its dot but is still the same agent, and losing the tint
+  // there would make the pile unreadable — which is the whole problem the
+  // tint exists to solve.
+  const tint = participant.kind === "agent" ? agentTint(participant.id) : null;
+  return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={presence}>
+    <Identity name={participant.displayName} avatarOnly size={size} tint={tint} />
     {label && <span className="sr-only">{label}</span>}
     {online && <span className="sr-only">Online</span>}
+    {isAgent && <span className="sr-only">Agent, always available</span>}
   </span>;
 }

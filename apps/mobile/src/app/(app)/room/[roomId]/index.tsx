@@ -13,8 +13,6 @@ import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -22,19 +20,21 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
-import { HeaderBack } from "../../../../components/room/HeaderBack";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
-import { RoomComposer, useComposerKeyboardOffset } from "../../../../components/room/RoomComposer";
+import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { liveSessionCount } from "../../../../lib/localSessions";
+import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
@@ -42,8 +42,13 @@ import { typingLine } from "../../../../lib/typingLine";
 const STAR_FAILED = "The star could not be saved.";
 const MUTE_FAILED = "The notification setting could not be saved.";
 
-/** Distance from the bottom, in px, still counted as "at the bottom". */
-const BOTTOM_SLACK = 80;
+/**
+ * How far the reader may scroll back, in px, before the jump-to-latest pill
+ * appears. The list is INVERTED, so `contentOffset.y === 0` is the newest
+ * message and the offset grows going back in time — no content/layout
+ * arithmetic, and nothing to recompute when the keyboard resizes the list.
+ */
+const JUMP_THRESHOLD = 80;
 
 export default function ConversationRoute() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
@@ -104,6 +109,10 @@ function Conversation() {
     [rooms.messages],
   );
   const items = useMemo(() => buildTimeline(mainMessages, { readSeq }), [mainMessages, readSeq]);
+  // `buildTimeline` is oldest → newest; an inverted list draws index 0 at the
+  // bottom, so reversing here puts the same visual order on screen — dividers
+  // included — with the newest message simply THERE, never scrolled to.
+  const newestFirst = useMemo(() => [...items].reverse(), [items]);
   const replyCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const message of rooms.messages) {
@@ -158,8 +167,14 @@ function Conversation() {
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
-  // The message a long press is acting on; dropping it dismisses the sheet.
+  // The message a long press is acting on; dropping it starts the sheet's
+  // close animation. `lastActionTarget` keeps the sheet's content stable
+  // through that close — BottomSheet stays mounted and is only ever toggled
+  // via `visible`, so `MessageActionsSheet` needs a non-null `message` for
+  // its whole exit animation, not just up to the moment the target clears.
   const [actionTarget, setActionTarget] = useState<CanonicalRoomMessage | null>(null);
+  const lastActionTarget = useRef<CanonicalRoomMessage | null>(null);
+  if (actionTarget) lastActionTarget.current = actionTarget;
 
   // The messageId of the most recent failed reaction toggle (mirrors the web's
   // single `reactionError` string state) — cleared UNCONDITIONALLY at the start
@@ -176,13 +191,10 @@ function Conversation() {
   );
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
-  const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  const jumpScale = usePressScale();
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const next = contentSize.height - layoutMeasurement.height - contentOffset.y < BOTTOM_SLACK;
-    atBottomRef.current = next;
-    setAtBottom(next);
+    setAtBottom(event.nativeEvent.contentOffset.y <= JUMP_THRESHOLD);
   }, []);
 
   const runningRun = runs.find((run) => run.state === "running");
@@ -201,15 +213,14 @@ function Conversation() {
   // Hoisted above the blocked-state early return below: a hook called inside
   // the JSX prop would run on the normal render and not on a blocked one,
   // which is a rules-of-hooks violation and a real order change, not a lint nit.
-  const keyboardOffset = useComposerKeyboardOffset();
+  const insets = useSafeAreaInsets();
 
+  // On `headerOptions` rather than inline so the blocked-state early return
+  // below keeps the header too — a blocked screen with no title and no
+  // star/mute is worse than the state it is reporting. The back button is the
+  // (app) Stack's own: the room is a PUSHED screen now, not a Stack root.
   const headerOptions = {
     title,
-    // The room is this Stack's root, so nothing draws a back button for it.
-    // It lives on `headerOptions` rather than inline so the blocked-state
-    // early return below keeps it too — a blocked screen with no way out is
-    // worse than the state it is reporting.
-    headerLeft: () => <HeaderBack fallback="/(app)/home" />,
     headerTitle: () => (
       <View style={styles.headerTitle}>
         <Text style={styles.headerName} numberOfLines={1}>
@@ -254,8 +265,15 @@ function Conversation() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={keyboardOffset}
+      behavior="padding"
+      // `automaticOffset` asks UIKit where this view actually sits on screen,
+      // so the nav bar's height stops being something we have to guess — the
+      // measured-44pt `useComposerKeyboardOffset` constant died with it.
+      automaticOffset
+      // All that is left is the pairing with the composer's own safe-area
+      // padding: land the composer box `insets.bottom` INTO the keyboard so its
+      // padding lifts the visible bar back flush on top of it.
+      keyboardVerticalOffset={-insets.bottom}
     >
       <Stack.Screen options={headerOptions} />
       {prefsError && (
@@ -266,38 +284,20 @@ function Conversation() {
       <FlatList
         ref={listRef}
         testID="room-timeline"
-        data={items}
+        // Inverted, the way every chat app draws a timeline: the newest content
+        // is at offset 0 and simply appears there, so a new message, a run frame
+        // or the keyboard resizing the list never animates a scroll.
+        inverted
+        data={newestFirst}
         keyExtractor={(item) => item.key}
         contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
-        onContentSizeChange={() => {
-          if (atBottomRef.current) listRef.current?.scrollToEnd({ animated: true });
-        }}
+        // Header and footer are swapped against the un-inverted version: on an
+        // inverted list the HEADER draws at the bottom, under the newest message.
         ListHeaderComponent={
-          rooms.historyError ? (
-            <View style={styles.errorCard}>
-              <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
-              <Pressable
-                onPress={rooms.loadHistory}
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading history"
-              >
-                <Text style={styles.retryText}>Retry</Text>
-              </Pressable>
-            </View>
-          ) : null
-        }
-        ListEmptyComponent={
-          rooms.historyLoading ? (
-            <TimelineSkeleton />
-          ) : (
-            <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
-          )
-        }
-        ListFooterComponent={
           <View>
             <LocalMessageRows
               rows={rows}
@@ -310,6 +310,27 @@ function Conversation() {
               <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
             ))}
           </View>
+        }
+        ListEmptyComponent={
+          rooms.historyLoading ? (
+            <TimelineSkeleton />
+          ) : (
+            <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
+          )
+        }
+        ListFooterComponent={
+          rooms.historyError ? (
+            <View style={styles.errorCard}>
+              <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
+              <Pressable
+                onPress={rooms.loadHistory}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading history"
+              >
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : null
         }
         renderItem={({ item }) => {
           if (item.kind === "date") {
@@ -351,34 +372,47 @@ function Conversation() {
         }}
       />
       {!atBottom && (
-        <Pressable
-          style={styles.jump}
-          onPress={() => listRef.current?.scrollToEnd({ animated: true })}
+        <AnimatedPressable
+          style={[styles.jump, jumpScale.style]}
+          // Offset 0 IS the newest message on an inverted list.
+          onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
+          onPressIn={jumpScale.onPressIn}
+          onPressOut={jumpScale.onPressOut}
           accessibilityRole="button"
           accessibilityLabel="Jump to latest"
         >
           <Feather name="arrow-down" size={16} color={colors.white} />
-        </Pressable>
+        </AnimatedPressable>
       )}
-      {actionTarget && (
-        <MessageActionsSheet
-          message={actionTarget}
-          currentUserId={userId ?? ""}
-          roomId={roomId}
-          onClose={() => setActionTarget(null)}
-          // ponytail: mark-unread's rejection is still swallowed, so a failed
-          // mark-unread just looks like nothing happened; the upgrade is an
-          // inline error or a toast. Reaction failures now surface (see
-          // `reactionErrorMessageId` above), matching the web's `reactionError`.
-          onReact={(emoji, active) => reactToMessage(actionTarget.messageId, emoji, active)}
-          onReplyInThread={() =>
-            router.push(`/(app)/room/${roomId}/thread/${actionTarget.messageId}`)
-          }
-          onMarkUnread={() =>
-            void rooms.markUnread(roomId, actionTarget.messageSeq).catch(() => {})
-          }
-        />
-      )}
+      {(() => {
+        // A local const so TS can narrow it through the closures below —
+        // `lastActionTarget.current` itself doesn't narrow across a nested
+        // arrow function boundary, and these must never read `actionTarget`
+        // directly: it clears to null the instant a row closes the sheet,
+        // before BottomSheet's exit animation finishes.
+        const sheetMessage = lastActionTarget.current;
+        if (!sheetMessage) return null;
+        return (
+          <MessageActionsSheet
+            message={sheetMessage}
+            visible={actionTarget !== null}
+            currentUserId={userId ?? ""}
+            roomId={roomId}
+            onClose={() => setActionTarget(null)}
+            // ponytail: mark-unread's rejection is still swallowed, so a failed
+            // mark-unread just looks like nothing happened; the upgrade is an
+            // inline error or a toast. Reaction failures now surface (see
+            // `reactionErrorMessageId` above), matching the web's `reactionError`.
+            onReact={(emoji, active) => reactToMessage(sheetMessage.messageId, emoji, active)}
+            onReplyInThread={() =>
+              router.push(`/(app)/room/${roomId}/thread/${sheetMessage.messageId}`)
+            }
+            onMarkUnread={() =>
+              void rooms.markUnread(roomId, sheetMessage.messageSeq).catch(() => {})
+            }
+          />
+        );
+      })()}
       {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
@@ -396,11 +430,15 @@ function Conversation() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.cream },
-  list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
+  // Top/bottom are swapped against the un-inverted version: the content
+  // container is inside the flipped scroll view, so `paddingTop` draws at the
+  // bottom (against the composer) and `paddingBottom` at the top.
+  list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
   headerTitle: { alignItems: "center" },
-  headerName: { fontFamily: fonts.sansSemiBold, fontSize: 17, lineHeight: 22, color: colors.ink },
-  headerMeta: { fontFamily: fonts.sans, fontSize: 11, lineHeight: 14, color: colors.mute },
+  // System font, not Source Sans 3 — see `type.navTitle`.
+  headerName: type.navTitle,
+  headerMeta: type.navMeta,
   prefsError: {
     fontFamily: fonts.sans,
     fontSize: 13,

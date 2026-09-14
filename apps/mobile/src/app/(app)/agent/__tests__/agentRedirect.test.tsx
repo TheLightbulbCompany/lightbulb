@@ -38,7 +38,7 @@ it("resolves the agent's DM room and replaces the route with it", async () => {
 it("falls back to the roster instead of spinning forever when no room resolves", async () => {
   mockSelectAgentDm.mockResolvedValueOnce(null);
   await render(<AgentRedirect />);
-  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/(app)/home"));
+  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/(app)/(tabs)/home"));
 });
 
 it("surfaces the failure with a retry instead of silently leaving", async () => {

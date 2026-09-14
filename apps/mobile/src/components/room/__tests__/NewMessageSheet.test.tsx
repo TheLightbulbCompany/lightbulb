@@ -149,31 +149,40 @@ describe("NewMessageSheet", () => {
   // the backend's `MAX_ROOM_MEMBERS = 32` (31 picked here + the creator).
   // Applies regardless of mode; exercised here in the sheet's default
   // "direct" mode.
-  it("caps member selection at 31 and never lets a 32nd pick land", async () => {
-    const many = Array.from({ length: 32 }, (_, index) => ({
-      userId: `user-${index}`,
-      name: `Person ${index}`,
-    }));
-    mockFetchMembers.mockImplementation(async () => many);
-    await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
-    await waitFor(() => expect(screen.getByText("Person 0")).toBeTruthy());
+  it(
+    "caps member selection at 31 and never lets a 32nd pick land",
+    async () => {
+      const many = Array.from({ length: 32 }, (_, index) => ({
+        userId: `user-${index}`,
+        name: `Person ${index}`,
+      }));
+      mockFetchMembers.mockImplementation(async () => many);
+      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+      await waitFor(() => expect(screen.getByText("Person 0")).toBeTruthy());
 
-    for (let index = 0; index < 31; index += 1) {
-      await fireEvent.press(screen.getByText(`Person ${index}`));
-    }
-    expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
-      false,
-    );
+      for (let index = 0; index < 31; index += 1) {
+        await fireEvent.press(screen.getByText(`Person ${index}`));
+      }
+      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+        false,
+      );
 
-    // Person 31 would be the 32nd pick — the row is disabled past the cap,
-    // so this press is a no-op.
-    await fireEvent.press(screen.getByText("Person 31"));
-    await fireEvent.press(screen.getByLabelText("Start conversation"));
-    await waitFor(() => expect(mockCreateRoom).toHaveBeenCalled());
-    const members = mockCreateRoom.mock.calls[0][0].members as { id: string }[];
-    expect(members).toHaveLength(31);
-    expect(members.some((member) => member.id === "user-31")).toBe(false);
-  });
+      // Person 31 would be the 32nd pick — the row is disabled past the cap,
+      // so this press is a no-op.
+      await fireEvent.press(screen.getByText("Person 31"));
+      await fireEvent.press(screen.getByLabelText("Start conversation"));
+      await waitFor(() => expect(mockCreateRoom).toHaveBeenCalled());
+      const members = mockCreateRoom.mock.calls[0][0].members as { id: string }[];
+      expect(members).toHaveLength(31);
+      expect(members.some((member) => member.id === "user-31")).toBe(false);
+    },
+    // 31 sequential presses each re-render the whole sheet, and BottomSheet's
+    // gesture-handler tree (GestureHandlerRootView + GestureDetector, added
+    // for real pan-to-dismiss) costs more per render than the old bare
+    // Animated.View did — comfortably under 5s alone, but this loop's 31
+    // renders add up past jest's default per-test timeout.
+    15000,
+  );
 
   it("says so when the conversation cannot be opened", async () => {
     const onOpenRoom = jest.fn();

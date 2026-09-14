@@ -7,14 +7,14 @@ import { randomUUID } from "expo-crypto";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View,
+  AppState, FlatList, Pressable, StyleSheet, Text, View,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
-import { HeaderBack } from "../../../../../components/room/HeaderBack";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
-import { useComposerKeyboardOffset } from "../../../../../components/room/RoomComposer";
 import { SessionPromptRow } from "../../../../../components/session/SessionPromptRow";
 import { SessionStatusDot } from "../../../../../components/session/SessionStatusDot";
 import { TranscriptRowView, WorkingRow } from "../../../../../components/session/TranscriptRow";
@@ -63,11 +63,12 @@ export default function SessionScreen() {
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
   );
-  const keyboardOffset = useComposerKeyboardOffset();
+  // Hoisted above the early returns below — see the room screen.
+  const insets = useSafeAreaInsets();
 
   const headerOptions = {
+    // The back button is the (app) Stack's own: this is a pushed screen.
     title: session ? sessionLabel(session) : "Session",
-    headerLeft: () => <HeaderBack fallback={`/(app)/room/${roomId}/devices`} />,
   };
 
   if (rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
@@ -115,13 +116,13 @@ export default function SessionScreen() {
         live={live}
         ownerName={ownerName}
         name={name}
-        keyboardOffset={keyboardOffset}
+        bottomInset={insets.bottom}
       />
     </View>
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, live, ownerName, name, keyboardOffset }: {
+function SessionBody({ roomId, session, client, revision, onAccessLost, live, ownerName, name, bottomInset }: {
   roomId: string;
   session: LocalSession;
   client: RoomResourceSource["client"];
@@ -130,7 +131,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
   live: boolean;
   ownerName: string;
   name: (who: string | null) => string;
-  keyboardOffset: number;
+  bottomInset: number;
 }) {
   const busy = session.status === "busy";
   const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { busy: busy && live });
@@ -155,8 +156,11 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={keyboardOffset}
+      behavior="padding"
+      // See the room screen for why `automaticOffset` plus the negative
+      // safe-area inset is the whole configuration.
+      automaticOffset
+      keyboardVerticalOffset={-bottomInset}
     >
       <View style={styles.summary}>
         <View style={styles.summaryLine}>

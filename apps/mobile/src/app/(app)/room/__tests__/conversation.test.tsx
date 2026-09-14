@@ -346,18 +346,42 @@ describe("conversation screen", () => {
     expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/thread/m2");
   });
 
+  // On an inverted list offset 0 IS the newest message, so the pill is purely a
+  // function of how far back the reader has scrolled — no content/layout maths.
   it("shows a jump-to-latest pill only after scrolling away from the bottom", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
     expect(screen.queryByLabelText("Jump to latest")).toBeNull();
-    await fireEvent.scroll(screen.getByTestId("room-timeline"), {
-      nativeEvent: {
-        contentOffset: { y: 0, x: 0 },
-        contentSize: { height: 2000, width: 400 },
-        layoutMeasurement: { height: 600, width: 400 },
-      },
-    });
+    const scrollTo = (y: number) =>
+      fireEvent.scroll(screen.getByTestId("room-timeline"), {
+        nativeEvent: {
+          contentOffset: { y, x: 0 },
+          contentSize: { height: 2000, width: 400 },
+          layoutMeasurement: { height: 600, width: 400 },
+        },
+      });
+    // Still within the 80px slack: the reader has not really left the bottom.
+    await scrollTo(40);
+    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+    await scrollTo(400);
     expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
+    await scrollTo(0);
+    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+  });
+
+  // The whole point of the inversion: the newest message is simply THERE at
+  // offset 0, so nothing scrolls itself when a message, a run frame or the
+  // keyboard changes the list's size. `buildTimeline` hands us oldest → newest,
+  // so index 0 of the list's data must be the NEWEST item.
+  it("draws the timeline inverted, newest item first, with no self-scrolling", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    const list = screen.getByTestId("room-timeline");
+    expect(list.props.inverted).toBe(true);
+    const data = list.props.data as { key: string; message?: { text: string } }[];
+    expect(data[0]?.message?.text).toBe("mine");
+    // Oldest item last — the date divider that opens the day, not a message.
+    expect(data.at(-1)?.message).toBeUndefined();
   });
 
   // Nothing wrote the push handler's target before this task: the signal existed

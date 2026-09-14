@@ -5,8 +5,13 @@ import { Avatar } from "./Avatar";
 import { colors, fonts, spacing, type } from "../../config/theme";
 import { relativeTime } from "../../lib/relativeTime";
 
-/** Everything a row needs of a member: the name it shows, the tile it draws. */
-export type RowParticipant = Pick<RoomMember, "kind" | "displayName">;
+/**
+ * Everything a row needs of a member: the name it shows, the tile it draws,
+ * and (for a human) whether they're online. `online` isn't on `RoomMember`
+ * yet -- mobile has no presence data for humans, so it stays undefined until
+ * that field reaches the app; see Avatar.tsx.
+ */
+export type RowParticipant = Pick<RoomMember, "kind" | "displayName"> & { online?: boolean };
 
 /**
  * The room's members minus the viewer — a DM is named after the OTHER party,
@@ -85,7 +90,12 @@ export function RoomRow({
         </View>
       ) : (
         <View style={styles.lead}>
-          <Avatar name={label} kind={participants[0]?.kind ?? "human"} />
+          <Avatar
+            name={label}
+            kind={participants[0]?.kind ?? "human"}
+            online={participants[0]?.online}
+            showPresence
+          />
         </View>
       )}
       <Text style={[styles.label, count > 0 && styles.labelUnread]} numberOfLines={1}>

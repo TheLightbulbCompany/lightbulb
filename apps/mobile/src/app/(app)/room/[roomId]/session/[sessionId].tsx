@@ -55,7 +55,7 @@ export default function SessionScreen() {
   useEffect(() => {
     if (roomId) selectRoomRef.current(roomId);
   }, [roomId]);
-  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: live && !!roomId });
+  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: live && !!roomId, includeEnded: true });
   const session = resources.data?.sessions.find((s) => s.sessionId === sessionId);
   const members = rooms.activeRoom?.members;
   const ownerName = session ? memberName(members, session.humanUserId) : "Room member";

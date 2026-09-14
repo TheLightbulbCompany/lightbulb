@@ -14,7 +14,7 @@ export function SessionDockPanel(props: IDockviewPanelProps<SessionDockPanelPara
   const params = useDockPanelParams(props);
   const { messaging, onEvent, connectionRevision } = useLiveEvents();
   const source = useMemo(() => ({ client: messaging, onEvent, connectionRevision }), [messaging, onEvent, connectionRevision]);
-  const resources = useRoomResources(params.roomId, source);
+  const resources = useRoomResources(params.roomId, source, { includeEnded: true });
   const [members, setMembers] = useState<RoomMember[]>([]);
   useEffect(() => {
     let alive = true;

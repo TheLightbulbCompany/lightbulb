@@ -553,3 +553,14 @@ it("shows last activity, hides ended sessions until Show recent is pressed", asy
   expect(screen.getByText(/Ended/)).toBeInTheDocument();
   expect(f.client.listResources).toHaveBeenLastCalledWith("room-1", { includeEnded: true });
 });
+
+it("resolves a permalink to an ended session without waiting for Show recent", async () => {
+  const f = setup();
+  const ended = { ...session, sessionId: "sess-ended", status: "ended" as const };
+  f.client.listResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+    Promise.resolve({ ...resources, sessions: options?.includeEnded ? [ended] : [] }));
+  render(<RoomPanel {...f.props} targetSession={{ sessionId: "sess-ended", nonce: 1 }} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(screen.queryByText("Session unavailable in this conversation.")).not.toBeInTheDocument();
+  expect(f.client.listResources).toHaveBeenCalledWith("room", { includeEnded: true });
+});

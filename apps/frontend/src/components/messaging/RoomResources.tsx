@@ -14,7 +14,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
   target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
 }) {
   const [includeEnded, setIncludeEnded] = useState(false);
-  const resources = useRoomResources(roomId, source, { includeEnded });
+  const resources = useRoomResources(roomId, source, { includeEnded: includeEnded || !!target });
   const [selection, setSelection] = useState<{ id: string; accessRevision: number } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());

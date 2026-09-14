@@ -14,8 +14,9 @@ import {
 import { useConnections } from "@/hooks/useConnections";
 
 /**
- * The consolidated Stripe section on /settings/connections: ONE brand, TWO
- * separately-granted credentials, each with its own state and action.
+ * The consolidated Stripe section of the workspace Connections panel: ONE
+ * brand, TWO separately-granted credentials, each with its own state and
+ * action.
  *
  *   - "Company account" — the company's own Stripe account (Connect OAuth).
  *     Identity: revenue lands there and providers are provisioned on it.

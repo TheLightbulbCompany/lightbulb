@@ -100,7 +100,20 @@ export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
 export const ONE_SHOT_PARAMS = ["new", "newIssue", "action"] as const;
 
 // Billing-return params: not commands. useCheckoutReturn owns their strips.
-export const NON_COMMAND_PARAMS = ["checkout", "subscription", "provider"] as const;
+// The OAuth/Stripe-return params join them for the same reason: the provider
+// redirects back carrying ?connected=/?error=/?stripe*=, ConnectionsPanel turns
+// them into a one-shot banner and strips them, and treating them as command
+// params would make that strip churn the reconciler's command signature.
+export const NON_COMMAND_PARAMS = [
+  "checkout",
+  "subscription",
+  "provider",
+  "connected",
+  "error",
+  "stripe",
+  "stripe_connect",
+  "stripe_error",
+] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   dashboard: "Home",
@@ -156,6 +169,11 @@ const CONTROL_KEYS: Readonly<Record<string, string>> = {
   skills: "Skills",
   llm: "Model & Credits",
   integrations: "Integrations",
+  // Third-party connect/disconnect. Unlike its neighbours this one IS in the
+  // sidebar — the workspace rail, under Browser and Files — and /settings no
+  // longer carries it. The /settings/connections route survives as a redirector
+  // because the backend's Stripe return URL points at it.
+  connections: "Connections",
   "skill-proposals": "Skill Proposals",
 };
 

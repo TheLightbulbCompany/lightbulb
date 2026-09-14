@@ -14,9 +14,9 @@ interface ConnectionsListProps {
   /** Org admins may connect/disconnect; non-admins see disabled actions. */
   canManage: boolean;
   /**
-   * Providers rendered elsewhere on the same page (e.g. Stripe's consolidated
-   * section on /settings/connections) — dropped from this list so one brand
-   * never shows up twice. Omitted everywhere else (the Control dashboard's
+   * Providers rendered elsewhere on the same surface (e.g. Stripe's
+   * consolidated section in the Connections panel) — dropped from this list so
+   * one brand never shows up twice. Omitted everywhere else (the Control dashboard's
    * IntegrationsPanel keeps the full server-driven catalog).
    */
   exclude?: string[];
@@ -53,8 +53,8 @@ const KIND_LABELS: Record<string, string> = {
  *
  * Holds no mutation state of its own: ConnectButton owns per-row busy /
  * error state, and useConnections owns the SWR cache + mutate. The
- * /settings/connections page re-mutates this same SWR key after an OAuth
- * return so a freshly-connected provider flips to green without a reload.
+ * Connections panel re-mutates this same SWR key after an OAuth return so a
+ * freshly-connected provider flips to green without a reload.
  */
 export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =

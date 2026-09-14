@@ -33,6 +33,7 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
+  RELOCATED_PANEL_HREFS,
   SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
@@ -706,15 +707,19 @@ function SettingsPageInner() {
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 
-  // …but some nav rows are sibling ROUTES, not tabs — Connections lives at
-  // /settings/connections because OAuth consent redirects the browser back to
-  // it. `?panel=connections` therefore names nothing in PANELS and used to
-  // fall back to Profile, silently, with no way to tell a typo from a real
-  // destination. Forward it to the route the nav row points at instead.
+  // …but a `?panel=` value can also name a destination that is NOT a tab here:
+  // an outbound nav row (`href`), or a panel that has since moved out of
+  // Settings altogether — Connections now lives on the workspace rail. Either
+  // way it names nothing in PANELS and would fall back to Profile silently,
+  // with no way to tell a typo from a real destination. Forward it instead.
   const router = useRouter();
-  const outboundHref = SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find(
-    (n) => n.href !== undefined && n.id === initialPanelParam,
-  )?.href;
+  const outboundHref =
+    SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find(
+      (n) => n.href !== undefined && n.id === initialPanelParam,
+    )?.href ??
+    (initialPanelParam !== null && Object.hasOwn(RELOCATED_PANEL_HREFS, initialPanelParam)
+      ? RELOCATED_PANEL_HREFS[initialPanelParam]
+      : undefined);
   useEffect(() => {
     if (outboundHref) router.replace(outboundHref);
   }, [outboundHref, router]);

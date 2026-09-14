@@ -2,14 +2,14 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
-import { MESSAGES_PANEL_ID } from "./panelRegistry";
+import { describePanel, MESSAGES_PANEL_ID } from "./panelRegistry";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 const DESTINATIONS = [
@@ -19,6 +19,7 @@ const DESTINATIONS = [
   { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
   { panel: "browser", label: "Browser", Icon: Chrome },
   { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
+  { panel: "connections", label: "Connections", Icon: Plug },
 ] as const;
 
 /** The global rail stays available when Messages hides the dock tabs. */
@@ -33,6 +34,10 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         <Search size={20} aria-hidden="true" />
       </button>
       {DESTINATIONS.map(({ panel, label, Icon }) => {
+        // The panel KEY is not always the panel ID — a control-key destination
+        // (Connections) opens as `control:connections`. Resolve through the
+        // registry so the active marker follows the id the dock actually uses.
+        const panelId = describePanel(panel, {})?.panelId ?? panel;
         const showsActivity = panel === "teams-inbox" && activeTeamRunCount > 0;
         const accessibleLabel = showsActivity
           ? `${label}, ${activeTeamRunCount} active team ${activeTeamRunCount === 1 ? "run" : "runs"}`
@@ -40,7 +45,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         // Messaging never needs the container; the other destinations do.
         return <button key={panel} type="button" aria-label={accessibleLabel} title={accessibleLabel}
           disabled={!chatReady && panel !== MESSAGES_PANEL_ID}
-          aria-current={activePanelId === panel ? "page" : undefined}
+          aria-current={activePanelId === panelId ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");
             if (panel === "browser") capture("browser_view_opened");

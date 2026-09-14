@@ -36,7 +36,7 @@ function errorMessage(e: unknown): string {
 
 /**
  * Google multi-account management. Mounted on BOTH Google surfaces — the
- * /settings/connections route (which is also where `connectAnother`'s OAuth
+ * workspace Connections panel (which is also where `connectAnother`'s OAuth
  * round trip lands) and the Control dashboard's Integrations tab — so there is
  * no surface where a connected Google reads as single-account-only.
  *

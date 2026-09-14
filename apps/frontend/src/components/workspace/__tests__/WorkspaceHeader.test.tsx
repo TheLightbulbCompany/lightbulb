@@ -46,6 +46,27 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(button);
     expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
   });
+  // Connections opens as a CONTROL-key panel, so its dock id ("control:connections")
+  // is not its rail key — the active marker has to resolve through the registry
+  // or it silently never lights up.
+  it("opens Connections under Browser and Files and marks it active by its dock id", () => {
+    activePanelId = "control:connections";
+    render(<WorkspaceHeader />);
+    const button = screen.getByRole("button", { name: "Connections" });
+    expect(button).toHaveAttribute("aria-current", "page");
+    fireEvent.click(button);
+    expect(openPanel).toHaveBeenCalledWith("connections", {}, { pushUrl: true });
+
+    // Order matters: the ask was "under browser and workspace files".
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
+    const browserAt = labels.indexOf("Browser");
+    expect(labels.slice(browserAt, browserAt + 3)).toEqual([
+      "Browser",
+      "Browse workspace files",
+      "Connections",
+    ]);
+  });
   it("shows active team runs on Activity without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));
     render(<WorkspaceHeader />);

@@ -99,7 +99,6 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).getByText("Profile")).toBeInTheDocument(); // ACCOUNT
     expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // BILLING & USAGE
     expect(within(navEl).getByText("Channels")).toBeInTheDocument(); // WIRING
-    expect(within(navEl).getByText("Connections")).toBeInTheDocument(); // WIRING (href)
     expect(within(navEl).getByText("Webhooks")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // SELLER
@@ -201,19 +200,26 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
   });
 
-  // --- Deep link to a nav row that is a ROUTE, not a tab ---
-  it("forwards ?panel=connections to /settings/connections instead of falling back to Profile", () => {
-    // Connections can't be a ?panel= tab (OAuth consent redirects the browser
-    // back to its own route), so the key isn't in PANELS — the deep link used
-    // to land silently on Profile.
+  // --- The Connections row is gone from Settings entirely ---
+  it("no longer offers Connections as a Settings row", () => {
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).queryByText("Connections")).toBeNull();
+  });
+
+  // --- Deep link to a panel that MOVED OUT of Settings ---
+  it("forwards ?panel=connections to the workspace rail instead of falling back to Profile", () => {
+    // Connections lives on the workspace rail now, so the key isn't in PANELS.
+    // Links and bookmarks minted while it was a Settings row must still land on
+    // it rather than silently on Profile.
     nav.panel = "connections";
     const { container } = render(<SettingsPage />);
-    expect(nav.replace).toHaveBeenCalledWith("/settings/connections");
+    expect(nav.replace).toHaveBeenCalledWith("/chat?panel=connections");
     // …and nothing is painted on the way out — no Profile flash.
     expect(container.querySelector("#panel-profile")).not.toBeInTheDocument();
   });
 
-  it("leaves a real tab key alone — only href rows redirect", () => {
+  it("leaves a real tab key alone — only relocated/href rows redirect", () => {
     nav.panel = "channel-status";
     render(<SettingsPage />);
     expect(nav.replace).not.toHaveBeenCalled();

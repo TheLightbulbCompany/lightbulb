@@ -96,14 +96,21 @@ wins, because a hook can be missed. It never marks a session offline.
 `reconcile_sessions` loses its all-offline loop. A failed listing logs once
 per distinct error string and keeps last known state.
 
-**Codex.** Spike first (plan task 1): install `session_start`,
-`user_prompt_submit`, `stop`, and `session_end` hooks in `~/.codex/config.toml`
-with the persisted trust entry the CLI expects, and confirm the payload carries
-the thread id. If that works, Codex follows the same table. If trust cannot be
-granted without a TUI prompt, Codex stays on a 10 s `ps` poll: `lsof` only for
-pids not seen before, status from the existing rollout `tail_state`, ended when
-the pid is gone. The spike's result is recorded in the plan before Codex tasks
-are written.
+**Codex (spike resolved 2026-09-14).** Codex 0.149 loads a Claude-shaped
+`~/.codex/hooks.json` and fires `SessionStart`, `UserPromptSubmit`, `Stop`, and
+`SessionEnd` with `session_id` (the thread id), `transcript_path` (the rollout),
+`cwd`, and `last_assistant_message` on Stop. An untrusted hook is skipped
+silently; trust is a `[hooks.state."<abs hooks.json path>:<event_snake>:<group>:<handler>"]
+trusted_hash = "sha256:…"` entry in `~/.codex/config.toml`, hashed over the
+canonical JSON of the normalized hook definition. The desktop writes those
+entries itself (recipe and live fixtures in the plan), so Codex follows the
+same event table as Claude and there is no poll fallback. The hook command
+carries the provider as its argument (`local-session-hook claude|codex`).
+
+**Recap seed.** The Stop hook's `last_assistant_message` (first 300 chars)
+rides the datagram, the mirror, the heartbeat, META, and the public JSON as
+`lastAssistantMessage`. No UI reads it in this phase; it exists so the phase-two
+recap line needs no second protocol change and no LLM call.
 
 ### 3.2 Wire protocol
 
@@ -115,9 +122,15 @@ negotiation and the generation/successor logic for a resumed conversation.
 ```json
 {"type":"local.device.heartbeat","sessions":[
   {"sessionId":"…","generation":"…","status":"busy","activeTurnId":null,
-   "controlUnavailableReason":null,"title":"…","cwdName":"…","workspace":{…}}
+   "controlUnavailableReason":null,"title":"…","cwdName":"…",
+   "lastAssistantMessage":null,"workspace":{…}}
 ]}
 ```
+
+The four frames (heartbeat, its ack, ended, its ack) are golden JSON fixtures
+under `packages/shared/fixtures/local-session-frames/`, asserted by both
+`cargo test` and `pytest`, because Rust-versus-Python contract skew has already
+caused one production outage.
 
 Sent every 10 s, and early on any status, active-turn, or title change,
 throttled to one per second. It lists every registered, non-ended mirror. The

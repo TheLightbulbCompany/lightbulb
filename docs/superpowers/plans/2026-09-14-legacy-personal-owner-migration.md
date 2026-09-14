@@ -71,18 +71,16 @@ against paying customers. Instead:
    the paying three by construction), then delete the orphan companies with
    `--delete-company` from the post-purge dry run.
 
-## Decisions needed from the owner
+## Owner rulings (2026-09-14)
 
-- Expired-trial owners: pre-create the workspace (step 1) **and** carry over
-  their old Friday/Atlas company + files (step 2 for all 28), or pre-create the
-  workspace only and let them start fresh with the starter roster? Recommended:
-  workspace only. They never used the personal one, and the starter roster is
-  the product now.
-- Paying owners: confirm the canary order (team member → the two customers) and
-  whether to notify the two customers before their workspace switches.
-- Does a migrated expired-trial owner get a fresh workspace trial? The workspace
-  trial row is created by `ensure_workspace_trial_default` on first poll, so the
-  default answer is yes unless we pre-write an expired row.
+- **Expired-trial owners: workspace only.** They get a Clerk org and start fresh
+  with the starter roster; their old Friday/Atlas company and files are purged.
+  (They will get a fresh workspace trial on first poll — accepted.)
+- **Paying owners: full runtime carry-over** via #2627, canary on the team
+  member first, then the two customers.
+- **Cap Clerk at one organization per user** (instance setting; was 5, and no
+  user held more than one membership when checked). That closes the
+  one-row-per-user flip between two orgs without a table re-key.
 
 ## Long-term code fixes (in flight)
 
@@ -92,15 +90,14 @@ against paying customers. Instead:
 - #2626 — no door can create a personal workspace (`ensure_workspace_trial_default`
   403s a `user_` id; `ensure_user_ready` refuses non-org callers first).
 - #2624 — the purge script.
-- Open question: users in **two** orgs would hit the same one-row-per-user
-  flip between orgs. Either cap Clerk at one organization per user (instance
-  setting + backend invite gate) or re-key `paperclip-companies` per
-  (user, org). Not started; needs a ruling.
+- #2625 — the workspace backfill (`--skip-paid` keeps paying owners out until #2627 ran for them).
+- #2627 — the paying-owner runtime migration.
 
-## Executing (the auto-mode classifier refuses prod deletions from the agent)
+## Executing (the auto-mode classifier refuses prod writes from the agent)
 
 Run from the owner's terminal (the `!` prefix in this session works), after
-`aws sso login --profile isol8-admin`:
+`aws sso login --profile isol8-admin`. The scripts are piped into the backend
+task, so they run whatever is on the local branch — no promotion needed.
 
 ```bash
 export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1
@@ -110,19 +107,34 @@ run() { B64=$(base64 < "$1" | tr -d '\n'); shift; aws ecs execute-command --clus
   --task "$TASK" --container backend --interactive \
   --command "/bin/sh -c 'cd /app && echo $B64 | base64 -d | uv run python - $*'"; }
 
+# 0. Cap Clerk at one organization per user (prod, then the same with lightbulb/dev/clerk_secret_key)
+SK=$(aws secretsmanager get-secret-value --secret-id lightbulb/prod/clerk_secret_key --query SecretString --output text)
+curl -s -A lightbulb-ops/1.0 -X PATCH -H "Authorization: Bearer $SK" -H 'Content-Type: application/json' \
+  -d '{"max_allowed_memberships":1}' https://api.clerk.com/v1/instance/organization_settings
+
 # 1. Leonardo's residue (already in the founder org): stopped personal box + two orphan companies
 run apps/backend/scripts/purge_legacy_personal_workspaces.py --apply \
   --owner user_3J8t0Yp76auS131Lk9ov9YCc5We \
   --delete-company e13f6059-6569-4e49-be06-8cb6345dda04 --delete-company 00d38093-a077-4822-92e9-9c78455c1f4b
 
-# 2. Workspaces for every legacy owner (dry run, then apply). NOTE: the script imports
-#    clerk_admin.create_organization from #2625, so run it after #2625 is merged AND promoted
-#    (or run it locally with ENVIRONMENT=prod + the prod CLERK_SECRET_KEY exported).
-run apps/backend/scripts/backfill_legacy_owner_workspaces.py
-run apps/backend/scripts/backfill_legacy_owner_workspaces.py --apply
+# 2. Paying owners, one at a time, canary first (team member user_3IvTzqFIQCWp3ck05Prhn2moTTJ,
+#    then user_3IEUfhBJrhDbABVjjcKo4ECy4wk and user_3IQ0sBQskW3v7XNiFSd1PIzZSQv).
+#    Dry run, apply with provisioning, verify chat/Teams/billing as the user, then purge the residue.
+run apps/backend/scripts/migrate_personal_owner_to_workspace.py --owner <user>
+run apps/backend/scripts/migrate_personal_owner_to_workspace.py --owner <user> --provision --apply
+run apps/backend/scripts/purge_legacy_personal_workspaces.py --owner <user> --apply
 
-# 3. Purge the non-paying rest (dry run, then apply), then the orphan companies it lists
+# 3. A workspace for every other legacy owner (dry run, then apply)
+run apps/backend/scripts/backfill_legacy_owner_workspaces.py --skip-paid
+run apps/backend/scripts/backfill_legacy_owner_workspaces.py --skip-paid --apply
+
+# 4. Purge the non-paying rest (dry run, then apply), then the orphan companies the run lists
 run apps/backend/scripts/purge_legacy_personal_workspaces.py
 run apps/backend/scripts/purge_legacy_personal_workspaces.py --apply
 run apps/backend/scripts/purge_legacy_personal_workspaces.py --apply --delete-company <id> [--delete-company <id> ...]
 ```
+
+Branches to have checked out (or merged) so `run` pipes the right file:
+`chore/purge-legacy-personal-workspaces` (#2624), `chore/backfill-legacy-owner-workspaces`
+(#2625), `chore/migrate-personal-owner-to-workspace` (#2627). Merging all three to
+main first is simplest.

@@ -132,62 +132,206 @@
  *     (on --card:   6.04     6.06        5.47        6.53)
  *     --brass  5.18:1 on midnight, 4.23:1 on --card — rules and labels, not copy.
  */
-/* Messaging uses neutral surfaces; marketing and existing routes keep the brand
-   palette. Declared on :root while the shell is mounted (not only on the shell)
-   so Radix portals — menus, dialogs, popovers rendered under <body> — take the
-   same neutral tokens instead of leaking the cream brand back in around a white
-   workspace. */
-:root:has(.workspace-shell), .workspace-shell {
-  --background: var(--cream);
-  --foreground: var(--midnight);
-  --card: var(--cream);
-  --card-foreground: var(--midnight);
-  --popover: var(--cream);
-  --popover-foreground: var(--midnight);
-  --primary: var(--midnight);
-  --primary-foreground: var(--cream);
-  --secondary: var(--cream-deep);
-  --secondary-foreground: var(--midnight);
-  --muted: var(--cream-deep);
-  --muted-foreground: var(--midnight-muted);
-  --accent: var(--cream-deep);
-  --accent-foreground: var(--midnight);
-  --border: var(--edge);
-  --input: var(--edge);
-  --ring: var(--midnight);
-  --cream: #ffffff;
-  --cream-deep: #fafafa;
-  --cream-deeper: #ededed;
-  --edge: #e4e4e7;
-  --edge-soft: #f0f0f2;
-  --midnight: #242428;
-  --midnight-soft: #45454b;
-  --midnight-muted: #6b6b73;
-  --midnight-label: #6b6b73;
-  --midnight-faint: #8e8e94;
-  /* The one accent in the neutral shell: links, mentions, unread badges. */
-  --info: #1e52cc;
-  --on-info: #ffffff;
-  --presence: #1fa463;
-  /* Agents are always reachable, so their dot is blue (== --info), never the
-     human online/offline green — see ParticipantAvatar. */
-  --presence-agent: var(--info);
+/*
+ * Chat theme system — see docs/superpowers/specs/2026-09-13-chat-theme-system-design.md
+ *
+ * Color splits into three layers that vary independently:
+ *   ladder    rail / sidebar / pane / raised / edge   — varies with theme
+ *   hue       the brand tint the chrome carries       — varies with focus
+ *   semantic  unread / mention / presence / run state — varies with NEITHER
+ *
+ * Focus mode is the hue layer set to neutral, which is why it costs almost
+ * nothing: no component opts in. And because the semantic layer never varies,
+ * no theme can make an unread badge or a failed run ambiguous.
+ *
+ * Scoped to :root attributes rather than :has(.workspace-shell) for two
+ * reasons. The desktop dock shell is the ONLY element carrying
+ * .workspace-shell (WorkspaceShell.tsx) — mobile renders .app-shell, so the
+ * old selector left mobile /chat on the brand cream palette while desktop was
+ * white. And a :root attribute reaches Radix portals rendered under <body>
+ * without needing :has() at all, which is what the old block's comment said it
+ * was fighting.
+ *
+ * Attributes are stamped on <html> before first paint by the inline script in
+ * app/chat/layout.tsx. `light` + `full` is the default; the blocks below are
+ * ordered so later ones win on equal specificity.
+ *
+ * Contrast: every text token is checked against EVERY plane it can sit on —
+ * pane, sidebar, raised, selected AND rail — not just the pane. A token that
+ * clears 4.5:1 on white can fail badly on the rail: --fg-mute at #6E7A88 read
+ * 4.37 on the pane and 3.24 on the rail, which is what the sidebar's section
+ * labels actually sit on. §06 says this explicitly and it is easy to skip.
+ *
+ * Worst-plane ratios after solving (AA floor 4.5 for text):
+ *   light/full   fg-mute 4.67  link 4.96  alert 4.65  live 4.68  brand 4.70
+ *   light/focus  fg-mute 4.63  link 4.98  alert 4.67  live 4.70  brand 5.75
+ *   dark/full    fg-mute 4.66  link 5.92  alert 4.65  live 5.55  brand 7.60
+ *   dark/focus   fg-mute 4.65  link 6.32  alert 4.71  live 5.92  brand 6.54
+ * --fg never drops below 10.85 and --fg-soft below 5.36 (light/full, on the
+ * rail) — both well clear, but nowhere near the 8:1 an earlier draft claimed.
+ *
+ * src/__tests__/chatThemeContrast.test.ts recomputes all 140 pairs, so a
+ * hand-edit that breaks one fails the build rather than shipping.
+ */
+:root[data-chat-theme] {
+  /* ── Ladder: light ── */
+  --plane-rail:    #D9DEE7;
+  --plane-sidebar: #EBEEF3;
+  --plane-pane:    #FFFFFF;
+  --plane-raised:  #F5F7FA;
+  --plane-edge:    #DCE1E9;
+
+  /* ── Type ── */
+  --fg:      #161C24;
+  --fg-soft: #4D5866;
+  --fg-mute: #57616C;
+
+  /* ── Semantic: constant across focus ── */
+  --link:   #1E52CC;
+  --on-link:#FFFFFF;
+  --alert:  #A83C29;
+  --live:   #186D48;
+
+  /* ── Hue: the one layer focus drains ── */
+  --brand: #7F5810;
+  --agent-tint-1: #8A5A12;
+  --agent-tint-2: #1E52CC;
+  --agent-tint-3: #1C7350;
+  /* Initials sit ON a tint, so they need the tint's own foreground: the light
+     tints are dark (white reads), the dark tints are light (ink reads). */
+  --on-agent-tint: #FFFFFF;
+
+  --plane-selected: #DDE4F2;
+  --plane-hover:    #F0F3F8;
 }
-.dark:has(.workspace-shell), .dark .workspace-shell {
-  --cream: #1c1c20;
-  --cream-deep: #232328;
-  --cream-deeper: #33333a;
-  --edge: #3d3d45;
-  --edge-soft: #303036;
-  --midnight: #f4f4f5;
-  --midnight-soft: #d4d4d8;
-  --midnight-muted: #b0b0ba;
-  --midnight-label: #b0b0ba;
-  --midnight-faint: #92929d;
-  --info: #8fb0ff;
-  --on-info: #1c1c20;
-  --presence: #3fbf7f;
-  --presence-agent: var(--info);
+
+:root[data-chat-theme="dark"] {
+  --plane-rail:    #0C121A;
+  --plane-sidebar: #121B26;
+  --plane-pane:    #18222F;
+  --plane-raised:  #212D3C;
+  --plane-edge:    #2A3646;
+
+  --fg:      #E9EEF4;
+  --fg-soft: #A7B4C4;
+  --fg-mute: #939EAD;
+
+  --link:   #8FB0FF;
+  --on-link:#0C121A;
+  --alert:  #E7806F;
+  --live:   #4BC08A;
+
+  --brand: #F0C34E;
+  --agent-tint-1: #F0C34E;
+  --agent-tint-2: #7FA8F0;
+  --agent-tint-3: #63C09A;
+  --on-agent-tint: #0C121A;
+
+  --plane-selected: #243448;
+  --plane-hover:    #1E2A38;
+}
+
+/* Focus drains the hue layer only. The ladder keeps its three depths and every
+   semantic token above is inherited untouched. */
+:root[data-chat-theme="light"][data-chat-accent="focus"] {
+  --plane-rail:    #DEDEDE;
+  --plane-sidebar: #EFEFEF;
+  --plane-pane:    #FFFFFF;
+  --plane-raised:  #F7F7F7;
+  --plane-edge:    #E2E2E2;
+
+  --fg:      #1A1A1C;
+  --fg-soft: #52525A;
+  --fg-mute: #606069;
+
+  --brand: #52525A;
+  --agent-tint-1: #6E6E78;
+  --agent-tint-2: #6E6E78;
+  --agent-tint-3: #6E6E78;
+  --on-agent-tint: #FFFFFF;
+
+  --plane-selected: #E4E4E6;
+  --plane-hover:    #F2F2F3;
+}
+
+:root[data-chat-theme="dark"][data-chat-accent="focus"] {
+  --plane-rail:    #101012;
+  --plane-sidebar: #171719;
+  --plane-pane:    #1E1E21;
+  --plane-raised:  #27272B;
+  --plane-edge:    #323236;
+
+  --fg:      #ECECEE;
+  --fg-soft: #B4B4B8;
+  --fg-mute: #97979C;
+
+  --brand: #B4B4B8;
+  --agent-tint-1: #9B9BA2;
+  --agent-tint-2: #9B9BA2;
+  --agent-tint-3: #9B9BA2;
+  --on-agent-tint: #101012;
+
+  --plane-selected: #2E2E33;
+  --plane-hover:    #26262A;
+}
+
+/*
+ * The legacy brand-token names are kept as a view onto the ladder, so the
+ * ~15 shadcn primitives in components/ui/ and every rule in ChatLayout.css /
+ * messaging.css / workspace.css that already reads --cream-deep, --edge,
+ * --midnight-muted &c. picks up the theme with no edit. New code should name
+ * the --plane-* / --fg-* tokens directly.
+ */
+:root[data-chat-theme] {
+  --cream:         var(--plane-pane);
+  --cream-deep:    var(--plane-sidebar);
+  --cream-deeper:  var(--plane-selected);
+  --edge:          var(--plane-edge);
+  --edge-soft:     var(--plane-hover);
+  --midnight:       var(--fg);
+  --midnight-soft:  var(--fg-soft);
+  --midnight-muted: var(--fg-mute);
+  --midnight-label: var(--fg-mute);
+  --midnight-faint: var(--fg-mute);
+
+  --background: var(--plane-pane);
+  --foreground: var(--fg);
+  --card: var(--plane-pane);
+  --card-foreground: var(--fg);
+  --popover: var(--plane-raised);
+  --popover-foreground: var(--fg);
+  --primary: var(--fg);
+  --primary-foreground: var(--plane-pane);
+  --secondary: var(--plane-raised);
+  --secondary-foreground: var(--fg);
+  --muted: var(--plane-sidebar);
+  --muted-foreground: var(--fg-mute);
+  --accent: var(--plane-selected);
+  --accent-foreground: var(--fg);
+  --border: var(--plane-edge);
+  --input: var(--plane-edge);
+  --ring: var(--link);
+  --destructive: var(--alert);
+  --destructive-foreground: var(--plane-pane);
+
+  --ok:   var(--live);
+  --warn: var(--brand);
+  --err:  var(--alert);
+  --info: var(--link);
+  --on-info: var(--on-link);
+
+  --presence: var(--live);
+  /* Agents are always reachable, so their dot is the link blue, never the
+     human online/offline green — see ParticipantAvatar. Presence stays
+     UNIFORM across agents on purpose: identity is carried by the avatar tint
+     (--agent-tint-*), and the two must not compete. */
+  --presence-agent: var(--link);
+
+  --chart-1: var(--live);
+  --chart-2: var(--link);
+  --chart-3: var(--brand);
+  --chart-4: var(--alert);
+  --chart-5: var(--fg-mute);
 }
 
 :root {

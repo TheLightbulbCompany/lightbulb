@@ -22,6 +22,11 @@ export interface IdentityProps {
    * outer span. For tight columns (e.g. HomeRow's 28px avatar cell) where
    * the full name would overflow. Default false: unchanged behavior. */
   avatarOnly?: boolean;
+  /** A CSS colour for the avatar fill, carrying identity (see lib/agentTint).
+   * Omitted everywhere except the messaging roster, so every other call site
+   * keeps the neutral tile. Initials flip to --on-agent-tint, and the border
+   * is dropped: a tinted circle already reads as its own shape. */
+  tint?: string | null;
 }
 
 function deriveInitials(name: string): string {
@@ -51,6 +56,7 @@ export function Identity({
   size = "default",
   className,
   avatarOnly = false,
+  tint = null,
 }: IdentityProps) {
   const displayInitials = initials ?? deriveInitials(name);
 
@@ -69,11 +75,15 @@ export function Identity({
           "relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full",
           avatarSize[size],
         )}
-        style={{
-          backgroundColor: "var(--cream-deep)",
-          color: "var(--midnight-muted)",
-          border: "1px solid var(--edge)",
-        }}
+        style={
+          tint
+            ? { backgroundColor: tint, color: "var(--on-agent-tint)", fontWeight: 600 }
+            : {
+                backgroundColor: "var(--cream-deep)",
+                color: "var(--midnight-muted)",
+                border: "1px solid var(--edge)",
+              }
+        }
         aria-hidden={avatarUrl ? undefined : true}
       >
         {avatarUrl ? (

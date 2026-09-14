@@ -7,6 +7,7 @@ pub mod local_mcp;
 pub mod local_sessions;
 mod node_client;
 mod node_invoke;
+pub mod notify;
 pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
@@ -1420,7 +1421,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -1497,6 +1497,7 @@ end tell"#,
             local_mcp_set,
             local_mcp_remove,
             claude_export::export_claude_context,
+            notify::native_notify,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
@@ -1525,6 +1526,10 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
+
+            // Registers the app under System Settings → Notifications on first
+            // launch and installs the click/foreground delegate.
+            notify::install(app.handle());
 
             // Native sharing is an independent consented service. A missing
             // OpenClaw sidecar/gateway cannot prevent a retained pair restoring it.

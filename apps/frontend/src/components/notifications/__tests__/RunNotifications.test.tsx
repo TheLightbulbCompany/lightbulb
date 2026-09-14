@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type TestLiveEvent = { type: string; payload: { eventName: string; payload: Record<string, unknown> } };
 
@@ -44,6 +44,10 @@ function emit(eventName: string, payload: Record<string, unknown>) {
   live.eventHandler?.({ type: "paperclip.event", payload: { eventName, payload } });
 }
 
+beforeEach(() => {
+  live.nativeNotify.mockResolvedValue(false);
+});
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -70,10 +74,11 @@ describe("RunNotifications inline team-run status", () => {
     act(() => emit("teams.heartbeat.run.status", { runId: "run-42", agentId: "agent-1", status: "succeeded" }));
   });
 
-  it("removes the inline status and keeps completion feedback", () => {
+  it("removes the inline status and keeps completion feedback", async () => {
     render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-42", agentId: "agent-1" }));
-    act(() => emit("teams.heartbeat.run.status", { runId: "run-42", agentId: "agent-1", status: "succeeded" }));
+    // The toast is the fallback once the native answer resolves; flush it.
+    await act(async () => emit("teams.heartbeat.run.status", { runId: "run-42", agentId: "agent-1", status: "succeeded" }));
 
     expect(screen.queryByRole("button", { name: /Team is working/ })).not.toBeInTheDocument();
     expect(live.notifySuccess).toHaveBeenCalledWith(
@@ -82,11 +87,11 @@ describe("RunNotifications inline team-run status", () => {
     );
   });
 
-  it("uses the native notification instead of the completion toast, clearing any working toast", () => {
-    live.nativeNotify.mockReturnValue(true);
+  it("uses the native notification instead of the completion toast, clearing any working toast", async () => {
+    live.nativeNotify.mockResolvedValue(true);
     render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-7", agentId: "agent-1" }));
-    act(() => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded" }));
+    await act(async () => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded" }));
 
     expect(live.nativeNotify).toHaveBeenCalledWith("Team agent run completed");
     expect(live.notifySuccess).not.toHaveBeenCalled();

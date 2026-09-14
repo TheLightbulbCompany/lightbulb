@@ -84,6 +84,53 @@ export const softwareApplicationJsonLd = {
   },
 };
 
+/**
+ * `TechArticle` for a single documentation page.
+ *
+ * Docs are product documentation, not news, so `TechArticle` is the correct
+ * type (Google treats it as an Article subtype; answer engines use `about` /
+ * `articleSection` to place the page). `isPartOf` points back at the `/docs`
+ * `CollectionPage` so the set reads as one corpus rather than five orphans.
+ *
+ * `dateModified` is deliberately omitted: docs carry no date in frontmatter,
+ * and emitting a build timestamp would claim every page changed on every
+ * deploy — a freshness signal that is simply untrue.
+ */
+export function techArticleJsonLd({
+  title,
+  description,
+  path,
+  section,
+}: {
+  title: string;
+  description: string;
+  path: string;
+  section?: string;
+}) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: title,
+    description,
+    url: absoluteUrl(path),
+    mainEntityOfPage: { "@type": "WebPage", "@id": absoluteUrl(path) },
+    inLanguage: "en",
+    ...(section ? { articleSection: section } : {}),
+    isPartOf: {
+      "@type": "CollectionPage",
+      name: "Lightbulb product documentation",
+      url: absoluteUrl("/docs"),
+    },
+    author: { "@type": "Organization", name: SITE_NAME, url: SITE_URL },
+    publisher: {
+      "@type": "Organization",
+      name: SITE_NAME,
+      url: SITE_URL,
+      logo: { "@type": "ImageObject", url: absoluteUrl("/icon.png") },
+    },
+  };
+}
+
 export function breadcrumbJsonLd(items: { name: string; path: string }[]) {
   return {
     "@context": "https://schema.org",

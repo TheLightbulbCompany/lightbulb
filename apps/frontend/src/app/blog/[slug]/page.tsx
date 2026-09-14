@@ -28,7 +28,12 @@ export async function generateMetadata({
   return {
     title: `${post.title} — Lightbulb`,
     description: post.description,
-    alternates: { canonical: url },
+    alternates: {
+      canonical: url,
+      types: {
+        "application/rss+xml": [{ url: "/blog/rss.xml", title: "The Lightbulb blog" }],
+      },
+    },
     openGraph: {
       title: post.title,
       description: post.description,

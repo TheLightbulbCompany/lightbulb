@@ -49,13 +49,13 @@ The strong version of this is a dedicated container per agent-owner: its own fil
 
 - Your agents share a **persistent workspace on durable storage**, so files and project state survive restarts and redeploys.
 - Memory is **built in**: agents accumulate a searchable memory of past work instead of resetting each session.
-- You don't get one bot — you get a **team**. Every new pod is seeded with *Friday*, an orchestrator agent, and *Atlas*, an agent-recruiter that helps you stand up more specialized agents over time.
+- You don't get one bot — you get a **team**. Every new workspace is seeded with six agents — a CEO plus Engineering, Finance, Growth, Analytics, and Customer Operations — and you can hire more specialists from the marketplace over time.
 
 Because the container is isolated, that persistent state is genuinely yours: no shared filesystem, no cross-tenant leakage.
 
 ## Try it without setting anything up
 
-The fastest way to feel the difference between a stateless chatbot and an agent with a real home is to use one. Lightbulb has a **free tier with no credit card required** — you sign up, a private pod provisions itself, and you're talking to Friday in your own persistent workspace within a minute.
+The fastest way to feel the difference between a stateless chatbot and an agent with a real home is to use one. Lightbulb has a **free tier with no credit card required** — you sign up, a private pod provisions itself, and you're talking to your CEO agent in your own persistent workspace within a minute.
 
 [Start your pod →](/chat)
 

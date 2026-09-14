@@ -18,13 +18,13 @@ A skill is a packaged capability an agent reads before acting — a workflow, a 
 
 - **You** — a chat message, or a message from a connected Slack, Discord, or Telegram channel.
 - **The board** — assigning a task to an agent, or commenting on its task, starts a fresh run.
-- **A schedule** — a routine runs an agent on a cadence. Friday's nightly self-directed check-in is one.
+- **A schedule** — a routine runs an agent on a cadence. Your CEO's nightly self-directed check-in is one.
 - **An event** — a webhook from an external service starts a routine run.
 - **Email** — mail from you or an allow-listed sender (Control Panel → Agents → Email) arrives as a message the agent can reply to. Everything else waits in its inbox.
 
 ## Routines and webhooks
 
-Open **Company → Automations**, or ask Friday to set the loop up.
+Open **Company → Automations**, or ask your CEO to set the loop up.
 
 - **Schedule** — pick the agent, the cadence, and the brief.
 - **Webhook** — for GitHub, Vercel, and Google, Lightbulb registers the webhook in the service for you. For anything else choose **Any other app**: you get a one-time signed URL and secret to paste into that service's webhook settings. The [webhook event reference](/blog/webhook-event-reference) lists the events ten providers send.

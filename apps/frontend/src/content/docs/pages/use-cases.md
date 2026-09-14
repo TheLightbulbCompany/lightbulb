@@ -9,7 +9,7 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 ## Inbound lead triage
 
 - **Trigger:** a form or CRM webhook, or an email forwarded to the agent's own address.
-- **Agent:** a sales specialist reporting to Friday.
+- **Agent:** a sales specialist reporting to your CEO.
 - **Tools:** Attio or Apollo for enrichment, web search, the agent's email.
 - **Gate:** the reply is drafted and filed for approval; it goes out only after you approve.
 
@@ -24,7 +24,7 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 
 - **Trigger:** a Monday-morning routine.
 - **Tools:** PostHog, Stripe, GitHub.
-- **Output:** a task on the board with the numbers, what changed, and what Friday recommends — posted to Slack or emailed to you.
+- **Output:** a task on the board with the numbers, what changed, and what your CEO recommends — posted to Slack or emailed to you.
 
 ## Engineering triage
 
@@ -53,4 +53,4 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 
 ## Start with one
 
-Pick one loop. Give it an owner — hire a specialist from the [marketplace](/marketplace), or ask Friday for one and she routes the role spec to Atlas. Connect the tool it needs, wire the trigger, set the gate, and let it run. Automations need an always-on workspace, which is what the paid plans buy — see [Skills, routines, and automations](/docs/skills-and-automations).
+Pick one loop. Give it an owner — hire a specialist from the [marketplace](/marketplace), or ask your CEO for one and it recruits the role. Connect the tool it needs, wire the trigger, set the gate, and let it run. Automations need an always-on workspace, which is what the paid plans buy — see [Skills, routines, and automations](/docs/skills-and-automations).

@@ -13,7 +13,12 @@ const DESCRIPTION =
 export const metadata: Metadata = {
   title: TITLE,
   description: DESCRIPTION,
-  alternates: { canonical: "/blog" },
+  alternates: {
+    canonical: "/blog",
+    // Renders <link rel="alternate" type="application/rss+xml">, which is how
+    // feed readers and several answer-engine crawlers discover new posts.
+    types: { "application/rss+xml": [{ url: "/blog/rss.xml", title: TITLE }] },
+  },
   openGraph: {
     title: TITLE,
     description: DESCRIPTION,

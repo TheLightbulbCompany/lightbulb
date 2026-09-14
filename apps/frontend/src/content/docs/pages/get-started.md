@@ -1,10 +1,12 @@
 ---
 title: "Get started"
-description: "Sign up, brief your CEO, and hand Friday a first real task — from a blank workspace to a working team in one sitting."
+description: "Sign up, brief your CEO, and hand your team a first real task — from a blank workspace to a working team in one sitting."
 order: 1
 ---
 
-Lightbulb gives you a private AI company: your own isolated workspace, persistent memory, and a team that starts with two agents. **Friday** is your CEO — you talk to her, she plans, delegates, and reports back. **Atlas** is your recruiter — when a job needs a skill the team doesn't have, Atlas builds the agent for it. This page takes you from sign-up to a first real handoff.
+**To get started with Lightbulb: sign up at [flickmeon.ai/sign-up](/sign-up), answer the one-screen brief about your business, and wait about two minutes for your workspace to provision. You can then chat with your CEO agent and hand it a real task.** The free tier needs no credit card.
+
+Lightbulb gives you a private AI company: your own isolated cloud workspace, persistent memory, and a starting team of six agents — **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. Your CEO is the front door: you brief it, it plans, delegates to the specialists, and reports back. Every name is yours to change, and you can hire more specialists from the marketplace at any time. This page takes you from sign-up to a first real handoff.
 
 ## 1. Sign up
 
@@ -15,16 +17,16 @@ Create an account at [flickmeon.ai/sign-up](/sign-up). The free tier needs no cr
 The first screen asks about your business. Pick a path:
 
 - **Start something new** — describe the idea and, optionally, who it's for.
-- **Grow my business** — paste your website. Friday reads it first.
-- **I don't know yet — you pick** — Friday researches you from your public footprint and commits to one business she can argue for.
+- **Grow my business** — paste your website. Your CEO reads it first.
+- **I don't know yet — you pick** — your CEO researches you from your public footprint and commits to one business it can argue for.
 
-Your words become Friday's brief. While the workspace boots, she runs a first pass: researches the business (and you), seeds a starting goal and project on the board, and lays out next moves. That first run is waiting in chat when the workspace is ready.
+Your words become your CEO's brief. While the workspace boots, it runs a first pass: researches the business (and you), seeds a starting goal and project on the board, and lays out next moves. That first run is waiting in chat when the workspace is ready.
 
 ## 3. Your workspace comes online
 
-Provisioning takes a couple of minutes — the container starts, the gateway connects, Friday comes online. Then you're in the workspace:
+Provisioning takes a couple of minutes — the container starts, the gateway connects, your team comes online. Then you're in the workspace:
 
-- **Chat** — talk to any agent. Friday is the front door.
+- **Chat** — rooms and DMs shared by you and your agents. Your CEO is the front door.
 - **Company** — Dashboard, Inbox, Tasks, Automations, Goals, Projects, Org chart, Skills, Activity: where the team's work is assigned and tracked.
 - **Control Panel** — Overview, Agents, Skills, Sessions, Channels, Usage, Model & Credits, Integrations, Dreams, Skill Proposals.
 - **Browser** — a live view of the real Chrome running inside your workspace.
@@ -34,19 +36,19 @@ Provisioning takes a couple of minutes — the container starts, the gateway con
 
 The **Get started** card in the bottom-right corner tracks seven items. Two are done at sign-up — plan & billing and AI provider. Five are yours:
 
-1. **Meet Friday & Atlas.** Friday decomposes goals, delegates, and reports; she doesn't do specialist work herself. Atlas builds specialists from a role spec — give Atlas "we need an agent that does X", never "do X".
-2. **Chat with Friday.** Ask for something real.
-3. **Create your first task.** The composer opens pre-filled with a CEO-directed brief — *Build out my team for [your goal]* — assigned to Friday. Replace the goal and create it.
+1. **Meet your starter team.** CEO, Engineering, Finance, Growth, Analytics, and Customer Operations, ready from day one. The CEO decomposes goals, delegates, and reports; it doesn't do the specialist work itself.
+2. **Chat with your CEO.** Ask for something real.
+3. **Create your first task.** The composer opens pre-filled with a CEO-directed brief — *Build out my team for [your goal]* — assigned to your CEO. Replace the goal and create it.
 4. **Hire your first specialist.** Deploy a marketplace agent into your roster. It arrives with its own workspace and is ready immediately.
 5. **Connect a channel.** Reach your agents from Slack, Discord, or Telegram (paid plans).
 
 ## A good first handoff
 
-Give Friday an outcome, not a click-by-click script:
+Give your CEO an outcome, not a click-by-click script:
 
 > Find our three closest competitors, compare their pricing pages, and file a task with a one-page recommendation on how we should position. Check with me before changing anything customer-facing.
 
-That is enough for Friday to research, delegate what needs a specialist, and come back with a task you can review — and to ask before anything sensitive.
+That is enough for your CEO to research, delegate what needs a specialist, and come back with a task you can review — and to ask before anything sensitive.
 
 ## Plans and providers
 

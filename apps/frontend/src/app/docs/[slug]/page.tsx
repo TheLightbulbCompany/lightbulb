@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { BlogArticleBody } from "@/components/blog/BlogArticleBody";
 import { getAllDocs, getDocBySlug } from "@/content/docs";
-import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
+import { JsonLd, breadcrumbJsonLd, pageMetadata, techArticleJsonLd } from "@/lib/seo";
 
 export const dynamicParams = false;
 
@@ -31,6 +31,14 @@ export default async function DocPage({ params }: DocRouteProps) {
 
   return (
     <article className="blog-article">
+      <JsonLd
+        data={techArticleJsonLd({
+          title: doc.title,
+          description: doc.description,
+          path: `/docs/${doc.slug}`,
+          section: "Documentation",
+        })}
+      />
       <JsonLd
         data={breadcrumbJsonLd([
           { name: "Docs", path: "/docs" },

@@ -124,15 +124,15 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
       source: action.issueId ? "interaction" : "approval",
       kind: action.kind,
     });
+    // Native notifications take a title AND a body; the specific line reads
+    // better as the body under a short standing title. Native replaces the toast.
+    if (nativeNotify("Waiting on you", action.message)) return;
     notifyAttention(action.message, {
       dedupeKey: action.key,
       // Land on the blocked task itself when we know it; the inbox is only the
       // fallback for approvals, which carry no issue id.
       action: action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("needs-you"),
     });
-    // Native notifications take a title AND a body; the specific line reads
-    // better as the body under a short standing title.
-    nativeNotify("Waiting on you", action.message);
     return;
   }
   const isChat = action.source === "chat";
@@ -149,12 +149,14 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
     });
   } else if (action.kind === "success") {
     const message = isChat ? `${name} finished a run` : "Team agent run completed";
-    notifySuccess(message, { dedupeKey: action.key, action: view });
-    nativeNotify(message);
+    // A native completion replaces the toast, so clear the "working…" one it
+    // would otherwise have replaced in place.
+    if (nativeNotify(message)) dismissNotification(action.key);
+    else notifySuccess(message, { dedupeKey: action.key, action: view });
   } else {
     const message = isChat ? `${name} run failed` : "Team agent run failed";
-    notifyFailure(message, { dedupeKey: action.key, action: view });
-    nativeNotify(message);
+    if (nativeNotify(message)) dismissNotification(action.key);
+    else notifyFailure(message, { dedupeKey: action.key, action: view });
   }
 }
 

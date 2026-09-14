@@ -65,11 +65,12 @@ export function MessageNotifications(props: {
             capture("notification_clicked", { channel: "web", room_kind: room.kind });
             current.current.onOpen(roomId, threadRootMessageId);
           };
+          // Native (desktop app, or web with permission) replaces the toast.
+          if (nativeNotify(title, body, { onClick, tag: messageId })) return;
           notifySuccess(`${title}: ${body}`, {
             dedupeKey: `message:${messageId}`,
             action: { label: "View", onClick },
           });
-          nativeNotify(title, body, { onClick, tag: messageId });
         }).catch(() => {});
     });
     return () => { stopped = true; unlisten(); };

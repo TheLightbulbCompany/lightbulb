@@ -1340,7 +1340,10 @@ async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
 @pytest.mark.parametrize(
     "auth,workspace_id,status",
     [
-        (_personal_auth(), "user_123", 409),
+        (_personal_auth(), "user_123", 403),
+        # A personal workspace id is refused even from an org-context caller:
+        # this helper only ever CREATES, and no new personal workspace exists.
+        (_org_admin_auth(), "user_123", 403),
         (_org_admin_auth(), "org_other", 403),
     ],
 )
@@ -1356,13 +1359,22 @@ async def test_workspace_trial_rejects_missing_or_mismatched_org(
 
 
 @pytest.mark.asyncio
-async def test_missing_org_cannot_provision_even_when_trial_helper_is_stubbed(_stub_trial_default):
-    from fastapi import HTTPException
-
-    with patch.object(user_provision, "evaluate_provision_gate", AsyncMock(return_value=_up_gate())):
-        with pytest.raises(HTTPException) as exc:
-            await ensure_user_ready(_personal_auth())
-    assert exc.value.status_code == 409
+async def test_missing_org_returns_before_the_gate_and_creates_nothing(_stub_trial_default):
+    """The workspace-first fence: a personal (no-org) caller leaves
+    ``ensure_user_ready`` as its FIRST statement — before the trial default, the
+    Metronome customer, the provision gate and the ECS dispatch — so no personal
+    world can be built for anyone who signs up alone."""
+    gate = AsyncMock(return_value=_up_gate())
+    with (
+        patch.object(user_provision, "evaluate_provision_gate", gate),
+        patch.object(user_provision, "ensure_metronome_customer", AsyncMock()) as metronome,
+        patch.object(user_provision, "_provision_or_reconcile", AsyncMock()) as provision,
+    ):
+        assert await ensure_user_ready(_personal_auth()) is None
+    gate.assert_not_awaited()
+    metronome.assert_not_awaited()
+    provision.assert_not_awaited()
+    _stub_trial_default.assert_not_awaited()
 
 
 @pytest.mark.asyncio

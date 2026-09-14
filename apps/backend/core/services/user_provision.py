@@ -90,8 +90,14 @@ async def ensure_workspace_trial_default(
 
     The conditional put selects one creator across members and backend instances.
     Existing trial analytics describe row creation; runtime readiness arms its clock.
+
+    Workspace-only, and the id prefix is checked FIRST: this function only ever
+    CREATES, and the product never provisions a new personal workspace, so a
+    ``user_``-prefixed id is a 403 rather than the 409 ``resolve_owner_id``
+    would raise for a caller with no org claim. That makes it impossible to
+    mint a ``trial_local`` row for a personal owner from any door.
     """
-    if resolve_owner_id(auth) != workspace_id:
+    if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
         raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
     if await billing_repo.get_by_owner_id(workspace_id):
         return
@@ -144,7 +150,28 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          ``provision_container`` kwarg made every caller re-derive that
          decision, and got it wrong for the seed half — a self-healing
          poll on a running container seeded nothing).
+
+    Workspace-only. A caller with no org claim returns here, before the gate —
+    this funnel is what used to build a whole personal world (trial row,
+    Metronome customer, ECS container, Paperclip company, nightly CEO routine)
+    for anyone who signed up alone, and that is exactly what must never happen
+    again.
     """
+    # ponytail: legacy personal path. Refusing here is the fence; the personal
+    # legs of _reconcile_owner_seed / _ensure_paperclip_for_owner /
+    # arm_nightly_ceo / provision_runner step 0 survive only because the
+    # executor's wake path still reconciles the three paid personal owners who
+    # predate the 2026-09-10 cutover (resolve_owner_id already 409s them at
+    # every product API). Delete those legs once they are migrated to
+    # workspaces (docs/superpowers/plans/2026-09-14-legacy-personal-owner-migration.md).
+    if not auth.is_org_context:
+        logger.info(
+            "ensure_user_ready: personal (no-org) caller user=%s refused — a workspace is required",
+            auth.user_id,
+        )
+        put_metric("ensure_user_ready.personal_refused")
+        return
+
     owner_id = resolve_owner_id(auth)
 
     # Both status and this background entry point need the row before gating.

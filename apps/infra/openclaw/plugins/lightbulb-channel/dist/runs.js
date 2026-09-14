@@ -113,7 +113,11 @@ export function createRunSupervisor(deps) {
      * reply, and the only correct fallback correlator in `onEvent`.
      */
     const bySession = new Map();
-    /** Session key -> turns accepted while that session was busy, oldest first. */
+    /**
+     * Session key -> turns accepted while that session was busy, oldest first. A parked
+     * entry holds its own `start()` call open rather than a closure the predecessor would
+     * launch: see `start`'s note on the gateway's async-context work admission.
+     */
     const queued = new Map();
     /** Host run id -> our run id, learned from the first event that carries a session key. */
     const bySdkRun = new Map();
@@ -206,8 +210,10 @@ export function createRunSupervisor(deps) {
             bySession.delete(run.sessionKey);
             const next = dequeue(run.sessionKey);
             if (next) {
+                // Hand the session over BEFORE releasing, so a third accept arriving in the gap
+                // still sees the session busy and parks behind this one.
                 bySession.set(run.sessionKey, next.run.runId);
-                launch(next.run, next.turn);
+                next.release(false);
             }
         }
         let outcome;
@@ -270,13 +276,32 @@ export function createRunSupervisor(deps) {
     // finish() can still throw (a frame flush, or getSessionEntry reading a torn row);
     // nothing is left to report it to, so it is logged and never rethrown.
     function launch(run, turn) {
-        void turn()
+        return turn()
             .then((gate) => finish(run, gate === "dispatched" ? undefined : gate), (failure) => finish(run, undefined, failure))
             .catch((error) => logFailure(run.runId, error));
     }
     return {
-        /** The ack has been written; run the turn to completion in the background. */
-        start(spec, turn) {
+        /**
+         * The ack has been written; run the turn to completion. Resolves only when the run
+         * has ended, and the ingress handler MUST await it.
+         *
+         * The gateway fences a plugin HTTP route with an AsyncLocalStorage root-work
+         * admission (dist/route-auth-D4jqHPuM.mjs `runWithGatewayBoundaryWorkAdmission`)
+         * released in a `finally` as soon as the handler's promise settles. A released root
+         * closes subordinate work admission, so every later command enqueue from that async
+         * context rejects with GatewayDrainingError
+         * (dist/command-queue-CH3iJffU.mjs:594 -> dist/gateway-work-admission-CeH7QzKc.mjs
+         * `isGatewaySubordinateWorkAdmissionClosed`). Returning before the turn dispatched
+         * therefore failed EVERY turn. The gateway's detached-work helpers
+         * (`runWithGatewayIndependentRootWorkContinuation`) are not exposed to plugins, so
+         * staying inside the handler's admission is the only seam we have — and it is the
+         * honest one: an in-flight turn is exactly the work the fence exists to drain.
+         *
+         * Same reason a queued turn parks here instead of being launched by its
+         * predecessor's finish(): it must resume inside its OWN handler's live admission,
+         * not the dying one that handed the session over.
+         */
+        async start(spec, turn) {
             unsubscribe ??= deps.sdk.onAgentEvent(onEvent);
             const run = { ...spec, started: false, text: { done: "", current: "" } };
             runs.set(spec.runId, run);
@@ -286,18 +311,24 @@ export function createRunSupervisor(deps) {
             markStarted(run);
             const busy = bySession.get(spec.sessionKey);
             if (busy !== undefined && runs.has(busy)) {
-                queued.set(spec.sessionKey, [...(queued.get(spec.sessionKey) ?? []), { run, turn }]);
-                return;
+                const cancelled = await new Promise((release) => {
+                    queued.set(spec.sessionKey, [...(queued.get(spec.sessionKey) ?? []), { run, release }]);
+                });
+                if (cancelled)
+                    return; // abort() dropped this turn and reported its end itself
             }
-            bySession.set(spec.sessionKey, spec.runId);
-            launch(run, turn);
+            else
+                bySession.set(spec.sessionKey, spec.runId);
+            await launch(run, turn);
         },
         abort(runId) {
             const run = runs.get(runId);
             // A queued turn has not been dispatched to the host, so there is nothing to abort
             // there: drop it from the line and report its own end — with explicit zero usage,
             // since the session row it would otherwise read belongs to the turn that did run.
-            if (run && dequeue(run.sessionKey, runId)) {
+            const parked = run ? dequeue(run.sessionKey, runId) : undefined;
+            if (run && parked) {
+                parked.release(true); // let its parked start() return; finish() below reports it
                 run.terminal = { phase: "end", aborted: true };
                 void finish(run, undefined, undefined, { neverLaunched: true }).catch((error) => logFailure(runId, error));
                 return "aborting";

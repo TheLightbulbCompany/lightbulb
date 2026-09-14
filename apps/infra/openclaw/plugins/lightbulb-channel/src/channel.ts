@@ -1021,7 +1021,11 @@ export function createInboundHandler(deps: InboundDeps) {
     // a run that never started, which the backend sweeper reports as an error rather
     // than re-running (spec §2).
     json(res, 202, { eventId: event.eventId, runId: run.runId, status: "accepted" });
-    deps.runs.start(
+    // The 202 is already flushed, so the caller is not waiting on us — but the gateway
+    // releases this route's root-work admission the moment this handler's promise
+    // settles, and a turn dispatching after that is refused with GatewayDrainingError
+    // (see the note on RunSupervisor.start). So stay pending until the run ends.
+    await deps.runs.start(
       {
         runId: run.runId,
         roomId: event.room.id,

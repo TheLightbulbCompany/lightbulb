@@ -989,12 +989,15 @@ timestamps and the trial-idle sweep, never by UI connectivity.
 
 A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits a missing Paperclip company onto a pre-existing container.
 
+**The path is workspace-only. No NEW personal workspace is ever provisioned.** Every owner is a Clerk org. `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, and `ensure_user_ready` returns on its first statement for a non-org caller — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone. Legacy personal owners from before the 2026-09-10 cutover (three of them paying) are locked out until they are migrated onto a workspace (`docs/superpowers/plans/2026-09-14-legacy-personal-owner-migration.md`); the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo` and `provision_runner` step 0 exist only because the executor's wake path still reconciles their boxes, and go when they do.
+
 ```
-Clerk sign-up
+Clerk sign-up  ->  workspace (Clerk org) created or joined
    └─ frontend polls GET /container/status every ~3s
         └─ routers/container.py dispatches ensure_user_ready(auth)
              └─ core/services/user_provision.py
-                  1. ensure_personal_trial_default + ensure_metronome_customer
+                  1. ensure_workspace_trial_default (org-only; 403 on a user_ id)
+                     + ensure_metronome_customer
                   2. evaluate_provision_gate — subscription/credits/OAuth pre-checks
                   3. asyncio.create_task(dispatch_provision(owner_id))
                        └─ SFN watchdog started FIRST; attempt 0 = scripts/provision_runner.py
@@ -1060,7 +1063,7 @@ Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% che
 
 ### Free tier (no card) — `trial_local`
 
-A first-time personal signup with no billing row gets a `trial_local` row and a container **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`.
+A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a container **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Personal (non-org) signups no longer reach this at all — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, so only a workspace can start a trial; the three legacy paid personal owners keep their existing rows until migrated.
 
 The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial window** (`trial_end` stamped locally at signup; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 

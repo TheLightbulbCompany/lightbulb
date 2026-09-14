@@ -449,67 +449,50 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
 
 @router.get("/members")
 async def list_members(ctx: TeamsContext = Depends(_ctx)):
-    """List the caller's company members, enriched with Clerk identity.
+    """List the humans in the caller's workspace.
 
-    Upstream's ``GET /api/companies/{co}/members`` rows carry only a
-    ``principalId`` (the Better Auth user id) — no email, name, or avatar.
-    The human-user assignee picker on the task detail rail needs those, so
-    we join each principal back to Clerk via the same principal→Clerk map
-    the activity feed uses, then resolve name/email/imageUrl from Clerk.
+    The source is Clerk org membership, NOT Paperclip's company members —
+    the same set ``messaging._validate_human_in_owner`` accepts as room
+    members, so the new-conversation picker never hides someone the backend
+    would let you add. (It used to join Paperclip's member rows back to
+    Clerk, which dropped any teammate whose Paperclip membership-add had not
+    landed — a cofounder who chats in rooms every day was invisible.) A
+    personal workspace has exactly one human: the caller.
 
     Returns the ``{members: [...]}`` envelope shape every Teams panel reads.
     Each row matches the frontend ``CompanyMember`` type
-    (``userId``/``name``/``email``/``imageUrl``). Enrichment is best-effort:
-    a member whose Clerk lookup fails is dropped rather than shipped as a
-    raw principal id (the picker only wants resolvable humans).
+    (``userId``/``name``/``email``/``imageUrl``).
     """
-    upstream = await _admin().list_members(
-        company_id=ctx.company_id,
-        session_cookie=ctx.session_cookie,
-    )
-    rows = envelope_list(upstream, "members")["members"]
-    principal_to_clerk = await build_principal_to_clerk(ctx)
+    if ctx.org_id is None:
+        member = await _resolve_member_identity(ctx.user_id)
+        return {"members": [member] if member else []}
+    from core.services.clerk_admin import list_organization_members
 
-    members: list[dict] = []
-    seen_clerk_ids: set[str] = set()
-    for row in rows:
-        clerk_user_id = principal_to_clerk.get(row.get("principalId"))
-        if not clerk_user_id or clerk_user_id in seen_clerk_ids:
-            continue
-        try:
-            member = await _resolve_member_identity(clerk_user_id)
-        except Exception:
-            logger.exception(
-                "teams.list_members: clerk lookup failed for clerk_user_id=%s",
-                clerk_user_id,
-            )
-            continue
-        if member is None:
-            continue
-        seen_clerk_ids.add(clerk_user_id)
-        members.append(member)
-    return {"members": members}
+    return {
+        "members": [
+            _member_row(m["user_id"], m["first_name"], m["last_name"], m["email"], m["image_url"])
+            for m in await list_organization_members(ctx.org_id)
+        ]
+    }
+
+
+def _member_row(user_id: str, first: str | None, last: str | None, email: str | None, image_url) -> dict:
+    """The ``CompanyMember`` row. Name falls back from the full name → email →
+    the raw id so the picker always has a label to show."""
+    name = " ".join(part for part in (first, last) if part).strip()
+    return {"userId": user_id, "name": name or email or user_id, "email": email or None, "imageUrl": image_url}
 
 
 async def _resolve_member_identity(user_id: str) -> dict | None:
-    """Build a ``CompanyMember`` row from a Clerk user.
-
-    Returns ``None`` when Clerk has no such user. Name falls back from the
-    full name → email → the raw id so the picker always has a label to show.
-    """
+    """Build a ``CompanyMember`` row from a Clerk user, or None when Clerk has no such user."""
     from core.services.clerk_admin import get_user
 
     user = await get_user(user_id)
     if not user:
         return None
-    email = _primary_email(user)
-    name = " ".join(part for part in (user.get("first_name"), user.get("last_name")) if part).strip()
-    return {
-        "userId": user_id,
-        "name": name or email or user_id,
-        "email": email,
-        "imageUrl": user.get("image_url"),
-    }
+    return _member_row(
+        user_id, user.get("first_name"), user.get("last_name"), _primary_email(user), user.get("image_url")
+    )
 
 
 def _primary_email(user: dict) -> str | None:

@@ -283,6 +283,65 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
     return result
 
 
+_ORG_MEMBERS_PAGE = 100
+
+
+async def list_organization_members(org_id: str) -> list[dict]:
+    """Return every member of a Clerk organization.
+
+    Each element: {"user_id", "first_name", "last_name", "email", "image_url", "role"}
+    — the membership's ``public_user_data`` flattened (``identifier`` is the
+    member's primary email). Returns [] if the Clerk key is unset or on any
+    network / HTTP error (logged as warning) — never a partial page, because a
+    silently short roster is exactly the bug the picker had.
+
+    Uses Clerk Backend API GET /v1/organizations/{org_id}/memberships, paged
+    by limit/offset; the envelope is {data: [...memberships], total_count: N}.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return []
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    members: list[dict] = []
+    offset = 0
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            while True:
+                response = await client.get(
+                    f"{_CLERK_API_BASE}/organizations/{org_id}/memberships",
+                    headers=headers,
+                    params={"limit": _ORG_MEMBERS_PAGE, "offset": offset},
+                )
+                if response.status_code >= 400:
+                    logger.warning("clerk_admin.list_organization_members HTTP %s", response.status_code)
+                    return []
+                payload = response.json()
+                rows = payload.get("data") if isinstance(payload, dict) else payload
+                if not isinstance(rows, list):
+                    return []
+                for m in rows:
+                    pud = (m.get("public_user_data") or {}) if isinstance(m, dict) else {}
+                    user_id = pud.get("user_id")
+                    if not user_id:
+                        continue
+                    members.append(
+                        {
+                            "user_id": user_id,
+                            "first_name": pud.get("first_name") or "",
+                            "last_name": pud.get("last_name") or "",
+                            "email": pud.get("identifier") or "",
+                            "image_url": pud.get("image_url"),
+                            "role": m.get("role") or "",
+                        }
+                    )
+                if len(rows) < _ORG_MEMBERS_PAGE:
+                    return members
+                offset += _ORG_MEMBERS_PAGE
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.list_organization_members network error: %s", e)
+        return []
+
+
 async def find_user_by_email(email: str) -> dict | None:
     """Return the first Clerk user matching `email`, or None.
 

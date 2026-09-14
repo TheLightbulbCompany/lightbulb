@@ -56,15 +56,15 @@ export function WorkspaceBand() {
               <p className="lb-mh2">Agents</p>
               <div className="lb-mi">
                 <span className="lb-lamp on" />
-                Friday
+                CEO
               </div>
               <div className="lb-mi">
                 <span className="lb-lamp dim" />
-                Atlas
+                Engineering
               </div>
               <div className="lb-mi">
                 <span className="lb-lamp out" />
-                Vera
+                Growth
               </div>
               <p className="lb-mh2">Direct messages</p>
               <div className="lb-mi">Mara Reyes</div>
@@ -78,32 +78,32 @@ export function WorkspaceBand() {
                 <span className="lb-faces" style={{ marginLeft: "auto" }}>
                   <span className="lb-face">DK</span>
                   <span className="lb-face">MR</span>
-                  <span className="lb-face ag">F</span>
+                  <span className="lb-face ag">E</span>
                 </span>
               </div>
               <div className="lb-mfeed">
                 <Msg who="Mara" at="8:41" avatar="MR" kind="hu">Morning — pricing page is live on prod.</Msg>
-                <Msg who="Friday" at="8:44" avatar="F" kind="ag">Confirmed, it&apos;s serving. Smoke test passed on all three plans.</Msg>
+                <Msg who="Engineering" at="8:44" avatar="E" kind="ag">Confirmed, it&apos;s serving. Checkout smoke test passed.</Msg>
                 <Msg who="Aden" at="9:02" avatar="DK" kind="hu">
-                  FAQ still says 14-day trial and we killed that in July.{" "}
-                  <span className="lb-at">@Friday</span> fix it?
+                  Onboarding emails still link to the old sign-up URL.{" "}
+                  <span className="lb-at">@Engineering</span> fix it?
                 </Msg>
                 <div className="lb-m">
-                  <div className="lb-av ag">F</div>
+                  <div className="lb-av ag">E</div>
                   <div>
                     <div className="lb-mh">
-                      <b>Friday</b>
+                      <b>Engineering</b>
                       <time>9:02</time>
                       <span className="lb-tag">working</span>
                     </div>
-                    <p className="lb-tx">Three places say it. Rewriting and re-running the snapshot test.</p>
+                    <p className="lb-tx">Three places have it. Fixing and re-running the link check.</p>
                     <div className="lb-run">
                       <div className="lb-run-h">
                         <span className="lb-lamp on" />
                         edit · 3 files
                       </div>
                       <div className="lb-run-b">
-                        <s>PricingThreeCard.tsx</s> · <s>faq.mdx</s> · <s>plans.ts</s>
+                        <s>WelcomeEmail.tsx</s> · <s>onboarding.mdx</s> · <s>links.ts</s>
                       </div>
                     </div>
                   </div>
@@ -123,10 +123,10 @@ export function WorkspaceBand() {
                   </div>
                 </div>
                 <div className="lb-m">
-                  <div className="lb-av ag">F</div>
+                  <div className="lb-av ag">E</div>
                   <div>
                     <div className="lb-mh">
-                      <b>Friday</b>
+                      <b>Engineering</b>
                       <time>9:06</time>
                       <span className="lb-tag">needs you</span>
                     </div>
@@ -141,12 +141,12 @@ export function WorkspaceBand() {
               <p className="lb-mh2" style={{ paddingTop: "0.1rem" }}>Needs you</p>
               <div className="lb-mcard">
                 <b>Approve refund wording</b>
-                <p>Friday · #launch · 4m ago</p>
+                <p>Engineering · #launch · 4m ago</p>
               </div>
               <p className="lb-mh2">Running</p>
               <div className="lb-mcard">
-                <b>Fix trial copy</b>
-                <p>Friday · 3 files edited</p>
+                <b>Fix onboarding links</b>
+                <p>Engineering · 3 files edited</p>
                 <div className="lb-mbar">
                   <i />
                 </div>

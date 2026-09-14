@@ -1,0 +1,56 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import type { LocalSession } from "./types";
+import type { RoomResourceSource } from "./useRoomResources";
+
+/**
+ * Every live session in the workspace, for the sidebar, the glyph and the
+ * mobile list. Polls slowly; the relay's `workspace.sessions.changed` hint on
+ * the private user channel is what makes a new session show within a second.
+ */
+export function useWorkspaceSessions(
+  { client, onEvent, connectionRevision }: RoomResourceSource,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
+  const [sessions, setSessions] = useState<LocalSession[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const request = useRef(0);
+  const refreshing = useRef(false);
+  const queued = useRef(false);
+  const refresh = useCallback(async () => {
+    if (refreshing.current) { queued.current = true; return; }
+    refreshing.current = true;
+    const id = ++request.current;
+    setLoading(true);
+    try {
+      do {
+        queued.current = false;
+        try {
+          const next = await client.listWorkspaceSessions();
+          if (id !== request.current) return;
+          setSessions(next.sessions);
+          setError(null);
+        } catch {
+          if (id !== request.current) return;
+          setError("Could not refresh shared sessions.");
+        }
+      } while (queued.current && id === request.current);
+    } finally {
+      if (id === request.current) { refreshing.current = false; setLoading(false); }
+    }
+  }, [client]);
+  useEffect(() => {
+    if (!enabled) return;
+    void refresh();
+    const unsubscribe = onEvent(event => { if (event.type === "workspace.sessions.changed") void refresh(); });
+    const timer = setInterval(() => void refresh(), 30000);
+    return () => { unsubscribe(); clearInterval(timer); request.current += 1; refreshing.current = false; queued.current = false; };
+  }, [enabled, onEvent, refresh]);
+  const previousConnection = useRef(connectionRevision);
+  useEffect(() => {
+    if (enabled && previousConnection.current !== connectionRevision) void refresh();
+    previousConnection.current = connectionRevision;
+  }, [enabled, connectionRevision, refresh]);
+  return { sessions, error, loading, refresh };
+}

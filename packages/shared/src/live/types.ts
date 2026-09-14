@@ -121,6 +121,7 @@ export type LiveEventType =
   | "room.run.frame"
   | "room.metadata.changed"
   | "room.resources.changed"
+  | "workspace.sessions.changed"
   | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
@@ -137,6 +138,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.run.frame",
   "room.metadata.changed",
   "room.resources.changed",
+  "workspace.sessions.changed",
   "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
@@ -190,6 +192,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"room.resources.changed", { roomId: string }>
+  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string }>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
@@ -282,6 +285,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
   switch (type) {
     case "room.resources.changed":
       return str(payload.roomId) && Object.keys(payload).length === 1;
+    case "workspace.sessions.changed":
+      return str(payload.humanUserId) && Object.keys(payload).length === 1;
     case "room.message.updated":
       return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;
     case "room.message.created":

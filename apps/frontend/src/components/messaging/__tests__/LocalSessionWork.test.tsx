@@ -11,7 +11,7 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ get: m.get, patch: m.patch }) }))
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: m.open }));
 const linked = { state: "linked", revision: "rev1", link: { kind: "issue", companyId: "company", issueId: "issue" }, title: "Private synthetic title" };
 const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUserId: "alice", provider: "codex", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
-const client = { listResources: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() };
+const client = { listResources: vi.fn(), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() };
 function view() {
   const cache = new Map();
   const tree = () => <SWRConfig value={{ provider: () => cache }}><LocalSessionPanel session={session} ownerName="Alice" roomId="room" client={client} revision={1} onAccessLost={() => {}} /></SWRConfig>;

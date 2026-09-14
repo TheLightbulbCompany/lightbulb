@@ -259,6 +259,8 @@ export interface RoomResources {
   pairedNodes: PairedNode[];
 }
 
+export interface WorkspaceSessions { sessions: LocalSession[] }
+
 export type LocalSessionEventActor = { userId: string } | { agentId: string };
 export type LocalSessionLifecycle = "turn_start" | "turn_end" | "turn_aborted" | "compaction" | "approval_pending";
 export interface LocalSessionEventTool {

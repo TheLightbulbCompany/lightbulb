@@ -36,6 +36,7 @@ function setup(roomId = "room") {
   });
   const client = {
     listResources: vi.fn<(roomId: string, options?: { includeEnded?: boolean }) => Promise<RoomResources>>(async () => resources),
+    listWorkspaceSessions: vi.fn(),
     listLocalSessionEvents: vi.fn(async (_room: string, _session: string, after: number, limit = 50) => page(after, limit)),
     submitLocalSessionCommand: vi.fn(async (_room: string, _session: string, request: LocalSessionCommand) => receipt(request)),
     getLocalSessionCommand: vi.fn<(_room: string, _session: string, _id: string) => Promise<LocalSessionCommandReceipt>>(),

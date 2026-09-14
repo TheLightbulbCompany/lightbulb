@@ -915,3 +915,31 @@ async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):
     assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
     with patch.object(repo, "list_user_sessions", side_effect=RuntimeError("boom")):
         assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
+
+
+async def test_live_sessions_for_room_truncates_a_long_human_user_id():
+    # human_user_id carries no Field(max_length=...) anywhere in the LocalSession
+    # chain, unlike title/cwd_name -- constructed directly rather than through the
+    # moto fixture, which has no way to register a session under an over-long id.
+    long_id = "x" * 200
+    session = service.LocalSession(
+        session_id="session-1",
+        device_id=MAC,
+        human_user_id=long_id,
+        provider="codex",
+        generation="generation-1",
+        status="idle",
+        provider_version="1.0",
+        active_turn_id=None,
+        capabilities=service.Capabilities(),
+        capabilities_verified=True,
+    )
+
+    async def fake_live(_owner, _humans):
+        return [session]
+
+    members = [{"kind": "human", "id": long_id, "displayName": "Long"}]
+    with patch.object(service, "_live_public_sessions", fake_live):
+        rows = await service.live_sessions_for_room(OWNER, ROOM, members)
+    assert rows[0]["humanUserId"] == long_id[:128]
+    assert len(rows[0]["humanUserId"]) == 128

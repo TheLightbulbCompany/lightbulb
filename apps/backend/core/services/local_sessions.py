@@ -572,7 +572,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         out = [
             {
                 "sessionId": s.session_id,
-                "humanUserId": s.human_user_id,
+                "humanUserId": s.human_user_id[:128],
                 "displayName": (names.get(s.human_user_id) or "Workspace member")[:120],
                 "provider": s.provider,
                 "cwdName": s.cwd_name,

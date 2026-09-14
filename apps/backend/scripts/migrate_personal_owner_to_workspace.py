@@ -86,7 +86,7 @@ except ImportError:  # pragma: no cover — only the deployed-image path
     class SlugTakenError(Exception):
         pass
 
-    async def create_organization(*, name: str, slug: str, created_by: str):
+    async def create_organization(*, name: str, created_by: str, slug: str | None = None):
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 "https://api.clerk.com/v1/organizations",
@@ -95,7 +95,7 @@ except ImportError:  # pragma: no cover — only the deployed-image path
                     "Content-Type": "application/json",
                     "User-Agent": "lightbulb-backend/1.0",
                 },
-                json={"name": name, "slug": slug, "created_by": created_by},
+                json={"name": name, "created_by": created_by, **({"slug": slug} if slug else {})},
             )
         if resp.status_code == 422 and any(
             e.get("code") in ("form_identifier_exists", "duplicate_record") for e in (resp.json().get("errors") or [])
@@ -207,10 +207,10 @@ async def _paperclip_company_name(pc_row: PaperclipCompany) -> str | None:
 async def _create_org(name: str, owner_id: str, out: list[str]) -> str | None:
     slug = slugify(name)
     try:
-        org = await create_organization(name=name, slug=slug, created_by=owner_id)
+        org = await create_organization(name=name, created_by=owner_id)
     except SlugTakenError:
         slug = f"{slug[:35].rstrip('-')}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=4))}"
-        org = await create_organization(name=name, slug=slug, created_by=owner_id)
+        org = await create_organization(name=name, created_by=owner_id)
     if not org or not org.get("id"):
         out.append("  FAIL clerk org: create_organization returned nothing")
         return None

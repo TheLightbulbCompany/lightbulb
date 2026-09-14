@@ -73,7 +73,7 @@ except ImportError:  # pragma: no cover — only the deployed-image path
     class SlugTakenError(Exception):
         pass
 
-    async def create_organization(*, name: str, slug: str, created_by: str):
+    async def create_organization(*, name: str, created_by: str, slug: str | None = None):
         import httpx
 
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -84,7 +84,7 @@ except ImportError:  # pragma: no cover — only the deployed-image path
                     "Content-Type": "application/json",
                     "User-Agent": "lightbulb-backend/1.0",
                 },
-                json={"name": name, "slug": slug, "created_by": created_by},
+                json={"name": name, "created_by": created_by, **({"slug": slug} if slug else {})},
             )
         if resp.status_code == 422 and any(
             e.get("code") in ("form_identifier_exists", "duplicate_record") for e in (resp.json().get("errors") or [])
@@ -235,12 +235,12 @@ async def _primary_email(owner_id: str) -> str | None:
 
 async def _create_with_retry(name: str, slug: str, owner_id: str, out: list[str]) -> None:
     try:
-        org = await create_organization(name=name, slug=slug, created_by=owner_id)
+        org = await create_organization(name=name, created_by=owner_id)
     except SlugTakenError:
         suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
         retry_slug = _slug_with_suffix(slug, suffix)
         try:
-            org = await create_organization(name=name, slug=retry_slug, created_by=owner_id)
+            org = await create_organization(name=name, created_by=owner_id)
         except SlugTakenError:
             out.append(f"  FAIL {owner_id}: slug taken twice ({slug}, {retry_slug})")
             return

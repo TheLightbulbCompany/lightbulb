@@ -541,7 +541,7 @@ def _is_slug_taken(response: httpx.Response) -> bool:
     return isinstance(first, dict) and first.get("code") in _SLUG_TAKEN_CODES
 
 
-async def create_organization(*, name: str, slug: str, created_by: str) -> dict | None:
+async def create_organization(*, name: str, created_by: str, slug: str | None = None) -> dict | None:
     """Create a Clerk organization with ``created_by`` as its admin.
 
     ``POST /v1/organizations`` with body ``{name, slug, created_by}`` — Clerk
@@ -564,7 +564,11 @@ async def create_organization(*, name: str, slug: str, created_by: str) -> dict 
         # (Python's default gets a 403 code 1010); every write here names itself.
         "User-Agent": "lightbulb-backend/1.0",
     }
-    body = {"name": name, "slug": slug, "created_by": created_by}
+    # Slugs are an instance feature; this instance has them DISABLED and Clerk
+    # 403s ``organization_slugs_disabled`` on any create that names one.
+    body: dict = {"name": name, "created_by": created_by}
+    if slug:
+        body["slug"] = slug
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:

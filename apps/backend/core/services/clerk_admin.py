@@ -510,3 +510,79 @@ async def list_pending_invitations_for_user(user_id: str) -> list[dict]:
     if isinstance(payload, dict) and "data" in payload:
         return payload["data"] or []
     return payload if isinstance(payload, list) else []
+
+
+class SlugTakenError(Exception):
+    """Raised by ``create_organization`` when Clerk 422s because the
+    requested slug is already in use by another organization.
+
+    Distinct from the module's usual "swallow and return None/[]" posture:
+    a slug collision is retryable (pick another slug), unlike a generic
+    failure, so callers need to tell the two apart rather than getting a
+    flat None for both.
+    """
+
+
+# Clerk has used more than one code for "this identifier (e.g. slug) is
+# already taken" — mirrors `_ALREADY_MEMBER_CODES`'s defensive posture.
+_SLUG_TAKEN_CODES = frozenset({"form_identifier_exists", "duplicate_record"})
+
+
+def _is_slug_taken(response: httpx.Response) -> bool:
+    """True when a Clerk 422 means "that slug is already taken"."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if not isinstance(errors, list) or not errors:
+        return False
+    first = errors[0]
+    return isinstance(first, dict) and first.get("code") in _SLUG_TAKEN_CODES
+
+
+async def create_organization(*, name: str, slug: str, created_by: str) -> dict | None:
+    """Create a Clerk organization with ``created_by`` as its admin.
+
+    ``POST /v1/organizations`` with body ``{name, slug, created_by}`` — Clerk
+    makes the ``created_by`` user the org's initial admin member, which is
+    exactly the workspace-first shape (one human, one workspace, admin role).
+
+    Returns the created org dict on 2xx. Returns ``None`` (logged as a
+    warning) for a network error, an unset ``CLERK_SECRET_KEY``, or any
+    non-2xx response — EXCEPT a 422 slug collision, which raises
+    ``SlugTakenError`` instead so a caller can retry with a different slug
+    rather than treating it as a generic, unretryable failure.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {"name": name, "slug": slug, "created_by": created_by}
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.post(f"{_CLERK_API_BASE}/organizations", headers=headers, json=body)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.create_organization network error: %s", e)
+        return None
+
+    if response.status_code == 422 and _is_slug_taken(response):
+        raise SlugTakenError(slug)
+
+    if response.status_code >= 400:
+        logger.warning(
+            "clerk_admin.create_organization HTTP %s slug=%s body=%s",
+            response.status_code,
+            slug,
+            response.text,
+        )
+        return None
+
+    try:
+        return response.json()
+    except ValueError:
+        return None

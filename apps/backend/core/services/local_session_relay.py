@@ -36,7 +36,7 @@ class Descriptor(ContractModel):
     native_conversation_id: sessions.OpaqueId
     generation: sessions.OpaqueId
     provider_version: str = Field(min_length=1, max_length=128)
-    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
+    status: sessions.STATUSES
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
@@ -54,7 +54,7 @@ class Heartbeat(ContractModel):
     type: Literal["local.session.heartbeat"]
     session_id: uuid.UUID
     generation: sessions.OpaqueId
-    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
+    status: sessions.STATUSES
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None

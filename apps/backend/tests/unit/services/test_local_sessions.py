@@ -777,3 +777,31 @@ async def test_machine_device_proof_cannot_enable_human_enrollment(db):
             )
     assert response.status_code == 401
     assert db[0].get_item(Key={"pk": f"LOCALUSER#{OWNER}#{ALICE.user_id}", "sk": f"DEVICE#{MAC}"}).get("Item") is None
+
+
+@pytest.mark.asyncio
+async def test_ended_row_reads_ended_even_while_lease_is_live(db):
+    with patch("time.time", return_value=10000):
+        sid = await registered()
+    row = await repo.get_session(OWNER, sid)
+    await repo.put_session(
+        {**row, "endedAt": 10005, "lastEventAt": 10005}, row, await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    )
+    with patch("time.time", return_value=10010):
+        resources = await service.list_resources(BOB, ROOM, include_ended=True)
+    [session] = [s for s in resources.sessions if s.session_id == sid]
+    assert session.status == "ended"
+    assert session.ended_at == "1970-01-01T02:46:45Z"
+    assert session.last_event_at == "1970-01-01T02:46:45Z"
+
+
+@pytest.mark.asyncio
+async def test_command_to_ended_session_is_refused(db):
+    with patch("time.time", return_value=10000):
+        sid = await registered()
+    row = await repo.get_session(OWNER, sid)
+    await repo.put_session({**row, "endedAt": 10005}, row, await repo.get_enrollment(OWNER, ALICE.user_id, MAC))
+    with patch("time.time", return_value=10010), pytest.raises(ApiProblem) as excinfo:
+        await service.submit_command(BOB, ROOM, sid, command(service))
+    assert excinfo.value.error.code == "LOCAL_SESSION_OFFLINE"
+    assert "ended" in excinfo.value.error.message

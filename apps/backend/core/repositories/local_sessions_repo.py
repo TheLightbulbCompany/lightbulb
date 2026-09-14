@@ -213,7 +213,7 @@ async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
                     "UpdateExpression": "SET commandSeq = :next, revision = :newRevision",
-                    "ConditionExpression": "revision = :revision AND generation = :generation AND onlineUntil > :now",
+                    "ConditionExpression": "revision = :revision AND generation = :generation AND onlineUntil > :now AND attribute_not_exists(endedAt)",
                     "ExpressionAttributeValues": {
                         ":next": receipt["commandSeq"],
                         ":revision": row["revision"],

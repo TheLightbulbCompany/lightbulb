@@ -30,6 +30,9 @@ HTTP_ENDPOINT = os.environ.get("APPSYNC_EVENTS_HTTP_ENDPOINT", "")
 REGION = os.environ.get("APPSYNC_EVENTS_REGION", os.environ.get("AWS_REGION", ""))
 MAX_EVENT_BYTES = 230 * 1024
 MAX_MESSAGE_BYTES = 100_000
+# Lockstep with core.services.messaging.ATTACHMENT_MAX_COUNT and the shared
+# client guard in packages/shared/src/live/types.ts.
+MAX_ATTACHMENTS = 4
 # Must equal core.services.messaging.LIVE_EVENT_TYPES. Drift does not lose an
 # event silently: _validate_live_event raises on an unlisted type, so the record
 # is retried, then parked in the failure bucket and paged
@@ -212,6 +215,28 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("invalid canonical mention")
         clean_mentions.append({"kind": mention["kind"], "id": mention["id"]})
     message["mentions"] = clean_mentions
+
+    # Attachments are OPTIONAL on the row but load-bearing in the payload: the
+    # shared client guard accepts `attachments === undefined`, so omitting them
+    # here does not drop the event — it merges an attachment-less copy over the
+    # one the HTTP read carried and the image silently disappears from the
+    # timeline. Sanitised like author/mentions above rather than passed through.
+    attachments = item.get("attachments") or []
+    if not isinstance(attachments, list) or len(attachments) > MAX_ATTACHMENTS:
+        raise ValueError("invalid canonical attachments")
+    clean_attachments = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            raise ValueError("invalid canonical attachment")
+        clean = {key: attachment.get(key) for key in ("id", "fileName", "contentType")}
+        if not all(isinstance(value, str) and value for value in clean.values()):
+            raise ValueError("invalid canonical attachment")
+        clean["size"] = _require_int(attachment.get("size"), "attachment size", minimum=1)
+        clean_attachments.append(clean)
+    # Omitted, not empty, when there are none: keeps a text message's payload
+    # byte-identical to what it published before.
+    if clean_attachments:
+        message["attachments"] = clean_attachments
 
     for field in ("replyToMessageId", "threadRootMessageId"):
         if message[field] is not None:

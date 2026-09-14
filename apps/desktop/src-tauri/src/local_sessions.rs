@@ -888,10 +888,10 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
     Ok(version.into())
 }
 
+/// Merges one listing into what is already known. A session the listing does not
+/// mention keeps everything it had: a listing is a sweep, not an obituary, and a
+/// session ends only when its hook or its pid says so.
 fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSession>) {
-    for session in current.iter_mut() {
-        session.status = "offline".into();
-    }
     let mut seen = std::collections::BTreeMap::new();
     for mut session in discovered {
         let identity = (
@@ -1556,7 +1556,11 @@ mod tests {
             "two live runtimes for one native identity are ambiguous"
         );
         reconcile_sessions(&mut sessions, vec![]);
-        assert_eq!(sessions[0].status, "offline");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].status, "unknown",
+            "an unlisted session keeps its status; hooks and the pid check end it"
+        );
     }
 
     #[test]

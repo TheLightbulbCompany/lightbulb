@@ -64,8 +64,16 @@ class HeartbeatSession(ContractModel):
 
 
 class DeviceHeartbeat(ContractModel):
+    """Every mirror the device still owns, split across as many frames as it takes.
+
+    The 16 KiB envelope is checked before validation, so a cap the envelope cannot
+    carry would reject the whole frame as INVALID_REQUEST instead of rejecting the
+    extra entries. 24 golden-shaped entries fit with room to spare; a device with
+    more sessions sends consecutive frames, each of them complete on its own.
+    """
+
     type: Literal["local.device.heartbeat"]
-    sessions: Annotated[list[HeartbeatSession], Field(max_length=64)]
+    sessions: Annotated[list[HeartbeatSession], Field(max_length=24)]
 
 
 class Ended(ContractModel):
@@ -338,10 +346,10 @@ class LocalSessionRelay:
 
     async def _device_heartbeat(self, cid: str, connection: dict, enrollment: dict, message: DeviceHeartbeat) -> dict:
         """One frame per device renews every mirror it still owns; the rest come back rejected."""
-        # ponytail: a read, a lease write and a delivery pass per listed session, capped at 64;
+        # ponytail: a read, a lease write and a delivery pass per listed session, capped at 24;
         # batch the reads if a device ever carries enough live mirrors for it to show.
         owner, now = connection.get("org_id") or connection["user_id"], int(time.time())
-        rejected, reconcile, changed = [], [], set()
+        rejected, reconcile = [], []
         for item in message.sessions:
             row = await repo.get_session(owner, item.session_id)
             if (
@@ -379,21 +387,22 @@ class LocalSessionRelay:
                 updated.update(
                     capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
                 )
-            if any(row.get(field) != updated.get(field) for field in public):
+            moved = any(row.get(field) != updated.get(field) for field in public)
+            if moved:
                 updated["lastEventAt"] = now
-                changed.add((owner, row["humanUserId"]))
-            elif row["onlineUntil"] <= now:
-                # A lapsed lease reads as offline; recovery must reach the room
-                # even when nothing else moved. Renewal makes this fire once.
-                changed.add((owner, row["humanUserId"]))
             await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+            # Hint per session, never deferred to the end of the frame: a failure
+            # part-way retries the whole frame, and by then the rows already written
+            # match what the device sent, so a deferred hint would be dropped.
+            # A lapsed lease reads as offline, so recovery must reach the room even
+            # when nothing else moved; renewal makes that fire once.
+            if moved or row["onlineUntil"] <= now:
+                await publish_resources_changed(owner, row["humanUserId"])
             # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
             await self.dispatch_session(owner, item.session_id)
             pending = await self._reconcile_for(owner, item.session_id, row["generation"])
             if pending is not None:
                 reconcile.append({"sessionId": item.session_id, **pending})
-        for owner_id, human in changed:
-            await publish_resources_changed(owner_id, human)
         return {"type": "local.device.heartbeat.ack", "rejected": rejected, "reconcile": reconcile, "serverTime": now}
 
     async def _ended(self, cid: str, connection: dict, enrollment: dict, message: Ended) -> dict:
@@ -407,9 +416,10 @@ class LocalSessionRelay:
             or row.get("endedAt") is not None
         ):
             return ack
-        updated = _revised(
-            row, status="ended", endedAt=message.ended_at, lastEventAt=message.ended_at, endedReason=message.reason
-        )
+        # A device clock ahead of the server cannot park a session in the future,
+        # where it would outrank every live row in a lastEventAt ordering.
+        ended_at = min(message.ended_at, int(time.time()))
+        updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=message.reason)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
         await publish_resources_changed(owner, row["humanUserId"])
         return ack

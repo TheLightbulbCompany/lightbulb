@@ -1097,6 +1097,31 @@ async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
     resumed = await repo.get_session(OWNER, sid)
     assert "endedAt" not in resumed and "endedReason" not in resumed
     assert resumed["status"] == "busy" and resumed["lastEventAt"] == 10008
+    # A device clock ahead of the server cannot park a session in the future.
+    with patch("time.time", return_value=10009):
+        await relay(transport).handle_message("conn-1", {**frame, "endedAt": 99999999})
+    clamped = await repo.get_session(OWNER, sid)
+    assert clamped["endedAt"] == clamped["lastEventAt"] == 10009
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_caps_one_frame_and_consecutive_frames_both_renew(transport):
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+        other = await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2"))
+    frame = heartbeat(sid)
+    frame["sessions"] = [{**frame["sessions"][0], "sessionId": f"session-{n}"} for n in range(25)]
+    # The cap must reject the extra entries, not the whole envelope: 25 entries are ~5 KB.
+    assert len(json.dumps(frame).encode()) < 16 * 1024
+    with pytest.raises(ApiProblem) as excinfo:
+        await relay(transport).handle_message("conn-1", frame)
+    assert excinfo.value.error.code == "INVALID_REQUEST"
+    # A device with more mirrors than one frame carries splits them; each frame stands alone.
+    with patch("time.time", return_value=10010):
+        await relay(transport).handle_message("conn-1", heartbeat(sid))
+        await relay(transport).handle_message("conn-1", heartbeat(other["sessionId"]))
+    assert (await repo.get_session(OWNER, sid))["onlineUntil"] == 10040
+    assert (await repo.get_session(OWNER, other["sessionId"]))["onlineUntil"] == 10040
 
 
 @pytest.mark.asyncio

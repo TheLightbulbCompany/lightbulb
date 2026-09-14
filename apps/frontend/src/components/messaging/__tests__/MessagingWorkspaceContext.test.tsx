@@ -83,7 +83,12 @@ beforeEach(() => {
   state.accessRemoved = false;
   state.runs = [];
   state.selectDm.mockResolvedValue(null);
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
+  // Never resolves by default: the provider's mount-time sessions fetch would
+  // otherwise settle-then-setState on a microtask this file's ~30 synchronous
+  // `it(() => {...})` bodies never yield to, landing outside any act() scope
+  // for a value (empty list, unchanged) none of them assert on anyway. The one
+  // test that cares (below) installs its own resolving mock before rendering.
+  state.resourceSource.client.listWorkspaceSessions.mockImplementation(() => new Promise(() => {}));
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -93,25 +98,13 @@ beforeEach(() => {
   state.historyError = false;
   state.historyErrorMessage = null;
 });
-afterEach(() => { cleanup(); localStorage.clear(); });
-
-// The provider now fetches workspace sessions on mount (Task 5), and this
-// suite's mocked client resolves immediately. Its settle-then-setState lands
-// on a microtask tick that this file's many synchronous `it(() => {...})`
-// bodies never yield to, so it always lands outside any act() scope — a
-// harmless timing artifact of the mock, not a real unguarded update (Task 4's
-// own hook test drains it properly with `waitFor`; converting every one of
-// this file's ~30 call sites to await that same drain is a much bigger,
-// riskier diff than this task). Filter only that one message; anything else
-// still prints, so a real bug is not hidden by this.
-const realConsoleError = console.error.bind(console);
-beforeEach(() => {
-  console.error = (...args: unknown[]) => {
-    if (typeof args[0] === "string" && args[0].includes("not wrapped in act(...)")) return;
-    realConsoleError(...args);
-  };
+// Belt-and-suspenders for the one test below that does let its sessions fetch
+// resolve: flush inside act(), before cleanup unmounts the tree.
+afterEach(async () => {
+  await act(async () => {});
+  cleanup();
+  localStorage.clear();
 });
-afterEach(() => { console.error = realConsoleError; });
 
 function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void) {
   return render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
@@ -216,6 +209,24 @@ it("enriches room participants with roster activity while keeping the full creat
   expect(panel.participants[0]).not.toHaveProperty("agentActivity");
   expect(panel.participants[0]).not.toHaveProperty("agentState");
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);
+});
+
+it("derives sharing from the workspace session list for room and directory participants", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "busy" } as never] });
+  state.activeRoom = { ...room, members: [...room.members, { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null, role: "member", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 }] };
+  mocks.rooms.mockReturnValue(state);
+  const view = render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(panel.participants.find((p) => p.id === "colleague")?.sharing).toBe(true));
+  expect(panel.participants.find((p) => p.id === "owner")?.sharing).toBe(false);
+  expect(directory.participants.find((p) => p.id === "colleague")?.sharing).toBe(true);
+  // Task 5 review finding: the own/ownerName mapping (sidebarSessions) was
+  // untested because every context test mocked an empty session list.
+  expect(directory.sessions?.find((row) => row.session.sessionId === "s1")).toMatchObject({ own: false, ownerName: "Colleague" });
+  view.unmount();
+
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s2", humanUserId: "owner", status: "busy" } as never] });
+  render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions?.find((row) => row.session.sessionId === "s2")).toMatchObject({ own: true, ownerName: "You" }));
 });
 
 it("offers channel admins only non-members and projects explicit member wire fields", async () => {

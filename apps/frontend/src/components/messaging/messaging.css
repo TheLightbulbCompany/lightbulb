@@ -177,6 +177,7 @@
 .participant-avatar[data-presence="online"]::after { background: var(--presence); }
 .participant-avatar[data-presence="agent"]::after { background: var(--presence-agent); }
 .room-directory .participant-avatar[data-presence="online"]::after, .room-directory .participant-avatar[data-presence="agent"]::after { box-shadow: 0 0 0 2px var(--muted); }
+.participant-avatar-sharing { position: absolute; left: -2px; bottom: -2px; width: 12px; height: 12px; padding: 1px; border-radius: 3px; color: var(--primary-foreground); background: var(--primary); box-shadow: 0 0 0 1.5px var(--background); }
 @keyframes agent-activity-halo {
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
 }

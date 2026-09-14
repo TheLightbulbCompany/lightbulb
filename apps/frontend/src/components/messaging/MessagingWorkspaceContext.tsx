@@ -197,6 +197,7 @@ export function MessagingWorkspaceProvider({
 
   const online = usePresence(rooms.httpReady, scope);
   const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
+  const sharing = useMemo(() => new Set(workspaceSessions.sessions.map((session) => session.humanUserId)), [workspaceSessions.sessions]);
   const humanName = useCallback((id: string) => {
     const member = humanRoster?.members?.find((candidate) => candidate.userId === id);
     return member?.name || member?.email || "Workspace member";
@@ -206,7 +207,7 @@ export function MessagingWorkspaceProvider({
   })), [workspaceSessions.sessions, userId, humanName]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-    : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
+    : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online, sharing]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
@@ -215,8 +216,8 @@ export function MessagingWorkspaceProvider({
       .filter((member) => member.kind !== "human" || member.id !== userId)
       .map((member) => member.kind === "agent"
         ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-        : { ...member, online: online.has(member.id) }),
-  })), [rooms.rooms, activityByAgentId, userId, online]);
+        : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }),
+  })), [rooms.rooms, activityByAgentId, userId, online, sharing]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
@@ -226,6 +227,7 @@ export function MessagingWorkspaceProvider({
       displayName: member.name || member.email || "Workspace member",
       mentionHandle: null,
       online: online.has(member.userId),
+      sharing: sharing.has(member.userId),
     }));
     const agents = (agentRoster?.agents ?? []).map((agent) => ({
       kind: "agent" as const,
@@ -234,7 +236,7 @@ export function MessagingWorkspaceProvider({
       mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
-  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online]);
+  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing]);
 
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);

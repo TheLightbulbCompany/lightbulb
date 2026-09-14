@@ -1074,6 +1074,10 @@ struct Mirror {
     pub ended_at: Option<u64>,
     #[serde(default)]
     pub ended_reason: Option<String>,
+    // The relay has acknowledged this session's end. Durable: a Mac that reports an
+    // end and restarts must not report it again, and one that does not must.
+    #[serde(default)]
+    ended_sent: bool,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1121,8 +1125,7 @@ impl Mirror {
         if self.queue.is_empty() && self.native.restriction.as_deref() != Some("history-gap") {
             // An ended session is exempt: its process is gone by definition, and the
             // last thing it wrote -- the end of the conversation -- is still unread.
-            if self.native.status != "offline"
-                && self.ended_at.is_none()
+            if self.ended_at.is_none()
                 && !process(self.native.process.pid).is_ok_and(|p| p == self.native.process)
             {
                 return Err("runtime-unverified".into());
@@ -1630,6 +1633,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_reason: None,
+            ended_sent: false,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1649,7 +1653,7 @@ mod tests {
             .open(restored.native.transcript.as_ref().unwrap())
             .unwrap();
         writeln!(file,"{}",json!({"type":"assistant","sessionId":"s","version":"2.1.268","message":{"role":"assistant","content":[{"type":"text","text":"final before exit"}]}})).unwrap();
-        restored.native.status = "offline".into();
+        restored.ended_at = Some(1);
         restored.native.process.pid = u32::MAX;
         assert_eq!(
             restored.next_batch().unwrap().unwrap()["events"][0]["text"],
@@ -1705,6 +1709,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_reason: None,
+            ended_sent: false,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1779,6 +1784,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_reason: None,
+            ended_sent: false,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1868,6 +1874,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_reason: None,
+            ended_sent: false,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1922,6 +1929,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_reason: None,
+            ended_sent: false,
         }
     }
 

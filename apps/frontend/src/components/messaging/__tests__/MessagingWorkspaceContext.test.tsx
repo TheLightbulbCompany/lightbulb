@@ -57,7 +57,7 @@ const room: RoomDetail = {
   ],
 };
 const state = {
-  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 },
+  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -83,6 +83,7 @@ beforeEach(() => {
   state.accessRemoved = false;
   state.runs = [];
   state.selectDm.mockResolvedValue(null);
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -93,6 +94,24 @@ beforeEach(() => {
   state.historyErrorMessage = null;
 });
 afterEach(() => { cleanup(); localStorage.clear(); });
+
+// The provider now fetches workspace sessions on mount (Task 5), and this
+// suite's mocked client resolves immediately. Its settle-then-setState lands
+// on a microtask tick that this file's many synchronous `it(() => {...})`
+// bodies never yield to, so it always lands outside any act() scope — a
+// harmless timing artifact of the mock, not a real unguarded update (Task 4's
+// own hook test drains it properly with `waitFor`; converting every one of
+// this file's ~30 call sites to await that same drain is a much bigger,
+// riskier diff than this task). Filter only that one message; anything else
+// still prints, so a real bug is not hidden by this.
+const realConsoleError = console.error.bind(console);
+beforeEach(() => {
+  console.error = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && args[0].includes("not wrapped in act(...)")) return;
+    realConsoleError(...args);
+  };
+});
+afterEach(() => { console.error = realConsoleError; });
 
 function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void) {
   return render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>

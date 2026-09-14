@@ -56,3 +56,23 @@ describe("groupRooms", () => {
     expect(groupRooms(rooms, [], { sort: "unread", nameOf })[0].rooms.map((value) => value.roomId)).toEqual(["alpha", "muted"]);
   });
 });
+
+import { orderSidebarSessions, type SidebarSession } from "../roomSections";
+
+const s = (over: Partial<SidebarSession["session"]>, ownerName: string, own = false): SidebarSession => ({
+  own, ownerName,
+  session: { sessionId: "x", deviceId: "d", humanUserId: "h", provider: "claude", providerVersion: "2", generation: "g", status: "idle", activeTurnId: null,
+    capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, ...over },
+});
+
+it("orders sidebar sessions: mine first, then people by name, busy before waiting before idle, then most recent", () => {
+  const rows = [
+    s({ sessionId: "b-idle", lastEventAt: "2026-09-14T10:00:00Z" }, "Bob"),
+    s({ sessionId: "a-idle-old", lastEventAt: "2026-09-14T09:00:00Z" }, "Alice"),
+    s({ sessionId: "a-idle-new", lastEventAt: "2026-09-14T11:00:00Z" }, "Alice"),
+    s({ sessionId: "a-busy", status: "busy", lastEventAt: "2026-09-14T08:00:00Z" }, "Alice"),
+    s({ sessionId: "a-wait", status: "waiting-approval" }, "Alice"),
+    s({ sessionId: "me", lastEventAt: "2026-09-14T01:00:00Z" }, "Me", true),
+  ];
+  expect(orderSidebarSessions(rows).map((r) => r.session.sessionId)).toEqual(["me", "a-busy", "a-wait", "a-idle-new", "a-idle-old", "b-idle"]);
+});

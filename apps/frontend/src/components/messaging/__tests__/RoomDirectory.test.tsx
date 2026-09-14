@@ -639,3 +639,26 @@ it("marks a shared channel and offers no Leave on it", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Conversation actions for lightbulb-acme" }));
   expect(screen.queryByRole("menuitem", { name: /Leave/ })).not.toBeInTheDocument();
 });
+
+it("lists live sessions above the room groups, hides the section when empty, and opens one on click", async () => {
+  const onSelectSession = vi.fn();
+  const session = { sessionId: "s1", deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status: "busy" as const, activeTurnId: null,
+    capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title: "Fix login", lastEventAt: new Date().toISOString() };
+  const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    sessions={[{ session, ownerName: "Alice", own: false }]} onSelectSession={onSelectSession} />);
+  const section = screen.getByRole("region", { name: "Sessions" });
+  expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await userEvent.click(within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, Working/ }));
+  expect(onSelectSession).toHaveBeenCalledWith("s1");
+  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[]} />);
+  expect(screen.queryByRole("region", { name: "Sessions" })).not.toBeInTheDocument();
+});
+
+it("collapses the Sessions section through the shared prefs and keeps a count", async () => {
+  const session = { sessionId: "s1", deviceId: "d", humanUserId: "me", provider: "codex" as const, providerVersion: "0.149.0", generation: "g", status: "idle" as const, activeTurnId: null,
+    capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0 };
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[{ session, ownerName: "Me", own: true }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Collapse Sessions" }));
+  expect(screen.getByLabelText("1 live session")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();
+});

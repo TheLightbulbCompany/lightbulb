@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -20,6 +20,7 @@ import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
+import type { SidebarSession } from "./roomSections";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
@@ -29,6 +30,7 @@ export interface MessagingWorkspaceValue {
   selectAgentDm: (agentId: string) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
   openSession: (roomId: string, sessionId: string) => void;
+  workspaceSessions: LocalSession[];
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -194,6 +196,14 @@ export function MessagingWorkspaceProvider({
   }, [setRoomTyping]);
 
   const online = usePresence(rooms.httpReady, scope);
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
+  const humanName = useCallback((id: string) => {
+    const member = humanRoster?.members?.find((candidate) => candidate.userId === id);
+    return member?.name || member?.email || "Workspace member";
+  }, [humanRoster]);
+  const sidebarSessions: SidebarSession[] = useMemo(() => workspaceSessions.sessions.map((session) => ({
+    session, own: session.humanUserId === userId, ownerName: session.humanUserId === userId ? "You" : humanName(session.humanUserId),
+  })), [workspaceSessions.sessions, userId, humanName]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
     : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
@@ -532,6 +542,7 @@ export function MessagingWorkspaceProvider({
     creationError,
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
+    sessions: sidebarSessions,
   };
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
     ownerScopeId: scope,
@@ -598,6 +609,7 @@ export function MessagingWorkspaceProvider({
     selectAgentDm: rooms.selectAgentDm,
     openMessage,
     openSession,
+    workspaceSessions: workspaceSessions.sessions,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
     onOpen={(roomId, targetThreadId) => {
       rooms.selectRoom(roomId);

@@ -49,16 +49,31 @@ class Register(ContractModel):
     previous_generation: sessions.OpaqueId | None = None
 
 
-class Heartbeat(ContractModel):
-    workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
-    type: Literal["local.session.heartbeat"]
-    session_id: uuid.UUID
+class HeartbeatSession(ContractModel):
+    """One live mirror as the device sees it. Null labels are silence, not a clear."""
+
+    session_id: sessions.OpaqueId
     generation: sessions.OpaqueId
     status: sessions.STATUSES
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
+    last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
+    workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
+
+
+class DeviceHeartbeat(ContractModel):
+    type: Literal["local.device.heartbeat"]
+    sessions: Annotated[list[HeartbeatSession], Field(max_length=64)]
+
+
+class Ended(ContractModel):
+    type: Literal["local.session.ended"]
+    session_id: sessions.OpaqueId
+    generation: sessions.OpaqueId
+    reason: Literal["exited", "process-exited"]
+    ended_at: int = Field(ge=0)
 
 
 Event = sessions.LocalSessionEventBody
@@ -83,7 +98,7 @@ class Receipt(ContractModel):
     held: bool = False
 
 
-_WIRE = TypeAdapter(Register | Heartbeat | Events | Receipt)
+_WIRE = TypeAdapter(Register | DeviceHeartbeat | Events | Receipt | Ended)
 
 
 def check_envelope(body: dict) -> None:
@@ -252,7 +267,11 @@ class LocalSessionRelay:
                             by_alias=True
                         ),
                         capabilitiesVerified=compatible,
+                        lastEventAt=int(time.time()),
                     )
+                    # A resumed conversation re-registers under the same id: registering un-ends it.
+                    row.pop("endedAt", None)
+                    row.pop("endedReason", None)
                     await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
                     await self.dispatch_session(owner, sid)
                     response = {
@@ -265,6 +284,14 @@ class LocalSessionRelay:
                         "local session registered",
                         extra={"sid": sid, "cid": cid, "cursor": row["eventSeq"], "resumed": previous is not None},
                     )
+                    response["reconcile"] = await self._reconcile_for(owner, sid, row["generation"])
+                    response["serverTime"] = int(time.time())
+                elif isinstance(message, DeviceHeartbeat):
+                    response = await self._device_heartbeat(cid, connection, enrollment, message)
+                    notify_resources = False
+                elif isinstance(message, Ended):
+                    response = await self._ended(cid, connection, enrollment, message)
+                    notify_resources = False
                 else:
                     sid = str(message.session_id)
                     # A current connection may reconcile its journal from an older
@@ -277,87 +304,115 @@ class LocalSessionRelay:
                         # _events throttles and publishes its own hint; the
                         # generic post-loop publish below must not double it.
                         notify_resources = False
-                    elif isinstance(message, Heartbeat):
-                        labels = {
-                            key: value
-                            for key, value in (("title", message.title), ("cwdName", message.cwd_name))
-                            if value is not None
-                        }
-                        updated = _revised(
-                            row,
-                            status=message.status,
-                            activeTurnId=message.active_turn_id,
-                            onlineUntil=int(time.time()) + LIVENESS_SECONDS,
-                            workspace=message.workspace.model_dump(by_alias=True),
-                            **labels,
-                        )
-                        # Heartbeats may withdraw authority. A fresh registration
-                        # is required to restore it after runtime revalidation.
-                        if message.control_unavailable_reason is not None:
-                            updated.update(
-                                controlUnavailableReason=message.control_unavailable_reason,
-                                capabilities=sessions.Capabilities().model_dump(by_alias=True),
-                                capabilitiesVerified=False,
-                            )
-                        # Renew the lease and drive delivery even when the public
-                        # resource projection is unchanged. Clock/revision churn
-                        # alone must not fan out a refetch to every room member.
-                        notify_resources = any(
-                            row.get(field) != updated.get(field)
-                            for field in (
-                                "status",
-                                "activeTurnId",
-                                "workspace",
-                                "capabilities",
-                                "capabilitiesVerified",
-                                "controlUnavailableReason",
-                                "title",
-                                "cwdName",
-                            )
-                        ) or (row["onlineUntil"] <= int(time.time()) and updated["status"] != "offline")
-                        await repo.put_session(
-                            updated, row, enrollment, extra=[self._connection_check(cid, connection)]
-                        )
-                        await self.dispatch_session(owner, sid)
-                        response = {
-                            "type": "local.session.heartbeat.ack",
-                            "sessionId": sid,
-                            "generation": row["generation"],
-                            "afterSeq": row.get("eventSeq", 0),
-                        }
                     else:
                         response = await self._receipt(cid, connection, enrollment, row, message)
                         await self.dispatch_session(owner, sid)
                 if notify_resources:
                     await publish_resources_changed(owner, human)
-                if isinstance(message, (Register, Heartbeat)):
-                    unresolved_commands = [
-                        c for c in await repo.list_commands(owner, sid) if c["state"] in {"dispatched", "unknown"}
-                    ]
-                    # Prefer the current generation's blocking receipt. Retain
-                    # older unknowns and still reconcile them when none is current.
-                    unresolved = next(
-                        (c for c in unresolved_commands if c["expectedGeneration"] == row["generation"]),
-                        next(iter(unresolved_commands), None),
-                    )
-                    response["reconcile"] = (
-                        {
-                            "requestId": unresolved["requestId"],
-                            "generation": unresolved["expectedGeneration"],
-                            "state": unresolved["state"],
-                        }
-                        if unresolved
-                        else None
-                    )
                 check_envelope(response)
-                if isinstance(message, (Register, Heartbeat)):
-                    response["serverTime"] = int(time.time())
                 return response
             except ClientError as exc:
                 if not store._is_cancelled(exc):
                     raise
                 connection, enrollment = await self.connect(cid)
         raise _conflict("revision contention", cid=cid)
+
+    async def _reconcile_for(self, owner: str, sid: str, generation: str) -> dict | None:
+        """The one command whose outcome the desktop journal must still settle."""
+        unresolved_commands = [
+            c for c in await repo.list_commands(owner, sid) if c["state"] in {"dispatched", "unknown"}
+        ]
+        # Prefer the current generation's blocking receipt. Retain older
+        # unknowns and still reconcile them when none is current.
+        unresolved = next(
+            (c for c in unresolved_commands if c["expectedGeneration"] == generation),
+            next(iter(unresolved_commands), None),
+        )
+        if unresolved is None:
+            return None
+        return {
+            "requestId": unresolved["requestId"],
+            "generation": unresolved["expectedGeneration"],
+            "state": unresolved["state"],
+        }
+
+    async def _device_heartbeat(self, cid: str, connection: dict, enrollment: dict, message: DeviceHeartbeat) -> dict:
+        """One frame per device renews every mirror it still owns; the rest come back rejected."""
+        # ponytail: a read, a lease write and a delivery pass per listed session, capped at 64;
+        # batch the reads if a device ever carries enough live mirrors for it to show.
+        owner, now = connection.get("org_id") or connection["user_id"], int(time.time())
+        rejected, reconcile, changed = [], [], set()
+        for item in message.sessions:
+            row = await repo.get_session(owner, item.session_id)
+            if (
+                row is None
+                or row["deviceId"] != connection["device_id"]
+                or row["generation"] != item.generation
+                or row.get("connectionId") != cid
+                or row.get("endedAt") is not None
+            ):
+                # Unknown, superseded or ended here: the desktop re-registers it.
+                rejected.append(item.session_id)
+                continue
+            labels = {
+                key: value
+                for key, value in (
+                    ("title", item.title),
+                    ("cwdName", item.cwd_name),
+                    ("lastAssistantMessage", item.last_assistant_message),
+                )
+                if value is not None
+            }
+            public = ("status", "activeTurnId", "title", "cwdName", "lastAssistantMessage", "controlUnavailableReason")
+            updated = _revised(
+                row,
+                status=item.status,
+                activeTurnId=item.active_turn_id,
+                controlUnavailableReason=item.control_unavailable_reason,
+                onlineUntil=now + LIVENESS_SECONDS,
+                workspace=item.workspace.model_dump(by_alias=True),
+                **labels,
+            )
+            # Heartbeats may withdraw authority. A fresh registration is
+            # required to restore it after runtime revalidation.
+            if item.control_unavailable_reason is not None:
+                updated.update(
+                    capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
+                )
+            if any(row.get(field) != updated.get(field) for field in public):
+                updated["lastEventAt"] = now
+                changed.add((owner, row["humanUserId"]))
+            elif row["onlineUntil"] <= now:
+                # A lapsed lease reads as offline; recovery must reach the room
+                # even when nothing else moved. Renewal makes this fire once.
+                changed.add((owner, row["humanUserId"]))
+            await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+            # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
+            await self.dispatch_session(owner, item.session_id)
+            pending = await self._reconcile_for(owner, item.session_id, row["generation"])
+            if pending is not None:
+                reconcile.append({"sessionId": item.session_id, **pending})
+        for owner_id, human in changed:
+            await publish_resources_changed(owner_id, human)
+        return {"type": "local.device.heartbeat.ack", "rejected": rejected, "reconcile": reconcile, "serverTime": now}
+
+    async def _ended(self, cid: str, connection: dict, enrollment: dict, message: Ended) -> dict:
+        owner = connection.get("org_id") or connection["user_id"]
+        row = await repo.get_session(owner, message.session_id)
+        ack = {"type": "local.session.ended.ack", "sessionId": message.session_id}
+        if (
+            row is None
+            or row["deviceId"] != connection["device_id"]
+            or row["generation"] != message.generation
+            or row.get("endedAt") is not None
+        ):
+            return ack
+        updated = _revised(
+            row, status="ended", endedAt=message.ended_at, lastEventAt=message.ended_at, endedReason=message.reason
+        )
+        await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+        await publish_resources_changed(owner, row["humanUserId"])
+        return ack
 
     async def _events(self, cid: str, connection: dict, enrollment: dict, row: dict, message: Events) -> dict:
         sid = row["sessionId"]
@@ -401,6 +456,7 @@ class LocalSessionRelay:
         updated = _revised(
             row,
             eventSeq=end,
+            lastEventAt=now // 1000,
             nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0),
             **({"nextHintAt": now + 1000} if hint else {}),
         )

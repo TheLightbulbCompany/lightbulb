@@ -6,12 +6,7 @@ import { useSearchParams } from "next/navigation";
 
 import { capture } from "@/lib/analytics";
 import { setSignupStep } from "@/lib/signupFlow";
-import {
-  Loader2,
-  XCircle,
-  CheckCircle,
-  Circle,
-} from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
@@ -1176,40 +1171,25 @@ export function ProvisioningStepper({
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
-  // Terminal error — any status="error" that isn't `error_retrying` (see
-  // isTerminalError above). Keyed off substatus, NOT `phase` (which resolves to
-  // "container" for an error row). A retrying error deliberately does NOT match:
-  // it falls through to the provisioning stepper below with a subtle "retrying"
-  // note instead of this terminal card. Copy is honest about a real failure —
-  // no "usually temporary" reassurance — since the container will not recover
-  // on its own; Retry re-checks, but support is the real path if it persists.
-  if (isTerminalError) {
+  // Past the second tier we stop claiming progress. Derived, not state, so
+  // "Check again" cannot erase it — the old handler reset `timedOut` AND
+  // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
+  const stuck = elapsedMs > STUCK_MS;
+
+  // Every workspace/plan/provider gate above has passed. Messaging never needs
+  // the container (HTTP + DynamoDB + AppSync), so a starting, stuck or failed
+  // one is a banner over the working app, not a card in front of it. Only the
+  // window before the first /container/status answer keeps the card below.
+  if (container) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[var(--cream)]">
-        <div className="text-center space-y-6 max-w-sm">
-          <StepperDisplay currentPhase={phase} steps={STEPS_PAID} error />
-          <div className="space-y-2">
-            <XCircle className="h-8 w-8 text-err mx-auto" />
-            <h2 className="text-lg font-medium text-[var(--midnight)]">Setup failed</h2>
-            <p className="text-sm text-[var(--midnight-muted)]">
-              {isOrg
-                ? `We couldn't finish setting up the container for ${organization.name}. Retry below — if it keeps failing, contact support and we'll get it sorted.`
-                : "We couldn't finish setting up your container. Retry below — if it keeps failing, contact support and we'll get it sorted."}
-            </p>
-          </div>
-          <div className="flex gap-3 justify-center">
-            <Button variant="outline" className="rounded-full border-[var(--edge)]" onClick={() => refresh()}>
-              Retry
-            </Button>
-            <Button variant="ghost" className="rounded-full" asChild>
-              <a
-                href={SUPPORT_MAILTO}
-                onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
-              >Contact Support</a>
-            </Button>
-          </div>
-        </div>
-      </div>
+      <>
+        <AgentsBanner
+          state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : isRetryingError ? "retrying" : "starting"}
+          onCheck={() => refresh()}
+          onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
+        />
+        {children}
+      </>
     );
   }
 
@@ -1217,11 +1197,6 @@ export function ProvisioningStepper({
   const steps = STEPS_PAID;
   const currentIdx = steps.findIndex((s) => s.phase === phase);
   const currentStep = steps[currentIdx] || steps[0];
-
-  // Past the second tier we stop claiming progress. Derived, not state, so
-  // "Check again" cannot erase it — the old handler reset `timedOut` AND
-  // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
-  const stuck = elapsedMs > STUCK_MS;
   // While the failure is known, the pod animation would keep steaming as if
   // work were still happening.
   const podAnimating =
@@ -1544,15 +1519,6 @@ export function ProvisioningStepper({
               </div>
             )}
 
-          {/* Transient error (status="error" + substatus="error_retrying"): the
-              backend is auto-retrying, so we keep the stepper and add a calm,
-              non-alarming line rather than the terminal "Setup failed" card. */}
-          {isRetryingError && (
-            <div className="provision-elapsed" role="status" aria-live="polite">
-              Hit a snag — retrying automatically.
-            </div>
-          )}
-
           {/* The known-failure card. Inline, in the flow of this card — the
               ready branch's `fixed` corner stack is the only one, and there is
               no app behind this screen to layer a toast over. */}
@@ -1596,6 +1562,52 @@ export function ProvisioningStepper({
   );
 }
 
+
+const AGENTS_BANNER_COPY = {
+  starting: "Your agents are getting ready. You can keep messaging in the meantime.",
+  retrying: "Your agents hit a snag and are retrying automatically. You can keep messaging in the meantime.",
+  slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
+  stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
+  failed: "Setup failed — your agents couldn't start. Messaging still works; retry, or contact support if it keeps failing.",
+} as const;
+
+/**
+ * In-flow status line above the workspace while the container is not ready.
+ * Escalates honestly (issue #1468): a slow start offers "Check again", a stuck
+ * or failed one also offers support, and nothing here resets the clock.
+ */
+function AgentsBanner({
+  state,
+  onCheck,
+  onSupport,
+}: {
+  state: keyof typeof AGENTS_BANNER_COPY;
+  onCheck: () => void;
+  onSupport: () => void;
+}) {
+  const alarming = state === "stuck" || state === "failed";
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`bg-cream border-b px-4 py-2 text-ui flex flex-wrap items-center justify-between gap-x-4 gap-y-1 ${
+        state === "failed" ? "border-err text-err" : alarming ? "border-warn text-warn" : "border-[var(--edge)] text-[var(--midnight-muted)]"
+      }`}
+    >
+      <span>{AGENTS_BANNER_COPY[state]}</span>
+      {state !== "starting" && state !== "retrying" && (
+        <span className="flex gap-4">
+          <button type="button" className="underline" onClick={onCheck}>
+            {state === "failed" ? "Retry" : "Check again"}
+          </button>
+          {alarming && (
+            <a className="underline" href={SUPPORT_MAILTO} onClick={onSupport}>Contact support</a>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
 
 /**
  * Non-blocking "Teams needs attention" affordance layered over the ready app
@@ -1648,56 +1660,6 @@ function TeamsDegradedNotice() {
   );
 }
 
-
-/** Render the current provisioning phase and its completed predecessors. */
-function StepperDisplay({
-  currentPhase,
-  steps,
-  error = false,
-}: {
-  currentPhase: Phase;
-  steps: { phase: Phase; label: string; activeLabel: string }[];
-  error?: boolean;
-}) {
-  const currentIdx = steps.findIndex((s) => s.phase === currentPhase);
-
-  return (
-    <div className="space-y-3 text-left mx-auto w-fit">
-      {steps.map((step, idx) => {
-        const isComplete = idx < currentIdx;
-        const isCurrent = idx === currentIdx;
-        const isErrorStep = error && isCurrent;
-
-        return (
-          <div key={step.phase} className="flex items-center gap-3">
-            {isErrorStep ? (
-              <XCircle className="h-5 w-5 text-err shrink-0" />
-            ) : isComplete ? (
-              <CheckCircle className="h-5 w-5 text-ok shrink-0" />
-            ) : isCurrent ? (
-              <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight)] shrink-0" />
-            ) : (
-              <Circle className="h-5 w-5 text-[var(--midnight-faint)] shrink-0" />
-            )}
-            <span
-              className={
-                isErrorStep
-                  ? "text-sm text-err"
-                  : isComplete
-                    ? "text-sm text-[var(--midnight)]"
-                    : isCurrent
-                      ? "text-sm text-[var(--midnight)] font-medium"
-                      : "text-sm text-[var(--midnight-muted)]"
-              }
-            >
-              {isCurrent && !error ? step.activeLabel : step.label}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 /**
  * The provider comparison shown before subscription.

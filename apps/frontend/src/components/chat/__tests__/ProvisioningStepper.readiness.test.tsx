@@ -137,7 +137,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
   });
 
-  it("(a) leaves the cold-start card once the container becomes ready mid-session", async () => {
+  it("(a) shows the workspace mid-boot and drops the agents banner once the container is ready", async () => {
     vi.useFakeTimers();
     body = STARTING;
     renderStepper();
@@ -145,7 +145,11 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    expect(screen.getByText(/finishing touches/i)).toBeInTheDocument();
+    // Messaging never needs the container: the workspace renders mid-boot,
+    // with the agents banner instead of the setup card.
+    expect(screen.getByText("workspace")).toBeInTheDocument();
+    expect(screen.getByText(/Your agents are getting ready/i)).toBeInTheDocument();
+    expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
 
     // The container finishes booting. Nothing else happens: no click, no
     // reload, no websocket push — only the status poll, whose cadence is 5s
@@ -153,7 +157,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     body = READY;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
 
-    await vi.waitFor(() => expect(screen.getByText("workspace")).toBeInTheDocument());
-    expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.queryByText(/Your agents are getting ready/i)).not.toBeInTheDocument());
+    expect(screen.getByText("workspace")).toBeInTheDocument();
   });
 });

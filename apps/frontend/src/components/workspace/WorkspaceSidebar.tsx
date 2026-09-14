@@ -73,13 +73,8 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
 
 
       <div className="sidebar-scroll">
-        {chatReady ? (
-          <MessagingDirectory onOpenRoom={() => activateMessagesPanel()} />
-        ) : (
-          <p role="status" className="workspace-conversations-disabled">
-            Conversations are available when your workspace is ready.
-          </p>
-        )}
+        {/* Messaging never needs the container, so conversations never wait on it. */}
+        <MessagingDirectory onOpenRoom={() => activateMessagesPanel()} />
         <details className="workspace-more-nav">
           <summary>More</summary>
           <nav aria-label="More workspace destinations">

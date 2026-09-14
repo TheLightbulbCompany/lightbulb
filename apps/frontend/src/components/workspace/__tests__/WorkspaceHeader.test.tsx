@@ -63,9 +63,9 @@ describe("WorkspaceHeader", () => {
     expect(activateMessagesPanel).toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
   });
-  it("disables panel navigation until provisioning completes", () => {
+  it("keeps Messages available but disables container-backed panels until the agents are up", () => {
     render(<WorkspaceHeader chatReady={false} />);
-    expect(screen.getByRole("button", { name: "Messages" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Messages" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Browser" })).toBeDisabled();
   });
   it("opens the existing command palette from a visible search control", () => {

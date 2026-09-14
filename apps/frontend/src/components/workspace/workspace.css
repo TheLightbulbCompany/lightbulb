@@ -78,12 +78,6 @@
   padding: 8px 12px;
 }
 
-.workspace-shell .workspace-conversations-disabled {
-  padding: 8px 20px;
-  color: var(--midnight-muted);
-  font-size: var(--text-ui);
-}
-
 .workspace-main {
   grid-area: main;
   display: flex;

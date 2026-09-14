@@ -28,6 +28,7 @@ import { RoomIntro } from "./RoomIntro";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
+import { LISTEN_MODE_LABELS } from "./respondHint";
 import { buildTimeline, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
@@ -93,19 +94,16 @@ const workLabel: Record<WorkState, string> = {
   ready: "Ready", queued: "Queued", working: "Working", paused: "Paused",
   "needs-approval": "Needs approval", completed: "Completed", failed: "Failed", offline: "Offline", unknown: "Unknown",
 };
-const responseLabel: Record<ListenMode, string> = {
-  active: "Automatic", mentions: "Mentions only", observe: "Observe",
-};
-
 function AgentResponse({ participant, selectId, onChange }: {
   participant: RoomParticipant;
   selectId: string;
   onChange?: (agentId: string, mode: ListenMode) => void;
 }) {
   const mode = participant.listenMode ?? "mentions";
-  if (!onChange) return <span className="text-sm text-muted-foreground">Response: {responseLabel[mode]}</span>;
+  if (!onChange) return <span className="text-sm text-muted-foreground">Response: {LISTEN_MODE_LABELS[mode]}</span>;
   return <><span className="text-sm text-muted-foreground">Response</span><select id={selectId} aria-label={`Response for ${participant.displayName}`} className="room-listen-mode" value={mode}
-    onChange={(event) => onChange(participant.id, event.target.value as ListenMode)}><option value="active">Automatic</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select></>;
+    onChange={(event) => onChange(participant.id, event.target.value as ListenMode)}>
+    {Object.entries(LISTEN_MODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></>;
 }
 
 function WorkStatus({ state }: { state: WorkState }) {

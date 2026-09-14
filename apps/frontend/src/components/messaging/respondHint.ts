@@ -1,5 +1,12 @@
 import type { ListenMode, MemberRef, RoomKind } from "@lightbulb/shared";
 
+/**
+ * What people see for each stored listen mode. The stored values predate these
+ * names: `active` shows as "Observe" (a cheap model decides whether an
+ * unmentioned message gets a reply) and `observe` as "Off" (never runs).
+ */
+export const LISTEN_MODE_LABELS: Record<ListenMode, string> = { active: "Observe", mentions: "Mentions", observe: "Off" };
+
 export interface RespondTarget {
   kind: "human" | "agent";
   id: string;
@@ -23,14 +30,16 @@ export function respondHint(
   const parts: string[] = [];
   for (const member of members) {
     if (member.kind !== "agent") continue;
-    // observe never runs — not on ambient traffic, not when mentioned, not in a DM.
-    if (member.listenMode === "observe") { parts.push(`${member.displayName} observing`); continue; }
+    // observe ("Off") never runs — not on ambient traffic, not when mentioned, not in a DM.
+    if (member.listenMode === "observe") { parts.push(`${member.displayName} is off`); continue; }
     // The dispatch decision comes FIRST: an agent this message will not be
     // dispatched to cannot be steered by it, however busy it looks.
-    const willReply = roomKind === "dm" || mentioned.has(member.id) || member.listenMode === "active";
+    const addressed = roomKind === "dm" || mentioned.has(member.id);
+    const willReply = addressed || member.listenMode === "active";
     if (!willReply) parts.push(`${member.displayName} when mentioned`);
     else if (runningAgentIds.includes(member.id)) parts.push(`${member.displayName} is working — sending now steers that run`);
-    else parts.push(`${member.displayName} will reply`);
+    // An unaddressed active ("Observe") agent passes the cheap relevance gate first.
+    else parts.push(`${member.displayName} ${addressed ? "will" : "may"} reply`);
   }
   return parts.join(" · ");
 }

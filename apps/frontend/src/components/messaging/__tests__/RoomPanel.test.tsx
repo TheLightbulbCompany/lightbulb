@@ -429,7 +429,9 @@ it("lets wide room details change agent response without giving humans a control
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
-  expect(within(mode).getAllByRole("option").map((option) => option.textContent)).toEqual(["Automatic", "Mentions only", "Observe"]);
+  expect(within(mode).getAllByRole("option").map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
+    ["active", "Observe"], ["mentions", "Mentions"], ["observe", "Off"],
+  ]);
   expect(details.getAllByRole("combobox")).toHaveLength(1);
   expect(details.queryByRole("combobox", { name: "Response for Owner" })).not.toBeInTheDocument();
   await user.selectOptions(mode, "observe");
@@ -441,7 +443,7 @@ it("shows an agent response as read-only text to ordinary members", async () => 
   render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]} />);
   await user.click(screen.getByRole("button", { name: /^Details/ }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
-  expect(details.getByText("Response: Mentions only")).toBeInTheDocument();
+  expect(details.getByText("Response: Mentions")).toBeInTheDocument();
   expect(details.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
 

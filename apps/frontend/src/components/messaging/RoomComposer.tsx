@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
 import { activeTrigger, applyCompletion, resolveTypedMentions, searchEmoji, type CompletionTrigger, type CreateMessageRequest, type MessageAttachment, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -70,7 +70,16 @@ function TypeaheadList<T>({ id, label, items, activeIndex, optionId, renderRow, 
 }
 
 export function RoomComposer(props: RoomComposerProps) {
-  return <ComposerAttempt key={props.clientMessageId} {...props} />;
+  const restoreFocusAfterSend = useRef(false);
+  const requestFocusAfterSend = useCallback(() => { restoreFocusAfterSend.current = true; }, []);
+  const cancelFocusAfterSend = useCallback(() => { restoreFocusAfterSend.current = false; }, []);
+  const consumeFocusAfterSend = useCallback(() => {
+    if (!restoreFocusAfterSend.current) return false;
+    restoreFocusAfterSend.current = false;
+    return true;
+  }, []);
+  return <ComposerAttempt key={props.clientMessageId} {...props} requestFocusAfterSend={requestFocusAfterSend}
+    cancelFocusAfterSend={cancelFocusAfterSend} consumeFocusAfterSend={consumeFocusAfterSend} />;
 }
 
 function ComposerAttempt({
@@ -93,7 +102,14 @@ function ComposerAttempt({
   dropTargetRef,
   roomKind,
   runningAgentIds = [],
-}: RoomComposerProps) {
+  requestFocusAfterSend,
+  cancelFocusAfterSend,
+  consumeFocusAfterSend,
+}: RoomComposerProps & {
+  requestFocusAfterSend: () => void;
+  cancelFocusAfterSend: () => void;
+  consumeFocusAfterSend: () => boolean;
+}) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
   const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
@@ -118,6 +134,11 @@ function ComposerAttempt({
   // The formatting bar shows by default (compact, at the top of the box) and
   // the Aa button collapses it; the keyboard shortcuts work either way.
   const [formatOpen, setFormatOpen] = useState(true);
+  // A successful send rotates clientMessageId and deliberately remounts this
+  // attempt. Preserve keyboard focus across that reset when Enter initiated it.
+  useLayoutEffect(() => {
+    if (consumeFocusAfterSend()) field.current?.focus();
+  }, [consumeFocusAfterSend]);
   // One line that grows with the draft, instead of a fixed three-row box.
   useLayoutEffect(() => {
     const node = field.current;
@@ -358,11 +379,12 @@ function ComposerAttempt({
     replaceText(next.text, next.caret, next.caret);
   }
 
-  function submit(retry = false) {
+  function submit(retry = false, restoreFocus = false) {
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
     locked.current = true;
+    if (restoreFocus) requestFocusAfterSend();
     if (retry) {
       retryLocked.current = true;
       setRetryPending(true);
@@ -371,6 +393,7 @@ function ComposerAttempt({
     onTypingChange?.(false);
     const version = evidenceVersion.current;
     const markUncertain = () => {
+      cancelFocusAfterSend();
       if (version !== evidenceVersion.current) return;
       setCallbackUncertain(true);
       setRetryPending(false);
@@ -485,7 +508,7 @@ function ComposerAttempt({
         }
         if (event.key === "Enter" && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
           event.preventDefault();
-          submit();
+          submit(false, true);
         }
       }} />
     {mentions.length > 0 && <p className="text-sm text-muted-foreground room-wrap">Mentioning {mentions.map((mention) => {

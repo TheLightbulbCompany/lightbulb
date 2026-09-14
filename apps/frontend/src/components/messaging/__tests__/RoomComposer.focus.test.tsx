@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
@@ -56,6 +57,24 @@ it("consumes live focus events only for the named agent", () => {
   expect(onTextChange).toHaveBeenCalledWith("File the inbox");
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
   expect(consumeFocusComposerRequest("agent-friday")).toBeNull();
+});
+
+it("keeps the composer focused when Enter sends and clears the draft", () => {
+  function Harness() {
+    const [text, setText] = useState("Send this");
+    const [clientMessageId, setClientMessageId] = useState("11111111-1111-4111-8111-111111111111");
+    return <RoomComposer {...baseProps} text={text} onTextChange={setText} clientMessageId={clientMessageId}
+      onSubmit={() => { setText(""); setClientMessageId("22222222-2222-4222-8222-222222222222"); }} />;
+  }
+
+  render(<Harness />);
+  const field = screen.getByRole("textbox", { name: "Message" });
+  field.focus();
+  fireEvent.keyDown(field, { key: "Enter" });
+
+  expect(field).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
 });
 
 it("uploads and sends an image without text", async () => {

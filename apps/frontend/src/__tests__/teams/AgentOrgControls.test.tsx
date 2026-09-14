@@ -98,6 +98,19 @@ describe("AgentOrgControls", () => {
     await waitFor(() => expect(clearError).toHaveBeenCalledWith("b"));
   });
 
+  it("names the stored status so a stale one is visible, not just inferred from a dot", () => {
+    render(<AgentOrgControls agent={{ ...BOB, status: "running" }} agents={AGENTS} />);
+    expect(screen.getByText("running")).toBeInTheDocument();
+    // A `live` status the owner disputes gets the "this may be stale" read.
+    expect(screen.getByText(/shown as working everywhere it appears/i)).toBeInTheDocument();
+  });
+
+  it("does not claim a stale status on an idle agent", () => {
+    render(<AgentOrgControls agent={BOB} agents={AGENTS} />);
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.queryByText(/shown as working everywhere it appears/i)).toBeNull();
+  });
+
   it("Reset session is two-step and calls resetSession on confirm", async () => {
     resetSession.mockResolvedValue(undefined);
     render(<AgentOrgControls agent={BOB} agents={AGENTS} />);

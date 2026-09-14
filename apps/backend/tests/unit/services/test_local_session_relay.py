@@ -795,23 +795,25 @@ async def test_unchanged_device_heartbeat_keeps_last_event_at_and_sends_no_hint(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["status", "active-turn", "control", "expired", "offline"])
+@pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "expired"])
 async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport, change):
     with patch("time.time", return_value=10000):
         sid = await start(transport)
-        if change == "offline":
-            await relay(transport).handle_message("conn-1", registration(status="offline"))
     row = await repo.get_session(OWNER, sid)
     changes = {
         "status": {"status": "idle"},
         "active-turn": {"activeTurnId": "turn-2"},
         "control": {"controlUnavailableReason": "endpoint-unavailable"},
+        "workspace": {"workspace": {"revision": 1, "coverage": "bounded", "changed": True, "overlap": False}},
     }
     transport[4].clear()
     with patch("time.time", return_value=row["onlineUntil"] + 1 if change == "expired" else 10010):
         response = await relay(transport).handle_message("conn-1", heartbeat(sid, **changes.get(change, {})))
     assert response["type"] == "local.device.heartbeat.ack"
     assert transport[4]
+    # A workspace scan is worth a refetch, but it is not the user doing something.
+    after = await repo.get_session(OWNER, sid)
+    assert after["lastEventAt"] == (10000 if change in {"workspace", "expired"} else 10010)
 
 
 @pytest.mark.asyncio
@@ -1133,6 +1135,30 @@ async def test_legacy_per_session_heartbeat_is_rejected(transport):
             {"type": "local.session.heartbeat", "sessionId": sid, "generation": "generation-1", "status": "busy"},
         )
     assert excinfo.value.error.code == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_device_input_cannot_claim_a_server_owned_status(transport):
+    # offline is the backend's verdict on a lapsed lease and ended is written by the
+    # ended frame; a device claiming either would forge a state it does not own.
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    for frame in (heartbeat(sid, status="ended"), heartbeat(sid, status="offline"), registration(status="offline")):
+        with pytest.raises(ApiProblem) as excinfo:
+            await relay(transport).handle_message("conn-1", frame)
+        assert excinfo.value.error.code == "INVALID_REQUEST"
+    assert (await repo.get_session(OWNER, sid))["status"] == "busy"
+    # The service-side registration model still defaults to offline: it is not device input.
+    assert (
+        service.SessionRegistration(
+            provider="codex",
+            profileFingerprint="f" * 64,
+            nativeConversationId="t",
+            generation="g",
+            providerVersion="1.0",
+        ).status
+        == "offline"
+    )
 
 
 @pytest.mark.asyncio

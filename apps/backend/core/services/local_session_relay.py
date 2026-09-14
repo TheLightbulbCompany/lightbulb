@@ -36,7 +36,7 @@ class Descriptor(ContractModel):
     native_conversation_id: sessions.OpaqueId
     generation: sessions.OpaqueId
     provider_version: str = Field(min_length=1, max_length=128)
-    status: sessions.STATUSES
+    status: sessions.INPUT_STATUSES
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
@@ -54,7 +54,7 @@ class HeartbeatSession(ContractModel):
 
     session_id: sessions.OpaqueId
     generation: sessions.OpaqueId
-    status: sessions.STATUSES
+    status: sessions.INPUT_STATUSES
     active_turn_id: sessions.OpaqueId | None = None
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
@@ -388,15 +388,18 @@ class LocalSessionRelay:
                     capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
                 )
             moved = any(row.get(field) != updated.get(field) for field in public)
+            scanned = row.get("workspace") != updated.get("workspace")
             if moved:
                 updated["lastEventAt"] = now
             await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
             # Hint per session, never deferred to the end of the frame: a failure
             # part-way retries the whole frame, and by then the rows already written
             # match what the device sent, so a deferred hint would be dropped.
-            # A lapsed lease reads as offline, so recovery must reach the room even
-            # when nothing else moved; renewal makes that fire once.
-            if moved or row["onlineUntil"] <= now:
+            # A workspace scan is worth a refetch but is not the user doing something,
+            # so it hints without stamping lastEventAt. A lapsed lease reads as
+            # offline, so recovery must reach the room even when nothing else moved;
+            # renewal makes that fire once.
+            if moved or scanned or row["onlineUntil"] <= now:
                 await publish_resources_changed(owner, row["humanUserId"])
             # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
             await self.dispatch_session(owner, item.session_id)

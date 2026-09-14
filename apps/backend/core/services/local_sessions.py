@@ -20,6 +20,9 @@ from core.services.messaging import ApiProblem, ContractModel, require_room_memb
 from core.services.local_session_grants import AgentInvocation
 
 STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "ended"]
+# What a device may claim. `offline` is the backend's verdict on a lapsed lease and
+# `ended` is written by the ended frame; neither is ever a status the device reports.
+INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]
 
 
 def iso(epoch: int | None) -> str | None:

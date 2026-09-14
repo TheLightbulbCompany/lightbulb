@@ -25,20 +25,23 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
     return f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:#1a1a1a;max-width:520px;margin:0 auto">
   <p>{greeting}</p>
-  <p>Thanks for signing up to <strong>Lightbulb</strong> — and welcome.</p>
+  <p>Thanks for signing up to <strong>Lightbulb</strong>.</p>
   <p>
-    You now have your own private AI team, running in a container that belongs
-    only to you. Nothing is shared with anyone else.
+    Lightbulb is a messaging workspace where your AI team are members of the
+    channels, rather than a chatbot you prompt one question at a time. You
+    already have one: a <strong>CEO and five specialists</strong> — Engineering,
+    Finance, Growth, Analytics and Customer Operations — waiting in #general.
+    Say what you want to happen; the CEO works out who does it and reports back
+    in the room.
   </p>
   <p>
-    <strong>It's free for your first 3 days</strong> — no credit card, nothing
-    to cancel. You get up to $3 of Claude a day to try the whole thing, and
-    your workspace sleeps when you're not using it.
+    The whole workspace runs in a container that belongs only to you. Nothing is
+    shared, and nothing resets between conversations — files, context and
+    history stay where you left them.
   </p>
   <p>
-    Start with <strong>Friday</strong>. She's your orchestrator: give her a goal
-    in plain English and she'll break it into work, pull in the right teammates,
-    and report back. You don't assign tasks — you set direction.
+    <strong>It's free for your first 3 days.</strong> No credit card, up to $3
+    of Claude a day, and the workspace sleeps when you're not using it.
   </p>
   <p>
     <a href="{base_url}/chat"
@@ -46,23 +49,19 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
       Open your workspace
     </a>
   </p>
-  <p style="margin-bottom:6px"><strong>Three things worth trying first</strong></p>
-  <ol style="margin-top:0;padding-left:20px;color:#333">
-    <li>Tell Friday what you're working on — the more context, the better she delegates.</li>
-    <li>Ask her to research something and report back. It's the fastest way to see how she works.</li>
-    <li>Browse the <a href="{base_url}/marketplace" style="color:#111">marketplace</a> and hire a specialist onto your team.</li>
-  </ol>
   <p>
-    One more thing: once Friday has settled in, <strong>she'll email you
-    herself</strong> — from her own address, with what she's found. Reply to her
-    and it goes straight back to her, no app needed.
+    Two things worth knowing. The CEO wakes overnight, moves one thing forward
+    and emails you what happened — reply straight from your inbox and it goes
+    back to the team. And when you need a skill the six of them don't have, you
+    can hire a specialist from the
+    <a href="{base_url}/marketplace" style="color:#111">marketplace</a>.
   </p>
   <p style="color:#666;font-size:14px">
-    Want to read more first? The <a href="{base_url}/blog" style="color:#111">blog</a>
-    covers how persistent agent workspaces work, and the
-    <a href="{base_url}/#faq" style="color:#111">FAQ</a> handles the common
-    questions. Or just reply to this email — it reaches a real person (and a few
-    of our own agents).
+    New here? The <a href="{base_url}/docs" style="color:#111">docs</a> walk
+    through how it works, and the
+    <a href="{base_url}/blog" style="color:#111">blog</a> goes deeper on
+    persistent agent workspaces. Or just reply to this email — it reaches a real
+    person (and a few of our own agents).
   </p>
   <p style="color:#999;font-size:13px">— The Lightbulb team</p>
 </div>"""
@@ -77,37 +76,31 @@ def _render_welcome_text(first_name: str | None, base_url: str) -> str:
     return f"""\
 {greeting}
 
-Thanks for signing up to Lightbulb — and welcome.
+Thanks for signing up to Lightbulb.
 
-You now have your own private AI team, running in a container that belongs
-only to you. Nothing is shared with anyone else.
+Lightbulb is a messaging workspace where your AI team are members of the
+channels, rather than a chatbot you prompt one question at a time. You already
+have one: a CEO and five specialists — Engineering, Finance, Growth, Analytics
+and Customer Operations — waiting in #general. Say what you want to happen; the
+CEO works out who does it and reports back in the room.
 
-It's free for your first 3 days — no credit card, nothing to cancel. You get
-up to $3 of Claude a day to try the whole thing, and your workspace sleeps
-when you're not using it.
+The whole workspace runs in a container that belongs only to you. Nothing is
+shared, and nothing resets between conversations — files, context and history
+stay where you left them.
 
-Start with Friday. She's your orchestrator: give her a goal in plain English
-and she'll break it into work, pull in the right teammates, and report back.
-You don't assign tasks — you set direction.
+It's free for your first 3 days. No credit card, up to $3 of Claude a day, and
+the workspace sleeps when you're not using it.
 
 Open your workspace: {base_url}/chat
 
-Three things worth trying first:
-  1. Tell Friday what you're working on — the more context, the better she
-     delegates.
-  2. Ask her to research something and report back. It's the fastest way to
-     see how she works.
-  3. Browse the marketplace and hire a specialist onto your team:
-     {base_url}/marketplace
+Two things worth knowing. The CEO wakes overnight, moves one thing forward and
+emails you what happened — reply straight from your inbox and it goes back to
+the team. And when you need a skill the six of them don't have, you can hire a
+specialist from the marketplace: {base_url}/marketplace
 
-One more thing: once Friday has settled in, she'll email you herself — from
-her own address, with what she's found. Reply to her and it goes straight
-back to her, no app needed.
-
-Want to read more first? The blog covers how persistent agent workspaces
-work ({base_url}/blog), and the FAQ handles the common questions
-({base_url}/#faq). Or just reply to this email — it reaches a real person
-(and a few of our own agents).
+New here? The docs walk through how it works ({base_url}/docs), and the blog
+goes deeper on persistent agent workspaces ({base_url}/blog). Or just reply to
+this email — it reaches a real person (and a few of our own agents).
 
 — The Lightbulb team"""
 

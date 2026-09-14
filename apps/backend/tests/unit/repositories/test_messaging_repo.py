@@ -308,7 +308,7 @@ async def test_default_room_uses_complete_renamed_starter_map_once_without_recon
     assert [(row["author"], row["text"]) for row in messages] == [
         (
             {"kind": "agent", "id": starter_ids["ceo"], "displayName": current_names[starter_ids["ceo"]]},
-            "Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. I’ll coordinate. Tell us what you’re trying to build or change.",
+            messaging.DEFAULT_ROOM_WELCOME,
         )
     ]
 

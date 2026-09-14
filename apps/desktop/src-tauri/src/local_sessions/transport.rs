@@ -2,7 +2,7 @@
 use super::*;
 use futures_util::{SinkExt, StreamExt};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -33,6 +33,51 @@ impl ClockAnchor {
     }
 }
 
+/// The one request outstanding on the socket. Single-flight, so the reply's type
+/// plus this slot are what identify the frame being answered.
+enum Rpc {
+    Register {
+        key: String,
+        sent: Instant,
+        wall: SystemTime,
+    },
+    Heartbeat {
+        sent: Instant,
+        wall: SystemTime,
+    },
+    Ended {
+        key: String,
+        /// Which end this frame reported. A resume and a second end can both land
+        /// while the ACK is in flight, and the answer to the old end must never be
+        /// read as an answer to the new one.
+        at: u64,
+        generation: String,
+        sent: Instant,
+    },
+}
+
+impl Rpc {
+    fn sent(&self) -> Instant {
+        match self {
+            Rpc::Register { sent, .. } | Rpc::Heartbeat { sent, .. } | Rpc::Ended { sent, .. } => {
+                *sent
+            }
+        }
+    }
+    /// The session an error frame carrying no `sessionId` belongs to. A device
+    /// heartbeat names every session, so it names none.
+    fn key(&self) -> Option<&str> {
+        match self {
+            Rpc::Register { key, .. } | Rpc::Ended { key, .. } => Some(key),
+            Rpc::Heartbeat { .. } => None,
+        }
+    }
+}
+
+/// One `local.device.heartbeat` carries at most this many sessions. The relay
+/// checks the envelope size before validating, so the byte budget bites first.
+const HEARTBEAT_SESSIONS_MAX: usize = 24;
+
 pub(super) struct Host {
     workspace_at: Instant,
     workspace_key: Option<String>,
@@ -40,6 +85,16 @@ pub(super) struct Host {
     home: PathBuf,
     mirrors: BTreeMap<String, Mirror>,
     stop: Arc<AtomicBool>,
+    /// Set by `supervise`, drained by `connection`. `None` in tests that never
+    /// drive `connection` through `supervise`.
+    hooks: Option<tokio::sync::mpsc::Receiver<super::lifecycle::HookEvent>>,
+    /// Sessions that have ended and whose end the relay has not been told about.
+    ended_pending: Vec<String>,
+    /// Sessions whose heartbeat fields moved between heartbeats: one goes out
+    /// early rather than up to ten seconds late.
+    heartbeat_dirty: BTreeSet<String>,
+    /// The device heartbeat cadence. A field so tests can drive many ticks fast.
+    heartbeat_interval: Duration,
 }
 
 /// How long a per-session verdict (a stale generation, a relay rejection) keeps that session out
@@ -89,7 +144,7 @@ impl Host {
                 *k == key
                     || (root.is_some()
                         && m.workspace.root() == root.as_deref()
-                        && m.native.status != "offline")
+                        && m.ended_at.is_none())
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -114,6 +169,7 @@ impl Host {
     }
     fn observe(&mut self, update: Vec<NativeSession>) -> Result<Vec<String>> {
         let mut invalidated = vec![];
+        let mut heartbeat = vec![];
         let mut reconciled = self
             .mirrors
             .values()
@@ -136,7 +192,23 @@ impl Host {
                 .map_err(|e| e.to_string())?;
             let generation =
                 fingerprint(&serde_json::to_string(&native.process).map_err(|e| e.to_string())?);
+            let mut invalidate = before.is_none();
+            let mut revived = false;
             if let Some(mirror) = self.mirrors.get_mut(&key) {
+                if mirror.ended_at.is_some() {
+                    // The session is over: a hook or its own pid said so, and a
+                    // listing cannot argue. Only a new process on the same identity
+                    // (a resume) brings it back.
+                    if mirror.generation == generation {
+                        continue;
+                    }
+                    mirror.ended_at = None;
+                    mirror.ended_reason = None;
+                    // Its next end is news again: leaving this set would make the
+                    // resumed session's own end unreportable forever.
+                    mirror.ended_sent = false;
+                    revived = true;
+                }
                 if mirror.registration.acknowledged.is_none()
                     && mirror.session_id.is_some()
                     && !mirror.registration.pending
@@ -152,9 +224,19 @@ impl Host {
                 if mirror.native.restriction.as_deref() == Some("history-gap") {
                     native.restriction = Some("history-gap".into());
                 }
+                // Discovery cannot read the last assistant message; only a Stop hook
+                // carries it, so a listing must not blank it.
+                if native.last_assistant_message.is_none() {
+                    native
+                        .last_assistant_message
+                        .clone_from(&mirror.native.last_assistant_message);
+                }
                 if mirror.generation != generation {
+                    invalidate = true;
                     mirror.registration.successor = Some(native);
-                    mirror.native.status = "offline".into();
+                    // The predecessor is not running and this Mac has verified nothing
+                    // about the successor yet. "offline" is not a status the relay knows.
+                    mirror.native.status = "unknown".into();
                     if mirror.native.restriction.as_deref() != Some("history-gap") {
                         mirror.native.restriction = Some("runtime-unverified".into());
                     }
@@ -164,7 +246,7 @@ impl Host {
                     mirror.native = native;
                 }
             } else {
-                if self.mirrors.len() >= 512 {
+                if self.live_count() >= 512 {
                     return Err("local session capacity reached".into());
                 }
                 self.mirrors.insert(
@@ -181,22 +263,207 @@ impl Host {
                         queue: vec![],
                         pending: None,
                         registration: RegistrationState::default(),
+                        ended_at: None,
+                        ended_reason: None,
+                        ended_sent: false,
                     },
                 );
+            }
+            if revived {
+                // Its end is no longer news; whatever has not been sent must not be.
+                self.ended_pending.retain(|pending| pending != &key);
             }
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
             let _ = capture_batch(mirror);
             let after = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
             if before.as_ref() != Some(&after) || mirror.dirty {
-                if before.as_ref().is_none_or(|b| {
-                    b["native"] != after["native"] || b["generation"] != after["generation"]
-                }) {
+                if invalidate {
                     invalidated.push(key.clone());
+                } else if before.as_ref().is_some_and(|b| b["native"] != after["native"]) {
+                    // Status, title, turn or cwd moved. The relay learns that from the
+                    // next heartbeat; re-registering a live session would be churn.
+                    heartbeat.push(key.clone());
                 }
                 mirror.persist(&self.dir.join(format!("{key}.json")))?;
             }
         }
+        self.heartbeat_dirty.extend(heartbeat);
         Ok(invalidated)
+    }
+
+    fn live_count(&self) -> usize {
+        self.mirrors
+            .values()
+            .filter(|m| m.ended_at.is_none())
+            .count()
+    }
+
+    /// One hook datagram. Returns the key whose mirror moved, so the caller can
+    /// send an early heartbeat instead of waiting out the ten-second cadence.
+    fn apply_hook(&mut self, event: &lifecycle::HookEvent) -> Result<Option<String>> {
+        let provider = match event.provider {
+            lifecycle::Provider::Claude => "claude",
+            lifecycle::Provider::Codex => "codex",
+        };
+        // An unknown session is not an error: a start hook wakes discovery, and the
+        // 60s sweep picks up anything whose start was missed. An ended one is over.
+        let Some(key) = self
+            .mirrors
+            .iter()
+            .find(|(_, m)| {
+                m.ended_at.is_none()
+                    && m.native.provider == provider
+                    && m.native.conversation == event.session_id
+            })
+            .map(|(key, _)| key.clone())
+        else {
+            return Ok(None);
+        };
+        match lifecycle::transition(event) {
+            lifecycle::Transition::Status(status) => {
+                let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+                let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                mirror.native.status = status.into();
+                if event.last_assistant_message.is_some() {
+                    mirror
+                        .native
+                        .last_assistant_message
+                        .clone_from(&event.last_assistant_message);
+                }
+                persist_changed(&self.dir, &key, mirror, &before)?;
+                Ok(Some(key))
+            }
+            lifecycle::Transition::Ended(reason) => {
+                self.end_session(&key, reason)?;
+                Ok(Some(key))
+            }
+            lifecycle::Transition::Start | lifecycle::Transition::Ignore => Ok(None),
+        }
+    }
+
+    /// The one end path: a `SessionEnd` hook, or a pid that is gone.
+    fn end_session(&mut self, key: &str, reason: &'static str) -> Result<()> {
+        let Some(mirror) = self.mirrors.get_mut(key) else {
+            return Ok(());
+        };
+        if mirror.ended_at.is_some() {
+            return Ok(());
+        }
+        let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(epoch_secs());
+        mirror.ended_reason = Some(reason.into());
+        persist_changed(&self.dir, key, mirror, &before)?;
+        self.ended_pending.push(key.to_owned());
+        Ok(())
+    }
+
+    /// The next end the relay is still owed, with the frame that reports it.
+    /// Skips what it cannot or need not report: a key whose mirror has been reaped,
+    /// one a resume has revived, and one that ended before the relay ever learned
+    /// the session existed -- that last one is retired here, since there is nothing
+    /// to tell and nobody to tell it to.
+    fn ended_frame(&mut self, registered: &BTreeSet<String>) -> Result<Option<(Rpc, Value)>> {
+        let Self {
+            dir,
+            mirrors,
+            ended_pending,
+            ..
+        } = self;
+        let mut index = ended_pending.len();
+        while index > 0 {
+            index -= 1;
+            let key = ended_pending[index].clone();
+            let Some(mirror) = mirrors.get_mut(&key) else {
+                ended_pending.remove(index);
+                continue;
+            };
+            let (Some(ended_at), false) = (mirror.ended_at, mirror.ended_sent) else {
+                ended_pending.remove(index);
+                continue;
+            };
+            let Some(session) = mirror.session_id.clone() else {
+                let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                mirror.ended_sent = true;
+                persist_changed(dir, &key, mirror, &before)?;
+                ended_pending.remove(index);
+                continue;
+            };
+            // The end of the conversation is the last thing a session writes, and the
+            // ACK for this frame is what stops it being tailed -- so report the end
+            // only once there is nothing left to send, including bytes still unread on
+            // disk. Only a key the upload loop still holds can drain; one that ended
+            // before this connection ever registered it has no drainer to wait for.
+            if registered.contains(&key) {
+                let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                let draining = mirror.pending.is_some()
+                    || !mirror.queue.is_empty()
+                    || capture_batch(mirror).is_ok_and(|batch| batch.is_some());
+                persist_changed(dir, &key, mirror, &before)?;
+                if draining {
+                    continue;
+                }
+            }
+            let reported = Rpc::Ended {
+                key: key.clone(),
+                at: ended_at,
+                generation: mirror.generation.clone(),
+                sent: Instant::now(),
+            };
+            let frame = json!({"type":"local.session.ended","sessionId":session,
+                "generation":mirror.generation,
+                "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
+                "endedAt":ended_at});
+            ended_pending.remove(index);
+            return Ok(Some((reported, frame)));
+        }
+        Ok(None)
+    }
+
+    /// Every live mirror, every tick: a process that is gone ends its session.
+    fn liveness_tick(&mut self) {
+        let gone: Vec<String> = self
+            .mirrors
+            .iter()
+            .filter(|(_, m)| {
+                m.ended_at.is_none()
+                    && !still_running(&m.native.process)
+                    // While a successor waits for `advance`, `native` is the dead
+                    // predecessor and the successor is the session that is running.
+                    && m.registration
+                        .successor
+                        .as_ref()
+                        .is_none_or(|next| !still_running(&next.process))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in gone {
+            if let Err(error) = self.end_session(&key, "process-exited") {
+                relay_log(&format!("{} end not recorded: {error}", short(&key)));
+            }
+        }
+    }
+
+    /// An ended session is kept for a day, then its mirrored history is dropped.
+    /// Returns the reaped keys: a caller keeping its own per-key state (a live
+    /// connection's registration map) has to drop them too, or it will index a
+    /// mirror that is no longer there.
+    #[must_use]
+    fn reap(&mut self) -> Vec<String> {
+        let cutoff = epoch_secs().saturating_sub(86_400);
+        let expired: Vec<String> = self
+            .mirrors
+            .iter()
+            .filter(|(_, m)| m.ended_at.is_some_and(|at| at < cutoff))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &expired {
+            let _ = fs::remove_file(self.dir.join(format!("{key}.json")));
+            self.mirrors.remove(key);
+            self.heartbeat_dirty.remove(key);
+            self.ended_pending.retain(|pending| pending != key);
+        }
+        expired
     }
     async fn observing_wait<T>(
         &mut self,
@@ -213,7 +480,7 @@ impl Host {
     }
     pub(super) fn restore(dir: PathBuf, home: PathBuf, stop: Arc<AtomicBool>) -> Result<Self> {
         private_dir(&dir)?;
-        let mut mirrors = BTreeMap::new();
+        let mut mirrors: BTreeMap<String, Mirror> = BTreeMap::new();
         for entry in fs::read_dir(&dir).map_err(|_| "local history unavailable")? {
             let path = entry.map_err(|_| "local history unavailable")?.path();
             let Some(key) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -229,7 +496,11 @@ impl Host {
             if native_key(&mirror.native) != key {
                 return Err("local history identity conflict".into());
             }
-            mirror.native.status = "offline".into();
+            if mirror.ended_at.is_none() {
+                // Nothing about a live session is verified across a restart; a hook,
+                // the pid check or the next sweep says what it really is.
+                mirror.native.status = "unknown".into();
+            }
             mirror.workspace.observe(
                 Err("workspace not yet observed after restart".into()),
                 false,
@@ -238,26 +509,35 @@ impl Host {
                 mirror.native.restriction = Some("runtime-unverified".into());
             }
             if let Some(successor) = &mut mirror.registration.successor {
-                successor.status = "offline".into();
+                successor.status = "unknown".into();
                 if successor.restriction.as_deref() != Some("history-gap") {
                     successor.restriction = Some("runtime-unverified".into());
                 }
             }
-            // The offline downgrade above is new RAM state, not yet a durable replay.
+            // The downgrade above is new RAM state, not yet a durable replay.
             mirror.dirty = true;
-            if mirrors.len() >= 512 {
+            if mirrors.values().filter(|m| m.ended_at.is_none()).count() >= 512 {
                 return Err("local session capacity reached".into());
             }
             mirrors.insert(key.into(), mirror);
         }
-        Ok(Self {
+        let mut host = Self {
             workspace_at: Instant::now() - Duration::from_secs(30),
             workspace_key: None,
             dir,
             home,
             mirrors,
             stop,
-        })
+            hooks: None,
+            ended_pending: vec![],
+            heartbeat_dirty: BTreeSet::new(),
+            heartbeat_interval: Duration::from_secs(10),
+        };
+        // Ended mirrors are loaded so their end can still be reported, and so the
+        // day-old ones are cleaned up on exactly one predictable path. No connection
+        // exists yet, so there is no per-key state to prune alongside them.
+        let _ = host.reap();
+        Ok(host)
     }
 
     async fn run_once(
@@ -270,14 +550,43 @@ impl Host {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let home = self.home.clone();
         let discovery = async move {
+            // A 60s backstop, not the status source: hooks and the pid check drive
+            // status now. A wake (a start hook, an enrollment change) runs it sooner,
+            // but never more than once a second.
+            let mut last = Instant::now() - Duration::from_secs(1);
+            let mut last_failures: Vec<String> = vec![];
             loop {
+                if let Some(remaining) = Duration::from_secs(1).checked_sub(last.elapsed()) {
+                    tokio::time::sleep(remaining).await;
+                }
+                last = Instant::now();
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
-                let mut found = claude.unwrap_or_default();
-                found.extend(codex.unwrap_or_default());
-                if tx.send(found).await.is_err() {
+                // One provider's broken listing must not hide the other's sessions,
+                // so the pass is the union of whatever answered.
+                let listings = [claude, codex];
+                let providers = listings.len();
+                let mut found = vec![];
+                let mut failures = vec![];
+                for listing in listings {
+                    match listing {
+                        Ok(sessions) => found.extend(sessions),
+                        Err(error) => failures.push(error),
+                    }
+                }
+                for error in &failures {
+                    // A listing that failed is not evidence that anything stopped;
+                    // say so once per distinct failure, not once a minute forever.
+                    if !last_failures.contains(error) {
+                        relay_log(&format!("discovery unavailable: {error}"));
+                    }
+                }
+                // Every provider failed: this pass proves nothing. Keep the state we
+                // have -- an empty listing would otherwise read as "all quiet".
+                if failures.len() < providers && tx.send(found).await.is_err() {
                     break;
                 }
-                tokio::select! {_ = tokio::time::sleep(Duration::from_secs(2))=>{},_ = wake.notified()=>{}}
+                last_failures = failures;
+                tokio::select! {_ = tokio::time::sleep(Duration::from_secs(60))=>{},_ = wake.notified()=>{}}
             }
         };
         let network = async {
@@ -373,7 +682,9 @@ impl Host {
         identity: crate::keychain::DeviceIdentity,
         wake: Arc<tokio::sync::Notify>,
         status: Arc<std::sync::Mutex<String>>,
+        hooks: tokio::sync::mpsc::Receiver<super::lifecycle::HookEvent>,
     ) {
+        self.hooks = Some(hooks);
         let mut restart = 1u64;
         loop {
             // Release builds abort on panic (Cargo.toml), so a panic is a visible crash, never a
@@ -401,15 +712,31 @@ impl Host {
         socket: &mut Socket,
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
     ) -> Result<()> {
-        let mut registered = BTreeMap::<String, Instant>::new();
+        let mut registered = BTreeSet::<String>::new();
         let mut quarantined = BTreeMap::<String, Instant>::new();
-        let mut pending_rpc: Option<(String, bool, Instant, SystemTime, Value)> = None;
+        let mut pending_rpc: Option<Rpc> = None;
         let mut anchor: Option<ClockAnchor> = None;
         let mut deferred = std::collections::VecDeque::<Command>::new();
         let mut sent_batches = BTreeMap::<String, Instant>::new();
         let mut last_upload = Instant::now() - Duration::from_millis(500);
         let mut last_upload_key: Option<String> = None;
+        let mut heartbeat_frames = std::collections::VecDeque::<Value>::new();
+        let mut last_heartbeat = Instant::now();
+        let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let mut reaped = Instant::now();
+        // An end the relay has not been told about -- because it happened while the
+        // socket was down, or in a previous run of this process -- is still owed to it.
+        self.liveness_tick();
+        let unreported: Vec<String> = self
+            .mirrors
+            .iter()
+            .filter(|(key, m)| {
+                m.ended_at.is_some() && !m.ended_sent && !self.ended_pending.contains(*key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        self.ended_pending.extend(unreported);
         loop {
             if self.stop.load(Ordering::SeqCst) {
                 return Ok(());
@@ -420,7 +747,7 @@ impl Host {
                 let keys: Vec<_> = self
                     .mirrors
                     .iter()
-                    .filter(|(_, m)| m.native.status != "offline")
+                    .filter(|(_, m)| m.ended_at.is_none())
                     .map(|(k, _)| k.clone())
                     .collect();
                 if let Some(key) = keys
@@ -434,7 +761,7 @@ impl Host {
             }
             if pending_rpc
                 .as_ref()
-                .is_some_and(|(_, _, at, _, _)| at.elapsed() > Duration::from_secs(10))
+                .is_some_and(|rpc| rpc.sent().elapsed() > Duration::from_secs(10))
             {
                 return Err("session acknowledgment timed out".into());
             }
@@ -444,8 +771,7 @@ impl Host {
             if anchor.is_some() {
                 let ready = deferred.iter().position(|cmd| {
                     self.mirrors.iter().any(|(key, m)| {
-                        registered.contains_key(key)
-                            && m.session_id.as_deref() == Some(&cmd.session_id)
+                        registered.contains(key) && m.session_id.as_deref() == Some(&cmd.session_id)
                     })
                 });
                 if let Some(command) = ready.and_then(|index| deferred.remove(index)) {
@@ -458,39 +784,37 @@ impl Host {
                 }
             }
             if pending_rpc.is_none() {
-                if let Some(key) = self
-                    .mirrors
-                    .keys()
-                    .find(|key| {
-                        !registered.contains_key(*key) && !quarantine_active(&quarantined, key)
-                    })
-                    .cloned()
-                {
+                if let Some(key) = registration_due(&self.mirrors, &registered, &quarantined) {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
                     let body = self.begin_registration(&key)?;
                     send(socket, &body).await?;
-                    let metadata = serde_json::to_value(&self.mirrors[&key].native)
-                        .map_err(|e| e.to_string())?;
-                    pending_rpc = Some((key, true, sent, wall, metadata));
-                } else if let Some((key, _)) = registered
-                    .iter()
-                    .find(|(_, at)| at.elapsed() >= Duration::from_secs(10))
-                {
-                    let mirror = &self.mirrors[key];
-                    let sent = Instant::now();
-                    let wall = SystemTime::now();
-                    send(socket, &json!({"type":"local.session.heartbeat", "sessionId":mirror.session_id,"generation":mirror.generation,
-                        "status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
-                        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,
-                        "workspace":mirror.workspace.summary()})).await?;
-                    pending_rpc = Some((
-                        key.clone(),
-                        false,
-                        sent,
-                        wall,
-                        serde_json::to_value(&mirror.native).map_err(|e| e.to_string())?,
-                    ));
+                    pending_rpc = Some(Rpc::Register { key, sent, wall });
+                } else {
+                    // One heartbeat for the device, not one per session: a session whose
+                    // fields moved brings the whole cadence forward instead of sending
+                    // its own frame, and no more than once a second.
+                    let early = !self.heartbeat_dirty.is_empty()
+                        && last_early.elapsed() >= Duration::from_secs(1);
+                    if heartbeat_frames.is_empty()
+                        && (early || last_heartbeat.elapsed() >= self.heartbeat_interval)
+                    {
+                        last_heartbeat = Instant::now();
+                        if early {
+                            last_early = Instant::now();
+                        }
+                        self.heartbeat_dirty.clear();
+                        heartbeat_frames = device_heartbeats(&self.mirrors, &registered)?.into();
+                    }
+                    if let Some((reported, frame)) = self.ended_frame(&registered)? {
+                        send(socket, &frame).await?;
+                        pending_rpc = Some(reported);
+                    } else if let Some(frame) = heartbeat_frames.pop_front() {
+                        let sent = Instant::now();
+                        let wall = SystemTime::now();
+                        send(socket, &frame).await?;
+                        pending_rpc = Some(Rpc::Heartbeat { sent, wall });
+                    }
                 }
             }
             if last_upload.elapsed() >= Duration::from_millis(500) {
@@ -504,7 +828,7 @@ impl Host {
                 }
                 for key in &keys {
                     let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
-                    if !registered.contains_key(key)
+                    if !registered.contains(key)
                         || sent_batches
                             .get(key)
                             .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
@@ -532,7 +856,33 @@ impl Host {
                 }
             }
             tokio::select! {
-                _ = tick.tick() => {},
+                _ = tick.tick() => {
+                    self.liveness_tick();
+                    if reaped.elapsed() >= Duration::from_secs(60) {
+                        reaped = Instant::now();
+                        // This connection's own per-key state has to go with them.
+                        for key in self.reap() {
+                            registered.remove(&key);
+                            sent_batches.remove(&key);
+                            quarantined.remove(&key);
+                        }
+                    }
+                },
+                event = async {
+                    match self.hooks.as_mut() {
+                        Some(hooks) => hooks.recv().await,
+                        // No hook listener on this host: the arm never fires.
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match event {
+                        Some(event) => {
+                            if let Some(key) = self.apply_hook(&event)? {self.heartbeat_dirty.insert(key);}
+                        },
+                        // The listener is gone; stop polling a closed channel.
+                        None => self.hooks = None,
+                    }
+                },
                 update = updates.recv() => {
                     let Some(update) = update else {return Err("discovery stopped".into());};
                     for key in self.observe(update)? {registered.remove(&key);}
@@ -547,9 +897,9 @@ impl Host {
                     if text.len() > 16384 {return Err("oversized session frame".into());}
                     let body: Value = serde_json::from_str(&text).map_err(|_| "invalid session frame")?;
                     match body["type"].as_str() {
-                        Some("local.session.registered" | "local.session.heartbeat.ack") => {
-                            let (key,is_register,sent,wall,metadata) = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
-                            if is_register != (body["type"] == "local.session.registered") {return Err("mismatched session acknowledgment".into());}
+                        Some("local.session.registered") => {
+                            let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let Rpc::Register{key,sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
                             if quarantine_active(&quarantined, &key) {
                                 // A late ACK must never put a quarantined session back in rotation.
                                 relay_log(&format!("{} ack ignored while quarantined", short(&key)));
@@ -585,17 +935,17 @@ impl Host {
                                 mirror.resync(after);
                             }
                             mirror.session_id = Some(sid.into());
-                            if is_register {
-                                mirror.registered();
-                                relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
-                            }
-                            let advanced=mirror.advance();
+                            mirror.registered();
+                            relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
+                            let advanced = mirror.advance();
                             persist_changed(&self.dir,&key,mirror,&before)?;
-                            // An ACK for live B cannot re-enable B after discovery
-                            // has downgraded it or found C while the RPC was in flight.
-                            if !advanced && metadata == serde_json::to_value(&mirror.native).map_err(|e|e.to_string())? {
-                                registered.insert(key.clone(),Instant::now());
-                            } else {registered.remove(&key);}
+                            // Whatever discovery has found since, the relay has this
+                            // session: fields it has not seen ride the next heartbeat,
+                            // and only the relay's own rejection re-registers it.
+                            // Unless `advance` just promoted a successor -- the relay
+                            // has never seen THAT generation, and uploading under it
+                            // would only earn a rejection.
+                            if advanced {registered.remove(&key);} else {registered.insert(key.clone());}
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
                                 .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
@@ -603,15 +953,51 @@ impl Host {
                             if !body["reconcile"].is_null() {
                                 let request = body["reconcile"]["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = body["reconcile"]["generation"].as_str().ok_or("invalid reconciliation")?;
-                                // Dispatch precedes registration ACK on the real relay.
-                                // The matching bounded pre-ACK frame is already here;
-                                // admit it before considering a missing-journal tombstone.
-                                let buffered = deferred.iter().position(|cmd|cmd.session_id == sid && cmd.request_id == request);
-                                let receipt = if let Some(cmd) = buffered.and_then(|index|deferred.remove(index)) {
-                                    self.command(&cmd,anchor.as_ref()).await?
-                                } else {self.reconcile(sid,request,generation).await?};
-                                send(socket,&receipt_wire(sid,request,&receipt)).await?;
+                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation).await?;
                             }
+                        },
+                        Some("local.device.heartbeat.ack") => {
+                            let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            let server = body["serverTime"].as_u64().ok_or("missing server time")?;
+                            let rtt = sent.elapsed().as_secs_f64();
+                            deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
+                                .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
+                            anchor = Some(ClockAnchor {server,round_trip:rtt,at:Instant::now(),wall:SystemTime::now()});
+                            // A session the relay does not hold is one this Mac has to
+                            // register again; it is never heartbeated back into existence.
+                            for rejected in body["rejected"].as_array().into_iter().flatten() {
+                                if let Some(key) = session_key(&self.mirrors, rejected.as_str()) {
+                                    relay_log(&format!("{} rejected by the relay; re-registering", short(&key)));
+                                    registered.remove(&key);
+                                }
+                            }
+                            for entry in body["reconcile"].as_array().into_iter().flatten() {
+                                let Some(sid) = entry["sessionId"].as_str().filter(|sid| session_key(&self.mirrors, Some(sid)).is_some()) else {
+                                    relay_log("reconciliation for a session this Mac does not hold, ignored");
+                                    continue;
+                                };
+                                let request = entry["requestId"].as_str().ok_or("invalid reconciliation")?;
+                                let generation = entry["generation"].as_str().ok_or("invalid reconciliation")?;
+                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation).await?;
+                            }
+                        },
+                        Some("local.session.ended.ack") => {
+                            let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let Rpc::Ended{key,at,generation,..} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            // Told. Nothing more is uploaded, heartbeated or registered for
+                            // it; the mirror stays until it is reaped.
+                            registered.remove(&key);
+                            sent_batches.remove(&key);
+                            let Some(mirror) = self.mirrors.get_mut(&key) else {continue;};
+                            // This ACK answers one specific end. A resume -- and a second end
+                            // -- can both land while it is in flight, and the session running
+                            // now still owes its own end, so anything but the exact end this
+                            // frame reported leaves `ended_sent` alone for `ended_frame`.
+                            if mirror.ended_at != Some(at) || mirror.generation != generation {continue;}
+                            let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
+                            mirror.ended_sent = true;
+                            persist_changed(&self.dir,&key,mirror,&before)?;
                         },
                         Some("local.session.events.ack") => {
                             let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
@@ -630,7 +1016,7 @@ impl Host {
                             let named = body["sessionId"].as_str().and_then(|sid| {
                                 self.mirrors.iter().find(|(_, m)| m.session_id.as_deref() == Some(sid)).map(|(k, _)| k.clone())
                             });
-                            let inflight = pending_rpc.as_ref().map(|(k, ..)| k.clone());
+                            let inflight = pending_rpc.as_ref().and_then(Rpc::key).map(str::to_owned);
                             let attributed = named.is_some();
                             let Some(key) = named.or(inflight) else {
                                 relay_log(&format!("relay rejected an unattributable frame: {code}"));
@@ -645,7 +1031,7 @@ impl Host {
                             // A named error is about this session's events frame only while a
                             // batch is outstanding; in every other case it is the in-flight RPC's
                             // own reply, and holding the slot would stall until the 10s timeout.
-                            if pending_rpc.as_ref().is_some_and(|(k, ..)| *k == key)
+                            if pending_rpc.as_ref().and_then(Rpc::key) == Some(key.as_str())
                                 && !(attributed && sent_batches.contains_key(&key))
                             {
                                 pending_rpc = None;
@@ -667,7 +1053,7 @@ impl Host {
     }
 
     async fn verified(&self, native: &NativeSession) -> Result<NativeSession> {
-        if native.status == "offline" || native.restriction.is_some() {
+        if native.status == "ended" || native.restriction.is_some() {
             return Err("control unavailable".into());
         }
         let program =
@@ -695,6 +1081,29 @@ impl Host {
             return Err("native identity changed".into());
         }
         Ok(current)
+    }
+
+    /// Answer one reconciliation the relay attached to an acknowledgment. Dispatch
+    /// precedes the ACK on the real relay, so the matching bounded pre-ACK frame is
+    /// usually already buffered; admit that before considering a missing-journal
+    /// tombstone.
+    async fn dispatch_reconcile(
+        &mut self,
+        socket: &mut Socket,
+        deferred: &mut std::collections::VecDeque<Command>,
+        anchor: Option<&ClockAnchor>,
+        session: &str,
+        request: &str,
+        generation: &str,
+    ) -> Result<()> {
+        let buffered = deferred
+            .iter()
+            .position(|cmd| cmd.session_id == session && cmd.request_id == request);
+        let receipt = match buffered.and_then(|index| deferred.remove(index)) {
+            Some(cmd) => self.command(&cmd, anchor).await?,
+            None => self.reconcile(session, request, generation).await?,
+        };
+        send(socket, &receipt_wire(session, request, &receipt)).await
     }
 
     async fn reconcile(
@@ -846,11 +1255,24 @@ fn native_key(native: &NativeSession) -> String {
     fingerprint(&json!([native.provider, native.profile, native.conversation]).to_string())
 }
 
+fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
+/// The stored identity has to still be at that pid: pids are reused, and
+/// `kill(pid, 0)` would call the stranger that inherited it this session alive
+/// forever. `process` is a `proc_pidinfo` read -- no spawn, no signal.
+fn still_running(identity: &Process) -> bool {
+    process(identity.pid).is_ok_and(|current| &current == identity)
+}
+
+/// A read failure is a history problem only. A process that is gone is ended by
+/// `liveness_tick`, which is the single owner of that verdict.
 fn capture_batch(mirror: &mut Mirror) -> Result<Option<Value>> {
     mirror.next_batch().inspect_err(|reason| {
-        if process(mirror.native.process.pid).is_err() {
-            mirror.native.status = "offline".into();
-        }
         mirror.native.restriction = Some(
             if reason == "runtime-unverified" {
                 "runtime-unverified"
@@ -888,6 +1310,79 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
+/// The next session owing a registration: still live, not already registered, not
+/// quarantined. An ended session is never registered -- it is on its way out.
+fn registration_due(
+    mirrors: &BTreeMap<String, Mirror>,
+    registered: &BTreeSet<String>,
+    quarantined: &BTreeMap<String, Instant>,
+) -> Option<String> {
+    mirrors
+        .iter()
+        .find(|(key, mirror)| {
+            mirror.ended_at.is_none()
+                && !registered.contains(*key)
+                && !quarantine_active(quarantined, key)
+        })
+        .map(|(key, _)| key.clone())
+}
+
+/// The mirror key a relay-supplied session id names, if this Mac still holds it.
+fn session_key(mirrors: &BTreeMap<String, Mirror>, session: Option<&str>) -> Option<String> {
+    let session = session?;
+    mirrors
+        .iter()
+        .find(|(_, m)| m.session_id.as_deref() == Some(session))
+        .map(|(key, _)| key.clone())
+}
+
+/// One device heartbeat listing every registered, still-running session, split
+/// into as many frames as the relay's limits need. An ended session is never
+/// listed: `ended` is not a heartbeat status and the relay would reject the whole
+/// frame over it. A key whose mirror has been reaped is simply not there.
+fn device_heartbeats(
+    mirrors: &BTreeMap<String, Mirror>,
+    registered: &BTreeSet<String>,
+) -> Result<Vec<Value>> {
+    let envelope = |sessions: &[Value]| json!({"type":"local.device.heartbeat","sessions":sessions});
+    let mut frames = vec![];
+    let mut sessions: Vec<Value> = vec![];
+    for (key, m) in mirrors.iter().filter(|(key, m)| {
+        registered.contains(*key) && m.ended_at.is_none() && m.session_id.is_some()
+    }) {
+        let entry = json!({"sessionId":m.session_id,"generation":m.generation,
+            "status":m.native.status,"activeTurnId":m.native.active_turn,
+            "controlUnavailableReason":m.native.restriction,
+            "title":m.native.title,"cwdName":m.native.cwd_name,
+            "lastAssistantMessage":m.native.last_assistant_message,
+            "workspace":m.workspace.summary()});
+        if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
+            // One session too big to travel even alone would make every frame it
+            // lands in oversized, and `send` takes the connection down over it.
+            // Leave it out; the rest of the Mac still gets heard.
+            relay_log(&format!("{} heartbeat fields exceed one frame; omitted", short(key)));
+            continue;
+        }
+        sessions.push(entry);
+        if sessions.len() <= HEARTBEAT_SESSIONS_MAX
+            && ascii_wire_len(&envelope(&sessions))? <= 16384
+        {
+            continue;
+        }
+        // Every entry fits alone, so what just overflowed always leaves a non-empty
+        // frame behind and always starts a viable next one.
+        let Some(overflow) = sessions.pop() else {
+            continue;
+        };
+        frames.push(envelope(&sessions));
+        sessions = vec![overflow];
+    }
+    if !sessions.is_empty() {
+        frames.push(envelope(&sessions));
+    }
+    Ok(frames)
+}
+
 fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
     quarantined
         .get(key)
@@ -896,7 +1391,7 @@ fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool
 
 fn quarantine(
     quarantined: &mut BTreeMap<String, Instant>,
-    registered: &mut BTreeMap<String, Instant>,
+    registered: &mut BTreeSet<String>,
     sent_batches: &mut BTreeMap<String, Instant>,
     key: &str,
     reason: &str,
@@ -946,6 +1441,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         }
     }
 
@@ -962,6 +1458,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         }
     }
 
@@ -973,6 +1472,10 @@ mod tests {
             home: dir.into(),
             mirrors: mirrors.into_iter().map(|(k, m)| (k.to_string(), m)).collect(),
             stop: Arc::new(AtomicBool::new(false)),
+            hooks: None,
+            ended_pending: vec![],
+            heartbeat_dirty: BTreeSet::new(),
+            heartbeat_interval: Duration::from_secs(10),
         }
     }
 
@@ -990,12 +1493,246 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_reconcile_never_marks_offline_and_keeps_unlisted_sessions() {
+        let mut current = vec![test_native(SID)];
+        current[0].status = "busy".into();
+        reconcile_sessions(&mut current, vec![]);
+        assert_eq!(current.len(), 1, "an unlisted session is kept, not dropped");
+        assert_eq!(current[0].status, "busy");
+    }
+
+    #[test]
+    fn local_sessions_hook_events_drive_status_and_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let mut ev = lifecycle::HookEvent {
+            provider: lifecycle::Provider::Codex,
+            event: "UserPromptSubmit".into(),
+            session_id: SID.into(),
+            transcript_path: None,
+            cwd: None,
+            notification_type: None,
+            message: None,
+            reason: None,
+            last_assistant_message: None,
+        };
+        assert_eq!(host.apply_hook(&ev).unwrap(), Some(key.clone()));
+        assert_eq!(host.mirrors[&key].native.status, "busy");
+        ev.event = "Stop".into();
+        ev.last_assistant_message = Some("done".into());
+        host.apply_hook(&ev).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "idle");
+        assert_eq!(
+            host.mirrors[&key].native.last_assistant_message.as_deref(),
+            Some("done")
+        );
+        // The same session id under the other provider is a different session.
+        let other = lifecycle::HookEvent {
+            provider: lifecycle::Provider::Claude,
+            ..ev.clone()
+        };
+        assert_eq!(host.apply_hook(&other).unwrap(), None);
+        // A session this Mac has not discovered yet is not an error.
+        let unknown = lifecycle::HookEvent {
+            session_id: SID_B.into(),
+            ..ev.clone()
+        };
+        assert_eq!(host.apply_hook(&unknown).unwrap(), None);
+        ev.event = "SessionEnd".into();
+        host.apply_hook(&ev).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "ended");
+        assert!(host.mirrors[&key].ended_at.is_some() && host.ended_pending == vec![key.clone()]);
+        ev.event = "UserPromptSubmit".into();
+        assert_eq!(
+            host.apply_hook(&ev).unwrap(),
+            None,
+            "events after end are ignored"
+        );
+        let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.native.status, "ended");
+        assert_eq!(stored.ended_reason.as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn local_sessions_dead_pid_ends_within_one_tick_and_is_reaped_after_a_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut native = test_native(SID);
+        native.process.pid = 2_147_483_000; // no such process
+        let key = native_key(&native);
+        let mut mirror = test_mirror(
+            SID,
+            &fingerprint(&serde_json::to_string(&native.process).unwrap()),
+        );
+        mirror.native = native.clone();
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.liveness_tick();
+        assert_eq!(host.mirrors[&key].native.status, "ended");
+        assert_eq!(
+            host.mirrors[&key].ended_reason.as_deref(),
+            Some("process-exited")
+        );
+        assert_eq!(host.ended_pending, vec![key.clone()]);
+        let file = dir.path().join(format!("{key}.json"));
+        assert!(file.exists());
+        // A sweep that still lists the process must not resurrect an ended session.
+        host.observe(vec![native]).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "ended");
+        host.mirrors.get_mut(&key).unwrap().ended_at = Some(0);
+        assert_eq!(host.reap(), vec![key.clone()]);
+        assert!(!file.exists() && host.mirrors.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_reaping_clears_the_per_key_state_a_connection_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ended = test_mirror(SID, "gen-1");
+        ended.native.status = "ended".into();
+        ended.ended_at = Some(0);
+        let mut live = test_mirror(SID_B, "gen-2");
+        live.session_id = Some(SID_B.into());
+        let mut host = test_host(dir.path(), vec![(SID, ended), (SID_B, live)]);
+        host.heartbeat_dirty.insert(SID.into());
+        host.ended_pending.push(SID.into());
+        let mut registered = BTreeSet::from([SID.to_string(), SID_B.to_string()]);
+        let listed = |mirrors: &BTreeMap<String, Mirror>, registered: &BTreeSet<String>| {
+            device_heartbeats(mirrors, registered).unwrap()[0]["sessions"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        assert_eq!(
+            listed(&host.mirrors, &registered),
+            1,
+            "an ended session is registered but never heartbeated"
+        );
+        for key in host.reap() {
+            registered.remove(&key);
+        }
+        assert!(!registered.contains(SID) && !host.mirrors.contains_key(SID));
+        assert!(host.heartbeat_dirty.is_empty() && host.ended_pending.is_empty());
+        // A registration set outliving its mirror must never be indexed blindly.
+        registered.insert(SID.to_string());
+        assert_eq!(
+            listed(&host.mirrors, &registered),
+            1,
+            "a reaped key is skipped, not looked up"
+        );
+    }
+
+    #[test]
+    fn local_sessions_liveness_keeps_a_session_whose_successor_is_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.process.pid = 2_147_483_000; // the predecessor is gone
+        mirror.registration.successor = Some(test_native(SID)); // its restart is not
+        // A frozen registration is exactly why `advance` has not promoted it yet.
+        mirror.registration.pending = true;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        host.liveness_tick();
+        assert!(
+            host.mirrors[SID].ended_at.is_none() && host.ended_pending.is_empty(),
+            "a restarted session is not an ended one"
+        );
+        assert_eq!(host.mirrors[SID].native.status, "unknown");
+    }
+
+    #[test]
+    fn local_sessions_liveness_ends_a_session_whose_pid_was_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        // The pid answers -- it is this very process -- but it is not the
+        // process the session was started in.
+        mirror.native.process.birth_micros ^= 1;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        host.liveness_tick();
+        assert_eq!(
+            host.mirrors[SID].ended_reason.as_deref(),
+            Some("process-exited"),
+            "a reused pid is not the session's process"
+        );
+        assert!(host.mirrors[SID].ended_at.is_some());
+    }
+
+    #[test]
+    fn local_sessions_an_ended_session_still_drains_its_last_transcript_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        mirror.native.process.pid = 2_147_483_000; // the process is gone; its tail is not
+        mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
+        assert_eq!(
+            mirror.next_batch().unwrap_err(),
+            "runtime-unverified",
+            "a live session with a dead process is unverifiable"
+        );
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(epoch_secs());
+        let batch = mirror
+            .next_batch()
+            .unwrap()
+            .expect("the end of the conversation is still mirrored");
+        assert_eq!(batch["events"][0]["text"], "short-lived public output");
+    }
+
+    #[test]
+    fn local_sessions_restore_loads_ended_mirrors_only_for_reaping_and_marks_live_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        private_dir(&scope).unwrap();
+        let persist = |mut mirror: Mirror| {
+            let key = native_key(&mirror.native);
+            mirror.persist(&scope.join(format!("{key}.json"))).unwrap();
+            key
+        };
+        let live = persist(test_mirror(SID, "gen-1"));
+        let mut recent = test_mirror(SID_B, "gen-1");
+        recent.native.status = "ended".into();
+        recent.ended_at = Some(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        );
+        let recent = persist(recent);
+        let mut old = test_mirror("ccccdddd-eeee-4fff-8000-111122223333", "gen-1");
+        old.native.status = "ended".into();
+        old.ended_at = Some(0);
+        let old = persist(old);
+        let restored = Host::restore(
+            scope.clone(),
+            dir.path().join("home"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(restored.mirrors[&live].native.status, "unknown");
+        assert_eq!(
+            restored.mirrors[&recent].native.status, "ended",
+            "an ended mirror is still loaded, for its frame and its reaping"
+        );
+        assert!(
+            !restored.mirrors.contains_key(&old) && !scope.join(format!("{old}.json")).exists(),
+            "ended a day ago -> reaped on restore"
+        );
+        assert_eq!(
+            registration_due(&restored.mirrors, &BTreeSet::new(), &BTreeMap::new()).as_deref(),
+            Some(live.as_str())
+        );
+        let live_registered = BTreeSet::from([live]);
+        assert_eq!(
+            registration_due(&restored.mirrors, &live_registered, &BTreeMap::new()),
+            None,
+            "an ended mirror is never sent as a registration"
+        );
+    }
+
+    #[test]
     fn local_sessions_failed_registration_write_retries_before_send_and_survives_lost_ack() {
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("scope");
         let mut a = observed_fixture(dir.path());
         a.transcript = None;
-        a.status = "offline".into();
+        a.status = "unknown".into();
         let key = native_key(&a);
         let mut host = Host::restore(
             scope.clone(),
@@ -1037,7 +1774,7 @@ mod tests {
             replay["session"]["generation"], server_generation,
             "discovery C must not skip accepted B"
         );
-        assert_eq!(replay["session"]["status"], "offline");
+        assert_eq!(replay["session"]["status"], "unknown");
         assert_eq!(
             replay["session"]["controlUnavailableReason"],
             "runtime-unverified"
@@ -1069,7 +1806,9 @@ mod tests {
     }
     #[test]
     fn local_sessions_failed_observation_write_retries_identical_snapshot() {
-        for completed in [false, true] {
+        // Both shapes of a failed write: a first sighting, and a status the sweep
+        // moved on a session that is already mirrored.
+        for known in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let scope = dir.path().join("scope");
             let native = observed_fixture(dir.path());
@@ -1080,20 +1819,21 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
             )
             .unwrap();
-            if completed {
+            if known {
                 host.observe(vec![native.clone()]).unwrap();
             }
-            let update = if completed { vec![] } else { vec![native] };
+            let mut listed = native;
+            if known {
+                listed.status = "busy".into();
+            }
+            let update = vec![listed];
             host.dir = dir.path().join("unavailable");
             assert!(host.observe(update.clone()).is_err());
             host.dir = scope.clone();
             host.observe(update).unwrap();
             let stored: Mirror = private_read(&scope.join(format!("{key}.json")))
                 .expect("identical observation must retry the failed write");
-            assert_eq!(
-                stored.native.status,
-                if completed { "offline" } else { "unknown" }
-            );
+            assert_eq!(stored.native.status, if known { "busy" } else { "unknown" });
             assert_eq!(stored.queue[0]["text"], "short-lived public output");
         }
     }
@@ -1159,7 +1899,7 @@ mod tests {
             let scope = dir.path().join("scope");
             let mut a = observed_fixture(dir.path());
             a.transcript = None;
-            a.status = "offline".into();
+            a.status = "unknown".into();
             let key = native_key(&a);
             let mut host = Host::restore(
                 scope.clone(),
@@ -1199,7 +1939,10 @@ mod tests {
                     || retry["previousGeneration"] == server_generation,
                 "canonical CAS"
             );
-            assert_eq!(retry["session"]["status"], "offline");
+            assert_eq!(
+                retry["session"]["status"], "unknown",
+                "a restart verifies nothing, but it does not declare it offline either"
+            );
             assert_eq!(
                 retry["session"]["controlUnavailableReason"],
                 "runtime-unverified"
@@ -1238,6 +1981,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         }
     }
     #[tokio::test]
@@ -1277,7 +2021,10 @@ mod tests {
         .unwrap();
         let _sender = producer.await.unwrap();
         let stored: Mirror = private_read(&scope.join(format!("{key}.json"))).unwrap();
-        assert_eq!(stored.native.status, "offline");
+        assert_eq!(
+            stored.native.status, "unknown",
+            "an empty listing never downgrades a session"
+        );
         assert!(stored.cursor.offset > 0);
         assert_eq!(stored.queue[0]["text"], "short-lived public output");
         let mut restarted =
@@ -1290,7 +2037,7 @@ mod tests {
         );
     }
     #[test]
-    fn local_sessions_observation_does_not_rewrite_unchanged_idle_or_completed_state() {
+    fn local_sessions_observation_does_not_rewrite_unchanged_or_unlisted_state() {
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("scope");
         let native = observed_fixture(dir.path());
@@ -1308,13 +2055,23 @@ mod tests {
             host.observe(vec![native.clone()]).unwrap();
         }
         assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
-        host.observe(vec![]).unwrap();
-        let completed = fs::metadata(&path).unwrap().ino();
-        assert_ne!(completed, inode);
         for _ in 0..10 {
             host.observe(vec![]).unwrap();
         }
-        assert_eq!(fs::metadata(path).unwrap().ino(), completed);
+        assert_eq!(
+            fs::metadata(&path).unwrap().ino(),
+            inode,
+            "an empty listing is not a change"
+        );
+        let mut busy = native;
+        busy.status = "busy".into();
+        host.observe(vec![busy.clone()]).unwrap();
+        let moved = fs::metadata(&path).unwrap().ino();
+        assert_ne!(moved, inode, "the listing's status is durable");
+        for _ in 0..10 {
+            host.observe(vec![busy.clone()]).unwrap();
+        }
+        assert_eq!(fs::metadata(path).unwrap().ino(), moved);
     }
     #[tokio::test]
     #[ignore = "requires explicitly owned disposable native PID/thread; remote boundary is a local mock"]
@@ -1380,8 +2137,8 @@ mod tests {
                 };
                 let body: Value = serde_json::from_str(&frame).unwrap();
                 match body["type"].as_str().unwrap() {
-                    "local.session.register" | "local.session.heartbeat" => {
-                        let registered = body["type"] == "local.session.register";
+                    "local.session.register" | "local.device.heartbeat" => {
+                        let registration = body["type"] == "local.session.register";
                         let now = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .unwrap()
@@ -1394,9 +2151,16 @@ mod tests {
                                 "commandSeq":1,"state":"dispatched","createdAt":now,"deliverBy":now+30,"held":false,"providerMessageId":null
                             }}).to_string().into())).await.unwrap();
                         }
-                        socket.send(Message::Text(json!({"type":if registered {"local.session.registered"} else {"local.session.heartbeat.ack"},
-                            "sessionId":sid,"generation":expected_generation,"afterSeq":after,"serverTime":now,
-                            "reconcile":if sent && !admitted {json!({"requestId":request,"generation":expected_generation,"state":"unknown"})} else {Value::Null}}).to_string().into())).await.unwrap();
+                        let pending = sent && !admitted;
+                        let ack = if registration {
+                            json!({"type":"local.session.registered","sessionId":sid,"generation":expected_generation,
+                                "afterSeq":after,"serverTime":now,
+                                "reconcile":if pending {json!({"requestId":request,"generation":expected_generation,"state":"unknown"})} else {Value::Null}})
+                        } else {
+                            json!({"type":"local.device.heartbeat.ack","rejected":[],"serverTime":now,
+                                "reconcile":if pending {json!([{"sessionId":sid,"requestId":request,"generation":expected_generation,"state":"unknown"}])} else {json!([])}})
+                        };
+                        socket.send(Message::Text(ack.to_string().into())).await.unwrap();
                     }
                     "local.session.receipt" => {
                         assert_ne!(
@@ -1441,6 +2205,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -1449,6 +2216,10 @@ mod tests {
             home,
             mirrors: BTreeMap::from([("owned".into(), mirror)]),
             stop: Arc::new(AtomicBool::new(false)),
+            hooks: None,
+            ended_pending: vec![],
+            heartbeat_dirty: BTreeSet::new(),
+            heartbeat_interval: Duration::from_secs(10),
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -1476,6 +2247,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -1490,6 +2262,9 @@ mod tests {
             after_seq: 2,
             queue: vec![json!({"kind":"text","role":"assistant","text":"saved","truncated":false})],
             pending: Some(json!({"batchId":"stable","afterSeq":2})),
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -1499,7 +2274,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(host.mirrors[&key].pending, mirror.pending);
-        assert_eq!(host.mirrors[&key].native.status, "offline");
+        assert_eq!(host.mirrors[&key].native.status, "unknown");
     }
     #[tokio::test]
     async fn local_sessions_transport_registers_then_uploads_and_persists_ack() {
@@ -1584,6 +2359,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),
@@ -1599,6 +2375,9 @@ mod tests {
                 json!({"kind":"text","role":"assistant","text":"public output","truncated":false}),
             ],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -1607,6 +2386,10 @@ mod tests {
             home: dir.path().into(),
             mirrors: BTreeMap::from([("local".into(), mirror)]),
             stop: Arc::new(AtomicBool::new(false)),
+            hooks: None,
+            ended_pending: vec![],
+            heartbeat_dirty: BTreeSet::new(),
+            heartbeat_interval: Duration::from_secs(10),
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -1618,6 +2401,47 @@ mod tests {
         assert_eq!(stored.after_seq, 1);
         assert!(stored.pending.is_none());
     }
+    #[tokio::test]
+    async fn local_sessions_a_successor_promoted_by_the_ack_registers_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["type"], "local.session.register");
+            assert_eq!(first["session"]["generation"], "g1");
+            // Hold the ACK back so the queued discovery pass -- the only other
+            // ready arm -- is taken while this registration is in flight.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":"g1","afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(second["type"], "local.session.register");
+            assert_ne!(
+                second["session"]["generation"], "g1",
+                "the generation the ACK promoted has never been registered"
+            );
+            assert_eq!(second["previousGeneration"], "g1");
+            socket.close(None).await.unwrap();
+        });
+        let native = test_native("native");
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), test_mirror("native", "g1"))]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        // The same session under a process the mirror's generation does not
+        // name: discovery parks it as a successor while registration is frozen.
+        tx.send(vec![native]).await.unwrap();
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        assert_ne!(host.mirrors[&key].generation, "g1");
+        assert!(host.mirrors[&key].registration.successor.is_none());
+    }
+
     #[tokio::test]
     async fn local_sessions_registration_ack_reconciles_a_lost_batch_ack() {
         let dir = tempfile::tempdir().unwrap();
@@ -2008,6 +2832,10 @@ mod tests {
             home: dir.path().into(),
             mirrors: BTreeMap::from([("native".to_string(), test_mirror("native", "g1"))]),
             stop: stop.clone(),
+            hooks: None,
+            ended_pending: vec![],
+            heartbeat_dirty: BTreeSet::new(),
+            heartbeat_interval: Duration::from_secs(10),
         };
         let enrollment = Enrollment {
             owner_id: "org".into(),
@@ -2029,9 +2857,13 @@ mod tests {
             stopper.store(true, Ordering::SeqCst);
         });
         let started = Instant::now();
-        tokio::time::timeout(Duration::from_secs(8), host.supervise(enrollment, identity, wake, status.clone()))
-            .await
-            .expect("supervise returns once stop is set");
+        let (_hooks_tx, hooks_rx) = tokio::sync::mpsc::channel(1);
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            host.supervise(enrollment, identity, wake, status.clone(), hooks_rx),
+        )
+        .await
+        .expect("supervise returns once stop is set");
         // A single non-looping run_once call would have returned as soon as the very
         // first attempt errored -- milliseconds in, well under the stop flip at 2.5s.
         // Only a loop that restarts run_once and waits for `stop` takes at least that long.
@@ -2097,4 +2929,529 @@ mod tests {
         assert_eq!(stored.after_seq, 380);
         assert!(stored.pending.is_none() && stored.queue.is_empty());
     }
+
+    const GOLDEN_HEARTBEAT: &str = include_str!(
+        "../../../../../packages/shared/fixtures/local-session-frames/device-heartbeat.json"
+    );
+    const GOLDEN_HEARTBEAT_ACK: &str = include_str!(
+        "../../../../../packages/shared/fixtures/local-session-frames/device-heartbeat-ack.json"
+    );
+    const GOLDEN_ENDED: &str =
+        include_str!("../../../../../packages/shared/fixtures/local-session-frames/session-ended.json");
+    const GOLDEN_ENDED_ACK: &str = include_str!(
+        "../../../../../packages/shared/fixtures/local-session-frames/session-ended-ack.json"
+    );
+
+    fn frame_keys(value: &Value) -> BTreeSet<&str> {
+        value
+            .as_object()
+            .expect("frame object")
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn hook(provider: lifecycle::Provider, event: &str, session: &str) -> lifecycle::HookEvent {
+        lifecycle::HookEvent {
+            provider,
+            event: event.into(),
+            session_id: session.into(),
+            transcript_path: None,
+            cwd: None,
+            notification_type: None,
+            message: None,
+            reason: None,
+            last_assistant_message: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn local_sessions_device_heartbeat_lists_live_sessions_and_rejected_reregisters() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(
+            dir.path(),
+            vec![
+                ("a-session", test_mirror(SID, "gen-1")),
+                ("b-session", test_mirror(SID_B, "gen-2")),
+            ],
+        );
+        host.heartbeat_interval = Duration::from_millis(50);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            for (generation, sid) in [("gen-1", SID), ("gen-2", SID_B)] {
+                let frame = next_frame(&mut socket).await;
+                assert_eq!(frame["type"], "local.session.register");
+                assert_eq!(frame["session"]["generation"], generation, "keys register in order");
+                reply(&mut socket, json!({"type":"local.session.registered","sessionId":sid,
+                    "generation":generation,"afterSeq":0,"serverTime":1000,"reconcile":null})).await;
+            }
+            // One frame for the device, not one per session.
+            let hb = next_frame(&mut socket).await;
+            let golden: Value = serde_json::from_str(GOLDEN_HEARTBEAT).unwrap();
+            assert_eq!(hb["type"], "local.device.heartbeat");
+            assert_eq!(frame_keys(&hb), frame_keys(&golden));
+            assert_eq!(hb["sessions"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                frame_keys(&hb["sessions"][0]),
+                frame_keys(&golden["sessions"][0]),
+                "every per-session field the contract names, and no other"
+            );
+            assert_eq!(hb["sessions"][0]["sessionId"], SID);
+            assert_eq!(hb["sessions"][1]["sessionId"], SID_B);
+            assert_eq!(
+                hb["sessions"][0]["status"], "unknown",
+                "the relay rejects the whole frame over one unknown status word"
+            );
+            let ack = json!({"type":"local.device.heartbeat.ack","rejected":[SID_B],
+                "reconcile":[],"serverTime":1010});
+            let golden_ack: Value = serde_json::from_str(GOLDEN_HEARTBEAT_ACK).unwrap();
+            assert_eq!(frame_keys(&ack), frame_keys(&golden_ack));
+            reply(&mut socket, ack).await;
+            let again = next_frame(&mut socket).await;
+            assert_eq!(again["type"], "local.session.register");
+            assert_eq!(
+                again["session"]["generation"], "gen-2",
+                "a rejected session re-registers; the accepted one does not"
+            );
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_sessions_ended_frame_is_sent_once_and_stops_heartbeats() {
+        let dir = tempfile::tempdir().unwrap();
+        let persisted = dir.path().join("a-session.json");
+        let acked = persisted.clone();
+        let mut host = test_host(dir.path(), vec![("a-session", test_mirror(SID, "gen-1"))]);
+        host.heartbeat_interval = Duration::from_millis(50);
+        let (hooks_tx, hooks_rx) = tokio::sync::mpsc::channel(1);
+        host.hooks = Some(hooks_rx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":"gen-1","afterSeq":0,"serverTime":1000,"reconcile":null})).await;
+            // End it only once that ACK is durable: a hook landing first would end a
+            // session the relay has never heard of, which has no end to report.
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    tick.tick().await;
+                    if private_read::<Mirror>(&acked).is_ok_and(|m| m.session_id.is_some()) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            hooks_tx.send(hook(lifecycle::Provider::Codex, "SessionEnd", SID)).await.unwrap();
+            // Heartbeats keep coming until the hook lands, and while it is live the
+            // session is in every one of them.
+            let ended = loop {
+                let frame = next_frame(&mut socket).await;
+                if frame["type"] != "local.device.heartbeat" {
+                    break frame;
+                }
+                assert_eq!(frame["sessions"][0]["sessionId"], SID);
+                reply(&mut socket, json!({"type":"local.device.heartbeat.ack","rejected":[],
+                    "reconcile":[],"serverTime":1005})).await;
+            };
+            let golden: Value = serde_json::from_str(GOLDEN_ENDED).unwrap();
+            assert_eq!(ended["type"], "local.session.ended");
+            assert_eq!(frame_keys(&ended), frame_keys(&golden));
+            assert_eq!(ended["sessionId"], SID);
+            assert_eq!(ended["generation"], "gen-1");
+            assert_eq!(ended["reason"], "exited");
+            assert!(ended["endedAt"].as_u64().is_some_and(|at| at > 1_700_000_000));
+            let ack = json!({"type":"local.session.ended.ack","sessionId":SID});
+            let golden_ack: Value = serde_json::from_str(GOLDEN_ENDED_ACK).unwrap();
+            assert_eq!(frame_keys(&ack), frame_keys(&golden_ack));
+            reply(&mut socket, ack).await;
+            // The cadence here is 50ms, so anything at all would be a frame naming a
+            // session the relay has already been told is over.
+            let quiet = tokio::time::timeout(Duration::from_millis(400), socket.next()).await;
+            assert!(
+                quiet.is_err(),
+                "an ended session is never heartbeated, re-registered or re-ended: {quiet:?}"
+            );
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&persisted).unwrap();
+        assert!(stored.ended_sent, "an acknowledged end is durable across restarts");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_end_missed_while_the_relay_was_down_is_reported_on_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reported = test_mirror(SID, "gen-1");
+        reported.session_id = Some(SID.into());
+        reported.registration.acknowledged = Some("gen-1".into());
+        reported.native.status = "ended".into();
+        reported.ended_at = Some(1_700_000_042);
+        reported.ended_reason = Some("process-exited".into());
+        // Ended before the relay ever learned it existed: there is nothing to tell.
+        let mut silent = test_mirror(SID_B, "gen-2");
+        silent.native.status = "ended".into();
+        silent.ended_at = Some(1_700_000_043);
+        silent.ended_reason = Some("exited".into());
+        let mut host = test_host(
+            dir.path(),
+            vec![("a-session", reported), ("b-session", silent)],
+        );
+        host.heartbeat_interval = Duration::from_millis(50);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended", "first frame after connect");
+            assert_eq!(ended["sessionId"], SID);
+            assert_eq!(ended["generation"], "gen-1");
+            assert_eq!(ended["reason"], "process-exited");
+            assert_eq!(ended["endedAt"], 1_700_000_042u64);
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            let quiet = tokio::time::timeout(Duration::from_millis(400), socket.next()).await;
+            assert!(
+                quiet.is_err(),
+                "an end the relay could never have known is retired silently: {quiet:?}"
+            );
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+        let reported: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
+        let silent: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
+        assert!(
+            reported.ended_sent && silent.ended_sent,
+            "both ends are retired, one on the wire and one silently"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_resumed_session_reports_its_second_end_too() {
+        let dir = tempfile::tempdir().unwrap();
+        // Keyed by its real identity: only then does a listing for the same
+        // provider/profile/conversation land on this mirror and resume it.
+        let key = native_key(&test_native(SID));
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(1_700_000_042);
+        mirror.ended_reason = Some("exited".into());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["type"], "local.session.ended");
+            assert_eq!(first["reason"], "exited");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            // A new process on the same identity: the session is back, and its own end
+            // is news the relay has not heard.
+            let mut resumed = test_native(SID);
+            resumed.process.pid = 2_147_483_000; // and this one is already gone
+            tx.send(vec![resumed]).await.unwrap();
+            // It may register before the liveness tick finds that pid dead; either
+            // order ends with the second end on the wire.
+            let second = loop {
+                let frame = next_frame(&mut socket).await;
+                if frame["type"] != "local.session.register" {
+                    break frame;
+                }
+                reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                    "generation":frame["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                    "reconcile":null})).await;
+            };
+            assert_eq!(second["type"], "local.session.ended");
+            assert_eq!(second["reason"], "process-exited");
+            assert_ne!(
+                second["generation"], first["generation"],
+                "the second end is the resumed session's, not a replay of the first"
+            );
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_ended_session_drains_its_last_bytes_before_its_end_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let persisted = dir.path().join("a-session.json");
+        let acked = persisted.clone();
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        // Nothing to read yet: the bytes arrive only once the session is registered,
+        // so no upload pass can have carried them away before it ends.
+        let transcript = mirror.native.transcript.clone().unwrap();
+        fs::write(&transcript, "").unwrap();
+        let mut host = test_host(dir.path(), vec![("a-session", mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+        let (hooks_tx, hooks_rx) = tokio::sync::mpsc::channel(1);
+        host.hooks = Some(hooks_rx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":frame["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "reconcile":null})).await;
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    tick.tick().await;
+                    if private_read::<Mirror>(&acked).is_ok_and(|m| m.session_id.is_some()) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            // The conversation's last words, written and then immediately ended: the
+            // only reader that can still see them is the drain gate in `ended_frame`.
+            let mut file = fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+            writeln!(file,"{}",json!({"type":"assistant","sessionId":"s","version":"2.1.268","message":{"role":"assistant","content":[{"type":"text","text":"short-lived public output"}]}})).unwrap();
+            drop(file);
+            hooks_tx
+                .send(hook(lifecycle::Provider::Claude, "SessionEnd", "s"))
+                .await
+                .unwrap();
+            let mut drained = false;
+            let ended = loop {
+                let frame = next_frame(&mut socket).await;
+                if frame["type"] != "local.session.events" {
+                    break frame;
+                }
+                assert_eq!(frame["events"][0]["text"], "short-lived public output");
+                drained = true;
+                reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                    "batchId":frame["batchId"],"afterSeq":1})).await;
+            };
+            assert!(
+                drained,
+                "the end of the conversation must travel before the end is reported"
+            );
+            assert_eq!(ended["type"], "local.session.ended");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&persisted).unwrap();
+        assert_eq!(stored.after_seq, 1, "the last bytes were acknowledged");
+        assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_dirty_session_heartbeats_early_then_waits_out_the_throttle() {
+        let dir = tempfile::tempdir().unwrap();
+        // A minute of cadence: only the dirty path can produce a heartbeat here.
+        let mut host = test_host(dir.path(), vec![("a-session", test_mirror(SID, "gen-1"))]);
+        host.heartbeat_interval = Duration::from_secs(60);
+        host.heartbeat_dirty.insert("a-session".into());
+        let (hooks_tx, hooks_rx) = tokio::sync::mpsc::channel(1);
+        host.hooks = Some(hooks_rx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let frame = next_frame(&mut socket).await;
+            assert_eq!(frame["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":"gen-1","afterSeq":0,"serverTime":1000,"reconcile":null})).await;
+            // Dirty, so it does not wait out the minute.
+            let early = next_frame(&mut socket).await;
+            assert_eq!(early["type"], "local.device.heartbeat");
+            assert_eq!(early["sessions"][0]["status"], "unknown");
+            reply(&mut socket, json!({"type":"local.device.heartbeat.ack","rejected":[],
+                "reconcile":[],"serverTime":1001})).await;
+            // Dirty again straight away: the throttle holds it for a second, and the
+            // minute-long cadence cannot be what releases it.
+            let sent = Instant::now();
+            hooks_tx
+                .send(hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID))
+                .await
+                .unwrap();
+            let quiet = tokio::time::timeout(Duration::from_millis(400), socket.next()).await;
+            assert!(quiet.is_err(), "early heartbeats are throttled to one a second: {quiet:?}");
+            let second = next_frame(&mut socket).await;
+            assert_eq!(second["type"], "local.device.heartbeat");
+            assert_eq!(second["sessions"][0]["status"], "busy", "the field that moved");
+            assert!(
+                sent.elapsed() >= Duration::from_millis(500),
+                "released before the throttle was out: {:?}",
+                sent.elapsed()
+            );
+            reply(&mut socket, json!({"type":"local.device.heartbeat.ack","rejected":[],
+                "reconcile":[],"serverTime":1002})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+        assert!(
+            host.heartbeat_dirty.is_empty(),
+            "sending the heartbeat clears what made it early"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_ended_ack_answers_only_the_end_it_reported() {
+        // The ACK for the first end is deliberately withheld until the session has
+        // been resumed AND has ended again, so the reply lands on a mirror whose
+        // `ended_at` is Some but is a different end. Holding it is what makes this
+        // deterministic; the same interleaving arrives at random otherwise.
+        let dir = tempfile::tempdir().unwrap();
+        let key = native_key(&test_native(SID));
+        let persisted = dir.path().join(format!("{key}.json"));
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(1_700_000_042);
+        mirror.ended_reason = Some("exited".into());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["type"], "local.session.ended");
+            assert_eq!(first["endedAt"], 1_700_000_042u64);
+            // Still unacknowledged: resume the session and let its new process die.
+            let mut resumed = test_native(SID);
+            resumed.process.pid = 2_147_483_000;
+            tx.send(vec![resumed]).await.unwrap();
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    tick.tick().await;
+                    if private_read::<Mirror>(&persisted)
+                        .is_ok_and(|m| m.ended_at.is_some() && m.generation != "gen-1")
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("the resumed session ends again while the first ACK is held");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(
+                second["type"], "local.session.ended",
+                "the stale ACK must not retire an end it never reported"
+            );
+            assert_eq!(second["reason"], "process-exited");
+            assert_ne!(second["generation"], first["generation"]);
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(8), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn local_sessions_a_session_too_big_for_one_frame_is_omitted_not_sent() {
+        let mut mirrors = BTreeMap::new();
+        let mut registered = BTreeSet::new();
+        for (index, key) in ["a", "b", "c"].into_iter().enumerate() {
+            let mut mirror = test_mirror(SID, "gen-1");
+            mirror.session_id = Some(SID.into());
+            if index == 1 {
+                // Padded past the whole 16 KiB envelope on its own.
+                mirror.native.title = Some("t".repeat(9000));
+                mirror.native.last_assistant_message = Some("m".repeat(9000));
+            }
+            mirrors.insert(key.to_string(), mirror);
+            registered.insert(key.to_string());
+        }
+        let frames = device_heartbeats(&mirrors, &registered).unwrap();
+        assert_eq!(frames.len(), 1, "the two that fit share one frame");
+        assert_eq!(
+            frames[0]["sessions"].as_array().unwrap().len(),
+            2,
+            "the oversized session is omitted, not sent in a frame the relay drops"
+        );
+        for frame in &frames {
+            assert!(ascii_wire_len(frame).unwrap() <= 16384);
+        }
+    }
+
+    #[test]
+    fn local_sessions_device_heartbeats_chunk_at_twenty_four_sessions() {
+        let mut mirrors = BTreeMap::new();
+        let mut registered = BTreeSet::new();
+        for index in 0..25 {
+            let key = format!("session-{index:02}");
+            let mut mirror = test_mirror(SID, "gen-1");
+            mirror.session_id = Some(SID.into());
+            mirrors.insert(key.clone(), mirror);
+            registered.insert(key);
+        }
+        let frames = device_heartbeats(&mirrors, &registered).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(
+            frames[0]["sessions"].as_array().unwrap().len(),
+            HEARTBEAT_SESSIONS_MAX
+        );
+        assert_eq!(frames[1]["sessions"].as_array().unwrap().len(), 1);
+    }
+
 }

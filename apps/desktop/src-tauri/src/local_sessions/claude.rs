@@ -117,6 +117,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         title,
         cwd_name,
         active_turn: None,
+        last_assistant_message: None,
     })
 }
 
@@ -623,6 +624,34 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     Ok(events)
 }
 
+/// The lifecycle hook events, and whether the hook runs asynchronously.
+/// Codex loads the same Claude-shaped hook JSON (minus `Notification`, which it
+/// has no equivalent for -- `lifecycle::codex_event_label` is the filter), so
+/// both providers install from this one list.
+pub(super) const HOOK_EVENTS: [(&str, bool); 5] = [
+    ("SessionStart", true),
+    ("UserPromptSubmit", true),
+    ("Stop", true),
+    ("Notification", true),
+    ("SessionEnd", false),
+];
+
+fn quoted(executable: &Path) -> Result<String> {
+    Ok(executable
+        .to_str()
+        .ok_or("invalid executable")?
+        .replace('\'', "'\\''"))
+}
+
+/// The command a provider's hook runs: this executable's hook subcommand,
+/// told which provider's stdin shape it is being handed.
+pub(super) fn hook_command(executable: &Path, provider: &str) -> Result<String> {
+    Ok(format!(
+        "'{}' local-session-hook {provider}",
+        quoted(executable)?
+    ))
+}
+
 fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value, Value)> {
     let mut settings: Value = if path.try_exists().map_err(|e| e.to_string())? {
         serde_json::from_reader(secure_file(path)?.take(1024 * 1024))
@@ -637,33 +666,36 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
         return Err("Claude hooks are disabled".into());
     }
     let original = settings.clone();
-    let command = format!(
-        "'{}' local-session-hook",
-        executable
-            .to_str()
-            .ok_or("invalid executable")?
-            .replace('\'', "'\\''")
-    );
+    let command = hook_command(executable, "claude")?;
+    // Installs before the five-event lifecycle hooks carried no provider
+    // argument; they are removed on both paths so an upgrade replaces them.
+    let legacy = json!({"hooks":[{"type":"command","command":format!("'{}' local-session-hook", quoted(executable)?)}]});
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
     }
     let hooks = settings["hooks"]
         .as_object_mut()
         .ok_or("invalid Claude hooks")?;
-    if !hooks.contains_key("SessionStart") {
-        hooks.insert("SessionStart".into(), json!([]));
-    }
-    let entries = hooks
-        .get_mut("SessionStart")
-        .unwrap()
-        .as_array_mut()
-        .ok_or("invalid SessionStart hooks")?;
-    entries.retain(|entry| entry != &json!({"hooks":[{"type":"command","command":command}]}));
-    if enabled {
-        entries.push(json!({"hooks":[{"type":"command","command":command}]}));
-    }
-    if entries.is_empty() {
-        hooks.remove("SessionStart");
+    for (event, is_async) in HOOK_EVENTS {
+        let mut hook = json!({"type":"command","command":command});
+        if is_async {
+            hook["async"] = json!(true);
+        }
+        let entry = json!({ "hooks": [hook] });
+        let slot = if enabled {
+            Some(hooks.entry(event).or_insert_with(|| json!([])))
+        } else {
+            hooks.get_mut(event)
+        };
+        let Some(slot) = slot else { continue };
+        let entries = slot.as_array_mut().ok_or("invalid Claude hooks")?;
+        entries.retain(|existing| existing != &entry && existing != &legacy);
+        if enabled {
+            entries.push(entry);
+        }
+        if entries.is_empty() {
+            hooks.remove(event);
+        }
     }
     if hooks.is_empty() {
         settings.as_object_mut().unwrap().remove("hooks");
@@ -681,7 +713,12 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
     if enabled && !backup.try_exists().map_err(|e| e.to_string())? {
         private_write(&backup, &original)?;
     }
-    private_write(path, &settings)?;
+    // Every launch re-asserts the install. An unchanged one must not rewrite
+    // the user's settings: `private_write` re-minifies the file and forces it
+    // to 0600, and the read-modify-write is worth nothing when nothing moved.
+    if original != settings {
+        private_write(path, &settings)?;
+    }
     Ok(())
 }
 
@@ -809,6 +846,51 @@ mod tests {
         assert_eq!(restored, original);
     }
 
+    #[test]
+    fn local_sessions_claude_hooks_cover_five_events_and_strip_legacy_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        fs::write(&settings, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/app' local-session-hook"}]}]},"other":1}"#).unwrap();
+        configure_hooks(&settings, Path::new("/app"), true).unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop",
+            "Notification",
+            "SessionEnd",
+        ] {
+            let entries = v["hooks"][event].as_array().unwrap();
+            assert_eq!(entries.len(), 1, "{event}");
+            assert_eq!(
+                entries[0]["hooks"][0]["command"],
+                "'/app' local-session-hook claude"
+            );
+            assert_eq!(
+                entries[0]["hooks"][0]["async"],
+                if event == "SessionEnd" {
+                    Value::Null
+                } else {
+                    json!(true)
+                }
+            );
+        }
+        assert_eq!(v["other"], 1);
+        // A re-assert that changes nothing must leave the file alone: restore
+        // runs it on every launch, and a write would re-minify the user's
+        // settings and force them to 0600.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).unwrap();
+        let before = fs::metadata(&settings).unwrap().modified().unwrap();
+        configure_hooks(&settings, Path::new("/app"), true).unwrap();
+        let after = fs::metadata(&settings).unwrap();
+        assert_eq!(after.modified().unwrap(), before, "rewritten with no change");
+        assert_eq!(after.mode() & 0o777, 0o644, "mode forced with no change");
+        configure_hooks(&settings, Path::new("/app"), false).unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(v.get("hooks").is_none());
+    }
+
     #[tokio::test]
     #[ignore = "requires an explicitly owned disposable native Claude PID and conversation ID"]
     async fn local_sessions_owned_claude_capture_binds_the_running_generation() {
@@ -878,6 +960,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let ingress = Ingress {
             workspace_revision: None,

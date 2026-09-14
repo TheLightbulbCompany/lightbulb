@@ -2,6 +2,7 @@
 mod claude;
 mod codex;
 pub mod enrollment;
+pub(crate) mod lifecycle;
 mod transport;
 mod workspace;
 pub use claude::{
@@ -235,8 +236,12 @@ pub struct EnrollmentAttempt {
 }
 
 impl Enrollment {
-    fn authenticate(&mut self, human: Option<&str>) {
-        self.paused = human != Some(self.human_user_id.as_str());
+    fn authenticate(&mut self, human: Option<Option<&str>>) {
+        // Outer `None` means the webview hasn't reported a signed-in user yet
+        // (unknown), not that the user signed out -- leave `paused` as is.
+        if let Some(human) = human {
+            self.paused = human != Some(self.human_user_id.as_str());
+        }
     }
 }
 
@@ -764,6 +769,8 @@ struct NativeSession {
     cwd_name: Option<String>,
     #[serde(default)]
     active_turn: Option<String>,
+    #[serde(default)]
+    pub last_assistant_message: Option<String>,
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -885,10 +892,10 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
     Ok(version.into())
 }
 
+/// Merges one listing into what is already known. A session the listing does not
+/// mention keeps everything it had: a listing is a sweep, not an obituary, and a
+/// session ends only when its hook or its pid says so.
 fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSession>) {
-    for session in current.iter_mut() {
-        session.status = "offline".into();
-    }
     let mut seen = std::collections::BTreeMap::new();
     for mut session in discovered {
         let identity = (
@@ -1067,6 +1074,14 @@ struct Mirror {
     pending: Option<Value>,
     #[serde(default)]
     registration: RegistrationState,
+    #[serde(default)]
+    pub ended_at: Option<u64>,
+    #[serde(default)]
+    pub ended_reason: Option<String>,
+    // The relay has acknowledged this session's end. Durable: a Mac that reports an
+    // end and restarts must not report it again, and one that does not must.
+    #[serde(default)]
+    ended_sent: bool,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1112,7 +1127,9 @@ impl Mirror {
             return Ok(Some(pending.clone()));
         }
         if self.queue.is_empty() && self.native.restriction.as_deref() != Some("history-gap") {
-            if self.native.status != "offline"
+            // An ended session is exempt: its process is gone by definition, and the
+            // last thing it wrote -- the end of the conversation -- is still unread.
+            if self.ended_at.is_none()
                 && !process(self.native.process.pid).is_ok_and(|p| p == self.native.process)
             {
                 return Err("runtime-unverified".into());
@@ -1305,6 +1322,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -1475,11 +1493,11 @@ mod tests {
             enabled: true,
             paused: false,
         };
-        enrollment.authenticate(None);
+        enrollment.authenticate(Some(None));
         assert!(enrollment.enabled && enrollment.paused);
-        enrollment.authenticate(Some("bob"));
+        enrollment.authenticate(Some(Some("bob")));
         assert!(enrollment.paused);
-        enrollment.authenticate(Some("alice"));
+        enrollment.authenticate(Some(Some("alice")));
         assert!(!enrollment.paused);
         assert_eq!(enrollment.owner_id, "org1");
     }
@@ -1527,6 +1545,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -1547,7 +1566,11 @@ mod tests {
             "two live runtimes for one native identity are ambiguous"
         );
         reconcile_sessions(&mut sessions, vec![]);
-        assert_eq!(sessions[0].status, "offline");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].status, "unknown",
+            "an unlisted session keeps its status; hooks and the pid check end it"
+        );
     }
 
     #[test]
@@ -1603,6 +1626,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1611,6 +1635,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1630,7 +1657,7 @@ mod tests {
             .open(restored.native.transcript.as_ref().unwrap())
             .unwrap();
         writeln!(file,"{}",json!({"type":"assistant","sessionId":"s","version":"2.1.268","message":{"role":"assistant","content":[{"type":"text","text":"final before exit"}]}})).unwrap();
-        restored.native.status = "offline".into();
+        restored.ended_at = Some(1);
         restored.native.process.pid = u32::MAX;
         assert_eq!(
             restored.next_batch().unwrap().unwrap()["events"][0]["text"],
@@ -1675,6 +1702,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1683,6 +1711,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1746,6 +1777,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1754,6 +1786,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1832,6 +1867,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1840,6 +1876,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1883,6 +1922,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1891,6 +1931,9 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
+            ended_sent: false,
         }
     }
 

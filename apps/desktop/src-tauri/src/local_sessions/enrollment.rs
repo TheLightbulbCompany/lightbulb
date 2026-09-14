@@ -183,20 +183,40 @@ impl Controller {
                 let wake = Arc::new(tokio::sync::Notify::new());
                 let hook_wake = wake.clone();
                 let status = self.status.clone();
+                let (hooks_tx, hooks_rx) =
+                    tokio::sync::mpsc::channel::<super::lifecycle::HookEvent>(64);
                 let task = tauri::async_runtime::spawn(async move {
                     let hooks = async move {
-                        let mut bytes = [0; 1];
+                        let mut bytes = [0u8; 2048];
                         loop {
-                            if socket.recv(&mut bytes).await.is_err() {
-                                // A dead hook socket must never end this select and drop
-                                // `supervise` -- park here instead of going dark.
-                                transport::relay_log("hook socket error; listener stopped");
-                                std::future::pending::<()>().await;
+                            let n = match socket.recv(&mut bytes).await {
+                                Ok(n) => n,
+                                Err(_) => {
+                                    // A dead hook socket must never end this select and drop
+                                    // `supervise` -- park here instead of going dark.
+                                    transport::relay_log("hook socket error; listener stopped");
+                                    std::future::pending::<()>().await;
+                                    unreachable!()
+                                }
+                            };
+                            match super::lifecycle::parse_datagram(&bytes[..n]) {
+                                Some(event) => {
+                                    if super::lifecycle::transition(&event)
+                                        == super::lifecycle::Transition::Start
+                                    {
+                                        hook_wake.notify_one();
+                                    }
+                                    if hooks_tx.try_send(event).is_err() {
+                                        // A lost status/end event is only recovered by
+                                        // the 60s sweep, so it must not be silent.
+                                        transport::relay_log("hook event dropped: channel full");
+                                    }
+                                }
+                                None => hook_wake.notify_one(),
                             }
-                            hook_wake.notify_one();
                         }
                     };
-                    tokio::select! {_ = hooks=>{},_ = host.supervise(enrollment,identity,wake,status)=>{}}
+                    tokio::select! {_ = hooks=>{},_ = host.supervise(enrollment,identity,wake,status,hooks_rx)=>{}}
                 });
                 *running = Some(Running { stop, task });
             },
@@ -205,7 +225,8 @@ impl Controller {
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
         let _guard = self.mutation.lock().await;
-        let path = state_dir(app)?.join("enrollment.json");
+        let dir = state_dir(app)?;
+        let path = dir.join("enrollment.json");
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
             return Ok(());
         }
@@ -215,7 +236,7 @@ impl Controller {
                 .lock()
                 .map_err(|_| "sharing state unavailable")?
                 .as_ref()
-                .and_then(|h| h.as_deref()),
+                .map(|h| h.as_deref()),
         );
         private_write(&path, &enrollment)?;
         self.stop();
@@ -224,6 +245,27 @@ impl Controller {
         }
         let revision = self.revision.load(Ordering::SeqCst);
         let prepared = self.prepare(app, &enrollment)?;
+        let notes = reassert(&dir);
+        if !notes.is_empty() {
+            *self.status.lock().map_err(|_| "sharing state unavailable")? =
+                format!("Local sharing resumed; {}.", notes.join("; "));
+        }
+        self.resume(enrollment, prepared, revision)
+    }
+
+    /// The tail of `restore`. At launch nobody has reported who is signed in
+    /// yet, and `publish` demands a matching human -- so an unreported human is
+    /// a quiet no-op here, not a failure. Sharing comes up on the
+    /// `local_sessions_auth` call that follows.
+    fn resume(&self, enrollment: Enrollment, prepared: PreparedRun, revision: u64) -> Result<()> {
+        if self
+            .human
+            .lock()
+            .map_err(|_| "sharing state unavailable")?
+            .is_none()
+        {
+            return Ok(());
+        }
         self.publish(None, enrollment, prepared, revision)
     }
 }
@@ -301,15 +343,30 @@ fn registration_socket() -> Result<tokio::net::UnixDatagram> {
     tokio::net::UnixDatagram::bind(path).map_err(|_| "registration channel unavailable".into())
 }
 
-/// Hooks carry only a wake signal, never a session path, credential, or authority.
-pub fn hook() {
-    let path = hook_path();
+/// Hooks send the bounded lifecycle datagram built from their stdin JSON, or
+/// a plain wake byte when stdin isn't a JSON object; never a credential or
+/// authority.
+pub fn hook(provider: &str) {
+    let mut raw = Vec::new();
+    let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
+    let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    send_hook_datagram(&hook_path(), provider, &json);
+}
+
+/// Split out from [`hook`] so tests can point it at a temp socket instead of
+/// the real hook path.
+pub(crate) fn send_hook_datagram(path: &Path, provider: &str, json: &serde_json::Value) {
     if private_dir(path.parent().unwrap()).is_err() {
         return;
     }
+    let bytes = if json.is_object() {
+        super::lifecycle::build_datagram(provider, json)
+    } else {
+        b"1".to_vec()
+    };
     if let Ok(socket) = std::os::unix::net::UnixDatagram::unbound() {
         let _ = socket.set_write_timeout(Some(std::time::Duration::from_millis(100)));
-        let _ = socket.send_to(b"1", path);
+        let _ = socket.send_to(&bytes, path);
     }
 }
 
@@ -329,7 +386,10 @@ pub async fn local_sessions_auth(
         *human = Some(human_user_id);
         state.stop();
     }
-    state.restore(&app).await
+    state.restore(&app).await.map_err(|e| {
+        crate::log(&format!("[local-sessions] auth restore failed: {e}"));
+        e
+    })
 }
 
 #[tauri::command]
@@ -400,6 +460,10 @@ pub async fn local_sessions_set(
             {
                 claude::configure_hooks(&settings, &installed, false)?;
             }
+            // Codex removal is best effort: its hooks are inert once this
+            // executable stops answering, and an absent or hand-edited Codex
+            // config must not be reported as a Claude settings failure.
+            let _ = codex::configure_hooks(&home()?, &installed, false);
             Ok(())
         })?;
         // Skill removal is tracked separately from hook cleanup so a failure in
@@ -511,14 +575,25 @@ pub async fn local_sessions_set(
                 claude::configure_hooks(&settings, &executable, true)?;
                 private_write(&hook_record, &executable)?;
             }
+            if installed != executable {
+                // Codex hooks naming a moved executable would run a dead path.
+                if let Ok(home) = home() {
+                    let _ = codex::configure_hooks(&home, &installed, false);
+                }
+            }
             state.prepare(&app, &enrollment)
         },
         |prepared, active| state.publish(Some(&path), active, prepared, revision),
     )
     .await?;
-    if let Err(reason) = home().and_then(|h| install_skill(&dir, &h)) {
-        *state.status.lock().map_err(|_| "sharing state unavailable")? =
-            format!("Sharing enabled; the lightbulb-session-sharing skill was not installed ({reason}). Claude/Codex still receive labelled teammate messages.");
+    // Codex hooks and the skill are reported, never fatal: the Claude path that
+    // just came up does not depend on either.
+    let notes = reassert(&dir);
+    if !notes.is_empty() {
+        *state.status.lock().map_err(|_| "sharing state unavailable")? = format!(
+            "Sharing enabled; {}. Claude/Codex still receive labelled teammate messages.",
+            notes.join("; ")
+        );
     }
     Ok(revision)
 }
@@ -641,6 +716,58 @@ pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Re-assert both providers' hooks and the bundled skill for an enrollment that
+/// is already enabled. Providers are installed, upgraded and hand-edited between
+/// launches, so a resume rewrites them rather than trusting the install that
+/// consent performed. Returns the failures for the status line; none is fatal.
+fn reassert(state_dir: &Path) -> Vec<String> {
+    let home = match home() {
+        Ok(home) => home,
+        Err(reason) => return vec![reason],
+    };
+    match std::env::current_exe() {
+        Ok(executable) => reassert_at(state_dir, &home, &executable),
+        Err(_) => vec!["the desktop executable is unavailable".into()],
+    }
+}
+
+fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> {
+    let record = state_dir.join("hook-executable.json");
+    let installed: PathBuf = private_read(&record).unwrap_or_else(|_| executable.to_owned());
+    let moved = installed != executable;
+    let settings = home.join(".claude/settings.json");
+    let claude = settings.parent().is_some_and(|parent| parent.is_dir());
+    // The app can move between launches. Hooks naming the old path are dead, so
+    // a resume heals them at the current path instead of cementing the stale
+    // install -- the same reconcile consent performs.
+    if moved {
+        if claude {
+            let _ = claude::configure_hooks(&settings, &installed, false);
+        }
+        let _ = codex::configure_hooks(home, &installed, false);
+    }
+    let mut notes = Vec::new();
+    if claude {
+        if let Err(reason) = claude::configure_hooks(&settings, executable, true) {
+            notes.push(format!("Claude hooks were not installed ({reason})"));
+        }
+    }
+    if let Err(reason) = codex::configure_hooks(home, executable, true) {
+        notes.push(format!("Codex hooks were not installed ({reason})"));
+    }
+    if moved {
+        if let Err(reason) = private_write(&record, &executable) {
+            notes.push(format!("the hook executable record was not updated ({reason})"));
+        }
+    }
+    if let Err(reason) = install_skill(state_dir, home) {
+        notes.push(format!(
+            "the lightbulb-session-sharing skill was not installed ({reason})"
+        ));
+    }
+    notes
+}
+
 async fn enroll_remote(token: &str, body: Value) -> Result<Value> {
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -677,7 +804,7 @@ mod tests {
             device_id: "mac".into(),
             gateway_url: "wss://example.invalid".into(),
             enabled: false,
-            paused: true,
+            paused: false,
             server_revision: Some("aaaaaaaa-1111-4111-8111-111111111111".into()),
             remote_disabled: false,
             attempt: Some(EnrollmentAttempt {
@@ -815,17 +942,37 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn local_sessions_hook_binary_datagram_reaches_listener() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // `private_dir` requires an existing parent to already be 0700; unlike
+        // a fresh subdir it won't fix a pre-existing tempdir's mode for us.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.path().join("wake.sock");
+        let socket = tokio::net::UnixDatagram::bind(&path).unwrap();
+        let stdin = serde_json::json!({"session_id":"abc","transcript_path":"/t","cwd":"/w","hook_event_name":"Stop","last_assistant_message":"hi"});
+        send_hook_datagram(&path, "claude", &stdin);
+        let mut buf = [0u8; 2048];
+        let n = socket.recv(&mut buf).await.unwrap();
+        let event = super::super::lifecycle::parse_datagram(&buf[..n]).unwrap();
+        assert_eq!(event.session_id, "abc");
+        assert_eq!(event.last_assistant_message.as_deref(), Some("hi"));
+    }
+    #[tokio::test]
     async fn local_sessions_auth_invalidation_at_publication_keeps_disk_stopped() {
-        for (human, revision) in [
-            (None, 0),
-            (Some(None), 0),
-            (Some(Some("bob".into())), 0),
-            (Some(Some("alice".into())), 1),
+        // Third element is the paused outcome `authenticate` must produce on the
+        // disk-persisted (pre-commit) row below, independent of the revision
+        // needed to force `publish` to reject this attempt.
+        for (human, revision, expect_paused) in [
+            (None, 0, false), // unreported: unchanged from candidate()'s paused:false
+            (Some(None), 0, true),
+            (Some(Some("bob".into())), 0, true),
+            (Some(Some("alice".into())), 1, false),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("enrollment.json");
             let state = Controller::default();
-            *state.human.lock().unwrap() = human;
+            *state.human.lock().unwrap() = human.clone();
             state.revision.store(revision, Ordering::SeqCst);
             assert!(complete_enable(
                 &path,
@@ -838,10 +985,36 @@ mod tests {
             .await
             .is_err());
             let mut restored: Enrollment = private_read(&path).unwrap();
-            restored.authenticate(Some("alice"));
+            restored.authenticate(human.as_ref().map(|h| h.as_deref()));
             assert!(!restored.enabled && restored.attempt.is_some());
+            assert_eq!(restored.paused, expect_paused);
+            assert!(state.running.lock().unwrap().is_none());
+            // Launch restore reads the same table. An unreported human is a
+            // quiet no-op; every other state still has to pass
+            // `require_current`, which the bumped revision forces to reject.
+            assert_eq!(
+                state
+                    .resume(candidate(), prepared(dir.path()), revision + 1)
+                    .is_ok(),
+                human.is_none(),
+                "restore must not fail merely because nobody has reported the human yet"
+            );
             assert!(state.running.lock().unwrap().is_none());
         }
+    }
+    #[test]
+    fn local_sessions_authenticate_treats_unreported_as_unchanged() {
+        let mut e = candidate(); // human_user_id "alice", paused false
+        e.authenticate(None);
+        assert!(!e.paused);
+        e.authenticate(Some(None));
+        assert!(e.paused);
+        e.authenticate(None);
+        assert!(e.paused, "unreported never un-pauses either");
+        e.authenticate(Some(Some("alice")));
+        assert!(!e.paused);
+        e.authenticate(Some(Some("bob")));
+        assert!(e.paused);
     }
     #[tokio::test]
     async fn local_sessions_final_consent_write_failure_does_not_publish() {
@@ -1054,6 +1227,58 @@ mod tests {
             .exists());
         assert!(!state.join("skill-paths.json").exists());
     }
+
+    #[test]
+    fn local_sessions_reassert_moves_both_providers_hooks_to_the_current_executable() {
+        let state = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let settings = home.path().join(".claude/settings.json");
+        let record = state.path().join("hook-executable.json");
+        let old = Path::new("/old/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let new = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        claude::configure_hooks(&settings, old, true).unwrap();
+        codex::configure_hooks(home.path(), old, true).unwrap();
+        private_write(&record, &old).unwrap();
+
+        assert!(reassert_at(state.path(), home.path(), new).is_empty());
+
+        let installed: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        let codex_hooks: Value =
+            serde_json::from_slice(&fs::read(home.path().join(".codex/hooks.json")).unwrap())
+                .unwrap();
+        for (hooks, provider) in [(&installed, "claude"), (&codex_hooks, "codex")] {
+            let entries = hooks["hooks"]["SessionStart"].as_array().unwrap();
+            assert_eq!(entries.len(), 1, "{provider}: the dead path must be removed");
+            assert_eq!(
+                entries[0]["hooks"][0]["command"],
+                format!("'{}' local-session-hook {provider}", new.display())
+            );
+        }
+        let stale = lifecycle::codex_trust_hash(
+            "stop",
+            None,
+            &format!("'{}' local-session-hook codex", old.display()),
+            5,
+            true,
+            None,
+        );
+        let config = fs::read_to_string(home.path().join(".codex/config.toml")).unwrap();
+        assert!(!config.contains(&stale), "the dead path stays trusted");
+        assert_eq!(private_read::<PathBuf>(&record).unwrap(), new);
+        // A resume installs the skill too: this is the only caller, so nothing
+        // else would notice the call going missing.
+        assert_eq!(
+            fs::read_to_string(
+                home.path()
+                    .join(".claude/skills/lightbulb-session-sharing/SKILL.md")
+            )
+            .unwrap(),
+            SKILL_MD
+        );
+    }
+
     #[test]
     fn local_sessions_skill_install_never_writes_through_a_symlinked_skill_file() {
         let dir = tempfile::tempdir().unwrap();

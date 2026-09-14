@@ -401,6 +401,15 @@ async fn run_bootstrap(
         ));
     }
 
+    // Pairing can complete after the webview already reported (or never
+    // reported) a signed-in user; a paused/never-started Controller waits on
+    // the retained pair `restore` needs, so re-run it now that pair state is
+    // on disk instead of waiting for the next unrelated trigger.
+    let controller = app.state::<local_sessions::enrollment::Controller>();
+    if let Err(e) = controller.restore(app).await {
+        log(&format!("[local-sessions] restore after pairing failed: {e}"));
+    }
+
     stash_handles(app, handles);
 
     Ok(())
@@ -1535,8 +1544,8 @@ end tell"#,
             // OpenClaw sidecar/gateway cannot prevent a retained pair restoring it.
             let sharing_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if sharing_app.state::<local_sessions::enrollment::Controller>().restore(&sharing_app).await.is_err() {
-                    log("[local-sessions] sharing restore unavailable; check Desktop settings");
+                if let Err(e) = sharing_app.state::<local_sessions::enrollment::Controller>().restore(&sharing_app).await {
+                    log(&format!("[local-sessions] sharing restore unavailable; check Desktop settings: {e}"));
                 }
             });
 

@@ -183,20 +183,36 @@ impl Controller {
                 let wake = Arc::new(tokio::sync::Notify::new());
                 let hook_wake = wake.clone();
                 let status = self.status.clone();
+                let (hooks_tx, hooks_rx) =
+                    tokio::sync::mpsc::channel::<super::lifecycle::HookEvent>(64);
                 let task = tauri::async_runtime::spawn(async move {
                     let hooks = async move {
-                        let mut bytes = [0; 1];
+                        let mut bytes = [0u8; 2048];
                         loop {
-                            if socket.recv(&mut bytes).await.is_err() {
-                                // A dead hook socket must never end this select and drop
-                                // `supervise` -- park here instead of going dark.
-                                transport::relay_log("hook socket error; listener stopped");
-                                std::future::pending::<()>().await;
+                            let n = match socket.recv(&mut bytes).await {
+                                Ok(n) => n,
+                                Err(_) => {
+                                    // A dead hook socket must never end this select and drop
+                                    // `supervise` -- park here instead of going dark.
+                                    transport::relay_log("hook socket error; listener stopped");
+                                    std::future::pending::<()>().await;
+                                    unreachable!()
+                                }
+                            };
+                            match super::lifecycle::parse_datagram(&bytes[..n]) {
+                                Some(event) => {
+                                    if super::lifecycle::transition(&event)
+                                        == super::lifecycle::Transition::Start
+                                    {
+                                        hook_wake.notify_one();
+                                    }
+                                    let _ = hooks_tx.try_send(event);
+                                }
+                                None => hook_wake.notify_one(),
                             }
-                            hook_wake.notify_one();
                         }
                     };
-                    tokio::select! {_ = hooks=>{},_ = host.supervise(enrollment,identity,wake,status)=>{}}
+                    tokio::select! {_ = hooks=>{},_ = host.supervise(enrollment,identity,wake,status,hooks_rx)=>{}}
                 });
                 *running = Some(Running { stop, task });
             },
@@ -301,15 +317,30 @@ fn registration_socket() -> Result<tokio::net::UnixDatagram> {
     tokio::net::UnixDatagram::bind(path).map_err(|_| "registration channel unavailable".into())
 }
 
-/// Hooks carry only a wake signal, never a session path, credential, or authority.
-pub fn hook() {
-    let path = hook_path();
+/// Hooks send the bounded lifecycle datagram built from their stdin JSON, or
+/// a plain wake byte when stdin isn't a JSON object; never a credential or
+/// authority.
+pub fn hook(provider: &str) {
+    let mut raw = Vec::new();
+    let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
+    let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    send_hook_datagram(&hook_path(), provider, &json);
+}
+
+/// Split out from [`hook`] so tests can point it at a temp socket instead of
+/// the real hook path.
+pub(crate) fn send_hook_datagram(path: &Path, provider: &str, json: &serde_json::Value) {
     if private_dir(path.parent().unwrap()).is_err() {
         return;
     }
+    let bytes = if json.is_object() {
+        super::lifecycle::build_datagram(provider, json)
+    } else {
+        b"1".to_vec()
+    };
     if let Ok(socket) = std::os::unix::net::UnixDatagram::unbound() {
         let _ = socket.set_write_timeout(Some(std::time::Duration::from_millis(100)));
-        let _ = socket.send_to(b"1", path);
+        let _ = socket.send_to(&bytes, path);
     }
 }
 
@@ -813,6 +844,23 @@ mod tests {
             identity: crate::keychain::generate_keypair(),
             socket: tokio::net::UnixDatagram::unbound().unwrap(),
         }
+    }
+    #[tokio::test]
+    async fn local_sessions_hook_binary_datagram_reaches_listener() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // `private_dir` requires an existing parent to already be 0700; unlike
+        // a fresh subdir it won't fix a pre-existing tempdir's mode for us.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.path().join("wake.sock");
+        let socket = tokio::net::UnixDatagram::bind(&path).unwrap();
+        let stdin = serde_json::json!({"session_id":"abc","transcript_path":"/t","cwd":"/w","hook_event_name":"Stop","last_assistant_message":"hi"});
+        send_hook_datagram(&path, "claude", &stdin);
+        let mut buf = [0u8; 2048];
+        let n = socket.recv(&mut buf).await.unwrap();
+        let event = super::super::lifecycle::parse_datagram(&buf[..n]).unwrap();
+        assert_eq!(event.session_id, "abc");
+        assert_eq!(event.last_assistant_message.as_deref(), Some("hi"));
     }
     #[tokio::test]
     async fn local_sessions_auth_invalidation_at_publication_keeps_disk_stopped() {

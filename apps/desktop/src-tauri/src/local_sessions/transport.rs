@@ -40,6 +40,9 @@ pub(super) struct Host {
     home: PathBuf,
     mirrors: BTreeMap<String, Mirror>,
     stop: Arc<AtomicBool>,
+    /// Set by `supervise`; consumed in Task 11. `None` in tests that never
+    /// drive `connection` through `supervise`.
+    hooks: Option<tokio::sync::mpsc::Receiver<super::lifecycle::HookEvent>>,
 }
 
 /// How long a per-session verdict (a stale generation, a relay rejection) keeps that session out
@@ -259,6 +262,7 @@ impl Host {
             home,
             mirrors,
             stop,
+            hooks: None,
         })
     }
 
@@ -375,7 +379,9 @@ impl Host {
         identity: crate::keychain::DeviceIdentity,
         wake: Arc<tokio::sync::Notify>,
         status: Arc<std::sync::Mutex<String>>,
+        hooks: tokio::sync::mpsc::Receiver<super::lifecycle::HookEvent>,
     ) {
+        self.hooks = Some(hooks);
         let mut restart = 1u64;
         loop {
             // Release builds abort on panic (Cargo.toml), so a panic is a visible crash, never a
@@ -978,6 +984,7 @@ mod tests {
             home: dir.into(),
             mirrors: mirrors.into_iter().map(|(k, m)| (k.to_string(), m)).collect(),
             stop: Arc::new(AtomicBool::new(false)),
+            hooks: None,
         }
     }
 
@@ -1457,6 +1464,7 @@ mod tests {
             home,
             mirrors: BTreeMap::from([("owned".into(), mirror)]),
             stop: Arc::new(AtomicBool::new(false)),
+            hooks: None,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -1621,6 +1629,7 @@ mod tests {
             home: dir.path().into(),
             mirrors: BTreeMap::from([("local".into(), mirror)]),
             stop: Arc::new(AtomicBool::new(false)),
+            hooks: None,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -2022,6 +2031,7 @@ mod tests {
             home: dir.path().into(),
             mirrors: BTreeMap::from([("native".to_string(), test_mirror("native", "g1"))]),
             stop: stop.clone(),
+            hooks: None,
         };
         let enrollment = Enrollment {
             owner_id: "org".into(),
@@ -2043,9 +2053,13 @@ mod tests {
             stopper.store(true, Ordering::SeqCst);
         });
         let started = Instant::now();
-        tokio::time::timeout(Duration::from_secs(8), host.supervise(enrollment, identity, wake, status.clone()))
-            .await
-            .expect("supervise returns once stop is set");
+        let (_hooks_tx, hooks_rx) = tokio::sync::mpsc::channel(1);
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            host.supervise(enrollment, identity, wake, status.clone(), hooks_rx),
+        )
+        .await
+        .expect("supervise returns once stop is set");
         // A single non-looping run_once call would have returned as soon as the very
         // first attempt errored -- milliseconds in, well under the stop flip at 2.5s.
         // Only a loop that restarts run_once and waits for `stop` takes at least that long.

@@ -368,6 +368,21 @@ describe("ContainerStack — dev", () => {
     ).toBe(":1");
   });
 
+  test("openclaw container declares external gateway supervision for doctor", () => {
+    // litestream supervises the gateway, so doctor's native-service ownership
+    // inspection throws and aborts boot `doctor --fix` before it can run the
+    // credentials/oauth.json migration OpenClaw >= 9.3 made doctor-only. Drop
+    // this and every ChatGPT-OAuth connect wedges the container on
+    // "requires legacy credential migration" for every turn.
+    for (const env of ["dev", "prod"] as const) {
+      expect(
+        openclawContainerEnv(buildStack(env), env).find(
+          ({ Name }) => Name === "OPENCLAW_SERVICE_REPAIR_POLICY",
+        )?.Value,
+      ).toBe("external");
+    }
+  });
+
   test("openclaw container performs a guarded one-time protocol transition", () => {
     const command = openclawStartupCommand(template, "dev");
     expect(command).toMatch(/^if \[ "\$\{ISOL8_CONFIG_LOCK_PROTOCOL:-\}" = "guard-v1" \]; then/);

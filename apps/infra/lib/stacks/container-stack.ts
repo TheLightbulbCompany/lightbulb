@@ -979,6 +979,17 @@ export class ContainerStack extends cdk.Stack {
         // openclaw-version.json in the same commit.
         DISPLAY: ":1",
         CHOKIDAR_USEPOLLING: "true",
+        // litestream supervises the gateway here (isol8-local-sqlite-app.sh is
+        // litestream's `-exec` child), so doctor must not try to own or stop a
+        // native service. Without this, `beginDoctorMaintenance` runs its
+        // native-service ownership inspection first and throws "Gateway service
+        // ownership or shutdown could not be verified", aborting boot
+        // `doctor --fix` BEFORE the credentials/oauth.json import — which
+        // OpenClaw >= 9.3 made doctor-only. The result: every ChatGPT-OAuth
+        // connect (which clears the auth-profile row and restarts the task)
+        // leaves the container throwing "requires legacy credential migration"
+        // on every turn, i.e. "No reply was generated" forever.
+        OPENCLAW_SERVICE_REPAIR_POLICY: "external",
         // Redirect clawhub installs to the OpenClaw managed-skills directory
         // (~/.openclaw/skills) so they're scanned by every agent. Without
         // this, clawhub falls through to agents.defaults.workspace and lands

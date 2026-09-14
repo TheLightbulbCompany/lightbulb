@@ -1102,6 +1102,13 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 ### Config Patching Notes
 
 - `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
+- `OPENCLAW_SERVICE_REPAIR_POLICY=external` (container task env, `container-stack.ts`)
+  tells doctor that litestream owns the gateway process, so it skips its native
+  service-ownership inspection. Without it, boot `doctor --fix` aborts with
+  "Gateway service ownership or shutdown could not be verified" before running the
+  `credentials/oauth.json` migration that OpenClaw ≥9.3 made doctor-only — and every
+  ChatGPT-OAuth connect then leaves the container throwing `requires legacy credential
+  migration` on every turn.
 - `openclaw.json.lock` starts as the backend's legacy persistent `fcntl`
   sidecar. Boot recovery takes the persistent `.isol8-guard`, publishes a
   resumable `.isol8-protocol` transition, removes the legacy inode, and then

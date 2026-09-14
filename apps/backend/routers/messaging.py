@@ -69,8 +69,11 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
 
 
 @router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)
-async def agent_local_session_resources(auth: local_session_grants.AgentInvocation = Depends(local_session_invocation)):
-    return await local_sessions.list_resources(auth, auth.room_id)
+async def agent_local_session_resources(
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+    include_ended: bool = Query(False, alias="includeEnded"),
+):
+    return await local_sessions.list_resources(auth, auth.room_id, include_ended=include_ended)
 
 
 @router.get(
@@ -118,8 +121,12 @@ async def agent_local_session_receipt(
 
 
 @router.get("/messaging/rooms/{room_id}/resources", response_model=local_sessions.RoomResources)
-async def list_room_resources(room_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await local_sessions.list_resources(auth, room_id)
+async def list_room_resources(
+    room_id: str,
+    include_ended: bool = Query(False, alias="includeEnded"),
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.list_resources(auth, room_id, include_ended=include_ended)
 
 
 @router.get(

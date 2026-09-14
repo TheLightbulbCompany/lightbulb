@@ -398,6 +398,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             "sessionId": sid,
             "revision": str(uuid.uuid4()),
             "commandSeq": (previous or {}).get("commandSeq", 0),
+            "lastEventAt": int(time.time()),
         }
         try:
             await repo.put_session(row, previous, enrollment)
@@ -492,6 +493,14 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
+    live = sorted((s for s in sessions if s.status != "ended"), key=lambda s: s.last_event_at or "", reverse=True)
+    if include_ended:
+        recent = sorted(
+            (s for s in sessions if s.status == "ended"), key=lambda s: s.last_event_at or "", reverse=True
+        )[:20]
+        sessions = live + recent
+    else:
+        sessions = live
     await require_caller(auth, room_id)
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
 

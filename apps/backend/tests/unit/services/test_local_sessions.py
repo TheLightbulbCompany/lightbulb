@@ -71,7 +71,7 @@ async def registered(**overrides):
     descriptor = dict(
         provider="codex",
         profileFingerprint="f" * 64,
-        nativeConversationId="thread-1",
+        nativeConversationId=overrides.pop("conversation", "thread-1"),
         generation="generation-1",
         providerVersion="1.0",
         status="idle",
@@ -805,3 +805,30 @@ async def test_command_to_ended_session_is_refused(db):
         await service.submit_command(BOB, ROOM, sid, command(service))
     assert excinfo.value.error.code == "LOCAL_SESSION_OFFLINE"
     assert "ended" in excinfo.value.error.message
+
+
+@pytest.mark.asyncio
+async def test_list_resources_sorts_by_activity_hides_ended_and_caps_recent(db):
+    sids = []
+    for stamp in (10000, 10100, 10200):
+        with patch("time.time", return_value=stamp):
+            sids.append(await registered(conversation=f"conv-{stamp}"))
+    rows = [await repo.get_session(OWNER, s) for s in sids]
+    # end the middle one, and 21 more ended rows to prove the cap. Each `registered()`
+    # call re-enrolls (fresh revision), so fetch the enrollment fresh right before use.
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**rows[1], "endedAt": 10150, "lastEventAt": 10150}, rows[1], enrollment)
+    for i in range(21):
+        with patch("time.time", return_value=20000 + i):
+            s = await registered(conversation=f"ended-{i}")
+        r = await repo.get_session(OWNER, s)
+        enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+        await repo.put_session({**r, "endedAt": 20000 + i, "lastEventAt": 20000 + i}, r, enrollment)
+    with patch("time.time", return_value=30000):
+        live = await service.list_resources(BOB, ROOM)
+        with_ended = await service.list_resources(BOB, ROOM, include_ended=True)
+    assert [s.session_id for s in live.sessions] == [sids[2], sids[0]]
+    assert [s.status for s in live.sessions] == ["offline", "offline"]
+    ended = [s for s in with_ended.sessions if s.status == "ended"]
+    assert len(ended) == 20 and ended[0].last_event_at == "1970-01-01T05:33:40Z"
+    assert with_ended.sessions[:2] == live.sessions

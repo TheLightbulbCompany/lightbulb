@@ -832,3 +832,57 @@ async def test_list_resources_sorts_by_activity_hides_ended_and_caps_recent(db):
     ended = [s for s in with_ended.sessions if s.status == "ended"]
     assert len(ended) == 20 and ended[0].last_event_at == "1970-01-01T05:33:40Z"
     assert with_ended.sessions[:2] == live.sessions
+
+
+async def test_list_workspace_sessions_is_live_only_owner_wide_and_sorted(db):
+    # Only users with an active private stream are enumerated; a sharer has one because pairing runs in the app.
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    sids = []
+    for stamp in (10000, 10100, 10200):
+        with patch("time.time", return_value=stamp):
+            # A generous onlineUntil (vs. registered()'s default +60s) keeps both
+            # surviving sessions' leases alive at the 10300 listing time below --
+            # otherwise sids[0]'s default 60s lease (expires 10060) and sids[2]'s
+            # (expires 10260) never overlap, and "live" would exclude both.
+            sids.append(await registered(conversation=f"conv-{stamp}", onlineUntil=stamp + 500))
+    rows = [await repo.get_session(OWNER, s) for s in sids]
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**rows[1], "endedAt": 10150, "lastEventAt": 10150}, rows[1], enrollment)
+    with patch("time.time", return_value=10300):
+        listed = await service.list_workspace_sessions(BOB)
+    assert [s.session_id for s in listed.sessions] == [sids[2], sids[0]]
+    assert all(s.status != "ended" for s in listed.sessions)
+    # An outsider org sees nothing: the owner partition is the fence.
+    with patch("time.time", return_value=10300):
+        other = await service.list_workspace_sessions(AuthContext(user_id="user_x", org_id="org_other"))
+    assert other.sessions == []
+
+
+async def test_list_workspace_sessions_skips_humans_without_a_stream_and_offline_rows(db):
+    sid = await registered(conversation="conv-a")
+    with patch("time.time", return_value=int(time.time()) + 3600):
+        # No ensure_user_stream for ALICE yet: nothing is enumerated.
+        assert (await service.list_workspace_sessions(BOB)).sessions == []
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    with patch("time.time", return_value=int(time.time()) + 3600):
+        # Lease lapsed → status offline → excluded from the live list.
+        assert (await service.list_workspace_sessions(BOB)).sessions == []
+    assert (await service.list_workspace_sessions(BOB)).sessions[0].session_id == sid
+
+
+async def test_workspace_sessions_route_binds(db):
+    from fastapi import FastAPI
+    from routers import messaging
+
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    sid = await registered(conversation="conv-http")
+    app = FastAPI()
+    app.include_router(messaging.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/messaging/sessions")
+    assert response.status_code == 200
+    body = response.json()
+    assert [s["sessionId"] for s in body["sessions"]] == [sid]
+    assert set(body["sessions"][0]) >= {"sessionId", "humanUserId", "status", "lastEventAt", "provider"}

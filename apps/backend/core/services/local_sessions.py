@@ -6,6 +6,8 @@ connection; its identity arguments must come from that connection, never its pay
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +31,12 @@ def iso(epoch: int | None) -> str | None:
     if epoch is None:
         return None
     return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+logger = logging.getLogger(__name__)
+
+LIVE_STATUSES = frozenset({"idle", "busy", "waiting-approval", "unknown"})
+WORKSPACE_SESSION_CAP = 100
 
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")]
@@ -151,6 +159,10 @@ class RoomResources(ContractModel):
     devices: list[LocalDevice]
     sessions: list[LocalSession]
     paired_nodes: list[PairedNode]
+
+
+class WorkspaceSessions(ContractModel):
+    sessions: list[LocalSession]
 
 
 def _drop_none(model, result: dict, info, names: tuple[str, ...]) -> dict:
@@ -326,6 +338,22 @@ def _public(model, row: dict):
     )
 
 
+def _session_public(row: dict) -> LocalSession:
+    """One projection for every listing: ended beats lease state, an unverified
+    capability set reads as none."""
+    public = dict(row)
+    public["latestEventSeq"] = row.get("eventSeq", 0)
+    public["lastEventAt"] = iso(row.get("lastEventAt"))
+    public["endedAt"] = iso(row.get("endedAt"))
+    if row.get("endedAt") is not None:
+        public["status"] = "ended"
+    elif row["onlineUntil"] <= int(time.time()):
+        public["status"] = "offline"
+    if not row["capabilitiesVerified"]:
+        public["capabilities"] = Capabilities().model_dump(by_alias=True)
+    return _public(LocalSession, public)
+
+
 async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None) -> dict:
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)
     pairs = (container or {}).get("paired_devices", {})
@@ -482,17 +510,7 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
         for projection in await repo.list_user_sessions(owner, human):
             try:
                 row, _ = await authorize_session(auth, room_id, projection["sessionId"])
-                public = dict(row)
-                public["latestEventSeq"] = row.get("eventSeq", 0)
-                public["lastEventAt"] = iso(row.get("lastEventAt"))
-                public["endedAt"] = iso(row.get("endedAt"))
-                if row.get("endedAt") is not None:
-                    public["status"] = "ended"
-                elif row["onlineUntil"] <= int(time.time()):
-                    public["status"] = "offline"
-                if not row["capabilitiesVerified"]:
-                    public["capabilities"] = Capabilities().model_dump(by_alias=True)
-                sessions.append(_public(LocalSession, public))
+                sessions.append(_session_public(row))
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
@@ -506,6 +524,40 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
         sessions = live
     await require_caller(auth, room_id)
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
+
+
+async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSession]:
+    """Per-human fetch/filter loop shared by every workspace-wide listing. Skips rows
+    whose owner mismatches, whose device is no longer enrolled, or whose projected
+    status is not live."""
+    projections = await asyncio.gather(*(repo.list_user_sessions(owner, human) for human in humans))
+    sessions: list[LocalSession] = []
+    for human_rows in projections:
+        for projection in human_rows:
+            row = await repo.get_session(owner, projection["sessionId"])
+            if row is None or row.get("ownerId") != owner:
+                continue
+            try:
+                await _enrolled(owner, row["humanUserId"], row["deviceId"])
+            except ApiProblem as exc:
+                if exc.error.code != "LOCAL_SESSION_FORBIDDEN":
+                    raise
+                continue
+            public = _session_public(row)
+            if public.status in LIVE_STATUSES:
+                sessions.append(public)
+    return sessions
+
+
+async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
+    """Every live session in the workspace. Visibility is workspace-wide by
+    owner ruling (spec §2.3); membership is not consulted."""
+    owner = caller_owner(auth)
+    humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
+    # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
+    sessions = await _live_public_sessions(owner, humans)
+    sessions.sort(key=lambda s: s.last_event_at or "", reverse=True)
+    return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
 
 
 async def list_events(

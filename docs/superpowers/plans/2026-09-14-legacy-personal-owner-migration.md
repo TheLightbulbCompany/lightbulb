@@ -21,7 +21,7 @@ seed, minted a third company and stole his org row for three days
 
 | class | count | what they are |
 |---|---|---|
-| paying, running, no org | 3 | two external customers (last active Sep 12 and Sep 8) and one team member. `subscription_status=active`. **Must not be purged; must be migrated.** |
+| paying, running, no org | 3 | two external customers (last active Sep 12 and Sep 8) and one team member. `subscription_status=active`. **Must not be purged; must be migrated — and urgently: since `96143cea9` ("require workspace context for product APIs", in prod as of the 2026-09-13/14 promotions) every product API 409s a caller with no org, so these three are locked out of their own workspaces today.** |
 | dual-tenant | 7 | already in an org (founder org ×4 incl. the bootstrap admin, plus three other orgs); only personal residue remains (a stopped box, an orphan company, a trial row). |
 | personal-only, expired `trial_local`, stopped | 28 | signups Jul 28 → Sep 10 who never converted; most never came back after day one. |
 | personal-only, `canceled`, no container | 1 | residue only. |
@@ -89,9 +89,8 @@ against paying customers. Instead:
 - #2619 — the picker reads Clerk org membership, never the Paperclip row.
 - #2622 — a personal seed can never re-point an org member's row.
 - #2623 — `organizationMembership.created` performs the Paperclip join.
-- fence (branch pending) — a non-org caller with no existing state can never
-  create a trial row, a container or a company; the three paying personal
-  owners keep being served until migrated.
+- #2626 — no door can create a personal workspace (`ensure_workspace_trial_default`
+  403s a `user_` id; `ensure_user_ready` refuses non-org callers first).
 - #2624 — the purge script.
 - Open question: users in **two** orgs would hit the same one-row-per-user
   flip between orgs. Either cap Clerk at one organization per user (instance
@@ -116,7 +115,9 @@ run apps/backend/scripts/purge_legacy_personal_workspaces.py --apply \
   --owner user_3J8t0Yp76auS131Lk9ov9YCc5We \
   --delete-company e13f6059-6569-4e49-be06-8cb6345dda04 --delete-company 00d38093-a077-4822-92e9-9c78455c1f4b
 
-# 2. Workspaces for every legacy owner (dry run, then apply)
+# 2. Workspaces for every legacy owner (dry run, then apply). NOTE: the script imports
+#    clerk_admin.create_organization from #2625, so run it after #2625 is merged AND promoted
+#    (or run it locally with ENVIRONMENT=prod + the prod CLERK_SECRET_KEY exported).
 run apps/backend/scripts/backfill_legacy_owner_workspaces.py
 run apps/backend/scripts/backfill_legacy_owner_workspaces.py --apply
 

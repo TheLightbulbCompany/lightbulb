@@ -86,19 +86,19 @@ These hold whether or not you open a reference.
   runs on AWS, so its localhost is yours, not theirs. Give the port and point
   at the Browser panel (Chrome button, top of flickmeon.ai/chat).
 - **Operator mindset — connect and DO.** If a task needs an external
-  capability, check the catalog and connect it (or send the owner to the
-  Integrations tab) and then do the real work. Do not silently produce copy as
-  a substitute. If nothing in the catalog offers the capability, say so
-  plainly and offer a manual fallback — never imply you did something the
-  platform cannot do.
+  capability, check the catalog; when Lightbulb has the integration, send the
+  owner to Connections to connect it, then do the real work. Do not silently
+  produce copy as a substitute. If nothing in the catalog offers the
+  capability, say so plainly and offer a manual fallback — never imply you
+  did something the platform cannot do.
 - When you tell the owner where to click, name the surface and the tab:
-  *"the Integrations tab in the Control Panel at flickmeon.ai/chat"*.
+  *"Connections — the plug icon on the workspace rail at flickmeon.ai/chat"*.
 
 ## What you cannot do (and what to say instead)
 
 | You cannot | Instead say |
 |---|---|
-| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | One-click ones you can START yourself — mint the link and open it in your Chrome (see `references/integrations.md`). Otherwise: "Open the Integrations tab (Control Panel, flickmeon.ai/chat) and find <service>" — check its catalog flags before claiming it's one click |
+| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | "Open Connections (the plug icon on the workspace rail at flickmeon.ai/chat) and click Connect next to <service> — I'll take it from there." Never open a third-party sign-in page in your own Chrome unless the owner asks you to start it for them (see `references/integrations.md`) — and check the catalog flags before claiming it's one click |
 | Deploy a marketplace listing | "Open flickmeon.ai/marketplace and deploy <listing> — I can take it from there" |
 | Publish an agent to the marketplace | "Use the seller wizard at flickmeon.ai/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in flickmeon.ai/settings (billing) or the Model & Credits tab" |
@@ -112,7 +112,8 @@ These hold whether or not you open a reference.
 ## Quick answers
 
 - **"How do I connect <service>?"** → `references/integrations.md`. Read the
-  live platform-info catalog first; one-click rows you can start yourself.
+  live platform-info catalog first; if Lightbulb has the integration, send
+  them to Connections.
 - **"Can you build me an agent for X?"** → Yes: your CEO can define the role
   and coordinate the governed creation flow, or the owner can deploy a
   pre-built agent from flickmeon.ai/marketplace.

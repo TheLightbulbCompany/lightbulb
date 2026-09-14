@@ -103,6 +103,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/connections.py (authorize_from_container — hook-token sibling of authorize;
                                  ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py);
                                  /app/skills/lightbulb/scripts/lightbulb-connect.sh (the mint door — never an inline header, see the redaction note)
+  - Connections door ........ references/integrations.md + references/surfaces.md + SKILL.md boundaries table
+                              <- apps/frontend/src/components/control/panels/ConnectionsPanel.tsx (rail panel); apps/frontend/src/components/workspace/WorkspaceHeader.tsx (rail label)
   - Paperclip org model ..... references/company-and-plans.md
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                                  services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)

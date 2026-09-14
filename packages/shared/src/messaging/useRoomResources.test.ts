@@ -46,6 +46,41 @@ describe("useRoomResources enabled gate", () => {
     rerender({ includeEnded: true });
     await waitFor(() => expect(source.client.listResources).toHaveBeenCalledWith("room-1", { includeEnded: true }));
   });
+
+  it("uses the latest includeEnded for a do-while re-run coalesced while the toggle flips mid-fetch", async () => {
+    // enabled:false keeps the interval-owning effect (whose cleanup invalidates
+    // the in-flight epoch on every dep change, including includeEnded) from ever
+    // registering, so a rerender here updates includeEndedRef WITHOUT tearing
+    // down refreshing/queued/request — isolating the do-while's own coalescing
+    // from that effect's unrelated (and already-correct) full-epoch reset.
+    let resolveFirst!: (value: { devices: never[]; sessions: never[]; pairedNodes: never[] }) => void;
+    const first = new Promise<{ devices: never[]; sessions: never[]; pairedNodes: never[] }>(resolve => { resolveFirst = resolve; });
+    const raceListResources = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValue({ devices: [], sessions: [], pairedNodes: [] });
+    const raceSource = {
+      client: { listResources: raceListResources, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+      onEvent: () => () => {},
+      connectionRevision: 1,
+    } as unknown as RoomResourceSource;
+
+    const { result, rerender } = renderHook(
+      ({ includeEnded }) => useRoomResources("room-1", raceSource, { enabled: false, includeEnded }),
+      { initialProps: { enabled: false, includeEnded: false } },
+    );
+    expect(raceListResources).not.toHaveBeenCalled();
+    await act(async () => { void result.current.refresh(); }); // enters the do-while, includeEnded: false, pending on `first`
+    expect(raceListResources).toHaveBeenNthCalledWith(1, "room-1", { includeEnded: false });
+    await act(async () => { void result.current.refresh(); }); // refreshing.current is true -> coalesced, just queues
+    expect(raceListResources).toHaveBeenCalledTimes(1);
+
+    rerender({ enabled: false, includeEnded: true }); // updates includeEndedRef; no effect to tear down
+    await act(async () => { resolveFirst({ devices: [], sessions: [], pairedNodes: [] }); await first; });
+    // The coalesced re-run must read the CURRENT includeEnded, not the value
+    // captured by the closure that originally entered the do-while.
+    await waitFor(() => expect(raceListResources).toHaveBeenCalledTimes(2));
+    expect(raceListResources).toHaveBeenNthCalledWith(2, "room-1", { includeEnded: true });
+  });
 });
 
 describe("useLocalSessionHistory tail stability", () => {

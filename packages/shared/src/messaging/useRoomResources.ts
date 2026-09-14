@@ -32,6 +32,12 @@ export function useRoomResources(
   const blocked = useRef(false);
   const refreshing = useRef(false);
   const queued = useRef(false);
+  // Coalesced re-runs of the do-while below reuse the `refresh` closure that
+  // was already in flight when a caller queued another pass; without this ref
+  // that re-run would fetch with the `includeEnded` captured at the START of
+  // the in-flight fetch, silently dropping a toggle flip that arrived mid-fetch.
+  const includeEndedRef = useRef(includeEnded);
+  includeEndedRef.current = includeEnded;
   const invalidate = useCallback(() => {
     request.current += 1;
     refreshing.current = false;
@@ -56,7 +62,7 @@ export function useRoomResources(
       do {
         queued.current = false;
         try {
-          const next = await client.listResources(roomId, { includeEnded });
+          const next = await client.listResources(roomId, { includeEnded: includeEndedRef.current });
           if (id !== request.current || blocked.current) return;
           setData(next);
           setError(null);

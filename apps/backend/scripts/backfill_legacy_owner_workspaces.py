@@ -62,6 +62,33 @@ import httpx
 from core.config import settings
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import clerk_admin
+
+# Piped into a deployed backend task via ECS exec, this script may run against an
+# image that predates ``clerk_admin.create_organization`` — fall back to an inline
+# copy of that one POST so the backfill does not have to wait for a promotion.
+try:
+    from core.services.clerk_admin import SlugTakenError, create_organization
+except ImportError:  # pragma: no cover — only the deployed-image path
+
+    class SlugTakenError(Exception):
+        pass
+
+    async def create_organization(*, name: str, slug: str, created_by: str):
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.clerk.com/v1/organizations",
+                headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}", "Content-Type": "application/json"},
+                json={"name": name, "slug": slug, "created_by": created_by},
+            )
+        if resp.status_code == 422 and any(
+            e.get("code") in ("form_identifier_exists", "duplicate_record") for e in (resp.json().get("errors") or [])
+        ):
+            raise SlugTakenError(slug)
+        return resp.json() if resp.status_code < 400 else None
+
+
 from core.services.entitlement_teardown import still_entitled
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -201,13 +228,13 @@ async def _primary_email(owner_id: str) -> str | None:
 
 async def _create_with_retry(name: str, slug: str, owner_id: str, out: list[str]) -> None:
     try:
-        org = await clerk_admin.create_organization(name=name, slug=slug, created_by=owner_id)
-    except clerk_admin.SlugTakenError:
+        org = await create_organization(name=name, slug=slug, created_by=owner_id)
+    except SlugTakenError:
         suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
         retry_slug = _slug_with_suffix(slug, suffix)
         try:
-            org = await clerk_admin.create_organization(name=name, slug=retry_slug, created_by=owner_id)
-        except clerk_admin.SlugTakenError:
+            org = await create_organization(name=name, slug=retry_slug, created_by=owner_id)
+        except SlugTakenError:
             out.append(f"  FAIL {owner_id}: slug taken twice ({slug}, {retry_slug})")
             return
         slug = retry_slug
@@ -222,6 +249,11 @@ async def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--apply", action="store_true", help="execute; default is a dry run")
     ap.add_argument("--owner", action="append", default=[], help="limit to these owner ids (repeatable)")
+    ap.add_argument(
+        "--skip-paid",
+        action="store_true",
+        help="do not create a workspace for owners still paying / in a live trial (their runtime must be migrated first)",
+    )
     args = ap.parse_args(argv)
 
     candidates, billing, pc_by_user = await _legacy_personal_owner_ids()
@@ -246,6 +278,11 @@ async def main(argv: list[str]) -> int:
             out.append(f"  {owner_id}: {verdict}")
             continue
 
+        if warn_paid and args.skip_paid:
+            out.append(
+                f"  {owner_id}: skip: paying owner — migrate their runtime first (migrate_personal_owner_to_workspace.py)"
+            )
+            continue
         out.append(f"  {owner_id}: create name={name!r} slug={slug}")
         if warn_paid:
             out.append("    WARN: paid personal owner — runtime migration required before they switch workspaces")

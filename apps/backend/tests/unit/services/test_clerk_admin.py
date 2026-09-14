@@ -31,6 +31,15 @@ async def _fake_client(response_or_exc):
     yield client
 
 
+@asynccontextmanager
+async def _fake_post_client(client):
+    """Like `_fake_client`, but yields a caller-built client so the test
+    can inspect `client.post.call_args` afterwards (`_fake_client` builds
+    a fresh mock per call, which is fine for GET-only assertions but hides
+    the call from POST tests that need to check the request body)."""
+    yield client
+
+
 @pytest.mark.asyncio
 async def test_list_users_stubs_when_no_secret_key(monkeypatch):
     monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
@@ -251,3 +260,114 @@ async def test_list_organization_members_stubs_when_no_secret_key(monkeypatch):
 
     monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
     assert await clerk_admin.list_organization_members("org_1") == []
+
+
+@pytest.mark.asyncio
+async def test_create_organization_returns_none_when_no_secret_key(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
+    from core.services.clerk_admin import create_organization
+
+    result = await create_organization(name="Acme", slug="acme", created_by="user_1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_organization_happy_path_body_and_headers(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    response = _make_response(201, json_body={"id": "org_new", "slug": "acme", "name": "Acme"})
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_post_client(client),
+    ):
+        from core.services.clerk_admin import create_organization
+
+        result = await create_organization(name="Acme", slug="acme", created_by="user_1")
+
+    assert result == {"id": "org_new", "slug": "acme", "name": "Acme"}
+    args, kwargs = client.post.call_args
+    assert args[0] == "https://api.clerk.com/v1/organizations"
+    assert kwargs["headers"]["Authorization"] == "Bearer sk_test_xyz"
+    assert kwargs["json"] == {"name": "Acme", "slug": "acme", "created_by": "user_1"}
+
+
+@pytest.mark.asyncio
+async def test_create_organization_slug_taken_raises(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    response = _make_response(
+        422,
+        json_body={"errors": [{"code": "form_identifier_exists", "message": "that slug is taken"}]},
+    )
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_post_client(client),
+    ):
+        from core.services.clerk_admin import SlugTakenError, create_organization
+
+        with pytest.raises(SlugTakenError):
+            await create_organization(name="Acme", slug="acme", created_by="user_1")
+
+
+@pytest.mark.asyncio
+async def test_create_organization_5xx_returns_none(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    response = _make_response(503, json_body={})
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_post_client(client),
+    ):
+        from core.services.clerk_admin import create_organization
+
+        result = await create_organization(name="Acme", slug="acme", created_by="user_1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_organization_timeout_returns_none(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=httpx.TimeoutException("slow"))
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_post_client(client),
+    ):
+        from core.services.clerk_admin import create_organization
+
+        result = await create_organization(name="Acme", slug="acme", created_by="user_1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_organization_unrelated_422_returns_none(monkeypatch):
+    """A 422 that isn't a slug collision is a plain failure, not SlugTakenError."""
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    response = _make_response(422, json_body={"errors": [{"code": "form_param_format_invalid"}]})
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_post_client(client),
+    ):
+        from core.services.clerk_admin import create_organization
+
+        result = await create_organization(name="Acme", slug="acme", created_by="user_1")
+
+    assert result is None

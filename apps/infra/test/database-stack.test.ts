@@ -419,3 +419,25 @@ describe("DatabaseStack — slack-installs table", () => {
     });
   });
 });
+
+describe("DatabaseStack — workspace join links", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates workspace-join-links keyed by org_id, durable, no TTL", () => {
+    // One row per org IS the link, which is what makes regenerate atomic — a
+    // sort key or a token-hash GSI would reintroduce the orphaned-credential
+    // race the repo module documents. And the owner's decision is that join
+    // links never expire, so a TTL attribute would be a silent revoke.
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-workspace-join-links",
+      KeySchema: [{ AttributeName: "org_id", KeyType: "HASH" }],
+      BillingMode: "PAY_PER_REQUEST",
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      TimeToLiveSpecification: Match.absent(),
+      GlobalSecondaryIndexes: Match.absent(),
+    });
+  });
+});

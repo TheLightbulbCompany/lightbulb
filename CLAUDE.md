@@ -321,6 +321,17 @@ something to bypass — the fix is to drop the check, not to unprotect `main`.
 | **Gate** | `claude-code-review.yml` → `anthropics/claude-code-action` | sticky PR comment | **yes** — the job `claude-review` is the required status check on `main` |
 | **Second opinion** | the `chatgpt-codex-connector` GitHub App | issue comment or 👍 reaction | no — it publishes no status check at all |
 
+> **⚠️ KNOWN ISSUE, ACCEPTED BY THE OWNER (2026-09-14): both reviewers are down.**
+> `claude-review` fails in ~1 s on every PR (`is_error:true`, zero model usage —
+> the action's credentials, not the PR), and the Codex app answers `create a
+> Codex account and connect to github` instead of reviewing. The owner knows and
+> is fine with it: do not wait on either, do not treat the red `claude-review`
+> as a blocker, and do not spend time fixing it. `main` currently has **no
+> required checks** (`enforce_admins: false`), so merges are not blocked — the
+> table above and "Admin bypass" below describe the intended setup, not today's.
+> Until this note is removed, review the diff yourself (or with a subagent)
+> before merging.
+
 `claude-code-review.yml` runs on every `pull_request` and is deliberately **not**
 path-filtered: a workflow that never starts reports no check, and a required
 check that never reports blocks that PR forever. That is also why none of the

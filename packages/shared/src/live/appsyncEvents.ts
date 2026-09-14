@@ -5,9 +5,9 @@
  * `WebSocket`: OIDC auth in the `header-*` subprotocol, `connection_init` →
  * `connection_ack`, one `subscribe` per desired channel with a fresh Clerk
  * template token, `ka` watchdog from the ACK's `connectionTimeoutMs`,
- * `unsubscribe` on replacement, full-jitter reconnect capped at 30s. It has
- * no publish method, sends no client pings, and never logs a token or a raw
- * server payload.
+ * `unsubscribe` on replacement, and a full-jitter reconnect capped at 30s on
+ * any lost connection or rejected subscription. It has no publish method,
+ * sends no client pings, and never logs a token or a raw server payload.
  *
  * One instance owns one reconnect loop; consumers replace the desired
  * channel set and read events — nothing else.
@@ -240,7 +240,6 @@ export class AppSyncEventsClient {
       case "connection_ack": {
         if (this.acked) return;
         this.acked = true;
-        this.attempt = 0;
         this.ackCount += 1;
         const timeout = msg.connectionTimeoutMs;
         this.connectionTimeoutMs =
@@ -261,6 +260,9 @@ export class AppSyncEventsClient {
         const sub = channel ? this.subs.get(channel) : undefined;
         if (!channel || !sub || sub.id !== msg.id) return;
         sub.live = true;
+        // Only a fully live cycle resets the reconnect backoff: an ACK alone
+        // does not, or a persistently rejected channel would reconnect-spin.
+        if (this.desired.every((c) => this.subs.get(c)?.live)) this.attempt = 0;
         this.emitStatus();
         return;
       }
@@ -271,6 +273,11 @@ export class AppSyncEventsClient {
         this.dropSubscription(channel, sub, false);
         this.opts.onError?.("subscribe_error", channel);
         this.emitStatus();
+        // Nothing else would ever retry: the socket stays acked, so the ACK's
+        // subscribe loop never re-fires and `ka` keeps it alive forever. Close
+        // and let the jittered reconnect resubscribe everything — its fresh
+        // ACK is also what makes consumers reconcile the gap over HTTP.
+        this.socket?.close(4002, "subscribe rejected");
         return;
       }
       case "data": {

@@ -605,7 +605,6 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
                 owner_id=owner_id,
                 paperclip_agent=paperclip_agent,
                 gateway_token=token,
-                ip=ip,
             )
         except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
             logger.warning(

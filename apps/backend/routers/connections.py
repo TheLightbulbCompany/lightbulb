@@ -134,8 +134,9 @@ _REGION_RE = re.compile(r"^[a-z0-9-]+$")
 # bearer token (minted at aws-complete; only its SHA-256 hash is retained in
 # the SM credential). Legitimate use is ~1 fetch per 50 minutes of active use,
 # so the per-owner limit is generous. In-process sliding window, same pattern
-# and caveats as routers/hooks_proxy.py (per-task buckets; fine at
-# desiredCount=1).
+# and caveats as routers/hooks_proxy.py (per-task buckets — RULING D17: at
+# desiredCount 2-4 (D's autoscale range) each instance keeps its own window,
+# so the effective per-owner ceiling is 2-4x this value, not a hard cap).
 _AWS_CLI_RATE_LIMIT_PER_MINUTE = 10
 _aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 

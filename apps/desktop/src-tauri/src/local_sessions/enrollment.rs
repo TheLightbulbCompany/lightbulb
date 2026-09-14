@@ -1002,6 +1002,7 @@ mod tests {
             device_id_mac: crate::node_client::derive_device_id(&identity.public_key_pem).unwrap(),
             device_id_cli: "unavailable-cli".into(),
             gateway_url: "wss://ws-dev.flickmeon.ai".into(),
+            relay_url: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws".into(),
             gateway_token: "unused".into(),
             display_name: "Mac".into(),
         };

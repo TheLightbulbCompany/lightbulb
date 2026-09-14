@@ -1,22 +1,21 @@
 """
 Machine-only Lambda authorizer for WebSocket API Gateway.
 
-Accepts two existing credential kinds:
-
-1. Paired desktop device JWTs (EdDSA, kind=device), verified against the
-   signature-bound public key in the owner's container row.
-2. Paperclip service-token JWTs (HS256, kind=paperclip_service), verified with
-   the environment signing key from Secrets Manager.
+Accepts one credential kind: paired desktop device JWTs (EdDSA, kind=device),
+verified against the signature-bound public key in the owner's container row.
+This door now admits only the desktop local-session relay (clientId is
+checked downstream by ws-connect); Paperclip operators and Tauri node hosts
+authenticate over the raw WS relay instead (routers/gateway_relay.py) and
+verify their own (still HS256) service tokens there via core/services/
+machine_auth.py — not through this Lambda.
 
 Clerk browser sessions are intentionally not accepted. Human commands use HTTP
 and live browser delivery uses AppSync Events.
 """
 
 import base64
-import json
 import logging
 import os
-import time
 from typing import Any, Optional
 
 import boto3
@@ -26,10 +25,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Paperclip service-token configuration
-SERVICE_TOKEN_KIND = "paperclip_service"
-PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN = os.environ.get("PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN", "")
-
 # Desktop device-token configuration
 DEVICE_TOKEN_KIND = "device"
 # Authorizer-enforced ceiling on a device token's self-declared lifetime
@@ -38,18 +33,8 @@ DEVICE_TOKEN_KIND = "device"
 DEVICE_TOKEN_MAX_LIFETIME_S = 300
 CONTAINERS_TABLE = os.environ.get("CONTAINERS_TABLE", "")
 
-# Boto client for Secrets Manager (initialized lazily)
-_secrets_client = None
-
 # Boto DynamoDB Table for the containers row (device pubkey registry), lazy
 _containers_table = None
-
-
-def _get_secrets_client():
-    global _secrets_client
-    if _secrets_client is None:
-        _secrets_client = boto3.client("secretsmanager")
-    return _secrets_client
 
 
 def _get_containers_table():
@@ -57,62 +42,6 @@ def _get_containers_table():
     if _containers_table is None and CONTAINERS_TABLE:
         _containers_table = boto3.resource("dynamodb").Table(CONTAINERS_TABLE)
     return _containers_table
-
-
-def _emit_metric(metric_name: str, value: int) -> None:
-    """Emit a CloudWatch EMF metric to stdout.
-
-    Lambda's log driver picks up Embedded Metric Format JSON automatically
-    and publishes the metric without an explicit PutMetricData call. We use
-    this so an alarm can fire on `ServiceTokenKeyLoadFailure > 0` without
-    needing to wire CloudWatch SDK creds into the Lambda role.
-    """
-    print(
-        json.dumps(
-            {
-                "_aws": {
-                    "Timestamp": int(time.time() * 1000),
-                    "CloudWatchMetrics": [
-                        {
-                            "Namespace": "LightbulbAI/Authorizer",
-                            "Dimensions": [["FunctionName"]],
-                            "Metrics": [{"Name": metric_name, "Unit": "Count"}],
-                        }
-                    ],
-                },
-                "FunctionName": os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "unknown"),
-                metric_name: value,
-            }
-        )
-    )
-
-
-def _load_service_token_key() -> str:
-    """Fetch the Paperclip service-token signing key from Secrets Manager.
-
-    Called once at cold-start. Returns "" on missing config or fetch failure;
-    service-token attempts then fail closed.
-    """
-    arn = PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN
-    if not arn:
-        return ""
-    try:
-        resp = _get_secrets_client().get_secret_value(SecretId=arn)
-        return resp.get("SecretString", "") or ""
-    except Exception as e:  # noqa: BLE001 — best-effort cold-start fetch
-        # Use error (not warning) so log-metric-filters and alarms can pick
-        # up the signal — a silent fall-through here disables service tokens
-        # platform-wide with no other observable symptom.
-        logger.error(f"Failed to load service-token signing key: {e}")
-        return ""
-
-
-# Cold-start: load the symmetric key once per Lambda container
-PAPERCLIP_SERVICE_TOKEN_KEY = _load_service_token_key()
-_emit_metric(
-    "ServiceTokenKeyLoadSuccess" if PAPERCLIP_SERVICE_TOKEN_KEY else "ServiceTokenKeyLoadFailure",
-    1,
-)
 
 
 def generate_policy(principal_id: str, effect: str, resource: str, context: dict = None) -> dict:
@@ -139,28 +68,6 @@ def generate_policy(principal_id: str, effect: str, resource: str, context: dict
     return policy
 
 
-def _try_service_token(token: str) -> Optional[dict]:
-    """Validate a Paperclip service-token JWT.
-
-    Returns the claims dict if the token is valid; otherwise returns None.
-    """
-    if not PAPERCLIP_SERVICE_TOKEN_KEY:
-        return None
-    try:
-        claims = jwt.decode(
-            token,
-            PAPERCLIP_SERVICE_TOKEN_KEY,
-            algorithms=["HS256"],
-        )
-    except jwt.PyJWTError:
-        return None
-    if claims.get("kind") != SERVICE_TOKEN_KIND:
-        return None
-    if not claims.get("sub"):
-        return None
-    return claims
-
-
 def _try_device_token(token: str) -> Optional[dict]:
     """Validate a desktop device-key WS-upgrade token (EdDSA, kind=device).
 
@@ -169,8 +76,8 @@ def _try_device_token(token: str) -> Optional[dict]:
     device's registered public key, projected onto the owner's ``containers`` row
     at ``/desktop/pair`` as ``paired_devices[deviceId]`` — no long-lived bearer
     secret at rest, and revocation is un-pairing (the row entry disappears → Deny
-    on the next connect). Returns verified user/org/auth/device provenance on success,
-    else None so the caller can try the service-token branch. Fails CLOSED.
+    on the next connect). Returns verified user/org/auth/device provenance on
+    success, else None. Fails CLOSED.
 
     Security note: the deviceId/owner claims are read UNVERIFIED only to locate
     the registered pubkey; the signature is then verified against THAT pubkey, so
@@ -184,7 +91,7 @@ def _try_device_token(token: str) -> Optional[dict]:
     except jwt.PyJWTError:
         return None
     if header.get("alg") != "EdDSA":
-        return None  # not a device token — let the other branches try
+        return None  # not a device token
     if not CONTAINERS_TABLE:
         logger.warning("Device (EdDSA) token seen but CONTAINERS_TABLE not set")
         return None
@@ -252,8 +159,12 @@ def handler(event: dict, context: Any) -> dict:
     """
     Lambda authorizer handler for WebSocket API.
 
-    Validates paired device and Paperclip service credentials. Every other token,
-    including a valid Clerk browser session, is denied.
+    Validates a paired-device credential. Every other token, including a
+    valid Clerk browser session or a Paperclip service token (which now
+    authenticates over the raw WS relay instead — see module docstring), is
+    denied. clientId narrowing (this door admits only the desktop
+    local-session relay) happens downstream in the ws-connect $connect
+    handler, which sees the same verified context this policy carries.
 
     Args:
         event: API Gateway authorizer event containing:
@@ -278,7 +189,6 @@ def handler(event: dict, context: Any) -> dict:
         return generate_policy("unauthorized", "Deny", method_arn)
 
     # --- Try desktop device token (EdDSA, proof-of-possession) ---
-    # Routed by alg=EdDSA; a no-op (returns None) for HS256/RS256 tokens.
     device_claims = _try_device_token(token)
     if device_claims:
         logger.info(f"Authorized via device token user_id={device_claims['userId']}")
@@ -287,22 +197,6 @@ def handler(event: dict, context: Any) -> dict:
             effect="Allow",
             resource=method_arn,
             context=device_claims,
-        )
-
-    # --- Try Paperclip service token (cheap symmetric verify) ---
-    service_claims = _try_service_token(token)
-    if service_claims:
-        user_id = service_claims["sub"]
-        logger.info(f"Authorized via service token user_id={user_id}")
-        return generate_policy(
-            principal_id=user_id,
-            effect="Allow",
-            resource=method_arn,
-            context={
-                "userId": user_id,
-                "orgId": "",
-                "authKind": SERVICE_TOKEN_KIND,
-            },
         )
 
     logger.warning("Token is not an admitted machine credential")

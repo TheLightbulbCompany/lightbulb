@@ -2,7 +2,7 @@
 
 Covers: gated tool-search, browser snapshot/tab bounds, firecrawl fetch
 fallback, per-path web-search provider, the widened tools.deny (tts/media-gen)
-with its node_proxy sync contract, the compaction-notifier hook, progress
+with its relay_hooks sync contract, the compaction-notifier hook, progress
 drafts on re-injected channels, prod-gated /debug, hooks agent-id allowlist,
 and session maintenance/reset bounds.
 
@@ -381,15 +381,15 @@ class TestToolDeny:
         assert set(TOOL_DENY_WITH_NODES) == set(TOOL_DENY_BASE) | {"nodes"}
         assert set(_cfg()["tools"]["deny"]) == set(TOOL_DENY_WITH_NODES)
 
-    def test_node_proxy_uses_shared_constants(self):
-        """node_proxy REPLACES the deny list wholesale on node pair/unpair; a
+    def test_relay_hooks_uses_shared_constants(self):
+        """relay_hooks REPLACES the deny list wholesale on node connect/close; a
         hand-written list there would silently re-enable tts/media-gen the
         moment a desktop pairs. It must consume the shared constants."""
         import inspect
 
-        from core.services import node_proxy
+        from core.services import relay_hooks
 
-        src = inspect.getsource(node_proxy)
+        src = inspect.getsource(relay_hooks)
         assert "TOOL_DENY_BASE" in src
         assert "TOOL_DENY_WITH_NODES" in src
         # No hand-maintained literal deny lists left behind.

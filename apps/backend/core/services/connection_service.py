@@ -23,10 +23,13 @@ Note: Table creation is handled by Terraform, not this service.
 import asyncio
 import logging
 import os
+import time
 from typing import Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -208,22 +211,47 @@ class ConnectionService:
     async def has_live_operator_connection(self, owner_id: str) -> bool:
         """Is a Paperclip run executing against this owner's container right now?
 
-        The openclaw_gateway adapter opens its WS in ``execute()``, runs the
-        turn, and closes — so an ``operator``-typed connection exists EXACTLY
-        while a Paperclip-initiated run is in flight. That makes this a direct
-        read of "is Paperclip using the container", with no run-state tracking
-        of our own to keep in sync.
+        The gateway relay writes an ``operator``-typed presence row
+        (`put_relay_presence`) for the life of the socket the Paperclip
+        adapter opens per run, refreshed every ~60s with a 120s ttl
+        (`refresh_relay_presence`) and deleted on close — so a still-fresh
+        ``operator`` row is a direct read of "is Paperclip using the
+        container right now", with no run-state tracking of our own to keep
+        in sync.
 
         Scale-to-zero needs it because Paperclip's operator socket is separate
         from backend-to-OpenClaw room run tracking. Stopping under it kills a
         legitimate turn, violating the stop path's over-preserve rule.
 
-        No freshness check, unlike the chat count: an operator row is written at
-        ``$connect`` and deleted at ``$disconnect``, and the adapter does not
-        ping. Its mere existence is the signal.
+        Freshness-checked (``ttl > now``), unlike the old ``$connect``/
+        ``$disconnect``-paired premise: a crashed or OOM'd backend instance
+        leaves its presence row behind for up to DynamoDB's TTL sweep lag (up
+        to 48h), and a stale row must never veto trial-idle stop for that
+        long. ``ttl`` is not on the ``by-owner-id`` GSI's projection, so each
+        candidate operator row is fetched individually; a row with no ``ttl``
+        at all is treated as live (over-preserve). Same bias if the row is
+        deleted between the GSI read and the follow-up ``get_item`` (a
+        just-closed connection): the vanished item comes back with no ``ttl``
+        attribute, which this method cannot distinguish from "never had one",
+        so it counts as live rather than false-negative a real connection.
         """
+        now = int(time.time())
         rows = await self.query_by_owner(owner_id)
-        return any(connection_type == "operator" for _connection_id, _user_id, connection_type in rows)
+        for connection_id, _user_id, connection_type in rows:
+            if connection_type != "operator":
+                continue
+            response = await asyncio.to_thread(
+                self._client.get_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": connection_id}},
+                ProjectionExpression="#ttl",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ConsistentRead=True,
+            )
+            ttl_raw = response.get("Item", {}).get("ttl", {}).get("N")
+            if ttl_raw is None or int(ttl_raw) > now:
+                return True
+        return False
 
     async def delete_all_for_user(self, user_id: str) -> int:
         """Delete every WS connection row owned by ``user_id``.
@@ -299,6 +327,77 @@ class ConnectionService:
             raise ConnectionServiceError(
                 f"Failed to delete connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
+
+    RELAY_TTL_SECONDS = 120
+
+    async def put_relay_presence(self, *, connection_id: str, identity) -> None:
+        """Write the gateway relay's presence row for a node/operator socket.
+
+        Written by the instance that accepted the upgrade, refreshed by that
+        same instance every ~60s (`refresh_relay_presence`) and deleted on
+        close — the row is how another instance (or a crashed one's TTL
+        sweep) learns the connection existed.
+        """
+        now = int(time.time())
+        item = {
+            "connectionId": {"S": connection_id},
+            "userId": {"S": identity.user_id},
+            "orgId": {"S": identity.org_id},
+            "ownerId": {"S": identity.owner_id},
+            "connectionType": {"S": identity.kind},
+            "authKind": {"S": identity.auth_kind},
+            "clientId": {"S": identity.client_id},
+            "connectedAt": {"S": utc_now_iso()},
+            "ttl": {"N": str(now + self.RELAY_TTL_SECONDS)},
+        }
+        if identity.device_id:
+            item["deviceId"] = {"S": identity.device_id}
+        await asyncio.to_thread(self._client.put_item, TableName=self.table_name, Item=item)
+
+    async def refresh_relay_presence(self, connection_id: str) -> bool:
+        """Bump the presence row's ttl. False when the row is gone (revoked
+        or expired): the caller must close the socket."""
+        try:
+            await asyncio.to_thread(
+                self._client.update_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": connection_id}},
+                UpdateExpression="SET #ttl = :ttl",
+                ConditionExpression="attribute_exists(connectionId)",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)}},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    async def count_relay_nodes(self, owner_id: str) -> int:
+        """Live `node`-typed relay connections for an owner (desktop node
+        hosts), used to edge-trigger the node tool-deny-list patch."""
+        return sum(1 for _connection_id, _user_id, kind in await self.query_by_owner(owner_id) if kind == "node")
+
+    async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
+        """Force-close a revoked device's live relay presence row(s).
+
+        The `by-owner-id` GSI does not project `deviceId` (only `userId` /
+        `connectionType`), so candidates come from its `node`-typed rows, each
+        fetched in full (`get_connection`, base table) to check `deviceId`
+        before deleting. At most a handful of rows per owner. Returns the
+        number of rows deleted — the desktop-device revoke route uses this in
+        place of the old in-process `force_close_device` socket kill; the
+        relay itself notices within its 60s presence refresh and closes 1008.
+        """
+        deleted = 0
+        for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
+            if kind != "node":
+                continue
+            full = await asyncio.to_thread(self.get_connection, connection_id)
+            if full and full.get("device_id") == device_id:
+                await asyncio.to_thread(self.delete_connection, connection_id)
+                deleted += 1
+        return deleted
 
 
 # ---------------------------------------------------------------------------

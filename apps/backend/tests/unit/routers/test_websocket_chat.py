@@ -1,4 +1,9 @@
-"""Machine-only API Gateway WebSocket relay contract tests."""
+"""Local-session-only API Gateway WebSocket relay contract tests.
+
+Node hosts and Paperclip operators moved to routers/gateway_relay.py (see
+tests/unit/routers/test_gateway_relay.py); this router now serves only the
+desktop local-session relay's connect/disconnect/message HTTP integration.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,35 +40,32 @@ async def _post(app, path, *, headers=None, json=None):
         return await client.post(path, headers=headers, json=json)
 
 
+_LOCAL_SESSION_HEADERS = {
+    "x-connection-id": "conn-1",
+    "x-user-id": "user-1",
+    "x-client-id": "lightbulb-local-sessions",
+    "x-auth-kind": "device",
+    "x-verified-device-id": "device-1",
+}
+
+
 @pytest.mark.asyncio
-async def test_node_connect_requires_exact_verified_provenance_headers(app, connection_service):
+async def test_local_session_connect_succeeds(app, connection_service):
     connection_service.get_connection.return_value = {
         "user_id": "user-1",
         "org_id": None,
-        "connection_type": "node",
+        "connection_type": "local-session",
         "auth_kind": "device",
+        "client_id": "lightbulb-local-sessions",
         "device_id": "device-1",
     }
-    with patch("routers.websocket_chat._kick_off_node_connect", new_callable=AsyncMock) as connect:
-        response = await _post(
-            app,
-            "/ws/connect",
-            headers={
-                "x-connection-id": "conn-1",
-                "x-user-id": "user-1",
-                "x-client-id": "node-host",
-                "x-auth-kind": "device",
-                "x-verified-device-id": "device-1",
-            },
-        )
+    machine = MagicMock()
+    machine.connect = AsyncMock()
+    with patch("core.services.local_session_relay.get_local_session_relay", return_value=machine):
+        response = await _post(app, "/ws/connect", headers=_LOCAL_SESSION_HEADERS)
 
     assert response.status_code == 200
-    connect.assert_awaited_once_with(
-        connection_id="conn-1",
-        owner_id="user-1",
-        user_id="user-1",
-        client_id="node-host",
-    )
+    machine.connect.assert_awaited_once_with("conn-1")
 
 
 @pytest.mark.asyncio
@@ -75,15 +77,53 @@ async def test_node_connect_requires_exact_verified_provenance_headers(app, conn
         ("x-verified-device-id", "wrong-device"),
     ],
 )
+async def test_local_session_connect_requires_exact_verified_provenance_headers(
+    app,
+    connection_service,
+    header,
+    value,
+):
+    connection_service.get_connection.return_value = {
+        "user_id": "user-1",
+        "org_id": None,
+        "connection_type": "local-session",
+        "auth_kind": "device",
+        "client_id": "lightbulb-local-sessions",
+        "device_id": "device-1",
+    }
+    headers = dict(_LOCAL_SESSION_HEADERS)
+    headers[header] = value
+
+    assert (await _post(app, "/ws/connect", headers=headers)).status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_internal_secret_does_not_bypass_provenance_mismatch(
     app,
     connection_service,
     monkeypatch,
-    header,
-    value,
 ):
     monkeypatch.setattr(settings, "WS_ENFORCE_INTERNAL_SECRET", True)
     monkeypatch.setattr(settings, "WS_INTERNAL_SECRET", "unit-test-internal-secret")
+    connection_service.get_connection.return_value = {
+        "user_id": "user-1",
+        "org_id": None,
+        "connection_type": "local-session",
+        "auth_kind": "device",
+        "client_id": "lightbulb-local-sessions",
+        "device_id": "device-1",
+    }
+    headers = dict(_LOCAL_SESSION_HEADERS)
+    headers["x-lightbulb-ws-internal"] = "unit-test-internal-secret"
+    headers["x-client-id"] = "browser"
+
+    assert (await _post(app, "/ws/connect", headers=headers)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_node_and_operator_connect_are_rejected(app, connection_service):
+    """Node hosts and Paperclip operators moved to the gateway relay — this
+    door now admits local-session devices only."""
     connection_service.get_connection.return_value = {
         "user_id": "user-1",
         "org_id": None,
@@ -91,44 +131,18 @@ async def test_internal_secret_does_not_bypass_provenance_mismatch(
         "auth_kind": "device",
         "device_id": "device-1",
     }
-    headers = {
-        "x-lightbulb-ws-internal": "unit-test-internal-secret",
-        "x-connection-id": "conn-1",
-        "x-user-id": "user-1",
-        "x-client-id": "node-host",
-        "x-auth-kind": "device",
-        "x-verified-device-id": "device-1",
-    }
-    headers[header] = value
-
-    assert (await _post(app, "/ws/connect", headers=headers)).status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_operator_connect_requires_paperclip_provenance(app, connection_service):
-    from core.services.paperclip_adapter_config import PAPERCLIP_OPERATOR_CLIENT_ID
-
-    connection_service.get_connection.return_value = {
-        "user_id": "user-1",
-        "org_id": "org-1",
-        "connection_type": "operator",
-        "auth_kind": "paperclip_service",
-    }
-    with patch("routers.websocket_chat._kick_off_operator_connect", new_callable=AsyncMock) as connect:
-        response = await _post(
-            app,
-            "/ws/connect",
-            headers={
-                "x-connection-id": "conn-1",
-                "x-user-id": "user-1",
-                "x-org-id": "org-1",
-                "x-client-id": PAPERCLIP_OPERATOR_CLIENT_ID,
-                "x-auth-kind": "paperclip_service",
-            },
-        )
-
-    assert response.status_code == 200
-    connect.assert_awaited_once_with(connection_id="conn-1", owner_id="org-1", user_id="user-1")
+    response = await _post(
+        app,
+        "/ws/connect",
+        headers={
+            "x-connection-id": "conn-1",
+            "x-user-id": "user-1",
+            "x-client-id": "node-host",
+            "x-auth-kind": "device",
+            "x-verified-device-id": "device-1",
+        },
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -154,50 +168,21 @@ async def test_browser_connect_is_rejected(app, connection_service):
 
 
 @pytest.mark.asyncio
-async def test_verified_node_message_uses_tauri_relay(app, connection_service):
+@pytest.mark.parametrize("connection_type", ["node", "operator", "chat"])
+async def test_message_rejects_non_local_session_connections(app, connection_service, connection_type):
     connection_service.get_connection.return_value = {
         "user_id": "user-1",
         "org_id": None,
-        "connection_type": "node",
+        "connection_type": connection_type,
         "auth_kind": "device",
-        "device_id": "device-1",
     }
-    with (
-        patch("routers.websocket_chat.is_node_connection", return_value=True),
-        patch("routers.websocket_chat.handle_node_message", new_callable=AsyncMock) as relay,
-    ):
-        response = await _post(
-            app,
-            "/ws/message",
-            headers={"x-connection-id": "conn-1"},
-            json={"type": "event", "event": "node.invoke.result"},
-        )
-
-    assert response.status_code == 200
-    relay.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_verified_operator_message_uses_paperclip_relay(app, connection_service):
-    connection_service.get_connection.return_value = {
-        "user_id": "user-1",
-        "org_id": "org-1",
-        "connection_type": "operator",
-        "auth_kind": "paperclip_service",
-    }
-    with (
-        patch("routers.websocket_chat.is_operator_connection", return_value=True),
-        patch("routers.websocket_chat.handle_operator_message", new_callable=AsyncMock) as relay,
-    ):
-        response = await _post(
-            app,
-            "/ws/message",
-            headers={"x-connection-id": "conn-1"},
-            json={"type": "event", "event": "paperclip.operator"},
-        )
-
-    assert response.status_code == 200
-    relay.assert_awaited_once()
+    response = await _post(
+        app,
+        "/ws/message",
+        headers={"x-connection-id": "conn-1"},
+        json={"type": "req", "id": "1", "method": "chat.send"},
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio

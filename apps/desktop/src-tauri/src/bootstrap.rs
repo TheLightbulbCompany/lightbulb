@@ -115,7 +115,7 @@ pub async fn start_from_pair(
             }
         }
     });
-    let proxy = start_proxy(pair_resp.gateway_url.clone(), cli_client_id, token_provider).await?;
+    let proxy = start_proxy(pair_resp.relay_url.clone(), cli_client_id, token_provider).await?;
     let proxy_port = proxy.local_port();
 
     // 4. Spawn the openclaw subprocess pointed at the loopback proxy.

@@ -160,7 +160,7 @@ class TestOpenclawConfigShape:
         assert "qmd" not in memory
 
     def test_tools_full_profile_denies_canvas_nodes(self):
-        """`nodes` is toggled to enabled at runtime by node_proxy.py when a
+        """`nodes` is toggled to enabled at runtime by relay_hooks.py when a
         desktop node pairs; default-deny prevents exposure without one."""
         config = _cfg()
         assert config["tools"]["profile"] == "full"

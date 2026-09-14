@@ -28,10 +28,11 @@ not a one-shot import:
 - ``push_desktop_pairing_live`` (POST /desktop/pair) approves whatever is
   ALREADY pending — the re-pair case where the desktop is looping on
   NOT_PAIRED and refreshing its pending request.
-- ``heal_desktop_device_not_paired`` (node relay NOT_PAIRED rejection in
-  ``node_proxy``) approves the pending request the rejected connect just
-  created — the fresh-pair case where the desktop connects after pairing.
-  Twin of the Paperclip operator relay's self-heal (``operator_proxy``).
+- ``heal_desktop_device_not_paired`` (the gateway relay's NOT_PAIRED
+  rejection hook, ``routers/gateway_relay.py``) approves the pending request
+  the rejected connect just created — the fresh-pair case where the desktop
+  connects after pairing. Twin of the Paperclip operator's self-heal
+  (``approve_pending_device_from_rejection``), called from the same hook.
 - ``approve_pending_node_surface`` (successful node connect) approves the
   node's pending command surface — the second gate, which the gateway files
   during the connect handshake and which otherwise strips the node's live
@@ -288,8 +289,9 @@ async def push_desktop_pairing_live(*, owner_id: str, device_ids: set[str]) -> b
     Called by POST /desktop/pair right after the JSON writes succeed. Covers
     the re-pair case: the desktop is already looping on NOT_PAIRED (its retry
     keeps a pending device request alive) and, once device-paired, files a
-    pending node surface. The connect-time hooks in ``node_proxy`` cover the
-    other ordering (desktop connects after pairing).
+    pending node surface. The connect-time hooks in the gateway relay
+    (``routers/gateway_relay.py``) cover the other ordering (desktop connects
+    after pairing).
 
     Never raises — a failed push must not fail the pair request; the boot
     import remains the fallback. Returns True iff the push ran to completion

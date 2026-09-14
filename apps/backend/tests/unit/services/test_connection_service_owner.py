@@ -1,3 +1,5 @@
+import time
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -90,3 +92,91 @@ async def test_query_by_owner_personal_owner(ddb_table_with_owner_gsi):
 
     rows = await svc.query_by_owner("user_p")
     assert rows == [("p1", "user_p", "chat")]
+
+
+def _set_ttl(table: str, connection_id: str, ttl: int) -> None:
+    boto3.client("dynamodb", region_name="us-east-1").update_item(
+        TableName=table,
+        Key={"connectionId": {"S": connection_id}},
+        UpdateExpression="SET #ttl = :ttl",
+        ExpressionAttributeNames={"#ttl": "ttl"},
+        ExpressionAttributeValues={":ttl": {"N": str(ttl)}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_has_live_operator_connection_ignores_a_stale_ttl_row(ddb_table_with_owner_gsi):
+    """A crashed instance's operator presence row must not veto trial-idle
+    stop for the DynamoDB TTL sweep lag — only a row whose ttl is still in
+    the future counts as live (ruling D4)."""
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit(ddb_table_with_owner_gsi, "c1", "m1", "org_x", "operator")
+    _set_ttl(ddb_table_with_owner_gsi, "c1", int(time.time()) - 10)
+
+    assert await svc.has_live_operator_connection("org_x") is False
+
+
+@pytest.mark.asyncio
+async def test_has_live_operator_connection_true_for_a_fresh_ttl_row(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit(ddb_table_with_owner_gsi, "c1", "m1", "org_x", "operator")
+    _set_ttl(ddb_table_with_owner_gsi, "c1", int(time.time()) + 120)
+
+    assert await svc.has_live_operator_connection("org_x") is True
+
+
+@pytest.mark.asyncio
+async def test_has_live_operator_connection_treats_a_missing_ttl_as_live(ddb_table_with_owner_gsi):
+    """Over-preserve when a row has no ttl at all (defensive: never silently
+    drop a real operator connection because of an absent attribute)."""
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit(ddb_table_with_owner_gsi, "c1", "m1", "org_x", "operator")
+
+    assert await svc.has_live_operator_connection("org_x") is True
+
+
+@pytest.mark.asyncio
+async def test_has_live_operator_connection_false_when_no_operator_rows(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit(ddb_table_with_owner_gsi, "c1", "m1", "org_x", "chat")
+
+    assert await svc.has_live_operator_connection("org_x") is False
+
+
+def _set_device_id(table: str, connection_id: str, device_id: str) -> None:
+    boto3.client("dynamodb", region_name="us-east-1").update_item(
+        TableName=table,
+        Key={"connectionId": {"S": connection_id}},
+        UpdateExpression="SET deviceId = :d",
+        ExpressionAttributeValues={":d": {"S": device_id}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_relay_rows_for_device_deletes_only_matching_node_rows(ddb_table_with_owner_gsi):
+    """The by-owner-id GSI has no deviceId projection, so this must fetch each
+    node row in full to check it -- and never touch a non-node row or another
+    device's row, even under the same owner."""
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit(ddb_table_with_owner_gsi, "c1", "m1", "org_x", "node")
+    _set_device_id(ddb_table_with_owner_gsi, "c1", "dev_revoked")
+    _admit(ddb_table_with_owner_gsi, "c2", "m1", "org_x", "node")
+    _set_device_id(ddb_table_with_owner_gsi, "c2", "dev_other")
+    _admit(ddb_table_with_owner_gsi, "c3", "m1", "org_x", "operator")  # not a node row
+
+    deleted = await svc.delete_relay_rows_for_device("org_x", "dev_revoked")
+
+    assert deleted == 1
+    assert svc.get_connection("c1") is None
+    assert svc.get_connection("c2") is not None
+    assert svc.get_connection("c3") is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_relay_rows_for_device_no_match_deletes_nothing(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit(ddb_table_with_owner_gsi, "c1", "m1", "org_x", "node")
+    _set_device_id(ddb_table_with_owner_gsi, "c1", "dev_other")
+
+    assert await svc.delete_relay_rows_for_device("org_x", "dev_revoked") == 0
+    assert svc.get_connection("c1") is not None

@@ -71,32 +71,6 @@ _ENRICH_TIMEOUT_S = 5.0
 _SEEN_RUN_IDS_CAP = 4096
 _seen_run_ids: dict[str, None] = {}
 
-# owner:runId -> actor stamped at dispatch. The retired server kickoff path no
-# longer emits a ``system`` run; the room dispatch and terminal reader both key
-# on runId (== chat.send idempotencyKey == the runId OpenClaw echoes on every
-# event), so this module-owned map needs no connection-pool change. Runs not
-# stamped by a dispatch site (cron/channel/paperclip) stay None (never inferred from
-# run_source). Bounded FIFO, same idiom as _seen_run_ids: a stamped run whose
-# terminal never fires (backend down mid-run, send that never acked) is evicted
-# by the cap.
-_RUN_ACTOR_CAP = 4096
-_run_actor: dict[str, str] = {}
-
-
-def record_run_actor(owner_id: str, run_id: str | None, actor: str) -> None:
-    """Stamp the dispatch actor for a run; read back by ``schedule_run_completed``.
-
-    No-op when analytics is off (keeps the map empty so nothing accumulates)
-    or the runId is missing. Synchronous and I/O-free — safe on any dispatch
-    path.
-    """
-    if not settings.POSTHOG_PROJECT_WRITE_KEY or not run_id:
-        return
-    _run_actor[f"{owner_id}:{run_id}"] = actor
-    while len(_run_actor) > _RUN_ACTOR_CAP:
-        del _run_actor[next(iter(_run_actor))]
-
-
 # owner_id -> (is_internal, monotonic stamp). Bounded, 1h TTL — one Clerk
 # email resolution per owner per hour instead of one per run.
 _INTERNAL_TTL_S = 3600.0
@@ -161,16 +135,10 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
     if not settings.POSTHOG_PROJECT_WRITE_KEY:
         return None
 
-    # Actor stamped at dispatch (record_run_actor). Popped so a re-emit of the
-    # same runId can't leave it dangling. None when neither dispatch site
-    # stamped this run.
-    actor = _run_actor.pop(f"{owner_id}:{run_id}", None) if run_id else None
-
     props: dict = {
         "run_id": run_id,
         "agent_id": parsed.get("agent_id"),
         "outcome": outcome,
-        "actor": actor,
         "trigger_provider": None,
         "channel": None,
         "is_nightly_ceo": False,

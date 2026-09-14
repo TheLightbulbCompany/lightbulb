@@ -344,7 +344,6 @@ async def _register_built_agent(
             owner_id=owner_id,
             paperclip_agent=paperclip_agent,
             gateway_token=container_token,
-            ip=container_ip,
         )
     except Exception as exc:  # noqa: BLE001 — roll back the orphan, re-raise
         if install_already_committed:

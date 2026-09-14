@@ -70,7 +70,7 @@ Both clients already put the credential and the kind in the query string (deskto
 `proxy.rs:166`, `paperclip_adapter_config.synthesize_openclaw_adapter`), so their wire
 shape does not change — only the host and path.
 
-### Handler (`routers/gateway_relay.py`, `@router.websocket("/gateway/ws")`)
+### Handler (`routers/gateway_relay.py`, mounted at `/api/v1/gateway`, `@router.websocket("/ws")` stacked with `/ws/` on one handler — D2)
 
 1. **Authenticate the upgrade** with `core/services/machine_auth.py`, a port of the two
    verifiers in `apps/infra/lambda/websocket-authorizer/index.py`: device JWTs (EdDSA,
@@ -108,6 +108,10 @@ shape does not change — only the host and path.
      This replaces `paperclip_openclaw_pairing._probe_pairing_request` and
      `perform_signed_connect`: agent creation no longer dials the container as the agent's
      device; the adapter's first connect opens the pairing window and the relay closes it.
+     D15: the self-heal is gated on the deviceId already being in the owner's
+     backend-written `devices/paired.json` (a compromised/buggy container's own NOT_PAIRED
+     frame is otherwise the only source of that deviceId) and fires once per connection,
+     not on every retry.
 6. **Node side effects** (unchanged behaviour, new home): after `hello-ok` on a node
    connection, `approve_pending_node_surface(owner_id, device_id)` and, when this is the
    owner's first live node row, `patch_openclaw_config(owner_id, {"tools": {"deny":
@@ -148,20 +152,29 @@ for the local-session enrollment URL (`transport.rs` reads `enrollment.gateway_u
   `paperclip_provisioning._ws_gateway_url`, `company_deploy_service._gateway_url`, and
   `paperclip_adapter_config.build_gateway_url_re` (allowlist becomes the `bv` host).
 - Desktop: `LIGHTBULB_WS_URL` in `desktop-build.yml` (dev and prod jobs) → the relay URL;
-  `lib.rs` defaults likewise. The node client and proxy need no code change.
+  `lib.rs` defaults likewise. D1: `POST /desktop/pair`'s response gains `relayUrl`
+  (`settings.GATEWAY_RELAY_URL`) alongside the existing `gatewayUrl` (stays
+  `WS_GATEWAY_URL`, still read by the local-session relay only); `bootstrap.rs` reads
+  `relay_url` and dials it for the node's own proxy, so the node client is not
+  code-change-free after all.
 - Paperclip: the backfill script of §2.4 rewrites `adapterConfig.url` for every
   `openclaw_gateway` agent through the Paperclip admin API.
 - `service-stack.ts`: `desiredCount: 2`, `minHealthyPercent: 100`, `maxHealthyPercent:
   200`, a scalable target 2–4 on CPU 60 %; the comment that explains why it was 1 is
   deleted. `security-group` and `ContainerFromServiceIngress` are unchanged (the backend
   already dials the container on 18789).
+- D16: uvicorn's own WS handshake log (`uvicorn.error`, independent of any app-level
+  logging) writes the upgrade request line including `?token=<jwt>` in plaintext.
+  `core/observability/logging.py`'s `configure_logging()` — called from `main.py` at
+  import — installs an idempotent `RedactTokenFilter` on that logger so the credential
+  never reaches CloudWatch.
 
 ## 6. Failure handling
 
 | Failure | Detected by | Outcome |
 |---|---|---|
 | bad or expired token, unknown `clientId` | upgrade auth | close 1008; the client re-mints and reconnects |
-| container stopped | `running_container` | wake requested; close 1013; the client's reconnect loop lands once it is up |
+| container stopped | `resolve_running_container` | D14: operator connects wake it (`request_wake_silent`), close 1013, reconnect loop lands once it is up; a node connect never wakes (`outcome=skipped_node`) — an old node path never woke either, and waking on a laptop coming back from sleep would re-provision a parked trial container forever |
 | container closes / task dies mid-connection | upstream EOF | client socket closed with the same code; the client reconnects and the next accept resolves the new IP |
 | backend deploy | instance drains | both sockets close; the client reconnects to a surviving instance (`minHealthyPercent: 100`) |
 | device revoked while connected | presence row gone at refresh | close 1008 within 60 s; re-auth fails (`paired.json`, token expiry) |
@@ -204,5 +217,11 @@ for the local-session enrollment URL (`transport.rs` reads `enrollment.gateway_u
 
 ## 10. Out of scope
 
-The local-session relay's transport (stays); C; per-owner rate limits on the relay;
+The local-session relay's transport (stays); per-owner rate limits on the relay;
 replacing the `bv-` CloudFront door with something else.
+
+Handled by C's PR, not D's: `idempotency.py` (replaced by a 409 dedup-table claim);
+the P12 backend-liveness alarm; the `run_completed` lifecycle tracking. The Task 4b
+amendment (a DDB `connection_lock` lease) was withdrawn — C's spec analysis found the
+existing `owner_lifecycle_guard` (EFS fcntl) is already cross-instance, so C reuses it
+instead of adding a second lock.

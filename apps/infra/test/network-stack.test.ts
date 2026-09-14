@@ -40,10 +40,11 @@ describe("NetworkStack — browser-view listener", () => {
   // its SG rule admits the WHOLE VPC CIDR (CloudFront VPC-origin ENIs sit
   // behind an AWS-managed SG that doesn't exist until first deploy, so the
   // rule can't be narrower). What keeps that safe is the routing cap: 404 by
-  // default, exactly one path forwarded. These assertions ARE that cap — if
-  // one fails, in-VPC callers (per-user containers included) just gained
-  // reach into more of FastAPI than the one Clerk-authenticated relay route.
-  test("8081 listener defaults to 404 and forwards ONLY the relay path", () => {
+  // default, exactly two paths forwarded (browser-view live view + the
+  // machine gateway relay). These assertions ARE that cap — if one fails,
+  // in-VPC callers (per-user containers included) just gained reach into
+  // more of FastAPI than those two Clerk/device/service-authenticated routes.
+  test("8081 listener defaults to 404 and forwards ONLY the relay paths", () => {
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
       Port: 8081,
       Protocol: "HTTP",
@@ -58,7 +59,7 @@ describe("NetworkStack — browser-view listener", () => {
       Conditions: [
         Match.objectLike({
           Field: "path-pattern",
-          PathPatternConfig: { Values: ["/api/v1/browser-view/*"] },
+          PathPatternConfig: { Values: ["/api/v1/browser-view/*", "/api/v1/gateway/*"] },
         }),
       ],
       Actions: [Match.objectLike({ Type: "forward" })],

@@ -338,7 +338,7 @@ def test_register_happy_path_pairs_operator_device(
     assert kwargs["paperclip_agent"] is full_paperclip_agent
     assert kwargs["paperclip_agent"]["adapterConfig"]["devicePrivateKeyPem"]
     assert kwargs["gateway_token"] == "gw-token"
-    assert kwargs["ip"] == "10.0.0.1"
+    assert "ip" not in kwargs
 
 
 @patch("routers.agent_builder.emit_agent_deployed")

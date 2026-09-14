@@ -28,6 +28,11 @@ pub struct PairRequest {
 pub struct PairResponse {
     #[serde(rename = "gatewayUrl")]
     pub gateway_url: String,
+    /// The raw WebSocket gateway relay's door (`bv-` CloudFront/ALB). The CLI
+    /// node's loopback proxy dials THIS one; `gateway_url` above stays on the
+    /// API Gateway door for the local-session relay, which still reads it.
+    #[serde(rename = "relayUrl")]
+    pub relay_url: String,
     #[serde(rename = "gatewayToken")]
     pub gateway_token: String,
     /// Container-row owner id (personal user or org). The node-host mints its

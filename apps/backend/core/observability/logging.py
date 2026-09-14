@@ -20,6 +20,7 @@ Usage:
 import contextvars
 import json
 import logging
+import re
 import traceback
 from datetime import datetime, timezone
 
@@ -99,6 +100,32 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data)
 
 
+_TOKEN_QS_RE = re.compile(r"token=[^&\s]*")
+
+
+class RedactTokenFilter(logging.Filter):
+    """Strips `token=<value>` out of a log record's message/args in place.
+
+    The gateway relay's upgrade URL carries the machine credential as
+    `?token=<jwt>` in the query string (routers/gateway_relay.py). Uvicorn's
+    own WebSocket handshake log (the `uvicorn.error` logger, INFO
+    `... "GET /api/v1/gateway/ws?token=..." [accepted]`/`403` lines) writes
+    the full request line independent of `--no-access-log` and independent of
+    anything our own routers log — so the credential lands in CloudWatch in
+    plaintext unless this is applied at the logger itself.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str) and "token=" in record.msg:
+            record.msg = _TOKEN_QS_RE.sub("token=REDACTED", record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _TOKEN_QS_RE.sub("token=REDACTED", a) if isinstance(a, str) and "token=" in a else a
+                for a in record.args
+            )
+        return True
+
+
 def configure_logging(level: str = "INFO") -> None:
     """Replace the root logger's handlers with a single JsonFormatter handler.
 
@@ -123,6 +150,16 @@ def configure_logging(level: str = "INFO") -> None:
     # site, present and future — the one place that fixes the whole class.
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    # See RedactTokenFilter — uvicorn's own WS handshake log writes the
+    # gateway relay's ?token=<jwt> in plaintext, independent of any flag.
+    # Idempotent: configure_logging can run more than once in a process
+    # (tests, a reload), and logging.Filter has no identity/equality check on
+    # add, so a naive addFilter would stack a duplicate on every call and
+    # redact-then-double-redact instead of no-op.
+    uvicorn_error = logging.getLogger("uvicorn.error")
+    if not any(isinstance(f, RedactTokenFilter) for f in uvicorn_error.filters):
+        uvicorn_error.addFilter(RedactTokenFilter())
 
 
 def bind_request_context(request_id: str, user_id: str | None = None) -> None:

@@ -632,9 +632,13 @@ async def revoke_desktop_device(
     """Remove the device from paired.json AND force-close any live WS session.
 
     Returns True if the device existed (was removed); False if it wasn't paired.
-    The force_close_device callback terminates the live API Gateway WS connection
-    keyed by deviceId — this is the security-review HIGH fix for stolen-Mac
-    scenarios where paired.json removal alone only blocks future reconnects.
+    The force_close_device callback force-closes the device's live relay
+    connection (deleting its TTL presence row — the relay pins a device's
+    socket to whichever backend instance accepted it, so there is no
+    in-process map to pop any more; the relay's own refresh loop notices the
+    row is gone and closes the socket) — this is the security-review HIGH fix
+    for stolen-Mac scenarios where paired.json removal alone only blocks
+    future reconnects.
     """
     removed = {"value": False}
 

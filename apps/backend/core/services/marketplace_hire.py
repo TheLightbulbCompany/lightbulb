@@ -479,7 +479,6 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 owner_id=owner_id,
                 paperclip_agent=full_agent,
                 gateway_token=container["gateway_token"],
-                ip=container_ip,
             )
         except Exception:  # noqa: BLE001 — pairing must not undo a committed install
             logger.exception(

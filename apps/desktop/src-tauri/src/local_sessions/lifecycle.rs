@@ -36,17 +36,22 @@ pub(crate) enum Transition {
 }
 
 /// Build the wire datagram sent to the local relay for one hook invocation.
-/// Drops the largest/least essential fields in order to stay under
-/// `DATAGRAM_MAX`: `lastAssistantMessage` -> `cwd` -> `transcriptPath`.
+/// `sessionId`/`reason`/`notificationType` are bounded up front (128/64/64
+/// chars) since they come from untrusted hook stdin; on top of that, drops
+/// the largest/least essential fields in order to stay under `DATAGRAM_MAX`:
+/// `lastAssistantMessage` -> `cwd` -> `transcriptPath`.
 pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
     let s = |k: &str| stdin_json[k].as_str().map(str::to_owned);
     let mut fields: Vec<(&str, Option<String>)> = vec![
         ("v", Some("1".into())),
         ("provider", Some(provider.into())),
         ("event", s("hook_event_name")),
-        ("sessionId", s("session_id")),
-        ("reason", s("reason")),
-        ("notificationType", s("notification_type")),
+        ("sessionId", s("session_id").map(|m| m.chars().take(128).collect())),
+        ("reason", s("reason").map(|m| m.chars().take(64).collect())),
+        (
+            "notificationType",
+            s("notification_type").map(|m| m.chars().take(64).collect()),
+        ),
         ("message", s("message").map(|m| m.chars().take(120).collect())),
         ("transcriptPath", s("transcript_path")),
         ("cwd", s("cwd")),
@@ -55,6 +60,7 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
             s("last_assistant_message").map(|m| m.chars().take(LAST_MESSAGE_MAX).collect()),
         ),
     ];
+    let mut bytes = Vec::new();
     for drop in ["lastAssistantMessage", "cwd", "transcriptPath", ""] {
         let mut map = Map::new();
         for (k, v) in &fields {
@@ -62,9 +68,9 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
                 map.insert((*k).into(), if *k == "v" { json!(1) } else { json!(v) });
             }
         }
-        let bytes = serde_json::to_vec(&Value::Object(map)).unwrap_or_default();
+        bytes = serde_json::to_vec(&Value::Object(map)).unwrap_or_default();
         if bytes.len() <= DATAGRAM_MAX || drop.is_empty() {
-            return bytes;
+            break;
         }
         for (k, v) in fields.iter_mut() {
             if *k == drop {
@@ -72,7 +78,7 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
             }
         }
     }
-    unreachable!()
+    bytes
 }
 
 /// Parse a datagram produced by [`build_datagram`]. Returns `None` for the
@@ -225,6 +231,24 @@ mod tests {
         assert!(parse_datagram(b"1").is_none());
         assert!(parse_datagram(b"{not json").is_none());
         assert!(parse_datagram(br#"{"v":1,"provider":"claude","event":"Stop"}"#).is_none(), "missing sessionId is a wake, not an event");
+    }
+
+    #[test]
+    fn lifecycle_datagram_bounds_oversized_untrusted_fields() {
+        let stdin = json!({
+            "session_id": "s".repeat(2000),
+            "hook_event_name": "Notification",
+            "reason": "r".repeat(2000),
+            "notification_type": "n".repeat(2000),
+            "message": "m".repeat(2000),
+            "transcript_path": "/t/x.jsonl",
+            "cwd": "/w",
+            "last_assistant_message": "x".repeat(2000),
+        });
+        let bytes = build_datagram("claude", &stdin);
+        assert!(bytes.len() <= DATAGRAM_MAX);
+        let parsed = parse_datagram(&bytes).unwrap();
+        assert_eq!(parsed.session_id.len(), 128);
     }
 
     #[test]

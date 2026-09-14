@@ -181,6 +181,8 @@ impl Host {
                         queue: vec![],
                         pending: None,
                         registration: RegistrationState::default(),
+                        ended_at: None,
+                        ended_reason: None,
                     },
                 );
             }
@@ -946,6 +948,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         }
     }
 
@@ -962,6 +965,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         }
     }
 
@@ -1238,6 +1243,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         }
     }
     #[tokio::test]
@@ -1441,6 +1447,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -1476,6 +1484,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -1490,6 +1499,8 @@ mod tests {
             after_seq: 2,
             queue: vec![json!({"kind":"text","role":"assistant","text":"saved","truncated":false})],
             pending: Some(json!({"batchId":"stable","afterSeq":2})),
+            ended_at: None,
+            ended_reason: None,
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -1584,6 +1595,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),
@@ -1599,6 +1611,8 @@ mod tests {
                 json!({"kind":"text","role":"assistant","text":"public output","truncated":false}),
             ],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),

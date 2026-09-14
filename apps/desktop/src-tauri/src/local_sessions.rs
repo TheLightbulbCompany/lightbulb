@@ -2,6 +2,7 @@
 mod claude;
 mod codex;
 pub mod enrollment;
+pub(crate) mod lifecycle;
 mod transport;
 mod workspace;
 pub use claude::{
@@ -764,6 +765,8 @@ struct NativeSession {
     cwd_name: Option<String>,
     #[serde(default)]
     active_turn: Option<String>,
+    #[serde(default)]
+    pub last_assistant_message: Option<String>,
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -1067,6 +1070,10 @@ struct Mirror {
     pending: Option<Value>,
     #[serde(default)]
     registration: RegistrationState,
+    #[serde(default)]
+    pub ended_at: Option<u64>,
+    #[serde(default)]
+    pub ended_reason: Option<String>,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1305,6 +1312,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -1527,6 +1535,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -1603,6 +1612,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1611,6 +1621,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1675,6 +1687,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1683,6 +1696,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1746,6 +1761,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1754,6 +1770,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1832,6 +1850,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1840,6 +1859,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1883,6 +1904,7 @@ mod tests {
                 title: None,
                 cwd_name: None,
                 active_turn: None,
+                last_assistant_message: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1891,6 +1913,8 @@ mod tests {
             after_seq: 0,
             queue: vec![],
             pending: None,
+            ended_at: None,
+            ended_reason: None,
         }
     }
 

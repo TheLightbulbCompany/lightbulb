@@ -117,6 +117,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         title,
         cwd_name,
         active_turn: None,
+        last_assistant_message: None,
     })
 }
 
@@ -878,6 +879,7 @@ mod tests {
             title: None,
             cwd_name: None,
             active_turn: None,
+            last_assistant_message: None,
         };
         let ingress = Ingress {
             workspace_revision: None,

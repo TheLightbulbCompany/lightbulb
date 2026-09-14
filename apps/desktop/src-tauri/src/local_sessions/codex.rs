@@ -43,6 +43,7 @@ fn from_rollout(
             .and_then(|c| Path::new(c).file_name())
             .map(|n| n.to_string_lossy().chars().take(128).collect()),
         active_turn,
+        last_assistant_message: None,
     })
 }
 

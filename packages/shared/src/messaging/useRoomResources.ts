@@ -21,7 +21,7 @@ export const accessLost = (error: unknown) => error instanceof ApiError && (erro
 export function useRoomResources(
   roomId: string,
   { client, onEvent, connectionRevision }: RoomResourceSource,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled = true, includeEnded = false }: { enabled?: boolean; includeEnded?: boolean } = {},
 ) {
   const [data, setData] = useState<RoomResources | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +56,7 @@ export function useRoomResources(
       do {
         queued.current = false;
         try {
-          const next = await client.listResources(roomId);
+          const next = await client.listResources(roomId, { includeEnded });
           if (id !== request.current || blocked.current) return;
           setData(next);
           setError(null);
@@ -72,7 +72,7 @@ export function useRoomResources(
     } finally {
       if (id === request.current) { refreshing.current = false; setLoading(false); }
     }
-  }, [client, roomId, revoke]);
+  }, [client, roomId, revoke, includeEnded]);
   useEffect(() => {
     if (!enabled) return;
     blocked.current = false;
@@ -92,7 +92,7 @@ export function useRoomResources(
     // Reuses the room's existing live subscription. Poll only while this pane exists.
     const timer = setInterval(() => void refresh(), 5000);
     return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
-  }, [enabled, onEvent, roomId, refresh, revoke, invalidate]);
+  }, [enabled, onEvent, roomId, refresh, revoke, invalidate, includeEnded]);
   const previousConnection = useRef(connectionRevision);
   useEffect(() => {
     if (enabled && previousConnection.current !== connectionRevision) void refresh();

@@ -3,7 +3,7 @@ import type { LocalSession } from "./types";
 export const sessionLabel = (s: LocalSession) => `${s.provider === "claude" ? "Claude" : "Codex"} · ${s.title?.trim() || s.sessionId.slice(0, 8)}`;
 
 export const sessionStatus: Record<LocalSession["status"], string> = {
-  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for approval on owner's machine", unknown: "Activity unknown", offline: "Offline",
+  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for approval on owner's machine", unknown: "Activity unknown", offline: "Offline", ended: "Ended",
 };
 
 export const unavailableReason: Record<NonNullable<LocalSession["controlUnavailableReason"]>, string> = {
@@ -15,6 +15,6 @@ export const unavailableReason: Record<NonNullable<LocalSession["controlUnavaila
 
 /** Verified control, a send mode, and — when input is immediate — a known turn. */
 export const canSendToSession = (session: LocalSession): boolean =>
-  session.status !== "offline" && session.capabilitiesVerified &&
+  session.status !== "offline" && session.status !== "ended" && session.capabilitiesVerified &&
   !session.controlUnavailableReason && session.capabilities.sendMode !== "none" &&
   !(session.status === "busy" && session.capabilities.sendMode === "immediate" && !session.activeTurnId);

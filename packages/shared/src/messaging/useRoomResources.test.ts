@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useLocalSessionHistory, useRoomResources, type RoomResourceSource } from "./useRoomResources";
@@ -38,6 +38,13 @@ describe("useRoomResources enabled gate", () => {
     renderHook(() => useRoomResources("room-1", source));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(listResources).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes includeEnded through to the client and refetches when it flips", async () => {
+    const { rerender } = renderHook(({ includeEnded }) => useRoomResources("room-1", source, { includeEnded }), { initialProps: { includeEnded: false } });
+    await waitFor(() => expect(source.client.listResources).toHaveBeenCalledWith("room-1", { includeEnded: false }));
+    rerender({ includeEnded: true });
+    await waitFor(() => expect(source.client.listResources).toHaveBeenCalledWith("room-1", { includeEnded: true }));
   });
 });
 

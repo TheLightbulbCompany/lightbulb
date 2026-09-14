@@ -39,7 +39,7 @@ const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(room
 const localSessionPath = (roomId: string, sessionId: string) => `${roomPath(roomId)}/local-sessions/${encodeURIComponent(sessionId)}`;
 
 export interface MessagingClient {
-  listResources(roomId: string): Promise<RoomResources>;
+  listResources(roomId: string, options?: { includeEnded?: boolean }): Promise<RoomResources>;
   listLocalSessionEvents(roomId: string, sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(roomId: string, sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(roomId: string, sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
@@ -70,7 +70,8 @@ export interface MessagingClient {
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
-    listResources: (roomId) => api.get(`${roomPath(roomId)}/resources`) as Promise<RoomResources>,
+    listResources: (roomId, options) =>
+      api.get(`${roomPath(roomId)}/resources${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<RoomResources>,
     listLocalSessionEvents: (roomId, sessionId, afterSeq, limit = 50) => api.get(
       `${localSessionPath(roomId, sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,

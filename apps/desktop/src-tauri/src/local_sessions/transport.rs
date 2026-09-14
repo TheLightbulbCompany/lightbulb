@@ -47,6 +47,11 @@ enum Rpc {
     },
     Ended {
         key: String,
+        /// Which end this frame reported. A resume and a second end can both land
+        /// while the ACK is in flight, and the answer to the old end must never be
+        /// read as an answer to the new one.
+        at: u64,
+        generation: String,
         sent: Instant,
     },
 }
@@ -358,7 +363,7 @@ impl Host {
     /// one a resume has revived, and one that ended before the relay ever learned
     /// the session existed -- that last one is retired here, since there is nothing
     /// to tell and nobody to tell it to.
-    fn ended_frame(&mut self, registered: &BTreeSet<String>) -> Result<Option<(String, Value)>> {
+    fn ended_frame(&mut self, registered: &BTreeSet<String>) -> Result<Option<(Rpc, Value)>> {
         let Self {
             dir,
             mirrors,
@@ -399,12 +404,18 @@ impl Host {
                     continue;
                 }
             }
+            let reported = Rpc::Ended {
+                key: key.clone(),
+                at: ended_at,
+                generation: mirror.generation.clone(),
+                sent: Instant::now(),
+            };
             let frame = json!({"type":"local.session.ended","sessionId":session,
                 "generation":mirror.generation,
                 "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
                 "endedAt":ended_at});
             ended_pending.remove(index);
-            return Ok(Some((key, frame)));
+            return Ok(Some((reported, frame)));
         }
         Ok(None)
     }
@@ -795,10 +806,9 @@ impl Host {
                         self.heartbeat_dirty.clear();
                         heartbeat_frames = device_heartbeats(&self.mirrors, &registered)?.into();
                     }
-                    if let Some((key, frame)) = self.ended_frame(&registered)? {
-                        let sent = Instant::now();
+                    if let Some((reported, frame)) = self.ended_frame(&registered)? {
                         send(socket, &frame).await?;
-                        pending_rpc = Some(Rpc::Ended { key, sent });
+                        pending_rpc = Some(reported);
                     } else if let Some(frame) = heartbeat_frames.pop_front() {
                         let sent = Instant::now();
                         let wall = SystemTime::now();
@@ -971,16 +981,17 @@ impl Host {
                         },
                         Some("local.session.ended.ack") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
-                            let Rpc::Ended{key,..} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            let Rpc::Ended{key,at,generation,..} = rpc else {return Err("mismatched session acknowledgment".into());};
                             // Told. Nothing more is uploaded, heartbeated or registered for
                             // it; the mirror stays until it is reaped.
                             registered.remove(&key);
                             sent_batches.remove(&key);
                             let Some(mirror) = self.mirrors.get_mut(&key) else {continue;};
-                            // A resume that landed while this ACK was in flight makes it an
-                            // answer about the session's previous life. The one running now
-                            // still owes its own end, so it must not be marked reported.
-                            if mirror.ended_at.is_none() {continue;}
+                            // This ACK answers one specific end. A resume -- and a second end
+                            // -- can both land while it is in flight, and the session running
+                            // now still owes its own end, so anything but the exact end this
+                            // frame reported leaves `ended_sent` alone for `ended_frame`.
+                            if mirror.ended_at != Some(at) || mirror.generation != generation {continue;}
                             let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
                             mirror.ended_sent = true;
                             persist_changed(&self.dir,&key,mirror,&before)?;
@@ -3149,6 +3160,10 @@ mod tests {
         let acked = persisted.clone();
         let mut mirror = test_mirror("s", "gen-1");
         mirror.native = observed_fixture(dir.path());
+        // Nothing to read yet: the bytes arrive only once the session is registered,
+        // so no upload pass can have carried them away before it ends.
+        let transcript = mirror.native.transcript.clone().unwrap();
+        fs::write(&transcript, "").unwrap();
         let mut host = test_host(dir.path(), vec![("a-session", mirror)]);
         host.heartbeat_interval = Duration::from_secs(60);
         let (hooks_tx, hooks_rx) = tokio::sync::mpsc::channel(1);
@@ -3174,6 +3189,11 @@ mod tests {
             })
             .await
             .unwrap();
+            // The conversation's last words, written and then immediately ended: the
+            // only reader that can still see them is the drain gate in `ended_frame`.
+            let mut file = fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+            writeln!(file,"{}",json!({"type":"assistant","sessionId":"s","version":"2.1.268","message":{"role":"assistant","content":[{"type":"text","text":"short-lived public output"}]}})).unwrap();
+            drop(file);
             hooks_tx
                 .send(hook(lifecycle::Provider::Claude, "SessionEnd", "s"))
                 .await
@@ -3265,6 +3285,68 @@ mod tests {
             host.heartbeat_dirty.is_empty(),
             "sending the heartbeat clears what made it early"
         );
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_ended_ack_answers_only_the_end_it_reported() {
+        // The ACK for the first end is deliberately withheld until the session has
+        // been resumed AND has ended again, so the reply lands on a mirror whose
+        // `ended_at` is Some but is a different end. Holding it is what makes this
+        // deterministic; the same interleaving arrives at random otherwise.
+        let dir = tempfile::tempdir().unwrap();
+        let key = native_key(&test_native(SID));
+        let persisted = dir.path().join(format!("{key}.json"));
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(1_700_000_042);
+        mirror.ended_reason = Some("exited".into());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["type"], "local.session.ended");
+            assert_eq!(first["endedAt"], 1_700_000_042u64);
+            // Still unacknowledged: resume the session and let its new process die.
+            let mut resumed = test_native(SID);
+            resumed.process.pid = 2_147_483_000;
+            tx.send(vec![resumed]).await.unwrap();
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    tick.tick().await;
+                    if private_read::<Mirror>(&persisted)
+                        .is_ok_and(|m| m.ended_at.is_some() && m.generation != "gen-1")
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("the resumed session ends again while the first ACK is held");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(
+                second["type"], "local.session.ended",
+                "the stale ACK must not retire an end it never reported"
+            );
+            assert_eq!(second["reason"], "process-exited");
+            assert_ne!(second["generation"], first["generation"]);
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(8), host.connection(&mut socket, &mut rx))
+            .await;
+        server.await.unwrap();
     }
 
     #[test]

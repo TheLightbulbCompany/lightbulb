@@ -160,7 +160,8 @@ export function useConnections() {
         `/connections/${encodeURIComponent(provider)}/authorize`,
       )) as AuthorizeResponse;
       // Hand the browser to the provider's consent screen. On the web it
-      // redirects back to /settings/connections?connected=… (or ?error=…) and
+      // redirects back to /settings/connections?connected=… (or ?error=…),
+      // which forwards to the workspace Connections panel, and
       // the full-page navigation discards this React tree. In the desktop app
       // the consent screen opens in the SYSTEM browser (the webview must not
       // navigate there — Google blocks embedded webviews and the callback

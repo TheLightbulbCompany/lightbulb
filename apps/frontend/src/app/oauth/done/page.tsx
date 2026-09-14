@@ -13,8 +13,9 @@ import { useRouter, useSearchParams } from "next/navigation";
  * bounce the agent's Chrome to a sign-in page right after the connect
  * succeeded — and an owner who signed in there would hand the agent's browser
  * an Isol8 session. So: a signed-in viewer continues to /settings/connections
- * exactly as before (same query string, same toasts); anyone else gets a
- * close-this-tab note and nothing else. No data is fetched here.
+ * exactly as before (same query string, same toasts) — that route forwards on
+ * to the workspace Connections panel, which owns the banner; anyone else gets
+ * a close-this-tab note and nothing else. No data is fetched here.
  */
 function Done() {
   const { isLoaded, isSignedIn } = useAuth();

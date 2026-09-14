@@ -13,15 +13,15 @@ import { cn } from "@/lib/utils";
 
 /**
  * Control-dashboard home for third-party integrations. This re-homes the
- * same connect/disconnect surface that powers /settings/connections — it
- * reuses ConnectionsList (+ ConnectButton + useConnections) as-is, so
+ * same connect/disconnect surface that powers the rail's Connections panel —
+ * it reuses ConnectionsList (+ ConnectButton + useConnections) as-is, so
  * paste-token providers connect inline here and the shared /connections
  * SWR cache stays in sync across both surfaces.
  *
- * OAuth providers still redirect out to /settings/connections on return
- * (the backend's fixed callback URL). That's acceptable: the user lands
- * back in Settings with the row already flipped to connected, and this
- * tab picks up the same cached status the next time it mounts.
+ * OAuth providers still redirect out to the backend's fixed callback URL on
+ * return, which lands the user on the Connections panel rather than back
+ * here. That's acceptable: they land with the row already flipped to
+ * connected, and this tab picks up the same cached status when it remounts.
  */
 interface IntegrationsPanelProps {
   /**

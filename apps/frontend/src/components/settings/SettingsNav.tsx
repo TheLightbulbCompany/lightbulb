@@ -14,19 +14,20 @@ import {
 // =============================================================================
 // SettingsNav — the shared <nav className="settings-nav"> sidebar.
 //
-// Rendered identically on BOTH /settings (page.tsx) and /settings/connections
-// (connections/page.tsx) so the connections route keeps the full nav instead
-// of a minimal back-link stub. Two modes:
+// Two modes. /settings is the only caller today, in "tabs" mode; "links" mode
+// existed for the /settings/connections page, which became a redirector when
+// Connections moved to the workspace rail. Both are kept so a future sibling
+// route gets the full nav instead of a minimal back-link stub.
 //
 //   mode="tabs" (/settings) — panel items are interactive <li role="tab">
 //     with the roving-tabindex keyboard nav; the caller owns activePanel +
-//     the keydown handler. Outbound href items (Connections) render as plain
-//     links (never active here). Byte-identical to the pre-extraction render.
+//     the keydown handler. Outbound href items render as plain links (never
+//     active here). Byte-identical to the pre-extraction render.
 //
-//   mode="links" (/settings/connections) — panel items render as
+//   mode="links" (a sibling route) — panel items render as
 //     <Link href="/settings?panel={id}"> so they navigate back into the tabbed
-//     page on the right pane, and the active href row (Connections) is marked
-//     active. No roving-tabindex (these are real links).
+//     page on the right pane, and the active href row is marked active. No
+//     roving-tabindex (these are real links).
 // =============================================================================
 
 type SettingsNavProps = {

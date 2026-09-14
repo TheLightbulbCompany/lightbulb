@@ -12,9 +12,11 @@ import React from "react";
 // =============================================================================
 
 // A nav item is either an in-page tab (sets activePanel) or an outbound
-// link to a sibling settings route (`href`). Connections lives on its own
-// route — /settings/connections — because OAuth providers redirect the
-// browser back to it after consent, so it can't be a ?panel= tab.
+// link to a sibling settings route (`href`). NO row uses `href` today:
+// Connections was the only one, and it moved out of Settings entirely onto the
+// workspace rail (see RELOCATED_PANEL_HREFS below). The field and SettingsNav's
+// matching link mode are left in place rather than torn out with it — they are
+// the generic escape hatch for the next row that needs to be a route.
 export type NavItem = {
   id: string;
   name: string;
@@ -72,9 +74,9 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     label: "WIRING",
     items: [
       { id: "channels", name: "Channels", icon: "channels", panel: "channels" },
-      { id: "connections", name: "Connections", icon: "connections", href: "/settings/connections" },
-      // MCP servers (owner-level mcp.servers) — the IntegrationsPanel tab; the
-      // OAuth-return *route* above (Connections) is the dedup counterpart (§5).
+      // MCP servers (owner-level mcp.servers) — the IntegrationsPanel tab.
+      // Connections, its dedup counterpart, is no longer a Settings row at all:
+      // it lives on the workspace rail under Browser and Files.
       { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
       { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
       { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
@@ -101,6 +103,14 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     ],
   },
 ];
+
+// Panels that used to be Settings tabs/routes and now live elsewhere in the
+// app. `/settings?panel=<id>` forwards here instead of silently falling back to
+// Profile, so links and bookmarks minted while the panel lived in Settings
+// still land on it.
+export const RELOCATED_PANEL_HREFS: Readonly<Record<string, string>> = {
+  connections: "/chat?panel=connections",
+};
 
 // =============================================================================
 // Icons

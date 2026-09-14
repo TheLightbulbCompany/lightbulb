@@ -106,8 +106,9 @@ export function useGoogleAccounts() {
     )) as AuthorizeResponse;
     // Hand the browser to Google's consent screen. Adding an account is
     // additive on the backend — it never replaces an existing grant. On the
-    // web the provider redirects back to /settings/connections and the
-    // full-page navigation discards this tree. In the desktop app the consent
+    // web the provider redirects back to /settings/connections — which
+    // forwards to the workspace Connections panel — and the full-page
+    // navigation discards this tree. In the desktop app the consent
     // screen opens in the SYSTEM browser (Google blocks embedded webviews),
     // so this tree stays mounted: poll the accounts list until the new grant
     // lands, then resolve so the caller's busy state clears. A failed browser

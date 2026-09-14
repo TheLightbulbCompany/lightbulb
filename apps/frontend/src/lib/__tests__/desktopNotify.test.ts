@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { waitFor } from "@testing-library/react";
 import { nativeNotify } from "../desktopNotify";
 
 describe("nativeNotify — browser fallback (no Tauri)", () => {
@@ -28,7 +27,7 @@ describe("nativeNotify — browser fallback (no Tauri)", () => {
   });
 
   it("creates a Notification with title/body/tag when granted", () => {
-    nativeNotify("Alice", "Hello", { tag: "message:1" });
+    expect(nativeNotify("Alice", "Hello", { tag: "message:1" })).toBe(true);
     expect(instances).toHaveLength(1);
     expect(instances[0].title).toBe("Alice");
     expect(instances[0].options).toMatchObject({ body: "Hello", tag: "message:1" });
@@ -44,38 +43,34 @@ describe("nativeNotify — browser fallback (no Tauri)", () => {
     expect(created.close).toHaveBeenCalled();
   });
 
-  it("does not notify when permission is denied", () => {
+  it("does not notify when permission is not granted, so the caller can toast", () => {
     FakeNotification.permission = "denied";
-    nativeNotify("Alice", "Hello");
+    expect(nativeNotify("Alice", "Hello")).toBe(false);
+    FakeNotification.permission = "default";
+    expect(nativeNotify("Alice", "Hello")).toBe(false);
     expect(instances).toHaveLength(0);
   });
 
-  it("does not notify when the document has focus", () => {
+  it("notifies even when the document has focus — the native banner replaces the toast", () => {
     vi.mocked(document.hasFocus).mockReturnValue(true);
-    nativeNotify("Alice", "Hello");
-    expect(instances).toHaveLength(0);
+    expect(nativeNotify("Alice", "Hello")).toBe(true);
+    expect(instances).toHaveLength(1);
   });
 
-  it("no-ops when the Notification API is missing", () => {
+  it("reports false when the Notification API is missing", () => {
     vi.unstubAllGlobals();
-    expect(() => nativeNotify("Alice", "Hello")).not.toThrow();
+    expect(nativeNotify("Alice", "Hello")).toBe(false);
     expect(instances).toHaveLength(0);
   });
 });
 
-describe("nativeNotify — Tauri path is unchanged", () => {
-  const isPermissionGranted = vi.fn();
-  const requestPermission = vi.fn();
+describe("nativeNotify — Tauri desktop shell", () => {
   const sendNotification = vi.fn();
 
   beforeEach(() => {
-    isPermissionGranted.mockReset();
-    requestPermission.mockReset();
     sendNotification.mockReset();
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
-    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {
-      notification: { isPermissionGranted, requestPermission, sendNotification },
-    };
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { notification: { sendNotification } };
   });
 
   afterEach(() => {
@@ -83,18 +78,21 @@ describe("nativeNotify — Tauri path is unchanged", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends via the Tauri API, ignoring onClick from opts", async () => {
-    isPermissionGranted.mockResolvedValue(true);
+  it("sends via the Tauri API, ignoring onClick from opts", () => {
     const onClick = vi.fn();
-    nativeNotify("Title", "Body", { onClick, tag: "ignored-by-tauri" });
-    await waitFor(() => expect(sendNotification).toHaveBeenCalled());
+    expect(nativeNotify("Title", "Body", { onClick, tag: "ignored-by-tauri" })).toBe(true);
     expect(sendNotification).toHaveBeenCalledWith({ title: "Title", body: "Body" });
     expect(onClick).not.toHaveBeenCalled();
   });
 
-  it("skips when the document has focus", () => {
+  it("always sends natively, even when the window has focus", () => {
     vi.mocked(document.hasFocus).mockReturnValue(true);
-    nativeNotify("Title", "Body");
-    expect(isPermissionGranted).not.toHaveBeenCalled();
+    expect(nativeNotify("Title", "Body")).toBe(true);
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports false when the send throws, so the caller can toast", () => {
+    sendNotification.mockImplementation(() => { throw new Error("ipc"); });
+    expect(nativeNotify("Title", "Body")).toBe(false);
   });
 });

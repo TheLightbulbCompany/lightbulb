@@ -10,6 +10,8 @@ const live = vi.hoisted(() => ({
   pushSearchParams: vi.fn(),
   notifyLoading: vi.fn(),
   notifySuccess: vi.fn(),
+  nativeNotify: vi.fn(),
+  dismissNotification: vi.fn(),
 }));
 
 vi.mock("@/hooks/useLiveEvents", () => ({
@@ -27,13 +29,13 @@ vi.mock("@/components/workspace/workspaceController", () => ({
 }));
 vi.mock("@/lib/shellNav", () => ({ pushSearchParams: (params: URLSearchParams) => live.pushSearchParams(params) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: vi.fn() }));
+vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: (...args: unknown[]) => live.nativeNotify(...args) }));
 vi.mock("@/lib/notify", () => ({
   notifyLoading: (...args: unknown[]) => live.notifyLoading(...args),
   notifySuccess: (...args: unknown[]) => live.notifySuccess(...args),
   notifyFailure: vi.fn(),
   notifyAttention: vi.fn(),
-  dismissNotification: vi.fn(),
+  dismissNotification: (...args: unknown[]) => live.dismissNotification(...args),
 }));
 
 import { RunNotifications } from "../RunNotifications";
@@ -78,5 +80,16 @@ describe("RunNotifications inline team-run status", () => {
       "Team agent run completed",
       expect.objectContaining({ dedupeKey: "teams:run-42" }),
     );
+  });
+
+  it("uses the native notification instead of the completion toast, clearing any working toast", () => {
+    live.nativeNotify.mockReturnValue(true);
+    render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
+    act(() => emit("teams.heartbeat.run.queued", { runId: "run-7", agentId: "agent-1" }));
+    act(() => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded" }));
+
+    expect(live.nativeNotify).toHaveBeenCalledWith("Team agent run completed");
+    expect(live.notifySuccess).not.toHaveBeenCalled();
+    expect(live.dismissNotification).toHaveBeenCalledWith("teams:run-7");
   });
 });

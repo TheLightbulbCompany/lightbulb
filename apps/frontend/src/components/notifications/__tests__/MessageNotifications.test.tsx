@@ -24,6 +24,7 @@ beforeEach(() => {
   mocks.handlers.clear();
   vi.clearAllMocks();
   vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  mocks.nativeNotify.mockReturnValue(false);
   mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 0 });
   mocks.listMessages.mockResolvedValue({ messages: [{ messageId: "message", text: "Hello", author: { kind: "human", id: "other", displayName: "Alice" } }] });
 });
@@ -45,6 +46,20 @@ it("notifies background DMs once and exposes a conversation action", async () =>
   opts.onClick();
   expect(onOpen).toHaveBeenCalledWith("room", null);
   expect(mocks.capture.mock.calls.filter((c) => c[0] === "notification_clicked")).toHaveLength(2);
+});
+
+it("shows only the native notification when one is available — no toast", async () => {
+  mocks.nativeNotify.mockReturnValue(true);
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+  await act(async () => { emit(); });
+  expect(mocks.nativeNotify).toHaveBeenCalledTimes(1);
+  expect(mocks.notifySuccess).not.toHaveBeenCalled();
+});
+
+it("falls back to the in-app toast when no native notification is available", async () => {
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+  await act(async () => { emit(); });
+  expect(mocks.notifySuccess).toHaveBeenCalledWith("Alice: Hello", expect.objectContaining({ dedupeKey: "message:message" }));
 });
 
 it("tags notification_shown with the room's kind, not just dm", async () => {

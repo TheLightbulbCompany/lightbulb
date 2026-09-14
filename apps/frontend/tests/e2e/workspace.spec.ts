@@ -166,10 +166,11 @@ test.describe('E2E: Workspace invitation and trial happy path', () => {
     await general.click({ timeout: 30_000 });
     const messages = page.getByRole('region', { name: 'Messages', exact: true });
     await expect(messages).toBeVisible();
-    await expect(messages.getByText(
-      'Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. I’ll coordinate. Tell us what you’re trying to build or change.',
-      { exact: true },
-    )).toHaveCount(1);
+    // Asserts a stable FRAGMENT of DEFAULT_ROOM_WELCOME, not the whole string: the
+    // seeded welcome is editable copy, and an exact full-text match breaks this spec
+    // on every wording change (it already did once). What matters here is that the
+    // CEO-authored seed landed in #general at all.
+    await expect(messages.getByText(/I’m the CEO here/)).toHaveCount(1);
     const responseModes = page.getByRole('combobox', { name: /^Response for / });
     await expect(responseModes).toHaveCount(6);
     expect(await responseModes.evaluateAll((selects) =>

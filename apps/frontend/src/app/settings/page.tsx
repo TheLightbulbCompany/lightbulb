@@ -13,6 +13,7 @@ import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
+import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { LocalSessions } from "@/components/desktop/LocalSessions";
@@ -48,6 +49,7 @@ import {
 
 type Panel =
   | "profile"
+  | "members"
   | "billing"
   | "usage"
   | "providers"
@@ -229,6 +231,24 @@ function ProfilePanel() {
       </div>
 
       <DeleteAccountCard />
+    </div>
+  );
+}
+
+// =============================================================================
+// Members Panel
+// =============================================================================
+
+function MembersPanel() {
+  return (
+    <div className="settings-panel" id="panel-members" role="tabpanel">
+      <h1 className="settings-page-title">Members</h1>
+      <p className="settings-page-desc">
+        Who&apos;s in this workspace, and the link that lets someone else in. Everyone
+        shares the same agents, rooms, and subscription — the plan is per workspace, not
+        per seat, so there is no per-person cost and no seat to grant.
+      </p>
+      <WorkspaceMembersSection />
     </div>
   );
 }
@@ -619,6 +639,7 @@ function MarketplaceProfileEditor() {
 
 const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
+  members: MembersPanel,
   billing: BillingPanel,
   usage: UsagePanel,
   providers: LLMPanel,

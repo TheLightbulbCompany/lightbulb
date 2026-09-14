@@ -26,7 +26,7 @@ An AI-native company operating system is not just a chatbot attached to a task l
 - **Connectors and channels** let agents work where the business already works.
 - **Webhooks** turn product or tool events into agent wakeups.
 - **The Browser panel** gives agents a practical path for services that do not expose a native connector.
-- **Marketplace and Atlas** let owners add specialist agents or deploy prebuilt companies.
+- **The marketplace** lets owners hire specialist agents or deploy prebuilt companies.
 - **Approval cards** keep humans in control of governed actions.
 
 ## Why this matters for founders

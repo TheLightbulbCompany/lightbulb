@@ -498,6 +498,16 @@ async def _handle_organization_deleted(data: dict) -> None:
         logger.warning("Clerk organization.deleted missing id: %s", data)
         return
 
+    # Drop the workspace's join link first. It is a live credential, and a
+    # deleted org is exactly when nobody is watching it any more; the delete is
+    # idempotent and its failure must not stop the teardown below.
+    try:
+        from core.services.workspace_join import revoke_join_link
+
+        await revoke_join_link(org_id)
+    except Exception:
+        logger.exception("join-link revoke on organization.deleted failed for org %s", org_id)
+
     try:
         from core.services.billing_service import cancel_subscription_for_owner
 

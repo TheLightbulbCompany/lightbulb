@@ -37,9 +37,9 @@ export function HowItWorks() {
               <Image src="/landing/step-agents.jpg" alt="" fill sizes="(max-width: 980px) 100vw, 33vw" style={{ objectFit: "cover" }} />
               <div className="lb-rows">
                 <div className="lb-row3">
-                  <span className="lb-av ag">F</span>
+                  <span className="lb-av ag">C</span>
                   <span className="lb-who3">
-                    <b>Friday</b>
+                    <b>CEO</b>
                     <span>Runs the company</span>
                   </span>
                   <span className="lb-chip3 yes">In channel</span>
@@ -47,8 +47,8 @@ export function HowItWorks() {
                 <div className="lb-row3">
                   <span className="lb-av ag">A</span>
                   <span className="lb-who3">
-                    <b>Atlas</b>
-                    <span>Hires your agents</span>
+                    <b>Analytics</b>
+                    <span>Reads the numbers</span>
                   </span>
                   <span className="lb-chip3">Add</span>
                 </div>
@@ -70,7 +70,7 @@ export function HowItWorks() {
                 </div>
                 <div className="lb-compose-b">
                   <div className="lb-compose-in">
-                    <span className="lb-at">@Friday</span> the FAQ still says 14-day trial — fix it?
+                    <span className="lb-at">@Analytics</span> where are the new signups coming from?
                   </div>
                   <div className="lb-compose-f">
                     <i />

@@ -148,7 +148,7 @@ vi.mock("@/lib/analytics", () => ({
 }));
 
 import { useProvisioningState } from "@/hooks/useProvisioningState";
-import { ProvisioningStepper } from "../ProvisioningStepper";
+import { ProvisioningStepper, agentsBannerProgress } from "../ProvisioningStepper";
 
 // The cold-start stepper render path queries prefers-reduced-motion;
 // jsdom has no matchMedia.
@@ -210,9 +210,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
           </ProvisioningStepper>,
         );
         expect(screen.getByText("children")).toBeInTheDocument();
-        expect(screen.getByText(/Your agents are getting ready/i)).toBeInTheDocument();
-        expect(screen.queryByText("Provisioning your container...")).not.toBeInTheDocument();
-        expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+        expect(screen.getByText(/You can keep messaging in the meantime/i)).toBeInTheDocument();
+        // The step label now also appears in the BANNER, so "is the card
+        // gone?" can no longer be asked of a step label. Ask it of something
+        // only the full-screen card renders: its rotating-ideas eyebrow.
+        expect(screen.queryByText(/try asking your agent to/i)).not.toBeInTheDocument();
         unmount();
       }
     }
@@ -574,7 +576,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     ).not.toBeInTheDocument();
     // Must proceed past "payment" into the workspace while the container boots.
     expect(screen.getByText("children")).toBeInTheDocument();
-    expect(screen.getByText(/Your agents are getting ready/i)).toBeInTheDocument();
+    expect(screen.getByText(/You can keep messaging in the meantime/i)).toBeInTheDocument();
   });
 
   it("renders ChatGPTOAuthStep when ?provider=chatgpt_oauth even if gate is blocked", async () => {
@@ -978,5 +980,196 @@ describe("ProvisioningStepper ready re-kick", () => {
       onboarded: true,
     });
     expect(swrGlobalMutate).not.toHaveBeenCalled();
+  });
+});
+
+// Once a container exists the stepper hands over to the banner, and that banner
+// used to be one flat sentence for what can be a 5+ minute wait (upstream's
+// sidecars.channels). It now carries the live step — but only while claiming
+// progress is still honest.
+describe("agents banner progress", () => {
+  const baseProv = { phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn() };
+
+  beforeEach(() => {
+    useProvMock.mockReset();
+    clerkMockUser = null;
+    clerkMockIsLoaded = true;
+    clerkMockOrganization = null;
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+    gatewayHealthData = null;
+  });
+
+  afterEach(() => {
+    gatewayHealthData = null;
+  });
+
+  function renderWithContainer(container: Record<string, unknown>) {
+    useProvMock.mockReturnValue({ ...baseProv, container });
+    return render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+  }
+
+  it("places each phase on the same six-step ladder the setup card draws", () => {
+    expect(agentsBannerProgress("payment")).toEqual({
+      step: 1,
+      total: 6,
+      activeLabel: "Confirming payment...",
+    });
+    expect(agentsBannerProgress("container")).toEqual({
+      step: 2,
+      total: 6,
+      activeLabel: "Provisioning your container...",
+    });
+    expect(agentsBannerProgress("gateway")).toEqual({
+      step: 3,
+      total: 6,
+      activeLabel: "Connecting to your agent's brain...",
+    });
+    expect(agentsBannerProgress("channels-sidecars")).toEqual({
+      step: 4,
+      total: 6,
+      activeLabel: "Wiring up your channels...",
+    });
+    expect(agentsBannerProgress("agent")).toEqual({
+      step: 5,
+      total: 6,
+      activeLabel: "Putting the finishing touches on your agent...",
+    });
+    expect(agentsBannerProgress("ready")).toEqual({
+      step: 6,
+      total: 6,
+      activeLabel: "Ready!",
+    });
+  });
+
+  it("has no position for a phase that isn't on the ladder, rather than inventing one", () => {
+    // "provider" is a real machine phase deliberately absent from STEPS_PAID.
+    // The banner degrades to its flat copy instead of guessing a number.
+    expect(agentsBannerProgress("provider")).toBeNull();
+  });
+
+  it.each([
+    [
+      "container",
+      { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "service_created" },
+      null,
+      2,
+      "Provisioning your container...",
+    ],
+    [
+      "gateway",
+      { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "task_running" },
+      null,
+      3,
+      "Connecting to your agent's brain...",
+    ],
+    [
+      "channels-sidecars",
+      { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" },
+      null,
+      4,
+      "Wiring up your channels...",
+    ],
+    [
+      "agent",
+      { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" },
+      { ok: true },
+      5,
+      "Putting the finishing touches on your agent...",
+    ],
+  ])(
+    "shows the live step (%s) with a labelled progressbar over the working app",
+    (_phase, container, health, step, activeLabel) => {
+      gatewayHealthData = health as Record<string, unknown> | null;
+      renderWithContainer(container as Record<string, unknown>);
+
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.getByText(activeLabel as string)).toBeInTheDocument();
+      expect(screen.getByText(`Step ${step} of 6`)).toBeInTheDocument();
+
+      const bar = screen.getByRole("progressbar");
+      expect(bar).toHaveAttribute("aria-valuenow", String(step));
+      expect(bar).toHaveAttribute("aria-valuemin", "0");
+      expect(bar).toHaveAttribute("aria-valuemax", "6");
+      expect(bar).toHaveAttribute("aria-valuetext", `Step ${step} of 6 — ${activeLabel}`);
+
+      // The banner stays the polite live region it was.
+      const banner = screen.getByRole("status");
+      expect(banner).toHaveAttribute("aria-live", "polite");
+      expect(banner).toHaveTextContent(/You can keep messaging in the meantime/i);
+    },
+  );
+
+  describe("stops claiming progress once it can't back it up", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("keeps the bar through the first (slow) escalation tier", () => {
+      gatewayHealthData = { ok: true };
+      renderWithContainer({
+        container_status: "running",
+        runtime_phase: "starting",
+        container_substatus: "gateway_healthy",
+      });
+
+      act(() => void vi.advanceTimersByTime(PROVISION_TIMEOUT_MS + 1_000));
+
+      expect(screen.getByText(/Still going/i)).toBeInTheDocument();
+      expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "5");
+      expect(screen.getByText("Step 5 of 6")).toBeInTheDocument();
+    });
+
+    it("drops the bar entirely when STUCK — a bar next to 'something is stuck' reads as progress", () => {
+      gatewayHealthData = { ok: true };
+      renderWithContainer({
+        container_status: "running",
+        runtime_phase: "starting",
+        container_substatus: "gateway_healthy",
+      });
+
+      act(() => void vi.advanceTimersByTime(PROVISION_STUCK_MS + 1_000));
+
+      expect(screen.getByText(/something is stuck on our side/i)).toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Step \d of 6/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+      // The escalation's own actions survive untouched.
+      expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();
+    });
+
+    it("drops the bar entirely for a TERMINAL failure", () => {
+      renderWithContainer({
+        container_status: "error",
+        container_substatus: "provision_failed",
+        runtime_phase: "provisioning",
+        last_error: "ECS task failed to start",
+      });
+
+      expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Step \d of 6/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();
+    });
+
+    it("keeps the bar for a RETRYING error — the backend really is still working", () => {
+      renderWithContainer({
+        container_status: "error",
+        container_substatus: "error_retrying",
+        runtime_phase: "provisioning",
+      });
+
+      expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
+      expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    });
   });
 });

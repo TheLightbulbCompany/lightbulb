@@ -6,6 +6,7 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
 import { EditorialButton } from "@/components/teams/shell";
 import { ReportsToPicker } from "@/components/teams/agents/ReportsToPicker";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
+import { classifyAgentStatus } from "@/components/teams/shared/lib/agentStatus";
 
 /**
  * Org-chart controls for a single agent: the editable reporting line plus the
@@ -37,6 +38,15 @@ export function AgentOrgControls({
   const [confirmReset, setConfirmReset] = useState(false);
   const paused = agent.status === "paused";
   const errored = agent.status === "error";
+  // `status` is a STORED field on the Paperclip agent row, forwarded verbatim
+  // by the BFF — not derived from the run ledger. So a run that died without
+  // writing its terminal status parks the agent on a `live` value forever, and
+  // every surface keyed off it (roster rail + word, org-chart dot, the chat
+  // avatar's "Agent working" halo) keeps saying the agent is busy with nothing
+  // running. The owner's only clue today is those indicators, which is exactly
+  // the thing they already distrust; showing the raw value here makes the
+  // stale field itself visible and reportable.
+  const live = classifyAgentStatus(agent.status) === "live";
   const marketplaceLabel = agent.marketplace
     ? `${agent.marketplace.slug} v${agent.marketplace.version} · ${agent.marketplace.seller}`
     : null;
@@ -142,6 +152,19 @@ export function AgentOrgControls({
         <p className="text-xs text-[var(--midnight-muted)]">
           Get a stuck agent unstuck without deleting it.
         </p>
+        {agent.status ? (
+          <p className="text-xs text-[var(--midnight-muted)]">
+            Reported status: <span className="font-mono">{agent.status}</span>
+          </p>
+        ) : null}
+        {live ? (
+          <p className="text-xs text-[var(--midnight-soft)]">
+            {agent.name} is shown as working everywhere it appears. If no run is actually in
+            flight, that is a stale status on the agent record rather than real work. Reset
+            session clears {agent.name}&apos;s runtime session state without starting a run or
+            spending anything.
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2">
           {errored ? (
             <EditorialButton

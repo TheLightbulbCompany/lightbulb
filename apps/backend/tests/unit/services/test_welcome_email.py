@@ -76,7 +76,7 @@ async def test_send_welcome_includes_plaintext_alternative(monkeypatch):
         "https://app.example.co/chat",
         "https://app.example.co/marketplace",
         "https://app.example.co/blog",
-        "https://app.example.co/#faq",
+        "https://app.example.co/docs",
     ):
         assert link in text
         assert link in mock_send.await_args.kwargs["html"]

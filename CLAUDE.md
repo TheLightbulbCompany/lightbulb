@@ -712,9 +712,13 @@ you cannot guess from the filename:
   `ensure_personal_trial_default` (auto `trial_local` row),
   `ensure_metronome_customer`, `evaluate_provision_gate`, and
   `_maybe_arm_nightly_ceo` (the poll-path self-heal only — the nightly CEO loop is
-  armed DETERMINISTICALLY by the provision executor's step 0 via `arm_nightly_ceo`,
-  paid-only inside, so a personal owner's healthy running-container poll never
-  needs to re-enter this function). On a FRESH provision the Paperclip seed runs
+  armed DETERMINISTICALLY by the provision executor's step 0 via `arm_nightly_ceo`).
+  It is armed for EVERY live owner, not just paid ones: `should_arm_nightly_ceo`
+  is deliberately broader than `has_always_on_entitlement` and returns True for
+  paid (active/trialing) **or an unexpired `trial_local`** — the nightly run is a
+  retention lever, and it stays safe on a trial because the wake path and the
+  bedrock-gate still cap-gate it. Only an EXPIRED trial (and canceled/past_due/
+  no-row) is left unarmed. On a FRESH provision the Paperclip seed runs
   **inside the provision executor** (step 0 of `scripts/provision_runner.py`,
   single-flight under `try_claim_provision` — kills the duplicate-company
   race); `ensure_user_ready` seeds on the poll thread only as reconcile for
@@ -1006,9 +1010,10 @@ Clerk sign-up
                                  ├─ per-user EFS access point + ECS service
                                  └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
                                        └─ openclaw.json on EFS lists the live Paperclip roster in agents.list[]
-                            0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine when the
-                                owner is PAID (trial_local is a metered no-op); every path to
-                                paid + provider chosen runs this executor, so this is the one door
+                            0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine for
+                                EVERY live owner: paid, OR an unexpired trial_local (see
+                                should_arm_nightly_ceo — only an EXPIRED trial is left unarmed);
+                                every path to provisioned runs this executor, so this is the one door
                   (on later polls of an already-running ORG row, ensure_user_ready reconciles the
                    Paperclip seed inline; _maybe_arm_nightly_ceo there is the self-heal wrapper)
 ```

@@ -65,12 +65,12 @@ export function Hero() {
 
         <div className="lb-float lb-f-run lb-ui lb-float-2">
           <div className="lb-mh">
-            <b>Friday</b>
+            <b>Growth</b>
             <time>9:04</time>
             <span className="lb-tag">needs you</span>
           </div>
           <div className="lb-ask">
-            <p>The refund line is a legal claim — approve the wording?</p>
+            <p>Launch post is drafted — want to read it before it goes out?</p>
             {/* Decorative: this is a screenshot, not a control. */}
             <div className="lb-ask-r" aria-hidden="true">
               <span className="y">Approve</span>
@@ -100,15 +100,15 @@ export function Hero() {
               <p>Agents</p>
               <div>
                 <span className="lb-lamp on" />
-                Friday
+                CEO
               </div>
               <div>
                 <span className="lb-lamp dim" />
-                Atlas
+                Growth
               </div>
               <div>
                 <span className="lb-lamp out" />
-                Vera
+                Finance
               </div>
             </div>
             <div className="lb-pane">
@@ -118,7 +118,7 @@ export function Hero() {
                 <span className="lb-faces" style={{ marginLeft: "auto" }}>
                   <span className="lb-face">DK</span>
                   <span className="lb-face">MR</span>
-                  <span className="lb-face ag">F</span>
+                  <span className="lb-face ag">C</span>
                 </span>
               </div>
               <div className="lb-m">
@@ -129,18 +129,18 @@ export function Hero() {
                     <time>9:02</time>
                   </div>
                   <p className="lb-tx">
-                    FAQ still says 14-day trial. <span className="lb-at">@Friday</span> fix it?
+                    Signups doubled overnight. <span className="lb-at">@CEO</span> what changed?
                   </p>
                 </div>
               </div>
               <div className="lb-m">
-                <div className="lb-av ag">F</div>
+                <div className="lb-av ag">C</div>
                 <div>
                   <div className="lb-mh">
-                    <b>Friday</b>
+                    <b>CEO</b>
                     <time>9:02</time>
                   </div>
-                  <p className="lb-tx">Found it in three places. Rewriting now.</p>
+                  <p className="lb-tx">Traffic is all from one post. Pulling the numbers now.</p>
                   <div className="lb-reacts">
                     <span className="lb-re">👍 2</span>
                     <span className="lb-re">3 replies</span>

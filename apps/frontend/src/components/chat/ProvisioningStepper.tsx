@@ -1185,6 +1185,7 @@ export function ProvisioningStepper({
       <>
         <AgentsBanner
           state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : isRetryingError ? "retrying" : "starting"}
+          phase={phase}
           onCheck={() => refresh()}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
         />
@@ -1572,38 +1573,115 @@ const AGENTS_BANNER_COPY = {
 } as const;
 
 /**
+ * Where the banner's phase sits on the SAME six-step ladder the setup card was
+ * drawing a moment ago (`STEPS_PAID`), so handing over from card to banner
+ * keeps one numbering rather than inventing a second.
+ *
+ * Returns null for any phase that isn't on that ladder. That null is the whole
+ * point of this function: the banner then falls back to its flat copy. A
+ * position we can't resolve from the real phase is never guessed, and nothing
+ * here is derived from elapsed time — the card's own clock is the only thing
+ * allowed to move on its own.
+ */
+export function agentsBannerProgress(
+  phase: Phase,
+): { step: number; total: number; activeLabel: string } | null {
+  const idx = STEPS_PAID.findIndex((s) => s.phase === phase);
+  if (idx < 0) return null;
+  return { step: idx + 1, total: STEPS_PAID.length, activeLabel: STEPS_PAID[idx].activeLabel };
+}
+
+// The only states allowed to draw the bar, each with the sentence it uses once
+// the step label is carrying the "what's happening" half. `starting` drops its
+// now-redundant "Your agents are getting ready." — the label above it already
+// says which step is running — and keeps only the reassurance; `retrying` and
+// `slow` keep their full sentence, because each says something the step label
+// does not.
+//
+// `stuck` and `failed` are absent deliberately: a bar sitting at 4 of 6 next to
+// "something is stuck on our side" reads as progress, and the point of the
+// escalation tiers (issue #1468) is that past a certain point this UI stops
+// claiming any. Those two keep the flat AGENTS_BANNER_COPY sentence and their
+// actions, unchanged — and so does any phase we can't place on the ladder.
+const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, string>> = {
+  starting: "You can keep messaging in the meantime.",
+  retrying: AGENTS_BANNER_COPY.retrying,
+  slow: AGENTS_BANNER_COPY.slow,
+};
+
+/**
  * In-flow status line above the workspace while the container is not ready.
  * Escalates honestly (issue #1468): a slow start offers "Check again", a stuck
  * or failed one also offers support, and nothing here resets the clock.
+ *
+ * While it is still honest to claim progress, it shows which of the six setup
+ * steps is actually running (`activeLabel` + "Step n of 6" + a bar), because
+ * the alternative is one unchanging sentence for the 5+ minutes upstream's
+ * sidecars.channels can take. The position comes from the real `phase`, so the
+ * bar only moves when the backend actually moved.
  */
 function AgentsBanner({
   state,
+  phase,
   onCheck,
   onSupport,
 }: {
   state: keyof typeof AGENTS_BANNER_COPY;
+  phase: Phase;
   onCheck: () => void;
   onSupport: () => void;
 }) {
   const alarming = state === "stuck" || state === "failed";
+  const progress = state in ADVANCING_BANNER_COPY ? agentsBannerProgress(phase) : null;
   return (
     <div
       role="status"
       aria-live="polite"
-      className={`bg-cream border-b px-4 py-2 text-ui flex flex-wrap items-center justify-between gap-x-4 gap-y-1 ${
+      className={`bg-cream border-b px-4 py-2 text-ui ${
         state === "failed" ? "border-err text-err" : alarming ? "border-warn text-warn" : "border-[var(--edge)] text-[var(--midnight-muted)]"
       }`}
     >
-      <span>{AGENTS_BANNER_COPY[state]}</span>
-      {state !== "starting" && state !== "retrying" && (
-        <span className="flex gap-4">
-          <button type="button" className="underline" onClick={onCheck}>
-            {state === "failed" ? "Retry" : "Check again"}
-          </button>
-          {alarming && (
-            <a className="underline" href={SUPPORT_MAILTO} onClick={onSupport}>Contact support</a>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          {progress && (
+            <span className="font-medium text-[var(--midnight)]">{progress.activeLabel}</span>
           )}
+          <span>{(progress && ADVANCING_BANNER_COPY[state]) || AGENTS_BANNER_COPY[state]}</span>
         </span>
+        {state !== "starting" && state !== "retrying" && (
+          <span className="flex gap-4">
+            <button type="button" className="underline" onClick={onCheck}>
+              {state === "failed" ? "Retry" : "Check again"}
+            </button>
+            {alarming && (
+              <a className="underline" href={SUPPORT_MAILTO} onClick={onSupport}>Contact support</a>
+            )}
+          </span>
+        )}
+      </div>
+      {progress && (
+        <div className="mt-1.5 flex items-center gap-3">
+          {/* One bar, one live position. aria-valuetext carries the step name
+              so a screen reader gets "Step 4 of 6 — Wiring up your channels..."
+              rather than a bare "67%" with no idea what moved. */}
+          <div
+            role="progressbar"
+            aria-label="Agent setup progress"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.step}
+            aria-valuetext={`Step ${progress.step} of ${progress.total} — ${progress.activeLabel}`}
+            className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--edge)]"
+          >
+            <div
+              className="h-full rounded-full bg-[var(--midnight)] transition-[width] duration-700 ease-out motion-reduce:transition-none"
+              style={{ width: `${(progress.step / progress.total) * 100}%` }}
+            />
+          </div>
+          <span className="shrink-0 text-xs tabular-nums text-[var(--midnight-muted)]">
+            Step {progress.step} of {progress.total}
+          </span>
+        </div>
       )}
     </div>
   );

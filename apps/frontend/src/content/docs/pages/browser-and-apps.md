@@ -4,6 +4,8 @@ description: "Three ways agents reach the outside world: native integrations, ch
 order: 4
 ---
 
+**Agents reach the outside world three ways: native integrations for connected tools, chat channels for Slack, Discord and Telegram, and a real Chrome browser for everything that has no API.** Native connectors are preferred; the browser is the practical fallback for login-bound or UI-only tools.
+
 ## Integrations
 
 **Control Panel → Integrations** lists what can be connected. Today that is Stripe, Notion, Linear, Sentry, Attio, Intercom, PostHog, Apollo, Cloudflare, GitHub, AWS, Vercel, Parallel (web search), Google Workspace, and X. The list grows; the tab is the source of truth.
@@ -18,7 +20,7 @@ Once connected, an agent uses the service as tools (Stripe, Notion, Linear, …)
 
 ## Channels
 
-**Control Panel → Channels**: Telegram, Discord, and Slack. Each agent can have its own bot, so you can message Friday from your phone or give a support agent its own Slack channel. An inbound message wakes the paired agent. Channels need a paid workspace.
+**Control Panel → Channels**: Telegram, Discord, and Slack. Each agent can have its own bot, so you can message your CEO from your phone or give a support agent its own Slack channel. An inbound message wakes the paired agent. Channels need a paid workspace.
 
 ## The browser
 

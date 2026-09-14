@@ -66,9 +66,20 @@ MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
 DEFAULT_ROOM_NAME = "general"
+# Seeded ONCE per workspace as a CEO-authored message (``ensure_default_room``
+# returns early on any room that already has messages), so this is the very
+# first thing a new user reads. It does NOT re-list the roster — the member
+# list already shows it — and instead spends its length on the blank-page
+# problem: state the role, ask one concrete question, and hand over a
+# copy-pasteable prompt for anyone who would rather watch before typing.
+# Refers to the CEO by ROLE, never a name: agent names are user-editable.
 DEFAULT_ROOM_WELCOME = (
-    "Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. "
-    "I’ll coordinate. Tell us what you’re trying to build or change."
+    "I’m the CEO here — tell me what you want to happen and I’ll put the right people on it "
+    "and report back.\n\n"
+    "Best first message: what you’re building, who it’s for, and what’s in the way. "
+    "A couple of sentences is plenty.\n\n"
+    "Or if you’d rather see it work first, try: “Research our top three competitors and tell me "
+    "where we’re weakest.”"
 )
 
 API_ERROR_STATUS = {

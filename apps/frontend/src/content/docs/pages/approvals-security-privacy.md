@@ -4,6 +4,8 @@ description: "What agents ask before doing, how your workspace is isolated, wher
 order: 5
 ---
 
+**Lightbulb keeps humans in control through approval gates, container isolation, and hard spend caps.** An agent asks before governed shell commands, marketplace hires, and other sensitive external actions. Each workspace runs in its own isolated container, credentials are held outside the workspace filesystem, and free-tier inference stops at $3 a day.
+
 ## Approvals
 
 Agents do the work. You keep the decisions that are hard to undo.
@@ -35,7 +37,7 @@ A threat guard runs inside every container and blocks commands, file writes, and
 
 ## Publishing an agent
 
-When you publish an agent to the marketplace, the snapshot strips runtime state — sessions, transcripts, credentials — and is scanned for credentials and personal data before review. The agent's persona files ship with it, **including its MEMORY.md**. Read MEMORY.md before you publish. Friday can't be published.
+When you publish an agent to the marketplace, the snapshot strips runtime state — sessions, transcripts, credentials — and is scanned for credentials and personal data before review. The agent's persona files ship with it, **including its MEMORY.md**. Read MEMORY.md before you publish. Founder-seeded agents can't be published.
 
 ## Your data
 

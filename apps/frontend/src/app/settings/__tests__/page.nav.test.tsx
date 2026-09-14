@@ -120,6 +120,35 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).queryByText("Usage")).not.toBeInTheDocument();
   });
 
+  // --- Members (admin-gated, ACCOUNT) — the workspace invite door ---
+  it("registers the Members row in ACCOUNT for an admin", () => {
+    clerk.membership = null; // personal owner = admin
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).getByText("Members")).toBeInTheDocument();
+  });
+
+  it("hides the Members row from a non-admin org member", () => {
+    clerk.membership = { role: "org:member" };
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).queryByText("Members")).not.toBeInTheDocument();
+  });
+
+  it("honors a ?panel=members deep link for an admin", () => {
+    nav.panel = "members";
+    const { container } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-members")).toBeInTheDocument();
+  });
+
+  it("falls back to Profile for ?panel=members as a non-admin member", () => {
+    clerk.membership = { role: "org:member" };
+    nav.panel = "members";
+    const { container } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-members")).not.toBeInTheDocument();
+    expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+  });
+
   // --- Model & Credits (LLMPanel, MODEL & PROVIDERS group) ---
   it("registers the Model & Credits row and renders LLMPanel on select", () => {
     render(<SettingsPage />);

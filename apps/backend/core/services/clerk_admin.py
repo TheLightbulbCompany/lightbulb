@@ -286,9 +286,8 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
 async def find_user_by_email(email: str) -> dict | None:
     """Return the first Clerk user matching `email`, or None.
 
-    Used by the invite-creation gate to detect "is this email already a
-    Clerk user?" before forwarding to Clerk's createInvitation API.
-    Stubs to None when CLERK_SECRET_KEY is unset.
+    Used by the curator lookup to resolve a human-gated address to its
+    Clerk user. Stubs to None when CLERK_SECRET_KEY is unset.
     """
     if not settings.CLERK_SECRET_KEY:
         return None
@@ -315,79 +314,103 @@ async def find_user_by_email(email: str) -> dict | None:
     return users[0] if users else None
 
 
-async def create_organization_invitation(
+async def create_organization_membership(
     *,
     org_id: str,
-    email: str,
-    role: str,
-    inviter_user_id: str,
+    user_id: str,
+    role: str = "org:member",
 ) -> dict:
-    """Create a Clerk org invitation. Returns the invitation dict on success.
+    """Add an EXISTING Clerk user to an org directly — no email invitation.
 
-    Raises HTTPException via the caller for non-201 responses — we want
-    Clerk's error to surface to the org admin, not a silent no-op.
-    `role` is a Clerk role key (e.g. "org:admin", "org:member").
+    This is the Clerk call behind a workspace JOIN LINK: the redeemer is
+    already signed in, so there is nobody to email and nothing to accept. It
+    replaced ``create_organization_invitation`` (removed with the email-invite
+    endpoint) — billing is per workspace, not per seat, so an email+role
+    invitation was the wrong shape for the product.
+
+    Returns ``{"status": "joined" | "already_member", "membership_id": str | None}``.
+    Already-a-member is a SUCCESS: Clerk rejects the duplicate with a 4xx, and
+    the join flow must be idempotent (the owner clicking their own link).
+
+    Unlike the read helpers in this module, failures RAISE rather than degrade
+    to an empty dict: a silently-swallowed failure here would tell someone they
+    joined a workspace they cannot see. Clerk's own error body is logged but
+    never surfaced — the caller is an arbitrary signed-in user, not an admin.
     """
     if not settings.CLERK_SECRET_KEY:
-        # Local-dev stub: return a fake invitation so the test path works.
-        return {"id": f"orginv_stub_{email}", "stubbed": True}
+        # Local-dev stub, matching this module's posture elsewhere.
+        return {"status": "joined", "membership_id": None, "stubbed": True}
 
     headers = {
         "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
         "Content-Type": "application/json",
     }
-    body = {
-        "email_address": email,
-        "role": role,
-        "inviter_user_id": inviter_user_id,
-    }
+    body = {"user_id": user_id, "role": role}
 
-    # Lazy import keeps `fastapi` out of this module's import graph except
-    # on the error paths that genuinely need it.
+    # Lazy import keeps `fastapi` out of this module's import graph except on
+    # the error paths that genuinely need it.
     from fastapi import HTTPException
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
             response = await client.post(
-                f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
+                f"{_CLERK_API_BASE}/organizations/{org_id}/memberships",
                 headers=headers,
                 json=body,
             )
     except httpx.TransportError as e:
-        # Transport-level failure — covers all of httpx's transport
-        # subclasses: TimeoutException, NetworkError (DNS, connection
-        # reset, read errors), ProtocolError (malformed request/response
-        # framing), ProxyError, UnsupportedProtocol. Catching the parent
-        # class instead of an enumerated tuple prevents future httpx
-        # additions from leaking out as bare 500s.
-        #
-        # Convert to a 503 HTTPException so:
-        #   1. The orgs router's `except HTTPException` catch fires the
-        #      `orgs.invitation.failed` metric (observability).
-        #   2. The org admin sees "Clerk API unavailable" instead of a
-        #      bare 500 from the framework.
+        # Catch the transport PARENT class, not an enumerated tuple, so future
+        # httpx additions can't leak out as bare 500s (same reasoning the
+        # removed invitation helper carried).
         logger.warning(
-            "clerk_admin.create_organization_invitation transport error org=%s email=%s err=%s",
+            "clerk_admin.create_organization_membership transport error org=%s user=%s err=%s",
             org_id,
-            email,
+            user_id,
             e,
         )
         raise HTTPException(status_code=503, detail="Clerk API unavailable") from e
 
     if response.status_code >= 400:
+        if _is_already_member(response):
+            return {"status": "already_member", "membership_id": None}
         logger.warning(
-            "clerk_admin.create_organization_invitation HTTP %s org=%s email=%s body=%s",
+            "clerk_admin.create_organization_membership HTTP %s org=%s user=%s body=%s",
             response.status_code,
             org_id,
-            email,
+            user_id,
             response.text,
         )
-        # Surface Clerk's error verbatim so the admin sees real causes
-        # (duplicate invitation, invalid role, etc.). Caller wraps in
-        # HTTPException with the same status code.
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+        raise HTTPException(status_code=502, detail="Could not add you to that workspace.")
 
-    return response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    return {"status": "joined", "membership_id": payload.get("id")}
+
+
+# Clerk has used more than one code for "this user is already in the org"
+# across API versions, and the join flow must treat every one of them as an
+# idempotent success rather than a failed join.
+_ALREADY_MEMBER_CODES = frozenset(
+    {
+        "already_a_member_in_organization",
+        "organization_membership_exists",
+        "duplicate_record",
+    }
+)
+
+
+def _is_already_member(response: httpx.Response) -> bool:
+    """True when a Clerk 4xx means "already a member of this org"."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if not isinstance(errors, list):
+        return False
+    return any(isinstance(e, dict) and e.get("code") in _ALREADY_MEMBER_CODES for e in errors)
 
 
 async def list_pending_invitations_for_user(user_id: str) -> list[dict]:

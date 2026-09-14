@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, useRoomResources, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { RoomResources as RoomResourcesPanel } from "../RoomResources";
 import { useState } from "react";
 
 const session: LocalSession = {
@@ -563,4 +564,30 @@ it("resolves a permalink to an ended session without waiting for Show recent", a
   expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
   expect(screen.queryByText("Session unavailable in this conversation.")).not.toBeInTheDocument();
   expect(f.client.listResources).toHaveBeenCalledWith("room", { includeEnded: true });
+});
+
+it("keeps a permalinked ended session open after its one-shot target is consumed", async () => {
+  // `target` is one-shot: RoomPanel nulls it out via onTargetConsumed the
+  // instant RoomResources resolves it. Drive RoomResources directly (rather
+  // than through RoomPanel's internal consumedSession state) so the
+  // target -> null transition is deterministic, exactly mirroring what
+  // RoomPanel does once the permalink is handled.
+  const f = setup();
+  const ended = { ...session, sessionId: "sess-ended", status: "ended" as const };
+  f.client.listResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+    Promise.resolve({ ...resources, sessions: options?.includeEnded ? [ended] : [] }));
+  const onTargetConsumed = vi.fn();
+  const view = render(<RoomResourcesPanel roomId="room" source={f.source} participants={f.props.participants} onClose={() => {}}
+    target={{ sessionId: "sess-ended", nonce: 1 }} onTargetConsumed={onTargetConsumed} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  await waitFor(() => expect(onTargetConsumed).toHaveBeenCalled());
+  view.rerender(<RoomResourcesPanel roomId="room" source={f.source} participants={f.props.participants} onClose={() => {}}
+    target={null} onTargetConsumed={onTargetConsumed} />);
+  // A non-sticky `includeEnded` (the previous `includeEnded || !!target` fix)
+  // recomputes to `false` the instant `target` clears, the hook refetches
+  // without the ended session, and the "selection no longer in the list"
+  // cleanup below closes the panel — this must NOT happen.
+  await waitFor(() => expect(f.client.listResources).toHaveBeenLastCalledWith("room", { includeEnded: true }));
+  expect(screen.getByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(screen.queryByText("Session unavailable in this conversation.")).not.toBeInTheDocument();
 });

@@ -14,7 +14,12 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
   target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
 }) {
   const [includeEnded, setIncludeEnded] = useState(false);
-  const resources = useRoomResources(roomId, source, { includeEnded: includeEnded || !!target });
+  // A permalink target is one-shot (RoomPanel clears it via onTargetConsumed
+  // once resolved) — flip the toggle on rather than gating the fetch on
+  // `target` directly, or the list reverts to hiding ended sessions the
+  // instant the target is consumed and the just-opened panel bounces closed.
+  if (target && !includeEnded) setIncludeEnded(true);
+  const resources = useRoomResources(roomId, source, { includeEnded });
   const [selection, setSelection] = useState<{ id: string; accessRevision: number } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());

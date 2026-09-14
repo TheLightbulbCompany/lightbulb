@@ -250,3 +250,15 @@ feature not sensitive.
 Claude app and Codex Desktop session discovery; recap line and Haiku rollup;
 sidebar Sessions surface and "started sharing" room line; Claude Code
 statusline notice.
+
+Ambient awareness for company agents (owner ruling 2026-09-14): the room
+ingress payload carries nothing about members' shared sessions today, so an
+agent plans its own fix and collides with a human's live Claude Code or Codex
+session unless the human mentions it. Phase two injects one line per LIVE
+session (human handle, provider, cwdName, title, status, sessionId,
+latestEventSeq) into the room context at ingress next to `participants`, and
+adds a `lightbulb` SKILL.md routing row telling agents to `read` the
+`lightbulb_local_sessions` tool from `latestEventSeq - N` when a member's
+session is live. The SKILL.md text change means a new extended image, so it
+rides the OpenClaw 2026.9.4 fork rebase promotion (fork branch
+`isol8/2026.9.4-rebase`), not a separate 9.3 image build.

@@ -19,7 +19,7 @@ Exactly one owner per run; dry-run by default. Order, and why:
 
 1. Clerk org (``created_by`` = the owner, so they are admin). ``--org`` resumes a
    partial run onto an org already created for them.
-2. Billing row copied to the org id (same Stripe customer, subscription, provider,
+2. (after the box is stopped, drained and its OAuth seed harvested) Billing row copied to the org id (same Stripe customer, subscription, provider,
    credits, Metronome ids), personal row deleted. Stripe webhooks resolve the
    owner through the ``stripe-customer-index`` GSI, so the copied row is what
    they find. Billing moves FIRST so the org is entitled the moment it first polls.
@@ -373,8 +373,13 @@ async def main(argv: list[str]) -> int:
     if not org_id:
         return 1
     steps = [
-        ("billing", _move_billing(owner_id, org_id, billing)),
+        # The OAuth-seed harvest resolves the connector through the PERSONAL
+        # billing row and checks the token row's owner binding, so it must run
+        # before that row moves. It also needs S3 read on the replicas bucket,
+        # which the backend task role lacks — pass admin credentials in the
+        # exec environment (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN) for this run.
         ("container", _stop_personal_box(owner_id, billing)),
+        ("billing", _move_billing(owner_id, org_id, billing)),
         ("efs", asyncio.to_thread(_rename_efs, owner_id, org_id)),
         ("replicas", asyncio.to_thread(_copy_replicas, owner_id, org_id)),
         ("paperclip", _repoint_paperclip(pc_row, org_id)),

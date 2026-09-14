@@ -1020,7 +1020,7 @@ Clerk sign-up
 
 Key invariants:
 
-- **`ensure_user_ready` is the canonical readiness entry point** — dispatched from `GET /container/status` polls, plus the Teams reconcile path and the Paperclip-proxy handshake. Clerk webhooks are pure record-keeping; they do not trigger provisioning.
+- **`ensure_user_ready` is the canonical readiness entry point** — dispatched from `GET /container/status` polls, plus the Teams reconcile path and the Paperclip-proxy handshake. Clerk webhooks never CREATE a company — that stays gated behind readiness — but `organizationMembership.created` performs the idempotent Paperclip JOIN inline (`_ensure_paperclip_for_member`), so a member who never polls is still added to Teams.
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.

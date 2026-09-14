@@ -5,7 +5,7 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
 
     OWNER#<owner>   ROOM#<room>                        room directory projection
     ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey
-    ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq
+    ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq, homeOwnerId (foreign members of a shared room; memberKey is keyed on it)
     ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets
     ROOM#<room>     IDEMP#EDIT#<user>#<operationId>     durable edit/delete retry receipt
     ROOM#<room>     IDEMP#human#<user>#<clientMessageId>  durable human retry receipt
@@ -114,6 +114,12 @@ def member_key(owner_id: str, kind: str, member_id: str) -> str:
     return f"OWNER#{owner_id}#{kind}#{member_id}"
 
 
+def member_home(member: dict) -> str:
+    """The workspace a member belongs to. A foreign human (a shared room) carries
+    ``homeOwnerId``; every other row's home is the room owner it was written with."""
+    return member.get("homeOwnerId") or member["ownerId"]
+
+
 def human_idemp_sk(user_id: str, client_message_id: str) -> str:
     return f"IDEMP#human#{user_id}#{client_message_id}"
 
@@ -189,6 +195,11 @@ def deterministic_room_id(owner_id: str, user_id: str, client_room_id: str) -> s
     a replay lands on the SAME ``ROOM#`` partition and the durable IDEMP row can
     live under the spec's ``ROOM#<roomId>/IDEMP#human#…`` key."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-room|{owner_id}|{user_id}|{client_room_id}"))
+
+
+def vendor_room_id(owner_id: str) -> str:
+    """The one platform-managed channel a customer workspace shares with the vendor org."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
 
 
 def request_hash(*parts: Any) -> str:
@@ -467,7 +478,7 @@ async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> lis
     out = []
     for r in rows:
         meta = metas.get(r["roomId"])
-        if meta is not None and meta.get("ownerId") == owner_id:
+        if meta is not None and member_home(r) == owner_id:
             out.append({"member": r, "meta": meta})
     return out
 
@@ -478,13 +489,15 @@ async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> lis
 
 
 def _member_item(room_id: str, owner_id: str, m: dict, joined_seq: int, now: str) -> dict:
+    home = m.get("homeOwnerId") or owner_id
     return {
         "pk": room_pk(room_id),
         "sk": member_sk(m["kind"], m["id"]),
-        "memberKey": member_key(owner_id, m["kind"], m["id"]),
+        "memberKey": member_key(home, m["kind"], m["id"]),
         "memberSort": room_pk(room_id),
         "roomId": room_id,
         "ownerId": owner_id,
+        "homeOwnerId": home,
         "kind": m["kind"],
         "id": m["id"],
         "displayName": m.get("displayName") or m["id"],
@@ -1087,7 +1100,16 @@ async def remove_member(
             {"Delete": {"TableName": table_name, "Key": {"pk": room_pk(room_id), "sk": delivery_sk(member_id)}}}
         )
     for live in live_events or []:
-        items.append(_live_item(table_name, room_id, owner_id, live["userId"], live.get("channelKey"), live["event"]))
+        items.append(
+            _live_item(
+                table_name,
+                room_id,
+                live.get("ownerId") or owner_id,
+                live["userId"],
+                live.get("channelKey"),
+                live["event"],
+            )
+        )
     await _transact(items)
     return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_delivery_key or meta["deliveryKey"]}
 

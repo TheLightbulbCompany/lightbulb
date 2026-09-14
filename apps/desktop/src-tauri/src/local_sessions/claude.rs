@@ -713,7 +713,12 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
     if enabled && !backup.try_exists().map_err(|e| e.to_string())? {
         private_write(&backup, &original)?;
     }
-    private_write(path, &settings)?;
+    // Every launch re-asserts the install. An unchanged one must not rewrite
+    // the user's settings: `private_write` re-minifies the file and forces it
+    // to 0600, and the read-modify-write is worth nothing when nothing moved.
+    if original != settings {
+        private_write(path, &settings)?;
+    }
     Ok(())
 }
 
@@ -871,6 +876,16 @@ mod tests {
             );
         }
         assert_eq!(v["other"], 1);
+        // A re-assert that changes nothing must leave the file alone: restore
+        // runs it on every launch, and a write would re-minify the user's
+        // settings and force them to 0600.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).unwrap();
+        let before = fs::metadata(&settings).unwrap().modified().unwrap();
+        configure_hooks(&settings, Path::new("/app"), true).unwrap();
+        let after = fs::metadata(&settings).unwrap();
+        assert_eq!(after.modified().unwrap(), before, "rewritten with no change");
+        assert_eq!(after.mode() & 0o777, 0o644, "mode forced with no change");
         configure_hooks(&settings, Path::new("/app"), false).unwrap();
         let v: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         assert!(v.get("hooks").is_none());

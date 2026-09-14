@@ -698,29 +698,46 @@ pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
 /// launches, so a resume rewrites them rather than trusting the install that
 /// consent performed. Returns the failures for the status line; none is fatal.
 fn reassert(state_dir: &Path) -> Vec<String> {
-    let record = state_dir.join("hook-executable.json");
-    let installed: PathBuf = match private_read(&record) {
-        Ok(installed) => installed,
-        Err(_) => match std::env::current_exe() {
-            Ok(executable) => executable,
-            Err(_) => return vec!["the desktop executable is unavailable".into()],
-        },
-    };
     let home = match home() {
         Ok(home) => home,
         Err(reason) => return vec![reason],
     };
-    let mut notes = Vec::new();
+    match std::env::current_exe() {
+        Ok(executable) => reassert_at(state_dir, &home, &executable),
+        Err(_) => vec!["the desktop executable is unavailable".into()],
+    }
+}
+
+fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> {
+    let record = state_dir.join("hook-executable.json");
+    let installed: PathBuf = private_read(&record).unwrap_or_else(|_| executable.to_owned());
+    let moved = installed != executable;
     let settings = home.join(".claude/settings.json");
-    if settings.parent().is_some_and(|parent| parent.is_dir()) {
-        if let Err(reason) = claude::configure_hooks(&settings, &installed, true) {
+    let claude = settings.parent().is_some_and(|parent| parent.is_dir());
+    // The app can move between launches. Hooks naming the old path are dead, so
+    // a resume heals them at the current path instead of cementing the stale
+    // install -- the same reconcile consent performs.
+    if moved {
+        if claude {
+            let _ = claude::configure_hooks(&settings, &installed, false);
+        }
+        let _ = codex::configure_hooks(home, &installed, false);
+    }
+    let mut notes = Vec::new();
+    if claude {
+        if let Err(reason) = claude::configure_hooks(&settings, executable, true) {
             notes.push(format!("Claude hooks were not installed ({reason})"));
         }
     }
-    if let Err(reason) = codex::configure_hooks(&home, &installed, true) {
+    if let Err(reason) = codex::configure_hooks(home, executable, true) {
         notes.push(format!("Codex hooks were not installed ({reason})"));
     }
-    if let Err(reason) = install_skill(state_dir, &home) {
+    if moved {
+        if let Err(reason) = private_write(&record, &executable) {
+            notes.push(format!("the hook executable record was not updated ({reason})"));
+        }
+    }
+    if let Err(reason) = install_skill(state_dir, home) {
         notes.push(format!(
             "the lightbulb-session-sharing skill was not installed ({reason})"
         ));
@@ -1158,6 +1175,48 @@ mod tests {
             .exists());
         assert!(!state.join("skill-paths.json").exists());
     }
+
+    #[test]
+    fn local_sessions_reassert_moves_both_providers_hooks_to_the_current_executable() {
+        let state = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let settings = home.path().join(".claude/settings.json");
+        let record = state.path().join("hook-executable.json");
+        let old = Path::new("/old/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let new = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        claude::configure_hooks(&settings, old, true).unwrap();
+        codex::configure_hooks(home.path(), old, true).unwrap();
+        private_write(&record, &old).unwrap();
+
+        assert!(reassert_at(state.path(), home.path(), new).is_empty());
+
+        let installed: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        let codex_hooks: Value =
+            serde_json::from_slice(&fs::read(home.path().join(".codex/hooks.json")).unwrap())
+                .unwrap();
+        for (hooks, provider) in [(&installed, "claude"), (&codex_hooks, "codex")] {
+            let entries = hooks["hooks"]["SessionStart"].as_array().unwrap();
+            assert_eq!(entries.len(), 1, "{provider}: the dead path must be removed");
+            assert_eq!(
+                entries[0]["hooks"][0]["command"],
+                format!("'{}' local-session-hook {provider}", new.display())
+            );
+        }
+        let stale = lifecycle::codex_trust_hash(
+            "stop",
+            None,
+            &format!("'{}' local-session-hook codex", old.display()),
+            5,
+            true,
+            None,
+        );
+        let config = fs::read_to_string(home.path().join(".codex/config.toml")).unwrap();
+        assert!(!config.contains(&stale), "the dead path stays trusted");
+        assert_eq!(private_read::<PathBuf>(&record).unwrap(), new);
+    }
+
     #[test]
     fn local_sessions_skill_install_never_writes_through_a_symlinked_skill_file() {
         let dir = tempfile::tempdir().unwrap();

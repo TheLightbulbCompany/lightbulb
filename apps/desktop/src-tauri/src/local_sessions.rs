@@ -236,8 +236,12 @@ pub struct EnrollmentAttempt {
 }
 
 impl Enrollment {
-    fn authenticate(&mut self, human: Option<&str>) {
-        self.paused = human != Some(self.human_user_id.as_str());
+    fn authenticate(&mut self, human: Option<Option<&str>>) {
+        // Outer `None` means the webview hasn't reported a signed-in user yet
+        // (unknown), not that the user signed out -- leave `paused` as is.
+        if let Some(human) = human {
+            self.paused = human != Some(self.human_user_id.as_str());
+        }
     }
 }
 
@@ -1489,11 +1493,11 @@ mod tests {
             enabled: true,
             paused: false,
         };
-        enrollment.authenticate(None);
+        enrollment.authenticate(Some(None));
         assert!(enrollment.enabled && enrollment.paused);
-        enrollment.authenticate(Some("bob"));
+        enrollment.authenticate(Some(Some("bob")));
         assert!(enrollment.paused);
-        enrollment.authenticate(Some("alice"));
+        enrollment.authenticate(Some(Some("alice")));
         assert!(!enrollment.paused);
         assert_eq!(enrollment.owner_id, "org1");
     }

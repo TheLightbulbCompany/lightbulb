@@ -232,7 +232,7 @@ impl Controller {
                 .lock()
                 .map_err(|_| "sharing state unavailable")?
                 .as_ref()
-                .and_then(|h| h.as_deref()),
+                .map(|h| h.as_deref()),
         );
         private_write(&path, &enrollment)?;
         self.stop();
@@ -366,7 +366,10 @@ pub async fn local_sessions_auth(
         *human = Some(human_user_id);
         state.stop();
     }
-    state.restore(&app).await
+    state.restore(&app).await.map_err(|e| {
+        crate::log(&format!("[local-sessions] auth restore failed: {e}"));
+        e
+    })
 }
 
 #[tauri::command]
@@ -781,7 +784,7 @@ mod tests {
             device_id: "mac".into(),
             gateway_url: "wss://example.invalid".into(),
             enabled: false,
-            paused: true,
+            paused: false,
             server_revision: Some("aaaaaaaa-1111-4111-8111-111111111111".into()),
             remote_disabled: false,
             attempt: Some(EnrollmentAttempt {
@@ -937,16 +940,19 @@ mod tests {
     }
     #[tokio::test]
     async fn local_sessions_auth_invalidation_at_publication_keeps_disk_stopped() {
-        for (human, revision) in [
-            (None, 0),
-            (Some(None), 0),
-            (Some(Some("bob".into())), 0),
-            (Some(Some("alice".into())), 1),
+        // Third element is the paused outcome `authenticate` must produce on the
+        // disk-persisted (pre-commit) row below, independent of the revision
+        // needed to force `publish` to reject this attempt.
+        for (human, revision, expect_paused) in [
+            (None, 0, false), // unreported: unchanged from candidate()'s paused:false
+            (Some(None), 0, true),
+            (Some(Some("bob".into())), 0, true),
+            (Some(Some("alice".into())), 1, false),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("enrollment.json");
             let state = Controller::default();
-            *state.human.lock().unwrap() = human;
+            *state.human.lock().unwrap() = human.clone();
             state.revision.store(revision, Ordering::SeqCst);
             assert!(complete_enable(
                 &path,
@@ -959,10 +965,25 @@ mod tests {
             .await
             .is_err());
             let mut restored: Enrollment = private_read(&path).unwrap();
-            restored.authenticate(Some("alice"));
+            restored.authenticate(human.as_ref().map(|h| h.as_deref()));
             assert!(!restored.enabled && restored.attempt.is_some());
+            assert_eq!(restored.paused, expect_paused);
             assert!(state.running.lock().unwrap().is_none());
         }
+    }
+    #[test]
+    fn local_sessions_authenticate_treats_unreported_as_unchanged() {
+        let mut e = candidate(); // human_user_id "alice", paused false
+        e.authenticate(None);
+        assert!(!e.paused);
+        e.authenticate(Some(None));
+        assert!(e.paused);
+        e.authenticate(None);
+        assert!(e.paused, "unreported never un-pauses either");
+        e.authenticate(Some(Some("alice")));
+        assert!(!e.paused);
+        e.authenticate(Some(Some("bob")));
+        assert!(e.paused);
     }
     #[tokio::test]
     async fn local_sessions_final_consent_write_failure_does_not_publish() {

@@ -101,3 +101,12 @@ def test_slugify():
     assert slugify("KidShield, Inc.") == "kidshield-inc"
     assert slugify("!!!") == "workspace"
     assert len(slugify("x" * 80)) == 40
+
+
+def test_resume_accepts_a_billing_row_already_moved_to_the_org():
+    moved = {"owner_id": ORG, "subscription_status": "active", "migrated_from": USER}
+    assert check_preconditions(USER, None, BOX, _row(), [{"id": ORG}], org_override=ORG, org_billing=moved) is None
+    stranger = {**moved, "migrated_from": "user_other"}
+    assert "purge" in check_preconditions(
+        USER, None, BOX, _row(), [{"id": ORG}], org_override=ORG, org_billing=stranger
+    )

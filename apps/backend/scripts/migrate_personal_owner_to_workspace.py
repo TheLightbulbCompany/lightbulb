@@ -134,13 +134,19 @@ def check_preconditions(
     memberships: list[dict[str, Any]],
     *,
     org_override: str | None = None,
+    org_billing: dict[str, Any] | None = None,
 ) -> str | None:
-    """``None`` when the owner is migratable, else the refusal reason."""
+    """``None`` when the owner is migratable, else the refusal reason.
+
+    ``org_billing`` is the billing row already under ``--org`` (a resumed run
+    moved it before dying); it stands in for the personal row when that one is
+    gone, provided it names this owner in ``migrated_from``."""
     if is_org_owner_id(owner_id) or not owner_id.startswith("user_"):
         return "owner must be a Clerk user id"
     if org_override is not None and not is_org_owner_id(org_override):
         return "--org must be a Clerk org id"
-    if not still_entitled(billing):
+    resumed = org_override is not None and (org_billing or {}).get("migrated_from") == owner_id
+    if not still_entitled(billing) and not (resumed and still_entitled(org_billing)):
         return "not entitled — this is a purge candidate, not a migration"
     if container is None:
         return "no containers row — nothing to carry over"
@@ -218,10 +224,11 @@ async def _create_org(name: str, owner_id: str, out: list[str]) -> str | None:
 
 async def _move_billing(owner_id: str, org_id: str, billing: dict[str, Any]) -> str:
     table = billing_repo._get_table()
-    new = billing_for_org(billing, org_id, now_iso=datetime.now(timezone.utc).isoformat())
     if await billing_repo.get_by_owner_id(org_id, consistent_read=True) is None:
+        new = billing_for_org(billing, org_id, now_iso=datetime.now(timezone.utc).isoformat())
         await run_in_thread(table.put_item, Item=new, ConditionExpression="attribute_not_exists(owner_id)")
-    await billing_repo.delete(owner_id)
+    if await billing_repo.get_by_owner_id(owner_id, consistent_read=True) is not None:
+        await billing_repo.delete(owner_id)
     customer = billing.get("stripe_customer_id")
     if customer:
         rows = await billing_repo.list_by_stripe_customer_id(customer)
@@ -234,7 +241,12 @@ async def _move_billing(owner_id: str, org_id: str, billing: dict[str, Any]) -> 
 async def _stop_personal_box(owner_id: str, billing: dict[str, Any]) -> str:
     ecs = get_ecs_manager()
     await ecs.stop_user_service(owner_id, reason="migrate_to_workspace")
-    drained = await ecs.wait_until_drained(owner_id, timeout_s=300.0)
+    drained = False
+    for _ in range(12):  # 12 x 25 s; a line per tick keeps the exec session alive
+        drained = await ecs.wait_until_drained(owner_id, timeout_s=25.0)
+        if drained:
+            break
+        print("    draining…", flush=True)
     note = "drained" if drained else "DRAIN TIMED OUT — proceeding"
     if billing.get("provider_choice") == "chatgpt_oauth":
         from core.services.oauth_service import harvest_rotated_oauth_seed
@@ -275,6 +287,8 @@ def _copy_replicas(owner_id: str, org_id: str) -> str:
                 continue
             s3.copy({"Bucket": bucket, "Key": obj["Key"]}, bucket, dst_key)
             copied += 1
+            if copied % 50 == 0:
+                print(f"    copied {copied}…", flush=True)
     return f"{copied} object(s) copied, {skipped} already present"
 
 
@@ -322,13 +336,17 @@ async def main(argv: list[str]) -> int:
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)
     pc_row = await PaperclipRepo(table_name="paperclip-companies").get(owner_id, consistent_read=True)
     memberships = await clerk_admin.list_user_organizations(owner_id, limit=10)
+    org_billing = await billing_repo.get_by_owner_id(args.org, consistent_read=True) if args.org else None
 
     out: list[str] = _Out()
-    reason = check_preconditions(owner_id, billing, container, pc_row, memberships, org_override=args.org)
+    reason = check_preconditions(
+        owner_id, billing, container, pc_row, memberships, org_override=args.org, org_billing=org_billing
+    )
     if reason:
         out.append(f"REFUSED {owner_id}: {reason}")
         return 2
 
+    billing = billing or org_billing or {}
     name = args.org_name or await _paperclip_company_name(pc_row) or f"{owner_id}'s workspace"
     out.append(
         f"{'APPLY' if args.apply else 'DRY RUN'} env={settings.ENVIRONMENT} owner={owner_id} "

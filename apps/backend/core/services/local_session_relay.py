@@ -156,11 +156,15 @@ async def publish_resources_changed(owner: str, human: str) -> None:
             await get_live_event_publisher().publish_room(
                 room, make_live_event("room.resources.changed", {"roomId": room}, room_id=room)
             )
-        # Workspace-wide: the sidebar list is not room-scoped (spec §5).
-        await publish_owner_users(owner, make_live_event("workspace.sessions.changed", {"humanUserId": human}))
     except Exception:
         # Hints are expendable; authorized HTTP polling repairs lost hints.
         logger.warning("Local session resource hint failed")
+    # Workspace-wide: the sidebar list is not room-scoped (spec §5). A failing room
+    # publish above must not suppress this -- each hint fails independently.
+    try:
+        await publish_owner_users(owner, make_live_event("workspace.sessions.changed", {"humanUserId": human}))
+    except Exception:
+        logger.warning("Workspace session hint failed")
 
 
 class LocalSessionRelay:

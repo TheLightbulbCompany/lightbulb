@@ -532,10 +532,10 @@ async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSess
     status is not live."""
     projections = await asyncio.gather(*(repo.list_user_sessions(owner, human) for human in humans))
     sessions: list[LocalSession] = []
-    for human_rows in projections:
+    for human, human_rows in zip(humans, projections):
         for projection in human_rows:
             row = await repo.get_session(owner, projection["sessionId"])
-            if row is None or row.get("ownerId") != owner:
+            if row is None or row.get("ownerId") != owner or row.get("humanUserId") != human:
                 continue
             try:
                 await _enrolled(owner, row["humanUserId"], row["deviceId"])
@@ -586,7 +586,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         out.sort(key=lambda row: row["lastEventAt"] or "", reverse=True)
         return out[:SESSION_SUMMARY_CAP]
     except Exception:
-        logger.warning("Live session summary unavailable for room %s", room_id)
+        logger.warning("Live session summary unavailable for room %s", room_id, exc_info=True)
         return []
 
 

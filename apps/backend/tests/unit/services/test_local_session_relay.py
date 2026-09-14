@@ -1194,3 +1194,27 @@ async def test_register_publishes_a_workspace_hint_to_every_user_stream(transpor
     assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
     assert all(e["payload"] == {"humanUserId": ALICE.user_id} for e in user_hints)
     assert any("/rooms/" in h["channel"] for h in transport[4])
+
+
+@pytest.mark.asyncio
+async def test_register_workspace_hint_survives_a_failing_room_publish(transport, db):
+    import core.services.live_events as live_events
+
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    connect(transport)
+    transport[4].clear()
+    with (
+        # A fresh publisher: the module singleton's signing lock binds to the
+        # event loop of whichever test acquires it first, and pytest-asyncio
+        # gives every test its own loop -- reusing it here is a test-isolation
+        # hazard unrelated to the fix under test.
+        patch.object(live_events, "_publisher", None),
+        patch("core.services.live_events.LiveEventPublisher.publish_room", side_effect=RuntimeError("boom")),
+    ):
+        await relay(transport).handle_message("conn-1", registration())
+    user_hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
+    assert len(user_hints) == 2
+    assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
+    assert not any("/rooms/" in h["channel"] for h in transport[4])

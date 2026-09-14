@@ -943,3 +943,31 @@ async def test_live_sessions_for_room_truncates_a_long_human_user_id():
         rows = await service.live_sessions_for_room(OWNER, ROOM, members)
     assert rows[0]["humanUserId"] == long_id[:128]
     assert len(rows[0]["humanUserId"]) == 128
+
+
+async def test_stray_projection_never_attributes_another_humans_session(db):
+    """A corrupt/stale projection under BOB's partition points at ALICE's real
+    session. It must never surface ALICE's session as BOB's -- not duplicated
+    into the workspace list, and not leaked into a room where only BOB is a
+    member."""
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    sid = await registered(conversation="conv-alice")
+    db[0].put_item(
+        Item={
+            "pk": repo.user_pk(OWNER, BOB.user_id),
+            "sk": f"SESSION#{sid}",
+            "ownerId": OWNER,
+            "humanUserId": BOB.user_id,
+            "deviceId": MAC,
+            "sessionId": sid,
+        }
+    )
+    listed = await service.list_workspace_sessions(BOB)
+    assert [s.session_id for s in listed.sessions] == [sid]
+    assert listed.sessions[0].human_user_id == ALICE.user_id
+
+    assert (
+        await service.live_sessions_for_room(OWNER, ROOM, [{"kind": "human", "id": BOB.user_id, "displayName": "Bob"}])
+        == []
+    )

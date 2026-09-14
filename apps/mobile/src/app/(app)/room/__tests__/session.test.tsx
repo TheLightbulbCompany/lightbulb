@@ -156,4 +156,15 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("This session is no longer shared.")).toBeTruthy());
   });
+
+  it("opens an ended session's transcript instead of reporting it unavailable", async () => {
+    mockSession = { ...base, status: "ended" };
+    // A prior test overrides listResources with a persistent mockResolvedValue
+    // (mockClear in beforeEach does not undo it) — restore the default impl.
+    mockListResources.mockImplementation(async () => ({ devices: [], sessions: [mockSession], pairedNodes: [] }));
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    expect(mockListResources).toHaveBeenCalledWith("room-1", { includeEnded: true });
+    expect(screen.queryByText("This session is no longer shared.")).toBeNull();
+  });
 });

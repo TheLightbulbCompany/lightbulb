@@ -21,7 +21,7 @@ export const accessLost = (error: unknown) => error instanceof ApiError && (erro
 export function useRoomResources(
   roomId: string,
   { client, onEvent, connectionRevision }: RoomResourceSource,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled = true, includeEnded = false }: { enabled?: boolean; includeEnded?: boolean } = {},
 ) {
   const [data, setData] = useState<RoomResources | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +32,12 @@ export function useRoomResources(
   const blocked = useRef(false);
   const refreshing = useRef(false);
   const queued = useRef(false);
+  // Coalesced re-runs of the do-while below reuse the `refresh` closure that
+  // was already in flight when a caller queued another pass; without this ref
+  // that re-run would fetch with the `includeEnded` captured at the START of
+  // the in-flight fetch, silently dropping a toggle flip that arrived mid-fetch.
+  const includeEndedRef = useRef(includeEnded);
+  includeEndedRef.current = includeEnded;
   const invalidate = useCallback(() => {
     request.current += 1;
     refreshing.current = false;
@@ -56,7 +62,7 @@ export function useRoomResources(
       do {
         queued.current = false;
         try {
-          const next = await client.listResources(roomId);
+          const next = await client.listResources(roomId, { includeEnded: includeEndedRef.current });
           if (id !== request.current || blocked.current) return;
           setData(next);
           setError(null);
@@ -72,7 +78,7 @@ export function useRoomResources(
     } finally {
       if (id === request.current) { refreshing.current = false; setLoading(false); }
     }
-  }, [client, roomId, revoke]);
+  }, [client, roomId, revoke, includeEnded]);
   useEffect(() => {
     if (!enabled) return;
     blocked.current = false;
@@ -92,7 +98,7 @@ export function useRoomResources(
     // Reuses the room's existing live subscription. Poll only while this pane exists.
     const timer = setInterval(() => void refresh(), 5000);
     return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
-  }, [enabled, onEvent, roomId, refresh, revoke, invalidate]);
+  }, [enabled, onEvent, roomId, refresh, revoke, invalidate, includeEnded]);
   const previousConnection = useRef(connectionRevision);
   useEffect(() => {
     if (enabled && previousConnection.current !== connectionRevision) void refresh();

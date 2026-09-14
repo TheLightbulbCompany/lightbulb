@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, useRoomResources, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { RoomResources as RoomResourcesPanel } from "../RoomResources";
 import { useState } from "react";
 
 const session: LocalSession = {
@@ -34,7 +35,7 @@ function setup(roomId = "room") {
     createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
   });
   const client = {
-    listResources: vi.fn(async () => resources),
+    listResources: vi.fn<(roomId: string, options?: { includeEnded?: boolean }) => Promise<RoomResources>>(async () => resources),
     listLocalSessionEvents: vi.fn(async (_room: string, _session: string, after: number, limit = 50) => page(after, limit)),
     submitLocalSessionCommand: vi.fn(async (_room: string, _session: string, request: LocalSessionCommand) => receipt(request)),
     getLocalSessionCommand: vi.fn<(_room: string, _session: string, _id: string) => Promise<LocalSessionCommandReceipt>>(),
@@ -535,4 +536,58 @@ it("cannot race a new send with a receipt check or erase the next draft", async 
   await act(async () => finish({ ...f.receipt(f.client.submitLocalSessionCommand.mock.calls[0][2]), state: "applied" }));
   expect(input).toHaveValue("Next follow-up");
   expect(input).toBeEnabled();
+});
+
+it("shows last activity, hides ended sessions until Show recent is pressed", async () => {
+  const f = setup("room-1");
+  const active = { ...session, status: "busy" as const, lastEventAt: "2026-09-14T04:00:00Z" };
+  const ended = { ...session, sessionId: "sess-ended", provider: "claude" as const, title: "Old run", status: "ended" as const, endedAt: "2026-09-14T03:00:00Z", lastEventAt: "2026-09-14T03:00:00Z" };
+  f.client.listResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+    Promise.resolve({ ...resources, sessions: options?.includeEnded ? [active, ended] : [active] }));
+  render(<RoomPanel {...f.props} />);
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  await screen.findByText(/Working/);
+  expect(screen.getByText(/ago/)).toBeInTheDocument();
+  expect(screen.queryByText("Claude · Old run")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /show recent/i }));
+  expect(await screen.findByText("Claude · Old run")).toBeInTheDocument();
+  expect(screen.getByText(/Ended/)).toBeInTheDocument();
+  expect(f.client.listResources).toHaveBeenLastCalledWith("room-1", { includeEnded: true });
+});
+
+it("resolves a permalink to an ended session without waiting for Show recent", async () => {
+  const f = setup();
+  const ended = { ...session, sessionId: "sess-ended", status: "ended" as const };
+  f.client.listResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+    Promise.resolve({ ...resources, sessions: options?.includeEnded ? [ended] : [] }));
+  render(<RoomPanel {...f.props} targetSession={{ sessionId: "sess-ended", nonce: 1 }} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(screen.queryByText("Session unavailable in this conversation.")).not.toBeInTheDocument();
+  expect(f.client.listResources).toHaveBeenCalledWith("room", { includeEnded: true });
+});
+
+it("keeps a permalinked ended session open after its one-shot target is consumed", async () => {
+  // `target` is one-shot: RoomPanel nulls it out via onTargetConsumed the
+  // instant RoomResources resolves it. Drive RoomResources directly (rather
+  // than through RoomPanel's internal consumedSession state) so the
+  // target -> null transition is deterministic, exactly mirroring what
+  // RoomPanel does once the permalink is handled.
+  const f = setup();
+  const ended = { ...session, sessionId: "sess-ended", status: "ended" as const };
+  f.client.listResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+    Promise.resolve({ ...resources, sessions: options?.includeEnded ? [ended] : [] }));
+  const onTargetConsumed = vi.fn();
+  const view = render(<RoomResourcesPanel roomId="room" source={f.source} participants={f.props.participants} onClose={() => {}}
+    target={{ sessionId: "sess-ended", nonce: 1 }} onTargetConsumed={onTargetConsumed} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  await waitFor(() => expect(onTargetConsumed).toHaveBeenCalled());
+  view.rerender(<RoomResourcesPanel roomId="room" source={f.source} participants={f.props.participants} onClose={() => {}}
+    target={null} onTargetConsumed={onTargetConsumed} />);
+  // A non-sticky `includeEnded` (the previous `includeEnded || !!target` fix)
+  // recomputes to `false` the instant `target` clears, the hook refetches
+  // without the ended session, and the "selection no longer in the list"
+  // cleanup below closes the panel — this must NOT happen.
+  await waitFor(() => expect(f.client.listResources).toHaveBeenLastCalledWith("room", { includeEnded: true }));
+  expect(screen.getByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(screen.queryByText("Session unavailable in this conversation.")).not.toBeInTheDocument();
 });

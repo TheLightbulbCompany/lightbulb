@@ -220,7 +220,7 @@ export interface LocalSession {
   humanUserId: string;
   provider: "claude" | "codex";
   generation: string;
-  status: "idle" | "busy" | "waiting-approval" | "unknown" | "offline";
+  status: "idle" | "busy" | "waiting-approval" | "unknown" | "offline" | "ended";
   providerVersion: string;
   controlUnavailableReason: "runtime-unverified" | "endpoint-unavailable" | "unsupported-version" | "history-gap" | null;
   activeTurnId: string | null;
@@ -232,6 +232,9 @@ export interface LocalSession {
   title?: string | null;
   /** Basename only; never a full path. */
   cwdName?: string | null;
+  lastEventAt?: string | null;
+  endedAt?: string | null;
+  lastAssistantMessage?: string | null;
 }
 
 export interface PairedNode {

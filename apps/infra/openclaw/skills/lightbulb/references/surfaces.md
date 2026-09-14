@@ -90,7 +90,9 @@ owner's terminal labelled with the sender's room handle (`Message from @aden`
 in Claude Code; a header line in Codex), and agent contributions carry an
 agent identity, never a human impersonation. Enabling sharing installs a
 `lightbulb-session-sharing` skill into the owner's Claude and Codex skill
-roots so the harness knows what a teammate contribution is.
+roots so the harness knows what a teammate contribution is. Sessions whose
+process has exited read **Ended** and are hidden until a member presses Show
+recent; they cannot receive follow-ups.
 
 A selected session's **Copy session link** or **Add link to conversation draft**
 lets a human explicitly share that same session in a room message. Opening it

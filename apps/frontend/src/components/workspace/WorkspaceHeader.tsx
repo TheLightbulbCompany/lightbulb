@@ -37,7 +37,9 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         const accessibleLabel = showsActivity
           ? `${label}, ${activeTeamRunCount} active team ${activeTeamRunCount === 1 ? "run" : "runs"}`
           : label;
-        return <button key={panel} type="button" aria-label={accessibleLabel} title={accessibleLabel} disabled={!chatReady}
+        // Messaging never needs the container; the other destinations do.
+        return <button key={panel} type="button" aria-label={accessibleLabel} title={accessibleLabel}
+          disabled={!chatReady && panel !== MESSAGES_PANEL_ID}
           aria-current={activePanelId === panel ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");

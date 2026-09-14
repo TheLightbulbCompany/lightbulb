@@ -100,7 +100,7 @@ describe("WorkspaceSidebar", () => {
     fireEvent.click(within(details).getByRole("button", { name: "Domain & Site" }));
     expect(openPanel).toHaveBeenCalledWith("teams-domain-site", {}, { pushUrl: true });
   });
-  it("disables destinations and withholds conversations while provisioning", () => {
+  it("disables container-backed destinations but keeps conversations while agents start", () => {
     render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);
     fireEvent.click(screen.getByText("More"));
     for (const name of ["Agents", "Money"]) {
@@ -109,8 +109,9 @@ describe("WorkspaceSidebar", () => {
       fireEvent.click(button);
     }
     expect(openPanel).not.toHaveBeenCalled();
-    expect(screen.queryByRole("navigation", { name: "Conversations" })).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Conversations are available when your workspace is ready.");
+    // Messaging never needs the container.
+    expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
+    expect(screen.queryByText(/Conversations are available when/)).not.toBeInTheDocument();
   });
   it("keeps health recovery available to free-tier owners", () => {
     isSubscribed = false;

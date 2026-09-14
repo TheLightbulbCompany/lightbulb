@@ -191,83 +191,43 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     apiGet.mockResolvedValue({});
   });
 
-  it("derives cold-start sub-phases from real signals, not elapsed time", () => {
-    // substatus task_running = ECS task up, gateway port still closed.
-    const base = {
-      phase: "normal",
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-    };
-    useProvMock.mockReturnValue({
-      ...base,
-      container: {
-        container_status: "provisioning",
-        runtime_phase: "provisioning",
-        container_substatus: "task_running",
-      },
-    });
-    const { rerender, unmount } = render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    expect(screen.getByText("Connecting to your agent's brain...")).toBeInTheDocument();
+  it("keeps the workspace usable through every cold-start phase, with an agents banner instead of the setup card", () => {
+    // Messaging never needs the container, so no container state may put the
+    // full-screen setup card in front of conversations.
+    const base = { phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn() };
+    const coldStarts = [
+      { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "service_created" },
+      { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "task_running" },
+      { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" },
+    ];
+    for (const health of [null, { ok: true }]) {
+      gatewayHealthData = health;
+      for (const container of coldStarts) {
+        useProvMock.mockReturnValue({ ...base, container });
+        const { unmount } = render(
+          <ProvisioningStepper>
+            <div>children</div>
+          </ProvisioningStepper>,
+        );
+        expect(screen.getByText("children")).toBeInTheDocument();
+        expect(screen.getByText(/Your agents are getting ready/i)).toBeInTheDocument();
+        expect(screen.queryByText("Provisioning your container...")).not.toBeInTheDocument();
+        expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+        unmount();
+      }
+    }
+    gatewayHealthData = null;
+  });
 
-    // Earlier provisioning (no task yet) stays on the container step.
-    useProvMock.mockReturnValue({
-      ...base,
-      container: {
-        container_status: "provisioning",
-        runtime_phase: "provisioning",
-        container_substatus: "service_created",
-      },
-    });
-    rerender(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
-
-    // phase=starting (gateway port open) with the health RPC unanswered:
-    // OpenClaw is booting channels/sidecars.
-    useProvMock.mockReturnValue({
-      ...base,
-      container: {
-        container_status: "running",
-        runtime_phase: "starting",
-        container_substatus: "gateway_healthy",
-      },
-    });
-    rerender(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    expect(screen.getByText("Wiring up your channels...")).toBeInTheDocument();
-    unmount();
-
-    // Health RPC answers but the pool handshake hasn't completed: the
-    // agent step (fresh mount so the regression-reset path can't interfere).
-    gatewayHealthData = { ok: true };
-    useProvMock.mockReturnValue({
-      ...base,
-      container: {
-        container_status: "running",
-        runtime_phase: "starting",
-        container_substatus: "gateway_healthy",
-      },
-    });
+  it("keeps the setup card only until the first status response arrives", () => {
+    useProvMock.mockReturnValue({ phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn(), container: null });
     render(
       <ProvisioningStepper>
         <div>children</div>
       </ProvisioningStepper>,
     );
-    expect(
-      screen.getByText("Putting the finishing touches on your agent..."),
-    ).toBeInTheDocument();
-    gatewayHealthData = null;
+    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
   it("renders title + message + action button when admin and not admin_only", () => {
@@ -612,8 +572,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(
       screen.queryByRole("heading", { name: /Sign in with ChatGPT/i }),
     ).not.toBeInTheDocument();
-    // Must proceed into the container cold-start phase, not "payment".
-    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
+    // Must proceed past "payment" into the workspace while the container boots.
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.getByText(/Your agents are getting ready/i)).toBeInTheDocument();
   });
 
   it("renders ChatGPTOAuthStep when ?provider=chatgpt_oauth even if gate is blocked", async () => {
@@ -721,99 +682,47 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the Setup-failed card for a TERMINAL error (status=error + substatus=provision_failed)", () => {
-    // Honest contract: a real provisioning failure now arrives as
-    // status="error". The terminal substatus must surface the "Setup failed"
-    // card (Retry + Contact Support) — keyed off substatus, never `phase`
-    // (which still resolves to "container" for an error row).
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: {
-        container_status: "error",
-        container_substatus: "provision_failed",
-        runtime_phase: "provisioning",
-        last_error: "ECS task failed to start",
-      },
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-    });
+  // Honest contract: a real provisioning failure arrives as status="error".
+  // Terminal is any status="error" that isn't error_retrying — provision_failed,
+  // the rollout circuit breaker's deployment_failed, or a bare error with no
+  // substatus (auto-retry gated / standing down) — keyed off substatus, never
+  // `phase`. It must say so with Retry + Contact support, never a plain
+  // spinner; and since messaging doesn't need the container, it says so in a
+  // banner over the working app rather than a card in front of it.
+  it.each(["provision_failed", "deployment_failed", null])(
+    "shows Setup failed with Retry over the working app for a TERMINAL error (substatus=%s)",
+    (substatus) => {
+      const refresh = vi.fn();
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: {
+          container_status: "error",
+          container_substatus: substatus,
+          runtime_phase: "provisioning",
+          last_error: "ECS task failed to start",
+        },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh,
+      });
 
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
 
-    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Contact Support/i })).toBeInTheDocument();
-    // The app itself must not render behind the terminal card.
-    expect(screen.queryByText("children")).not.toBeInTheDocument();
-  });
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+      expect(refresh).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it("shows the Setup-failed card for a TERMINAL error with substatus=deployment_failed (rollout circuit breaker)", () => {
-    // Terminal is any status="error" that isn't error_retrying — NOT just
-    // provision_failed. The rollout circuit breaker emits deployment_failed;
-    // it must show the card, not fall through to the plain spinner with no CTA.
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: {
-        container_status: "error",
-        container_substatus: "deployment_failed",
-        runtime_phase: "provisioning",
-        last_error: "deployment rolled back",
-      },
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
-    expect(screen.queryByText("children")).not.toBeInTheDocument();
-  });
-
-  it("shows the Setup-failed card for a bare status=error with NO substatus (auto-retry gated / standing down)", () => {
-    // When auto-retry is gated or standing down the backend emits a bare
-    // status="error" with substatus=null. That is terminal by default and must
-    // show the card — the exact endless-spinner regression the invert fixes.
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: {
-        container_status: "error",
-        container_substatus: null,
-        runtime_phase: "provisioning",
-        last_error: "retries exhausted",
-      },
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
-    expect(screen.queryByText("children")).not.toBeInTheDocument();
-  });
-
-  it("keeps the provisioning stepper (NOT the Setup-failed card) for a RETRYING error", () => {
+  it("says retrying (NOT Setup failed) for a RETRYING error", () => {
     // status="error" + substatus="error_retrying" is transient — the backend is
-    // auto-retrying. The stepper must keep showing progress with a calm
-    // "retrying" line; the terminal "Setup failed" card must NOT appear. This
-    // is the whole point of the split: a dead container fails loudly, a
-    // retrying one keeps showing progress.
+    // auto-retrying. A dead container fails loudly, a retrying one stays calm.
     useProvMock.mockReturnValue({
       phase: "normal",
       container: {
@@ -833,8 +742,8 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       </ProvisioningStepper>,
     );
 
+    expect(screen.getByText("children")).toBeInTheDocument();
     expect(screen.queryByText(/Setup failed/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
     expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
   });
 
@@ -879,17 +788,19 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   // identical to the copy at hour twenty-one.
   describe("bounding the wait honestly", () => {
     const refreshSpy = vi.fn();
-    const renderColdStart = () => {
+    const renderColdStart = (withContainer = true) => {
       gatewayHealthData = { ok: true };
       useProvMock.mockReturnValue({
         phase: "normal",
-        container: {
-          container_status: "running",
-          runtime_phase: "starting",
-          container_substatus: "gateway_healthy",
-          onboarded: true,
-          funnel: { state: "submitted" },
-        },
+        container: withContainer
+          ? {
+              container_status: "running",
+              runtime_phase: "starting",
+              container_substatus: "gateway_healthy",
+              onboarded: true,
+              funnel: { state: "submitted" },
+            }
+          : null,
         blocked: null,
         refreshInterval: 3000,
         refresh: refreshSpy,
@@ -910,7 +821,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       gatewayHealthData = null;
     });
 
-    it("escalates to a second tier at 15 minutes", () => {
+    it("escalates the agents banner to a second tier at 15 minutes, over the working app", () => {
       renderColdStart();
 
       act(() => void vi.advanceTimersByTime(PROVISION_TIMEOUT_MS + 1_000));
@@ -920,13 +831,12 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       act(() => void vi.advanceTimersByTime(PROVISION_STUCK_MS - PROVISION_TIMEOUT_MS));
       expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
       expect(screen.getByText(/something is stuck on our side/i)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();
       expect(screen.queryByText(/Still going/i)).not.toBeInTheDocument();
-      // Past the stuck tier the counter stops carrying a promise about how
-      // long this normally takes.
-      expect(screen.queryByText(/cold starts can take a few minutes/i)).not.toBeInTheDocument();
+      expect(screen.getByText("children")).toBeInTheDocument();
     });
 
-    it('"Check again" re-polls without erasing the escalation or the clock', () => {
+    it('"Check again" re-polls without erasing the escalation', () => {
       renderColdStart();
       act(() => void vi.advanceTimersByTime(PROVISION_STUCK_MS + 1_000));
       expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
@@ -937,11 +847,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       // It used to setTimedOut(false) + setElapsedMs(0) + restamp the start
       // ref, which is how 21 hours kept reading as five minutes, over and over.
       expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
-      expect(screen.queryByText("0:00")).not.toBeInTheDocument();
     });
 
-    it("rolls the counter to h:mm:ss instead of rendering 1260:37", () => {
-      renderColdStart();
+    it("rolls the setup card's counter to h:mm:ss instead of rendering 1260:37", () => {
+      // The card (and its counter) only remains while no status has arrived.
+      renderColdStart(false);
       act(() => void vi.advanceTimersByTime(3_600_000 + 5_000));
       expect(screen.getByText(/^1:00:0\d$/)).toBeInTheDocument();
     });

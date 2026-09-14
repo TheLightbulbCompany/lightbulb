@@ -427,13 +427,13 @@ impl Host {
             .iter()
             .filter(|(_, m)| {
                 m.ended_at.is_none()
-                    && !alive(m.native.process.pid)
+                    && !still_running(&m.native.process)
                     // While a successor waits for `advance`, `native` is the dead
                     // predecessor and the successor is the session that is running.
                     && m.registration
                         .successor
                         .as_ref()
-                        .is_none_or(|next| !alive(next.process.pid))
+                        .is_none_or(|next| !still_running(&next.process))
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -937,12 +937,15 @@ impl Host {
                             mirror.session_id = Some(sid.into());
                             mirror.registered();
                             relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
-                            mirror.advance();
+                            let advanced = mirror.advance();
                             persist_changed(&self.dir,&key,mirror,&before)?;
                             // Whatever discovery has found since, the relay has this
                             // session: fields it has not seen ride the next heartbeat,
                             // and only the relay's own rejection re-registers it.
-                            registered.insert(key.clone());
+                            // Unless `advance` just promoted a successor -- the relay
+                            // has never seen THAT generation, and uploading under it
+                            // would only earn a rejection.
+                            if advanced {registered.remove(&key);} else {registered.insert(key.clone());}
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
                                 .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
@@ -1259,14 +1262,11 @@ fn epoch_secs() -> u64 {
         .unwrap_or_default()
 }
 
-/// `kill(pid, 0)` sends nothing; it only asks. ESRCH is the one answer that
-/// proves the process is gone -- EPERM means it exists and is someone else's.
-fn alive(pid: u32) -> bool {
-    if pid == 0 || pid > i32::MAX as u32 {
-        return false;
-    }
-    let probe = unsafe { libc::kill(pid as i32, 0) };
-    probe == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+/// The stored identity has to still be at that pid: pids are reused, and
+/// `kill(pid, 0)` would call the stranger that inherited it this session alive
+/// forever. `process` is a `proc_pidinfo` read -- no spawn, no signal.
+fn still_running(identity: &Process) -> bool {
+    process(identity.pid).is_ok_and(|current| &current == identity)
 }
 
 /// A read failure is a history problem only. A process that is gone is ended by
@@ -1635,6 +1635,23 @@ mod tests {
             "a restarted session is not an ended one"
         );
         assert_eq!(host.mirrors[SID].native.status, "unknown");
+    }
+
+    #[test]
+    fn local_sessions_liveness_ends_a_session_whose_pid_was_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        // The pid answers -- it is this very process -- but it is not the
+        // process the session was started in.
+        mirror.native.process.birth_micros ^= 1;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        host.liveness_tick();
+        assert_eq!(
+            host.mirrors[SID].ended_reason.as_deref(),
+            Some("process-exited"),
+            "a reused pid is not the session's process"
+        );
+        assert!(host.mirrors[SID].ended_at.is_some());
     }
 
     #[test]
@@ -2384,6 +2401,47 @@ mod tests {
         assert_eq!(stored.after_seq, 1);
         assert!(stored.pending.is_none());
     }
+    #[tokio::test]
+    async fn local_sessions_a_successor_promoted_by_the_ack_registers_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["type"], "local.session.register");
+            assert_eq!(first["session"]["generation"], "g1");
+            // Hold the ACK back so the queued discovery pass -- the only other
+            // ready arm -- is taken while this registration is in flight.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":"g1","afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            let second = next_frame(&mut socket).await;
+            assert_eq!(second["type"], "local.session.register");
+            assert_ne!(
+                second["session"]["generation"], "g1",
+                "the generation the ACK promoted has never been registered"
+            );
+            assert_eq!(second["previousGeneration"], "g1");
+            socket.close(None).await.unwrap();
+        });
+        let native = test_native("native");
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), test_mirror("native", "g1"))]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        // The same session under a process the mirror's generation does not
+        // name: discovery parks it as a successor while registration is frozen.
+        tx.send(vec![native]).await.unwrap();
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = host.connection(&mut socket, &mut rx).await;
+        server.await.unwrap();
+        assert_ne!(host.mirrors[&key].generation, "g1");
+        assert!(host.mirrors[&key].registration.successor.is_none());
+    }
+
     #[tokio::test]
     async fn local_sessions_registration_ack_reconciles_a_lost_batch_ack() {
         let dir = tempfile::tempdir().unwrap();

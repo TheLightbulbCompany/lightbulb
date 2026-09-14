@@ -119,7 +119,11 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
         notification_type: s("notificationType"),
         message: s("message"),
         reason: s("reason"),
-        last_assistant_message: s("lastAssistantMessage"),
+        // Bounded on the way in, not just on the way out: anything same-uid can
+        // write to `wake.sock`, and an oversized value would be mirrored into
+        // every device heartbeat, which the relay rejects whole.
+        last_assistant_message: s("lastAssistantMessage")
+            .map(|m| m.chars().take(LAST_MESSAGE_MAX).collect()),
     })
 }
 
@@ -269,6 +273,17 @@ mod tests {
         let parsed = parse_datagram(&bytes).unwrap();
         assert!(parsed.session_id.len() <= 128);
         assert!(parsed.event.len() <= 32);
+
+        // A datagram this process did not build: same-uid, so the parse side is
+        // the only bound there is.
+        let hostile = json!({"v":1,"provider":"claude","event":"Stop","sessionId":"abc",
+            "lastAssistantMessage":"y".repeat(2000)})
+        .to_string();
+        let parsed = parse_datagram(hostile.as_bytes()).unwrap();
+        assert_eq!(
+            parsed.last_assistant_message.unwrap().chars().count(),
+            LAST_MESSAGE_MAX
+        );
     }
 
     #[test]

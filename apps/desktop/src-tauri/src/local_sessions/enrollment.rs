@@ -206,7 +206,11 @@ impl Controller {
                                     {
                                         hook_wake.notify_one();
                                     }
-                                    let _ = hooks_tx.try_send(event);
+                                    if hooks_tx.try_send(event).is_err() {
+                                        // A lost status/end event is only recovered by
+                                        // the 60s sweep, so it must not be silent.
+                                        transport::relay_log("hook event dropped: channel full");
+                                    }
                                 }
                                 None => hook_wake.notify_one(),
                             }
@@ -245,6 +249,22 @@ impl Controller {
         if !notes.is_empty() {
             *self.status.lock().map_err(|_| "sharing state unavailable")? =
                 format!("Local sharing resumed; {}.", notes.join("; "));
+        }
+        self.resume(enrollment, prepared, revision)
+    }
+
+    /// The tail of `restore`. At launch nobody has reported who is signed in
+    /// yet, and `publish` demands a matching human -- so an unreported human is
+    /// a quiet no-op here, not a failure. Sharing comes up on the
+    /// `local_sessions_auth` call that follows.
+    fn resume(&self, enrollment: Enrollment, prepared: PreparedRun, revision: u64) -> Result<()> {
+        if self
+            .human
+            .lock()
+            .map_err(|_| "sharing state unavailable")?
+            .is_none()
+        {
+            return Ok(());
         }
         self.publish(None, enrollment, prepared, revision)
     }
@@ -969,6 +989,17 @@ mod tests {
             assert!(!restored.enabled && restored.attempt.is_some());
             assert_eq!(restored.paused, expect_paused);
             assert!(state.running.lock().unwrap().is_none());
+            // Launch restore reads the same table. An unreported human is a
+            // quiet no-op; every other state still has to pass
+            // `require_current`, which the bumped revision forces to reject.
+            assert_eq!(
+                state
+                    .resume(candidate(), prepared(dir.path()), revision + 1)
+                    .is_ok(),
+                human.is_none(),
+                "restore must not fail merely because nobody has reported the human yet"
+            );
+            assert!(state.running.lock().unwrap().is_none());
         }
     }
     #[test]
@@ -1236,6 +1267,16 @@ mod tests {
         let config = fs::read_to_string(home.path().join(".codex/config.toml")).unwrap();
         assert!(!config.contains(&stale), "the dead path stays trusted");
         assert_eq!(private_read::<PathBuf>(&record).unwrap(), new);
+        // A resume installs the skill too: this is the only caller, so nothing
+        // else would notice the call going missing.
+        assert_eq!(
+            fs::read_to_string(
+                home.path()
+                    .join(".claude/skills/lightbulb-session-sharing/SKILL.md")
+            )
+            .unwrap(),
+            SKILL_MD
+        );
     }
 
     #[test]

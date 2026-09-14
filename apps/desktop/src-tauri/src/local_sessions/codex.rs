@@ -441,6 +441,12 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
         return Ok(()); // Codex is not installed on this Mac.
     }
     let path = dir.join("hooks.json");
+    // The trust key is this path, written into a TOML bare-string table header.
+    // A quote or backslash in it would corrupt the user's config.toml, so refuse
+    // before either file is touched rather than escape our way through.
+    if path.to_string_lossy().contains(['"', '\\']) {
+        return Err("Codex config path cannot be trusted safely".into());
+    }
     let mut doc: Value = if path.try_exists().map_err(|e| e.to_string())? {
         serde_json::from_reader(secure_file(&path)?.take(1024 * 1024))
             .map_err(|_| "invalid Codex hooks")?
@@ -482,18 +488,29 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
         };
         let Some(slot) = slot else { continue };
         let entries = slot.as_array_mut().ok_or("invalid Codex hooks")?;
-        // The trust key carries the group's index, so it is read before the
-        // removal and, when enabling, re-read after the re-append.
-        let found = entries.iter().position(|existing| existing == &entry);
-        entries.retain(|existing| existing != &entry);
-        if enabled {
-            entries.push(entry);
-        }
+        // Our group is the one running our command. Re-appending it instead
+        // would shift every group the user keeps after it -- and their trust
+        // keys are that index.
+        let found = entries
+            .iter()
+            .position(|existing| existing["hooks"][0]["command"].as_str() == Some(&*command));
         // Never guess an index when disabling: `<hooks.json>:<event>:0:0` is a
         // real key that another tool's first group may own.
         let index = if enabled {
-            Some(entries.len() - 1)
+            Some(match found {
+                Some(at) => {
+                    entries[at] = entry;
+                    at
+                }
+                None => {
+                    entries.push(entry);
+                    entries.len() - 1
+                }
+            })
         } else {
+            if let Some(at) = found {
+                entries.remove(at);
+            }
             found
         };
         if entries.is_empty() {
@@ -580,7 +597,30 @@ mod tests {
         );
         assert!(config.contains(&format!("trusted_hash = \"{expected}\"")));
         assert!(config.contains("other:stop:0:0"));
+
+        // A group the user adds AFTER ours keeps its index across a resume --
+        // their own trust key is that index, so moving ours invalidates it.
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        doc["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"hooks":[{"type":"command","command":"later"}]}));
+        fs::write(
+            codex.join("hooks.json"),
+            serde_json::to_vec_pretty(&doc).unwrap(),
+        )
+        .unwrap();
         configure_hooks(home.path(), Path::new("/app"), true).unwrap(); // idempotent
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        let stop = doc["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 3);
+        assert_eq!(stop[0]["hooks"][0]["command"], "theirs");
+        assert_eq!(
+            stop[2]["hooks"][0]["command"], "later",
+            "ours stayed at index 1 instead of being re-appended"
+        );
         assert_eq!(
             fs::read_to_string(codex.join("config.toml"))
                 .unwrap()
@@ -591,7 +631,16 @@ mod tests {
         configure_hooks(home.path(), Path::new("/app"), false).unwrap();
         let hooks: Value =
             serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
-        assert_eq!(hooks["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        let stop = hooks["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(
+            (
+                stop.len(),
+                stop[0]["hooks"][0]["command"].as_str(),
+                stop[1]["hooks"][0]["command"].as_str(),
+            ),
+            (2, Some("theirs"), Some("later")),
+            "only our group is removed, and in place"
+        );
         assert!(hooks["hooks"].get("SessionEnd").is_none());
         let config = fs::read_to_string(codex.join("config.toml")).unwrap();
         assert!(
@@ -623,6 +672,21 @@ mod tests {
         let bare = tempfile::tempdir().unwrap();
         configure_hooks(bare.path(), Path::new("/app"), true).unwrap();
         assert!(!bare.path().join(".codex").exists());
+    }
+
+    #[test]
+    fn local_sessions_codex_refuses_a_path_the_trust_table_cannot_quote() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("we\"ird");
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        let config = home.join(".codex/config.toml");
+        fs::write(&config, "model = \"x\"\n").unwrap();
+        assert_eq!(
+            configure_hooks(&home, Path::new("/app"), true).unwrap_err(),
+            "Codex config path cannot be trusted safely"
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), "model = \"x\"\n");
+        assert!(!home.join(".codex/hooks.json").exists());
     }
 
     #[test]

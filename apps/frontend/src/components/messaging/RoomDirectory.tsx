@@ -14,6 +14,7 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
+import { LISTEN_MODE_LABELS } from "./respondHint";
 import { groupRooms, type RoomGroup, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
@@ -460,7 +461,7 @@ function DirectoryContent({
             {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Response for {participant.displayName}</label>}
             {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
-              <option value="active">Automatic</option><option value="mentions">Mentions only</option><option value="observe">Observe</option>
+              {Object.entries(LISTEN_MODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>}</>;
           return <div className="room-choice" key={key}>{content}</div>;
         })}</div>

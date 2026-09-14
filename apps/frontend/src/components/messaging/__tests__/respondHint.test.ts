@@ -9,7 +9,7 @@ const person: RespondTarget = { kind: "human", id: "user-aden", displayName: "Ad
 describe("respondHint", () => {
   it("renders the compact channel form", () => {
     expect(respondHint("channel", [person, friday, gauge, atlas], [], []))
-      .toBe("Friday will reply · Gauge when mentioned · Atlas observing");
+      .toBe("Friday may reply · Gauge when mentioned · Atlas is off");
   });
   it("promotes a mentions agent the moment the draft mentions it", () => {
     expect(respondHint("channel", [gauge], [{ kind: "agent", id: "agent-gauge" }], [])).toBe("Gauge will reply");
@@ -20,8 +20,13 @@ describe("respondHint", () => {
   it("makes every agent reply in a DM regardless of listen mode", () => {
     expect(respondHint("dm", [gauge], [], [])).toBe("Gauge will reply");
   });
-  it("never promises a reply from an observe agent, even mentioned in a DM", () => {
-    expect(respondHint("dm", [atlas], [{ kind: "agent", id: "agent-atlas" }], [])).toBe("Atlas observing");
+  it("never promises a reply from an Off agent, even mentioned in a DM", () => {
+    expect(respondHint("dm", [atlas], [{ kind: "agent", id: "agent-atlas" }], [])).toBe("Atlas is off");
+  });
+  it("only promises an Observe agent's reply when the message addresses it", () => {
+    expect(respondHint("channel", [friday], [], [])).toBe("Friday may reply");
+    expect(respondHint("channel", [friday], [{ kind: "agent", id: "agent-friday" }], [])).toBe("Friday will reply");
+    expect(respondHint("dm", [friday], [], [])).toBe("Friday will reply");
   });
   it("says a live run will be steered", () => {
     expect(respondHint("channel", [friday], [], ["agent-friday"])).toBe("Friday is working — sending now steers that run");

@@ -143,7 +143,7 @@ async def _actor_label(command: dict) -> dict | None:
 
 
 async def publish_resources_changed(owner: str, human: str) -> None:
-    from core.services.live_events import get_live_event_publisher
+    from core.services.live_events import get_live_event_publisher, publish_owner_users
 
     # GSI is discovery only; current membership/scope is checked before publishing.
     try:
@@ -159,6 +159,12 @@ async def publish_resources_changed(owner: str, human: str) -> None:
     except Exception:
         # Hints are expendable; authorized HTTP polling repairs lost hints.
         logger.warning("Local session resource hint failed")
+    # Workspace-wide: the sidebar list is not room-scoped (spec §5). A failing room
+    # publish above must not suppress this -- each hint fails independently.
+    try:
+        await publish_owner_users(owner, make_live_event("workspace.sessions.changed", {"humanUserId": human}))
+    except Exception:
+        logger.warning("Workspace session hint failed")
 
 
 class LocalSessionRelay:

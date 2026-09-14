@@ -151,6 +151,7 @@ async def build_ingress_body(
     event_kind: str,
     message: dict[str, Any],
     members: list[dict[str, Any]],
+    sessions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     history = await messaging_repo.list_messages_before(meta["roomId"], int(message["messageSeq"]), _HISTORY_LIMIT)
     body = {
@@ -179,6 +180,10 @@ async def build_ingress_body(
         ],
         "recentHistory": [_public_message(row) for row in history],
     }
+    if sessions is not None:
+        # Only once every container runs a plugin that parses it (Task 15); an
+        # older plugin rejects unknown top-level fields with 400.
+        body["sessions"] = sessions
     while body["recentHistory"] and json_body_size(body) > _INGRESS_MAX_BYTES:
         body["recentHistory"].pop(0)
     if json_body_size(body) > _INGRESS_MAX_BYTES:

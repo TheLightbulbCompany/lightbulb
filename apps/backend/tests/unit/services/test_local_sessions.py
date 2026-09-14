@@ -832,3 +832,142 @@ async def test_list_resources_sorts_by_activity_hides_ended_and_caps_recent(db):
     ended = [s for s in with_ended.sessions if s.status == "ended"]
     assert len(ended) == 20 and ended[0].last_event_at == "1970-01-01T05:33:40Z"
     assert with_ended.sessions[:2] == live.sessions
+
+
+async def test_list_workspace_sessions_is_live_only_owner_wide_and_sorted(db):
+    # Only users with an active private stream are enumerated; a sharer has one because pairing runs in the app.
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    sids = []
+    for stamp in (10000, 10100, 10200):
+        with patch("time.time", return_value=stamp):
+            # A generous onlineUntil (vs. registered()'s default +60s) keeps both
+            # surviving sessions' leases alive at the 10300 listing time below --
+            # otherwise sids[0]'s default 60s lease (expires 10060) and sids[2]'s
+            # (expires 10260) never overlap, and "live" would exclude both.
+            sids.append(await registered(conversation=f"conv-{stamp}", onlineUntil=stamp + 500))
+    rows = [await repo.get_session(OWNER, s) for s in sids]
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**rows[1], "endedAt": 10150, "lastEventAt": 10150}, rows[1], enrollment)
+    with patch("time.time", return_value=10300):
+        listed = await service.list_workspace_sessions(BOB)
+    assert [s.session_id for s in listed.sessions] == [sids[2], sids[0]]
+    assert all(s.status != "ended" for s in listed.sessions)
+    # An outsider org sees nothing: the owner partition is the fence.
+    with patch("time.time", return_value=10300):
+        other = await service.list_workspace_sessions(AuthContext(user_id="user_x", org_id="org_other"))
+    assert other.sessions == []
+
+
+async def test_list_workspace_sessions_skips_humans_without_a_stream_and_offline_rows(db):
+    sid = await registered(conversation="conv-a")
+    with patch("time.time", return_value=int(time.time()) + 3600):
+        # No ensure_user_stream for ALICE yet: nothing is enumerated.
+        assert (await service.list_workspace_sessions(BOB)).sessions == []
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    with patch("time.time", return_value=int(time.time()) + 3600):
+        # Lease lapsed → status offline → excluded from the live list.
+        assert (await service.list_workspace_sessions(BOB)).sessions == []
+    assert (await service.list_workspace_sessions(BOB)).sessions[0].session_id == sid
+
+
+async def test_workspace_sessions_route_binds(db):
+    from fastapi import FastAPI
+    from routers import messaging
+
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    sid = await registered(conversation="conv-http")
+    app = FastAPI()
+    app.include_router(messaging.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/messaging/sessions")
+    assert response.status_code == 200
+    body = response.json()
+    assert [s["sessionId"] for s in body["sessions"]] == [sid]
+    assert set(body["sessions"][0]) >= {"sessionId", "humanUserId", "status", "lastEventAt", "provider"}
+
+
+async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):
+    sid = await registered(conversation="conv-agent")
+    members = [
+        {"kind": "human", "id": ALICE.user_id, "displayName": "A" * 300},
+        {"kind": "human", "id": BOB.user_id, "displayName": "Bob"},
+        {"kind": "agent", "id": "friday", "displayName": "Friday"},
+    ]
+    rows = await service.live_sessions_for_room(OWNER, ROOM, members)
+    assert [r["sessionId"] for r in rows] == [sid]
+    assert set(rows[0]) == {
+        "sessionId",
+        "humanUserId",
+        "displayName",
+        "provider",
+        "cwdName",
+        "title",
+        "status",
+        "latestEventSeq",
+        "lastEventAt",
+    }
+    assert len(rows[0]["displayName"]) == 120 and rows[0]["status"] in service.LIVE_STATUSES
+    row = await repo.get_session(OWNER, sid)
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**row, "endedAt": int(time.time()), "lastEventAt": int(time.time())}, row, enrollment)
+    assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
+    with patch.object(repo, "list_user_sessions", side_effect=RuntimeError("boom")):
+        assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
+
+
+async def test_live_sessions_for_room_truncates_a_long_human_user_id():
+    # human_user_id carries no Field(max_length=...) anywhere in the LocalSession
+    # chain, unlike title/cwd_name -- constructed directly rather than through the
+    # moto fixture, which has no way to register a session under an over-long id.
+    long_id = "x" * 200
+    session = service.LocalSession(
+        session_id="session-1",
+        device_id=MAC,
+        human_user_id=long_id,
+        provider="codex",
+        generation="generation-1",
+        status="idle",
+        provider_version="1.0",
+        active_turn_id=None,
+        capabilities=service.Capabilities(),
+        capabilities_verified=True,
+    )
+
+    async def fake_live(_owner, _humans):
+        return [session]
+
+    members = [{"kind": "human", "id": long_id, "displayName": "Long"}]
+    with patch.object(service, "_live_public_sessions", fake_live):
+        rows = await service.live_sessions_for_room(OWNER, ROOM, members)
+    assert rows[0]["humanUserId"] == long_id[:128]
+    assert len(rows[0]["humanUserId"]) == 128
+
+
+async def test_stray_projection_never_attributes_another_humans_session(db):
+    """A corrupt/stale projection under BOB's partition points at ALICE's real
+    session. It must never surface ALICE's session as BOB's -- not duplicated
+    into the workspace list, and not leaked into a room where only BOB is a
+    member."""
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    sid = await registered(conversation="conv-alice")
+    db[0].put_item(
+        Item={
+            "pk": repo.user_pk(OWNER, BOB.user_id),
+            "sk": f"SESSION#{sid}",
+            "ownerId": OWNER,
+            "humanUserId": BOB.user_id,
+            "deviceId": MAC,
+            "sessionId": sid,
+        }
+    )
+    listed = await service.list_workspace_sessions(BOB)
+    assert [s.session_id for s in listed.sessions] == [sid]
+    assert listed.sessions[0].human_user_id == ALICE.user_id
+
+    assert (
+        await service.live_sessions_for_room(OWNER, ROOM, [{"kind": "human", "id": BOB.user_id, "displayName": "Bob"}])
+        == []
+    )

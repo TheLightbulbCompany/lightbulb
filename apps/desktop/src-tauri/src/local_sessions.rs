@@ -1119,7 +1119,10 @@ impl Mirror {
             return Ok(Some(pending.clone()));
         }
         if self.queue.is_empty() && self.native.restriction.as_deref() != Some("history-gap") {
+            // An ended session is exempt: its process is gone by definition, and the
+            // last thing it wrote -- the end of the conversation -- is still unread.
             if self.native.status != "offline"
+                && self.ended_at.is_none()
                 && !process(self.native.process.pid).is_ok_and(|p| p == self.native.process)
             {
                 return Err("runtime-unverified".into());

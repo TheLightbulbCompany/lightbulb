@@ -146,6 +146,7 @@ impl Host {
             let generation =
                 fingerprint(&serde_json::to_string(&native.process).map_err(|e| e.to_string())?);
             let mut invalidate = before.is_none();
+            let mut revived = false;
             if let Some(mirror) = self.mirrors.get_mut(&key) {
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
@@ -156,6 +157,7 @@ impl Host {
                     }
                     mirror.ended_at = None;
                     mirror.ended_reason = None;
+                    revived = true;
                 }
                 if mirror.registration.acknowledged.is_none()
                     && mirror.session_id.is_some()
@@ -213,6 +215,10 @@ impl Host {
                         ended_reason: None,
                     },
                 );
+            }
+            if revived {
+                // Its end is no longer news; whatever has not been sent must not be.
+                self.ended_pending.retain(|pending| pending != &key);
             }
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
             let _ = capture_batch(mirror);
@@ -304,7 +310,16 @@ impl Host {
         let gone: Vec<String> = self
             .mirrors
             .iter()
-            .filter(|(_, m)| m.ended_at.is_none() && !alive(m.native.process.pid))
+            .filter(|(_, m)| {
+                m.ended_at.is_none()
+                    && !alive(m.native.process.pid)
+                    // While a successor waits for `advance`, `native` is the dead
+                    // predecessor and the successor is the session that is running.
+                    && m.registration
+                        .successor
+                        .as_ref()
+                        .is_none_or(|next| !alive(next.process.pid))
+            })
             .map(|(key, _)| key.clone())
             .collect();
         for key in gone {
@@ -315,7 +330,11 @@ impl Host {
     }
 
     /// An ended session is kept for a day, then its mirrored history is dropped.
-    fn reap(&mut self) {
+    /// Returns the reaped keys: a caller keeping its own per-key state (a live
+    /// connection's registration map) has to drop them too, or it will index a
+    /// mirror that is no longer there.
+    #[must_use]
+    fn reap(&mut self) -> Vec<String> {
         let cutoff = epoch_secs().saturating_sub(86_400);
         let expired: Vec<String> = self
             .mirrors
@@ -323,12 +342,13 @@ impl Host {
             .filter(|(_, m)| m.ended_at.is_some_and(|at| at < cutoff))
             .map(|(key, _)| key.clone())
             .collect();
-        for key in expired {
+        for key in &expired {
             let _ = fs::remove_file(self.dir.join(format!("{key}.json")));
-            self.mirrors.remove(&key);
-            self.heartbeat_dirty.remove(&key);
-            self.ended_pending.retain(|pending| pending != &key);
+            self.mirrors.remove(key);
+            self.heartbeat_dirty.remove(key);
+            self.ended_pending.retain(|pending| pending != key);
         }
+        expired
     }
     async fn observing_wait<T>(
         &mut self,
@@ -398,8 +418,9 @@ impl Host {
             heartbeat_dirty: BTreeSet::new(),
         };
         // Ended mirrors are loaded so their end can still be reported, and so the
-        // day-old ones are cleaned up on exactly one predictable path.
-        host.reap();
+        // day-old ones are cleaned up on exactly one predictable path. No connection
+        // exists yet, so there is no per-key state to prune alongside them.
+        let _ = host.reap();
         Ok(host)
     }
 
@@ -417,34 +438,38 @@ impl Host {
             // status now. A wake (a start hook, an enrollment change) runs it sooner,
             // but never more than once a second.
             let mut last = Instant::now() - Duration::from_secs(1);
-            let mut last_error: Option<String> = None;
+            let mut last_failures: Vec<String> = vec![];
             loop {
                 if let Some(remaining) = Duration::from_secs(1).checked_sub(last.elapsed()) {
                     tokio::time::sleep(remaining).await;
                 }
                 last = Instant::now();
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
-                match claude.and_then(|mut found| {
-                    codex.map(|rest| {
-                        found.extend(rest);
-                        found
-                    })
-                }) {
-                    Ok(found) => {
-                        last_error = None;
-                        if tx.send(found).await.is_err() {
-                            break;
-                        }
-                    }
-                    // A listing that failed is not evidence that anything stopped:
-                    // keep the state we have, and say so once per distinct failure.
-                    Err(error) => {
-                        if last_error.as_deref() != Some(error.as_str()) {
-                            relay_log(&format!("discovery unavailable: {error}"));
-                            last_error = Some(error);
-                        }
+                // One provider's broken listing must not hide the other's sessions,
+                // so the pass is the union of whatever answered.
+                let listings = [claude, codex];
+                let providers = listings.len();
+                let mut found = vec![];
+                let mut failures = vec![];
+                for listing in listings {
+                    match listing {
+                        Ok(sessions) => found.extend(sessions),
+                        Err(error) => failures.push(error),
                     }
                 }
+                for error in &failures {
+                    // A listing that failed is not evidence that anything stopped;
+                    // say so once per distinct failure, not once a minute forever.
+                    if !last_failures.contains(error) {
+                        relay_log(&format!("discovery unavailable: {error}"));
+                    }
+                }
+                // Every provider failed: this pass proves nothing. Keep the state we
+                // have -- an empty listing would otherwise read as "all quiet".
+                if failures.len() < providers && tx.send(found).await.is_err() {
+                    break;
+                }
+                last_failures = failures;
                 tokio::select! {_ = tokio::time::sleep(Duration::from_secs(60))=>{},_ = wake.notified()=>{}}
             }
         };
@@ -629,14 +654,7 @@ impl Host {
                 }
             }
             if pending_rpc.is_none() {
-                if let Some(key) = self
-                    .mirrors
-                    .keys()
-                    .find(|key| {
-                        !registered.contains_key(*key) && !quarantine_active(&quarantined, key)
-                    })
-                    .cloned()
-                {
+                if let Some(key) = registration_due(&self.mirrors, &registered, &quarantined) {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
                     let body = self.begin_registration(&key)?;
@@ -644,10 +662,10 @@ impl Host {
                     let metadata = serde_json::to_value(&self.mirrors[&key].native)
                         .map_err(|e| e.to_string())?;
                     pending_rpc = Some((key, true, sent, wall, metadata));
-                } else if let Some((key, _)) = registered.iter().find(|(key, at)| {
-                    self.heartbeat_dirty.contains(*key) || at.elapsed() >= Duration::from_secs(10)
-                }) {
-                    let mirror = &self.mirrors[key];
+                } else if let Some(key) =
+                    heartbeat_due(&self.mirrors, &self.heartbeat_dirty, &registered)
+                {
+                    let mirror = &self.mirrors[&key];
                     let sent = Instant::now();
                     let wall = SystemTime::now();
                     send(socket, &json!({"type":"local.session.heartbeat", "sessionId":mirror.session_id,"generation":mirror.generation,
@@ -661,7 +679,7 @@ impl Host {
                         wall,
                         serde_json::to_value(&mirror.native).map_err(|e| e.to_string())?,
                     ));
-                    self.heartbeat_dirty.remove(key);
+                    self.heartbeat_dirty.remove(&key);
                 }
             }
             if last_upload.elapsed() >= Duration::from_millis(500) {
@@ -707,7 +725,12 @@ impl Host {
                     self.liveness_tick();
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
-                        self.reap();
+                        // This connection's own per-key state has to go with them.
+                        for key in self.reap() {
+                            registered.remove(&key);
+                            sent_batches.remove(&key);
+                            quarantined.remove(&key);
+                        }
                     }
                 },
                 event = async {
@@ -1096,6 +1119,40 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
+/// The next session owing a registration: still live, not already registered, not
+/// quarantined. An ended session is never registered -- it is on its way out.
+fn registration_due(
+    mirrors: &BTreeMap<String, Mirror>,
+    registered: &BTreeMap<String, Instant>,
+    quarantined: &BTreeMap<String, Instant>,
+) -> Option<String> {
+    mirrors
+        .iter()
+        .find(|(key, mirror)| {
+            mirror.ended_at.is_none()
+                && !registered.contains_key(*key)
+                && !quarantine_active(quarantined, key)
+        })
+        .map(|(key, _)| key.clone())
+}
+
+/// The next registered session owing a heartbeat: one whose fields moved, or whose
+/// ten-second cadence is up. A key whose mirror has been reaped is skipped -- the
+/// caller indexes the map with whatever comes back.
+fn heartbeat_due(
+    mirrors: &BTreeMap<String, Mirror>,
+    dirty: &BTreeSet<String>,
+    registered: &BTreeMap<String, Instant>,
+) -> Option<String> {
+    registered
+        .iter()
+        .find(|(key, at)| {
+            mirrors.contains_key(*key)
+                && (dirty.contains(*key) || at.elapsed() >= Duration::from_secs(10))
+        })
+        .map(|(key, _)| key.clone())
+}
+
 fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
     quarantined
         .get(key)
@@ -1290,8 +1347,81 @@ mod tests {
         host.observe(vec![native]).unwrap();
         assert_eq!(host.mirrors[&key].native.status, "ended");
         host.mirrors.get_mut(&key).unwrap().ended_at = Some(0);
-        host.reap();
+        assert_eq!(host.reap(), vec![key.clone()]);
         assert!(!file.exists() && host.mirrors.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_reaping_clears_the_per_key_state_a_connection_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ended = test_mirror(SID, "gen-1");
+        ended.native.status = "ended".into();
+        ended.ended_at = Some(0);
+        let mut host = test_host(
+            dir.path(),
+            vec![(SID, ended), (SID_B, test_mirror(SID_B, "gen-2"))],
+        );
+        host.heartbeat_dirty.insert(SID.into());
+        host.ended_pending.push(SID.into());
+        let mut registered = BTreeMap::from([
+            (SID.to_string(), Instant::now()),
+            (SID_B.to_string(), Instant::now() - Duration::from_secs(30)),
+        ]);
+        assert_eq!(
+            heartbeat_due(&host.mirrors, &host.heartbeat_dirty, &registered).as_deref(),
+            Some(SID),
+            "a session still in the map heartbeats as soon as its fields move"
+        );
+        for key in host.reap() {
+            registered.remove(&key);
+        }
+        assert!(!registered.contains_key(SID) && !host.mirrors.contains_key(SID));
+        assert!(host.heartbeat_dirty.is_empty() && host.ended_pending.is_empty());
+        // A registration map outliving its mirror must never be indexed blindly.
+        registered.insert(SID.to_string(), Instant::now() - Duration::from_secs(30));
+        assert_eq!(
+            heartbeat_due(&host.mirrors, &host.heartbeat_dirty, &registered).as_deref(),
+            Some(SID_B),
+            "a reaped key is skipped, not looked up"
+        );
+    }
+
+    #[test]
+    fn local_sessions_liveness_keeps_a_session_whose_successor_is_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.process.pid = 2_147_483_000; // the predecessor is gone
+        mirror.registration.successor = Some(test_native(SID)); // its restart is not
+        // A frozen registration is exactly why `advance` has not promoted it yet.
+        mirror.registration.pending = true;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        host.liveness_tick();
+        assert!(
+            host.mirrors[SID].ended_at.is_none() && host.ended_pending.is_empty(),
+            "a restarted session is not an ended one"
+        );
+        assert_eq!(host.mirrors[SID].native.status, "unknown");
+    }
+
+    #[test]
+    fn local_sessions_an_ended_session_still_drains_its_last_transcript_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        mirror.native.process.pid = 2_147_483_000; // the process is gone; its tail is not
+        mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
+        assert_eq!(
+            mirror.next_batch().unwrap_err(),
+            "runtime-unverified",
+            "a live session with a dead process is unverifiable"
+        );
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(epoch_secs());
+        let batch = mirror
+            .next_batch()
+            .unwrap()
+            .expect("the end of the conversation is still mirrored");
+        assert_eq!(batch["events"][0]["text"], "short-lived public output");
     }
 
     #[test]
@@ -1332,6 +1462,16 @@ mod tests {
         assert!(
             !restored.mirrors.contains_key(&old) && !scope.join(format!("{old}.json")).exists(),
             "ended a day ago -> reaped on restore"
+        );
+        assert_eq!(
+            registration_due(&restored.mirrors, &BTreeMap::new(), &BTreeMap::new()).as_deref(),
+            Some(live.as_str())
+        );
+        let live_registered = BTreeMap::from([(live, Instant::now())]);
+        assert_eq!(
+            registration_due(&restored.mirrors, &live_registered, &BTreeMap::new()),
+            None,
+            "an ended mirror is never sent as a registration"
         );
     }
 

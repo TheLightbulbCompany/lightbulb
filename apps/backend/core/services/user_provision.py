@@ -450,7 +450,10 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
                 if is_org_owner_id(owner_id)
                 else await provisioning.get_company_row(owner_id)
             )
-            if row is None or row.status != "active":
+            # ``row.org_id != owner_id``: a personal owner whose single row was
+            # re-pointed at an org they joined must not arm the ORG's company
+            # under their personal billing account.
+            if row is None or row.status != "active" or row.org_id != owner_id:
                 return _arm_status("company_not_active")
             company_id = row.company_id
             cached = account.get("nightly_ceo_armed_company") == company_id
@@ -692,6 +695,29 @@ async def _ensure_paperclip_for_owner(
     try:
         try:
             before = await provisioning.get_company_row(owner_user_id)
+            if (
+                not is_org_owner_id(owner_id)
+                and before is not None
+                and before.status == "active"
+                and is_org_owner_id(before.org_id)
+            ):
+                # ONE paperclip-companies row per user, and this user's row
+                # belongs to an org they joined. Seeding a PERSONAL company
+                # here would mint a fresh one and re-point the row at it,
+                # dropping them from every org Teams surface (and the
+                # new-conversation picker) until their next org-context poll.
+                # That ping-pong hid a cofounder for three days: his own
+                # pre-invite personal workspace's nightly routine woke his old
+                # personal box, whose executor ran this seed. The org wins; a
+                # personal Teams workspace for an org member is the explicitly
+                # unsupported "no live path" state (2026-07-24).
+                logger.info(
+                    "ensure_user_ready (owner): %s belongs to org %s — personal Teams seed skipped",
+                    owner_user_id,
+                    before.org_id,
+                )
+                put_metric("paperclip.provision.personal_seed_skipped_org_member")
+                return
             company = await provisioning.provision_org(
                 owner_id=owner_id,
                 owner_user_id=owner_user_id,

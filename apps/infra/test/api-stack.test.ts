@@ -514,7 +514,38 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     const eventApi = Object.values(
       API_TEMPLATE.findResources("AWS::AppSync::Api"),
     )[0] as any;
-    expect(eventApi.Properties.EventConfig).not.toHaveProperty("LogConfig");
+    expect(eventApi.Properties.EventConfig.LogConfig).toMatchObject({
+      LogLevel: "ERROR",
+    });
+    expect(
+      eventApi.Properties.EventConfig.LogConfig.CloudWatchLogsRoleArn,
+    ).toBeDefined();
+    // The L2 EventApi construct sets retention via a Custom::LogRetention
+    // resource (not a plain AWS::Logs::LogGroup) since /aws/appsync/apis/<id>
+    // may already exist once the API starts logging.
+    API_TEMPLATE.hasResourceProperties("Custom::LogRetention", {
+      LogGroupName: Match.objectLike({
+        "Fn::Join": Match.arrayWith([
+          Match.arrayWith(["/aws/appsync/apis/"]),
+        ]),
+      }),
+      RetentionInDays: 14,
+    });
+  });
+
+  test("Event API logs to a dedicated role with only the AppSync-to-CloudWatch managed policy", () => {
+    const roleEntry = Object.entries(
+      API_TEMPLATE.findResources("AWS::IAM::Role"),
+    ).find(([, role]: [string, any]) =>
+      role.Properties?.AssumeRolePolicyDocument?.Statement?.some(
+        (stmt: any) => stmt.Principal?.Service === "appsync.amazonaws.com",
+      ),
+    );
+    expect(roleEntry).toBeDefined();
+    const [, role] = roleEntry!;
+    expect(
+      JSON.stringify((role as any).Properties.ManagedPolicyArns),
+    ).toContain("AWSAppSyncPushToCloudWatchLogs");
   });
 
   test("one read-only DynamoDB data source backs the ws namespace handler", () => {

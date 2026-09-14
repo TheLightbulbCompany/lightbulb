@@ -579,10 +579,20 @@ export class ApiStack extends cdk.Stack {
       "ClerkIssuerForAppSync",
       props.clerkIssuerSecretName,
     );
-    // Event APIs cannot exclude verbose request/response content. Omit LogConfig
-    // entirely so authorization headers, identities, and messages never reach logs.
+    // Event APIs have no excludeVerboseContent knob (unlike GraphQL APIs) — CDK's
+    // EventApi.logConfig silently drops that field because the underlying
+    // CfnApi.EventLogConfigProperty only has cloudWatchLogsRoleArn/logLevel, so a
+    // logged request's headers/identity ride along regardless of level. logLevel
+    // ERROR keeps that to just the erroring requests (today's 68 unattributable
+    // SubscribeClientErrors), and the two-week LogRetention below bounds how long
+    // that exposure sits in CloudWatch — same irreducible-verbosity tradeoff the
+    // Bedrock invocation log takes (see the Billing section of CLAUDE.md).
     const eventApi = new appsync.EventApi(this, "MessagingEventApi", {
       apiName: `${resourcePrefix(env)}messaging-events`,
+      logConfig: {
+        fieldLogLevel: appsync.AppSyncFieldLogLevel.ERROR,
+        retention: logs.RetentionDays.TWO_WEEKS,
+      },
       authorizationConfig: {
         authProviders: [
           {
@@ -648,6 +658,10 @@ export class ApiStack extends cdk.Stack {
     });
     this.messagingProjectorFunctionName = `${resourcePrefix(env)}messaging-projector`;
     messagingTable.grantReadData(projectorFn);
+    // Read-only otherwise; the one write is the conditional workspaceId heal
+    // stamp on a legacy META row (attribute_not_exists guarded, so this can
+    // never clobber a concurrent writer) — see _workspace_id_for_meta.
+    messagingTable.grant(projectorFn, "dynamodb:UpdateItem");
     // Expo push tokens live on the users table, owned by DatabaseStack. Imported
     // by name so the projector needs no cross-stack prop (read-only: token
     // pruning would need a writer).

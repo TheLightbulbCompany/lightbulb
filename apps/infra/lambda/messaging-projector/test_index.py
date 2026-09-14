@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from boto3.dynamodb.types import TypeSerializer
 from botocore.credentials import Credentials
+from botocore.exceptions import ClientError
 
 import index
 import replay
@@ -119,6 +120,18 @@ class FakeDdb:
         values = kwargs["ExpressionAttributeValues"]
         return {"Items": [av_map(row) for (pk, sk), row in self.items.items()
                           if pk == values[":pk"]["S"] and sk.startswith(values[":prefix"]["S"])]}
+
+    def update_item(self, **kwargs):
+        self.calls.append(kwargs)
+        key = kwargs["Key"]
+        lookup = (key["pk"]["S"], key["sk"]["S"])
+        item = self.items.setdefault(lookup, {})
+        if kwargs.get("ConditionExpression") == "attribute_not_exists(workspaceId)" and "workspaceId" in item:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "already set"}},
+                "UpdateItem",
+            )
+        item["workspaceId"] = kwargs["ExpressionAttributeValues"][":ws"]["S"]
 
 
 class ProjectorTests(unittest.TestCase):
@@ -237,10 +250,34 @@ class ProjectorTests(unittest.TestCase):
         publish.assert_not_called()
 
     @patch("index._publish")
-    def test_room_meta_without_workspace_id_fails_the_record_and_publishes_nothing(self, publish):
-        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
+    def test_room_meta_without_workspace_id_heals_from_owner_row_and_stamps(self, publish):
+        index._ddb_client = FakeDdb({
+            (f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID},
+            (f"OWNER#{OWNER_ID}", "WORKSPACE"): {"workspaceId": WORKSPACE_ID},
+        })
         result = index.handler({"Records": [stream_record(message_item(), "42")]}, object())
-        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "42"}]})
+        self.assertEqual(result, {"batchItemFailures": []})
+        self.assertEqual(publish.call_args.args[0], f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}")
+        self.assertEqual(index._ddb_client.items[(f"ROOM#{ROOM_ID}", "META")]["workspaceId"], WORKSPACE_ID)
+
+    @patch("index._publish")
+    def test_room_meta_without_workspace_id_and_no_owner_row_is_skipped_not_failed(self, publish):
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
+        with self.assertLogs(level="WARNING"):
+            result = index.handler({"Records": [stream_record(message_item(), "42")]}, object())
+        self.assertEqual(result, {"batchItemFailures": []})
+        publish.assert_not_called()
+
+    @patch("index._publish")
+    def test_stream_meta_without_workspace_id_and_no_owner_row_skips_live_event(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"STREAM#{CHANNEL_KEY}", "META"): {
+                "ownerId": OWNER_ID, "userId": USER_ID, "active": True, "channelKey": CHANNEL_KEY,
+            }}
+        )
+        with self.assertLogs(level="WARNING"):
+            result = index.handler({"Records": [stream_record(live_item(), "43")]}, object())
+        self.assertEqual(result, {"batchItemFailures": []})
         publish.assert_not_called()
 
     @patch("index._publish")
@@ -395,6 +432,57 @@ class ProjectorTests(unittest.TestCase):
         )
 
 
+class WorkspaceHealTests(unittest.TestCase):
+    """Direct unit coverage of the shared heal helper all four projector call
+    sites route through — see the ProjectorTests/PushTests integration cases
+    above for how a poisoned META no longer wedges the shard."""
+
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index._ddb_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+
+    def tearDown(self):
+        index.MESSAGING_TABLE, index._ddb_client = self.saved
+
+    def test_present_and_valid_short_circuits_with_no_ddb_write(self):
+        index._ddb_client = FakeDdb()
+        meta = {"workspaceId": WORKSPACE_ID}
+        result = index._workspace_id_for_meta(f"ROOM#{ROOM_ID}", "META", meta)
+        self.assertEqual(result, WORKSPACE_ID)
+        self.assertEqual(index._ddb_client.calls, [])
+
+    def test_missing_heals_from_owner_row_and_stamps_conditionally(self):
+        index._ddb_client = FakeDdb({(f"OWNER#{OWNER_ID}", "WORKSPACE"): {"workspaceId": WORKSPACE_ID}})
+        meta = {"ownerId": OWNER_ID}
+        result = index._workspace_id_for_meta(f"ROOM#{ROOM_ID}", "META", meta)
+        self.assertEqual(result, WORKSPACE_ID)
+        self.assertEqual(meta["workspaceId"], WORKSPACE_ID)
+        updates = [c for c in index._ddb_client.calls if "UpdateExpression" in c]
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0]["ConditionExpression"], "attribute_not_exists(workspaceId)")
+
+    def test_missing_heals_survive_a_concurrent_stamp_race(self):
+        ddb = FakeDdb({(f"OWNER#{OWNER_ID}", "WORKSPACE"): {"workspaceId": WORKSPACE_ID}})
+        ddb.items[(f"ROOM#{ROOM_ID}", "META")] = {"workspaceId": WORKSPACE_ID}  # another writer already stamped it
+        index._ddb_client = ddb
+        meta = {"ownerId": OWNER_ID}
+        result = index._workspace_id_for_meta(f"ROOM#{ROOM_ID}", "META", meta)
+        self.assertEqual(result, WORKSPACE_ID)
+
+    def test_no_owner_row_is_unresolvable(self):
+        index._ddb_client = FakeDdb()
+        meta = {"ownerId": OWNER_ID}
+        with self.assertLogs(level="WARNING"):
+            result = index._workspace_id_for_meta(f"ROOM#{ROOM_ID}", "META", meta)
+        self.assertIsNone(result)
+
+    def test_owner_row_with_malformed_workspace_id_is_unresolvable(self):
+        index._ddb_client = FakeDdb({(f"OWNER#{OWNER_ID}", "WORKSPACE"): {"workspaceId": "not-a-uuid"}})
+        meta = {"ownerId": OWNER_ID}
+        result = index._workspace_id_for_meta(f"ROOM#{ROOM_ID}", "META", meta)
+        self.assertIsNone(result)
+
+
 def push_world(kind: str = "channel", muted: tuple[str, ...] = (), tokens: dict | None = None) -> dict:
     """Room of Alice (author) + Bob + Carol, each an active stream with one device."""
     keys = {USER_ID: CHANNEL_KEY, BOB_ID: BOB_KEY, CAROL_ID: CAROL_KEY}
@@ -474,6 +562,26 @@ class PushTests(unittest.TestCase):
         users_reads = [c for c in index._ddb_client.calls if c.get("TableName") == USERS_TABLE]
         self.assertEqual(len(users_reads), 2)
         self.assertTrue(all(read["ConsistentRead"] for read in users_reads))
+
+    def test_room_meta_heals_workspace_id_from_owner_row_and_push_still_happens(self):
+        world = push_world()
+        del world[(f"ROOM#{ROOM_ID}", "META")]["workspaceId"]
+        world[(f"OWNER#{OWNER_ID}", "WORKSPACE")] = {"workspaceId": WORKSPACE_ID}
+        publish, urlopen = self.project(world)
+        self.assertEqual(publish.call_args_list[-1].args[0], f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}")
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(index._ddb_client.items[(f"ROOM#{ROOM_ID}", "META")]["workspaceId"], WORKSPACE_ID)
+
+    def test_one_recipients_unresolvable_stream_meta_is_skipped_not_fatal(self):
+        world = push_world()
+        del world[(f"STREAM#{BOB_KEY}", "META")]["workspaceId"]
+        publish, urlopen = self.project(world)
+        channels = [call.args[0] for call in publish.call_args_list]
+        self.assertNotIn(f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}", channels)
+        self.assertIn(f"/ws/{WORKSPACE_ID}/users/{CAROL_KEY}", channels)
+        self.assertEqual(publish.call_args_list[-1].args[0], f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}")
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(sorted(m["to"] for m in json.loads(urlopen.call_args.args[0].data)), ["tok-carol"])
 
     def test_muted_member_collects_no_token_and_dm_title_is_the_author(self):
         _, urlopen = self.project(push_world(kind="dm", muted=(BOB_ID,)))

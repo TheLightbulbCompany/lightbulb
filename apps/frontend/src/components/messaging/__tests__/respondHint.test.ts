@@ -23,7 +23,7 @@ describe("respondHint", () => {
   it("never promises a reply from an Off agent, even mentioned in a DM", () => {
     expect(respondHint("dm", [atlas], [{ kind: "agent", id: "agent-atlas" }], [])).toBe("Atlas is off");
   });
-  it("only promises an Observe agent's reply when the message addresses it", () => {
+  it("only promises a Listening agent's reply when the message addresses it", () => {
     expect(respondHint("channel", [friday], [], [])).toBe("Friday may reply");
     expect(respondHint("channel", [friday], [{ kind: "agent", id: "agent-friday" }], [])).toBe("Friday will reply");
     expect(respondHint("dm", [friday], [], [])).toBe("Friday will reply");

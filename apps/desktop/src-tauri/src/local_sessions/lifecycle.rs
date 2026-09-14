@@ -35,24 +35,42 @@ pub(crate) enum Transition {
     Ignore,
 }
 
+/// Take the longest leading prefix of `s` whose UTF-8 encoding is at most
+/// `max` bytes, never splitting a multi-byte character.
+fn take_bytes(s: &str, max: usize) -> String {
+    let mut end = 0;
+    for (i, c) in s.char_indices() {
+        let next = i + c.len_utf8();
+        if next > max {
+            break;
+        }
+        end = next;
+    }
+    s[..end].to_string()
+}
+
 /// Build the wire datagram sent to the local relay for one hook invocation.
-/// `sessionId`/`reason`/`notificationType` are bounded up front (128/64/64
-/// chars) since they come from untrusted hook stdin; on top of that, drops
-/// the largest/least essential fields in order to stay under `DATAGRAM_MAX`:
-/// `lastAssistantMessage` -> `cwd` -> `transcriptPath`.
+/// Every non-droppable field (`event`, `sessionId`, `reason`,
+/// `notificationType`, `message`) is byte-bounded up front via
+/// [`take_bytes`] since they come from untrusted hook stdin and a
+/// multi-byte-character payload could otherwise blow past its char-count cap
+/// in bytes; `lastAssistantMessage` keeps its char-based cap because it is
+/// droppable. On top of that, drops the largest/least essential fields in
+/// order to stay under `DATAGRAM_MAX`: `lastAssistantMessage` -> `cwd` ->
+/// `transcriptPath`.
 pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
     let s = |k: &str| stdin_json[k].as_str().map(str::to_owned);
     let mut fields: Vec<(&str, Option<String>)> = vec![
         ("v", Some("1".into())),
         ("provider", Some(provider.into())),
-        ("event", s("hook_event_name")),
-        ("sessionId", s("session_id").map(|m| m.chars().take(128).collect())),
-        ("reason", s("reason").map(|m| m.chars().take(64).collect())),
+        ("event", s("hook_event_name").map(|m| take_bytes(&m, 32))),
+        ("sessionId", s("session_id").map(|m| take_bytes(&m, 128))),
+        ("reason", s("reason").map(|m| take_bytes(&m, 64))),
         (
             "notificationType",
-            s("notification_type").map(|m| m.chars().take(64).collect()),
+            s("notification_type").map(|m| take_bytes(&m, 64)),
         ),
-        ("message", s("message").map(|m| m.chars().take(120).collect())),
+        ("message", s("message").map(|m| take_bytes(&m, 120))),
         ("transcriptPath", s("transcript_path")),
         ("cwd", s("cwd")),
         (
@@ -234,13 +252,14 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_datagram_bounds_oversized_untrusted_fields() {
+    fn lifecycle_datagram_bounds_oversized_multibyte_untrusted_fields() {
+        let emoji = "\u{1F600}".repeat(2000); // 4 bytes per char in UTF-8
         let stdin = json!({
-            "session_id": "s".repeat(2000),
-            "hook_event_name": "Notification",
-            "reason": "r".repeat(2000),
-            "notification_type": "n".repeat(2000),
-            "message": "m".repeat(2000),
+            "session_id": emoji.clone(),
+            "hook_event_name": emoji.clone(),
+            "reason": emoji.clone(),
+            "notification_type": emoji.clone(),
+            "message": emoji.clone(),
             "transcript_path": "/t/x.jsonl",
             "cwd": "/w",
             "last_assistant_message": "x".repeat(2000),
@@ -248,7 +267,16 @@ mod tests {
         let bytes = build_datagram("claude", &stdin);
         assert!(bytes.len() <= DATAGRAM_MAX);
         let parsed = parse_datagram(&bytes).unwrap();
-        assert_eq!(parsed.session_id.len(), 128);
+        assert!(parsed.session_id.len() <= 128);
+        assert!(parsed.event.len() <= 32);
+    }
+
+    #[test]
+    fn lifecycle_take_bytes_never_splits_a_multibyte_char() {
+        assert_eq!(take_bytes("\u{1F600}\u{1F600}", 5), "\u{1F600}");
+        assert_eq!(take_bytes("\u{1F600}\u{1F600}", 8), "\u{1F600}\u{1F600}");
+        assert_eq!(take_bytes("\u{1F600}\u{1F600}", 3), "");
+        assert_eq!(take_bytes("hello", 3), "hel");
     }
 
     #[test]

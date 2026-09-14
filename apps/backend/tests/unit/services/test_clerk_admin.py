@@ -150,3 +150,104 @@ async def test_get_user_returns_payload_on_200(monkeypatch):
 
     assert result["id"] == "user_a"
     assert result["first_name"] == "Alice"
+
+
+# --- list_organization_members -------------------------------------------------
+
+
+def _membership(user_id: str, first: str | None, last: str | None, email: str) -> dict:
+    return {
+        "id": f"orgmem_{user_id}",
+        "role": "org:member",
+        "public_user_data": {
+            "user_id": user_id,
+            "first_name": first,
+            "last_name": last,
+            "identifier": email,
+            "image_url": f"https://img/{user_id}",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_organization_members_flattens_public_user_data_and_pages(monkeypatch):
+    from core.services import clerk_admin
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    monkeypatch.setattr(clerk_admin, "_ORG_MEMBERS_PAGE", 1)
+    pages = [
+        _make_response(200, {"data": [_membership("u1", "Ada", "Lovelace", "ada@x.co")], "total_count": 2}),
+        _make_response(200, {"data": [_membership("u2", None, None, "leo@x.co")], "total_count": 2}),
+        _make_response(200, {"data": [], "total_count": 2}),
+    ]
+
+    @asynccontextmanager
+    async def fake_client(*a, **k):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=pages)
+        yield client
+
+    with patch("core.services.clerk_admin.httpx.AsyncClient", new=fake_client):
+        members = await clerk_admin.list_organization_members("org_1")
+
+    assert members == [
+        {
+            "user_id": "u1",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@x.co",
+            "image_url": "https://img/u1",
+            "role": "org:member",
+        },
+        {
+            "user_id": "u2",
+            "first_name": "",
+            "last_name": "",
+            "email": "leo@x.co",
+            "image_url": "https://img/u2",
+            "role": "org:member",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_organization_members_never_returns_a_partial_roster(monkeypatch):
+    """A 5xx on any page → [] (not the rows gathered so far): a silently short
+    roster hides teammates, which is the very bug the picker had."""
+    from core.services import clerk_admin
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    monkeypatch.setattr(clerk_admin, "_ORG_MEMBERS_PAGE", 1)
+    pages = [
+        _make_response(200, {"data": [_membership("u1", "Ada", "Lovelace", "ada@x.co")], "total_count": 2}),
+        _make_response(503, {"errors": []}),
+    ]
+
+    @asynccontextmanager
+    async def fake_client(*a, **k):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=pages)
+        yield client
+
+    with patch("core.services.clerk_admin.httpx.AsyncClient", new=fake_client):
+        assert await clerk_admin.list_organization_members("org_1") == []
+
+
+@pytest.mark.asyncio
+async def test_list_organization_members_timeout_returns_empty(monkeypatch):
+    from core.services import clerk_admin
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(httpx.TimeoutException("slow")),
+    ):
+        assert await clerk_admin.list_organization_members("org_1") == []
+
+
+@pytest.mark.asyncio
+async def test_list_organization_members_stubs_when_no_secret_key(monkeypatch):
+    from core.services import clerk_admin
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
+    assert await clerk_admin.list_organization_members("org_1") == []

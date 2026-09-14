@@ -16,8 +16,10 @@ fail-closed path is the only one that runs off a laptop.
 
 **Paperclip provisioning dispatch**:
 
-  * ``organization.created``           -> log only (provisioning deferred to /container/status)
-  * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status)
+  * ``organization.created``           -> log only (company CREATE deferred to /container/status)
+  * ``organizationMembership.created`` -> log + idempotent Paperclip JOIN via
+    ``_ensure_paperclip_for_member`` (join-only: never creates a company; a
+    still-provisioning org self-heals on the member's next /container/status poll)
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
   * ``user.deleted``                   -> ``disable`` for that user
@@ -367,10 +369,22 @@ async def _handle_organization_membership_created(
     *,
     lifecycle_claim_id: str | None = None,
 ) -> None:
-    """Record a membership lifecycle event.
+    """Record a membership lifecycle event, then join the org's Paperclip company.
 
     Room admission remains explicit; the member receives an opaque user stream
     when they first request messaging live-config or are added to a room.
+
+    The Paperclip join itself is delegated to
+    ``core.services.user_provision._ensure_paperclip_for_member`` — the same
+    join-only, idempotent helper ``ensure_user_ready`` calls from the member's
+    own ``/container/status`` poll. It returns gracefully when the org's
+    company isn't active yet (the member's later poll self-heals), treats a
+    409 as success, and records a 422 as a durable failure. Any exception is
+    logged and metered here but never re-raised: this must not turn into a
+    non-2xx that makes Clerk retry the whole event — the lifecycle bookkeeping
+    above already happened and must still be acknowledged. Without this call,
+    a member who never polls (or polls in the wrong context) stays invisible
+    to every Teams surface even though chat already works for them.
     """
     org = data.get("organization") or {}
     org_id = org.get("id", "")
@@ -393,6 +407,23 @@ async def _handle_organization_membership_created(
         user_id,
         owner_user_id,
     )
+
+    from core.services.user_provision import _ensure_paperclip_for_member
+
+    try:
+        await _ensure_paperclip_for_member(
+            org_id=org_id,
+            member_user_id=user_id,
+            member_email=email,
+        )
+    except Exception:
+        logger.exception(
+            "membership.created: paperclip membership-add failed org=%s user=%s "
+            "— member's own /container/status poll will retry",
+            org_id,
+            user_id,
+        )
+        put_metric("paperclip.member_add", dimensions={"outcome": "webhook_error"})
 
 
 async def _handle_organization_membership_deleted(

@@ -194,22 +194,24 @@ async def test_organization_created_does_not_provision():
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.created -> membership lifecycle only
+# organizationMembership.created -> lifecycle record + idempotent Paperclip JOIN
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_membership_created_does_not_provision():
-    """The membership webhook is record-keeping only. Should NOT call provision_member,
-    build_paperclip_provisioning, or _enqueue_paperclip_retry. The new
-    member's paperclip-membership row will be added by the first
-    /container/status poll on their session via ensure_user_ready."""
+async def test_membership_created_does_not_create_company_but_does_join():
+    """The membership webhook never creates a company (that stays behind the
+    provision gate — no direct ``build_paperclip_provisioning``/
+    ``_enqueue_paperclip_retry`` call from this router), but it DOES drive
+    the idempotent ``_ensure_paperclip_for_member`` JOIN inline, rather than
+    waiting on the member's own ``/container/status`` poll."""
     from routers.webhooks import _handle_organization_membership_created
 
     with (
         patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
         patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
         patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock()) as mock_billing,
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as mock_join,
     ):
         await _handle_organization_membership_created(
             {
@@ -224,6 +226,46 @@ async def test_membership_created_does_not_provision():
     mock_factory.assert_not_called()
     mock_retry.assert_not_awaited()
     mock_billing.assert_not_awaited()
+    mock_join.assert_awaited_once_with(
+        org_id="org_x",
+        member_user_id="user_member",
+        member_email="m@example.com",
+    )
+
+
+@pytest.mark.asyncio
+async def test_membership_created_join_error_still_acks_webhook_2xx(lifecycle_io, monkeypatch):
+    """A raising Paperclip join must not turn into a non-2xx: the full
+    ``handle_clerk_webhook`` route must still return ``{"status": "ok"}`` so
+    Clerk does not retry the whole event, while the error is logged + metered."""
+    from routers import webhooks
+
+    _bypass_svix(monkeypatch)
+    monkeypatch.setattr(
+        "core.services.user_provision._ensure_paperclip_for_member",
+        AsyncMock(side_effect=RuntimeError("paperclip is down")),
+    )
+    metric_calls = []
+    monkeypatch.setattr(webhooks, "put_metric", lambda name, **kw: metric_calls.append((name, kw)))
+    request = SimpleNamespace(
+        headers=_svix_headers(),
+        body=AsyncMock(
+            return_value=json.dumps(
+                {
+                    "type": "organizationMembership.created",
+                    "data": {
+                        "organization": {"id": "org_acme", "created_by": "user_owner"},
+                        "public_user_data": {"user_id": "user_member", "identifier": "m@example.com"},
+                    },
+                }
+            ).encode()
+        ),
+    )
+
+    result = await webhooks.handle_clerk_webhook(request)
+
+    assert result == {"status": "ok"}
+    assert ("paperclip.member_add", {"dimensions": {"outcome": "webhook_error"}}) in metric_calls
 
 
 # ----------------------------------------------------------------------

@@ -36,6 +36,7 @@ const session: LocalSession = {
   status: "busy", providerVersion: "2.1.224", controlUnavailableReason: null, activeTurnId: "t1",
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
   latestEventSeq: 4, title: "Fix relay", cwdName: "lightbulb",
+  lastEventAt: new Date(Date.now() - 5 * 60_000).toISOString(),
 };
 const full: RoomResources = {
   devices: [{ deviceId: "mac-1234abcd", humanUserId: "user-a", cliDeviceId: "cli-1" }],
@@ -46,7 +47,11 @@ const full: RoomResources = {
     { deviceId: "cli-lonely99", humanUserId: "user-b", clientId: "node-host", macDeviceId: null },
   ],
 };
-const mockListResources = jest.fn(async (): Promise<RoomResources> => full);
+const endedSession: LocalSession = {
+  ...session, sessionId: "sess-old", title: "Old run", status: "ended",
+  endedAt: "2026-09-14T03:00:00Z", lastEventAt: "2026-09-14T03:00:00Z",
+};
+const mockListResources = jest.fn(async (_roomId: string, _options?: { includeEnded?: boolean }): Promise<RoomResources> => full);
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null, liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
   messaging: {
@@ -84,11 +89,22 @@ describe("devices & sessions screen", () => {
     expect(screen.getByText("Mac · mac-1234")).toBeTruthy();
     expect(screen.getByText("Paired Mac + associated CLI · availability unknown")).toBeTruthy();
     expect(screen.getByText("Claude · Fix relay")).toBeTruthy();
-    expect(screen.getByText("Working · ~/lightbulb")).toBeTruthy();
+    expect(screen.getByText(/Working · 5m · ~\/lightbulb/)).toBeTruthy();
     expect(screen.getByText("Bob")).toBeTruthy();
     expect(screen.getByText("Paired CLI endpoint · cli-lone")).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Open Claude · Fix relay"));
     expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/session/sess-1");
+  });
+
+  it("hides ended sessions until Show recent", async () => {
+    mockListResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+      Promise.resolve({ ...full, sessions: options?.includeEnded ? [...full.sessions, endedSession] : full.sessions }));
+    await render(<DevicesScreen />);
+    await waitFor(() => expect(screen.getByText("Claude · Fix relay")).toBeTruthy());
+    expect(screen.queryByText("Claude · Old run")).toBeNull();
+    await fireEvent.press(screen.getByText("Show recent"));
+    await waitFor(() => expect(screen.getByText("Claude · Old run")).toBeTruthy());
+    expect(screen.getByText(/Ended/)).toBeTruthy();
   });
 
   it("says so when nothing is shared", async () => {

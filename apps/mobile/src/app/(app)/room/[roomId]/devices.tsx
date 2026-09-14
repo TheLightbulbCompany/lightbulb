@@ -8,6 +8,7 @@ import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { SessionStatusDot } from "../../../../components/session/SessionStatusDot";
 import { colors, fonts, radii, spacing } from "../../../../config/theme";
 import { deviceSections, memberName, type DeviceRow } from "../../../../lib/localSessions";
+import { relativeTime } from "../../../../lib/relativeTime";
 import { useMobileRooms } from "../../../../lib/rooms";
 
 /**
@@ -30,7 +31,8 @@ export default function DevicesScreen() {
   useEffect(() => {
     if (roomId) selectRoomRef.current(roomId);
   }, [roomId]);
-  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: focused && !!roomId });
+  const [includeEnded, setIncludeEnded] = useState(false);
+  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: focused && !!roomId, includeEnded });
   const members = rooms.activeRoom?.members;
   const sections = resources.data ? deviceSections(resources.data, (human) => memberName(members, human)) : [];
 
@@ -81,9 +83,19 @@ export default function DevicesScreen() {
         }
         ListFooterComponent={
           sections.length > 0 ? (
-            <Text style={styles.footer}>
-              Paired endpoints are listed independently of session sharing. Pairing does not confirm they are online or available to run work.
-            </Text>
+            <View>
+              <Text style={styles.footer}>
+                Paired endpoints are listed independently of session sharing. Pairing does not confirm they are online or available to run work.
+              </Text>
+              <Pressable
+                onPress={() => setIncludeEnded((v) => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={includeEnded ? "Hide recent" : "Show recent"}
+                style={styles.footerToggle}
+              >
+                <Text style={styles.link}>{includeEnded ? "Hide recent" : "Show recent"}</Text>
+              </Pressable>
+            </View>
           ) : null
         }
       />
@@ -122,7 +134,9 @@ function DeviceCard({ row, onOpen }: { row: DeviceRow; onOpen: (session: LocalSe
           <View style={styles.sessionBody}>
             <Text style={styles.sessionTitle} numberOfLines={1}>{sessionLabel(session)}</Text>
             <Text style={styles.sessionMeta} numberOfLines={1}>
-              {sessionStatus[session.status]}{session.cwdName ? ` · ~/${session.cwdName}` : ""}
+              {sessionStatus[session.status]}
+              {session.lastEventAt ? ` · ${relativeTime(Date.parse(session.lastEventAt))}` : ""}
+              {session.cwdName ? ` · ~/${session.cwdName}` : ""}
             </Text>
           </View>
           <Feather name="chevron-right" size={16} color={colors.mute} />
@@ -161,6 +175,7 @@ const styles = StyleSheet.create({
   sessionMeta: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16, color: colors.mute },
   meta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.mute },
   footer: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute, marginTop: spacing.lg },
+  footerToggle: { marginTop: spacing.sm },
   errorCard: { padding: spacing.lg, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18, color: colors.forest },

@@ -9,6 +9,7 @@ const DOT: Record<LocalSession["status"], { color: string; hollow: boolean }> = 
   idle: { color: colors.mute, hollow: false },
   unknown: { color: colors.mute, hollow: false },
   offline: { color: colors.border, hollow: true },
+  ended: { color: colors.border, hollow: true },
 };
 
 /** Never colour alone: every call site already narrates the status in adjacent text. */

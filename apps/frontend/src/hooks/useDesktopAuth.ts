@@ -22,8 +22,8 @@ export function useDesktopAuth() {
     const invoke = (window as Window & { __TAURI__?: { core?: { invoke?: (command: string, args: object) => Promise<unknown> } } }).__TAURI__?.core?.invoke;
     if (!invoke) return;
     // Workspace switches deliberately do not rebind native sharing consent.
-    void invoke("local_sessions_auth", { humanUserId: isSignedIn ? userId : null }).catch(() => {
-      // Older desktop builds have no sharing commands; settings explains updates.
+    void invoke("local_sessions_auth", { humanUserId: isSignedIn ? userId : null }).catch((err: unknown) => {
+      console.warn("[desktop-auth] local_sessions_auth failed", err);
     });
   }, [isLoaded, isSignedIn, userId]);
 

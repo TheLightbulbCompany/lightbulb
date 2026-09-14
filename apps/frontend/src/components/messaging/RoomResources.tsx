@@ -5,6 +5,7 @@ import { ArrowLeft, Laptop, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isDockAttached, openSessionPanel } from "@/components/workspace/workspaceController";
 import { useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 
@@ -12,7 +13,8 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
   roomId: string; source: RoomResourceSource; participants: readonly RoomParticipant[]; onClose: () => void;
   target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
 }) {
-  const resources = useRoomResources(roomId, source);
+  const [includeEnded, setIncludeEnded] = useState(false);
+  const resources = useRoomResources(roomId, source, { includeEnded });
   const [selection, setSelection] = useState<{ id: string; accessRevision: number } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
@@ -93,7 +95,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
                   {sessions.map(session => <li key={session.sessionId}><button type="button" className="room-resource-session" aria-label={`Open ${sessionLabel(session)}`}
                     ref={button => { if (button) buttons.current.set(session.sessionId, button); else buttons.current.delete(session.sessionId); }}
                     onClick={() => { if (isDockAttached()) openSessionPanel(roomId, session.sessionId); else setSelection({ id: session.sessionId, accessRevision: resources.accessRevision }); }}>
-                    <span>{sessionLabel(session)}</span><span className="text-sm text-muted-foreground">{sessionStatus[session.status]}</span>
+                    <span>{sessionLabel(session)}</span><span className="text-sm text-muted-foreground">{sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
                   </button></li>)}
                 </ul>
                 {sessions.length === 0 && <p className="text-sm text-muted-foreground">No shared local sessions.</p>}
@@ -104,6 +106,9 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
           </section>;
         })}
         {humans.size > 0 && <p className="text-sm text-muted-foreground">Paired endpoints are listed independently of session sharing. Pairing does not confirm they are online or available to run work.</p>}
+        <button type="button" className="text-sm text-muted-foreground underline" onClick={() => setIncludeEnded(v => !v)}>
+          {includeEnded ? "Hide recent" : "Show recent"}
+        </button>
       </div>}
   </aside>;
 }

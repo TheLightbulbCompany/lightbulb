@@ -140,6 +140,7 @@
 .native-session-dot-busy { background: var(--ok); }
 .native-session-dot-waiting-approval { background: var(--warn); }
 .native-session-dot-offline { background: var(--border); }
+.native-session-dot-ended { background: var(--border); opacity: 0.5; }
 .native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
 .native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
 .native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }

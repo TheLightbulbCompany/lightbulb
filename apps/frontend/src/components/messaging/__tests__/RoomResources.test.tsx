@@ -34,7 +34,7 @@ function setup(roomId = "room") {
     createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
   });
   const client = {
-    listResources: vi.fn(async () => resources),
+    listResources: vi.fn<(roomId: string, options?: { includeEnded?: boolean }) => Promise<RoomResources>>(async () => resources),
     listLocalSessionEvents: vi.fn(async (_room: string, _session: string, after: number, limit = 50) => page(after, limit)),
     submitLocalSessionCommand: vi.fn(async (_room: string, _session: string, request: LocalSessionCommand) => receipt(request)),
     getLocalSessionCommand: vi.fn<(_room: string, _session: string, _id: string) => Promise<LocalSessionCommandReceipt>>(),
@@ -535,4 +535,21 @@ it("cannot race a new send with a receipt check or erase the next draft", async 
   await act(async () => finish({ ...f.receipt(f.client.submitLocalSessionCommand.mock.calls[0][2]), state: "applied" }));
   expect(input).toHaveValue("Next follow-up");
   expect(input).toBeEnabled();
+});
+
+it("shows last activity, hides ended sessions until Show recent is pressed", async () => {
+  const f = setup("room-1");
+  const active = { ...session, status: "busy" as const, lastEventAt: "2026-09-14T04:00:00Z" };
+  const ended = { ...session, sessionId: "sess-ended", provider: "claude" as const, title: "Old run", status: "ended" as const, endedAt: "2026-09-14T03:00:00Z", lastEventAt: "2026-09-14T03:00:00Z" };
+  f.client.listResources.mockImplementation((_room: string, options?: { includeEnded?: boolean }) =>
+    Promise.resolve({ ...resources, sessions: options?.includeEnded ? [active, ended] : [active] }));
+  render(<RoomPanel {...f.props} />);
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  await screen.findByText(/Working/);
+  expect(screen.getByText(/ago/)).toBeInTheDocument();
+  expect(screen.queryByText("Claude · Old run")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /show recent/i }));
+  expect(await screen.findByText("Claude · Old run")).toBeInTheDocument();
+  expect(screen.getByText(/Ended/)).toBeInTheDocument();
+  expect(f.client.listResources).toHaveBeenLastCalledWith("room-1", { includeEnded: true });
 });

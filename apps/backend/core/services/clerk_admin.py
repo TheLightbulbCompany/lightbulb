@@ -560,6 +560,9 @@ async def create_organization(*, name: str, slug: str, created_by: str) -> dict 
     headers = {
         "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
         "Content-Type": "application/json",
+        # api.clerk.com sits behind Cloudflare, which rejects bare client UAs
+        # (Python's default gets a 403 code 1010); every write here names itself.
+        "User-Agent": "lightbulb-backend/1.0",
     }
     body = {"name": name, "slug": slug, "created_by": created_by}
 

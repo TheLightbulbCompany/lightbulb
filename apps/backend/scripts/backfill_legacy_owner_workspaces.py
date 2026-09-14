@@ -79,14 +79,21 @@ except ImportError:  # pragma: no cover — only the deployed-image path
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 "https://api.clerk.com/v1/organizations",
-                headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "lightbulb-backend/1.0",
+                },
                 json={"name": name, "slug": slug, "created_by": created_by},
             )
         if resp.status_code == 422 and any(
             e.get("code") in ("form_identifier_exists", "duplicate_record") for e in (resp.json().get("errors") or [])
         ):
             raise SlugTakenError(slug)
-        return resp.json() if resp.status_code < 400 else None
+        if resp.status_code >= 400:
+            print(f"  clerk POST /organizations -> {resp.status_code} {resp.text[:300]}", flush=True)
+            return None
+        return resp.json()
 
 
 from core.services.entitlement_teardown import still_entitled

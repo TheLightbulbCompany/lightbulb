@@ -438,3 +438,41 @@ async def test_a_400_from_an_unrolled_container_is_a_retry(monkeypatch):
 def test_no_visibility_extension_task_exists():
     assert not hasattr(OpenClawWorkWorker, "_extend_visibility")
     assert work._VISIBILITY_SECONDS == 60
+
+
+@pytest.mark.asyncio
+async def test_build_ingress_body_carries_sessions_only_when_given(monkeypatch):
+    async def no_history(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(work.messaging_repo, "list_messages_before", no_history)
+    monkeypatch.setattr(work, "_public_message", lambda row: dict(row))
+    message = {
+        "messageId": "m1",
+        "messageSeq": 3,
+        "author": {"kind": "human", "id": "u1", "displayName": "Founder"},
+        "mentions": [],
+    }
+    meta = {"roomId": _ROOM, "name": "launch", "kind": "channel", "revision": 1}
+    members = [{"kind": "agent", "id": "a1", "displayName": "Friday", "listenMode": "active"}]
+    summary = [
+        {
+            "sessionId": "s1",
+            "humanUserId": "u1",
+            "displayName": "Founder",
+            "provider": "claude",
+            "cwdName": "repo",
+            "title": "Fix",
+            "status": "busy",
+            "latestEventSeq": 7,
+            "lastEventAt": "2026-09-14T00:00:00Z",
+        }
+    ]
+    with_sessions = await work.build_ingress_body(
+        meta=meta, target_agent_id="a1", event_kind="user_request", message=message, members=members, sessions=summary
+    )
+    assert with_sessions["sessions"] == summary
+    without = await work.build_ingress_body(
+        meta=meta, target_agent_id="a1", event_kind="user_request", message=message, members=members
+    )
+    assert "sessions" not in without

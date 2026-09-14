@@ -560,6 +560,36 @@ async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
     return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
 
 
+SESSION_SUMMARY_CAP = 24
+
+
+async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) -> list[dict]:
+    """Bounded projection of the room's live sessions for agent ingress.
+    Never raises: a missing summary is worse than a blocked dispatch, but not by much."""
+    try:
+        names = {member["id"]: member.get("displayName") for member in members if member.get("kind") == "human"}
+        sessions = await _live_public_sessions(owner, list(names))
+        out = [
+            {
+                "sessionId": s.session_id,
+                "humanUserId": s.human_user_id,
+                "displayName": (names.get(s.human_user_id) or "Workspace member")[:120],
+                "provider": s.provider,
+                "cwdName": s.cwd_name,
+                "title": s.title,
+                "status": s.status,
+                "latestEventSeq": s.latest_event_seq,
+                "lastEventAt": s.last_event_at,
+            }
+            for s in sessions
+        ]
+        out.sort(key=lambda row: row["lastEventAt"] or "", reverse=True)
+        return out[:SESSION_SUMMARY_CAP]
+    except Exception:
+        logger.warning("Live session summary unavailable for room %s", room_id)
+        return []
+
+
 async def list_events(
     auth: Caller, room_id: str, session_id: str, after_seq: int = 0, limit: int = 50
 ) -> LocalSessionEventPage:

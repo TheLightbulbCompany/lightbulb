@@ -886,3 +886,32 @@ async def test_workspace_sessions_route_binds(db):
     body = response.json()
     assert [s["sessionId"] for s in body["sessions"]] == [sid]
     assert set(body["sessions"][0]) >= {"sessionId", "humanUserId", "status", "lastEventAt", "provider"}
+
+
+async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):
+    sid = await registered(conversation="conv-agent")
+    members = [
+        {"kind": "human", "id": ALICE.user_id, "displayName": "A" * 300},
+        {"kind": "human", "id": BOB.user_id, "displayName": "Bob"},
+        {"kind": "agent", "id": "friday", "displayName": "Friday"},
+    ]
+    rows = await service.live_sessions_for_room(OWNER, ROOM, members)
+    assert [r["sessionId"] for r in rows] == [sid]
+    assert set(rows[0]) == {
+        "sessionId",
+        "humanUserId",
+        "displayName",
+        "provider",
+        "cwdName",
+        "title",
+        "status",
+        "latestEventSeq",
+        "lastEventAt",
+    }
+    assert len(rows[0]["displayName"]) == 120 and rows[0]["status"] in service.LIVE_STATUSES
+    row = await repo.get_session(OWNER, sid)
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**row, "endedAt": int(time.time()), "lastEventAt": int(time.time())}, row, enrollment)
+    assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
+    with patch.object(repo, "list_user_sessions", side_effect=RuntimeError("boom")):
+        assert await service.live_sessions_for_room(OWNER, ROOM, members) == []

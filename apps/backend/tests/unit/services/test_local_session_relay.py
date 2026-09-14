@@ -1179,3 +1179,18 @@ async def test_register_and_events_stamp_last_event_at(transport):
             },
         )
     assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+
+
+@pytest.mark.asyncio
+async def test_register_publishes_a_workspace_hint_to_every_user_stream(transport, db):
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    connect(transport)
+    transport[4].clear()
+    await relay(transport).handle_message("conn-1", registration())
+    user_hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
+    assert len(user_hints) == 2
+    assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
+    assert all(e["payload"] == {"humanUserId": ALICE.user_id} for e in user_hints)
+    assert any("/rooms/" in h["channel"] for h in transport[4])

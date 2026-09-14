@@ -126,6 +126,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "runtime.resource.invalidated",
         "paperclip.event",
         "room.member.updated",
+        "workspace.sessions.changed",
     }
 )
 LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES

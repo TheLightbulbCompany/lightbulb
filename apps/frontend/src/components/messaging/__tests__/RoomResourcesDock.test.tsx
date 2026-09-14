@@ -1,8 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import type { LiveEvent, RoomResources as Resources } from "@lightbulb/shared";
-import type { RoomResourceSource } from "@/hooks/useRoomResources";
+import type { LiveEvent, RoomResourceSource, RoomResources as Resources } from "@lightbulb/shared";
 import { RoomResources } from "../RoomResources";
 
 const openSessionPanel = vi.fn();

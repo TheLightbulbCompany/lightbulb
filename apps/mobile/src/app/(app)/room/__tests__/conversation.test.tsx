@@ -5,6 +5,7 @@ import {
   type CanonicalRoomMessage,
   type LiveEvent,
   type RoomDetail,
+  type RoomResources,
 } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 import { AppState } from "react-native";
@@ -86,18 +87,29 @@ jest.mock("react-native-safe-area-context", () => ({
 const mockRoom: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",
   pinnedMessageIds: [], topic: null, starred: false, muted: false, sectionId: null,
-  lastMessageSeq: 3, lastMessageAt: "2026-09-11T10:02:00Z", unreadCount: 1,
-  updatedAt: "2026-09-11T10:02:00Z", lastReadSeq: 2, createdAt: "2026-09-11T09:00:00Z",
+  lastMessageSeq: 3, lastMessageAt: "2026-06-11T10:02:00Z", unreadCount: 1,
+  updatedAt: "2026-06-11T10:02:00Z", lastReadSeq: 2, createdAt: "2026-06-11T09:00:00Z",
   members: [
     { kind: "human", id: "user-a", displayName: "Alice", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "x", joinedSeq: 0 },
     { kind: "agent", id: "agent-1", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "x", joinedSeq: 0 },
   ],
 };
+const mockSession = {
+  sessionId: "sess-1", deviceId: "mac-1", humanUserId: "user-a", provider: "claude" as const, generation: "g1",
+  status: "busy" as const, providerVersion: "2.1.224", controlUnavailableReason: null, activeTurnId: "t1",
+  capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true,
+  latestEventSeq: 4, title: "Fix relay", cwdName: "lightbulb",
+};
+// Fixed more than a week in the past (not "recent" by any calendar reckoning at
+// any run date) so `dateDividerLabel` always renders the absolute-date branch —
+// never "Today"/"Yesterday" or a bare weekday name, which could otherwise
+// collide with the fixture agent's display name "Friday" on the calendar week
+// it happens to land on.
 const mockMsg = (over: Partial<CanonicalRoomMessage>): CanonicalRoomMessage => ({
   messageId: "m1", roomId: "room-1", messageSeq: 1, roomRevision: 1,
   author: { kind: "agent", id: "agent-1", displayName: "Friday" }, text: "first",
   mentions: [], replyToMessageId: null, threadRootMessageId: null,
-  createdAt: "2026-09-11T10:00:00Z", runId: null, ...over,
+  createdAt: "2026-06-11T10:00:00Z", runId: null, ...over,
 });
 const mockBase = [
   mockMsg({}),
@@ -119,6 +131,11 @@ const mockSetTyping = jest.fn(async () => {});
 // Live events this suite dispatches by hand (typing changes only so far);
 // everything else stays the fixed no-op the rest of the suite never drives.
 const typingHandlers = new Set<(event: LiveEvent) => void>();
+// Named and hoisted so a single test can override its resolved value; every
+// other case gets the empty snapshot reset in beforeEach, since the header's
+// devices poll now runs on every mount and must never hand `undefined` to
+// the resources hook.
+const mockListResources = jest.fn(async (): Promise<RoomResources> => ({ devices: [], sessions: [], pairedNodes: [] }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
   // room-unavailable is the blocked-states suite's own room id (its Try again
@@ -141,7 +158,7 @@ const mockLive = {
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
-    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: jest.fn(),
+    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: mockListResources,
     setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
@@ -181,6 +198,8 @@ describe("conversation screen", () => {
     mockSetTyping.mockClear();
     typingHandlers.clear();
     mockSetMemberPrefs.mockClear();
+    mockListResources.mockReset();
+    mockListResources.mockResolvedValue({ devices: [], sessions: [], pairedNodes: [] });
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
   });
@@ -188,24 +207,19 @@ describe("conversation screen", () => {
   it("shows the author name once per run and a day divider above the first message", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    // "Friday" is both this fixture's agent display name AND, on some run
-    // dates, the weekday-name label the date divider renders for a message a
-    // few days old (2026-09-11 is a Friday; whenever "now" lands 2-6 days
-    // later, dateDividerLabel returns "Friday" too). A plain
-    // getAllByText("Friday") then matches both and this assertion fails by
-    // calendar date, not by anything the screen got wrong. MessageGroup's
-    // author label is the one rendered single-line (numberOfLines={1}); the
-    // divider label isn't — filter on that structural signal instead of the
-    // text the two coincidentally share.
+    // "Friday" is this fixture's agent display name, and dateDividerLabel
+    // renders a weekday name for a message less than a week old — so the
+    // fixture dates are pinned to 2026-06-11, far outside that window, and the
+    // divider is always a calendar date. MessageGroup's author label is the one
+    // rendered single-line (numberOfLines={1}); filtering on that keeps this
+    // assertion honest even if the two texts ever coincide again.
     const fridayNodes = screen.getAllByText("Friday");
     const authorNames = fridayNodes.filter((node) => node.props.numberOfLines === 1);
     expect(authorNames).toHaveLength(1);
     expect(screen.getByTestId("room-timeline")).toBeTruthy();
-    const dividerLabel = dateDividerLabel(new Date("2026-09-11T10:00:00Z"), new Date());
-    const dividerNodes = screen
-      .getAllByText(dividerLabel)
-      .filter((node) => node.props.numberOfLines !== 1);
-    expect(dividerNodes).toHaveLength(1);
+    expect(
+      screen.getByText(dateDividerLabel(new Date("2026-06-11T10:00:00Z"), new Date())),
+    ).toBeTruthy();
   });
 
   it("draws the New messages line at the read cursor the room opened with", async () => {
@@ -465,5 +479,13 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Star this conversation"));
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
+  });
+
+  it("shows the devices header action, badges live sessions, and pushes the devices screen", async () => {
+    mockListResources.mockResolvedValue({ devices: [{ deviceId: "mac-1", humanUserId: "user-a", cliDeviceId: null }], sessions: [mockSession], pairedNodes: [] });
+    await render(<Conversation />);
+    const button = await screen.findByLabelText("Devices & sessions, 1 live");
+    await fireEvent.press(button);
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/devices");
   });
 });

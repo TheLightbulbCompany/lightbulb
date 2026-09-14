@@ -78,6 +78,10 @@ export default function AppLayout() {
                 the room (`Stack.Screen` inside the screen body). */}
             <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
             <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
+            {/* Shared Claude / Codex sessions: the room's devices list and one
+                session's transcript (it sets its own title from the session). */}
+            <Stack.Screen name="room/[roomId]/devices" options={{ title: "Devices & sessions" }} />
+            <Stack.Screen name="room/[roomId]/session/[sessionId]" options={{ title: "Session" }} />
             {/* Teams and Control were nested Stacks inside hidden tabs; folded
                 in here, a push from More lands on a normally pushed screen. */}
             <Stack.Screen name="teams/index" options={{ title: "Teams" }} />

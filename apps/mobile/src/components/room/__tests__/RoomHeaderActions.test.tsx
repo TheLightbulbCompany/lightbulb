@@ -66,4 +66,23 @@ describe("RoomHeaderActions", () => {
     await fireEvent.press(star);
     expect(onToggleStar).not.toHaveBeenCalled();
   });
+
+  it("shows the Devices & sessions button only when given a handler, with the live count in its label", async () => {
+    const onOpenDevices = jest.fn();
+    const { rerender } = await render(
+      <RoomHeaderActions starred={false} muted={false} onToggleStar={() => {}} onToggleMute={() => {}} />,
+    );
+    expect(screen.queryByLabelText(/Devices & sessions/)).toBeNull();
+    await rerender(
+      <RoomHeaderActions starred={false} muted={false} onToggleStar={() => {}} onToggleMute={() => {}} onOpenDevices={onOpenDevices} liveSessions={0} />,
+    );
+    await fireEvent.press(screen.getByLabelText("Devices & sessions"));
+    expect(onOpenDevices).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("2")).toBeNull();
+    await rerender(
+      <RoomHeaderActions starred={false} muted={false} onToggleStar={() => {}} onToggleMute={() => {}} onOpenDevices={onOpenDevices} liveSessions={2} />,
+    );
+    expect(screen.getByLabelText("Devices & sessions, 2 live")).toBeTruthy();
+    expect(screen.getByText("2")).toBeTruthy();
+  });
 });

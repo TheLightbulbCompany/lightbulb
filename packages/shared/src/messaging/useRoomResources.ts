@@ -1,7 +1,9 @@
-"use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, type createMessagingClient, type LiveEvent, type LocalSessionEvent, type RoomResources } from "@lightbulb/shared";
+
+import { ApiError } from "../api/error";
+import type { LiveEvent } from "../live/types";
+import type { createMessagingClient } from "./client";
+import type { LocalSessionEvent, RoomResources } from "./types";
 
 export interface RoomResourceSource {
   client: Pick<ReturnType<typeof createMessagingClient>, "listResources" | "listLocalSessionEvents" | "submitLocalSessionCommand" | "getLocalSessionCommand">;
@@ -11,8 +13,16 @@ export interface RoomResourceSource {
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
 
-/** Mounted only by the open pane, keyed by owner, viewer, room and membership. */
-export function useRoomResources(roomId: string, { client, onEvent, connectionRevision }: RoomResourceSource) {
+/**
+ * Mounted only by the open pane, keyed by owner, viewer, room and membership.
+ * `enabled: false` neither fetches nor polls (a phone stacks several screens of
+ * one room; only the focused one should); the last snapshot stays readable.
+ */
+export function useRoomResources(
+  roomId: string,
+  { client, onEvent, connectionRevision }: RoomResourceSource,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
   const [data, setData] = useState<RoomResources | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,6 +74,7 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
     }
   }, [client, roomId, revoke]);
   useEffect(() => {
+    if (!enabled) return;
     blocked.current = false;
     void refresh();
     const unsubscribe = onEvent(event => {
@@ -81,12 +92,12 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
     // Reuses the room's existing live subscription. Poll only while this pane exists.
     const timer = setInterval(() => void refresh(), 5000);
     return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
-  }, [onEvent, roomId, refresh, revoke, invalidate]);
+  }, [enabled, onEvent, roomId, refresh, revoke, invalidate]);
   const previousConnection = useRef(connectionRevision);
   useEffect(() => {
-    if (previousConnection.current !== connectionRevision) void refresh();
+    if (enabled && previousConnection.current !== connectionRevision) void refresh();
     previousConnection.current = connectionRevision;
-  }, [connectionRevision, refresh]);
+  }, [enabled, connectionRevision, refresh]);
   return { data, error, loading, revision, accessRevision, refresh, revoke };
 }
 
@@ -124,12 +135,16 @@ export function useLocalSessionHistory(
       const page = await client.listLocalSessionEvents(roomId, sessionId, after, limit);
       if (run !== generation.current) return;
       const incoming = page.events.filter(event => event.seq > after && (direction !== "older" || event.seq < first));
-      const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
-      for (const event of incoming) merged.set(event.seq, event);
-      const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
-      // ponytail: 200 events retained; navigation reloads discarded regions from canonical history.
-      rows.current = direction === "older" ? ordered.slice(0, 200) : ordered.slice(-200);
-      setEvents(rows.current);
+      // A "newer"/"older" poll with nothing new keeps the existing array reference
+      // so unchanged rows skip re-rendering (the 1s busy tail polls every second).
+      if (direction === "latest" || incoming.length > 0) {
+        const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
+        for (const event of incoming) merged.set(event.seq, event);
+        const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
+        // ponytail: 200 events retained; navigation reloads discarded regions from canonical history.
+        rows.current = direction === "older" ? ordered.slice(0, 200) : ordered.slice(-200);
+        setEvents(rows.current);
+      }
       follow.current = direction !== "older" && page.nextAfterSeq === null;
       setMore(direction === "older" || page.nextAfterSeq !== null);
       initialized.current = true;

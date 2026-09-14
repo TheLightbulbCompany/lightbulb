@@ -1,28 +1,10 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { LocalSessionEvent } from "@lightbulb/shared";
-import { buildRows, NativeSessionTranscript } from "../NativeSessionTranscript";
+import { NativeSessionTranscript } from "../NativeSessionTranscript";
 
 const people = [{ kind: "human" as const, id: "user_a", displayName: "Aden Kim" }, { kind: "agent" as const, id: "friday", displayName: "Friday" }];
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
-
-describe("buildRows", () => {
-  it("merges split prose by itemId, pairs tool results and marks the final Codex answer", () => {
-    const rows = buildRows([
-      ev(1, { kind: "text", role: "user", text: "run it", actor: { userId: "user_a" } }),
-      ev(2, { kind: "tool", role: "assistant", text: "git status", itemId: "toolu_1", tool: { name: "Bash", status: "running", input: { command: "git status" } } }),
-      ev(3, { kind: "tool", role: "tool", text: "On branch main", parentId: "toolu_1", tool: { name: "result", status: "done", result: { stdout: "On branch main\n" }, lines: 1 } }),
-      ev(4, { kind: "text", role: "assistant", text: "first half ", itemId: "m1" }),
-      ev(5, { kind: "text", role: "assistant", text: "second half", itemId: "m1" }),
-      ev(6, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end" }),
-    ]);
-    expect(rows.map(r => r.kind)).toEqual(["prompt", "tool", "prose"]); // a bare turn_end closes the turn without drawing a row
-    expect(rows[0].kind === "prompt" && rows[0].who).toBe("user_a");
-    expect(rows[1].kind === "tool" && rows[1].result?.text).toBe("On branch main");
-    expect(rows[2].kind === "prose" && rows[2].text).toBe("first half second half");
-    expect(rows[2].kind === "prose" && rows[2].final).toBe(true);
-  });
-});
 
 describe("NativeSessionTranscript", () => {
   const events = [

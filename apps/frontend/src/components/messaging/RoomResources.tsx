@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Laptop, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isDockAttached, openSessionPanel } from "@/components/workspace/workspaceController";
-import { useRoomResources, type RoomResourceSource } from "@/hooks/useRoomResources";
+import { useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 

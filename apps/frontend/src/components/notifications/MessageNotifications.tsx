@@ -52,7 +52,7 @@ export function MessageNotifications(props: {
       // The private event contains no message content. HTTP checks current
       // membership again before we display anything from the conversation.
       void Promise.all([messaging.getRoom(roomId), messaging.listMessages(roomId, messageSeq - 1, 1)])
-        .then(([room, page]) => {
+        .then(async ([room, page]) => {
           if (stopped || watched() || room.muted || messageSeq <= room.lastReadSeq) return;
           const message = page.messages.find((item) => item.messageId === messageId);
           if (!message || (message.author.kind === "human" && message.author.id === userId)) return;
@@ -66,7 +66,7 @@ export function MessageNotifications(props: {
             current.current.onOpen(roomId, threadRootMessageId);
           };
           // Native (desktop app, or web with permission) replaces the toast.
-          if (nativeNotify(title, body, { onClick, tag: messageId })) return;
+          if (await nativeNotify(title, body, { onClick, tag: messageId })) return;
           notifySuccess(`${title}: ${body}`, {
             dedupeKey: `message:${messageId}`,
             action: { label: "View", onClick },

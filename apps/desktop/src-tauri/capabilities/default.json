@@ -15,7 +15,6 @@
     "core:default",
     "deep-link:default",
     "shell:allow-open",
-    "notification:default",
     "updater:default",
     "dialog:default"
   ]

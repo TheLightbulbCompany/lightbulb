@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// The join page: /join/{orgId}/{token}. The invariants worth pinning are that
-// the token leaves the URL and travels in the POST body, that a rejected link
-// says so without offering a retry, and that already-a-member is a success.
+// The join page: /join/{orgId}#{token}. The invariants worth pinning are that
+// the token is scrubbed from the URL and travels in the POST body, that a
+// rejected link says so without offering a retry, and that already-a-member is
+// a success.
 
 const post = vi.hoisted(() => vi.fn());
 const apiClient = vi.hoisted(() => ({}) as Record<string, unknown>);
@@ -16,7 +17,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 const nav = vi.hoisted(() => ({
-  params: { orgId: "org_1", token: "s3cr3t-token" } as Record<string, string>,
+  params: { orgId: "org_1" } as Record<string, string>,
   push: vi.fn(),
 }));
 
@@ -28,16 +29,18 @@ vi.mock("next/navigation", () => ({
 const clerk = vi.hoisted(() => ({
   isLoaded: true,
   isSignedIn: true,
+  orgListLoaded: true,
   setActive: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.isLoaded, isSignedIn: clerk.isSignedIn }),
-  useOrganizationList: () => ({ setActive: clerk.setActive }),
+  useOrganizationList: () => ({ isLoaded: clerk.orgListLoaded, setActive: clerk.setActive }),
+  SignInButton: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 import { ApiError } from "@/lib/api";
-import JoinWorkspacePage, { joinErrorMessage } from "../[orgId]/[token]/page";
+import JoinWorkspacePage, { joinErrorMessage } from "../[orgId]/page";
 
 describe("JoinWorkspacePage", () => {
   beforeEach(() => {
@@ -46,7 +49,10 @@ describe("JoinWorkspacePage", () => {
     clerk.setActive.mockReset().mockResolvedValue(undefined);
     clerk.isLoaded = true;
     clerk.isSignedIn = true;
-    nav.params = { orgId: "org_1", token: "s3cr3t-token" };
+    clerk.orgListLoaded = true;
+    nav.params = { orgId: "org_1" };
+    window.sessionStorage.clear();
+    window.history.replaceState(null, "", "/join/org_1#s3cr3t-token");
     post.mockResolvedValue({ status: "joined", org_id: "org_1", org_name: "Acme" });
   });
 
@@ -56,6 +62,7 @@ describe("JoinWorkspacePage", () => {
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/orgs/org_1/join", { token: "s3cr3t-token" }),
     );
+    expect(window.location.hash).toBe("");
     // The credential must never ride in the URL to the API host.
     expect(post.mock.calls[0][0]).not.toContain("s3cr3t-token");
 
@@ -103,6 +110,22 @@ describe("JoinWorkspacePage", () => {
 
   it("does not redeem before Clerk has resolved the session", () => {
     clerk.isLoaded = false;
+    render(<JoinWorkspacePage />);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("keeps the token in session storage while a signed-out holder authenticates", async () => {
+    clerk.isSignedIn = false;
+    render(<JoinWorkspacePage />);
+
+    expect(await screen.findByRole("button", { name: /sign in to join/i })).toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+    expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBe("s3cr3t-token");
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("waits for the organization switcher before redeeming", () => {
+    clerk.orgListLoaded = false;
     render(<JoinWorkspacePage />);
     expect(post).not.toHaveBeenCalled();
   });

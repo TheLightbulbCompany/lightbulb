@@ -70,17 +70,16 @@ def _hash_token(token: str) -> str:
 def build_join_url(org_id: str, token: str) -> str:
     """The shareable URL for a freshly minted token.
 
-    ``/join/{org_id}/{token}`` — two path segments, no separator to parse and
-    no ``.`` anywhere (a dot would collide with the frontend middleware's
-    static-file matcher, which would skip the sign-in redirect for the unlucky
-    token that happens to contain something matcher-shaped).
+    ``/join/{org_id}#{token}`` — the public route identifies the workspace and
+    the fragment carries the credential without sending it in an HTTP request.
 
-    The token lives in the FRONTEND path, never in a backend URL: the join page
-    reads it as a route param and POSTs it in a JSON body, so it stays out of
-    API Gateway / ALB access logs. That it is visible in the holder's own
-    address bar is inherent to a shareable link.
+    The token lives in the URL FRAGMENT, never in a request path or query: the
+    browser does not send fragments to Vercel, Clerk, API Gateway, or ALB, so
+    the credential stays out of access logs and Referer headers. The client
+    stores it in sessionStorage while a signed-out holder authenticates, then
+    POSTs it in the redeem request body.
     """
-    return f"{settings.FRONTEND_URL.rstrip('/')}/join/{org_id}/{token}"
+    return f"{settings.FRONTEND_URL.rstrip('/')}/join/{org_id}#{token}"
 
 
 async def mint_join_link(org_id: str, *, created_by: str) -> dict:

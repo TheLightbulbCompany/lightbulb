@@ -1,24 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useAuth, useOrganizationList } from "@clerk/nextjs";
+import { SignInButton, useAuth, useOrganizationList } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
 // =============================================================================
-// Join a workspace from a shared link: /join/{orgId}/{token}
+// Join a workspace from a shared link: /join/{orgId}#{token}
 //
-// The route is in `isProtectedRoute` (src/middleware.ts), so a signed-out
-// visitor is bounced to Clerk sign-in and returned to this exact URL — the link
-// is an authorization grant, never an authentication bypass. Redeeming
-// therefore always happens as a known Clerk user.
-//
-// Two path segments, never a query string: the token is a credential, and a
-// `?t=` would land in every access log and Referer header along the way. It is
-// read here as a route param and POSTed in a JSON body, so it never appears in
-// a backend URL at all.
+// The token is a credential, so it lives in the fragment: browsers never send
+// fragments in HTTP requests or Referer headers. On first render we move it to
+// sessionStorage and scrub it from the address bar. A signed-out holder signs
+// in through Clerk's modal on this same page, preserving sessionStorage without
+// copying the credential into an auth redirect URL. The authenticated client
+// then POSTs it in the redeem body.
 //
 // The redeem call is idempotent on the backend (already-a-member is a success),
 // which is what lets the owner click their own link and lets a reload after a
@@ -67,14 +64,23 @@ export function joinErrorMessage(err: unknown): { message: string; canRetry: boo
 }
 
 export default function JoinWorkspacePage() {
-  const params = useParams<{ orgId: string; token: string }>();
+  const params = useParams<{ orgId: string }>();
   const orgId = params?.orgId ?? "";
-  const token = params?.token ?? "";
 
   const router = useRouter();
   const api = useApi();
   const { isLoaded, isSignedIn } = useAuth();
-  const { setActive } = useOrganizationList();
+  const { isLoaded: orgListLoaded, setActive } = useOrganizationList();
+
+  const tokenStorageKey = `lightbulb:workspace-join:${orgId}`;
+  const subscribe = useCallback(() => () => {}, []);
+  const readToken = useCallback((): string | null => {
+    if (typeof window === "undefined") return null;
+    if (!orgId) return "";
+    const fragment = window.location.hash.slice(1);
+    return fragment || window.sessionStorage.getItem(tokenStorageKey) || "";
+  }, [orgId, tokenStorageKey]);
+  const token = useSyncExternalStore(subscribe, readToken, () => null);
 
   const [phase, setPhase] = useState<Phase>({ kind: "working" });
   // Bumping this re-runs the effect below — the idiomatic way to re-trigger a
@@ -86,9 +92,15 @@ export default function JoinWorkspacePage() {
   const ran = useRef(-1);
 
   useEffect(() => {
-    // Middleware guarantees a signed-in user here; the check is for the render
-    // that happens before Clerk hydrates.
-    if (!isLoaded || !isSignedIn || !orgId || !token) return;
+    if (!token || typeof window === "undefined") return;
+    if (window.location.hash) {
+      window.sessionStorage.setItem(tokenStorageKey, token);
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+  }, [token, tokenStorageKey]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !orgListLoaded || !setActive || !orgId || !token) return;
     if (ran.current === attempt) return;
     ran.current = attempt;
 
@@ -103,9 +115,11 @@ export default function JoinWorkspacePage() {
         // can't activate it yet (the membership is seconds old), /onboarding is
         // the surface that resolves memberships, so fall through to it.
         try {
-          await setActive?.({ organization: result.org_id });
+          await setActive({ organization: result.org_id });
+          window.sessionStorage.removeItem(tokenStorageKey);
           router.push("/chat");
         } catch {
+          window.sessionStorage.removeItem(tokenStorageKey);
           router.push("/onboarding");
         }
       })
@@ -118,7 +132,18 @@ export default function JoinWorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [api, attempt, isLoaded, isSignedIn, orgId, token, setActive, router]);
+  }, [
+    api,
+    attempt,
+    isLoaded,
+    isSignedIn,
+    orgListLoaded,
+    orgId,
+    token,
+    tokenStorageKey,
+    setActive,
+    router,
+  ]);
 
   // An event handler, so setState here is exactly where React wants it.
   const retry = useCallback(() => {
@@ -126,13 +151,44 @@ export default function JoinWorkspacePage() {
     setAttempt((n) => n + 1);
   }, []);
 
-  if (!orgId || !token) {
+  if (!orgId) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <h1 className="font-serif text-2xl text-midnight">Couldn&apos;t join</h1>
         <p className="text-ui text-midnight-muted" role="alert">
           That join link is incomplete. Ask a workspace admin for a new one.
         </p>
+      </main>
+    );
+  }
+
+  if (token === null || !isLoaded || (isSignedIn && !orgListLoaded)) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="settings-spinner" role="status" aria-label="Loading join link" />
+      </main>
+    );
+  }
+
+  if (!token) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
+        <h1 className="font-serif text-2xl text-midnight">Couldn&apos;t join</h1>
+        <p className="text-ui text-midnight-muted" role="alert">
+          That join link is incomplete. Ask a workspace admin for a new one.
+        </p>
+      </main>
+    );
+  }
+
+  if (!isSignedIn) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
+        <h1 className="font-serif text-2xl text-midnight">Join this workspace</h1>
+        <p className="text-ui text-midnight-muted">Sign in first, then we&apos;ll add you.</p>
+        <SignInButton mode="modal">
+          <Button type="button">Sign in to join</Button>
+        </SignInButton>
       </main>
     );
   }

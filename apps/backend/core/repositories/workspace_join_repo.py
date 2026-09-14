@@ -16,9 +16,10 @@ conditional TransactWriteItems.
 Keying on org_id instead removes the race by construction: the org's row IS the
 current link, so regenerate is one PutItem (last writer wins, no orphan
 possible) and revoke is one DeleteItem. The cost is that redeem must be told
-which org to look up, which is why the join URL carries the org id alongside the
-secret (``/join/{org_id}/{token}``) — an opaque Clerk id that grants nothing on
-its own, exactly as Slack's and Discord's invite links carry a workspace id.
+which org to look up, which is why the join URL carries the org id in the path
+and the secret in its fragment (``/join/{org_id}#{token}``) — an opaque Clerk id
+that grants nothing on its own, exactly as Slack's and Discord's invite links
+carry a workspace id.
 
 No TTL attribute: the owner's decision is that join links do not expire. They
 end when an admin regenerates or revokes.

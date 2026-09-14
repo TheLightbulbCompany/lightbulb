@@ -10,11 +10,6 @@ const isProtectedRoute = createRouteMatcher([
   "/chat(.*)",
   "/onboarding",
   "/settings(.*)",
-  // Workspace join links (/join/{orgId}/{token}). Protected deliberately: the
-  // link is an authorization grant, not an authentication bypass, so a
-  // signed-out visitor is sent to Clerk sign-in and returned to this exact URL
-  // (redirectToSignIn preserves it) to redeem as a known user.
-  "/join(.*)",
 ]);
 
 // NEXT_PUBLIC_ADMIN_HOSTS is set in no deployed environment, so the derived

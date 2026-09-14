@@ -99,8 +99,8 @@ def _override_auth(app, ctx):
 
 
 def _token_from(url: str) -> str:
-    """The secret half of a minted join URL (/join/{org_id}/{token})."""
-    return url.rsplit("/", 1)[-1]
+    """The fragment-only secret from a minted join URL (/join/{org_id}#{token})."""
+    return url.rsplit("#", 1)[-1]
 
 
 # --- Minting -----------------------------------------------------------------
@@ -114,9 +114,8 @@ def test_mint_returns_a_link_and_stores_only_its_hash(app, admin_auth, repo):
     assert resp.status_code == 201
     url = resp.json()["join_url"]
     token = _token_from(url)
-    assert url.endswith(f"/join/org_test/{token}")
-    # ~256 bits of CSPRNG entropy, url-safe, and no "." (which would collide
-    # with the frontend middleware's static-file matcher).
+    assert url.endswith(f"/join/org_test#{token}")
+    # ~256 bits of CSPRNG entropy, url-safe.
     assert len(token) >= 43
     assert "." not in token
 

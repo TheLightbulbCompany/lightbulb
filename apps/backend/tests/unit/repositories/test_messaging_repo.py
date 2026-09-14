@@ -935,6 +935,7 @@ async def test_has_open_runs_follows_the_sweep_marker(table):
     assert await repo.has_open_runs("owner_1")
     assert not await repo.has_open_runs("owner_2")
     await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert not await repo.has_open_runs("owner_1")
 
 
 VENDOR = "org_vendor"

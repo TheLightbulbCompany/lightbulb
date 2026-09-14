@@ -430,7 +430,7 @@ it("lets wide room details change agent response without giving humans a control
   const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
   expect(within(mode).getAllByRole("option").map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
-    ["active", "Observe"], ["mentions", "Mentions"], ["observe", "Off"],
+    ["active", "Listening"], ["mentions", "Mentions"], ["observe", "Off"],
   ]);
   expect(details.getAllByRole("combobox")).toHaveLength(1);
   expect(details.queryByRole("combobox", { name: "Response for Owner" })).not.toBeInTheDocument();

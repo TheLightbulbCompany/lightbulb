@@ -2,10 +2,11 @@ import type { ListenMode, MemberRef, RoomKind } from "@lightbulb/shared";
 
 /**
  * What people see for each stored listen mode. The stored values predate these
- * names: `active` shows as "Observe" (a cheap model decides whether an
+ * names: `active` shows as "Listening" (a cheap model decides whether an
  * unmentioned message gets a reply) and `observe` as "Off" (never runs).
+ * No label reuses a stored value, so the two vocabularies cannot be confused.
  */
-export const LISTEN_MODE_LABELS: Record<ListenMode, string> = { active: "Observe", mentions: "Mentions", observe: "Off" };
+export const LISTEN_MODE_LABELS: Record<ListenMode, string> = { active: "Listening", mentions: "Mentions", observe: "Off" };
 
 export interface RespondTarget {
   kind: "human" | "agent";
@@ -38,7 +39,7 @@ export function respondHint(
     const willReply = addressed || member.listenMode === "active";
     if (!willReply) parts.push(`${member.displayName} when mentioned`);
     else if (runningAgentIds.includes(member.id)) parts.push(`${member.displayName} is working — sending now steers that run`);
-    // An unaddressed active ("Observe") agent passes the cheap relevance gate first.
+    // An unaddressed active ("Listening") agent passes the cheap relevance gate first.
     else parts.push(`${member.displayName} ${addressed ? "will" : "may"} reply`);
   }
   return parts.join(" · ");

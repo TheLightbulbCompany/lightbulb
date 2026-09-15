@@ -55,7 +55,6 @@ export function PickerSheet({
     <BottomSheet
       visible={visible}
       onClose={onClose}
-     
       maxHeight="80%"
     >
       <View style={styles.sheet}>

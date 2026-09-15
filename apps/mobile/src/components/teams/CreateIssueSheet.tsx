@@ -124,7 +124,7 @@ export function CreateIssueSheet({
   };
 
   return (
-    <BottomSheet visible={visible} onClose={close} large>
+    <BottomSheet visible={visible} onClose={close} large dismissible={!busy}>
       <View style={styles.sheet}>
         <Text style={styles.heading}>
           {mode === "subissue" ? "New sub-issue" : "New issue"}
@@ -257,7 +257,8 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
 
-  form: { flexGrow: 0 },
+  // Takes the full-height sheet's spare room, so the footer sits at the bottom.
+  form: { flexGrow: 1 },
   formContent: { gap: spacing.lg, paddingBottom: spacing.sm },
   field: { gap: spacing.sm },
   fieldLabel: {

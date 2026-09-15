@@ -2,11 +2,12 @@ import { Host } from "@expo/ui";
 import { BottomSheet as NativeSheet, Group, RNHostView } from "@expo/ui/swift-ui";
 import {
   environment,
+  interactiveDismissDisabled,
   presentationBackground,
   presentationDetents,
   presentationDragIndicator,
 } from "@expo/ui/swift-ui/modifiers";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { StyleSheet, useWindowDimensions, View } from "react-native";
 
 import { colors, spacing } from "../../config/theme";
@@ -25,6 +26,8 @@ interface BottomSheetProps {
   /** Content-sized sheets: cap on height as a share of the window. A list
    * inside the card scrolls past it (the card gets `flexShrink: 1`). */
   maxHeight?: `${number}%`;
+  /** `false` while the sheet must not be swiped away (e.g. mid-submit). */
+  dismissible?: boolean;
 }
 
 const SHARED_MODIFIERS = [
@@ -35,6 +38,7 @@ const SHARED_MODIFIERS = [
   presentationBackground(colors.cream),
 ];
 const LARGE_MODIFIERS = [...SHARED_MODIFIERS, presentationDetents(["large"])];
+const LOCKED = interactiveDismissDisabled(true);
 
 /**
  * The app's bottom sheet, presented by iOS: SwiftUI's `.sheet` (@expo/ui),
@@ -47,7 +51,8 @@ const LARGE_MODIFIERS = [...SHARED_MODIFIERS, presentationDetents(["large"])];
  *
  * `onClose` fires when the reader dismisses the sheet (drag down, tap the
  * backdrop); closing it from code is `visible={false}`. Content stays mounted
- * through the native exit animation.
+ * through the native exit animation, and nothing is mounted while the sheet
+ * is closed — several screens render one per list row.
  */
 export function BottomSheet({
   visible,
@@ -55,8 +60,15 @@ export function BottomSheet({
   children,
   large = false,
   maxHeight = "85%",
+  dismissible = true,
 }: BottomSheetProps) {
   const { width, height } = useWindowDimensions();
+  // Holds the native host from the first open until the exit animation ends.
+  const [mounted, setMounted] = useState(visible);
+  if (visible && !mounted) setMounted(true);
+  if (!mounted) return null;
+
+  const modifiers = large ? LARGE_MODIFIERS : SHARED_MODIFIERS;
   return (
     <Host style={{ position: "absolute", width }} pointerEvents="none">
       <NativeSheet
@@ -64,9 +76,10 @@ export function BottomSheet({
         onIsPresentedChange={(presented) => {
           if (!presented) onClose();
         }}
+        onDismiss={() => setMounted(false)}
         fitToContents={!large}
       >
-        <Group modifiers={large ? LARGE_MODIFIERS : SHARED_MODIFIERS}>
+        <Group modifiers={dismissible ? modifiers : [...modifiers, LOCKED]}>
           <RNHostView matchContents={!large}>
             <View
               style={

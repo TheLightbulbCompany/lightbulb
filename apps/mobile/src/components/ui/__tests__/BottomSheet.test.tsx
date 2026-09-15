@@ -19,6 +19,17 @@ describe("BottomSheet", () => {
     expect(screen.getByText("Sheet body")).toBeTruthy();
   });
 
+  // Several screens render a sheet per list row; a closed one mounts nothing,
+  // not even the native host.
+  it("mounts nothing until it is first opened", async () => {
+    const screenApi = await render(
+      <BottomSheet visible={false} onClose={() => {}}>
+        <Text>Sheet body</Text>
+      </BottomSheet>,
+    );
+    expect(screenApi.toJSON()).toBeNull();
+  });
+
   it("does not render children when not visible", async () => {
     await render(
       <BottomSheet visible={false} onClose={() => {}}>

@@ -211,6 +211,7 @@ jest.mock("@expo/ui/swift-ui", () => {
 });
 jest.mock("@expo/ui/swift-ui/modifiers", () => ({
   environment: () => ({}),
+  interactiveDismissDisabled: () => ({}),
   presentationBackground: () => ({}),
   presentationDetents: () => ({}),
   presentationDragIndicator: () => ({}),

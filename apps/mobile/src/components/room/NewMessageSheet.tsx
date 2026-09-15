@@ -237,7 +237,6 @@ export function NewMessageSheet({
     <BottomSheet
       visible={visible}
       onClose={onClose}
-     
       large
     >
       <View style={styles.card}>

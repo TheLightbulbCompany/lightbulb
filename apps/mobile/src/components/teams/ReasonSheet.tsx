@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -63,9 +61,6 @@ export function ReasonSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose} closeLabel="Cancel">
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
       <View style={styles.card}>
         <View style={styles.handle} />
         <Text style={styles.title}>{title}</Text>
@@ -110,7 +105,6 @@ export function ReasonSheet({
           </Pressable>
         </View>
       </View>
-      </KeyboardAvoidingView>
     </BottomSheet>
   );
 }
@@ -121,7 +115,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     padding: spacing.lg,
-    paddingBottom: spacing.xl,
+    paddingBottom: spacing.md,
     gap: spacing.md,
   },
   handle: {

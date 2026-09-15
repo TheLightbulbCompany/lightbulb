@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { type DimensionValue, Dimensions, Modal, Pressable, StyleSheet } from "react-native";
+import { type DimensionValue, Dimensions, Modal, Pressable, StyleSheet, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import Animated, {
   Extrapolation,
   interpolate,
@@ -9,8 +10,9 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from "react-native-reanimated";
+import { initialWindowMetrics } from "react-native-safe-area-context";
 
-import { colors } from "../../config/theme";
+import { colors, spacing } from "../../config/theme";
 
 interface BottomSheetProps {
   visible: boolean;
@@ -51,6 +53,12 @@ const SPRING_CONFIG = {
 // card height regardless of content, the same trick the old Animated.timing
 // version used for its off-screen translateY.
 const OFFSCREEN_Y = Dimensions.get("window").height;
+
+// The card's foot: the WINDOW's bottom inset (the home indicator), and never
+// less than `md` on phones without one. Not `useSafeAreaInsets()`: that reads
+// the insets of the screen that rendered the sheet, and a tab screen's include
+// the tab bar (83pt, not 34), while the Modal itself covers the whole window.
+const SHEET_FOOT = Math.max(initialWindowMetrics?.insets.bottom ?? 0, spacing.md);
 
 // Release-velocity dismiss decision: projects the finger's momentum forward
 // (current position + velocity · a short time constant) rather than reading
@@ -171,16 +179,34 @@ export function BottomSheet({
           the RN tree, so it sits above the tab bar regardless of which tab
           presented it. */}
       <GestureHandlerRootView style={styles.root}>
-        <Animated.View style={[styles.scrim, scrimStyle]}>
-          <Pressable
-            style={styles.scrimFill}
-            onPress={closeSheet}
-            accessibilityLabel={closeLabel}
-          />
-        </Animated.View>
-        <GestureDetector gesture={pan}>
-          <Animated.View style={[{ maxHeight }, cardStyle]}>{children}</Animated.View>
-        </GestureDetector>
+        {/* The keyboard is avoided HERE, on the full-screen root, and not by
+            the sheets: this view is never transformed, so its measured frame
+            is the screen. A KeyboardAvoidingView inside the card measures
+            itself against the sliding card and lifts it by little or nothing —
+            which is how CreateIssueSheet's and ReasonSheet's inputs ended up
+            under the keyboard. The offset lets the card's foot below tuck
+            behind the keyboard instead of padding above it. */}
+        <KeyboardAvoidingView
+          behavior="padding"
+          keyboardVerticalOffset={-SHEET_FOOT}
+          style={styles.root}
+        >
+          <Animated.View style={[styles.scrim, scrimStyle]}>
+            <Pressable
+              style={styles.scrimFill}
+              onPress={closeSheet}
+              accessibilityLabel={closeLabel}
+            />
+          </Animated.View>
+          <GestureDetector gesture={pan}>
+            <Animated.View style={[{ maxHeight }, cardStyle]}>
+              {children}
+              {/* Every sheet card is cream; this extends it through the home
+                  indicator so its last row is not in the swipe-home zone. */}
+              <View style={{ height: SHEET_FOOT, backgroundColor: colors.cream }} />
+            </Animated.View>
+          </GestureDetector>
+        </KeyboardAvoidingView>
       </GestureHandlerRootView>
     </Modal>
   );

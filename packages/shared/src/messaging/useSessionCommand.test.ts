@@ -30,7 +30,7 @@ let uuidCounter = 0;
 const uuid = () => `req-${++uuidCounter}`;
 const hook = (s: LocalSession = session) => renderHook(() => useSessionCommand(client, "room", s, { uuid, onAccessLost, onSent }));
 
-afterEach(() => { cleanup(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
+afterEach(() => { cleanup(); vi.useRealTimers(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
 
 describe("labels", () => {
   it("labels a session by provider and title, and gates sending on verified control", () => {
@@ -110,6 +110,62 @@ describe("useSessionCommand", () => {
     const open = hook();
     await act(async () => { open.result.current.send("hello"); });
     expect(onAccessLost).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-settles a pending receipt on the first check: no canCheck at any point, checking never true", async () => {
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request, "pending"));
+    get.mockImplementation(async (_r: string, _s: string, requestId: string) => receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, "applied"));
+    const { result } = hook();
+    await act(async () => { result.current.send("hello"); });
+    expect(result.current.attempt?.state).toBe("received");
+    expect(result.current.canCheck).toBe(false);
+    expect(result.current.checking).toBe(false);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith("room", session.sessionId, "req-1");
+    expect(result.current.receiptText).toBe("Admitted to the native session — not completed work.");
+    expect(result.current.canCheck).toBe(false);
+    expect(result.current.checking).toBe(false);
+
+    // Settled: no further auto-checks are scheduled.
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps canCheck false while a receipt stays dispatched, flips true only after the 15-check budget, checking exactly 15 times", async () => {
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request, "dispatched"));
+    get.mockImplementation(async (_r: string, _s: string, requestId: string) => receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, "dispatched"));
+    const { result } = hook();
+    await act(async () => { result.current.send("hello"); });
+    expect(result.current.canCheck).toBe(false);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(29999); }); // just under the ~30s window
+    expect(result.current.canCheck).toBe(false);
+    expect(get.mock.calls.length).toBeLessThan(15);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); }); // the 15th check lands
+    expect(get).toHaveBeenCalledTimes(15);
+    expect(result.current.canCheck).toBe(true);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); }); // exhausted: no 16th call
+    expect(get).toHaveBeenCalledTimes(15);
+  });
+
+  it("stops auto-checking once the component unmounts", async () => {
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request, "dispatched"));
+    get.mockImplementation(async (_r: string, _s: string, requestId: string) => receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, "dispatched"));
+    const { result, unmount } = hook();
+    await act(async () => { result.current.send("hello"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(get).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("prefixes an agent-issued receipt with the agent", async () => {

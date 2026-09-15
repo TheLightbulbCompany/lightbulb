@@ -125,7 +125,7 @@ export function useLocalSessionHistory(
   const follow = useRef(true);
   const initialized = useRef(false);
   const lastDirection = useRef<"latest" | "older" | "newer">("latest");
-  const load = useCallback(async (direction: "latest" | "older" | "newer") => {
+  const load = useCallback(async (direction: "latest" | "older" | "newer", { quiet = false }: { quiet?: boolean } = {}) => {
     if (busy.current) return;
     const run = generation.current;
     const first = rows.current[0]?.seq ?? 1;
@@ -135,7 +135,7 @@ export function useLocalSessionHistory(
     if (limit < 1) return;
     lastDirection.current = direction;
     busy.current = true;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const page = await client.listLocalSessionEvents(roomId, sessionId, after, limit);
@@ -167,14 +167,14 @@ export function useLocalSessionHistory(
     return () => { generation.current += 1; busy.current = false; };
   }, [load]);
   useEffect(() => {
-    if (initialized.current && follow.current) void load("newer");
+    if (initialized.current && follow.current) void load("newer", { quiet: true });
   }, [revision, load]);
   // Tail the session only while a turn runs. At idle the cadence is already
   // useRoomResources' 5s poll -> `revision` -> the load("newer") effect above.
   const tailBusy = live?.busy ?? false;
   useEffect(() => {
     if (!tailBusy) return;
-    const timer = setInterval(() => { if (initialized.current && follow.current) void load("newer"); }, 1000);
+    const timer = setInterval(() => { if (initialized.current && follow.current) void load("newer", { quiet: true }); }, 1000);
     return () => clearInterval(timer);
   }, [tailBusy, load]);
   return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,

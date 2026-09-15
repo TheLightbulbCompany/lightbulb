@@ -15,6 +15,11 @@ export type SessionCommandAttempt = {
 /** Canonical command JSON is bounded to 8 KiB UTF-8, including every field. */
 export const COMMAND_MAX_BYTES = 8192;
 
+// The server's own delivery window (deliverBy - createdAt) is 30s in the fixtures;
+// 15 checks * 2s covers it without a caller ever having to click "Check delivery".
+const AUTO_CHECK_INTERVAL_MS = 2000;
+const AUTO_CHECK_LIMIT = 15;
+
 /** The receipt line both composers show; null when there is nothing to say. */
 export function receiptCopy(receipt: LocalSessionCommandReceipt | undefined): string | null {
   if (!receipt) return null;
@@ -41,12 +46,46 @@ export function useSessionCommand(
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
+  const [autoCheckExhaustedFor, setAutoCheckExhaustedFor] = useState<string | null>(null);
   const alive = useRef(true);
   const pending = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const canSend = canSendToSession(session);
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
+
+  // Auto-settle a pending/dispatched receipt in the background so "Check delivery"
+  // only ever appears once delivery is genuinely stuck (owner report: it sat there
+  // needing a click for every follow-up). Never touches `checking` or `onSent`.
+  const requestId = attempt?.request.requestId;
+  const receiptPolling = attempt?.receipt?.state === "pending" || attempt?.receipt?.state === "dispatched";
+  useEffect(() => {
+    if (!requestId || !receiptPolling) return;
+    let cancelled = false;
+    let count = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        count += 1;
+        try {
+          const receipt = await client.getLocalSessionCommand(roomId, session.sessionId, requestId);
+          if (cancelled || !alive.current) return;
+          setAttempt(current => current && current.request.requestId === requestId
+            ? { ...current, state: "received", receipt, error: undefined } : current);
+          if (receipt.state !== "pending" && receipt.state !== "dispatched") return; // settled; stop
+        } catch (e) {
+          if (cancelled || !alive.current) return;
+          if (e instanceof ApiError && e.status === 403) { onAccessLost(); return; }
+          // network / 5xx: swallow and just wait for the next tick
+        }
+        if (cancelled) return;
+        if (count < AUTO_CHECK_LIMIT) tick(); else setAutoCheckExhaustedFor(requestId);
+      }, AUTO_CHECK_INTERVAL_MS);
+    };
+    tick();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [requestId, receiptPolling, client, roomId, session.sessionId, onAccessLost]);
 
   async function submit(request: LocalSessionCommand) {
     if (pending.current || !canSend) return;
@@ -103,6 +142,7 @@ export function useSessionCommand(
   }
 
   const receipt = attempt?.receipt;
-  const canCheck = attempt?.state === "uncertain" || (!!receipt && ["pending", "dispatched", "unknown"].includes(receipt.state));
+  const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
+    || (receiptPolling && autoCheckExhaustedFor === requestId);
   return { attempt, receipt, receiptText: receiptCopy(receipt), canSend, locked, checking, canCheck, send, retry, checkDelivery };
 }

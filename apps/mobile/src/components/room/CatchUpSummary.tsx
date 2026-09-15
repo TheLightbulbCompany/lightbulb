@@ -16,7 +16,10 @@ interface Props {
   messages: CanonicalRoomMessage[];
   readSeq: number | null;
   offline: boolean;
-  generateSummary?: typeof buildCatchUpSummary;
+  generateSummary?: (
+    messages: CanonicalRoomMessage[],
+    readSeq: number | null,
+  ) => Summary | Promise<Summary>;
 }
 
 function Section({ title, items, empty }: { title: string; items: string[]; empty: string }) {

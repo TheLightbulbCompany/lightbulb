@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
@@ -34,7 +34,8 @@ export interface MessagingWorkspaceValue {
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
   currentUserId: string;
-  resourceSource: RoomResourceSource | undefined;
+  /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
+  sessionSource: RoomResourceSource;
   scope: string;
   workspaceSessions: LocalSession[];
 }
@@ -106,6 +107,16 @@ function useMessagingShortcuts(
   }, [rooms, activeRoomId, selectRoom, onShowShortcuts, shortcutsOpen]);
 }
 
+// Focus placement's conversation column is display:none below this width (messaging.css).
+const sideColumnQuery = "(min-width: 1180px)";
+function subscribeSideColumn(callback: () => void) {
+  const media = window.matchMedia(sideColumnQuery);
+  media.addEventListener("change", callback);
+  return () => media.removeEventListener("change", callback);
+}
+const getSideColumn = () => window.matchMedia(sideColumnQuery).matches;
+const getServerSideColumn = () => false;
+
 export function MessagingWorkspaceProvider({
   children,
   initialAgentId,
@@ -117,7 +128,15 @@ export function MessagingWorkspaceProvider({
 }) {
   const { userId, orgId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
-  const rooms = useRooms(initialAgentId, subscribeToRoom);
+  // Focus placement: a session opened from the sidebar or a link takes the
+  // middle of the panel with the sharer's DM beside it, rather than the room's
+  // right column (which is where a session opened from a room stays).
+  const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
+  const sideColumn = useSyncExternalStore(subscribeSideColumn, getSideColumn, getServerSideColumn);
+  // Focus covers the room unless it is someone else's session with room for the
+  // side column. A covered room must neither auto-read nor silence its notifications.
+  const roomVisible = subscribeToRoom && (!sessionFocus || (sessionFocus.ownerUserId !== userId && sideColumn));
+  const rooms = useRooms(initialAgentId, subscribeToRoom, roomVisible);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();
@@ -486,10 +505,6 @@ export function MessagingWorkspaceProvider({
   const sessionNonce = useRef(0);
   const selectRoom = rooms.selectRoom;
   const selectDm = rooms.selectDm;
-  // Focus placement: a session opened from the sidebar or a link takes the
-  // middle of the panel with the sharer's DM beside it, rather than the room's
-  // right column (which is where a session opened from a room stays).
-  const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
   // A permalink applied before the workspace session list lands (a cold load,
   // a new tab, a deep link) cannot yet tell a live session from an ended one,
   // so it waits here and is replayed once the list settles.
@@ -509,27 +524,38 @@ export function MessagingWorkspaceProvider({
       heldLink.current = { sessionId, roomId };
       return;
     }
-    if (from === "room" || !live) {
-      // Room placement, or a link to a session that is no longer live (ended history lives in the room list).
+    const placeInRoom = () => {
       if (!roomId) return;
       selectRoom(roomId);
       setThreadId(null);
       setTarget(null);
       setSessionFocus(null);
       setSessionTarget({ roomId, sessionId, nonce: ++sessionNonce.current });
+    };
+    // Room placement, or a link to a session that is no longer live (ended history lives in the room list).
+    if (from === "room" || !live) {
+      placeInRoom();
       return;
     }
     const own = live.humanUserId === userId;
-    const contextRoom = own
-      ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
-      // A failed resolve is already on screen as selectRoomError.
-      : await selectDm({ kind: "human", id: live.humanUserId }, { activate: true }).catch(() => null);
-    // Stale: a newer open, a close, or a directory pick already won while
-    // this awaited selectDm() was in flight.
-    if (focusRequest.current !== requestId) return;
-    // null: the resolve failed, or a room was picked while it ran (useRooms
-    // answers null when superseded). Either way the owner is elsewhere now.
-    if (!own && !contextRoom) return;
+    let contextRoom = own ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null : null;
+    if (!own) {
+      try {
+        // Resolved without activating: the DM and the focus must land in one
+        // render. An existing DM activated here moves the room synchronously,
+        // and the room-change effect below reads that as leaving focus.
+        contextRoom = await selectDm({ kind: "human", id: live.humanUserId }, { activate: false });
+      } catch {
+        // Already on screen as selectRoomError; a link still has its own room to open in.
+        if (focusRequest.current === requestId && from === "link") placeInRoom();
+        return;
+      }
+      // Stale: a newer open, a close, or a directory pick already won while
+      // this awaited selectDm() was in flight. null: a room was picked while it
+      // ran (useRooms answers null when superseded). The owner is elsewhere now.
+      if (focusRequest.current !== requestId || !contextRoom) return;
+      selectRoom(contextRoom);
+    }
     setThreadId(null);
     setTarget(null);
     setSessionTarget(null);
@@ -681,11 +707,13 @@ export function MessagingWorkspaceProvider({
     sessionFocus,
     closeSession,
     currentUserId: userId ?? "",
-    resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
+    sessionSource: rooms.resourceSource,
     scope,
     workspaceSessions: workspaceSessions.sessions,
-  }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
+  }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible}
     onOpen={(roomId, targetThreadId) => {
+      // The room may be the one focus covers; opening it has to uncover it.
+      closeSession();
       rooms.selectRoom(roomId);
       setNotificationTarget({ roomId, threadId: targetThreadId });
       activateMessagesPanel();

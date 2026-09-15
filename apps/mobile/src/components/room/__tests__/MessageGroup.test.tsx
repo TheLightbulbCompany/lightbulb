@@ -34,6 +34,27 @@ const message: CanonicalRoomMessage = {
 };
 
 describe("MessageGroup reactions", () => {
+  it("keeps the whole-message long-press action alongside selectable message text", async () => {
+    const onLongPress = jest.fn();
+    await render(
+      <MessageGroup
+        message={message}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-c"
+        onLongPress={onLongPress}
+        downloadAttachment={downloadAttachment}
+      />,
+    );
+
+    let textNode: ReturnType<typeof screen.getByText> | null = screen.getByText("ship it");
+    while (textNode && textNode.props.selectable !== true) textNode = textNode.parent;
+    expect(textNode?.props.selectable).toBe(true);
+    fireEvent(screen.getByTestId("message-group"), "longPress");
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
+  });
+
   it("renders an applied reaction chip with its count", async () => {
     await render(
       <MessageGroup

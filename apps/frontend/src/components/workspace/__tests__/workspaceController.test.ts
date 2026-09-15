@@ -110,16 +110,16 @@ beforeEach(() => {
 });
 
 describe("workspaceController", () => {
-  it("opens the session dock panel when the dock API is attached, and never duplicates it", () => {
+  it("retargets the Messages panel for a session, bumping sessionIntent on repeat opens, and never duplicates it", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "friday-id");
     expect(isDockAttached()).toBe(true);
     openSessionPanel("r1", "s1");
     expect(api.addPanel).toHaveBeenCalledTimes(1);
-    expect(api.addPanel.mock.calls[0][0]).toMatchObject({ id: "session:s1", component: "session", params: { roomId: "r1", sessionId: "s1" } });
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "r1", sessionId: "s1", sessionIntent: "1" });
     openSessionPanel("r1", "s1");
-    expect(api.addPanel).toHaveBeenCalledTimes(1);
-    expect(api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionId).toBeUndefined();
+    expect(api.addPanel).toHaveBeenCalledTimes(1); // focused, not a second panel
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "r1", sessionId: "s1", sessionIntent: "2" });
   });
   it("openPanel adds when missing, focuses when present, never duplicates", () => {
     const api = makeFakeApi();

@@ -111,10 +111,10 @@ let detach: () => void;
 function renderWorkspace(agentId = "agent-a", search?: string) {
   const api = dock();
   detach = attachDockviewApi(api, () => "agent-a");
-  // The dock is always attached in this harness, so a session command now
-  // opens its OWN "session:" dock panel (task-16) rather than retargeting
-  // Messages — openChatPanel must run regardless of `search` or
-  // MESSAGES_PANEL_ID never exists for the tests below to bind ChatPanel to.
+  // openChatPanel must run regardless of `search` or MESSAGES_PANEL_ID never
+  // exists for the tests below to bind ChatPanel to. A session command
+  // (task-8) retargets this same Messages panel — there is no separate dock
+  // panel — so the params grabbed below already reflect any session command.
   openChatPanel(agentId);
   if (search) {
     const command = parseCommand(search)!;
@@ -143,7 +143,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); detach?.(); });
 
 describe("Messages room/controller boundary", () => {
-  it("opens an explicitly posted session URL from canonical room Markdown into its own session dock panel", async () => {
+  it("opens an explicitly posted session URL from canonical room Markdown into the Messages panel", async () => {
     live.liveChannels = ["/rooms/a-first/key-a-first", "/rooms/a-exact/key-a-exact"];
     messaging.listMessages.mockImplementation(async roomId => ({ messages: [{
       messageId: "link-message", roomId, messageSeq: 1, roomRevision: 1,
@@ -153,30 +153,27 @@ describe("Messages room/controller boundary", () => {
     }], nextAfterSeq: null }));
     const { api } = renderWorkspace();
     fireEvent.click(await screen.findByRole("link", { name: "Continue native session" }));
-    // Dock attached (task-16): the link opens a SEPARATE session dock panel —
-    // it no longer retargets the Messages pane's own room selection.
-    await waitFor(() => expect(api.getPanel("session:native-one")).toBeDefined());
-    expect(api.getPanel("session:native-one")?.params).toEqual({ roomId: "a-exact", sessionId: "native-one" });
+    // Session links retarget Messages (task-8) — there is no separate dock panel.
+    await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ roomId: "a-exact", sessionId: "native-one" }));
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
     expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
   });
-  it("opens a fresh session URL command as a singleton dock panel, leaving Messages untouched", async () => {
+  it("openSessionPanel focuses the Messages panel and bumps sessionIntent on repeat opens, never duplicating it", async () => {
     const { api } = renderWorkspace("agent-a", "?panel=chat&room=a-exact&session=native-one");
-    await waitFor(() => expect(api.getPanel("session:native-one")).toBeDefined());
-    expect(api.getPanel("session:native-one")?.params).toEqual({ roomId: "a-exact", sessionId: "native-one" });
-    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
+    await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ roomId: "a-exact", sessionId: "native-one" }));
+    const firstIntent = api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionIntent;
     act(() => openSessionPanel("a-exact", "native-one"));
-    expect(api.panels.filter(panel => panel.id === "session:native-one")).toHaveLength(1); // focused, not duplicated
+    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1); // focused, not duplicated
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params?.sessionIntent).not.toBe(firstIntent);
     act(() => openMessagePanel("channel"));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
     expect(messaging.createRoom).not.toHaveBeenCalled();
     expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
   });
-  it("opens the current panel=session permalink grammar into its own dock panel", async () => {
+  it("opens the current panel=session permalink grammar into the Messages panel", async () => {
     const { api } = renderWorkspace("agent-a", "?panel=session&room=r1&session=s1");
-    await waitFor(() => expect(api.getPanel("session:s1")).toBeDefined());
-    expect(api.getPanel("session:s1")?.params).toEqual({ roomId: "r1", sessionId: "s1" });
+    await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ roomId: "r1", sessionId: "s1" }));
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
   });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {

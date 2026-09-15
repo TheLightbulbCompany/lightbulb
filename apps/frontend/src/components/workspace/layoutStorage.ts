@@ -195,13 +195,6 @@ function canonicalPanelTitle(
     case "browser":
       key = component;
       break;
-    case "session": {
-      if (typeof params?.roomId !== "string" || typeof params?.sessionId !== "string") return null;
-      key = "session";
-      p.room = params.roomId;
-      p.session = params.sessionId;
-      break;
-    }
     default:
       return null;
   }

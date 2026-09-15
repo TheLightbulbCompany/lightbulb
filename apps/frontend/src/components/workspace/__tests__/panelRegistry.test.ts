@@ -307,17 +307,16 @@ describe("panelRegistry", () => {
 
   it("registers exactly the component keys the shell's components map will have", () => {
     expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["browser", "chat", "control", "file-viewer", "missing", "session", "teams"].sort(),
+      ["browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
     );
   });
 
-  it("session panels are keyed by session id and carry room + session as durable params", () => {
-    expect(describePanel("session", { room: "r1", session: "s1" })).toEqual({
-      panelId: "session:s1", component: "session", title: "Session", params: { roomId: "r1", sessionId: "s1" },
-    });
+  it("describePanel('session', …) retargets the Messages (chat) panel — there is no docked session panel", () => {
+    expect(describePanel("session", { room: "r1", session: "s1" })).toEqual(
+      describePanel("chat", { room: "r1", session: "s1" }),
+    );
     expect(describePanel("session", { room: "r1" })).toBeNull();
-    expect(durableParamsFor("session:s1")).toEqual(["panel", "room", "session"]);
-    expect(clearablePanelParamKeys("session:s1")).toEqual([]);
+    expect(durableParamsFor(MESSAGES_PANEL_ID)).toContain("session");
   });
 
   it("resolves the browser panel as a parameterless singleton", () => {

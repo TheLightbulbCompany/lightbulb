@@ -110,7 +110,11 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-artifacts"].title).toBe("Library");
   });
 
-  it("sanitizer derives the Session title for a session dock panel", () => {
+  it("sanitizer remaps a persisted session dock panel to 'missing' — the kind is retired (task-8)", () => {
+    // Same handling as any other retired/unregistered contentComponent (see
+    // the "ghost" case above): "session" is gone from PANEL_COMPONENT_KEYS,
+    // so a layout saved before the retirement no longer resolves to a real
+    // component and falls to the shared unknown-component default.
     const dirty = minimalLayout({
       "session:s1": {
         id: "session:s1",
@@ -120,7 +124,7 @@ describe("layoutStorage", () => {
       },
     });
     const clean = sanitizeLayout(dirty);
-    expect(clean.panels["session:s1"].title).toBe("Session");
+    expect(clean.panels["session:s1"].contentComponent).toBe("missing");
   });
 
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {

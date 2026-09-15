@@ -16,7 +16,6 @@ import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
 // to rebuild a fake chrome that never matched native and felt broken to users.)
 // `browser` stays the parameterless-singleton key (#1874).
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
-import { SessionDockPanel } from "./panels/SessionDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -25,7 +24,6 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
-  session: SessionDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

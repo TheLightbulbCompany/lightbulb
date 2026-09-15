@@ -103,6 +103,7 @@ export function RoomRow({
       </Text>
       {/* Colour (the dimmed row) is never the only signal — the word too. */}
       {muted && <Text style={styles.mutedTag}>Muted</Text>}
+      {room.shared && <Text style={styles.mutedTag}>Shared</Text>}
       <Text style={styles.time}>{relativeTime(Date.parse(room.lastMessageAt ?? ""))}</Text>
       {!isChannel && count > 0 ? (
         <View style={styles.badge}>

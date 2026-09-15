@@ -40,6 +40,13 @@ const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
 };
 
+// The Lightbulb workspace per environment — the org every customer's shared
+// `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
+const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
+  prod: "org_3H3viGAfq2SXc9dIdcatmGXg8Td",
+  dev: "org_3JISOofvGAOehDRhYwzZ33C50aw",
+};
+
 export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
   /**
@@ -252,6 +259,7 @@ export class LightbulbStage extends cdk.Stage {
       // configuration set on outbound sends (core/services/ses_email.py).
       agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
       stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],
+      vendorOrgId: VENDOR_ORG_ID_BY_ENV[env],
       // Dev provisions out of Stripe's `testing` catalog partition so a dev
       // experiment can never create a real provider resource out of the prod
       // catalog. Prod reads and writes the real one.

@@ -182,3 +182,8 @@ it("puts Star, Mute, Conversation options and Search inside .room-audience for t
   const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
   expect(css).toMatch(/@media \(max-width: 859px\) \{[\s\S]*\.room-audience button \{ min-width: 44px; min-height: 44px; \}/);
 });
+
+it("marks a shared channel", () => {
+  render(<RoomHeader {...props} room={{ ...room, shared: true }} />);
+  expect(screen.getByText("Shared")).toHaveAttribute("title", "Shared between this workspace and Lightbulb");
+});

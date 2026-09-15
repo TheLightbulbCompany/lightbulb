@@ -336,6 +336,21 @@ class ProjectorTests(unittest.TestCase):
         self.assertEqual(publish.call_count, 1)
 
     @patch("index._publish")
+    def test_foreign_member_gets_the_hint_on_their_home_stream(self, publish):
+        vendor = "org_vendor"
+        meta = {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm", "workspaceId": WORKSPACE_ID}
+        items = {
+            (f"ROOM#{ROOM_ID}", "META"): meta,
+            (f"ROOM#{ROOM_ID}", f"MEMBER#human#{BOB_ID}"): {"id": BOB_ID, "ownerId": OWNER_ID, "homeOwnerId": vendor, "joinedSeq": 0},
+            (f"OWNER#{vendor}", f"USERSTREAM#{BOB_ID}"): {"active": True, "channelKey": BOB_KEY},
+            (f"STREAM#{BOB_KEY}", "META"): {"active": True, "ownerId": vendor, "userId": BOB_ID, "workspaceId": WORKSPACE_ID},
+        }
+        index._ddb_client = FakeDdb(items)
+        index._notify_members(message_item(), meta)
+        self.assertEqual([c.args[0] for c in publish.call_args_list], [f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}"])
+        self.assertTrue(publish.call_args_list[0].args[1]["payload"]["notify"])
+
+    @patch("index._publish")
     def test_active_user_stream_projects_stored_frozen_event(self, publish):
         index._ddb_client = FakeDdb(
             {

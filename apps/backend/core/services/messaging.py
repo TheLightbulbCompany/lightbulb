@@ -18,10 +18,13 @@ from pathlib import PurePath
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from botocore.exceptions import ClientError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
+from core.auth import is_org_owner_id
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
@@ -186,6 +189,12 @@ class RoomSummary(ContractModel):
     # and is only needed for the room actually being subscribed.
     members: list[RoomMember] = []
     last_read_seq: int = Field(ge=0, default=0)
+    # The ROOM's opaque AppSync segment: a shared channel lives in the owning
+    # workspace, so a foreign member's client must subscribe with this, not its
+    # own. None only on rows written before the segment was stamped.
+    workspace_id: str | None = None
+    # The platform-managed channel shared with the Lightbulb workspace.
+    shared: bool = False
 
 
 class RoomDetail(RoomSummary):
@@ -1052,15 +1061,19 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
         messaging_repo.get_room(room_id),
         messaging_repo.get_member(room_id, "human", user_id),
     )
-    if meta is None or meta.get("ownerId") != owner_id:
+    if meta is None:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
-    if member is None:
+    if member is not None and messaging_repo.member_home(member, meta["ownerId"]) == owner_id:
+        return meta, member
+    # A human of the room's own workspace who lost access keeps the reconcile hint;
+    # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.
+    if member is None and meta.get("ownerId") == owner_id:
         raise ApiProblem(
             "ROOM_FORBIDDEN",
             "You no longer have access to this room.",
             reconcile_from_seq=int(meta.get("lastSeq", 0)),
         )
-    return meta, member
+    raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
 
 
 async def require_room_admin(owner_id: str, user_id: str, room_id: str) -> tuple[dict, dict]:
@@ -1099,6 +1112,8 @@ def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, 
         "muted": bool(member.get("muted")),
         "section_id": member.get("sectionId"),
         "topic": meta.get("topic"),
+        "workspace_id": meta.get("workspaceId"),
+        "shared": is_vendor_room(meta),
     }
 
 
@@ -1200,6 +1215,18 @@ async def put_sections(auth: AuthContext, request: SectionsRequest) -> RoomListR
 def default_room_id(owner_id: str) -> str:
     """Stable identity for the one fresh-workspace general room."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
+
+
+def is_vendor_room(meta: dict) -> bool:
+    """The one channel a customer shares with the vendor org — by id, never by a stored flag."""
+    return bool(settings.VENDOR_ORG_ID) and meta.get("roomId") == messaging_repo.vendor_room_id(
+        meta.get("ownerId") or ""
+    )
+
+
+def _deny_vendor_human_change(meta: dict, kind: str) -> None:
+    if kind == "human" and is_vendor_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
 def _emit_room_created(owner_id: str, actor_user_id: str, kind: str, added: list[dict], *, by: str) -> None:
@@ -1304,6 +1331,175 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     return room_id
 
 
+def _display_name_from_membership(row: dict) -> str:
+    """Same precedence as ``_resolve_human_display_name``, from the Clerk membership row
+    we already hold — one roster read instead of one ``get_user`` per human."""
+    name = " ".join(part.strip() for part in (row.get("first_name") or "", row.get("last_name") or "") if part.strip())
+    if name:
+        return name[:256]
+    email = row.get("email") or ""
+    return (email.split("@", 1)[0] if email else row["user_id"])[:256]
+
+
+def _vendor_room_human(row: dict, home_owner_id: str, *, role: str = "member") -> dict:
+    return {
+        "kind": "human",
+        "id": row["user_id"],
+        "displayName": _display_name_from_membership(row),
+        "mentionHandle": None,
+        "role": role,
+        "listenMode": None,
+        "homeOwnerId": home_owner_id,
+    }
+
+
+async def ensure_vendor_room(owner_id: str) -> str | None:
+    """Create the customer's channel shared with the vendor org, once (spec §4).
+
+    Runs on every org-context poll; the steady-state cost is one consistent
+    ``get_room``. Creation waits for an ACTIVE Paperclip company so a
+    fresh workspace gets its CEO in the room. Returns the room id when it exists."""
+    vendor = settings.VENDOR_ORG_ID
+    if not vendor or owner_id == vendor or not is_org_owner_id(owner_id):
+        return None
+    room_id = messaging_repo.vendor_room_id(owner_id)
+    if await messaging_repo.get_room(room_id) is not None:
+        return room_id
+
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.clerk_admin import get_organization, list_organization_members
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    if getattr(company, "status", None) != "active":
+        return None
+    org = await get_organization(owner_id)
+    customer_humans = await list_organization_members(owner_id)
+    vendor_humans = await list_organization_members(vendor)
+    # list_organization_members returns [] on any Clerk failure; a half roster must never seed.
+    if org is None or not customer_humans or not vendor_humans:
+        return None
+    by_id = {row["user_id"]: row for row in customer_humans}
+    owner_user_id = (
+        org.get("created_by")
+        if org.get("created_by") in by_id
+        else next((uid for uid in sorted(by_id) if by_id[uid].get("role") == "org:admin"), None)
+    )
+    if owner_user_id is None:
+        return None
+    # The platform's own company slug (company hosts, agent mail) is the readable one;
+    # Clerk org slugs here carry a timestamp suffix ("acme-1789347059550170402").
+    from core.repositories import company_slug_repo
+
+    slug_row = await company_slug_repo.get_by_owner(owner_id)
+    slug = (slug_row or {}).get("slug") or re.sub(r"-\d{10,}$", "", org.get("slug") or "")
+    try:
+        name = validate_room_name(f"lightbulb-{slug}".rstrip("-"))
+    except ValueError:
+        name = "lightbulb"
+
+    members = [_vendor_room_human(by_id[owner_user_id], owner_id, role="owner")]
+    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
+    if ceo_id:
+        roster = await load_agent_roster(owner_id)
+        agents = {row["id"]: row for row in roster}
+        if ceo_id in agents:
+            members.append(
+                {
+                    "kind": "agent",
+                    "id": ceo_id,
+                    "displayName": agents[ceo_id]["name"],
+                    "mentionHandle": mention_handles(roster)[ceo_id],
+                    "role": "member",
+                    "listenMode": "mentions",
+                }
+            )
+    members.extend(_vendor_room_human(by_id[uid], owner_id) for uid in sorted(by_id) if uid != owner_user_id)
+    seen = {m["id"] for m in members}
+    members.extend(
+        _vendor_room_human(row, vendor)
+        for row in sorted(vendor_humans, key=lambda r: r["user_id"])
+        if row["user_id"] not in seen
+    )
+    if len(members) > messaging_repo.MAX_ROOM_MEMBERS:
+        # ponytail: 32-member cap; raise MAX_ROOM_MEMBERS when a customer org exceeds ~25 humans
+        put_metric("messaging.vendor_room.capped")
+        logger.warning("vendor room capped at %d members for owner %s", messaging_repo.MAX_ROOM_MEMBERS, owner_id)
+        members = members[: messaging_repo.MAX_ROOM_MEMBERS]
+    for human in (m for m in members if m["kind"] == "human"):
+        await messaging_repo.ensure_user_stream(human["homeOwnerId"], human["id"])
+    try:
+        await messaging_repo.create_room(
+            owner_id=owner_id,
+            room_id=room_id,
+            client_room_id=f"vendor-room-v1:{owner_id}",
+            creator_user_id=owner_user_id,
+            name=name,
+            kind="channel",
+            members=members,
+            req_hash=messaging_repo.request_hash(name, "channel", [(m["kind"], m["id"]) for m in members]),
+        )
+    except messaging_repo.IdempotencyConflict:
+        return room_id  # a concurrent poll created it with a different roster; it exists
+    _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
+    return room_id
+
+
+async def add_vendor_room_member(owner_id: str, user_id: str, *, home_owner_id: str) -> bool:
+    """Add one human to a customer's vendor room, keyed on THEIR home. Idempotent.
+
+    Retries up to 3 attempts on a lost compare-and-swap race on the room's
+    revision (``upsert_member`` raises ``ClientError`` on a cancelled
+    transaction): each attempt re-reads room + member fresh, so a concurrent
+    add that already landed is a clean no-op rather than a dropped join."""
+    room_id = messaging_repo.vendor_room_id(owner_id)
+    await messaging_repo.ensure_user_stream(home_owner_id, user_id)
+    for attempt in range(3):
+        meta = await messaging_repo.get_room(room_id)
+        if meta is None or await messaging_repo.get_member(room_id, "human", user_id) is not None:
+            return False
+        member = {
+            "kind": "human",
+            "id": user_id,
+            "displayName": await human_display_name(user_id),
+            "mentionHandle": None,
+            "role": "member",
+            "listenMode": None,
+            "homeOwnerId": home_owner_id,
+        }
+        try:
+            meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
+        except messaging_repo.MemberLimitExceeded:
+            put_metric("messaging.vendor_room.capped")
+            logger.warning("vendor room full; %s not added to owner %s", user_id, owner_id)
+            return False
+        except ClientError as exc:
+            if messaging_repo._is_cancelled(exc) and attempt < 2:
+                continue
+            raise
+        await _publish_room_metadata(meta)
+        return True
+    return False  # pragma: no cover — loop always returns or raises within 3 attempts
+
+
+async def on_org_member_joined(org_id: str, user_id: str) -> None:
+    """Clerk ``organizationMembership.created``: keep 'everyone in both workspaces' true."""
+    vendor = settings.VENDOR_ORG_ID
+    if not vendor:
+        return
+    if org_id != vendor:
+        await add_vendor_room_member(org_id, user_id, home_owner_id=org_id)
+        return
+    # ponytail: full containers scan per vendor join; add a VENDORROOM# catalog row when org count makes this slow
+    for row in await container_repo.scan_all(consistent=True):
+        customer = row.get("owner_id")
+        if isinstance(customer, str) and is_org_owner_id(customer) and customer != vendor:
+            try:
+                await add_vendor_room_member(customer, user_id, home_owner_id=vendor)
+            except Exception:
+                logger.exception("vendor room add failed for owner %s user %s", customer, user_id)
+                put_metric("messaging.vendor_room.error")
+
+
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     keys = [(member.kind, member.id) for member in request.members]
@@ -1363,6 +1559,8 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     # merged to main — this generalizes the same guard to updates-scoping.)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
+    if "name" in updates and is_vendor_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
     if not updates:
         return await _room_detail(meta, auth.user_id)
     try:
@@ -1401,8 +1599,9 @@ async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsReq
 
 
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
-    owner_id = resolve_owner_id(auth)
-    meta, actor = await require_room_admin(owner_id, auth.user_id, room_id)
+    meta, actor = await require_room_admin(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
+    _deny_vendor_human_change(meta, request.kind)
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
@@ -1436,6 +1635,7 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
         raise ApiProblem("INVALID_REQUEST", "Invalid member kind.")
     owner_id = resolve_owner_id(auth)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
+    _deny_vendor_human_change(meta, kind)
     target = await messaging_repo.get_member(room_id, kind, member_id)
     if target is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Room member not found.")
@@ -1449,6 +1649,7 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
     first — room deletion is out of scope, so this is a hard refusal."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    _deny_vendor_human_change(meta, "human")
     if member.get("role") == "owner":
         raise ApiProblem(
             "INVALID_REQUEST",
@@ -1469,7 +1670,8 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
     revision = int(meta["revision"]) + 1
     notices: list[dict] = []
     for human in humans:
-        key = await messaging_repo.ensure_user_stream(meta["ownerId"], human["id"])
+        home = messaging_repo.member_home(human, meta["ownerId"])
+        key = await messaging_repo.ensure_user_stream(home, human["id"])
         removed = human["id"] == member_id
         event = make_live_event(
             "room.access.removed" if removed else "room.subscription.rotated",
@@ -1481,7 +1683,7 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
             room_id=meta["roomId"],
             room_revision=revision,
         )
-        notices.append({"userId": human["id"], "channelKey": key, "event": event})
+        notices.append({"userId": human["id"], "ownerId": home, "channelKey": key, "event": event})
     return await messaging_repo.remove_member(
         meta=meta,
         kind="human",
@@ -1500,7 +1702,7 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
         if member is None:
             continue
         meta = await messaging_repo.get_room(room_id)
-        if meta is None or meta.get("ownerId") != owner_id:
+        if meta is None or messaging_repo.member_home(member, meta["ownerId"]) != owner_id:
             continue
         await _remove_member_with_notices(meta, "human", user_id)
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
@@ -1518,8 +1720,8 @@ async def list_messages(auth: AuthContext, room_id: str, after_seq: int, limit: 
 async def update_message(
     auth: AuthContext, room_id: str, message_id: str, request: UpdateMessageRequest
 ) -> CanonicalMessage:
-    owner_id = resolve_owner_id(auth)
-    await require_room_member(owner_id, auth.user_id, room_id)
+    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     item = await messaging_repo.get_message_by_id(room_id, validate_uuid(message_id, label="message ID"))
     if item is None:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
@@ -1549,8 +1751,8 @@ async def set_reaction(
 ) -> CanonicalMessage:
     from core.services.live_events import get_live_event_publisher
 
-    owner_id = resolve_owner_id(auth)
-    meta, _ = await require_room_member(owner_id, auth.user_id, room_id)
+    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     message_id = validate_uuid(message_id, label="message ID")
     item = await messaging_repo.get_message_by_id(room_id, message_id)
     if item is None:
@@ -1762,8 +1964,8 @@ async def _validate_mentions(room_id: str, mentions: list[MemberRef]) -> list[di
 
 
 async def create_human_message(auth: AuthContext, room_id: str, request: CreateMessageRequest) -> CanonicalMessage:
-    owner_id = resolve_owner_id(auth)
-    meta, sender = await require_room_member(owner_id, auth.user_id, room_id)
+    meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
     await _validate_message_links(
         room_id,

@@ -229,6 +229,7 @@ function Conversation() {
         {isChannel && members ? (
           <Text style={styles.headerMeta}>
             {members.length} {members.length === 1 ? "member" : "members"}
+            {rooms.activeRoom?.shared ? " · Shared with Lightbulb" : ""}
           </Text>
         ) : null}
       </View>

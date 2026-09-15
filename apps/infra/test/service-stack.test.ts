@@ -108,6 +108,9 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     appsyncEventsApiArn: `arn:aws:appsync:us-east-1:877352799272:apis/events-${environment}`,
     appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
+    // Mirrors lightbulb-stage.ts's VENDOR_ORG_ID_BY_ENV["prod"]; left unset
+    // for dev here so the untested env keeps exercising the "" default.
+    vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
     stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
   });
 
@@ -570,6 +573,19 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       ),
     );
     expect(found).toBe(true);
+  });
+
+  test("stamps the vendor org id into the prod backend task and leaves it empty where unset", () => {
+    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "VENDOR_ORG_ID", Value: "org_3H3viGAfq2SXc9dIdcatmGXg8Td" }),
+          ]),
+        }),
+      ]),
+    });
   });
 });
 

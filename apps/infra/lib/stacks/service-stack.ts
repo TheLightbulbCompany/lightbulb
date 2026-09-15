@@ -189,6 +189,11 @@ export interface ServiceStackProps extends cdk.StackProps {
    */
   agentMailConfigurationSet?: string;
   /**
+   * The Lightbulb workspace's Clerk org id (lightbulb-stage.ts VENDOR_ORG_ID_BY_ENV).
+   * Every other org gets a channel shared with it. Empty ⇒ feature off.
+   */
+  vendorOrgId?: string;
+  /**
    * Connect platform client id (ca_…) for the Standard-OAuth "connect an
    * existing Stripe account" flow. Public, not a secret — see
    * STRIPE_CONNECT_CLIENT_ID_BY_ENV in isol8-stage.ts. Undefined/empty until
@@ -1624,6 +1629,9 @@ export class ServiceStack extends cdk.Stack {
       // wherever that stack isn't deployed — sends stay unstamped, a
       // harmless no-op.
       AGENT_MAIL_CONFIGURATION_SET: props.agentMailConfigurationSet ?? "",
+      // The Lightbulb workspace's Clerk org id (lightbulb-stage.ts
+      // VENDOR_ORG_ID_BY_ENV). Empty ⇒ the vendor-shared-channel feature is off.
+      VENDOR_ORG_ID: props.vendorOrgId ?? "",
       // Platform sender identities, on the apex of the mail domain. Set here
       // rather than left to core/config.py's defaults so the mail domain has a
       // SINGLE source of truth (lib/domains.ts) and a move cannot leave the

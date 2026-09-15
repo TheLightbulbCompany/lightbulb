@@ -88,3 +88,36 @@ async def test_membership_created_join_failure_is_logged_and_metered_not_raised(
         await _handle_organization_membership_created(payload)
 
     put_metric.assert_any_call("paperclip.member_add", dimensions={"outcome": "webhook_error"})
+
+
+@pytest.mark.asyncio
+async def test_membership_created_adds_the_member_to_the_vendor_room():
+    payload = {
+        "organization": {"id": "org_xyz", "created_by": "user_admin"},
+        "public_user_data": {"user_id": "user_member", "identifier": "member@example.com"},
+    }
+    with (
+        patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.messaging.on_org_member_joined", new=AsyncMock()) as joined,
+    ):
+        from routers.webhooks import _handle_organization_membership_created
+
+        await _handle_organization_membership_created(payload)
+    joined.assert_awaited_once_with("org_xyz", "user_member")
+
+
+@pytest.mark.asyncio
+async def test_membership_created_survives_a_vendor_room_failure():
+    payload = {
+        "organization": {"id": "org_xyz", "created_by": "user_admin"},
+        "public_user_data": {"user_id": "user_member", "identifier": "member@example.com"},
+    }
+    with (
+        patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.messaging.on_org_member_joined", new=AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        from routers.webhooks import _handle_organization_membership_created
+
+        await _handle_organization_membership_created(payload)  # must not raise: Clerk would retry the event

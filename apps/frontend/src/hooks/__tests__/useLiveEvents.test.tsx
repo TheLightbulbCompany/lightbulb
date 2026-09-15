@@ -79,6 +79,9 @@ function RoomClaimProbe() {
     <button onClick={() => {
       releaseSecondRoom = live.claimActiveRoomSubscription({ roomId: "room-b", deliveryKey: "key-b" });
     }}>claim second</button>
+    <button onClick={() => {
+      releaseFirstRoom = live.claimActiveRoomSubscription({ roomId: "room-c", deliveryKey: "key-c", workspaceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" });
+    }}>claim shared</button>
     <button onClick={() => releaseFirstRoom?.()}>release first</button>
     <button onClick={() => releaseSecondRoom?.()}>release second</button>
   </>;
@@ -125,6 +128,13 @@ describe("LiveEventsProvider", () => {
     expect(shared.roomChannel).toBe(`/ws/${WORKSPACE_ID}/rooms/room-b/key-b`);
     fireEvent.click(screen.getByRole("button", { name: "release second" }));
     await waitFor(() => expect(shared.roomChannel).toBeNull());
+  });
+
+  it("subscribes a shared room on ITS workspace segment, not the caller's", async () => {
+    render(<LiveEventsProvider><RoomClaimProbe /></LiveEventsProvider>);
+
+    fireEvent.click(screen.getByRole("button", { name: "claim shared" }));
+    await waitFor(() => expect(shared.roomChannel).toBe("/ws/cccccccc-cccc-4ccc-8ccc-cccccccccccc/rooms/room-c/key-c"));
   });
 
   it("pushes Tauri auth while AppSync is disconnected and again on native node status", async () => {

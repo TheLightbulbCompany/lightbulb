@@ -57,7 +57,15 @@ def db():
         for room in (ROOM, OTHER_ROOM):
             table.put_item(Item={"pk": f"ROOM#{room}", "sk": "META", "ownerId": OWNER, "roomId": room})
             for user in (ALICE.user_id, BOB.user_id):
-                table.put_item(Item={"pk": f"ROOM#{room}", "sk": f"MEMBER#human#{user}", "kind": "human", "id": user})
+                table.put_item(
+                    Item={
+                        "pk": f"ROOM#{room}",
+                        "sk": f"MEMBER#human#{user}",
+                        "kind": "human",
+                        "id": user,
+                        "ownerId": OWNER,
+                    }
+                )
         with (
             patch("core.dynamodb._dynamodb_resource", resource),
             patch("core.repositories.container_repo._get_table", return_value=containers),
@@ -326,7 +334,9 @@ async def test_equivalent_uuid_spellings_share_resources_events_and_one_command_
     table = db[0]
     table.put_item(Item={"pk": f"ROOM#{room}", "sk": "META", "ownerId": OWNER, "roomId": room})
     for user in (ALICE.user_id, BOB.user_id):
-        table.put_item(Item={"pk": f"ROOM#{room}", "sk": f"MEMBER#human#{user}", "kind": "human", "id": user})
+        table.put_item(
+            Item={"pk": f"ROOM#{room}", "sk": f"MEMBER#human#{user}", "kind": "human", "id": user, "ownerId": OWNER}
+        )
     table.put_item(
         Item={
             "pk": f"LOCALSESSION#{OWNER}#{sid}",

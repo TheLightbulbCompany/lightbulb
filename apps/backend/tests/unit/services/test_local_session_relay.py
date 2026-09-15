@@ -61,10 +61,11 @@ def transport(db):
         )
         table.update_item(
             Key={"pk": f"ROOM#{room}", "sk": f"MEMBER#human#{ALICE.user_id}"},
-            UpdateExpression="SET memberKey = :member, roomId = :room",
+            UpdateExpression="SET memberKey = :member, roomId = :room, ownerId = :owner",
             ExpressionAttributeValues={
                 ":member": messaging_repo.member_key(OWNER, "human", ALICE.user_id),
                 ":room": room,
+                ":owner": OWNER,
             },
         )
     sent, hints = [], []
@@ -191,6 +192,7 @@ async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, d
             "sk": f"MEMBER#human#{BOB.user_id}",
             "kind": "human",
             "id": BOB.user_id,
+            "ownerId": OWNER,
             "displayName": "Bob Example",
             "joinedSeq": 2,
             "memberKey": messaging_repo.member_key(OWNER, "human", BOB.user_id),

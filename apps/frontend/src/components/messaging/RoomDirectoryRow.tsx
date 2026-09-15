@@ -50,6 +50,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
       {room.kind === "dm" && room.participants.length === 1 && room.participants[0].kind === "agent" && <span className="room-directory-tag">Agent</span>}
       {room.starred && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
+      {room.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {badge && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
       {draft && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
     </button>

@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -936,3 +937,51 @@ async def test_has_open_runs_follows_the_sweep_marker(table):
     assert not await repo.has_open_runs("owner_2")
     await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
     assert not await repo.has_open_runs("owner_1")
+
+
+VENDOR = "org_vendor"
+
+
+def _foreign(user_id: str) -> dict:
+    return {**_member("human", user_id), "homeOwnerId": VENDOR}
+
+
+@pytest.mark.asyncio
+async def test_foreign_member_is_indexed_by_home_owner(table):
+    room_id, _ = await _room(members=[_member("human", USER_A, "owner"), _foreign("user_v")])
+    row = await repo.get_member(room_id, "human", "user_v")
+    assert row["memberKey"] == f"OWNER#{VENDOR}#human#user_v"
+    assert row["ownerId"] == OWNER and repo.member_home(row, OWNER) == VENDOR
+    assert [r["meta"]["roomId"] for r in await repo.list_rooms_for_member(VENDOR, "human", "user_v")] == [room_id]
+    assert await repo.list_rooms_for_member(OWNER, "human", "user_v") == []
+    local = await repo.get_member(room_id, "human", USER_A)
+    assert local["memberKey"] == f"OWNER#{OWNER}#human#{USER_A}" and repo.member_home(local, OWNER) == OWNER
+
+
+@pytest.mark.asyncio
+async def test_upsert_keeps_the_members_home(table):
+    room_id, _ = await _room()
+    await repo.upsert_member(room_id=room_id, owner_id=OWNER, member=_foreign("user_v"))
+    row = await repo.get_member(room_id, "human", "user_v")
+    assert repo.member_home(row, OWNER) == VENDOR and row["memberKey"] == f"OWNER#{VENDOR}#human#user_v"
+
+
+@pytest.mark.asyncio
+async def test_removal_notice_carries_its_own_owner(table):
+    room_id, meta = await _room(members=[_member("human", USER_A, "owner"), _foreign("user_v")])
+    event = {"eventId": str(uuid.uuid4()), "type": "room.access.removed", "payload": {}}
+    await repo.remove_member(
+        meta=meta,
+        kind="human",
+        member_id="user_v",
+        new_delivery_key=str(uuid.uuid4()),
+        live_events=[{"userId": "user_v", "channelKey": "k", "event": event, "ownerId": VENDOR}],
+    )
+    live = await repo._query(repo.room_pk(room_id), begins_with="LIVE#")
+    assert [(r["userId"], r["ownerId"]) for r in live] == [("user_v", VENDOR)]
+
+
+def test_vendor_room_id_is_deterministic_per_customer():
+    assert repo.vendor_room_id(OWNER) == repo.vendor_room_id(OWNER)
+    assert repo.vendor_room_id(OWNER) != repo.vendor_room_id(VENDOR)
+    assert repo.vendor_room_id(OWNER) == str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{OWNER}"))

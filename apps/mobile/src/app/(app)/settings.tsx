@@ -181,7 +181,9 @@ export function statusChipLabel(account: BillingAccount): string | null {
   // Card-less free tier: the plan row itself says "Free plan" — no chip
   // (and never the raw "trial_local" string).
   if (status === "trial_local") return null;
-  return status; // render verbatim
+  // Anything else ("past_due", "unpaid", …) reads as words, not an enum.
+  const words = status.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** Provider label mapping (contract §3, LLMPanel labels). */

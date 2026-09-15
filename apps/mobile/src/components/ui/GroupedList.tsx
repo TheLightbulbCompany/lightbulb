@@ -33,7 +33,7 @@ export function GroupedList({ children }: { children: ReactNode }) {
   );
 }
 
-const ICON = [foregroundStyle(colors.forest), frame({ width: 28 })];
+const ICON = [font({ textStyle: "body" }), foregroundStyle(colors.forest), frame({ width: 28 })];
 const TITLE = [foregroundStyle(colors.ink)];
 const SUBTITLE = [font({ textStyle: "footnote" }), foregroundStyle(colors.mute)];
 const CHEVRON = [font({ textStyle: "footnote", weight: "semibold" }), foregroundStyle(colors.muteSoft)];

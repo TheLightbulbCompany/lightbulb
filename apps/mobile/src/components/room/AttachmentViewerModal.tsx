@@ -105,7 +105,7 @@ function ZoomableImage({ uri, label }: { uri: string; label: string }) {
       showsVerticalScrollIndicator={false}
     >
       <Pressable onPress={handleTap} accessibilityLabel={label} accessibilityRole="image">
-        <Image source={{ uri }} style={{ width, height }} contentFit="contain" />
+        <Image source={{ uri }} style={{ width, height }} contentFit="contain" allowDownscaling={false} />
       </Pressable>
     </ScrollView>
   );

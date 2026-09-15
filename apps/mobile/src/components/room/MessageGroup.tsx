@@ -76,7 +76,7 @@ function AttachmentThumbnail({
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
       {uri ? (
-        <Image source={{ uri }} style={styles.image} contentFit="cover" />
+        <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory" />
       ) : (
         <View style={[styles.image, styles.imagePending]} />
       )}

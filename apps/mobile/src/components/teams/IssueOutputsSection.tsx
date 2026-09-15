@@ -267,6 +267,7 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
           source={{ uri: preview }}
           style={styles.imagePreview}
           contentFit="contain"
+          cachePolicy="memory"
           accessibilityLabel={name}
         />
       ) : null}

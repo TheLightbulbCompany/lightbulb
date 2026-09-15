@@ -918,7 +918,8 @@ async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):
         "latestEventSeq",
         "lastEventAt",
     }
-    assert len(rows[0]["displayName"]) == 120 and rows[0]["status"] in service.LIVE_STATUSES
+    # The plugin (channel.ts) truncates on ingress; the backend passes it through whole.
+    assert rows[0]["displayName"] == "A" * 300 and rows[0]["status"] in service.LIVE_STATUSES
     row = await repo.get_session(OWNER, sid)
     enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
     await repo.put_session({**row, "endedAt": int(time.time()), "lastEventAt": int(time.time())}, row, enrollment)
@@ -927,10 +928,13 @@ async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):
         assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
 
 
-async def test_live_sessions_for_room_truncates_a_long_human_user_id():
+async def test_live_sessions_for_room_does_not_truncate_a_long_human_user_id():
     # human_user_id carries no Field(max_length=...) anywhere in the LocalSession
     # chain, unlike title/cwd_name -- constructed directly rather than through the
     # moto fixture, which has no way to register a session under an over-long id.
+    # The plugin (channel.ts) is the trust boundary and truncates on ingress;
+    # the backend no longer duplicates that bound (truncating an id is wrong
+    # anyway, and Clerk ids are ~32 chars).
     long_id = "x" * 200
     session = service.LocalSession(
         session_id="session-1",
@@ -951,8 +955,21 @@ async def test_live_sessions_for_room_truncates_a_long_human_user_id():
     members = [{"kind": "human", "id": long_id, "displayName": "Long"}]
     with patch.object(service, "_live_public_sessions", fake_live):
         rows = await service.live_sessions_for_room(OWNER, ROOM, members)
-    assert rows[0]["humanUserId"] == long_id[:128]
-    assert len(rows[0]["humanUserId"]) == 128
+    assert rows[0]["humanUserId"] == long_id
+
+
+async def test_live_sessions_for_room_blanks_for_a_foreign_member_without_querying(db):
+    """The vendor shared channel (#2644): a foreign member's home differs from
+    the room owner, so the whole summary is withheld -- and cheaply, before any
+    session lookup runs (the guard now lives here, not in the caller)."""
+    members = [
+        {"kind": "human", "id": ALICE.user_id, "displayName": "Alice"},
+        {"kind": "human", "id": "user_vendor", "displayName": "Vendor Rep", "homeOwnerId": "org_vendor"},
+    ]
+    with patch.object(
+        repo, "list_user_sessions", side_effect=AssertionError("must not query when a member is foreign")
+    ):
+        assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
 
 
 async def test_stray_projection_never_attributes_another_humans_session(db):

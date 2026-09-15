@@ -177,6 +177,7 @@
 .participant-avatar[data-presence="online"]::after { background: var(--presence); }
 .participant-avatar[data-presence="agent"]::after { background: var(--presence-agent); }
 .room-directory .participant-avatar[data-presence="online"]::after, .room-directory .participant-avatar[data-presence="agent"]::after { box-shadow: 0 0 0 2px var(--muted); }
+.participant-avatar-sharing { position: absolute; left: -2px; bottom: -2px; width: 12px; height: 12px; padding: 1px; border-radius: 3px; color: var(--primary-foreground); background: var(--primary); box-shadow: 0 0 0 1.5px var(--background); }
 @keyframes agent-activity-halo {
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
 }
@@ -238,6 +239,7 @@
   .room-details-toggle { display: inline-flex; }
   .room-panel.room-has-context { grid-template-columns: minmax(0, 1fr) 344px; }
   .room-panel.room-has-context > .room-context { display: flex; width: auto; }
+  .room-panel.room-has-context.room-has-session { grid-template-columns: minmax(0, 1fr) min(var(--room-session-width, 50%), 80%); }
 }
 
 @media (min-width: 860px) and (max-width: 1179px) {
@@ -249,6 +251,7 @@
     width: 344px;
     box-shadow: -16px 0 32px color-mix(in srgb, var(--midnight) 12%, transparent);
   }
+  .room-panel.room-has-session > .room-context { width: min(var(--room-session-width, 60%), 80%); }
 }
 
 @media (max-width: 859px) {
@@ -331,3 +334,25 @@
 .room-directory-tag { flex: none; font-size: .75rem; color: var(--muted-foreground); }
 .room-directory-faces { display: inline-flex; flex: none; }
 .room-directory-faces > :nth-child(2) { margin-left: -6px; }
+
+/* Focus placement: a session opened from the sidebar or a link takes the middle
+   of the Messages panel, with the sharer's DM in the same column the room
+   placement puts the session in. Narrow viewports keep the session only. */
+.room-session-focus { display: grid; grid-template-columns: minmax(0, 1fr); }
+.room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
+@media (min-width: 1180px) {
+  .room-session-focus:has(> .room-session-side) { grid-template-columns: minmax(0, 1fr) min(var(--room-session-width, 50%), 80%); }
+  .room-session-side { display: flex; width: auto; position: relative; }
+  .room-session-side > .room-panel { flex: 1; min-width: 0; }
+}
+@media (max-width: 1179px) { .room-session-side { display: none; } }
+
+/* The session column (room placement's Devices & sessions aside, and the focus
+   placement's DM aside) is drag-resizable via a visible grab bar on its left edge. */
+.room-context, .room-session-side { position: relative; }
+.room-column-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; }
+.room-column-grip::before { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: var(--border); transform-origin: center; transition: background 120ms, transform 120ms; }
+.room-column-grip:hover::before, .room-column-grip:focus-visible::before { background: var(--primary); transform: scaleX(2); }
+/* Below 860px the column is full width (see the .room-panel.room-has-context
+   > .room-context rule at max-width: 859px) -- nothing left to drag against. */
+@media (max-width: 859px) { .room-column-grip { display: none; } }

@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { roomDisplayName, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { roomDisplayName, sessionLabel, sessionStatus, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -15,9 +15,10 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { listenModeOptions } from "./respondHint";
-import { groupRooms, type RoomGroup, type SidebarSort } from "./roomSections";
+import { groupRooms, orderSidebarSessions, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -50,6 +51,8 @@ export interface RoomDirectoryProps {
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
+  sessions?: readonly SidebarSession[];
+  onSelectSession?: (sessionId: string) => void;
 }
 
 // Mirrors the backend's own limits (`core/services/messaging.py`) so the
@@ -101,6 +104,8 @@ function DirectoryContent({
   creationError,
   onRetry,
   draftRoomIds = [],
+  sessions = [],
+  onSelectSession,
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
@@ -264,7 +269,11 @@ function DirectoryContent({
   const updatePrefs = (patch: Partial<SidebarPrefs>) => {
     const next = { ...prefs, ...patch };
     setPrefs(next);
-    writeSidebarPrefs(ownerScopeId, next);
+    // Read-merge-write against storage, not just this component's in-memory
+    // `prefs` -- the session column's own width write (useSessionColumnWidth)
+    // can land in storage between renders, and writing `next` here would
+    // silently clobber it back to unset.
+    writeSidebarPrefs(ownerScopeId, { ...readSidebarPrefs(ownerScopeId), ...patch });
   };
 
   function selectNextUnread() {
@@ -343,6 +352,34 @@ function DirectoryContent({
     {savePrefs.error && <p role="alert" className="px-2 text-sm text-err">{savePrefs.error}</p>}
     {saveSections.error && !managing && <p role="alert" className="px-2 text-sm text-err">{saveSections.error}</p>}
     {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
+    {sessions.length > 0 && (() => {
+      const collapsed = prefs.collapsed.includes("sessions");
+      const listId = `${id}-group-sessions`;
+      return <section aria-label="Sessions">
+        <div className="room-directory-group-header">
+          <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId} data-group-id="sessions"
+            aria-label={`${collapsed ? "Expand" : "Collapse"} Sessions`}
+            onClick={() => updatePrefs({ collapsed: collapsed ? prefs.collapsed.filter((groupId) => groupId !== "sessions") : [...prefs.collapsed, "sessions"] })}>
+            {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+          </Button>
+          <h3 className="room-directory-group">Sessions</h3>
+          {collapsed && <span className="room-count" aria-label={`${sessions.length} live session${sessions.length === 1 ? "" : "s"}`}>{sessions.length}</span>}
+        </div>
+        {!collapsed && <ul id={listId}>{orderSidebarSessions(sessions).map(({ session, ownerName, own }) => {
+          const label = sessionLabel(session);
+          const who = own ? "your session" : ownerName;
+          return <li key={session.sessionId} className="room-directory-row room-directory-row--roster">
+            <button type="button" className="room-directory-entry" aria-label={`Open ${label}, ${who}, ${sessionStatus[session.status]}`} onClick={() => onSelectSession?.(session.sessionId)}>
+              <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate" title={label}>{label}</span>
+                <span className="block truncate text-xs text-muted-foreground">{own ? "You" : ownerName} · {sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
+              </span>
+            </button>
+          </li>;
+        })}</ul>}
+      </section>;
+    })()}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.map((group) => {

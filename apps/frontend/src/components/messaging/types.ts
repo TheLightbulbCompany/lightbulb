@@ -15,9 +15,10 @@ export const roomKindLabel = {
   "group-dm": "Group chat",
 } as const;
 
-/** `online` is presence for people (a recent heartbeat from a tab in use); agents carry `agentActivity` instead. */
-export type RoomParticipant = RoomMember & { agentActivity?: RosterState; online?: boolean };
-export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle"> & { agentActivity?: RosterState; online?: boolean };
+/** `online` is presence for people (a recent heartbeat from a tab in use); agents carry `agentActivity` instead.
+ *  `sharing` is a live shared terminal session, from the workspace list. */
+export type RoomParticipant = RoomMember & { agentActivity?: RosterState; online?: boolean; sharing?: boolean };
+export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle"> & { agentActivity?: RosterState; online?: boolean; sharing?: boolean };
 export type DirectoryRoom = RoomSummary & { participants: readonly DirectoryParticipant[] };
 export type RoomMessage = CanonicalRoomMessage;
 

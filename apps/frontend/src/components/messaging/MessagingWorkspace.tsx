@@ -3,6 +3,7 @@
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "./MessagingWorkspaceContext";
 import { RoomDirectory } from "./RoomDirectory";
 import { RoomPanel } from "./RoomPanel";
+import { SessionFocus } from "./SessionFocus";
 import type { DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -19,6 +20,10 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
       onOpenRoom?.();
       return directoryProps.onSelectParticipant(participant);
     }}
+    onSelectSession={(sessionId) => {
+      onOpenRoom?.();
+      directoryProps.onSelectSession?.(sessionId);
+    }}
     onCreate={(creation) => {
       onOpenRoom?.();
       return directoryProps.onCreate?.(creation);
@@ -27,7 +32,11 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
 }
 
 export function MessagingConversation() {
-  const { roomProps } = useMessagingWorkspace();
+  const { roomProps, sessionFocus, closeSession, currentUserId, resourceSource, scope } = useMessagingWorkspace();
+  if (sessionFocus && resourceSource) {
+    return <SessionFocus focus={sessionFocus} source={resourceSource} own={sessionFocus.ownerUserId === currentUserId} onClose={closeSession}
+      conversation={roomProps ? <RoomPanel {...roomProps} /> : null} scope={scope} />;
+  }
   return roomProps
     ? <RoomPanel {...roomProps} />
     : <section className="room-panel room-blocked" aria-label="No conversation selected">

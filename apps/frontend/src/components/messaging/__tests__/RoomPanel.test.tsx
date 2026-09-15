@@ -68,7 +68,7 @@ it("reveals and focuses same-room message navigation from a narrow resources pan
   const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
     if (this.dataset.messageId === "message") targetedWhileHidden.push(!!this.closest(".room-conversation[hidden]"));
   });
-  const source = { client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 };
+  const source = { client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 };
   function ControlledRoom({ target }: { target: string | null }) {
     const [thread, setThread] = useState<string | null>(null);
     return <RoomPanel {...props} resourceSource={source} selectedThreadId={thread} onSelectThread={setThread} targetMessageId={target} />;
@@ -523,7 +523,7 @@ it.each(["thread", "resources"] as const)("replaces the narrow conversation only
   const onLinkToWork = vi.fn();
   narrowViewport();
   render(<RoomPanel {...props} onLinkToWork={onLinkToWork}
-    resourceSource={{ client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 }}
+    resourceSource={{ client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 }}
     />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();

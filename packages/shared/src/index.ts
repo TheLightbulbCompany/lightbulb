@@ -106,6 +106,7 @@ export type {
 } from "./messaging/localSessionTranscript";
 export { accessLost, useLocalSessionHistory, useRoomResources } from "./messaging/useRoomResources";
 export type { RoomResourceSource } from "./messaging/useRoomResources";
+export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, sessionLabel, sessionStatus, unavailableReason } from "./messaging/localSessionLabels";
 export { COMMAND_MAX_BYTES, receiptCopy, useSessionCommand } from "./messaging/useSessionCommand";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
@@ -119,6 +120,7 @@ export type {
   LocalSessionLifecycle,
   LocalSessionEventPage,
   RoomResources,
+  WorkspaceSessions,
   CanonicalRoomMessage,
   CreateMessageRequest,
   CreateRoomRequest,

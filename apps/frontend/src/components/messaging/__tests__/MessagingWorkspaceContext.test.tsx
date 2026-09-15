@@ -57,7 +57,7 @@ const room: RoomDetail = {
   ],
 };
 const state = {
-  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 },
+  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -83,6 +83,12 @@ beforeEach(() => {
   state.accessRemoved = false;
   state.runs = [];
   state.selectDm.mockResolvedValue(null);
+  // Never resolves by default: the provider's mount-time sessions fetch would
+  // otherwise settle-then-setState on a microtask this file's ~30 synchronous
+  // `it(() => {...})` bodies never yield to, landing outside any act() scope
+  // for a value (empty list, unchanged) none of them assert on anyway. The one
+  // test that cares (below) installs its own resolving mock before rendering.
+  state.resourceSource.client.listWorkspaceSessions.mockImplementation(() => new Promise(() => {}));
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -92,7 +98,13 @@ beforeEach(() => {
   state.historyError = false;
   state.historyErrorMessage = null;
 });
-afterEach(() => { cleanup(); localStorage.clear(); });
+// Belt-and-suspenders for the one test below that does let its sessions fetch
+// resolve: flush inside act(), before cleanup unmounts the tree.
+afterEach(async () => {
+  await act(async () => {});
+  cleanup();
+  localStorage.clear();
+});
 
 function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void) {
   return render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
@@ -115,10 +127,10 @@ it("feeds the directory and conversation from one selected-room owner", () => {
 
 it("hands a session intent to the current room and cancels it on message navigation", () => {
   compose();
-  act(() => workspaceValue.openSession("room-1", "session-1"));
+  act(() => void workspaceValue.openSession("session-1", { from: "room", roomId: "room-1" }));
   expect(panel.targetSession?.sessionId).toBe("session-1");
   const nonce = panel.targetSession?.nonce;
-  act(() => workspaceValue.openSession("room-1", "session-1"));
+  act(() => void workspaceValue.openSession("session-1", { from: "room", roomId: "room-1" }));
   expect(panel.targetSession?.nonce).not.toBe(nonce);
   expect(panel.targetMessageId).toBeNull();
   act(() => workspaceValue.openMessage("room-1", "message-1"));
@@ -197,6 +209,24 @@ it("enriches room participants with roster activity while keeping the full creat
   expect(panel.participants[0]).not.toHaveProperty("agentActivity");
   expect(panel.participants[0]).not.toHaveProperty("agentState");
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);
+});
+
+it("derives sharing from the workspace session list for room and directory participants", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "busy" } as never] });
+  state.activeRoom = { ...room, members: [...room.members, { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null, role: "member", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 }] };
+  mocks.rooms.mockReturnValue(state);
+  const view = render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(panel.participants.find((p) => p.id === "colleague")?.sharing).toBe(true));
+  expect(panel.participants.find((p) => p.id === "owner")?.sharing).toBe(false);
+  expect(directory.participants.find((p) => p.id === "colleague")?.sharing).toBe(true);
+  // Task 5 review finding: the own/ownerName mapping (sidebarSessions) was
+  // untested because every context test mocked an empty session list.
+  expect(directory.sessions?.find((row) => row.session.sessionId === "s1")).toMatchObject({ own: false, ownerName: "Colleague" });
+  view.unmount();
+
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s2", humanUserId: "owner", status: "busy" } as never] });
+  render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions?.find((row) => row.session.sessionId === "s2")).toMatchObject({ own: true, ownerName: "You" }));
 });
 
 it("offers channel admins only non-members and projects explicit member wire fields", async () => {
@@ -296,6 +326,13 @@ it("opens Messages when a person or agent is selected from the directory", async
   await act(async () => directory.onSelectParticipant(participant));
 
   expect(state.selectDm).toHaveBeenCalledWith(participant);
+  expect(onOpenRoom).toHaveBeenCalledWith();
+});
+
+it("opens Messages when a session is selected from the sidebar, so its focus placement is visible", () => {
+  const onOpenRoom = vi.fn();
+  compose(onOpenRoom);
+  act(() => directory.onSelectSession!("s1"));
   expect(onOpenRoom).toHaveBeenCalledWith();
 });
 
@@ -649,4 +686,151 @@ it("closes the shortcut sheet on a second Cmd+/, even though it is itself an ope
   expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
   fireEvent.keyDown(window, { key: "/", metaKey: true });
   expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+});
+
+it("opens someone else's session from the sidebar in focus with their DM, and clears it when a conversation is picked", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+  await act(async () => { await directory.onSelectSession!("s1"); });
+  expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: true });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague" });
+  act(() => directory.onSelectRoom("room-1"));
+  expect(workspaceValue.sessionFocus).toBeNull();
+});
+
+it("stays out of focus when the sharer's DM resolve was superseded by a later pick, or failed", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+  // useRooms answers null when a room was picked while the DM was resolving.
+  await act(async () => { await directory.onSelectSession!("s1"); });
+  expect(workspaceValue.sessionFocus).toBeNull();
+  // A failure is already on screen as selectRoomError; it must not escape as an unhandled rejection.
+  state.selectDm.mockRejectedValueOnce(new Error("offline"));
+  await act(async () => { await directory.onSelectSession!("s1"); });
+  expect(workspaceValue.sessionFocus).toBeNull();
+});
+
+it("opens your own session with the current room as context and no DM", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "mine", humanUserId: "owner", status: "busy" } as never] });
+  state.selectDm = vi.fn();
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+  await act(async () => { await directory.onSelectSession!("mine"); });
+  expect(state.selectDm).not.toHaveBeenCalled();
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "mine", ownerUserId: "owner", ownerName: "You", roomId: "room-1" });
+});
+
+/** Holds the provider's workspace-session fetch open (a cold load) until the test lands it. */
+function holdSessionList() {
+  let land!: (page: { sessions: never[] }) => void;
+  state.resourceSource.client.listWorkspaceSessions.mockImplementation(() => new Promise((resolve) => { land = resolve; }));
+  return (sessions: never[]) => act(async () => { land({ sessions }); });
+}
+
+it("holds a permalink until the workspace session list lands, then opens a live one in focus with the sharer's DM", async () => {
+  const landList = holdSessionList();
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
+  expect(workspaceValue.sessionFocus).toBeNull();
+  expect(panel.targetSession).toBeNull();
+  await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
+  expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: true });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague" });
+  expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
+  expect(panel.targetSession).toBeNull();
+});
+
+it("falls back to the room placement for a link whose session list settles without it", async () => {
+  const landList = holdSessionList();
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await act(async () => { await workspaceValue.openSession("old", { from: "link", roomId: "room-1" }); });
+  expect(panel.targetSession).toBeNull();
+  await landList([]);
+  expect(workspaceValue.sessionFocus).toBeNull();
+  expect(panel.targetSession).toMatchObject({ roomId: "room-1", sessionId: "old" });
+});
+
+it("drops a held permalink when a conversation is picked before the session list lands", async () => {
+  const landList = holdSessionList();
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
+  act(() => directory.onSelectRoom("room-1"));
+  await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
+  expect(state.selectDm).not.toHaveBeenCalled();
+  expect(workspaceValue.sessionFocus).toBeNull();
+});
+
+it("clears focus when the active room moves off its conversation by any path, and keeps it when it moves onto it", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  const tree = () => <MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>;
+  const view = render(tree());
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+  await act(async () => { await directory.onSelectSession!("s1"); });
+  // selectDm makes the DM active (the mock does not, so the test does): focus stays.
+  state.activeRoomId = "dm-colleague";
+  state.activeRoom = { ...room, roomId: "dm-colleague" };
+  view.rerender(tree());
+  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s1", roomId: "dm-colleague" });
+  // A notification click or ⌥↓ moves the active room without going through the directory.
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(tree());
+  expect(workspaceValue.sessionFocus).toBeNull();
+});
+
+it("keeps the newest focus request when a colleague's slow DM resolve settles after your own session was opened", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [
+    { sessionId: "s-colleague", humanUserId: "colleague", status: "idle" } as never,
+    { sessionId: "s-own", humanUserId: "owner", status: "busy" } as never,
+  ] });
+  let resolveDm!: (roomId: string) => void;
+  state.selectDm = vi.fn(() => new Promise<string>((resolve) => { resolveDm = resolve; }));
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(2));
+
+  let colleagueOpen!: Promise<void>;
+  act(() => { colleagueOpen = workspaceValue.openSession("s-colleague", { from: "sidebar" }); });
+  act(() => { void workspaceValue.openSession("s-own", { from: "sidebar" }); });
+  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s-own", ownerName: "You" });
+
+  // The colleague's DM resolve was still in flight when the own-session open
+  // (synchronous, no DM to resolve) already won. Its late arrival must not
+  // overwrite that newer focus.
+  await act(async () => { resolveDm("dm-colleague"); await colleagueOpen; });
+
+  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s-own", ownerName: "You" });
+});
+
+it("stays out of focus when closeSession runs before a slow colleague DM resolve settles", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [
+    { sessionId: "s-colleague", humanUserId: "colleague", status: "idle" } as never,
+  ] });
+  let resolveDm!: (roomId: string) => void;
+  state.selectDm = vi.fn(() => new Promise<string>((resolve) => { resolveDm = resolve; }));
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+
+  let opening!: Promise<void>;
+  act(() => { opening = workspaceValue.openSession("s-colleague", { from: "sidebar" }); });
+  act(() => { workspaceValue.closeSession(); });
+  expect(workspaceValue.sessionFocus).toBeNull();
+
+  await act(async () => { resolveDm("dm-colleague"); await opening; });
+
+  expect(workspaceValue.sessionFocus).toBeNull();
 });

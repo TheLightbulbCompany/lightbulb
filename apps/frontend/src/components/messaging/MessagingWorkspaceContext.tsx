@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -20,6 +20,8 @@ import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
+import type { SessionFocusTarget } from "./SessionFocus";
+import type { SidebarSession } from "./roomSections";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
@@ -28,7 +30,13 @@ export interface MessagingWorkspaceValue {
   roomProps: RoomPanelProps | null;
   selectAgentDm: (agentId: string) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
-  openSession: (roomId: string, sessionId: string) => void;
+  openSession: (sessionId: string, options: { from: "sidebar" | "link" | "room"; roomId?: string }) => Promise<void>;
+  sessionFocus: SessionFocusTarget | null;
+  closeSession: () => void;
+  currentUserId: string;
+  resourceSource: RoomResourceSource | undefined;
+  scope: string;
+  workspaceSessions: LocalSession[];
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -194,9 +202,18 @@ export function MessagingWorkspaceProvider({
   }, [setRoomTyping]);
 
   const online = usePresence(rooms.httpReady, scope);
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
+  const sharing = useMemo(() => new Set(workspaceSessions.sessions.map((session) => session.humanUserId)), [workspaceSessions.sessions]);
+  const humanName = useCallback((id: string) => {
+    const member = humanRoster?.members?.find((candidate) => candidate.userId === id);
+    return member?.name || member?.email || "Workspace member";
+  }, [humanRoster]);
+  const sidebarSessions: SidebarSession[] = useMemo(() => workspaceSessions.sessions.map((session) => ({
+    session, own: session.humanUserId === userId, ownerName: session.humanUserId === userId ? "You" : humanName(session.humanUserId),
+  })), [workspaceSessions.sessions, userId, humanName]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-    : { ...member, online: online.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online]);
+    : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online, sharing]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
@@ -205,8 +222,8 @@ export function MessagingWorkspaceProvider({
       .filter((member) => member.kind !== "human" || member.id !== userId)
       .map((member) => member.kind === "agent"
         ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-        : { ...member, online: online.has(member.id) }),
-  })), [rooms.rooms, activityByAgentId, userId, online]);
+        : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }),
+  })), [rooms.rooms, activityByAgentId, userId, online, sharing]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
@@ -216,6 +233,7 @@ export function MessagingWorkspaceProvider({
       displayName: member.name || member.email || "Workspace member",
       mentionHandle: null,
       online: online.has(member.userId),
+      sharing: sharing.has(member.userId),
     }));
     const agents = (agentRoster?.agents ?? []).map((agent) => ({
       kind: "agent" as const,
@@ -224,7 +242,7 @@ export function MessagingWorkspaceProvider({
       mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
-  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online]);
+  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing]);
 
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);
@@ -467,22 +485,80 @@ export function MessagingWorkspaceProvider({
   const [sessionTarget, setSessionTarget] = useState<{ roomId: string; sessionId: string; nonce: number } | null>(null);
   const sessionNonce = useRef(0);
   const selectRoom = rooms.selectRoom;
-  const openSession = useCallback((roomId: string, sessionId: string) => {
-    selectRoom(roomId);
+  const selectDm = rooms.selectDm;
+  // Focus placement: a session opened from the sidebar or a link takes the
+  // middle of the panel with the sharer's DM beside it, rather than the room's
+  // right column (which is where a session opened from a room stays).
+  const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
+  // A permalink applied before the workspace session list lands (a cold load,
+  // a new tab, a deep link) cannot yet tell a live session from an ended one,
+  // so it waits here and is replayed once the list settles.
+  const heldLink = useRef<{ sessionId: string; roomId?: string } | null>(null);
+  // openSession awaits selectDm() for someone else's live session. Bumped at
+  // the start of every openSession call and by every path that clears
+  // sessionFocus (closeSession, the directory picks that route through it,
+  // openMessage, and the room-change clear effect below), so a slow resolve
+  // that lands after a newer open/close/pick can never overwrite it.
+  const focusRequest = useRef(0);
+  const closeSession = useCallback(() => { focusRequest.current += 1; heldLink.current = null; setSessionFocus(null); }, []);
+  const openSession = useCallback(async (sessionId: string, { from, roomId }: { from: "sidebar" | "link" | "room"; roomId?: string }) => {
+    const requestId = ++focusRequest.current;
+    heldLink.current = null; // the latest intent wins
+    const live = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (from === "link" && !live && workspaceSessions.loading) {
+      heldLink.current = { sessionId, roomId };
+      return;
+    }
+    if (from === "room" || !live) {
+      // Room placement, or a link to a session that is no longer live (ended history lives in the room list).
+      if (!roomId) return;
+      selectRoom(roomId);
+      setThreadId(null);
+      setTarget(null);
+      setSessionFocus(null);
+      setSessionTarget({ roomId, sessionId, nonce: ++sessionNonce.current });
+      return;
+    }
+    const own = live.humanUserId === userId;
+    const contextRoom = own
+      ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
+      // A failed resolve is already on screen as selectRoomError.
+      : await selectDm({ kind: "human", id: live.humanUserId }, { activate: true }).catch(() => null);
+    // Stale: a newer open, a close, or a directory pick already won while
+    // this awaited selectDm() was in flight.
+    if (focusRequest.current !== requestId) return;
+    // null: the resolve failed, or a room was picked while it ran (useRooms
+    // answers null when superseded). Either way the owner is elsewhere now.
+    if (!own && !contextRoom) return;
     setThreadId(null);
     setTarget(null);
-    setSessionTarget({ roomId, sessionId, nonce: ++sessionNonce.current });
-  }, [selectRoom]);
+    setSessionTarget(null);
+    setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom });
+  }, [workspaceSessions.sessions, workspaceSessions.loading, userId, rooms.activeRoomId, rooms.rooms, selectDm, selectRoom, humanName]);
+  useEffect(() => {
+    const link = heldLink.current;
+    if (!link || workspaceSessions.loading) return;
+    void openSession(link.sessionId, { from: "link", roomId: link.roomId });
+  }, [workspaceSessions.loading, openSession]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     setSessionTarget(null);
+    closeSession();
     selectRoom(roomId);
     setTarget({ roomId, messageId });
-  }, [selectRoom]);
+  }, [selectRoom, closeSession]);
   const previousSelectedRoom = useRef(rooms.activeRoomId);
   useEffect(() => {
-    if (rooms.accessRemoved || (previousSelectedRoom.current !== rooms.activeRoomId && sessionTarget?.roomId !== rooms.activeRoomId)) setSessionTarget(null);
+    const moved = previousSelectedRoom.current !== rooms.activeRoomId;
+    if (rooms.accessRemoved || (moved && sessionTarget?.roomId !== rooms.activeRoomId)) setSessionTarget(null);
+    // Room changes that bypass the directory (a notification, ⌥↑/⌥↓) leave focus
+    // too, unless they land on its own conversation (selectDm activating the DM).
+    // A held link is kept: a cold load's automatic first room is a change as well.
+    if (moved && sessionFocus?.roomId !== rooms.activeRoomId) {
+      focusRequest.current += 1;
+      setSessionFocus(null);
+    }
     previousSelectedRoom.current = rooms.activeRoomId;
-  }, [rooms.activeRoomId, rooms.accessRemoved, sessionTarget]);
+  }, [rooms.activeRoomId, rooms.accessRemoved, sessionTarget, sessionFocus]);
   useEffect(() => {
     if (!target?.messageId) return;
     const timer = setTimeout(() => setTarget(null), 3_000);
@@ -520,8 +596,10 @@ export function MessagingWorkspaceProvider({
     participants: directoryParticipants,
     state: directoryState,
     currentRoomId: rooms.activeRoomId ?? undefined,
-    onSelectRoom: rooms.selectRoom,
-    onSelectParticipant: selectParticipant,
+    // Picking any conversation leaves focus placement — the session goes back
+    // to being something you open, not the thing you are looking at.
+    onSelectRoom: (roomId: string) => { closeSession(); rooms.selectRoom(roomId); },
+    onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,
     onSetPrefs: rooms.setRoomPrefs,
@@ -532,6 +610,8 @@ export function MessagingWorkspaceProvider({
     creationError,
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
+    sessions: sidebarSessions,
+    onSelectSession: (sessionId: string) => void openSession(sessionId, { from: "sidebar" }),
   };
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
     ownerScopeId: scope,
@@ -598,6 +678,12 @@ export function MessagingWorkspaceProvider({
     selectAgentDm: rooms.selectAgentDm,
     openMessage,
     openSession,
+    sessionFocus,
+    closeSession,
+    currentUserId: userId ?? "",
+    resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
+    scope,
+    workspaceSessions: workspaceSessions.sessions,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
     onOpen={(roomId, targetThreadId) => {
       rooms.selectRoom(roomId);

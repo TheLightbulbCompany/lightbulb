@@ -1,4 +1,4 @@
-import type { RoomSection } from "@lightbulb/shared";
+import type { LocalSession, RoomSection } from "@lightbulb/shared";
 import type { DirectoryRoom } from "./types";
 
 export type SidebarSort = "alpha" | "unread";
@@ -41,4 +41,17 @@ export function groupRooms(
       : options.nameOf(left).localeCompare(options.nameOf(right))));
   }
   return order.filter((group) => group.rooms.length > 0 || options.alwaysShow?.includes(group.id));
+}
+
+export interface SidebarSession { session: LocalSession; ownerName: string; own: boolean }
+
+const STATUS_RANK: Record<LocalSession["status"], number> = { busy: 0, "waiting-approval": 1, idle: 2, unknown: 2, offline: 3, ended: 3 };
+
+/** Mine first, then people by name; within a person busy → waiting → idle, then most recent. */
+export function orderSidebarSessions(rows: readonly SidebarSession[]): SidebarSession[] {
+  return [...rows].sort((left, right) =>
+    Number(right.own) - Number(left.own)
+    || left.ownerName.localeCompare(right.ownerName)
+    || STATUS_RANK[left.session.status] - STATUS_RANK[right.session.status]
+    || (right.session.lastEventAt ?? "").localeCompare(left.session.lastEventAt ?? ""));
 }

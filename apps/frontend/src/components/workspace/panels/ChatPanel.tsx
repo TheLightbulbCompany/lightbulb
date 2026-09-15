@@ -68,7 +68,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     if (lastOpenedRoom.current === key) return;
     lastOpenedRoom.current = key;
     ++navigationRequest.current; // A pending agent-DM focus must not supersede a room intent.
-    if (params.sessionId) openSession(params.roomId, params.sessionId);
+    if (params.sessionId) void openSession(params.sessionId, { from: "link", roomId: params.roomId });
     else openMessage(params.roomId, params.messageId ?? null);
   }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession]);
 

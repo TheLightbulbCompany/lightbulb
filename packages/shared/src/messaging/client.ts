@@ -22,6 +22,7 @@ import type {
   TypingRequest,
   UpsertRoomMemberRequest,
   RoomResources,
+  WorkspaceSessions,
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
@@ -40,6 +41,7 @@ const localSessionPath = (roomId: string, sessionId: string) => `${roomPath(room
 
 export interface MessagingClient {
   listResources(roomId: string, options?: { includeEnded?: boolean }): Promise<RoomResources>;
+  listWorkspaceSessions(): Promise<WorkspaceSessions>;
   listLocalSessionEvents(roomId: string, sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(roomId: string, sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(roomId: string, sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
@@ -72,6 +74,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
     listResources: (roomId, options) =>
       api.get(`${roomPath(roomId)}/resources${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<RoomResources>,
+    listWorkspaceSessions: () => api.get("/messaging/sessions") as Promise<WorkspaceSessions>,
     listLocalSessionEvents: (roomId, sessionId, afterSeq, limit = 50) => api.get(
       `${localSessionPath(roomId, sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,

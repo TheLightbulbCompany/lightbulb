@@ -6,7 +6,7 @@ import type { createMessagingClient } from "./client";
 import type { LocalSessionEvent, RoomResources } from "./types";
 
 export interface RoomResourceSource {
-  client: Pick<ReturnType<typeof createMessagingClient>, "listResources" | "listLocalSessionEvents" | "submitLocalSessionCommand" | "getLocalSessionCommand">;
+  client: Pick<ReturnType<typeof createMessagingClient>, "listResources" | "listWorkspaceSessions" | "listLocalSessionEvents" | "submitLocalSessionCommand" | "getLocalSessionCommand">;
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
   connectionRevision: number;
 }

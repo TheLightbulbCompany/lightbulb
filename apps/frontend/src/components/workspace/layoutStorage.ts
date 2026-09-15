@@ -195,13 +195,6 @@ function canonicalPanelTitle(
     case "browser":
       key = component;
       break;
-    case "session": {
-      if (typeof params?.roomId !== "string" || typeof params?.sessionId !== "string") return null;
-      key = "session";
-      p.room = params.roomId;
-      p.session = params.sessionId;
-      break;
-    }
     default:
       return null;
   }
@@ -241,6 +234,16 @@ export function sanitizeLayout(
   const claimedTargets = new Set<string>();
 
   for (const [id, state] of Object.entries(rawPanels)) {
+    // Docked session panels were retired in favor of a middle-pane focus
+    // placement (SessionFocus). Unlike an ordinary unrecognized
+    // contentComponent, this is a KNOWN retired shape: remapping it to
+    // 'missing' would just leave a dead tab behind after every upgrade, so it
+    // is dropped the same way a retired-panel duplicate is dropped, pruning
+    // its now-empty leaf along with it.
+    if (id.startsWith("session:")) {
+      dropped.add(id);
+      continue;
+    }
     const component =
       state.contentComponent && PANEL_COMPONENT_KEYS.has(state.contentComponent)
         ? state.contentComponent

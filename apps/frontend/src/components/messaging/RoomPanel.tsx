@@ -12,6 +12,8 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { RoomResources } from "./RoomResources";
+import { ColumnGrip } from "./ColumnGrip";
+import { useSessionColumnWidth } from "./sidebarPrefs";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -282,6 +284,9 @@ function RoomContent({
   const [editTarget, setEditTarget] = useState<string | null>(null);
   const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
   const [consumedSession, setConsumedSession] = useState<number | null>(null);
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const panelRef = useRef<HTMLElement>(null);
+  const column = useSessionColumnWidth(ownerScopeId, panelRef);
   const targetSessionNonce = targetSession?.nonce;
   useEffect(() => {
     if (targetSessionNonce === undefined) return;
@@ -326,6 +331,7 @@ function RoomContent({
   const showResources = selection?.kind === "resources" && !!resourceSource;
   const showDetail = !!(parentMessage || showResources);
   const showContext = showDetail || !contextCollapsed;
+  useEffect(() => { if (!showResources) setSessionOpen(false); }, [showResources]);
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
   const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember && !visibleRoom.shared;
@@ -522,7 +528,8 @@ function RoomContent({
 
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
-  return <section className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
+  return <section ref={panelRef} style={sessionOpen ? column.style : undefined}
+    className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context", sessionOpen && showResources && "room-has-session")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} actionable={actionable} pinnedCount={pinnedMessageIds.length}
@@ -645,6 +652,8 @@ function RoomContent({
       roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail}
       target={targetSession?.nonce !== consumedSession ? targetSession : null}
       onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
+      onSessionOpenChange={setSessionOpen}
+      resizeHandle={<ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} value={column.value} min={column.min} max={column.max} />}
       onShare={url => composer.onTextChange(composer.text ? `${composer.text}\n${url}` : url)} />}
     {showDetail && !showResources && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>

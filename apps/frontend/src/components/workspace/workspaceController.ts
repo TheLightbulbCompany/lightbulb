@@ -243,15 +243,9 @@ export function isDockAttached(): boolean {
 }
 
 let sessionIntent = 0;
-// Docks the session as its own panel when the workspace shell is attached
-// (task-16); falls back to the legacy in-Messages-pane intent otherwise —
-// e.g. mobile, or any caller before the dock API attaches.
+/** Retargets the Messages panel at a room+session; the session view itself
+ *  lives inside Messages (spec §4), never as its own dock tab. */
 export function openSessionPanel(roomId: string, sessionId: string): void {
-  const dock = describePanel("session", { room: roomId, session: sessionId });
-  if (dock && _api) {
-    addOrFocus(dock);
-    return;
-  }
   const descriptor = describePanel("chat", { room: roomId, session: sessionId });
   if (descriptor && _api) addOrFocus(descriptor, { sessionIntent: String(++sessionIntent) });
 }

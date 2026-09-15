@@ -109,6 +109,10 @@ class _Out(list):
         super().append(line)
         print(line, flush=True)
 
+    def extend(self, lines) -> None:  # type: ignore[override]
+        for line in lines:
+            self.append(line)
+
 
 def slugify(text: str, *, max_len: int = _SLUG_MAX_LEN) -> str:
     """Lowercase; runs of non `[a-z0-9]` become one `-`; trimmed; capped."""

@@ -61,6 +61,10 @@ class _Out(list):
         super().append(line)
         print(line, flush=True)
 
+    def extend(self, lines) -> None:  # type: ignore[override]
+        for line in lines:
+            self.append(line)
+
 
 def classify(
     owner_id: str,

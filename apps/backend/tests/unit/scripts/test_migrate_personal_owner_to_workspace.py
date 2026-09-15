@@ -115,3 +115,23 @@ def test_resume_accepts_a_billing_row_already_moved_to_the_org():
 def test_resume_tolerates_a_personal_box_already_purged():
     moved = {"owner_id": ORG, "subscription_status": "active", "migrated_from": USER}
     assert check_preconditions(USER, None, None, _row(ORG), [{"id": ORG}], org_override=ORG, org_billing=moved) is None
+
+
+def test_billing_names_the_chatgpt_connector_for_the_org():
+    chatgpt = {"owner_id": USER, "subscription_status": "active", "provider_choice": "chatgpt_oauth"}
+    assert billing_for_org(chatgpt, ORG, now_iso="t")["oauth_connector_user_id"] == USER
+    already = {**chatgpt, "oauth_connector_user_id": "user_admin"}
+    assert billing_for_org(already, ORG, now_iso="t")["oauth_connector_user_id"] == "user_admin"
+    assert "oauth_connector_user_id" not in billing_for_org(PAID, ORG, now_iso="t")
+
+
+def test_token_rebind_targets_only_rows_bound_to_the_personal_workspace():
+    from scripts.migrate_personal_owner_to_workspace import should_rebind_token
+
+    assert should_rebind_token({"state": "active", "bound_owner_id": USER}, USER, USER)
+    assert should_rebind_token({"state": "active"}, USER, USER)  # unbound provider row = its own key
+    assert should_rebind_token({"state": "active", "bound_owner_id": USER}, f"{USER}#harness", USER)
+    assert not should_rebind_token({"state": "active"}, f"{USER}#harness", USER)
+    assert not should_rebind_token({"state": "active", "bound_owner_id": "org_other"}, USER, USER)
+    assert not should_rebind_token({"state": "revoked", "bound_owner_id": USER}, USER, USER)
+    assert not should_rebind_token(None, USER, USER)

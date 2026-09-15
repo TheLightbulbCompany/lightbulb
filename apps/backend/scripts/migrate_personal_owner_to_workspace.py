@@ -115,6 +115,10 @@ class _Out(list):
         super().append(line)
         print(line, flush=True)
 
+    def extend(self, lines) -> None:  # type: ignore[override]
+        for line in lines:
+            self.append(line)
+
 
 # ---------------------------------------------------------------------------
 # pure helpers (unit-tested)
@@ -169,7 +173,21 @@ def billing_for_org(row: dict[str, Any], org_id: str, *, now_iso: str) -> dict[s
     new["owner_type"] = "org"
     new["migrated_from"] = row["owner_id"]
     new["updated_at"] = now_iso
+    # A personal owner is implicitly their own ChatGPT connector
+    # (connector_from_account falls back to owner_id); under the org id that
+    # fallback would point at the org, which has no token row. Name the human.
+    if row.get("provider_choice") == "chatgpt_oauth":
+        new.setdefault("oauth_connector_user_id", row["owner_id"])
     return new
+
+
+def should_rebind_token(row: dict[str, Any] | None, key: str, owner_id: str) -> bool:
+    """Whether an oauth-tokens row still binds a ChatGPT grant to the personal
+    workspace. ``_row_belongs_to`` treats an unbound row as bound to its own
+    key, so an unbound provider row keyed by the owner counts too."""
+    if not row or row.get("state") != "active":
+        return False
+    return (row.get("bound_owner_id") or key) == owner_id
 
 
 def paperclip_row_for_org(
@@ -300,6 +318,37 @@ async def _repoint_paperclip(pc_row: PaperclipCompany, org_id: str) -> str:
     return f"row org_id -> {org_id}, service token re-minted with sub={org_id}; adapters re-bind on provisioning"
 
 
+async def _rebind_oauth(owner_id: str, org_id: str, billing: dict[str, Any]) -> str:
+    """Point the connector's ChatGPT grants (provider + harness rows) at the org.
+
+    Every consumer reads the tokens with ``bound_to=<container owner>`` (the
+    provision gate, ``ecs_manager`` when it stages the seed, ``container_auth``),
+    so a row still bound to the personal id reads as NO tokens for the org: the
+    gate shows "Sign in with ChatGPT" and the container boots unauthenticated.
+    Runs after the OAuth-seed harvest, which needs the OLD binding."""
+    if billing.get("provider_choice") != "chatgpt_oauth":
+        return "not a ChatGPT workspace — nothing to rebind"
+    from core.services.oauth_service import HARNESS_ROW_SUFFIX, _table
+
+    connector = billing.get("oauth_connector_user_id") or owner_id
+    table = _table()
+    done = []
+    for key in (connector, connector + HARNESS_ROW_SUFFIX):
+        row = (await run_in_thread(table.get_item, Key={"user_id": key}, ConsistentRead=True)).get("Item")
+        if not should_rebind_token(row, key, owner_id):
+            done.append(f"{key}: {'absent' if not row else 'left as is'}")
+            continue
+        await run_in_thread(
+            table.update_item,
+            Key={"user_id": key},
+            UpdateExpression="SET bound_owner_id = :org",
+            ConditionExpression="attribute_not_exists(bound_owner_id) OR bound_owner_id = :old",
+            ExpressionAttributeValues={":org": org_id, ":old": owner_id},
+        )
+        done.append(f"{key}: rebound -> {org_id}")
+    return "; ".join(done)
+
+
 async def _move_messaging(owner_id: str, org_id: str) -> str:
     table = messaging_repo._table()
     rows = await messaging_repo._query(owner_pk(owner_id))
@@ -357,7 +406,8 @@ async def main(argv: list[str]) -> int:
     if not args.apply:
         out.append("  plan: clerk org -> billing row -> stop+drain box (+oauth seed) -> EFS rename -> replicas copy")
         out.append(
-            "        -> paperclip row -> messaging partition" + (" -> dispatch provisioning" if args.provision else "")
+            "        -> oauth rebind -> paperclip row -> messaging partition"
+            + (" -> dispatch provisioning" if args.provision else "")
         )
         return 0
 
@@ -381,6 +431,7 @@ async def main(argv: list[str]) -> int:
         # A resume whose personal box was already purged has nothing to stop.
         ("container", _stop_personal_box(owner_id, billing) if container is not None else _noop("box already gone")),
         ("billing", _move_billing(owner_id, org_id, billing)),
+        ("oauth", _rebind_oauth(owner_id, org_id, billing)),
         ("efs", asyncio.to_thread(_rename_efs, owner_id, org_id)),
         ("replicas", asyncio.to_thread(_copy_replicas, owner_id, org_id)),
         ("paperclip", _repoint_paperclip(pc_row, org_id)),

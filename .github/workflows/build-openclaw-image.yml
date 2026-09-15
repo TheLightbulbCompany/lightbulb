@@ -277,10 +277,22 @@ jobs:
         env:
           BASE_IMAGE: ${{ steps.meta.outputs.base_image }}
           BASE_DIGEST: ${{ steps.meta.outputs.base_digest }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RESOLVED_DIGEST=$(docker buildx imagetools inspect \
-            "${BASE_IMAGE}" --format '{{.Manifest.Digest}}')
+          # Ask the registry: a HEAD on the tag returns the top-level manifest
+          # digest in Docker-Content-Digest. `buildx imagetools inspect
+          # --format '{{.Manifest.Digest}}'` printed a non-digest on the
+          # Blacksmith runner (2026-09-15), so this no longer depends on the
+          # runner's buildx.
+          ref="${BASE_IMAGE#ghcr.io/}"; repo="${ref%:*}"; tag="${ref##*:}"
+          token=$(curl -fsS -u "x-access-token:${GHCR_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | jq -r .token)
+          RESOLVED_DIGEST=$(curl -fsSI -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/${repo}/manifests/${tag}" \
+            | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest" {print $2}')
+          printf 'resolved base digest: %s\n' "${RESOLVED_DIGEST}"
           printf '%s\n' "${RESOLVED_DIGEST}" \
             | node scripts/openclaw-image-proof.mjs digest "${BASE_DIGEST}"
 

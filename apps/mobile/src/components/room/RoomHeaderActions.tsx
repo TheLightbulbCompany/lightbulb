@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii } from "../../config/theme";
@@ -51,7 +51,7 @@ export function RoomHeaderActions({
           accessibilityState={{ disabled: !!disabled }}
           style={[styles.button, devicesScale.style]}
         >
-          <Feather name="terminal" size={18} color={colors.inkSoft} />
+          <SymbolView name="terminal" size={18} tintColor={colors.inkSoft} />
           {liveSessions > 0 && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{liveSessions > 9 ? "9+" : String(liveSessions)}</Text>
@@ -77,7 +77,7 @@ export function RoomHeaderActions({
         // feedback; a background tint on top of it would be two signals.
         style={[styles.button, starScale.style]}
       >
-        <Feather name="star" size={18} color={colors.inkSoft} />
+        <SymbolView name="star" size={18} tintColor={colors.inkSoft} />
       </AnimatedPressable>
       <AnimatedPressable
         onPress={() => {
@@ -93,7 +93,7 @@ export function RoomHeaderActions({
         accessibilityState={{ selected: muted, disabled: !!disabled }}
         style={[styles.button, muteScale.style]}
       >
-        <Feather name={muted ? "bell-off" : "bell"} size={18} color={colors.inkSoft} />
+        <SymbolView name={muted ? "bell.slash" : "bell"} size={18} tintColor={colors.inkSoft} />
       </AnimatedPressable>
     </View>
   );

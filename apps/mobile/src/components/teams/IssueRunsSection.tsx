@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -61,7 +61,7 @@ export function IssueRunsSection({
                 {agentName(run.agentId)}
               </Text>
               {when ? <Text style={styles.when}>{timeAgo(when)}</Text> : null}
-              <Feather name="chevron-right" size={14} color={colors.mute} />
+              <SymbolView name="chevron.right" size={14} tintColor={colors.mute} />
             </View>
             {errorSnippet ? (
               <Text style={styles.error} numberOfLines={2}>

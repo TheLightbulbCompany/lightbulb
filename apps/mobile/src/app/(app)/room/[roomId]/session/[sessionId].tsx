@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import {
   buildRows, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
   type LocalSession, type RoomResourceSource, type TranscriptRow,
@@ -87,7 +87,7 @@ export default function SessionScreen() {
             .catch(() => {})
         }
       >
-        <Feather name="message-circle" size={20} color={colors.inkSoft} />
+        <SymbolView name="bubble.left" size={20} tintColor={colors.inkSoft} />
       </Pressable>
     ) : undefined,
   };
@@ -254,7 +254,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
           accessibilityRole="button"
           accessibilityLabel="Scroll to bottom"
         >
-          <Feather name="arrow-down" size={16} color={colors.white} />
+          <SymbolView name="arrow.down" size={16} tintColor={colors.white} />
         </Pressable>
       )}
       <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />

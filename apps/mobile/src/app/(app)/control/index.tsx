@@ -1,17 +1,16 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
-import { Fragment, type ComponentProps } from "react";
+import { Fragment, } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../../config/theme";
 
-type FeatherName = ComponentProps<typeof Feather>["name"];
 
 interface PanelRow {
   key: string;
   label: string;
   description: string;
-  icon: FeatherName;
+  icon: SFSymbol;
   /** Nested-Stack route pushed on tap. */
   route: Href;
 }
@@ -25,42 +24,42 @@ const PANELS: PanelRow[] = [
     key: "overview",
     label: "Overview",
     description: "Health, plan, and live counts",
-    icon: "activity",
+    icon: "waveform.path.ecg",
     route: "/(app)/control/overview",
   },
   {
     key: "agents",
     label: "Agents",
     description: "Your roster and per-agent settings",
-    icon: "users",
+    icon: "person.2",
     route: "/(app)/control/agents",
   },
   {
     key: "skills",
     label: "Skills",
     description: "Installed and available skills",
-    icon: "zap",
+    icon: "bolt",
     route: "/(app)/control/skills",
   },
   {
     key: "sessions",
     label: "Sessions",
     description: "Recent conversations and tokens",
-    icon: "layers",
+    icon: "square.3.layers.3d",
     route: "/(app)/control/sessions",
   },
   {
     key: "channels",
     label: "Channels",
     description: "Telegram, Discord, and Slack status",
-    icon: "radio",
+    icon: "dot.radiowaves.left.and.right",
     route: "/(app)/control/channels",
   },
   {
     key: "usage",
     label: "Usage",
     description: "Token spend this billing period",
-    icon: "bar-chart-2",
+    icon: "chart.bar",
     route: "/(app)/control/usage",
   },
   {
@@ -74,14 +73,14 @@ const PANELS: PanelRow[] = [
     key: "integrations",
     label: "Integrations",
     description: "Connections, MCP servers, and plugins",
-    icon: "grid",
+    icon: "square.grid.2x2",
     route: "/(app)/control/integrations",
   },
   {
     key: "marketplace",
     label: "Marketplace",
     description: "Discover and deploy free community agents",
-    icon: "shopping-bag",
+    icon: "bag",
     route: "/(app)/control/marketplace",
   },
 ];
@@ -105,7 +104,7 @@ export default function ControlIndex() {
               accessibilityLabel={panel.label}
             >
               <View style={styles.iconTile}>
-                <Feather name={panel.icon} size={16} color={colors.forest} />
+                <SymbolView name={panel.icon} size={16} tintColor={colors.forest} />
               </View>
               <View style={styles.rowText}>
                 <Text style={styles.rowLabel} numberOfLines={1}>
@@ -115,7 +114,7 @@ export default function ControlIndex() {
                   {panel.description}
                 </Text>
               </View>
-              <Feather name="chevron-right" size={18} color={colors.muteSoft} />
+              <SymbolView name="chevron.right" size={18} tintColor={colors.muteSoft} />
             </Pressable>
           </Fragment>
         ))}

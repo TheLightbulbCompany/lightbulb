@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -55,10 +55,10 @@ export function ApprovalCard({
 
   const Body = (
     <View style={styles.head}>
-      <Feather
-        name="shield"
+      <SymbolView
+        name="checkmark.shield"
         size={16}
-        color={colors.forest}
+        tintColor={colors.forest}
         style={styles.headIcon}
       />
       <View style={styles.headText}>
@@ -72,7 +72,7 @@ export function ApprovalCard({
         )}
       </View>
       {canOpen ? (
-        <Feather name="chevron-right" size={16} color={colors.muteSoft} />
+        <SymbolView name="chevron.right" size={16} tintColor={colors.muteSoft} />
       ) : null}
     </View>
   );
@@ -110,7 +110,7 @@ export function ApprovalCard({
               accessibilityRole="button"
               accessibilityLabel={`Approve ${label}`}
             >
-              <Feather name="check" size={14} color={colors.white} />
+              <SymbolView name="checkmark" size={14} tintColor={colors.white} />
               <Text style={styles.approveText}>Approve</Text>
             </Pressable>
             <Pressable
@@ -123,7 +123,7 @@ export function ApprovalCard({
               accessibilityRole="button"
               accessibilityLabel={`Reject ${label}`}
             >
-              <Feather name="x" size={14} color={colors.errorText} />
+              <SymbolView name="xmark" size={14} tintColor={colors.errorText} />
               <Text style={styles.rejectText}>Reject</Text>
             </Pressable>
           </View>

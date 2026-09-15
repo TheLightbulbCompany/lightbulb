@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { router, Stack } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import {
@@ -143,7 +143,7 @@ function CreateAgentModal({
               accessibilityRole="button"
               accessibilityLabel="Close"
             >
-              <Feather name="x" size={18} color={colors.mute} />
+              <SymbolView name="xmark" size={18} tintColor={colors.mute} />
             </Pressable>
           </View>
 
@@ -393,7 +393,7 @@ export default function AgentsPanel() {
               accessibilityRole="button"
               accessibilityLabel="New agent"
             >
-              <Feather name="plus" size={22} color={colors.forest} />
+              <SymbolView name="plus" size={22} tintColor={colors.forest} />
             </Pressable>
           ),
         }}

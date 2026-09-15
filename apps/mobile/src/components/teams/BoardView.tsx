@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
 import { useMemo, useState, type ReactElement } from "react";
 import {
@@ -167,7 +167,7 @@ export function BoardView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<Feather name="lock" size={28} color={colors.mute} />}
+            glyph={<SymbolView name="lock" size={28} tintColor={colors.mute} />}
             title="Teams requires an active subscription"
             detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
             action={
@@ -183,7 +183,7 @@ export function BoardView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
+          glyph={<SymbolView name="icloud.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}

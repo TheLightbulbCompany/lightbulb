@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import {
   Animated,
@@ -61,10 +61,10 @@ export function ToolPill({
         <Text style={[styles.label, { color: trio.text }]} numberOfLines={1}>
           {label}
         </Text>
-        <Feather
-          name={expanded ? "chevron-down" : "chevron-right"}
+        <SymbolView
+          name={expanded ? "chevron.down" : "chevron.right"}
           size={12}
-          color={trio.text}
+          tintColor={trio.text}
           style={styles.chevron}
         />
       </Pressable>

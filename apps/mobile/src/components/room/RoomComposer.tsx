@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import {
   activeTrigger,
   applyCompletion,
@@ -415,7 +415,7 @@ export function RoomComposer({
             {uploading ? (
               <ActivityIndicator size="small" color={colors.mute} />
             ) : (
-              <Feather name="image" size={18} color={colors.mute} />
+              <SymbolView name="photo" size={18} tintColor={colors.mute} />
             )}
           </Pressable>
           {onAbort && !hasContent ? (
@@ -425,7 +425,7 @@ export function RoomComposer({
               accessibilityRole="button"
               accessibilityLabel="Stop"
             >
-              <Feather name="square" size={14} color={colors.white} />
+              <SymbolView name="stop.fill" size={14} tintColor={colors.white} />
             </Pressable>
           ) : (
             <AnimatedPressable
@@ -450,7 +450,7 @@ export function RoomComposer({
               {sending ? (
                 <ActivityIndicator size="small" color={colors.white} />
               ) : (
-                <Feather name="arrow-up" size={16} color={colors.white} />
+                <SymbolView name="arrow.up" size={16} tintColor={colors.white} />
               )}
             </AnimatedPressable>
           )}

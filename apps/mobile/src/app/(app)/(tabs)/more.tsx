@@ -1,6 +1,6 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
-import { Fragment, type ComponentProps } from "react";
+import { Fragment, } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../../config/theme";
@@ -8,7 +8,7 @@ import { colors, fonts, radii, spacing } from "../../../config/theme";
 interface MoreRow {
   label: string;
   description: string;
-  icon: ComponentProps<typeof Feather>["name"];
+  icon: SFSymbol;
   route: Href;
 }
 
@@ -20,7 +20,7 @@ const ROWS: MoreRow[] = [
   {
     label: "Teams",
     description: "Inbox, issues, and routines",
-    icon: "inbox",
+    icon: "tray",
     route: "/(app)/teams",
   },
   {
@@ -32,13 +32,13 @@ const ROWS: MoreRow[] = [
   {
     label: "Control",
     description: "Agents, skills, usage, and billing",
-    icon: "sliders",
+    icon: "slider.horizontal.3",
     route: "/(app)/control",
   },
   {
     label: "Settings",
     description: "Account, notifications, and sign out",
-    icon: "settings",
+    icon: "gearshape",
     route: "/(app)/settings",
   },
 ];
@@ -61,7 +61,7 @@ export default function More() {
               accessibilityLabel={row.label}
             >
               <View style={styles.iconTile}>
-                <Feather name={row.icon} size={16} color={colors.forest} />
+                <SymbolView name={row.icon} size={16} tintColor={colors.forest} />
               </View>
               <View style={styles.rowText}>
                 <Text style={styles.rowLabel} numberOfLines={1}>
@@ -71,7 +71,7 @@ export default function More() {
                   {row.description}
                 </Text>
               </View>
-              <Feather name="chevron-right" size={18} color={colors.muteSoft} />
+              <SymbolView name="chevron.right" size={18} tintColor={colors.muteSoft} />
             </Pressable>
           </Fragment>
         ))}

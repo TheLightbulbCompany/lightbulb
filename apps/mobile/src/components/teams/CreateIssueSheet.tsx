@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -227,7 +227,7 @@ export function CreateIssueSheet({
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <>
-                <Feather name="plus" size={15} color={colors.white} />
+                <SymbolView name="plus" size={15} tintColor={colors.white} />
                 <Text style={styles.createText}>Create</Text>
               </>
             )}

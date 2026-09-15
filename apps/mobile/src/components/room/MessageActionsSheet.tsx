@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import type { ComponentProps } from "react";
@@ -13,7 +13,7 @@ import { BottomSheet } from "../ui/BottomSheet";
 export const QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"] as const;
 
 interface ActionRow {
-  icon: ComponentProps<typeof Feather>["name"];
+  icon: SFSymbol;
   label: string;
   run: () => void | Promise<unknown>;
 }
@@ -65,18 +65,18 @@ export function MessageActionsSheet({
   const deleted = Boolean(message.deletedAt);
   const rows: ActionRow[] = [
     ...(onReplyInThread
-      ? [{ icon: "corner-up-left" as const, label: "Reply in thread", run: onReplyInThread }]
+      ? [{ icon: "arrowshape.turn.up.left" as const, label: "Reply in thread", run: onReplyInThread }]
       : []),
     ...(deleted
       ? []
       : [
           {
-            icon: "copy" as const,
+            icon: "doc.on.doc" as const,
             label: "Copy text",
             run: () => Clipboard.setStringAsync(message.text),
           },
         ]),
-    ...(onMarkUnread ? [{ icon: "mail" as const, label: "Mark unread", run: onMarkUnread }] : []),
+    ...(onMarkUnread ? [{ icon: "envelope" as const, label: "Mark unread", run: onMarkUnread }] : []),
     {
       icon: "link" as const,
       label: "Copy link",
@@ -125,7 +125,7 @@ export function MessageActionsSheet({
             accessibilityRole="button"
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
           >
-            <Feather name={icon} size={16} color={colors.inkSoft} />
+            <SymbolView name={icon} size={16} tintColor={colors.inkSoft} />
             <Text style={styles.rowLabel}>{label}</Text>
           </Pressable>
         ))}

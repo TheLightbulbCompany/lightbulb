@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { GLYPH, unavailableReason, type LocalSession, type useSessionCommand } from "@lightbulb/shared";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -45,7 +45,7 @@ export function SessionPromptRow({ session, text, onChangeText, command }: {
             accessibilityState={{ disabled: sendDisabled }}
             style={[styles.send, sendDisabled && styles.sendDisabled]}
           >
-            <Feather name="arrow-up" size={18} color={colors.white} />
+            <SymbolView name="arrow.up" size={18} tintColor={colors.white} />
           </Pressable>
         </View>
       )}

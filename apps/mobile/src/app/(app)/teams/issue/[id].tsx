@@ -1,5 +1,5 @@
 import { useUser } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState, type ReactElement, type ReactNode } from "react";
 import {
@@ -183,7 +183,7 @@ function EditableRow({
     >
       <Text style={styles.propLabel}>{label}</Text>
       <View style={styles.editValue}>{children}</View>
-      <Feather name="chevron-down" size={15} color={colors.muteSoft} />
+      <SymbolView name="chevron.down" size={15} tintColor={colors.muteSoft} />
     </Pressable>
   );
 }
@@ -566,7 +566,7 @@ function ReadyBody({
             accessibilityRole="button"
             accessibilityLabel="Edit description"
           >
-            <Feather name="edit-2" size={13} color={colors.mute} />
+            <SymbolView name="pencil" size={13} tintColor={colors.mute} />
           </Pressable>
         </View>
         {issue.description != null && issue.description.trim() !== "" ? (
@@ -627,7 +627,7 @@ function ReadyBody({
           accessibilityRole="button"
           accessibilityLabel="Add sub-issue"
         >
-          <Feather name="plus" size={15} color={colors.forest} />
+          <SymbolView name="plus" size={15} tintColor={colors.forest} />
           <Text style={styles.addChildText}>Add sub-issue</Text>
         </Pressable>
       </View>

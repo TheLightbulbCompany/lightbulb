@@ -5,7 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
-import { notifyAttention, notifySuccess } from "@/lib/notify";
+import { notifySuccess } from "@/lib/notify";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
@@ -18,30 +18,41 @@ export function MessageNotifications(props: {
   const current = useRef(props);
   useEffect(() => { current.current = props; });
 
-  // Ask once per person on this device, as soon as they are signed in: a
-  // sticky toast whose button is the user gesture a browser requires, and
-  // which spends the one-time macOS or browser prompt only when chosen. The
-  // desktop app can also undo an earlier "no" (Turn on opens System
-  // Settings); a page cannot reopen a browser's, so that case is left alone.
+  // The OS prompt is the ask; nothing in the app asks in front of it. macOS
+  // can raise it unprompted, so the desktop app does, once per person on this
+  // device — and whatever they answer (or ignore), the provisional
+  // registration at launch keeps Lightbulb listed under System Settings →
+  // Notifications. A browser only prompts from a user gesture, so there it
+  // waits for the first click or keypress.
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
+    let stopWaiting = () => {};
     void notificationPermission().then((state) => {
-      if (cancelled || state === null) return; // no native path yet: ask on a later visit
-      const key = `lightbulb.notifications.asked.${userId}`;
-      try {
-        if (localStorage.getItem(key)) return;
-        localStorage.setItem(key, "1");
-      } catch {
+      if (cancelled || state !== "default") return; // decided, or no native path yet
+      if (isDesktopApp()) {
+        const key = `lightbulb.notifications.asked.${userId}`;
+        try {
+          if (localStorage.getItem(key)) return;
+          localStorage.setItem(key, "1");
+        } catch {
+          return;
+        }
+        void notificationPermission(true);
         return;
       }
-      if (state === "granted" || (state === "denied" && !isDesktopApp())) return;
-      notifyAttention("Get notified when someone messages you.", {
-        dedupeKey: "notifications:ask",
-        action: { label: "Turn on", onClick: () => void notificationPermission(true) },
-      });
+      const requestOnce = () => {
+        stopWaiting();
+        void notificationPermission(true);
+      };
+      document.addEventListener("pointerdown", requestOnce);
+      document.addEventListener("keydown", requestOnce);
+      stopWaiting = () => {
+        document.removeEventListener("pointerdown", requestOnce);
+        document.removeEventListener("keydown", requestOnce);
+      };
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; stopWaiting(); };
   }, [userId]);
 
   useEffect(() => {

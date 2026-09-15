@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { LocalSession } from "@lightbulb/shared";
 
 const mockPush = jest.fn();
@@ -92,5 +92,19 @@ describe("shared sessions screen", () => {
     await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug"));
     await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug 2"));
     expect(mockSelectDm).toHaveBeenCalledTimes(1);
+  });
+
+  it("spins pull-to-refresh only for a pull, not for a background refresh", async () => {
+    const pending: ((page: { sessions: LocalSession[] }) => void)[] = [];
+    mockListWorkspaceSessions.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    await render(<SharedSessionsScreen />);
+    // The mount fetch stands in for every 30 s poll and hint: the hook is loading.
+    await waitFor(() => expect(screen.getByText("Loading shared sessions…")).toBeTruthy());
+    expect(screen.getByTestId("shared-sessions").props.refreshing).toBe(false);
+    await act(async () => pending.shift()!({ sessions: [] }));
+    await act(async () => { screen.getByTestId("shared-sessions").props.onRefresh(); });
+    expect(screen.getByTestId("shared-sessions").props.refreshing).toBe(true);
+    await act(async () => pending.shift()!({ sessions: [] }));
+    expect(screen.getByTestId("shared-sessions").props.refreshing).toBe(false);
   });
 });

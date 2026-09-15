@@ -230,6 +230,21 @@ describe("useRooms canonical reconciliation", () => {
     await waitFor(() => expect(messaging.markRead).toHaveBeenCalled());
   });
 
+  it("keeps a covered room unread, and marks it read as soon as it is uncovered", async () => {
+    const { result, rerender } = renderHook(({ roomVisible }) => useRooms(null, true, roomVisible), {
+      wrapper, initialProps: { roomVisible: false },
+    });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    act(() => { for (const handler of handlers) handler(messageEvent(firstMessage)); });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(messaging.markRead).not.toHaveBeenCalled();
+    // No focus event: closing the covering session is itself the visibility change.
+    rerender({ roomVisible: true });
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalled());
+  });
+
   it("keeps an inactive room unread and refreshes the directory on private hints", async () => {
     const { result } = renderHook(() => useRooms(null, false), { wrapper });
     act(() => result.current.selectRoom(room.roomId));

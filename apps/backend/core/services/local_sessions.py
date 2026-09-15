@@ -317,6 +317,9 @@ async def require_caller(auth: Caller, room: str) -> None:
         or not meta
         or meta.get("ownerId") != owner
         or await messaging_repo.get_member(room, "agent", auth.agent_id) is None
+        # An agent answers everyone in the room, and a shared room's foreign
+        # members must never hear this workspace's sessions.
+        or await messaging_repo.has_foreign_members(room, owner)
     ):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
 
@@ -532,16 +535,24 @@ async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSess
     status is not live."""
     projections = await asyncio.gather(*(repo.list_user_sessions(owner, human) for human in humans))
     sessions: list[LocalSession] = []
+    # One enrollment verdict per (human, device) per call: history piles up on one Mac.
+    enrolled: dict[tuple[str, str], bool] = {}
     for human, human_rows in zip(humans, projections):
-        for projection in human_rows:
-            row = await repo.get_session(owner, projection["sessionId"])
+        # ponytail: one concurrent read per historical row; an owner-keyed live index if history grows large.
+        rows = await asyncio.gather(*(repo.get_session(owner, p["sessionId"]) for p in human_rows))
+        for row in rows:
             if row is None or row.get("ownerId") != owner or row.get("humanUserId") != human:
                 continue
-            try:
-                await _enrolled(owner, row["humanUserId"], row["deviceId"])
-            except ApiProblem as exc:
-                if exc.error.code != "LOCAL_SESSION_FORBIDDEN":
-                    raise
+            key = (human, row["deviceId"])
+            if key not in enrolled:
+                try:
+                    await _enrolled(owner, human, row["deviceId"])
+                    enrolled[key] = True
+                except ApiProblem as exc:
+                    if exc.error.code != "LOCAL_SESSION_FORBIDDEN":
+                        raise
+                    enrolled[key] = False
+            if not enrolled[key]:
                 continue
             public = _session_public(row)
             if public.status in LIVE_STATUSES:

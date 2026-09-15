@@ -142,7 +142,9 @@ async def _actor_label(command: dict) -> dict | None:
     }
 
 
-async def publish_resources_changed(owner: str, human: str) -> None:
+async def publish_resources_changed(owner: str, human: str, *, workspace: bool = True) -> None:
+    """``workspace=False`` for transcript batches: the sidebar lists liveness, not
+    content, so only register/heartbeat/ended make every member refetch it."""
     from core.services.live_events import get_live_event_publisher, publish_owner_users
 
     # GSI is discovery only; current membership/scope is checked before publishing.
@@ -159,6 +161,8 @@ async def publish_resources_changed(owner: str, human: str) -> None:
     except Exception:
         # Hints are expendable; authorized HTTP polling repairs lost hints.
         logger.warning("Local session resource hint failed")
+    if not workspace:
+        return
     # Workspace-wide: the sidebar list is not room-scoped (spec §5). A failing room
     # publish above must not suppress this -- each hint fails independently.
     try:
@@ -481,7 +485,7 @@ class LocalSessionRelay:
         )
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if hint:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"])
+            await publish_resources_changed(row["ownerId"], row["humanUserId"], workspace=False)
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],

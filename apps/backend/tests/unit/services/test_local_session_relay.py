@@ -1220,3 +1220,27 @@ async def test_register_workspace_hint_survives_a_failing_room_publish(transport
     assert len(user_hints) == 2
     assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
     assert not any("/rooms/" in h["channel"] for h in transport[4])
+
+
+@pytest.mark.asyncio
+async def test_event_batches_hint_the_room_but_not_every_user_stream(transport, db):
+    """A streaming teammate must not make every member refetch the workspace list
+    once a second; liveness changes (register, heartbeat, ended) still do."""
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    sid = await start(transport)
+    assert any("/users/" in h["channel"] for h in transport[4])
+    transport[4].clear()
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.events",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "batchId": "b1",
+            "afterSeq": 0,
+            "events": [{"kind": "text", "role": "assistant", "text": "one"}],
+        },
+    )
+    assert any("/rooms/" in h["channel"] for h in transport[4])
+    assert not any("/users/" in h["channel"] for h in transport[4])

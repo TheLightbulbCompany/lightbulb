@@ -79,7 +79,12 @@ def _upsert_fixture(monkeypatch, *, room_kind: str) -> AsyncMock:
     monkeypatch.setattr(
         messaging,
         "require_room_admin",
-        AsyncMock(return_value=({"kind": room_kind, "roomId": ROOM}, {"kind": "human", "id": USER, "role": "owner"})),
+        AsyncMock(
+            return_value=(
+                {"kind": room_kind, "roomId": ROOM, "ownerId": OWNER},
+                {"kind": "human", "id": USER, "role": "owner"},
+            )
+        ),
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": AGENT, "name": "Friday"}]))

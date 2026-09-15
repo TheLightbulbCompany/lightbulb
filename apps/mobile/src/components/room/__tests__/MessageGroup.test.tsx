@@ -53,6 +53,7 @@ describe("MessageGroup reactions", () => {
     fireEvent(screen.getByTestId("message-group"), "longPress");
     expect(onLongPress).toHaveBeenCalledTimes(1);
     expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
+    (Haptics.impactAsync as jest.Mock).mockClear();
   });
 
   it("renders an applied reaction chip with its count", async () => {

@@ -11,17 +11,18 @@ const room = (id: string, extra: Partial<DirectoryRoom> = {}): DirectoryRoom => 
 const nameOf = (value: DirectoryRoom) => value.name ?? value.roomId;
 
 describe("groupRooms", () => {
-  it("orders starred, custom sections, channels, then direct messages", () => {
+  it("orders starred, custom sections, channels, group messages, then direct messages", () => {
     const groups = groupRooms(
-      [room("beta"), room("alpha", { starred: true }), room("dm-1", { kind: "dm" }), room("shipping", { sectionId: "s-1" })],
+      [room("beta"), room("alpha", { starred: true }), room("group", { kind: "group-dm", participants: [{ kind: "human", id: "a", displayName: "A", mentionHandle: null }] }), room("dm-1", { kind: "dm", participants: [{ kind: "human", id: "b", displayName: "B", mentionHandle: null }] }), room("shipping", { sectionId: "s-1" })],
       [{ id: "s-1", name: "Ship" }],
       { sort: "alpha", nameOf },
     );
-    expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "Channels", "Direct messages"]);
+    expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "Channels", "Group messages", "Direct messages"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["alpha"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["shipping"]);
     expect(groups[2].rooms.map((value) => value.roomId)).toEqual(["beta"]);
-    expect(groups[3].rooms.map((value) => value.roomId)).toEqual(["dm-1"]);
+    expect(groups[3].rooms.map((value) => value.roomId)).toEqual(["group"]);
+    expect(groups[4].rooms.map((value) => value.roomId)).toEqual(["dm-1"]);
   });
 
   it("separates shared channels into External connections using the canonical attribute", () => {
@@ -42,10 +43,23 @@ describe("groupRooms", () => {
       .toEqual(["Channels"]);
   });
 
-  it("keeps group DMs inside Direct messages", () => {
-    const groups = groupRooms([room("g", { kind: "group-dm" }), room("d", { kind: "dm" })], [], { sort: "alpha", nameOf });
-    expect(groups.map((group) => group.label)).toEqual(["Direct messages"]);
-    expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["d", "g"]);
+  it("separates group conversations from strict 1:1 direct messages", () => {
+    const counterpart = { kind: "human" as const, id: "a", displayName: "A", mentionHandle: null };
+    const groups = groupRooms([
+      room("g", { kind: "group-dm", participants: [counterpart, { ...counterpart, id: "b", displayName: "B" }] }),
+      room("d", { kind: "dm", participants: [counterpart] }),
+      room("legacy-group", { kind: "dm", participants: [counterpart, { ...counterpart, id: "c", displayName: "C" }] }),
+    ], [], { sort: "alpha", nameOf });
+    expect(groups.map((group) => group.label)).toEqual(["Group messages", "Direct messages"]);
+    expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["g", "legacy-group"]);
+    expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["d"]);
+  });
+
+  it("suppresses unresolved direct-message ghosts until counterpart metadata resolves", () => {
+    const unresolved = room("ghost", { kind: "dm", name: null, participants: [] });
+    expect(groupRooms([unresolved], [], { sort: "alpha", nameOf })).toEqual([]);
+    const resolved = { ...unresolved, participants: [{ kind: "agent" as const, id: "friday", displayName: "Friday", mentionHandle: null }] };
+    expect(groupRooms([resolved], [], { sort: "alpha", nameOf })[0].rooms).toEqual([resolved]);
   });
 
   it("shows a room once — starred beats its section, which beats its kind", () => {

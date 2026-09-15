@@ -14,7 +14,7 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
-import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
+import { groupRooms, isResolvedSidebarRoom, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -171,21 +171,26 @@ function DirectoryContent({
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
   });
   const partialError = state === "error" && rooms.length > 0;
+  // Keep unresolved room summaries in the workspace state, but out of every
+  // sidebar projection until member metadata arrives. This prevents a hidden
+  // ghost from becoming a keyboard or Drafts destination too.
+  const sidebarRooms = rooms.filter(isResolvedSidebarRoom);
   // Muted rooms are unread but never a jump destination -- same predicate
   // the Alt+Shift+Arrow shortcut uses, so the chevron cannot disagree with it.
-  const unreadRooms = rooms.filter(isUnreadTarget);
+  const unreadRooms = sidebarRooms.filter(isUnreadTarget);
   // A drafted room can be absent from `rooms` (left, or directory still
   // loading) — gate the section on this filtered list, not on
   // draftRoomIds.length, or the heading renders over an empty list.
-  const draftedRooms = rooms.filter((room) => draftRoomIds.includes(room.roomId));
+  const draftedRooms = sidebarRooms.filter((room) => draftRoomIds.includes(room.roomId));
   // Slack's Direct messages section is the roster, not the list of rooms that
   // happen to exist: every person and agent gets a row, and a click opens (or
-  // creates) the 1:1 DM. Group chats stay as rooms.
+  // creates) the 1:1 DM. Only resolved 1:1 rooms suppress a roster row; an
+  // incomplete summary must not replace a real person with a generic ghost.
   const dmCounterpart = (room: DirectoryRoom) => room.kind === "dm" && room.participants.length === 1
     ? `${room.participants[0].kind}:${room.participants[0].id}` : null;
-  const withDm = new Set(rooms.map(dmCounterpart));
+  const withDm = new Set(sidebarRooms.map(dmCounterpart));
   const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`));
-  const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
+  const groups = groupRooms(sidebarRooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
     alwaysShow: roster.length > 0 ? ["direct"] : [] });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
@@ -293,7 +298,7 @@ function DirectoryContent({
   }
 
   function selectNextUnread() {
-    const next = nextUnreadRoomId(rooms, currentRoomId ?? null, 1);
+    const next = nextUnreadRoomId(sidebarRooms, currentRoomId ?? null, 1);
     if (next) onSelectRoom(next);
   }
 
@@ -371,9 +376,9 @@ function DirectoryContent({
     {sessions.length > 0 && (() => {
       const collapsed = prefs.collapsed.includes("sessions");
       const listId = `${id}-group-sessions`;
-      return <section aria-label="Sessions">
+      return <section aria-label="Shared coding sessions">
         {groupHeader({
-          id: "sessions", label: "Sessions", listId, collapsed,
+          id: "sessions", label: "Shared coding sessions", listId, collapsed,
           badge: collapsed && <span className="room-count" aria-label={`${sessions.length} live session${sessions.length === 1 ? "" : "s"}`}>{sessions.length}</span>,
         })}
         {/* Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared). */}
@@ -525,7 +530,7 @@ function DirectoryContent({
       <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { if (manageTrigger.current?.isConnected) { event.preventDefault(); manageTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle>Manage sections</DialogTitle>
-          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels, External connections, or Direct messages.</DialogDescription>
+          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels, External connections, Group messages, or Direct messages.</DialogDescription>
         </DialogHeader>
         {sections.length > 0 && <ul className="grid gap-2">{sections.map((section) => <li key={section.id} className="room-section-edit">
           {/* Both accessible names stay on the SAVED name: a control whose name
@@ -556,7 +561,7 @@ function DirectoryContent({
         {blankName && <p id={blankHintId} className="text-sm text-muted-foreground">Every section needs a name.</p>}
         {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
-          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels, External connections, or Direct messages.</p>
+          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels, External connections, Group messages, or Direct messages.</p>
           <div className="room-composer-actions">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}

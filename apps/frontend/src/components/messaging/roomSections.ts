@@ -9,12 +9,21 @@ export interface RoomGroup {
   custom: boolean;
 }
 
+export function isResolvedSidebarRoom(room: DirectoryRoom): boolean {
+  return room.kind === "channel" || room.participants.length > 0;
+}
+
 /**
  * The sidebar's groups, in display order: Starred · the owner's custom
- * sections · Channels · External connections · Direct messages (both `dm`
- * and `group-dm` — the spec has no separate "Group chats" section). Every room lands in exactly one
- * group, and empty groups are dropped unless named in `alwaysShow` (the
- * sidebar keeps Direct messages for the roster even before any DM exists).
+ * sections · Channels · External connections · Group messages · Direct
+ * messages. Every resolved room lands in exactly one group, and empty groups
+ * are dropped unless named in `alwaysShow` (the sidebar keeps Direct messages
+ * for the roster even before any DM exists).
+ *
+ * A non-channel room without resolved participant metadata is deliberately
+ * omitted. The room remains in the caller's data and will naturally appear on
+ * a later render once its summary includes members; rendering a DM early would
+ * create the misleading generic "Direct message" ghost row.
  */
 export function groupRooms(
   rooms: readonly DirectoryRoom[],
@@ -22,19 +31,26 @@ export function groupRooms(
   options: { sort: SidebarSort; nameOf: (room: DirectoryRoom) => string; alwaysShow?: readonly string[] },
 ): RoomGroup[] {
   const known = new Set(sections.map((section) => section.id));
-  const bucket = (room: DirectoryRoom) => room.starred ? "starred"
+  const bucket = (room: DirectoryRoom) => !isResolvedSidebarRoom(room) ? null
+    : room.starred ? "starred"
     : room.sectionId && known.has(room.sectionId) ? room.sectionId
       : room.kind === "channel" && room.shared ? "external"
-        : room.kind === "channel" ? "channels" : "direct";
+        : room.kind === "channel" ? "channels"
+          : room.kind === "group-dm" || room.participants.length > 1 ? "group"
+            : "direct";
   const order: RoomGroup[] = [
     { id: "starred", label: "Starred", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),
     { id: "channels", label: "Channels", rooms: [], custom: false },
     { id: "external", label: "External connections", rooms: [], custom: false },
+    { id: "group", label: "Group messages", rooms: [], custom: false },
     { id: "direct", label: "Direct messages", rooms: [], custom: false },
   ];
   const byId = new Map(order.map((group) => [group.id, group]));
-  for (const room of rooms) byId.get(bucket(room))?.rooms.push(room);
+  for (const room of rooms) {
+    const groupId = bucket(room);
+    if (groupId) byId.get(groupId)?.rooms.push(room);
+  }
   // A muted room never carries a badge, so it never jumps the queue either.
   const unread = (room: DirectoryRoom) => room.muted ? 0 : room.unreadCount;
   for (const group of order) {

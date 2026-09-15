@@ -52,7 +52,7 @@ it("preserves a failed draft and disables member controls while creating", async
 // Room-name matchers are anchored: every row now carries a "Conversation
 // actions for <name>" overflow trigger, which an unanchored /Name/ would
 // match as well.
-it("separates channels from direct messages, keeping group DMs — with stacked avatars — inside Direct messages, while preserving selection and unread counts", () => {
+it("separates channels, group messages, and 1:1 direct messages while preserving selection and unread counts", () => {
   const onSelectRoom = vi.fn();
   render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} currentRoomId="friday-dm" participants={[]}
     onSelectRoom={onSelectRoom} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} rooms={[
@@ -61,19 +61,30 @@ it("separates channels from direct messages, keeping group DMs — with stacked 
     { ...base, roomId: "group", kind: "group-dm", name: "Launch crew", participants: [alice, atlas] },
   ]} />);
   expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
-  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const groupMessages = within(screen.getByRole("region", { name: "Group messages" }));
   // The facepile is decorative — the row already announces "Launch crew" — so
   // the avatars are found with `hidden`.
-  const groupRow = directMessages.getByRole("button", { name: /^Launch crew/ });
+  const groupRow = groupMessages.getByRole("button", { name: /^Launch crew/ });
   expect(within(groupRow).getByRole("img", { name: "Alice", hidden: true })).toBeInTheDocument();
   expect(within(groupRow).getByRole("img", { name: "Atlas", hidden: true })).toBeInTheDocument();
-  expect(screen.queryByRole("region", { name: "Group chats" })).not.toBeInTheDocument();
+  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
   const row = directMessages.getByRole("button", { name: /^Friday/ });
   expect(row).toHaveAttribute("aria-current", "page");
   expect(within(row).getByLabelText("3 unread messages")).toHaveTextContent("3");
   expect(within(row).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   fireEvent.click(row);
   expect(onSelectRoom).toHaveBeenCalledWith("friday-dm");
+});
+
+it("does not render a generic DM ghost and reveals the same room when its counterpart resolves", () => {
+  const props = { ownerScopeId: "org", sections: [], state: "ready" as const, participants: [], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn() };
+  const unresolved = { ...base, roomId: "late-dm", kind: "dm" as const, name: null, participants: [] };
+  const { rerender } = render(<RoomDirectory {...props} rooms={[unresolved]} />);
+  expect(screen.queryByRole("button", { name: /^Direct message/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Direct messages" })).not.toBeInTheDocument();
+
+  rerender(<RoomDirectory {...props} rooms={[{ ...unresolved, participants: [friday] }]} />);
+  expect(within(screen.getByRole("region", { name: "Direct messages" })).getByRole("button", { name: /^Friday/ })).toBeInTheDocument();
 });
 
 it("marks a conversation unread and navigates to the next unread conversation", async () => {
@@ -662,15 +673,17 @@ it("separates shared channels into External connections, retains their indicator
   expect(screen.queryByRole("menuitem", { name: /Leave/ })).not.toBeInTheDocument();
 });
 
-it("hides empty Channels and External connections sections", () => {
+it("hides empty Channels, External connections, and Group messages sections", () => {
   const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
     onSelectRoom: vi.fn(), onSelectParticipant: vi.fn() };
   const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, shared: true }]} />);
   expect(screen.getByRole("region", { name: "External connections" })).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Channels" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Group messages" })).not.toBeInTheDocument();
   rerender(<RoomDirectory {...props} rooms={[base]} />);
   expect(screen.getByRole("region", { name: "Channels" })).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "External connections" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Group messages" })).not.toBeInTheDocument();
 });
 
 it("keeps the selected external channel visible when External connections is collapsed", async () => {
@@ -687,25 +700,25 @@ it("keeps the selected external channel visible when External connections is col
   expect(screen.getByRole("button", { name: "Expand External connections" })).toHaveAttribute("aria-expanded", "false");
 });
 
-it("lists live sessions above the room groups, hides the section when empty, and opens one on click", async () => {
+it("lists shared coding sessions above the room groups, hides the section when empty, and opens one on click", async () => {
   const onSelectSession = vi.fn();
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status: "busy" as const, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title: "Fix login", lastEventAt: new Date().toISOString() };
   const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     sessions={[{ session, ownerName: "Alice", own: false }]} onSelectSession={onSelectSession} />);
-  const section = screen.getByRole("region", { name: "Sessions" });
+  const section = screen.getByRole("region", { name: "Shared coding sessions" });
   expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await userEvent.click(within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, Working/ }));
   expect(onSelectSession).toHaveBeenCalledWith("s1");
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[]} />);
-  expect(screen.queryByRole("region", { name: "Sessions" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Shared coding sessions" })).not.toBeInTheDocument();
 });
 
-it("collapses the Sessions section through the shared prefs and keeps a count", async () => {
+it("collapses Shared coding sessions through the shared prefs and keeps a count", async () => {
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "me", provider: "codex" as const, providerVersion: "0.149.0", generation: "g", status: "idle" as const, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0 };
   render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[{ session, ownerName: "Me", own: true }]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Collapse Sessions" }));
+  await userEvent.click(screen.getByRole("button", { name: "Collapse Shared coding sessions" }));
   expect(screen.getByLabelText("1 live session")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();
 });

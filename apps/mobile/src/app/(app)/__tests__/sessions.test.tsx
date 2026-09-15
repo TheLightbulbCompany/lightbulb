@@ -41,20 +41,26 @@ jest.mock("../../../lib/rooms", () => {
   return {
     useMobileRooms: () => {
       const [selectRoomError, setSelectRoomError] = useState(null as string | null);
+      const selectDm = async (participant: { kind: string; id: string }, options: { activate?: boolean }) => {
+        try {
+          const roomId = await mockSelectDm(participant, options);
+          setSelectRoomError(null);
+          return roomId;
+        } catch {
+          setSelectRoomError("this conversation could not be opened");
+          throw new Error("this conversation could not be opened");
+        }
+      };
       return {
         rooms: mockRoomsList,
         activeRoomId: null,
         resourceSource: mockResourceSource,
-        selectDm: async (participant: { kind: string; id: string }, options: { activate?: boolean }) => {
-          try {
-            const roomId = await mockSelectDm(participant, options);
-            setSelectRoomError(null);
-            return roomId;
-          } catch {
-            setSelectRoomError("this conversation could not be opened");
-            throw new Error("this conversation could not be opened");
-          }
-        },
+        selectDm,
+        // useRooms' session-host rule (pinned in @lightbulb/shared), over this
+        // double's selection: no active room, so your own goes to the first.
+        sessionContextRoom: (session: { humanUserId: string }, userId?: string | null) => session.humanUserId === userId
+          ? mockRoomsList[0].roomId
+          : selectDm({ kind: "human", id: session.humanUserId }, { activate: false }),
         selectRoomError,
       };
     },

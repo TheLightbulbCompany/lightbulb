@@ -504,12 +504,12 @@ export function MessagingWorkspaceProvider({
   const [sessionTarget, setSessionTarget] = useState<{ roomId: string; sessionId: string; nonce: number } | null>(null);
   const sessionNonce = useRef(0);
   const selectRoom = rooms.selectRoom;
-  const selectDm = rooms.selectDm;
+  const sessionContextRoom = rooms.sessionContextRoom;
   // A permalink applied before the workspace session list lands (a cold load,
   // a new tab, a deep link) cannot yet tell a live session from an ended one,
   // so it waits here and is replayed once the list settles.
   const heldLink = useRef<{ sessionId: string; roomId?: string } | null>(null);
-  // openSession awaits selectDm() for someone else's live session. Bumped at
+  // openSession awaits the sharer's DM for someone else's live session. Bumped at
   // the start of every openSession call and by every path that clears
   // sessionFocus (closeSession, the directory picks that route through it,
   // openMessage, and the room-change clear effect below), so a slow resolve
@@ -538,20 +538,21 @@ export function MessagingWorkspaceProvider({
       return;
     }
     const own = live.humanUserId === userId;
-    let contextRoom = own ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null : null;
-    if (!own) {
+    let contextRoom = sessionContextRoom(live, userId);
+    // Someone else's session: their DM resolves without activating it, and is
+    // selected here with the focus, in one render. An existing DM activated
+    // during the resolve would move the room synchronously, and the
+    // room-change effect below would read that as leaving focus.
+    if (contextRoom instanceof Promise) {
       try {
-        // Resolved without activating: the DM and the focus must land in one
-        // render. An existing DM activated here moves the room synchronously,
-        // and the room-change effect below reads that as leaving focus.
-        contextRoom = await selectDm({ kind: "human", id: live.humanUserId }, { activate: false });
+        contextRoom = await contextRoom;
       } catch {
         // Already on screen as selectRoomError; a link still has its own room to open in.
         if (focusRequest.current === requestId && from === "link") placeInRoom();
         return;
       }
       // Stale: a newer open, a close, or a directory pick already won while
-      // this awaited selectDm() was in flight. null: a room was picked while it
+      // the DM resolve was in flight. null: a room was picked while it
       // ran (useRooms answers null when superseded). The owner is elsewhere now.
       if (focusRequest.current !== requestId || !contextRoom) return;
       selectRoom(contextRoom);
@@ -560,7 +561,7 @@ export function MessagingWorkspaceProvider({
     setTarget(null);
     setSessionTarget(null);
     setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom, own });
-  }, [workspaceSessions.sessions, workspaceSessions.loading, userId, rooms.activeRoomId, rooms.rooms, selectDm, selectRoom, humanName]);
+  }, [workspaceSessions.sessions, workspaceSessions.loading, userId, sessionContextRoom, selectRoom, humanName]);
   useEffect(() => {
     const link = heldLink.current;
     if (!link || workspaceSessions.loading) return;

@@ -14,8 +14,8 @@ import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../lib/team
 /**
  * Every live shared session in the workspace, grouped by person (yours
  * first) — the phone's twin of the web sidebar's session list. Tapping a
- * session resolves the same room web does (your own active/first room, or
- * the sharer's DM) and pushes the existing session screen.
+ * session resolves the same room web does (rooms.sessionContextRoom) and
+ * pushes the existing session screen.
  */
 export default function SharedSessionsScreen() {
   const { userId } = useAuth();
@@ -56,12 +56,11 @@ export default function SharedSessionsScreen() {
     openingRef.current = true;
     setOpening(session.sessionId);
     try {
-      const roomId = session.humanUserId === userId
-        ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
-        // A rejected resolve sets rooms.selectRoomError, rendered below (this
-        // screen — unlike web's global banner — is its own error surface);
-        // swallow the throw so the fire-and-forget onPress doesn't reject unhandled.
-        : await rooms.selectDm({ kind: "human", id: session.humanUserId }, { activate: false }).catch(() => null);
+      const room = rooms.sessionContextRoom(session, userId);
+      // A rejected DM resolve sets rooms.selectRoomError, rendered below (this
+      // screen — unlike web's global banner — is its own error surface);
+      // swallow the throw so the fire-and-forget onPress doesn't reject unhandled.
+      const roomId = room instanceof Promise ? await room.catch(() => null) : room;
       if (roomId) router.push(`/(app)/room/${roomId}/session/${session.sessionId}`);
     } finally {
       openingRef.current = false;

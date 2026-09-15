@@ -95,6 +95,36 @@ describe("useRooms platform seams", () => {
     await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 1 }));
   });
 
+  it("marks nothing read while the room is covered, and marks it read as soon as it is uncovered", async () => {
+    const { result, rerender } = renderHook(({ visible: shown }) => useRooms(platform(), { visible: shown }), {
+      wrapper, initialProps: { visible: false },
+    });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    act(() => { for (const listener of visibilityListeners) listener(); }); // a window focus while covered
+    expect(messaging.markRead).not.toHaveBeenCalled();
+    // No platform event: uncovering the room is itself the visibility change.
+    rerender({ visible: true });
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 1 }));
+  });
+
+  it("opens your own session beside the active or first room, and anyone else's beside their DM without activating it", async () => {
+    const dm: RoomDetail = {
+      ...room, roomId: "room-dm", kind: "dm", name: null,
+      members: [room.members[0], { ...room.members[0], id: "user-b", displayName: "Bob", role: "member" }],
+    };
+    messaging.listRooms.mockResolvedValue({ rooms: [room, dm], sections: [] });
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+    expect(result.current.sessionContextRoom({ humanUserId: "user-a" }, "user-a")).toBe(room.roomId);
+    let theirs: string | null = null;
+    await act(async () => { theirs = await result.current.sessionContextRoom({ humanUserId: "user-b" }, "user-a"); });
+    expect(theirs).toBe(dm.roomId);
+    expect(result.current.activeRoomId).toBeNull();
+    act(() => result.current.selectRoom(dm.roomId));
+    expect(result.current.sessionContextRoom({ humanUserId: "user-a" }, "user-a")).toBe(dm.roomId);
+  });
+
   it("reconciles history when the live channel carries the workspace prefix", async () => {
     live.liveChannels = [`/ws/ws-1/rooms/${room.roomId}/${room.deliveryKey}`];
     const { result } = renderHook(() => useRooms(platform()), { wrapper });

@@ -14,57 +14,35 @@ import { AppState } from "react-native";
 
 import { useLiveEvents } from "../providers/live-events";
 
+const appActive = () => AppState.currentState === "active";
+const onAppStateChange = (listener: () => void) => {
+  const subscription = AppState.addEventListener("change", () => listener());
+  return () => subscription.remove();
+};
+
 /**
- * The phone's half of RoomsPlatform.
- *
- * `visible` is the SCREEN's own focus (expo-router blurs a pushed screen
- * without backgrounding the app), ANDed with AppState — the shared hook's
- * read-marking rule is "on screen and in the foreground", and on a phone
- * those are two different facts.
+ * The phone's half of RoomsPlatform: AppState. The SCREEN's own focus
+ * (expo-router blurs a pushed screen without backgrounding the app) is the
+ * shared hook's `visible` option — the read-marking rule is "on screen and in
+ * the foreground", and on a phone those are two different facts.
  */
-export function useRoomsPlatform(visible = true): RoomsPlatform {
+export function useRoomsPlatform(): RoomsPlatform {
   const { userId } = useAuth();
   const { organization } = useOrganization();
   const live = useLiveEvents();
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
-  const isVisible = useCallback(
-    () => visibleRef.current && AppState.currentState === "active",
-    [],
-  );
-  const listeners = useRef(new Set<() => void>());
-  const onVisibilityChange = useCallback((listener: () => void) => {
-    listeners.current.add(listener);
-    const subscription = AppState.addEventListener("change", () => listener());
-    return () => {
-      listeners.current.delete(listener);
-      subscription.remove();
-    };
-  }, []);
-  // The screen's own focus is the other half of isVisible(), so a change in it
-  // has to notify too — AppState alone leaves a room that was blurred by a
-  // pushed thread screen never re-marking read on the way back. Firing on
-  // mount is a no-op: the shared hook subscribes in a later effect and calls
-  // markVisibleRead() itself there, so the set is still empty here.
-  useEffect(() => {
-    for (const listener of listeners.current) listener();
-  }, [visible]);
   return useMemo(() => ({
     userId: userId ?? null,
     orgId: organization?.id ?? null,
     live,
-    isVisible,
-    onVisibilityChange,
+    isVisible: appActive,
+    onVisibilityChange: onAppStateChange,
     uuid: () => randomUUID(),
-  }), [userId, organization?.id, live, isVisible, onVisibilityChange]);
+  }), [userId, organization?.id, live]);
 }
 
 /** The room machine, wired to this phone. */
-export function useMobileRooms(
-  options: UseRoomsOptions & { visible?: boolean } = {},
-): UseRoomsResult {
-  const { visible = true, ...roomOptions } = options;
-  return useRooms(useRoomsPlatform(visible), roomOptions);
+export function useMobileRooms(options: UseRoomsOptions = {}): UseRoomsResult {
+  return useRooms(useRoomsPlatform(), options);
 }
 
 /** One not-yet-canonical message a room screen still has to draw. */

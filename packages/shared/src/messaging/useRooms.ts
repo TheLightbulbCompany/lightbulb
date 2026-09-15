@@ -17,6 +17,7 @@ import type {
   CreateMessageRequest,
   UpdateMessageRequest,
   CreateRoomRequest,
+  LocalSession,
   MemberPrefsRequest,
   MessagePage,
   MemberRef,
@@ -69,8 +70,9 @@ export interface RoomsPlatform {
    * must pass it through, never rebuild it.
    */
   live: RoomsLiveSource;
-  /** True when this room surface is on screen AND the app is foregrounded.
-   *  Web: document visible + window focused. Mobile: AppState active. */
+  /** True when the app is foregrounded: web, document visible + window
+   *  focused; mobile, AppState active. Whether the room itself is on screen is
+   *  `UseRoomsOptions.visible`. */
   isVisible(): boolean;
   /** Subscribe to changes in `isVisible()`. MUST be referentially stable, as must `isVisible`. */
   onVisibilityChange(listener: () => void): () => void;
@@ -83,6 +85,13 @@ export interface UseRoomsOptions {
   subscribeToRoom?: boolean;
   /** Select rooms[0] when nothing is active (the web sidebar's behaviour). */
   autoSelect?: boolean;
+  /**
+   * The room is on screen: false while something covers it (web: a session in
+   * focus) or for a surface that belongs to no single room (mobile's list,
+   * thread and session screens). It marks nothing read while false, and
+   * re-runs the read when it turns true.
+   */
+  visible?: boolean;
 }
 
 export type UseRoomsResult = ReturnType<typeof useRooms>;
@@ -96,7 +105,7 @@ const failureMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
-  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true } = options;
+  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, visible = true } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
@@ -477,7 +486,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
 
   const markVisibleRead = useCallback(() => {
     const sequence = lastSequence(messages);
-    if (!subscribeToRoom || !isVisible() ||
+    if (!subscribeToRoom || !visible || !isVisible() ||
         !activeRoom || manuallyUnreadRoom.current === activeRoom.roomId ||
         sequence <= activeRoom.lastReadSeq || accessRemoved) return;
     // Marking read used to be followed by a full room-detail GET *and* a full
@@ -515,7 +524,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     void operation.finally(() => {
       if (pendingRead.current === operation) pendingRead.current = null;
     });
-  }, [messages, activeRoom, accessRemoved, subscribeToRoom, isVisible, messaging, mutateRoom, mutateRooms]);
+  }, [messages, activeRoom, accessRemoved, subscribeToRoom, visible, isVisible, messaging, mutateRoom, mutateRooms]);
 
   // `markVisibleRead` closes over `messages`, so its identity changes on every
   // message. Reading it through a ref is what lets `selectRoom` be
@@ -526,11 +535,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const markVisibleReadRef = useRef(markVisibleRead);
   markVisibleReadRef.current = markVisibleRead;
 
+  // `visible`: uncovering the room is a visibility change like a window focus.
   useEffect(() => {
     const run = () => markVisibleReadRef.current();
     run();
     return onVisibilityChange(run);
-  }, [messages, activeRoom, onVisibilityChange]);
+  }, [messages, activeRoom, onVisibilityChange, visible]);
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
@@ -689,6 +699,18 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     [selectDm],
   );
 
+  /**
+   * The room a shared session opens beside: your own session keeps the room
+   * you are in (or the first room); anyone else's is their DM, resolved
+   * without activating it, so the caller can select it and place the session
+   * in one render. Only that DM case is async.
+   */
+  const sessionContextRoom = useCallback((session: Pick<LocalSession, "humanUserId">, viewerId: string | null | undefined): string | null | Promise<string | null> =>
+    session.humanUserId === viewerId
+      ? activeRoomId ?? rooms[0]?.roomId ?? null
+      : selectDm({ kind: "human", id: session.humanUserId }, { activate: false }),
+  [activeRoomId, rooms, selectDm]);
+
   useEffect(() => {
     if (!roomsData) return;
     if (!initialAgentId) {
@@ -834,6 +856,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     resourceSource: { client: messaging, onEvent, connectionRevision },
     selectDm,
     selectAgentDm,
+    sessionContextRoom,
     directoryRoomDetails,
     refreshRooms: () => mutateRooms(),
     refreshRoom: () => mutateRoom(),

@@ -61,8 +61,16 @@ const room: RoomDetail = {
     { kind: "agent", id: "agent-friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 },
   ],
 };
+/** useRooms' session-host rule (pinned in @lightbulb/shared), over a double's own selection. */
+function hostRoom(
+  rooms: { activeRoomId: string | null; rooms: { roomId: string }[]; selectDm: (participant: { kind: "human"; id: string }, options: { activate: boolean }) => Promise<string | null> },
+  session: { humanUserId: string }, userId?: string | null,
+) {
+  return session.humanUserId === userId ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
+    : rooms.selectDm({ kind: "human", id: session.humanUserId }, { activate: false });
+}
 const state = {
-  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
+  resourceSource:{ client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -71,6 +79,7 @@ const state = {
   historyLoading: false, historyComplete: false, historyError: false, historyErrorMessage: null as string | null,
   loadHistory: vi.fn(), selectRoomError: null as string | null,
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
+  sessionContextRoom: (session: { humanUserId: string }, userId?: string | null): string | null | Promise<string | null> => hostRoom(state, session, userId),
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
   upsertMember: vi.fn(), removeMember: vi.fn(), sendMessage: vi.fn(), reconcileSend: vi.fn(),
@@ -784,7 +793,7 @@ it("drops a held permalink when a conversation is picked before the session list
 function selectRoomsSynchronously() {
   mocks.rooms.mockImplementation(function useRoomsWithRealSelection() {
     const [activeRoomId, setActiveRoomId] = useState<string | null>(room.roomId);
-    return {
+    const value = {
       ...state,
       activeRoomId,
       activeRoom: activeRoomId ? { ...room, roomId: activeRoomId } : null,
@@ -795,6 +804,7 @@ function selectRoomsSynchronously() {
         return Promise.resolve("dm-colleague");
       },
     };
+    return { ...value, sessionContextRoom: (session: { humanUserId: string }, userId?: string | null) => hostRoom(value, session, userId) };
   });
 }
 

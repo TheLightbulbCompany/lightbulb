@@ -38,16 +38,14 @@ describe("useRoomsPlatform", () => {
     expect(result.current.uuid()).toBe("22222222-2222-4222-8222-222222222222");
   });
 
-  it("is visible only while AppState is active and the screen says so", async () => {
+  // The screen's own focus is the shared hook's `visible` option (useRooms.test.tsx).
+  it("is visible only while AppState is active", async () => {
     const appState = AppState as { currentState: string | null };
     const original = appState.currentState;
     appState.currentState = "active";
-    const { result, rerender } = await renderHook(({ v }: { v: boolean }) => useRoomsPlatform(v), { initialProps: { v: true } });
+    const { result } = await renderHook(() => useRoomsPlatform());
     expect(result.current.isVisible()).toBe(true);
     appState.currentState = "background";
-    expect(result.current.isVisible()).toBe(false);
-    appState.currentState = "active";
-    await rerender({ v: false });
     expect(result.current.isVisible()).toBe(false);
     appState.currentState = original;
   });
@@ -67,26 +65,6 @@ describe("useRoomsPlatform", () => {
     stop();
     expect(remove).toHaveBeenCalled();
     spy.mockRestore();
-  });
-
-  it("fires visibility listeners when the screen's own visible prop changes", async () => {
-    const { result, rerender } = await renderHook(({ v }: { v: boolean }) => useRoomsPlatform(v), { initialProps: { v: false } });
-    const seen = jest.fn();
-    const stop = result.current.onVisibilityChange(seen);
-    const platform = result.current;
-    await rerender({ v: true });
-    expect(seen).toHaveBeenCalledTimes(1);
-    // visible lives on a ref, so the platform object itself does not churn.
-    expect(result.current).toBe(platform);
-    stop();
-  });
-
-  it("fires nothing on a later visible change once the listener has unsubscribed", async () => {
-    const { result, rerender } = await renderHook(({ v }: { v: boolean }) => useRoomsPlatform(v), { initialProps: { v: false } });
-    const seen = jest.fn();
-    result.current.onVisibilityChange(seen)();
-    await rerender({ v: true });
-    expect(seen).not.toHaveBeenCalled();
   });
 
   it("keeps onVisibilityChange referentially stable across renders", async () => {

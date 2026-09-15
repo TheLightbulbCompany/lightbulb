@@ -4,7 +4,7 @@ import { useEffect } from "react";
 
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { parseAgentDeepLink } from "../../lib/deepLink";
-import type { NotificationData } from "../../lib/notifications";
+import { shouldSuppressBanner, type NotificationData } from "../../lib/notifications";
 
 type TapData = NotificationData & { url?: string; source?: string; issueId?: string };
 
@@ -31,6 +31,11 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
   return agentId ? [`/agent/${agentId}` as Href] : null;
 }
 
+/** The last tap routed, by notification id. A tap landing while this mounts
+ * is read from the stored response AND delivered by the native event after the
+ * clear below — it must route once. */
+let lastRouted: string | undefined;
+
 /**
  * Routes a tapped notification — the one that cold-started the app, or one
  * tapped while it was backgrounded.
@@ -44,6 +49,10 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
  * `useLastNotificationResponse` is the single source for both paths, and the
  * response is cleared once handled: the native module otherwise keeps
  * returning the last tap for the life of the process.
+ *
+ * It pushes over whatever is open rather than unwinding to the tabs: every
+ * pushed screen keeps its composer draft in its own state, and unwinding would
+ * throw an unsent message away.
  */
 export function NotificationTapRouter() {
   const response = Notifications.useLastNotificationResponse();
@@ -51,24 +60,25 @@ export function NotificationTapRouter() {
   useEffect(() => {
     if (!response) return;
     Notifications.clearLastNotificationResponse();
+    const id = response.notification.request.identifier;
+    if (id === lastRouted) return;
+    lastRouted = id;
+
     const data = response.notification.request.content.data as TapData | undefined;
     const hrefs = notificationHrefs(data);
     if (!hrefs) return;
-
-    // Already reading it: the message arrives live, and pushing would stack a
-    // second copy of the screen under the reader's back button.
     const current = getCurrentTarget();
-    if (
-      data?.roomId &&
-      current.roomId === data.roomId &&
-      current.threadId === (data.threadRootMessageId ?? null)
-    ) {
+    // Already on screen: the message arrives live, and a push would stack a
+    // second copy of the screen under the reader's back button.
+    if (shouldSuppressBanner(current, data ?? {})) return;
+
+    if (data?.roomId && current.roomId === data.roomId) {
+      // Inside that room already: a thread reply opens over it, and a room
+      // message read from one of its threads goes back down to the room.
+      if (data.threadRootMessageId) router.push(hrefs[hrefs.length - 1]);
+      else router.dismissTo(hrefs[0]);
       return;
     }
-
-    // Land on exactly [tabs, ...target], whatever was open when the app
-    // backgrounded, so the back button always leads home from the target.
-    if (router.canDismiss()) router.dismissAll();
     for (const href of hrefs) router.push(href);
   }, [response]);
 

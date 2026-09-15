@@ -125,10 +125,10 @@ jest.mock(
     getPermissionsAsync: jest.fn(async () => ({ status: "granted" })),
     requestPermissionsAsync: jest.fn(async () => ({ status: "granted" })),
     getExpoPushTokenAsync: jest.fn(async () => ({ data: "ExponentPushToken[test]" })),
-    getLastNotificationResponseAsync: jest.fn(async () => null),
+    useLastNotificationResponse: jest.fn(() => null),
+    clearLastNotificationResponse: jest.fn(),
     setNotificationHandler: jest.fn(),
     setBadgeCountAsync: jest.fn(async () => true),
-    addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
   }),
   { virtual: true },
 );

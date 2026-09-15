@@ -3,82 +3,22 @@ import { createApiClient } from "@lightbulb/shared";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
-import { router } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useMemo, useRef } from "react";
 
 import { makeAdapter } from "../../lib/adapter";
-import { parseAgentDeepLink } from "../../lib/deepLink";
 import {
   configureNotificationHandler,
-  type NotificationData,
   type NotificationTarget,
 } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
 
-/** Route a tapped notification (warm OR cold-start launch) to the conversation
- * it is about, the thread when it is a reply, or the Teams issue an agent is
- * waiting on.
- *
- * The Teams case is checked FIRST because it is the one that used to fall
- * through. Teams pushes deliberately carry no `agentId` — the backend omits it
- * because the id in that payload is a Paperclip agent uuid, which would route
- * into a gateway chat that does not exist (see `push_data` in
- * routers/paperclip_events.py) — so a tap matched neither branch below and
- * routed NOWHERE. The app opened wherever it last was, and "A task needs you"
- * left the reader hunting for a task with no way to reach it, usually via the
- * Approvals tab, which holds approvals only and so was empty. The identifiers
- * were already in the payload, shipped under a docstring promising "future
- * tap-routing"; this is that future.
- */
-function routeFromResponse(
-  response: Notifications.NotificationResponse | null,
-): void {
-  if (!response) return;
-  const data = response.notification.request.content.data as
-    | (NotificationData & { url?: string; source?: string; issueId?: string })
-    | undefined;
-
-  // Every Teams push concerns an issue — a thread interaction waiting on a
-  // reply, an approval, or a finished/failed run — so the issue detail screen
-  // is the right landing spot for all of them. `source` is required as well as
-  // `issueId` so an unrelated future payload carrying an issueId cannot
-  // silently claim this route.
-  if (data?.source === "teams" && data.issueId) {
-    router.push({
-      pathname: "/(app)/teams/issue/[id]",
-      params: { id: data.issueId },
-    });
-    return;
-  }
-
-  // A room push (the messaging projector's) lands in the conversation, or in
-  // the thread when it is a reply — the same two screens the in-app banner
-  // suppression checks against. Before the agent branch: a room push carries no
-  // agentId today, but the order makes that independent of the payload.
-  if (data?.roomId) {
-    router.push(
-      data.threadRootMessageId
-        ? `/(app)/room/${data.roomId}/thread/${data.threadRootMessageId}`
-        : `/(app)/room/${data.roomId}`,
-    );
-    return;
-  }
-
-  const agentId = data?.agentId;
-  if (agentId) {
-    router.push(`/agent/${agentId}`);
-    return;
-  }
-  const parsed = data?.url ? parseAgentDeepLink(data.url) : null;
-  if (parsed) router.push(`/agent/${parsed.agentId}`);
-}
-
 /**
  * Mounted inside the signed-in subtree (LiveEventsProvider). Requests notification
- * permission, registers the Expo push token with the backend, installs the
- * foreground-suppression handler, and routes notification taps (including the
- * one that cold-started the app) to the right conversation. Renders nothing.
+ * permission, registers the Expo push token with the backend and installs the
+ * foreground-suppression handler. Renders nothing. Taps are routed by
+ * `NotificationTapRouter`, which has to wait for the signed-in Stack to exist —
+ * this component mounts before the gates and must not navigate.
  */
 export function PushRegistration({
   getCurrentTarget,
@@ -130,27 +70,6 @@ export function PushRegistration({
       cancelled = true;
     };
   }, [api, userId]);
-
-  // Tap routing. The launch (cold-start) response is delivered ONLY via
-  // getLastNotificationResponseAsync — the listener below mounts too late
-  // (behind async Clerk auth) to catch it, so without this a tap that
-  // cold-starts the app would never open the notified agent's chat. Stable
-  // deps ([]) so the listener is not re-subscribed on every render.
-  useEffect(() => {
-    let cancelled = false;
-    Notifications.getLastNotificationResponseAsync()
-      .then((r) => {
-        if (!cancelled) routeFromResponse(r);
-      })
-      .catch(() => {});
-    const sub = Notifications.addNotificationResponseReceivedListener(
-      routeFromResponse,
-    );
-    return () => {
-      cancelled = true;
-      sub.remove();
-    };
-  }, []);
 
   // Foreground-suppression handler (reads the on-screen conversation at
   // handle-time).

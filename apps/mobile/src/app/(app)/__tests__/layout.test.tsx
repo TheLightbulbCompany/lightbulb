@@ -34,14 +34,27 @@ jest.mock("expo-router/react-navigation", () => ({
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ isSignedIn: true, isLoaded: true }),
 }));
+// Consent is still being read from the keychain until a test says otherwise.
+let mockConsentGranted = true;
 jest.mock("../../../components/consent/AiConsentGate", () => ({
-  AiConsentGate: ({ children }: { children?: ReactNode }) => children,
+  AiConsentGate: ({ children }: { children?: ReactNode }) => (mockConsentGranted ? children : null),
 }));
 jest.mock("../../../components/provision/ProvisionGate", () => ({
   ProvisionGate: ({ children }: { children?: ReactNode }) => children,
 }));
+let mockPushRegistrations = 0;
+let mockTapRouters = 0;
 jest.mock("../../../components/push/PushRegistration", () => ({
-  PushRegistration: () => null,
+  PushRegistration: () => {
+    mockPushRegistrations += 1;
+    return null;
+  },
+}));
+jest.mock("../../../components/push/NotificationTapRouter", () => ({
+  NotificationTapRouter: () => {
+    mockTapRouters += 1;
+    return null;
+  },
 }));
 jest.mock("../../../providers/live-events", () => ({
   LiveEventsProvider: ({ children }: { children?: ReactNode }) => children,
@@ -60,6 +73,9 @@ const titleOf = (name: string) => {
 beforeEach(() => {
   mockScreens.length = 0;
   mockFocusedTab = undefined;
+  mockConsentGranted = true;
+  mockPushRegistrations = 0;
+  mockTapRouters = 0;
 });
 
 // The defect this restructure fixes: a conversation used to be a HIDDEN TAB
@@ -117,4 +133,19 @@ it("titles the tabs header from the focused tab", async () => {
   mockScreens.length = 0;
   await render(<AppLayout />);
   expect(titleOf("(tabs)")).toBe("DMs");
+});
+
+// The cold-start loop: a tap routed while the gates still hid the Stack made
+// expo-router push a second copy of the whole (app) group onto the root stack,
+// whose own router pushed again. Token registration may run behind the gates;
+// tap routing must not.
+it("routes notification taps only once the gated Stack is mounted", async () => {
+  mockConsentGranted = false;
+  await render(<AppLayout />);
+  expect(mockPushRegistrations).toBeGreaterThan(0);
+  expect(mockTapRouters).toBe(0);
+
+  mockConsentGranted = true;
+  await render(<AppLayout />);
+  expect(mockTapRouters).toBeGreaterThan(0);
 });

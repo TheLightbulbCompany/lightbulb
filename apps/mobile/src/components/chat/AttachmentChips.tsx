@@ -1,4 +1,5 @@
 import Feather from "@expo/vector-icons/Feather";
+import { Image } from "expo-image";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
@@ -28,7 +29,16 @@ export function AttachmentChips({
     <View style={styles.row}>
       {attachments.map((a) => (
         <View key={a.id} style={styles.chip}>
-          <Feather name="file" size={12} color={colors.mute} />
+          {a.mimeType.startsWith("image/") ? (
+            <Image
+              source={{ uri: a.uri }}
+              style={styles.preview}
+              contentFit="cover"
+              accessibilityLabel={`Preview ${a.name}`}
+            />
+          ) : (
+            <Feather name="file" size={12} color={colors.mute} />
+          )}
           <Text style={styles.name} numberOfLines={1}>
             {a.name}
           </Text>
@@ -65,6 +75,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     maxWidth: "80%",
+  },
+  preview: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.md,
+    backgroundColor: colors.edge,
   },
   name: {
     fontFamily: fonts.sans,

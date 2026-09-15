@@ -20,7 +20,8 @@
       "appleTeamId": "WZX4U3C22Y",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSPhotoLibraryUsageDescription": "Lightbulb lets you attach photos from your library to chat messages for your agents."
+        "NSPhotoLibraryUsageDescription": "Lightbulb lets you attach photos from your library to chat messages for your agents.",
+        "NSCameraUsageDescription": "Lightbulb lets you take photos to attach to chat messages for your agents."
       },
       "entitlements": {
         "aps-environment": "production"
@@ -46,7 +47,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Lightbulb lets you attach photos from your library to chat messages for your agents.",
-          "cameraPermission": false,
+          "cameraPermission": "Lightbulb lets you take photos to attach to chat messages for your agents.",
           "microphonePermission": false
         }
       ]

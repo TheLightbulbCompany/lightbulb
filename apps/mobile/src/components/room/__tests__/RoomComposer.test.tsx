@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
 import { colors } from "../../../config/theme";
 import type { RoomMember } from "@lightbulb/shared";
@@ -65,9 +65,32 @@ const caretAt = (position: number) =>
     nativeEvent: { selection: { start: position, end: position } },
   });
 
+function choosePhotoSource(index: 0 | 1) {
+  return jest
+    .spyOn(ActionSheetIOS, "showActionSheetWithOptions")
+    .mockImplementation((_options, callback) => callback(index));
+}
+
 describe("RoomComposer", () => {
   beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
     mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: true });
+    ImagePicker.requestCameraPermissionsAsync.mockResolvedValue({ granted: true });
+    ImagePicker.launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
+    ImagePicker.launchCameraAsync.mockResolvedValue({ canceled: true, assets: null });
+  });
+
+  it("offers the photo library and camera from the attachment action", async () => {
+    const sheet = choosePhotoSource(0);
+    await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(sheet).toHaveBeenCalledWith(
+      expect.objectContaining({ options: ["Photo Library", "Take Photo", "Cancel"] }),
+      expect.any(Function),
+    );
   });
 
   it("opens the mention typeahead on @ and completes the picked handle", async () => {
@@ -121,6 +144,7 @@ describe("RoomComposer", () => {
   });
 
   it("uploads a picked photo and sends its attachment id", async () => {
+    choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
       canceled: false,
@@ -129,6 +153,19 @@ describe("RoomComposer", () => {
     const onSend = jest.fn(async () => {});
     const { onUploadAttachment } = await setup(onSend);
     await fireEvent.press(screen.getByLabelText("Attach photo"));
+    // The chip proves the photo is attached before the message goes out.
+    expect(await screen.findByText("a.png")).toBeTruthy();
+    expect(screen.getByLabelText("Preview a.png")).toBeTruthy();
+    expect(onUploadAttachment).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByLabelText("Remove a.png"));
+    expect(screen.queryByLabelText("Preview a.png")).toBeNull();
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 }],
+    });
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(screen.getByLabelText("Preview a.png")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
       expect(onUploadAttachment).toHaveBeenCalledWith({
         uri: "file:///a.png",
@@ -136,9 +173,6 @@ describe("RoomComposer", () => {
         type: "image/png",
       }),
     );
-    // The chip proves the photo is attached before the message goes out.
-    expect(screen.getByText("a.png")).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
     );
@@ -170,6 +204,7 @@ describe("RoomComposer", () => {
   });
 
   it("rejects a photo over the 10MB cap without uploading it", async () => {
+    choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
       canceled: false,
@@ -181,6 +216,94 @@ describe("RoomComposer", () => {
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     await waitFor(() => expect(screen.getByText("big.png exceeds the 10MB limit")).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it("takes a new photo after camera permission is granted", async () => {
+    choosePhotoSource(1);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchCameraAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [
+        {
+          uri: "file:///camera.jpg",
+          fileName: "camera.jpg",
+          mimeType: "image/jpeg",
+          fileSize: 20,
+        },
+      ],
+    });
+    await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByLabelText("Preview camera.jpg")).toBeTruthy();
+  });
+
+  it("shows a recoverable camera permission error without opening the camera", async () => {
+    choosePhotoSource(1);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.requestCameraPermissionsAsync.mockResolvedValueOnce({ granted: false });
+    await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(
+      await screen.findByText("Camera access is needed. Allow it in Settings, then try again."),
+    ).toBeTruthy();
+    expect(ImagePicker.launchCameraAsync).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unsupported picker result and leaves the composer usable", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [
+        {
+          uri: "file:///not-photo.pdf",
+          fileName: "not-photo.pdf",
+          mimeType: "application/pdf",
+          fileSize: 10,
+        },
+      ],
+    });
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByText(/isn't a supported photo/)).toBeTruthy();
+    expect(onUploadAttachment).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Attach photo")).toBeTruthy();
+  });
+
+  it("shows an upload failure and allows the user to retry", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        { uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 },
+      ],
+    });
+    const onUploadAttachment = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ id: "att-1" });
+    const onSend = jest.fn(async () => {});
+    await render(
+      <RoomComposer
+        members={members}
+        placeholder="Message"
+        disabled={false}
+        reconnecting={false}
+        onSend={onSend}
+        onUploadAttachment={onUploadAttachment}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByLabelText("Preview a.png")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(
+      await screen.findByText("Couldn't upload your photos. Check your connection and try again."),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Preview a.png")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(onUploadAttachment).toHaveBeenCalledTimes(2);
   });
 });
 

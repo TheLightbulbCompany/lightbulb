@@ -14,8 +14,9 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
  * Assistant-message markdown (spec §2). Style map mirrors the web
  * MarkdownContent/CodeBlock scale; fenced code gets the bordered
  * header-bar treatment via a custom `fence` rule (no syntax colors v1).
- * Links open externally through the library's default Linking.openURL
- * handler; only the color/underline is ours. A `mention:` href (written by
+ * Text groups and code blocks opt into React Native's native granular
+ * selection; links continue to open through the library's default
+ * Linking.openURL handler. A `mention:` href (written by
  * the shared `linkifyMentions` grammar) instead renders as an inert chip via
  * a custom `link` rule.
  *
@@ -28,22 +29,41 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
 // them via GFM). typographer matches the library default.
 const markdownIt = MarkdownIt({ typographer: true, linkify: true });
 const rules: RenderRules = {
+  // `selectable` belongs on one outer Text tree so the native iOS/Android
+  // selection handles can cross inline markdown spans. Keeping links as nested
+  // Text nodes preserves their existing tap handler and accessibility role.
+  textgroup: (node, children, parent, styles) => (
+    <Text key={node.key} style={styles.textgroup} selectable>
+      {children}
+    </Text>
+  ),
+  // Indented code blocks do not pass through `textgroup`, so opt their own
+  // Text node into the same platform-native selection behavior.
+  code_block: (node, children, parent, styles, inheritedStyles = {}) => {
+    const content = node.content.endsWith("\n")
+      ? node.content.slice(0, -1)
+      : node.content;
+    return (
+      <Text key={node.key} style={[inheritedStyles, styles.code_block]} selectable>
+        {content}
+      </Text>
+    );
+  },
   // Bordered code card: header bar with the fence's language label, mono
   // body on the code surface (spec §2 fenced code block).
   fence: (node, children, parent, styles) => {
     const lang = (
       (node as ASTNode & { sourceInfo?: string }).sourceInfo ?? ""
     ).trim();
-    let { content } = node;
-    if (content.endsWith("\n")) {
-      content = content.slice(0, -1);
-    }
+    const content = node.content.endsWith("\n")
+      ? node.content.slice(0, -1)
+      : node.content;
     return (
       <View key={node.key} style={styles._VIEW_SAFE_fenceWrap}>
         <View style={styles._VIEW_SAFE_fenceHeader}>
           <Text style={styles.fenceLang}>{lang || "code"}</Text>
         </View>
-        <Text style={styles.fence}>{content}</Text>
+        <Text style={styles.fence} selectable>{content}</Text>
       </View>
     );
   },

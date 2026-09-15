@@ -10,6 +10,8 @@ export const MAX_TEXT_BYTES = 100_000;
 export const MAX_EVENT_ID_BYTES = 256;
 export const MAX_HISTORY = 50;
 export const MAX_PARTICIPANTS = 128;
+export const MAX_SESSIONS = 24;
+const SESSION_STATUSES = ["idle", "busy", "waiting-approval", "unknown"];
 const AMBIENT_GATE_HISTORY_LIMIT = 5;
 const AMBIENT_GATE_TEXT_CHARS = 1_000;
 const AMBIENT_GATE_MAX_TOKENS = 16;
@@ -331,7 +333,7 @@ export function parseIngress(value) {
     try {
         const r = obj(value, "body", [
             "version", "eventId", "targetAgentId", "eventKind", "room", "sender", "message",
-            "mentions", "participants", "recentHistory", "run",
+            "mentions", "participants", "recentHistory", "sessions", "run",
         ]);
         if (r.version !== 1)
             throw new Invalid("body.version: expected 1");
@@ -412,6 +414,22 @@ export function parseIngress(value) {
             }
             previousSeq = history.messageSeq;
         }
+        const sessions = r.sessions === undefined ? [] : list(r.sessions, "body.sessions", MAX_SESSIONS).map((entry, i) => {
+            const path = `body.sessions[${i}]`;
+            const sr = obj(entry, path, ["sessionId", "humanUserId", "displayName", "provider", "cwdName", "title", "status", "latestEventSeq", "lastEventAt"]);
+            const optional = (value, name, max) => value === null || value === undefined ? null : str(value, `${path}.${name}`).slice(0, max);
+            return {
+                sessionId: uuid(sr.sessionId, `${path}.sessionId`),
+                humanUserId: nonEmpty(sr.humanUserId, `${path}.humanUserId`).slice(0, 128),
+                displayName: nonEmpty(sr.displayName, `${path}.displayName`).slice(0, 120),
+                provider: oneOf(sr.provider, `${path}.provider`, ["claude", "codex"]),
+                cwdName: optional(sr.cwdName, "cwdName", 128),
+                title: optional(sr.title, "title", 120),
+                status: SESSION_STATUSES.includes(sr.status) ? sr.status : "unknown",
+                latestEventSeq: int(sr.latestEventSeq, `${path}.latestEventSeq`),
+                lastEventAt: optional(sr.lastEventAt, "lastEventAt", 64),
+            };
+        });
         return {
             ok: true,
             value: {
@@ -425,6 +443,7 @@ export function parseIngress(value) {
                 mentions,
                 participants,
                 recentHistory,
+                sessions,
                 run,
             },
         };
@@ -657,6 +676,7 @@ export async function runRoomTurn(deps, event, admitted, invocation) {
                         sender,
                         mentions: event.mentions,
                         participants: event.participants,
+                        sessions: event.sessions,
                         eventKind,
                     },
                 },

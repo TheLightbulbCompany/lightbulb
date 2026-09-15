@@ -1,13 +1,13 @@
 import { expect, it } from "vitest";
-import { clampWidth, readSidebarPrefs, writeSidebarPrefs } from "../sidebarPrefs";
+import { clampWidth, readSessionColumnWidth, writeSessionColumnWidth } from "../sidebarPrefs";
 
-it("round-trips a valid session column width and drops a bad one", () => {
-  writeSidebarPrefs("org", { collapsed: [], sort: "alpha", sessionColumnWidth: 480 });
-  expect(readSidebarPrefs("org").sessionColumnWidth).toBe(480);
-  window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: [], sort: "alpha", sessionColumnWidth: "wide" }));
-  expect(readSidebarPrefs("org").sessionColumnWidth).toBeUndefined();
-  window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: [], sort: "alpha", sessionColumnWidth: 12 }));
-  expect(readSidebarPrefs("org").sessionColumnWidth).toBeUndefined();
+it("round-trips a valid session column width and drops a bad one, in its own key", () => {
+  writeSessionColumnWidth("org", 480);
+  expect(readSessionColumnWidth("org")).toBe(480);
+  window.localStorage.setItem("lightbulb.messaging.sessionColumnWidth.org", "wide");
+  expect(readSessionColumnWidth("org")).toBeUndefined();
+  window.localStorage.setItem("lightbulb.messaging.sessionColumnWidth.org", "12");
+  expect(readSessionColumnWidth("org")).toBeUndefined();
 });
 
 it("lets the 80% ceiling undercut the 360px floor on a narrow panel", () => {

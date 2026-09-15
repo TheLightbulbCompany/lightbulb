@@ -1,14 +1,15 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { sessionLabel, sessionStatus, useWorkspaceSessions, type LocalSession } from "@lightbulb/shared";
-import { router, Stack, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
+import { router, Stack, useIsFocused } from "expo-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
 import { colors, fonts, radii, spacing } from "../../config/theme";
-import { memberName, workspaceSections } from "../../lib/localSessions";
+import { memberName } from "../../lib/localSessions";
 import { relativeTime } from "../../lib/relativeTime";
 import { useMobileRooms } from "../../lib/rooms";
+import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../lib/teamsData";
 
 /**
  * Every live shared session in the workspace, grouped by person (yours
@@ -18,22 +19,32 @@ import { useMobileRooms } from "../../lib/rooms";
  */
 export default function SharedSessionsScreen() {
   const { userId } = useAuth();
-  const [focused, setFocused] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      setFocused(true);
-      return () => setFocused(false);
-    }, []),
-  );
+  const focused = useIsFocused();
   // visible: false — this list belongs to no single room, so it marks nothing read.
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const { sessions, error, loading, refresh } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
   // The spinner is for a pull only: `loading` is also true for every 30 s poll and hint.
   const [pulling, setPulling] = useState(false);
   const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);
+  // This list is workspace-wide, so a live session can belong to someone the
+  // viewer shares no room with -- name from the org roster first (the same
+  // GET /teams/members NewMessageSheet uses), falling back to room members.
+  // No ref-pin needed here (unlike NewMessageSheet's own per-open fetch):
+  // useTeamsConfig's adapter is already identity-stable (its own useMemo has
+  // an empty deps array), so plain [config] never re-fires this effect.
+  const config = useTeamsConfig();
+  const [roster, setRoster] = useState<CompanyMember[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void fetchMembers(config).then((list) => { if (alive) setRoster(list); });
+    return () => { alive = false; };
+  }, [config]);
   const sections = useMemo(
-    () => workspaceSections(sessions, userId, (human) => memberName(members, human)),
-    [sessions, userId, members],
+    () => workspaceSections(sessions, userId, (human) => {
+      const member = roster.find((m) => m.userId === human);
+      return member ? (member.name || member.email || "Workspace member") : memberName(members, human);
+    }),
+    [sessions, userId, members, roster],
   );
   const [opening, setOpening] = useState<string | null>(null);
   // Guards against a second row's tap starting a second open while the first

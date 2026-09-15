@@ -1,11 +1,11 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  buildRows, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
+  buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
   type LocalSession, type RoomResourceSource, type TranscriptRow,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState, FlatList, Pressable, StyleSheet, Text, View,
@@ -36,13 +36,7 @@ const BOTTOM_SLACK = 80;
 export default function SessionScreen() {
   const { roomId, sessionId } = useLocalSearchParams<{ roomId: string; sessionId: string }>();
   const { userId } = useAuth();
-  const [focused, setFocused] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      setFocused(true);
-      return () => setFocused(false);
-    }, []),
-  );
+  const focused = useIsFocused();
   // Only a backgrounded app stops tailing — "inactive" (app switcher, a system
   // sheet) keeps it live. Both the initial state and the listener use this same rule.
   const [appActive, setAppActive] = useState(AppState.currentState !== "background");
@@ -136,7 +130,7 @@ export default function SessionScreen() {
         </View>
       )}
       <SessionBody
-        key={`${session.sessionId}:${session.generation}:${resources.accessRevision}`}
+        key={sessionViewKey(session, resources.accessRevision)}
         roomId={roomId ?? ""}
         session={session}
         client={rooms.resourceSource.client}

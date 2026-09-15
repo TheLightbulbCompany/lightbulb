@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -33,11 +33,9 @@ export interface MessagingWorkspaceValue {
   openSession: (sessionId: string, options: { from: "sidebar" | "link" | "room"; roomId?: string }) => Promise<void>;
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
-  currentUserId: string;
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
   sessionSource: RoomResourceSource;
   scope: string;
-  workspaceSessions: LocalSession[];
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -135,7 +133,7 @@ export function MessagingWorkspaceProvider({
   const sideColumn = useSyncExternalStore(subscribeSideColumn, getSideColumn, getServerSideColumn);
   // Focus covers the room unless it is someone else's session with room for the
   // side column. A covered room must neither auto-read nor silence its notifications.
-  const roomVisible = subscribeToRoom && (!sessionFocus || (sessionFocus.ownerUserId !== userId && sideColumn));
+  const roomVisible = subscribeToRoom && (!sessionFocus || (!sessionFocus.own && sideColumn));
   const rooms = useRooms(initialAgentId, subscribeToRoom, roomVisible);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
@@ -223,33 +221,35 @@ export function MessagingWorkspaceProvider({
   const online = usePresence(rooms.httpReady, scope);
   const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
   const sharing = useMemo(() => new Set(workspaceSessions.sessions.map((session) => session.humanUserId)), [workspaceSessions.sessions]);
-  const humanName = useCallback((id: string) => {
-    const member = humanRoster?.members?.find((candidate) => candidate.userId === id);
-    return member?.name || member?.email || "Workspace member";
-  }, [humanRoster]);
-  const sidebarSessions: SidebarSession[] = useMemo(() => workspaceSessions.sessions.map((session) => ({
-    session, own: session.humanUserId === userId, ownerName: session.humanUserId === userId ? "You" : humanName(session.humanUserId),
-  })), [workspaceSessions.sessions, userId, humanName]);
-  const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
+  // A room member's online/sharing (human) or agentActivity (agent) decoration --
+  // the same ternary every member list below applies to its own room-member array.
+  const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-    : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online, sharing]);
+    : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) },
+  [activityByAgentId, online, sharing]);
+  // A roster row's display name, with the same "Workspace member" fallback everywhere one is missing.
+  const rosterName = (member: CompanyMember | undefined) => member?.name || member?.email || "Workspace member";
+  const humanName = useCallback((id: string) => rosterName(humanRoster?.members?.find((candidate) => candidate.userId === id)), [humanRoster]);
+  const sidebarSessions: SidebarSession[] = useMemo(() =>
+    workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
+      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId }))),
+    [workspaceSessions.sessions, userId, humanName]);
+  const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
     // `getRoom` fan-out, so until it settled every DM row read "Direct message".
     participants: (room.members ?? [])
       .filter((member) => member.kind !== "human" || member.id !== userId)
-      .map((member) => member.kind === "agent"
-        ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-        : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }),
-  })), [rooms.rooms, activityByAgentId, userId, online, sharing]);
+      .map(decorate),
+  })), [rooms.rooms, userId, decorate]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
       .map((member) => ({
       kind: "human" as const,
       id: member.userId,
-      displayName: member.name || member.email || "Workspace member",
+      displayName: rosterName(member),
       mentionHandle: null,
       online: online.has(member.userId),
       sharing: sharing.has(member.userId),
@@ -559,7 +559,7 @@ export function MessagingWorkspaceProvider({
     setThreadId(null);
     setTarget(null);
     setSessionTarget(null);
-    setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom });
+    setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom, own });
   }, [workspaceSessions.sessions, workspaceSessions.loading, userId, rooms.activeRoomId, rooms.rooms, selectDm, selectRoom, humanName]);
   useEffect(() => {
     const link = heldLink.current;
@@ -706,10 +706,8 @@ export function MessagingWorkspaceProvider({
     openSession,
     sessionFocus,
     closeSession,
-    currentUserId: userId ?? "",
     sessionSource: rooms.resourceSource,
     scope,
-    workspaceSessions: workspaceSessions.sessions,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible}
     onOpen={(roomId, targetThreadId) => {
       // The room may be the one focus covers; opening it has to uncover it.

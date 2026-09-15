@@ -12,6 +12,7 @@ jest.mock("expo-router", () => {
   return {
     router: { push: (...args: unknown[]) => mockPush(...args) },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(cb, [cb]),
+    useIsFocused: () => true,
   };
 });
 jest.mock("@clerk/clerk-expo", () => ({

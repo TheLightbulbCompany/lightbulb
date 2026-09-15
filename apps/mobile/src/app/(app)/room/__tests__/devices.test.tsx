@@ -10,6 +10,7 @@ jest.mock("expo-router", () => {
     router: { push: (...args: unknown[]) => mockPush(...args), back: jest.fn(), canGoBack: () => true, replace: jest.fn() },
     Stack: { Screen: () => null },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
+    useIsFocused: () => true,
     useLocalSearchParams: () => ({ roomId: "room-1" }),
   };
 });

@@ -15,3 +15,11 @@ it("groups workspace sessions by person, mine first, busy first, then most recen
   expect(sections.map((section) => section.title)).toEqual(["You", "Alice", "Bob"]);
   expect(sections[1].data.map((row) => row.sessionId)).toEqual(["a-busy", "a-idle"]);
 });
+
+it("breaks a tie between same-status sessions by most recent lastEventAt", () => {
+  const sections = workspaceSections([
+    s({ sessionId: "older", humanUserId: "alice", status: "idle", lastEventAt: "2026-09-14T09:00:00Z" }),
+    s({ sessionId: "newer", humanUserId: "alice", status: "idle", lastEventAt: "2026-09-14T10:00:00Z" }),
+  ], "me", (id) => ({ alice: "Alice" }[id] ?? "Room member"));
+  expect(sections[0].data.map((row) => row.sessionId)).toEqual(["newer", "older"]);
+});

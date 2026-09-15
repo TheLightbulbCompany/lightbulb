@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { sessionLabel, sessionStatus, useWorkspaceSessions, type LocalSession } from "@lightbulb/shared";
 import { router, Stack, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
@@ -34,7 +34,13 @@ export default function SharedSessionsScreen() {
     [sessions, userId, members],
   );
   const [opening, setOpening] = useState<string | null>(null);
+  // Guards against a second row's tap starting a second open while the first
+  // is still resolving — a ref (not state) so the check is synchronous even
+  // mid-await, and both completions' `finally` clear only their own attempt.
+  const openingRef = useRef(false);
   const open = async (session: LocalSession) => {
+    if (openingRef.current) return;
+    openingRef.current = true;
     setOpening(session.sessionId);
     try {
       const roomId = session.humanUserId === userId
@@ -45,6 +51,7 @@ export default function SharedSessionsScreen() {
         : await rooms.selectDm({ kind: "human", id: session.humanUserId }, { activate: false }).catch(() => null);
       if (roomId) router.push(`/(app)/room/${roomId}/session/${session.sessionId}`);
     } finally {
+      openingRef.current = false;
       setOpening(null);
     }
   };
@@ -76,8 +83,9 @@ export default function SharedSessionsScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Open ${sessionLabel(item)}`}
-            disabled={opening === item.sessionId}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            accessibilityState={{ busy: opening === item.sessionId }}
+            disabled={opening !== null}
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed, opening === item.sessionId && styles.rowOpening]}
             onPress={() => void open(item)}
           >
             <SessionStatusDot status={item.status} />
@@ -109,6 +117,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20, color: colors.ink, marginTop: spacing.lg, marginBottom: spacing.sm },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderRadius: radii.sm },
   rowPressed: { backgroundColor: colors.rowPressed },
+  rowOpening: { opacity: 0.6 },
   rowText: { flex: 1 },
   rowLabel: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20, color: colors.ink },
   rowMeta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },

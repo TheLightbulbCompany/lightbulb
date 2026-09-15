@@ -81,4 +81,16 @@ describe("shared sessions screen", () => {
     await waitFor(() => expect(screen.getByText("this conversation could not be opened")).toBeTruthy());
     expect(mockPush).not.toHaveBeenCalled();
   });
+
+  it("blocks a second row's open while the first is still resolving", async () => {
+    const carolSession: LocalSession = { ...bobSession, sessionId: "sess-carol", humanUserId: "carol", title: "Fix bug 2" };
+    mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession, carolSession] });
+    // Never resolves within the test — the first open is still pending when the second row is tapped.
+    mockSelectDm.mockReturnValue(new Promise(() => {}));
+    await render(<SharedSessionsScreen />);
+    await waitFor(() => expect(screen.getByText("Claude · Fix bug")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug"));
+    await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug 2"));
+    expect(mockSelectDm).toHaveBeenCalledTimes(1);
+  });
 });

@@ -406,13 +406,11 @@ class OpenClawWorkWorker:
         members = with_human_handles(room_members, await human_emails(room_members))
         from core.services import local_sessions
 
-        # A shared vendor room (#2644) carries members whose homeOwnerId differs
-        # from this room's owner. Session visibility is workspace-wide, so any
-        # foreign member means no summary -- an empty field, not an omitted one.
-        foreign_member = any(messaging_repo.member_home(m, owner_id) != owner_id for m in room_members)
+        # Session visibility is workspace-wide, so a room shared with another
+        # organization (#2644) gets no summary.
         sessions = (
             []
-            if foreign_member
+            if await messaging_repo.has_foreign_members(meta["roomId"], owner_id)
             else await local_sessions.live_sessions_for_room(owner_id, meta["roomId"], room_members)
         )
         body = await build_ingress_body(
@@ -421,7 +419,8 @@ class OpenClawWorkWorker:
             event_kind=event_kind,
             message=message,
             members=members,
-            sessions=sessions,
+            # On the wire only when a session is live; the plugin reads a missing field as [].
+            sessions=sessions or None,
         )
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.

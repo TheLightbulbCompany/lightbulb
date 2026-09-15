@@ -482,14 +482,20 @@ async def test_build_ingress_body_carries_sessions_only_when_given(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_sends_the_live_session_summary(monkeypatch):
+@pytest.mark.parametrize(
+    ("live", "sent"),
+    [([{"sessionId": "s1"}], [{"sessionId": "s1"}]), ([], None)],
+    ids=["live-session", "no-live-session"],
+)
+async def test_dispatch_sends_the_summary_only_when_a_session_is_live(monkeypatch, live, sent):
+    """No live session, no field: the plugin reads a missing one as ``[]``."""
     from core.services import local_sessions
 
     seen: dict = {}
 
     async def fake_live(owner, room_id, members):
         seen["live"] = (owner, room_id)
-        return [{"sessionId": "s1"}]
+        return live
 
     async def fake_body(**kwargs):
         seen["sessions"] = kwargs.get("sessions")
@@ -507,7 +513,7 @@ async def test_dispatch_sends_the_live_session_summary(monkeypatch):
         body=fake_body,
     )
     assert seen["live"] == ("owner-1", _ROOM)
-    assert seen["sessions"] == [{"sessionId": "s1"}]
+    assert seen["sessions"] == sent
 
 
 @pytest.mark.asyncio
@@ -543,4 +549,4 @@ async def test_dispatch_sends_no_summary_into_a_room_with_a_foreign_member(monke
         members=foreign_members,
     )
     assert "live_called" not in seen
-    assert seen["sessions"] == []
+    assert seen["sessions"] is None

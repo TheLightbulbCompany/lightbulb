@@ -40,6 +40,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  dialog, drag/keyboard section reorder, Leave confirm); RoomDirectoryRow.tsx (the ⋯ menu,
                                  Move to section); roomSections.ts (groupRooms — Starred · custom · Channels · Direct);
                                  sidebarPrefs.ts (per-browser collapse + sort)
+  - Lightbulb channel ....... references/surfaces.md
+                              <- apps/backend/core/services/messaging.py (ensure_vendor_room, on_org_member_joined,
+                                 is_vendor_room / _deny_vendor_human_change); core/config.py VENDOR_ORG_ID;
+                                 apps/frontend/src/components/messaging/{RoomDirectoryRow,RoomHeader,RoomPanel}.tsx (Shared marker, gates)
   - Composer ................ references/surfaces.md
                               <- apps/frontend/src/components/messaging/RoomComposer.tsx (typeaheads, formatting toolbar,
                                  drag-and-drop, up-arrow edit); composerText.ts (caret grammar); mentions.ts

@@ -179,6 +179,13 @@ describe("session screen", () => {
     expect(screen.queryByText("This session is no longer shared.")).toBeNull();
   });
 
+  it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
+    mockSession = { ...base, status: "waiting-approval" };
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    expect(screen.getByText("2.1.224 · Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeTruthy();
+  });
+
   it("has no DM button on your own session", async () => {
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());

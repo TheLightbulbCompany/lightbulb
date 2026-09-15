@@ -647,7 +647,7 @@ function RoomContent({
         </section>} />
     </aside>}
     {showResources && <RoomResources key={JSON.stringify([ownerScopeId, currentUserId, roomId, participants.filter(p => p.kind === "human").map(p => p.id).sort()])}
-      roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail}
+      roomId={roomId} source={resourceSource!} participants={participants} currentUserId={currentUserId} onClose={closeDetail}
       target={targetSession?.nonce !== consumedSession ? targetSession : null}
       onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
       resizeHandle={<ColumnGrip {...column.grip} />}

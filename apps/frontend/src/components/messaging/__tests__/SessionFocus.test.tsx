@@ -22,3 +22,12 @@ it("renders only the session for your own session and closes", async () => {
   screen.getByRole("button", { name: "Close session" }).click();
   expect(onClose).toHaveBeenCalled();
 });
+
+it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
+  const waiting = { ...session, status: "waiting-approval" as const };
+  const waitingClient = { listResources: vi.fn(async () => ({ devices: [], pairedNodes: [], sessions: [waiting] })), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() } as unknown as RoomResourceSource["client"];
+  const waitingSource: RoomResourceSource = { client: waitingClient, connectionRevision: 1, onEvent: () => () => {} };
+  render(<SessionFocus focus={{ sessionId: "s1", ownerUserId: "me", ownerName: "You", roomId: "general", own: true }} source={waitingSource} onClose={vi.fn()} conversation={<section aria-label="Messages" />} scope="org" />);
+  expect(await screen.findByText("You · Waiting for input on your Mac")).toBeInTheDocument();
+  expect(screen.getByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeInTheDocument();
+});

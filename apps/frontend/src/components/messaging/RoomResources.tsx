@@ -8,8 +8,8 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { LocalSessionPanel } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 
-export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare, resizeHandle }: {
-  roomId: string; source: RoomResourceSource; participants: readonly RoomParticipant[]; onClose: () => void;
+export function RoomResources({ roomId, source, participants, currentUserId, onClose, target, onTargetConsumed, onShare, resizeHandle }: {
+  roomId: string; source: RoomResourceSource; participants: readonly RoomParticipant[]; currentUserId?: string; onClose: () => void;
   target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
   resizeHandle?: ReactNode;
 }) {
@@ -77,7 +77,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
       {resources.data && <p>Showing the last successful snapshot; availability may be stale.</p>}
       <Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
     {selected ? <LocalSessionPanel key={sessionViewKey(selected, resources.accessRevision)}
-      session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare}
+      session={selected} ownerName={name(selected.humanUserId)} own={selected.humanUserId === currentUserId} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare}
       participants={participants} />
       : <div className="room-context-body">
         {unavailable && <p role="status">Session unavailable in this conversation.</p>}

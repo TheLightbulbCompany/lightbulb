@@ -3,7 +3,7 @@ import type { LocalSession } from "./types";
 export const sessionLabel = (s: LocalSession) => `${s.provider === "claude" ? "Claude" : "Codex"} · ${s.title?.trim() || s.sessionId.slice(0, 8)}`;
 
 export const sessionStatus: Record<LocalSession["status"], string> = {
-  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for approval on owner's machine", unknown: "Activity unknown", offline: "Offline", ended: "Ended",
+  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Activity unknown", offline: "Offline", ended: "Ended",
 };
 
 /** List/sidebar ordering, shared by web and mobile: busy → waiting on the owner → idle-ish → gone. */

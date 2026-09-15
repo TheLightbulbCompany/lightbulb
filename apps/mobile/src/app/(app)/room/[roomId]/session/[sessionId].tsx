@@ -55,6 +55,7 @@ export default function SessionScreen() {
   const session = resources.data?.sessions.find((s) => s.sessionId === sessionId);
   const members = rooms.activeRoom?.members;
   const ownerName = session ? memberName(members, session.humanUserId) : "Room member";
+  const own = session ? session.humanUserId === userId : false;
   const name = useCallback(
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
@@ -138,6 +139,7 @@ export default function SessionScreen() {
         onAccessLost={resources.revoke}
         live={live}
         ownerName={ownerName}
+        own={own}
         name={name}
         bottomInset={insets.bottom}
       />
@@ -145,7 +147,7 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, live, ownerName, name, bottomInset }: {
+function SessionBody({ roomId, session, client, revision, onAccessLost, live, ownerName, own, name, bottomInset }: {
   roomId: string;
   session: LocalSession;
   client: RoomResourceSource["client"];
@@ -153,6 +155,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
   onAccessLost: () => void;
   live: boolean;
   ownerName: string;
+  own: boolean;
   name: (who: string | null) => string;
   bottomInset: number;
 }) {
@@ -193,7 +196,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
           </Text>
         </View>
         <Text style={styles.meta} numberOfLines={2}>
-          {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${ownerName}’s Mac. Approvals stay in their terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
+          {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. Approvals stay in ${own ? "your" : "their"} terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
         </Text>
         {session.controlUnavailableReason && <Text style={styles.warn}>{unavailableReason[session.controlUnavailableReason]}</Text>}
       </View>

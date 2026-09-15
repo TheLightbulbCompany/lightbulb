@@ -409,7 +409,7 @@ it("renders only safe public text and labels native approval and capability limi
   const { container } = render(<RoomPanel {...f.props} />);
   await openSession();
   expect(await screen.findByLabelText("Native event 250")).toBeInTheDocument();
-  expect(screen.getByText(/Waiting for approval on/)).toBeInTheDocument();
+  expect(screen.getByText(/Waiting for input on/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
   expect(container.querySelector("script")).toBeNull();
   expect(container.querySelector('img[src="https://example.com/private.png"]')).toBeNull();

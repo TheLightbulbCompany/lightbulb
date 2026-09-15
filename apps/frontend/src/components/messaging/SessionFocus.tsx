@@ -34,7 +34,7 @@ export function SessionFocus({ focus, source, onClose, conversation, scope }: {
       {!focus.roomId && <p role="status" className="p-4 text-sm text-muted-foreground">Open a conversation first so this session has somewhere to report.</p>}
       {focus.roomId && !session && <p role="status" className="p-4 text-sm text-muted-foreground">{resources.loading ? "Loading session…" : resources.error ?? "This session is no longer shared."}</p>}
       {focus.roomId && session && <LocalSessionPanel key={sessionViewKey(session, resources.accessRevision)}
-        session={session} ownerName={focus.ownerName} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
+        session={session} ownerName={focus.ownerName} own={focus.own} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
     </div>
     {!focus.own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">
       <ColumnGrip {...column.grip} />

@@ -55,11 +55,9 @@ export function PickerSheet({
     <BottomSheet
       visible={visible}
       onClose={onClose}
-      closeLabel="Dismiss"
       maxHeight="80%"
     >
       <View style={styles.sheet}>
-        <View style={styles.grabber} />
         <Text style={styles.heading}>{heading}</Text>
         {subheading != null && subheading !== "" && (
           <Text style={styles.subheading} numberOfLines={1}>
@@ -141,14 +139,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
     gap: spacing.xs,
-  },
-  grabber: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: radii.xs,
-    backgroundColor: colors.edge,
-    marginBottom: spacing.sm,
   },
   heading: {
     fontFamily: fonts.sansSemiBold,

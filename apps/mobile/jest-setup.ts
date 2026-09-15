@@ -191,3 +191,28 @@ jest.mock("react-native-keyboard-controller", () => {
     KeyboardAvoidingView: View,
   };
 });
+
+// @expo/ui: native SwiftUI views (BottomSheet presents through them). Mocked so
+// a sheet's React Native content renders inline while it is presented, and a
+// suite can simulate the reader dismissing it via `onIsPresentedChange`.
+jest.mock("@expo/ui", () => ({
+  Host: ({ children }: { children?: unknown }) => children,
+}));
+jest.mock("@expo/ui/swift-ui", () => {
+  const react = require("react");
+  const { View } = require("react-native");
+  const passthrough = ({ children }: { children?: unknown }) => children;
+  return {
+    BottomSheet: (props: { isPresented: boolean; children?: unknown }) =>
+      props.isPresented ? react.createElement(View, { testID: "native-sheet", ...props }) : null,
+    Group: passthrough,
+    RNHostView: passthrough,
+  };
+});
+jest.mock("@expo/ui/swift-ui/modifiers", () => ({
+  environment: () => ({}),
+  interactiveDismissDisabled: () => ({}),
+  presentationBackground: () => ({}),
+  presentationDetents: () => ({}),
+  presentationDragIndicator: () => ({}),
+}));

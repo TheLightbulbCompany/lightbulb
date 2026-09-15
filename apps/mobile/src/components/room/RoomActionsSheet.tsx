@@ -86,9 +86,8 @@ export function RoomActionsSheet({
   ];
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} closeLabel="Close conversation actions">
+    <BottomSheet visible={visible} onClose={onClose}>
       <View style={styles.card}>
-        <View style={styles.handle} />
         {rows.map(({ icon, label, run }) => (
           <Pressable
             key={label}
@@ -116,14 +115,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingBottom: spacing.md,
-  },
-  handle: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.edge,
-    marginTop: spacing.sm,
   },
   row: {
     flexDirection: "row",

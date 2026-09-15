@@ -124,9 +124,8 @@ export function CreateIssueSheet({
   };
 
   return (
-    <BottomSheet visible={visible} onClose={close} closeLabel="Dismiss" maxHeight="88%">
+    <BottomSheet visible={visible} onClose={close} large dismissible={!busy}>
       <View style={styles.sheet}>
-        <View style={styles.grabber} />
         <Text style={styles.heading}>
           {mode === "subissue" ? "New sub-issue" : "New issue"}
         </Text>
@@ -240,9 +239,9 @@ export function CreateIssueSheet({
 
 const styles = StyleSheet.create({
   sheet: {
-    // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
-    // the list inside scrolls, instead of the footer overflowing off-screen.
-    flexShrink: 1,
+    // Fills the full-height sheet: the list takes the room and the footer
+    // stays at the bottom — above the keyboard while typing.
+    flex: 1,
     backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
@@ -251,14 +250,6 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
     gap: spacing.md,
   },
-  grabber: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: radii.xs,
-    backgroundColor: colors.edge,
-    marginBottom: spacing.xs,
-  },
   heading: {
     fontFamily: fonts.sansSemiBold,
     fontSize: 16,
@@ -266,7 +257,8 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
 
-  form: { flexGrow: 0 },
+  // Takes the full-height sheet's spare room, so the footer sits at the bottom.
+  form: { flexGrow: 1 },
   formContent: { gap: spacing.lg, paddingBottom: spacing.sm },
   field: { gap: spacing.sm },
   fieldLabel: {

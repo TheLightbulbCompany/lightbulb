@@ -60,9 +60,8 @@ export function ReasonSheet({
   const canSubmit = !required || trimmed.length > 0;
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} closeLabel="Cancel">
+    <BottomSheet visible={visible} onClose={onClose}>
       <View style={styles.card}>
-        <View style={styles.handle} />
         <Text style={styles.title}>{title}</Text>
         <TextInput
           style={styles.input}
@@ -117,13 +116,6 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingBottom: spacing.md,
     gap: spacing.md,
-  },
-  handle: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.creamDeepest,
   },
   title: {
     fontFamily: fonts.sansMedium,

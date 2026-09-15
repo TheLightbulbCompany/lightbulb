@@ -237,11 +237,9 @@ export function NewMessageSheet({
     <BottomSheet
       visible={visible}
       onClose={onClose}
-      closeLabel="Close new message"
-      maxHeight="80%"
+      large
     >
       <View style={styles.card}>
-        <View style={styles.handle} />
         <Text style={styles.overline}>NEW MESSAGE</Text>
         <View style={styles.toggle}>
           {SEGMENTS.map((segment) => {
@@ -354,21 +352,13 @@ export function NewMessageSheet({
 
 const styles = StyleSheet.create({
   card: {
-    // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
-    // the list inside scrolls, instead of the footer overflowing off-screen.
-    flexShrink: 1,
+    // Fills the full-height sheet: the list takes the room and the footer
+    // stays at the bottom — above the keyboard while typing.
+    flex: 1,
     backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingBottom: spacing.md,
-  },
-  handle: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.edge,
-    marginTop: spacing.sm,
   },
   overline: {
     ...type.overline,

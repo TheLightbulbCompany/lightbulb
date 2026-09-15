@@ -1,6 +1,6 @@
 import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
-import { useMemo, useState, type ReactElement } from "react";
+import { useMemo, useRef, useState, type ReactElement } from "react";
 import {
   Animated,
   Linking,
@@ -117,6 +117,10 @@ function SectionHeader({ status, count }: { status: BoardStatus; count: number }
 export function BoardView() {
   const { state, refreshing, retry, refresh, moveIssue } = useTeamsBoard();
   const [moving, setMoving] = useState<BoardIssue | null>(null);
+  // The sheet sizes to its content, so it keeps showing the last issue while
+  // it animates away instead of shrinking mid-exit.
+  const lastMoving = useRef<BoardIssue | null>(null);
+  if (moving) lastMoving.current = moving;
 
   const issues = useMemo(
     () => (state.kind === "ready" ? state.issues : EMPTY_ISSUES),
@@ -240,8 +244,8 @@ export function BoardView() {
 
       <StatusSheet
         visible={moving != null}
-        issueTitle={moving?.title ?? null}
-        currentStatus={moving?.status}
+        issueTitle={lastMoving.current?.title ?? null}
+        currentStatus={lastMoving.current?.status}
         onSelect={(status) => {
           if (moving) void moveIssue(moving.id, status);
         }}

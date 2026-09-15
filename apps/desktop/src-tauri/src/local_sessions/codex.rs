@@ -1,5 +1,55 @@
 use super::*;
 
+/// Rollout sources we mirror: the terminal CLI, and the ChatGPT / Codex
+/// Desktop app's bundled codex (which writes `source: "vscode"` into the
+/// same `~/.codex`). The VS Code *extension* writes the identical `source`
+/// value, so `vscode` alone is not enough to admit a rollout — see
+/// `ACCEPTED_APP_ORIGINATORS`. `exec` and subagent rollouts stay out either
+/// way.
+const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
+
+/// The exact `session_meta.payload.originator` the ChatGPT / Codex Desktop
+/// app writes into its rollouts (surveyed live on this Mac: every one of 268
+/// `vscode`-sourced rollouts under `~/.codex/sessions` carries this value).
+/// Required only when `source == "vscode"` — it is what tells the app's own
+/// sessions apart from the VS Code extension's, which shares the same
+/// `source` but was never asked for here.
+const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
+
+/// Runtimes whose *paginated* rollout grammar this parser was verified
+/// against. A `"legacy"` rollout carries none of the `item_completed` rows
+/// this parser reads — text lives in bare `user_message`/`agent_message`
+/// event_msgs and tool calls in `response_item` rows — so it is refused
+/// outright rather than mirrored blank; see `accepted_history_mode` below.
+const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
+
+fn accepted_version(version: &str) -> bool {
+    ACCEPTED_VERSIONS.contains(&version)
+}
+
+/// `vscode` (app) rollouts must be the Codex Desktop app itself; `cli`
+/// rollouts carry no such requirement.
+fn accepted_app_source(source: &str, payload: &Value) -> bool {
+    if source != "vscode" {
+        return true;
+    }
+    let originator = payload["originator"].as_str().unwrap_or("");
+    ACCEPTED_APP_ORIGINATORS.contains(&originator)
+}
+
+/// `vscode` (app) rollouts must be explicitly paginated (fail closed); `cli`
+/// rollouts keep the historic rule — absent means accepted, only the literal
+/// `"legacy"` is refused — since 0.149.0 CLI rollouts never carried the
+/// field. One helper for both `from_rollout` and `normalize` so the two
+/// cannot drift.
+fn accepted_history_mode(source: &str, payload: &Value) -> bool {
+    if source == "vscode" {
+        payload["history_mode"] == "paginated"
+    } else {
+        payload["history_mode"] != "legacy"
+    }
+}
+
 fn from_rollout(
     root: &Path,
     process: Process,
@@ -13,8 +63,15 @@ fn from_rollout(
         .read_line(&mut line)
         .map_err(|_| "rollout unavailable")?;
     let row: Value = serde_json::from_str(&line).map_err(|_| "rollout metadata unavailable")?;
-    if row["type"] != "session_meta" || row["payload"]["source"] != "cli" {
-        return Err("not an ordinary CLI rollout".into());
+    let source = row["payload"]["source"].as_str().unwrap_or("");
+    if row["type"] != "session_meta" || !ACCEPTED_SOURCES.contains(&source) {
+        return Err("not a Codex CLI or app rollout".into());
+    }
+    if !accepted_app_source(source, &row["payload"]) {
+        return Err("not the Codex desktop app".into());
+    }
+    if !accepted_history_mode(source, &row["payload"]) {
+        return Err("legacy rollout grammar is not mirrored".into());
     }
     let conversation = row["payload"]["id"]
         .as_str()
@@ -33,7 +90,7 @@ fn from_rollout(
         socket: None,
         socket_inode: None,
         version: reported.into(),
-        restriction: (reported != "0.149.0" || reported != version)
+        restriction: (!accepted_version(reported) || reported != version)
             .then(|| "runtime-unverified".into()),
         status: status.into(),
         title,
@@ -325,8 +382,12 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     if row.get("channel").is_some() || row.get("phase").is_some() {
         return Ok(vec![]);
     }
+    let meta_source = row["payload"]["source"].as_str().unwrap_or("");
     if row["type"] == "session_meta"
-        && (row["payload"]["id"] != session || row["payload"]["cli_version"] != "0.149.0")
+        && (row["payload"]["id"] != session
+            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || !accepted_app_source(meta_source, &row["payload"])
+            || !accepted_history_mode(meta_source, &row["payload"]))
     {
         return Err("runtime-unverified".into());
     }
@@ -694,6 +755,16 @@ mod tests {
         let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0","source":"cli"}});
         assert!(normalize("s", &meta).unwrap().is_empty());
         assert!(normalize("other", &meta).is_err());
+        let app_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"Codex Desktop","history_mode":"paginated"}});
+        assert!(normalize("s", &app_meta).unwrap().is_empty());
+        let old_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.140.0","source":"cli"}});
+        assert!(normalize("s", &old_meta).is_err());
+        let legacy_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"Codex Desktop","history_mode":"legacy"}});
+        assert!(normalize("s", &legacy_meta).is_err());
+        let unknown_history_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"Codex Desktop"}});
+        assert!(normalize("s", &unknown_history_meta).is_err());
+        let other_originator_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"vscode-extension","history_mode":"paginated"}});
+        assert!(normalize("s", &other_originator_meta).is_err());
         let ts = "2026-09-12T10:00:00.000Z";
         let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
         let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
@@ -843,6 +914,30 @@ mod tests {
         fs::write(&path, format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\",\"cwd\":\"/tmp/{long}\"}}}}\n")).unwrap();
         let bounded_cwd = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
         assert_eq!(bounded_cwd.cwd_name.unwrap().chars().count(), 128);
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        let app = from_rollout(&root, process.clone(), &path, "0.153.4").unwrap();
+        assert_eq!((app.conversation.as_str(), app.version.as_str(), app.restriction), ("app", "0.153.4", None));
+        let unverified = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        assert_eq!(unverified.restriction.as_deref(), Some("runtime-unverified"));
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.150.0\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.150.0").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        // The ChatGPT app's older history layout has none of the item_completed
+        // rows this parser reads (text/tools/title live elsewhere), so it is
+        // refused rather than mirrored blank.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.153.4\",\"history_mode\":\"legacy\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        // vscode fails closed: an absent/unknown history_mode is refused, not
+        // treated as the verified paginated grammar.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        // The VS Code extension shares source "vscode" with the desktop app;
+        // only the app's originator is accepted.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"vscode-extension\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.153.4").unwrap().restriction, None);
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":{\"subagent\":{}},\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.149.0").is_err());
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
         assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
     }

@@ -1,22 +1,23 @@
 import { useAuth, useOrganization, useUser } from "@clerk/clerk-expo";
+import { Button, HStack, LabeledContent, Section, Text, VStack } from "@expo/ui/swift-ui";
+import {
+  accessibilityLabel,
+  background,
+  font,
+  foregroundStyle,
+  frame,
+  redacted,
+  shapes,
+} from "@expo/ui/swift-ui/modifiers";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  Alert,
-  Animated,
-  Linking,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { Alert, Linking } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
-import { usePulse } from "../../components/chat/usePulse";
+import { GroupedList, NavigationRow } from "../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../config/domain";
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { colors, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { isAppleManaged, openSubscriptionManagement } from "../../lib/manageSubscription";
 import { unregisterDevice } from "../../lib/pushDevice";
@@ -180,7 +181,7 @@ export function statusChipLabel(account: BillingAccount): string | null {
   // Card-less free tier: the plan row itself says "Free plan" — no chip
   // (and never the raw "trial_local" string).
   if (status === "trial_local") return null;
-  return status; // render verbatim (chip style uppercases it)
+  return status; // render verbatim
 }
 
 /** Provider label mapping (contract §3, LLMPanel labels). */
@@ -237,34 +238,23 @@ function initialsOf(name: string | null | undefined, email: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Building blocks
+// Row text styles (SwiftUI modifiers; the rows draw in the system font — see
+// GroupedList)
 // ---------------------------------------------------------------------------
 
-function Card({ children }: { children: ReactNode }) {
-  return <View style={styles.card}>{children}</View>;
-}
-
-function SkeletonRow({ delayMs, width }: { delayMs: number; width: `${number}%` }) {
-  const pulse = usePulse(true, 0.55, 700, delayMs);
-  return <Animated.View style={[styles.skeletonLine, { width, opacity: pulse }]} />;
-}
-
-/** Loading placeholder shaped like the plan/credits/provider cards (§7). */
-function SkeletonCards() {
-  return (
-    <>
-      <Card>
-        <SkeletonRow delayMs={150} width="30%" />
-        <SkeletonRow delayMs={300} width="72%" />
-        <SkeletonRow delayMs={450} width="55%" />
-      </Card>
-      <Card>
-        <SkeletonRow delayMs={450} width="40%" />
-        <SkeletonRow delayMs={600} width="64%" />
-      </Card>
-    </>
-  );
-}
+const BODY = [foregroundStyle(colors.ink)];
+const SECONDARY = [foregroundStyle(colors.mute)];
+const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(colors.mute)];
+const DANGER = [foregroundStyle(colors.danger)];
+const ERROR = [foregroundStyle(colors.errorText)];
+/** iOS's own loading skeleton: the row's shape, greyed, until billing loads. */
+const PLACEHOLDER = [redacted("placeholder"), accessibilityLabel("Loading")];
+const AVATAR = [
+  font({ textStyle: "subheadline", weight: "semibold" }),
+  foregroundStyle(colors.avatarText),
+  frame({ width: 40, height: 40 }),
+  background(colors.avatarBg, shapes.circle()),
+];
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -425,41 +415,37 @@ export default function Settings() {
     ]);
   }, [signOut, api]);
 
-  let billingCards: ReactNode;
+  let billingSections: ReactNode;
   if (restricted) {
-    billingCards = (
-      <Card>
-        <Text style={styles.overline}>PLAN</Text>
-        <Text style={styles.bodyText}>
-          Billing is managed by your organization admin
-        </Text>
-      </Card>
+    billingSections = (
+      <Section title="Plan">
+        <Text modifiers={BODY}>Billing is managed by your organization admin</Text>
+      </Section>
     );
   } else if (state.kind === "loading") {
-    billingCards = <SkeletonCards />;
+    // Shaped like the plan and provider sections it stands in for (§7).
+    billingSections = (
+      <>
+        <Section title="Plan">
+          <Text modifiers={PLACEHOLDER}>Current plan and status</Text>
+        </Section>
+        <Section title="Model provider">
+          <Text modifiers={PLACEHOLDER}>Provider name</Text>
+        </Section>
+      </>
+    );
   } else if (state.kind === "error") {
-    billingCards = (
-      <View style={styles.errorCard}>
-        <Text style={styles.errorText}>
-          Couldn’t load billing: {state.message}
-        </Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.retryButton,
-            pressed && styles.retryButtonPressed,
-          ]}
-          onPress={() => void retry()}
-        >
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
-      </View>
+    billingSections = (
+      <Section>
+        <Text modifiers={ERROR}>Couldn’t load billing: {state.message}</Text>
+        <Button label="Retry" onPress={() => void retry()} />
+      </Section>
     );
   } else if (state.kind === "none") {
-    billingCards = (
-      <Card>
-        <Text style={styles.overline}>PLAN</Text>
-        <Text style={styles.bodyText}>No plan on this account yet</Text>
-      </Card>
+    billingSections = (
+      <Section title="Plan">
+        <Text modifiers={BODY}>No plan on this account yet</Text>
+      </Section>
     );
   } else {
     const { account, credits, chatgpt } = state;
@@ -471,47 +457,42 @@ export default function Settings() {
       account.provider_choice === "bedrock_claude" ||
       credits?.balance_dollars != null;
     const provider = providerLabel(account, chatgpt);
+    const planName = isTrialLocal ? "Lightbulb Free plan" : "Lightbulb";
+    const planNote = isTrialLocal
+      ? "Includes a daily free usage allowance."
+      : trialing && account.trial_end != null
+        ? `Trial ends ${trialEndLabel(account.trial_end)}`
+        : null;
 
-    billingCards = (
+    billingSections = (
       <>
-        <Card>
-          <Text style={styles.overline}>PLAN</Text>
-          <View style={styles.planRow}>
-            <Text style={styles.bodyText}>
-              {isTrialLocal ? "Lightbulb Free plan" : "Lightbulb"}
-            </Text>
-            {chip != null && (
-              <View style={styles.planBadge}>
-                <Text style={styles.planBadgeText}>{chip}</Text>
-              </View>
-            )}
-          </View>
-          {isTrialLocal && (
-            <Text style={styles.captionText}>
-              Includes a daily free usage allowance.
-            </Text>
+        <Section title="Plan" footer={planNote != null ? <Text>{planNote}</Text> : undefined}>
+          {chip != null ? (
+            <LabeledContent label={<Text modifiers={BODY}>{planName}</Text>}>
+              <Text modifiers={SECONDARY}>{chip}</Text>
+            </LabeledContent>
+          ) : (
+            <Text modifiers={BODY}>{planName}</Text>
           )}
-          {trialing && account.trial_end != null && (
-            <Text style={styles.captionText}>
-              Trial ends {trialEndLabel(account.trial_end)}
-            </Text>
-          )}
-        </Card>
+        </Section>
 
         {showCredits && (
-          <Card>
-            <Text style={styles.overline}>BEDROCK CREDITS</Text>
-            <Text style={styles.balanceText}>
-              {credits?.balance_dollars != null
-                ? `$${credits.balance_dollars}`
-                : "—"}
-            </Text>
-            <Text style={styles.captionText}>
-              {credits?.balance_dollars != null
-                ? "Prepaid balance for Bedrock inference. Top up on flickmeon.ai."
-                : "Balance unavailable right now."}
-            </Text>
-          </Card>
+          <Section
+            title="Bedrock credits"
+            footer={
+              <Text>
+                {credits?.balance_dollars != null
+                  ? "Prepaid balance for Bedrock inference. Top up on flickmeon.ai."
+                  : "Balance unavailable right now."}
+              </Text>
+            }
+          >
+            <LabeledContent label={<Text modifiers={BODY}>Balance</Text>}>
+              <Text modifiers={SECONDARY}>
+                {credits?.balance_dollars != null ? `$${credits.balance_dollars}` : "—"}
+              </Text>
+            </LabeledContent>
+          </Section>
         )}
 
         {/* Apple requires an app selling auto-renewable subscriptions to give
@@ -520,269 +501,80 @@ export default function Settings() {
             ALREADY pays — a free-tier user sees nothing here and 3.1.3(f)
             stays intact for as long as we are still relying on it. */}
         {account.is_subscribed && (
-          <Card>
-            <Text style={styles.overline}>SUBSCRIPTION</Text>
-            <Text style={styles.captionText}>
-              {isAppleManaged(account.subscription_source)
-                ? "Billed through your Apple Account. Manage or cancel in iOS Settings."
-                : "Billed through flickmeon.ai. Manage or cancel in the billing portal."}
-            </Text>
-            <Pressable
-              style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+          <Section
+            title="Subscription"
+            footer={
+              <Text>
+                {isAppleManaged(account.subscription_source)
+                  ? "Billed through your Apple Account. Manage or cancel in iOS Settings."
+                  : "Billed through flickmeon.ai. Manage or cancel in the billing portal."}
+              </Text>
+            }
+          >
+            <Button
+              label="Manage subscription"
               onPress={() => void onManageSubscription(account.subscription_source)}
-              accessibilityRole="button"
-            >
-              <Text style={styles.linkText}>Manage subscription</Text>
-            </Pressable>
-          </Card>
+            />
+          </Section>
         )}
 
-        <Card>
-          <Text style={styles.overline}>MODEL PROVIDER</Text>
-          <Text style={styles.bodyText}>{provider.title}</Text>
-          {provider.detail != null && (
-            <Text style={styles.captionText}>{provider.detail}</Text>
-          )}
-        </Card>
+        <Section title="Model provider">
+          <VStack alignment="leading" spacing={2}>
+            <Text modifiers={BODY}>{provider.title}</Text>
+            {provider.detail != null ? <Text modifiers={CAPTION}>{provider.detail}</Text> : null}
+          </VStack>
+        </Section>
       </>
     );
   }
 
   return (
-    <ScrollView
-      contentInsetAdjustmentBehavior="automatic"
-      style={styles.page}
-      contentContainerStyle={styles.content}
-    >
+    <GroupedList>
       {/* Profile (§5 footer user-card pattern) */}
-      <Card>
-        <View style={styles.profileRow}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{initialsOf(fullName, email)}</Text>
-          </View>
-          <View style={styles.profileText}>
-            <Text style={styles.profileName} numberOfLines={1}>
-              {fullName || email || "Account"}
-            </Text>
-            {email !== "" && (
-              <Text style={styles.captionText} numberOfLines={1}>
-                {email}
-              </Text>
-            )}
-            {organization != null && (
-              <Text style={styles.captionText} numberOfLines={1}>
-                {organization.name}
-              </Text>
-            )}
-          </View>
-        </View>
-      </Card>
+      <Section>
+        <HStack spacing={spacing.md}>
+          <Text modifiers={AVATAR}>{initialsOf(fullName, email)}</Text>
+          <VStack alignment="leading" spacing={2}>
+            <Text modifiers={BODY}>{fullName || email || "Account"}</Text>
+            {email !== "" ? <Text modifiers={CAPTION}>{email}</Text> : null}
+            {organization != null ? <Text modifiers={CAPTION}>{organization.name}</Text> : null}
+          </VStack>
+        </HStack>
+      </Section>
 
-      {billingCards}
+      {billingSections}
 
       {/* Legal links — App Store 5.1.1(i) requires the privacy policy to be
           reachable inside the app. */}
-      <Card>
-        <Text style={styles.overline}>LEGAL</Text>
-        <Pressable
-          style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+      <Section title="Legal">
+        <NavigationRow
+          title="Privacy Policy"
+          icon="hand.raised"
+          link
           onPress={() => void Linking.openURL(`${WEB_ORIGIN}/privacy`)}
-          accessibilityRole="link"
-        >
-          <Text style={styles.linkText}>Privacy Policy</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+        />
+        <NavigationRow
+          title="Terms of Service"
+          icon="doc.text"
+          link
           onPress={() => void Linking.openURL(`${WEB_ORIGIN}/terms`)}
-          accessibilityRole="link"
-        >
-          <Text style={styles.linkText}>Terms of Service</Text>
-        </Pressable>
-      </Card>
+        />
+      </Section>
 
-      {/* Sign out — destructive-outline row, confirmed before acting. */}
-      <Pressable
-        style={({ pressed }) => [
-          styles.signOutRow,
-          pressed && styles.signOutRowPressed,
-        ]}
-        onPress={confirmSignOut}
-      >
-        <Text style={styles.signOutText}>Sign out</Text>
-      </Pressable>
+      {/* Sign out — confirmed before acting. */}
+      <Section>
+        <Button label="Sign out" onPress={confirmSignOut} modifiers={DANGER} />
+      </Section>
 
       {/* Account deletion — App Store 5.1.1(v). */}
-      <Pressable
-        style={({ pressed }) => [
-          styles.signOutRow,
-          pressed && styles.signOutRowPressed,
-        ]}
-        onPress={confirmDeleteAccount}
-        accessibilityRole="button"
-        accessibilityLabel="Delete account"
-      >
-        <Text style={styles.deleteText}>Delete account</Text>
-      </Pressable>
-    </ScrollView>
+      <Section>
+        <Button
+          label="Delete account"
+          role="destructive"
+          onPress={confirmDeleteAccount}
+          modifiers={DANGER}
+        />
+      </Section>
+    </GroupedList>
   );
 }
-
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: {
-    padding: spacing.lg,
-    gap: spacing.xl,
-    paddingBottom: spacing.xl,
-  },
-
-  // Grouped white card (radius lg=12, hairline edge).
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-
-  overline: { ...type.overline },
-  bodyText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  captionText: { ...type.caption },
-
-  // Profile card (§5 footer)
-  profileRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.avatarBg,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarText: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 12,
-    color: colors.avatarText,
-  },
-  profileText: { flex: 1, gap: 2 },
-  profileName: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-
-  // Plan card
-  planRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    flexWrap: "wrap",
-  },
-  // Plan badge (§5 footer): 10/600 uppercase, chip bg, mute text, radius 4.
-  planBadge: {
-    backgroundColor: colors.chip,
-    borderRadius: radii.xs,
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 2,
-  },
-  planBadgeText: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 0.4,
-    textTransform: "uppercase",
-    color: colors.mute,
-  },
-  linkRow: {
-    marginTop: spacing.xs,
-    alignSelf: "flex-start",
-    borderRadius: radii.xs,
-  },
-  linkRowPressed: { opacity: 0.6 },
-  linkText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
-
-  // Credits card
-  balanceText: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 20,
-    lineHeight: 26,
-    color: colors.ink,
-  },
-
-  // Loading skeleton (§7)
-  skeletonLine: {
-    height: 14,
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
-
-  // Error card (§4 trio)
-  errorCard: {
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryButtonPressed: { opacity: 0.6 },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-
-  // Sign out — standalone destructive-outline row.
-  signOutRow: {
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.lg,
-    backgroundColor: colors.white,
-    paddingVertical: spacing.md,
-    alignItems: "center",
-  },
-  signOutRowPressed: { backgroundColor: colors.creamPressed },
-  signOutText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.danger,
-  },
-  deleteText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.danger,
-  },
-});

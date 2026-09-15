@@ -192,27 +192,93 @@ jest.mock("react-native-keyboard-controller", () => {
   };
 });
 
-// @expo/ui: native SwiftUI views (BottomSheet presents through them). Mocked so
-// a sheet's React Native content renders inline while it is presented, and a
-// suite can simulate the reader dismissing it via `onIsPresentedChange`.
+// @expo/ui: native SwiftUI views (the sheets, the grouped lists and the
+// segmented controls). Mocked as React Native stand-ins so a suite sees their
+// text and can press their controls:
+// - a sheet renders its content inline while it is presented, and a suite can
+//   simulate the reader dismissing it via `onIsPresentedChange`;
+// - a Button is a Pressable, labelled by its `accessibilityLabel` modifier
+//   (else its `label`), and a Picker is one Pressable per `tag`ged option that
+//   fires only for a different option, as iOS does;
+// - containers render their children, Sections their title, header and footer.
+// Modifiers are plain objects: the few a stand-in reads carry their value.
 jest.mock("@expo/ui", () => ({
   Host: ({ children }: { children?: unknown }) => children,
 }));
 jest.mock("@expo/ui/swift-ui", () => {
   const react = require("react");
-  const { View } = require("react-native");
+  const { Pressable, Text, View } = require("react-native");
+  type MockModified = { modifiers?: Record<string, unknown>[] };
   const passthrough = ({ children }: { children?: unknown }) => children;
+  const text = (value: unknown) =>
+    typeof value === "string" ? react.createElement(Text, null, value) : value;
+  const modifier = (props: MockModified, key: string) =>
+    props.modifiers?.find((config) => key in config)?.[key];
   return {
     BottomSheet: (props: { isPresented: boolean; children?: unknown }) =>
       props.isPresented ? react.createElement(View, { testID: "native-sheet", ...props }) : null,
+    Button: (props: MockModified & { label?: string; onPress?: () => void; children?: unknown }) =>
+      react.createElement(
+        Pressable,
+        {
+          onPress: props.onPress,
+          accessibilityRole: "button",
+          accessibilityLabel: modifier(props, "accessibilityLabel") ?? props.label,
+        },
+        props.label ? text(props.label) : props.children,
+      ),
+    Form: passthrough,
     Group: passthrough,
+    HStack: passthrough,
+    Image: () => null,
+    LabeledContent: (props: { label?: unknown; children?: unknown }) =>
+      react.createElement(View, null, text(props.label), props.children),
+    Picker: (props: {
+      selection?: unknown;
+      onSelectionChange?: (value: unknown) => void;
+      children?: unknown;
+    }) =>
+      react.createElement(
+        View,
+        null,
+        react.Children.map(props.children, (option: { props: MockModified }) => {
+          const value = modifier(option.props, "tag");
+          return react.createElement(
+            Pressable,
+            {
+              accessibilityRole: "button",
+              accessibilityState: { selected: value === props.selection },
+              onPress: () => {
+                if (value !== props.selection) props.onSelectionChange?.(value);
+              },
+            },
+            option,
+          );
+        }),
+      ),
     RNHostView: passthrough,
+    Section: (props: { title?: string; header?: unknown; footer?: unknown; children?: unknown }) =>
+      react.createElement(View, null, text(props.title), props.header, props.children, props.footer),
+    Spacer: () => null,
+    Text: (props: { children?: unknown }) => react.createElement(Text, null, props.children),
+    VStack: passthrough,
   };
 });
 jest.mock("@expo/ui/swift-ui/modifiers", () => ({
+  accessibilityAddTraits: () => ({}),
+  accessibilityLabel: (accessibilityLabel: string) => ({ accessibilityLabel }),
+  accessibilityRemoveTraits: () => ({}),
+  background: () => ({}),
   environment: () => ({}),
+  font: () => ({}),
+  foregroundStyle: () => ({}),
+  frame: () => ({}),
   interactiveDismissDisabled: () => ({}),
+  pickerStyle: () => ({}),
   presentationBackground: () => ({}),
   presentationDetents: () => ({}),
   presentationDragIndicator: () => ({}),
+  redacted: () => ({}),
+  shapes: { circle: () => ({}) },
+  tag: (tag: string | number) => ({ tag }),
 }));

@@ -133,6 +133,8 @@ export default function MarketplacePanel() {
     const items = state.items.filter((l) => isFreeToHire(l, userId));
     body = (
       <FlatList
+        contentInsetAdjustmentBehavior="automatic"
+        automaticallyAdjustKeyboardInsets
         data={items}
         keyExtractor={(l) => l.listing_id}
         style={styles.list}

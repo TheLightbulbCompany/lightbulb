@@ -186,6 +186,7 @@ export default function ListingDetailScreen() {
 
     body = (
       <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
       >

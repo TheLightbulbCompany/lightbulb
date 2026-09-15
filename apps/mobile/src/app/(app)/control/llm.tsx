@@ -483,7 +483,11 @@ export default function LlmPanel() {
   }
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
+    <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
+      style={styles.page}
+      contentContainerStyle={styles.content}
+    >
       {providerCard}
       {creditsCard}
       {catalogCard}

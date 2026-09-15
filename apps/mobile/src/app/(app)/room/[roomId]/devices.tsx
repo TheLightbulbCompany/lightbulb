@@ -66,6 +66,7 @@ export default function DevicesScreen() {
         </View>
       )}
       <SectionList
+        contentInsetAdjustmentBehavior="automatic"
         sections={sections}
         keyExtractor={(row) => row.key}
         contentContainerStyle={[styles.list, sections.length === 0 && styles.listEmpty]}

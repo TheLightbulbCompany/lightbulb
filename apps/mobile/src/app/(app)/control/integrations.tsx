@@ -259,7 +259,11 @@ export default function IntegrationsPanel() {
   }
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
+    <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
+      style={styles.page}
+      contentContainerStyle={styles.content}
+    >
       {inner}
     </ScrollView>
   );

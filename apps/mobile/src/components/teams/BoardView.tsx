@@ -197,6 +197,7 @@ export function BoardView() {
   return (
     <>
       <SectionList<BoardIssue, BoardSection>
+        contentInsetAdjustmentBehavior="automatic"
         style={styles.page}
         sections={sections}
         keyExtractor={(item) => item.id}

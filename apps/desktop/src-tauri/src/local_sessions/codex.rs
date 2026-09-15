@@ -104,11 +104,49 @@ fn from_rollout(
     })
 }
 
-pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<NativeSession> {
+/// Like `open_files`, but keeps only paths the process holds open for
+/// writing (lsof access mode `w` or `u` -- read-write; `r` is read-only).
+/// Codex-only: a process merely reading another thread's rollout -- the
+/// app-server loading a thread's history, the CLI resume picker browsing
+/// past sessions -- must never be mistaken for that thread's owner, so
+/// `capture` cannot use the shared `open_files` (which Claude's capture
+/// keeps using unchanged).
+async fn open_write_files(pid: u32) -> Result<Vec<PathBuf>> {
+    let mut mode = None;
+    Ok(native_output(
+        Path::new("/usr/sbin/lsof"),
+        &["-n", "-a", "-p", &pid.to_string(), "-Fan"],
+    )
+    .await?
+    .lines()
+    .filter_map(|line| {
+        if line.starts_with('f') {
+            mode = None;
+            None
+        } else if let Some(a) = line.strip_prefix('a') {
+            mode = a.chars().next();
+            None
+        } else {
+            line.strip_prefix('n')
+                .filter(|p| p.starts_with('/') && matches!(mode, Some('w') | Some('u')))
+        }
+    })
+    .map(PathBuf::from)
+    .collect())
+}
+
+/// A single Codex process can host more than one thread at once (the ChatGPT
+/// / Codex Desktop app runs one `codex app-server` pid for every open
+/// conversation), each with its own rollout file open. Mirror every rollout
+/// `from_rollout` accepts and that the process currently holds open for
+/// writing; a rollout it refuses (exec, subagent, legacy grammar, other
+/// originator) is skipped rather than failing the whole process, unless none
+/// is accepted, in which case the first refusal's error is returned.
+pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec<NativeSession>> {
     let execution = process(pid)?;
     let root = home.join(".codex/sessions");
     confined_path(home, &root)?;
-    let paths: Vec<_> = open_files(pid)
+    let mut paths: Vec<_> = open_write_files(pid)
         .await?
         .into_iter()
         .filter(|p| {
@@ -118,15 +156,33 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Nat
                 && p.extension().is_some_and(|e| e == "jsonl")
         })
         .collect();
-    if paths.len() != 1 {
+    if paths.is_empty() {
         return Err("native rollout is not available yet".into());
     }
+    // A writer and a reader (or two writers) on the same rollout must still
+    // yield one session.
+    paths.sort();
+    paths.dedup();
     let version = runtime_version(&execution, program, "codex")
         .await
         .unwrap_or_default();
-    let found = from_rollout(&root, execution.clone(), &paths[0], &version)?;
+    let mut found = Vec::with_capacity(paths.len());
+    let mut refusal = None;
+    for path in &paths {
+        match from_rollout(&root, execution.clone(), path, &version) {
+            Ok(session) => found.push(session),
+            Err(e) => {
+                refusal.get_or_insert(e);
+            }
+        };
+    }
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
+    }
+    if found.is_empty() {
+        // paths was non-empty and found is empty, so every path hit the Err
+        // arm above, and each one sets refusal -- it is always Some here.
+        return Err(refusal.expect("a refusal was recorded for every refused path"));
     }
     Ok(found)
 }
@@ -148,8 +204,8 @@ pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
         if !name.contains("/codex") {
             continue;
         }
-        if let Ok(session) = capture(home, &program, pid).await {
-            found.push(session);
+        if let Ok(sessions) = capture(home, &program, pid).await {
+            found.extend(sessions);
         }
     }
     Ok(found)
@@ -942,6 +998,53 @@ mod tests {
         assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
     }
     #[tokio::test]
+    async fn local_sessions_codex_capture_mirrors_every_writer_rollout_and_excludes_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(dir.path()).unwrap();
+        let root = home.join(".codex/sessions");
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("rollout-first.jsonl");
+        let second = root.join("rollout-second.jsonl");
+        let read_only = root.join("rollout-read-only.jsonl");
+        let refused = root.join("rollout-refused.jsonl");
+        fs::write(&first, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&second, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"two\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&read_only, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"three\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&refused, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"four\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+
+        // One real process (this test binary itself) holding four rollouts open
+        // at once: two writers (accepted), one reader only (accepted content,
+        // but must be excluded -- a process merely reading another thread's
+        // history, the way the app-server loads history or the CLI resume
+        // picker browses it, must never be mistaken for that thread's owner),
+        // and one writer `from_rollout` refuses on content grounds. Holding the
+        // handles here (rather than in a spawned child) makes every fd open
+        // before `capture` ever runs, so there is nothing to race.
+        let _first_writer = fs::OpenOptions::new().append(true).open(&first).unwrap();
+        let _second_writer = fs::OpenOptions::new().append(true).open(&second).unwrap();
+        let _reader = fs::File::open(&read_only).unwrap();
+        let _refused_writer = fs::OpenOptions::new().append(true).open(&refused).unwrap();
+
+        let sessions = capture(
+            &home,
+            Path::new("/nonexistent-codex-binary"),
+            std::process::id(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sessions.len(),
+            2,
+            "the read-only handle and the refused exec-sourced rollout are both excluded"
+        );
+        let mut conversations: Vec<_> = sessions.iter().map(|s| s.conversation.clone()).collect();
+        conversations.sort();
+        assert_eq!(conversations, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(sessions[0].process, sessions[1].process);
+    }
+
+    #[tokio::test]
     #[ignore = "requires an explicitly owned disposable native Codex PID and conversation ID"]
     async fn local_sessions_owned_codex_capture_binds_the_running_binary() {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
@@ -951,7 +1054,12 @@ mod tests {
             .unwrap();
         let conversation = std::env::var("LIGHTBULB_TEST_CODEX_THREAD").unwrap();
         let program = provider_program(&home, "codex").unwrap();
-        let session = capture(&home, &program, pid).await.unwrap();
+        let session = capture(&home, &program, pid)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.conversation == conversation)
+            .unwrap();
         assert_eq!(session.conversation, conversation);
         assert_eq!(session.restriction, None);
         assert_eq!(session.version, "0.149.0");

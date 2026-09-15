@@ -114,10 +114,11 @@ def member_key(owner_id: str, kind: str, member_id: str) -> str:
     return f"OWNER#{owner_id}#{kind}#{member_id}"
 
 
-def member_home(member: dict) -> str:
+def member_home(member: dict, room_owner: str) -> str:
     """The workspace a member belongs to. A foreign human (a shared room) carries
-    ``homeOwnerId``; every other row's home is the room owner it was written with."""
-    return member.get("homeOwnerId") or member["ownerId"]
+    ``homeOwnerId``; every other row belongs to the room's CURRENT owner -- not the
+    row's own ``ownerId``, which a META-only migration (#2627) left stale."""
+    return member.get("homeOwnerId") or room_owner
 
 
 def human_idemp_sk(user_id: str, client_message_id: str) -> str:
@@ -478,7 +479,7 @@ async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> lis
     out = []
     for r in rows:
         meta = metas.get(r["roomId"])
-        if meta is not None and member_home(r) == owner_id:
+        if meta is not None and member_home(r, meta["ownerId"]) == owner_id:
             out.append({"member": r, "meta": meta})
     return out
 

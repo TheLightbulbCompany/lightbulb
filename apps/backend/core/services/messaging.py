@@ -192,7 +192,7 @@ class RoomSummary(ContractModel):
     # The ROOM's opaque AppSync segment: a shared channel lives in the owning
     # workspace, so a foreign member's client must subscribe with this, not its
     # own. None only on rows written before the segment was stamped.
-    workspace_id: uuid.UUID | None = None
+    workspace_id: str | None = None
     # The platform-managed channel shared with the Lightbulb workspace.
     shared: bool = False
 
@@ -1063,7 +1063,7 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
     )
     if meta is None:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
-    if member is not None and messaging_repo.member_home(member) == owner_id:
+    if member is not None and messaging_repo.member_home(member, meta["ownerId"]) == owner_id:
         return meta, member
     # A human of the room's own workspace who lost access keeps the reconcile hint;
     # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.
@@ -1356,8 +1356,8 @@ def _vendor_room_human(row: dict, home_owner_id: str, *, role: str = "member") -
 async def ensure_vendor_room(owner_id: str) -> str | None:
     """Create the customer's channel shared with the vendor org, once (spec §4).
 
-    Runs on every org-context poll of a running container; the steady-state cost is
-    one consistent ``get_room``. Creation waits for an ACTIVE Paperclip company so a
+    Runs on every org-context poll; the steady-state cost is one consistent
+    ``get_room``. Creation waits for an ACTIVE Paperclip company so a
     fresh workspace gets its CEO in the room. Returns the room id when it exists."""
     vendor = settings.VENDOR_ORG_ID
     if not vendor or owner_id == vendor or not is_org_owner_id(owner_id):
@@ -1670,7 +1670,7 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
     revision = int(meta["revision"]) + 1
     notices: list[dict] = []
     for human in humans:
-        home = messaging_repo.member_home(human)
+        home = messaging_repo.member_home(human, meta["ownerId"])
         key = await messaging_repo.ensure_user_stream(home, human["id"])
         removed = human["id"] == member_id
         event = make_live_event(
@@ -1702,7 +1702,7 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
         if member is None:
             continue
         meta = await messaging_repo.get_room(room_id)
-        if meta is None or messaging_repo.member_home(member) != owner_id:
+        if meta is None or messaging_repo.member_home(member, meta["ownerId"]) != owner_id:
             continue
         await _remove_member_with_notices(meta, "human", user_id)
     await messaging_repo.deactivate_user_stream(owner_id, user_id)

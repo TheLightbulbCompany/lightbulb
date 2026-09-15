@@ -951,11 +951,11 @@ async def test_foreign_member_is_indexed_by_home_owner(table):
     room_id, _ = await _room(members=[_member("human", USER_A, "owner"), _foreign("user_v")])
     row = await repo.get_member(room_id, "human", "user_v")
     assert row["memberKey"] == f"OWNER#{VENDOR}#human#user_v"
-    assert row["ownerId"] == OWNER and repo.member_home(row) == VENDOR
+    assert row["ownerId"] == OWNER and repo.member_home(row, OWNER) == VENDOR
     assert [r["meta"]["roomId"] for r in await repo.list_rooms_for_member(VENDOR, "human", "user_v")] == [room_id]
     assert await repo.list_rooms_for_member(OWNER, "human", "user_v") == []
     local = await repo.get_member(room_id, "human", USER_A)
-    assert local["memberKey"] == f"OWNER#{OWNER}#human#{USER_A}" and repo.member_home(local) == OWNER
+    assert local["memberKey"] == f"OWNER#{OWNER}#human#{USER_A}" and repo.member_home(local, OWNER) == OWNER
 
 
 @pytest.mark.asyncio
@@ -963,7 +963,7 @@ async def test_upsert_keeps_the_members_home(table):
     room_id, _ = await _room()
     await repo.upsert_member(room_id=room_id, owner_id=OWNER, member=_foreign("user_v"))
     row = await repo.get_member(room_id, "human", "user_v")
-    assert repo.member_home(row) == VENDOR and row["memberKey"] == f"OWNER#{VENDOR}#human#user_v"
+    assert repo.member_home(row, OWNER) == VENDOR and row["memberKey"] == f"OWNER#{VENDOR}#human#user_v"
 
 
 @pytest.mark.asyncio

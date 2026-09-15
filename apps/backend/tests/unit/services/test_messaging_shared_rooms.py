@@ -63,6 +63,22 @@ async def test_require_room_member_follows_the_members_home(monkeypatch, member,
 
 
 @pytest.mark.asyncio
+async def test_a_member_row_left_behind_by_a_meta_only_migration_still_opens_its_room(monkeypatch):
+    # The #2627 personal->org migration rewrote META.ownerId but never the MEMBER# rows.
+    legacy = {
+        "kind": "human",
+        "id": "user_x",
+        "ownerId": "user_x",
+        "memberKey": "OWNER#user_x#human#user_x",
+        "role": "owner",
+        "joinedSeq": 0,
+    }
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=legacy))
+    assert await messaging.require_room_member(CUSTOMER, "user_x", ROOM) == (META, legacy)
+
+
+@pytest.mark.asyncio
 async def test_removal_notices_go_to_each_humans_home_stream(monkeypatch):
     members = [_human("user_c", CUSTOMER, "owner"), _human("user_v", VENDOR)]
     streams = AsyncMock(side_effect=lambda owner, user: f"key-{owner}-{user}")
@@ -163,6 +179,7 @@ async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendo
         messaging, "require_room_admin", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=agent))
+    monkeypatch.setattr(messaging, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": agent["id"], "name": "CEO"}]))
     monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(return_value={**agent, "listenMode": "active"}))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[agent]))

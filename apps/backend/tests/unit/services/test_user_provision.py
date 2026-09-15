@@ -2269,7 +2269,7 @@ async def test_arm_skips_when_row_belongs_to_another_owner():
 
 
 @pytest.mark.asyncio
-async def test_org_poll_on_a_running_container_reconciles_the_vendor_room():
+async def test_any_org_members_poll_reconciles_the_vendor_room():
     """A plain org MEMBER's poll reaches the vendor-room seat (spec §4) — the seat is not behind the admin-only container path."""
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),

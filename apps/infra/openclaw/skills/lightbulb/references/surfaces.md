@@ -81,8 +81,10 @@ founders publish it.
 # Shared local-session workspace notices
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
-opening one on desktop web docks a **session panel** that renders the native
-transcript with the harness's own grammar: prompts with the sender's name,
+opening one from that list opens the session in that room's right column.
+Opening a session from the sidebar Sessions section or from a session link
+instead fills the middle with the sharer's DM beside it. Either way the view
+renders the native transcript with the harness's own grammar: prompts with the sender's name,
 tool calls with collapsed output previews, thinking markers, turn boundaries
 and a working line. Codex sessions read as `• Ran …` / `└ output`; Claude
 sessions as `⏺ Bash(…)` / `⎿ output`. Updates arrive block by block, not token
@@ -95,6 +97,18 @@ agent identity, never a human impersonation. Enabling sharing installs a
 roots so the harness knows what a teammate contribution is. Sessions whose
 process has exited read **Ended** and are hidden until a member presses Show
 recent; they cannot receive follow-ups.
+
+When a participant's session is live, every room message you receive carries a
+`sessions` list inside the **Lightbulb room** structured context: `sessionId`,
+who owns it (`humanUserId`, `displayName`), `provider`, `cwdName`, `title`,
+`status` (`busy`, `idle`, `waiting-approval`, `unknown`), `latestEventSeq` and
+`lastEventAt`. Before you plan or edit code in that repository, call
+`lightbulb_local_sessions` with `action: "read"`, that `sessionId`, and
+`afterSeq: max(0, latestEventSeq - 40)` to see what the human's terminal is
+doing; do not duplicate its work, and say which session (its title or folder)
+you looked at when you report. `resources` lists the same sessions on demand.
+A session missing from the list is not live. The list is omitted in
+conversations that include people from outside the workspace.
 
 A selected session's **Copy session link** or **Add link to conversation draft**
 lets a human explicitly share that same session in a room message. Opening it

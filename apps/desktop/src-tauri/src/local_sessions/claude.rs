@@ -213,10 +213,12 @@ pub(super) fn sender_handle(handle: Option<&str>) -> String {
 }
 
 pub(super) fn listing_status(row: &Value) -> &'static str {
-    match (row["status"].as_str(), row["waitingFor"].as_str()) {
-        (Some("idle"), _) => "idle",
-        (Some("busy"), _) => "busy",
-        (Some("waiting"), Some("permission prompt")) => "waiting-approval",
+    match row["status"].as_str() {
+        Some("idle") => "idle",
+        Some("busy") => "busy",
+        // A Claude session that is waiting is waiting on its human, whatever
+        // `waitingFor` says (a permission prompt, a pending question, ...).
+        Some("waiting") => "waiting-approval",
         _ => "unknown",
     }
 }
@@ -1079,8 +1081,13 @@ mod tests {
             listing_status(&json!({"status":"waiting","waitingFor":"permission prompt"})),
             "waiting-approval"
         );
-        assert_eq!(listing_status(&json!({"status":"waiting"})), "unknown");
+        assert_eq!(
+            listing_status(&json!({"status":"waiting","waitingFor":"input needed"})),
+            "waiting-approval"
+        );
+        assert_eq!(listing_status(&json!({"status":"waiting"})), "waiting-approval");
         assert_eq!(listing_status(&json!({"status":"busy"})), "busy");
+        assert_eq!(listing_status(&json!({})), "unknown");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n{\"type\":\"user\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Desktop and mobile notifications\"}\n").unwrap();

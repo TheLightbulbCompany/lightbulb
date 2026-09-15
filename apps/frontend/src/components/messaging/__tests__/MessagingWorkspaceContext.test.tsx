@@ -726,11 +726,67 @@ it("opens your own session with the current room as context and no DM", async ()
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "mine", ownerUserId: "owner", ownerName: "You", roomId: "room-1" });
 });
 
-it("falls back to the room placement for a link whose session is not live", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
+/** Holds the provider's workspace-session fetch open (a cold load) until the test lands it. */
+function holdSessionList() {
+  let land!: (page: { sessions: never[] }) => void;
+  state.resourceSource.client.listWorkspaceSessions.mockImplementation(() => new Promise((resolve) => { land = resolve; }));
+  return (sessions: never[]) => act(async () => { land({ sessions }); });
+}
+
+it("holds a permalink until the workspace session list lands, then opens a live one in focus with the sharer's DM", async () => {
+  const landList = holdSessionList();
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
+  expect(workspaceValue.sessionFocus).toBeNull();
+  expect(panel.targetSession).toBeNull();
+  await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
+  expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: true });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague" });
+  expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
+  expect(panel.targetSession).toBeNull();
+});
+
+it("falls back to the room placement for a link whose session list settles without it", async () => {
+  const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
   await act(async () => { await workspaceValue.openSession("old", { from: "link", roomId: "room-1" }); });
+  expect(panel.targetSession).toBeNull();
+  await landList([]);
   expect(workspaceValue.sessionFocus).toBeNull();
   expect(panel.targetSession).toMatchObject({ roomId: "room-1", sessionId: "old" });
+});
+
+it("drops a held permalink when a conversation is picked before the session list lands", async () => {
+  const landList = holdSessionList();
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
+  act(() => directory.onSelectRoom("room-1"));
+  await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
+  expect(state.selectDm).not.toHaveBeenCalled();
+  expect(workspaceValue.sessionFocus).toBeNull();
+});
+
+it("clears focus when the active room moves off its conversation by any path, and keeps it when it moves onto it", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
+  state.selectDm = vi.fn(async () => "dm-colleague");
+  mocks.rooms.mockReturnValue(state);
+  const tree = () => <MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>;
+  const view = render(tree());
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+  await act(async () => { await directory.onSelectSession!("s1"); });
+  // selectDm makes the DM active (the mock does not, so the test does): focus stays.
+  state.activeRoomId = "dm-colleague";
+  state.activeRoom = { ...room, roomId: "dm-colleague" };
+  view.rerender(tree());
+  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s1", roomId: "dm-colleague" });
+  // A notification click or ⌥↓ moves the active room without going through the directory.
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(tree());
+  expect(workspaceValue.sessionFocus).toBeNull();
 });

@@ -18,18 +18,20 @@ const source = {
 afterEach(() => { cleanup(); vi.useRealTimers(); listResources.mockClear(); });
 
 describe("useRoomResources enabled gate", () => {
-  it("neither fetches nor polls while disabled, then fetches once enabled and polls every 5s", async () => {
+  it("neither fetches nor polls while disabled, then fetches once enabled, refetches nothing before the 30s safety poll, and refetches once at 30s", async () => {
     vi.useFakeTimers();
     const { rerender } = renderHook(({ enabled }) => useRoomResources("room-1", source, { enabled }), { initialProps: { enabled: false } });
-    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(31000); });
     expect(listResources).not.toHaveBeenCalled();
     rerender({ enabled: true });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(listResources).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(listResources).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(29999); });
+    expect(listResources).toHaveBeenCalledTimes(1); // no hint, nothing refetches before 30s
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(listResources).toHaveBeenCalledTimes(2); // the safety poll fires exactly at 30s
     rerender({ enabled: false });
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
     expect(listResources).toHaveBeenCalledTimes(2);
   });
 
@@ -45,6 +47,42 @@ describe("useRoomResources enabled gate", () => {
     await waitFor(() => expect(source.client.listResources).toHaveBeenCalledWith("room-1", { includeEnded: false }));
     rerender({ includeEnded: true });
     await waitFor(() => expect(source.client.listResources).toHaveBeenCalledWith("room-1", { includeEnded: true }));
+  });
+
+  it("a room.resources.changed push refreshes resources and bumps revision with no timer advance, feeding a session history load(\"newer\")", async () => {
+    vi.useFakeTimers();
+    const handlers = new Set<(event: unknown) => void>();
+    const pushListResources = vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] }));
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null }) // initial "latest" history load
+      .mockResolvedValueOnce({ events: [ev(4)], nextAfterSeq: null }) // the "newer" load the mount's own revision bump feeds
+      .mockResolvedValueOnce({ events: [ev(5)], nextAfterSeq: null }); // the "newer" load the push's revision bump feeds
+    const pushSource = {
+      client: { listResources: pushListResources, listLocalSessionEvents, submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+      onEvent: (handler: (event: unknown) => void) => { handlers.add(handler); return () => handlers.delete(handler); },
+      connectionRevision: 1,
+    } as unknown as RoomResourceSource;
+    const onAccessLost = () => {}; // stable reference: an inline fn would re-identity `load` every render.
+    const { result } = renderHook(() => {
+      const resources = useRoomResources("room-1", pushSource);
+      const history = useLocalSessionHistory(pushSource.client, "room-1", "session-1", 5, resources.revision, onAccessLost);
+      return { resources, history };
+    });
+    // Mount alone already refreshes resources once and bumps revision once, so
+    // the history hook's revision effect already ran by the time this settles.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); }); // flush; no polling elapsed
+    expect(pushListResources).toHaveBeenCalledTimes(1);
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(2);
+    expect(result.current.history.events).toHaveLength(4);
+
+    // The push hint arrives; only microtasks are flushed below, never a timer interval.
+    await act(async () => {
+      for (const handler of handlers) handler({ type: "room.resources.changed", payload: { roomId: "room-1" }, roomId: "room-1", schemaVersion: 1, eventId: "e1", occurredAt: "now" });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(pushListResources).toHaveBeenCalledTimes(2);
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
+    expect(result.current.history.events).toHaveLength(5);
   });
 
   it("uses the latest includeEnded for a do-while re-run coalesced while the toggle flips mid-fetch", async () => {
@@ -83,6 +121,85 @@ describe("useRoomResources enabled gate", () => {
   });
 });
 
+/** A source whose `onEvent` handlers can be driven directly, to fire
+ *  `room.resources.changed` hints for "room-1" on demand. */
+function hintSource() {
+  const handlers = new Set<(event: unknown) => void>();
+  const listResourcesHint = vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] }));
+  const source = {
+    client: { listResources: listResourcesHint, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+    onEvent: (handler: (event: unknown) => void) => { handlers.add(handler); return () => handlers.delete(handler); },
+    connectionRevision: 1,
+  } as unknown as RoomResourceSource;
+  const fire = () => {
+    for (const handler of handlers) handler({ type: "room.resources.changed", payload: { roomId: "room-1" }, roomId: "room-1", schemaVersion: 1, eventId: "e", occurredAt: "now" });
+  };
+  return { source, listResourcesHint, fire };
+}
+
+describe("useRoomResources trailing hint refresh", () => {
+  it("a hint gives one immediate refresh plus exactly one trailing refresh at +1500ms, then nothing until the 30s poll", async () => {
+    vi.useFakeTimers();
+    const { source, listResourcesHint, fire } = hintSource();
+    renderHook(() => useRoomResources("room-1", source));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); }); // the mount fetch settles
+    expect(listResourcesHint).toHaveBeenCalledTimes(1);
+
+    await act(async () => { fire(); await vi.advanceTimersByTimeAsync(0); }); // the hint's immediate refresh
+    expect(listResourcesHint).toHaveBeenCalledTimes(2);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1499); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(2); // the trailing refresh is not due yet
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(3); // exactly one trailing refresh, at +1500ms
+
+    // Nothing more until the 30s safety poll, which started ticking at mount
+    // and is unaffected by the hint; 1500ms of the 30s window already elapsed above.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000 - 1500 - 1); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(4); // the 30s safety poll
+  });
+
+  it("three hints 400ms apart give three immediate refreshes (coalescing as today) plus exactly one trailing refresh 1500ms after the last hint", async () => {
+    vi.useFakeTimers();
+    const { source, listResourcesHint, fire } = hintSource();
+    renderHook(() => useRoomResources("room-1", source));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(1);
+
+    await act(async () => { fire(); await vi.advanceTimersByTimeAsync(0); }); // hint 1
+    expect(listResourcesHint).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); fire(); await vi.advanceTimersByTimeAsync(0); }); // hint 2, resets the trailing timer
+    expect(listResourcesHint).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); fire(); await vi.advanceTimersByTimeAsync(0); }); // hint 3, resets it again
+    expect(listResourcesHint).toHaveBeenCalledTimes(4);
+
+    // Only 1499ms have passed since the last (3rd) hint -- no trailing refresh yet.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1499); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(4);
+    // Exactly one trailing refresh fires 1500ms after the LAST hint -- the
+    // earlier hints' timers were reset, not left to fire their own.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(5);
+  });
+
+  it("unmounting before the trailing timer fires means no refresh", async () => {
+    vi.useFakeTimers();
+    const { source, listResourcesHint, fire } = hintSource();
+    const { unmount } = renderHook(() => useRoomResources("room-1", source));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listResourcesHint).toHaveBeenCalledTimes(1);
+
+    await act(async () => { fire(); await vi.advanceTimersByTimeAsync(0); }); // schedules the trailing timer
+    expect(listResourcesHint).toHaveBeenCalledTimes(2);
+
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // well past +1500ms
+    expect(listResourcesHint).toHaveBeenCalledTimes(2); // the trailing timer never fired
+  });
+});
+
 describe("useLocalSessionHistory tail stability", () => {
   it("keeps the same events array across an empty poll, and hands out a new one when an event arrives", async () => {
     vi.useFakeTimers();
@@ -110,41 +227,30 @@ describe("useLocalSessionHistory tail stability", () => {
     expect(result.current.events).toHaveLength(4);
   });
 
-  it("never flashes loading on the two background callers (revision bump, busy tail), and new events still arrive", async () => {
+  it("never flashes loading on a background revision-bump load, and new events still arrive", async () => {
     vi.useFakeTimers();
     let resolveRevision!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
-    let resolveTail!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
     const revisionFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveRevision = resolve; });
-    const tailFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveTail = resolve; });
     const listLocalSessionEvents = vi.fn()
       .mockResolvedValueOnce({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null })
-      .mockReturnValueOnce(revisionFetch)
-      .mockReturnValueOnce(tailFetch);
+      .mockReturnValueOnce(revisionFetch);
     const client = { listLocalSessionEvents } as unknown as RoomResourceSource["client"];
     const onAccessLost = () => {};
     const { result, rerender } = renderHook(
-      ({ revision, busy }) => useLocalSessionHistory(client, "room-1", "session-1", 3, revision, onAccessLost, { busy }),
-      { initialProps: { revision: 0, busy: false } },
+      ({ revision }) => useLocalSessionHistory(client, "room-1", "session-1", 3, revision, onAccessLost),
+      { initialProps: { revision: 0 } },
     );
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(result.current.loading).toBe(false);
     expect(result.current.events).toHaveLength(3);
 
-    // Background caller 1: the revision effect, driven by useRoomResources' 5s poll.
-    rerender({ revision: 1, busy: false });
+    // The revision effect, driven by useRoomResources' push hint or its 30s safety poll.
+    rerender({ revision: 1 });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(result.current.loading).toBe(false); // stayed false while the fetch is in flight
     await act(async () => { resolveRevision({ events: [ev(4)], nextAfterSeq: null }); await revisionFetch; });
     expect(result.current.loading).toBe(false);
     expect(result.current.events).toHaveLength(4);
-
-    // Background caller 2: the 1s busy tail.
-    rerender({ revision: 1, busy: true });
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(result.current.loading).toBe(false); // stayed false while the fetch is in flight
-    await act(async () => { resolveTail({ events: [ev(5)], nextAfterSeq: null }); await tailFetch; });
-    expect(result.current.loading).toBe(false);
-    expect(result.current.events).toHaveLength(5);
   });
 
   it("still flashes loading for a user-initiated load (Load older/newer, Jump to latest, retry)", async () => {

@@ -14,7 +14,7 @@ const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUser
 const client = { listResources: vi.fn(), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() };
 function view() {
   const cache = new Map();
-  const tree = () => <SWRConfig value={{ provider: () => cache }}><LocalSessionPanel session={session} ownerName="Alice" roomId="room" client={client} revision={1} onAccessLost={() => {}} /></SWRConfig>;
+  const tree = () => <SWRConfig value={{ provider: () => cache }}><LocalSessionPanel session={session} ownerName="Alice" own={false} roomId="room" client={client} revision={1} onAccessLost={() => {}} /></SWRConfig>;
   return { ...render(tree()), tree };
 }
 beforeEach(() => {

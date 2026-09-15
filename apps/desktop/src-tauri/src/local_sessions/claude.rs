@@ -213,10 +213,12 @@ pub(super) fn sender_handle(handle: Option<&str>) -> String {
 }
 
 pub(super) fn listing_status(row: &Value) -> &'static str {
-    match (row["status"].as_str(), row["waitingFor"].as_str()) {
-        (Some("idle"), _) => "idle",
-        (Some("busy"), _) => "busy",
-        (Some("waiting"), Some("permission prompt")) => "waiting-approval",
+    match row["status"].as_str() {
+        Some("idle") => "idle",
+        Some("busy") => "busy",
+        // A Claude session that is waiting is waiting on its human, whatever
+        // `waitingFor` says (a permission prompt, a pending question, ...).
+        Some("waiting") => "waiting-approval",
         _ => "unknown",
     }
 }
@@ -415,6 +417,34 @@ fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> 
         "Agent" => first(&["description"]).to_owned(),
         "WebFetch" | "WebSearch" => first(&["url", "query"]).to_owned(),
         "TodoWrite" => "Update Todos".to_owned(),
+        "AskUserQuestion" => {
+            let text = input["questions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|q| {
+                    let question = q["question"].as_str()?;
+                    let labels: Vec<&str> = q["options"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|o| o["label"].as_str())
+                        .collect();
+                    Some(if labels.is_empty() {
+                        question.to_owned()
+                    } else {
+                        format!("{question} ({})", labels.join(" / "))
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let (cut, truncated) = bounded(&text, 300);
+            if truncated {
+                format!("{cut}…")
+            } else {
+                cut
+            }
+        }
         _ => input
             .as_object()
             .and_then(|o| o.values().find_map(Value::as_str))
@@ -1079,8 +1109,13 @@ mod tests {
             listing_status(&json!({"status":"waiting","waitingFor":"permission prompt"})),
             "waiting-approval"
         );
-        assert_eq!(listing_status(&json!({"status":"waiting"})), "unknown");
+        assert_eq!(
+            listing_status(&json!({"status":"waiting","waitingFor":"input needed"})),
+            "waiting-approval"
+        );
+        assert_eq!(listing_status(&json!({"status":"waiting"})), "waiting-approval");
         assert_eq!(listing_status(&json!({"status":"busy"})), "busy");
+        assert_eq!(listing_status(&json!({})), "unknown");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n{\"type\":\"user\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Desktop and mobile notifications\"}\n").unwrap();
@@ -1195,6 +1230,25 @@ mod tests {
         let events = normalize("s", &call).unwrap();
         assert_eq!(events[0]["text"], "src/a.ts");
         assert_eq!(events[0]["tool"]["input"]["file_path"], "src/a.ts");
+    }
+
+    #[test]
+    fn local_sessions_claude_ask_user_question_is_summarized() {
+        let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a1","timestamp":"2026-09-12T10:00:00.000Z",
+            "message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{"questions":[{"question":"Tea or coffee?","header":"Beverage","options":[{"label":"Tea","description":"…"},{"label":"Coffee","description":"…"}],"multiSelect":false}]}}]}});
+        let events = normalize("s", &call).unwrap();
+        assert_eq!(events[0]["text"], "Tea or coffee? (Tea / Coffee)");
+    }
+
+    #[test]
+    fn local_sessions_claude_ask_user_question_joins_multiple_questions_and_skips_missing_options() {
+        let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a1","timestamp":"2026-09-12T10:00:00.000Z",
+            "message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{"questions":[
+                {"question":"Tea or coffee?","options":[{"label":"Tea"},{"label":"Coffee"}]},
+                {"question":"Anything else?"}
+            ]}}]}});
+        let events = normalize("s", &call).unwrap();
+        assert_eq!(events[0]["text"], "Tea or coffee? (Tea / Coffee); Anything else?");
     }
 
     #[test]

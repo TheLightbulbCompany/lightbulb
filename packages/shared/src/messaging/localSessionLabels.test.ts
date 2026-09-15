@@ -10,6 +10,10 @@ describe("session labels", () => {
     expect(canSendToSession({ ...base, status: "ended" })).toBe(false);
     expect(canSendToSession({ ...base, status: "idle" })).toBe(true);
   });
+
+  it("labels waiting-approval as input needed, covering both permission prompts and questions", () => {
+    expect(sessionStatus["waiting-approval"]).toBe("Waiting for input");
+  });
 });
 
 describe("workspaceSections", () => {

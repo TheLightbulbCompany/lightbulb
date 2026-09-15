@@ -13,6 +13,14 @@ export interface RoomResourceSource {
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
 
+/** Safety-net cadence for the resources poll. The push hint (`room.resources.changed`) is
+ *  primary; this only covers a dropped hint. */
+const RESOURCES_POLL_MS = 30_000;
+
+/** Must exceed local_session_relay's 1000ms per-session hint throttle (no trailing edge), so a
+ *  batch that lands inside that window and gets no hint of its own is still caught by this. */
+const TRAILING_HINT_MS = 1500;
+
 /**
  * Mounted only by the open pane, keyed by owner, viewer, room and membership.
  * `enabled: false` neither fetches nor polls (a phone stacks several screens of
@@ -32,6 +40,7 @@ export function useRoomResources(
   const blocked = useRef(false);
   const refreshing = useRef(false);
   const queued = useRef(false);
+  const trailingHint = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Coalesced re-runs of the do-while below reuse the `refresh` closure that
   // was already in flight when a caller queued another pass; without this ref
   // that re-run would fetch with the `includeEnded` captured at the START of
@@ -93,11 +102,23 @@ export function useRoomResources(
         setData(null);
         setAccessRevision(v => v + 1);
         void refresh();
-      } else if (event.type === "room.resources.changed") void refresh();
+      } else if (event.type === "room.resources.changed") {
+        void refresh();
+        // The backend throttles hints per session with no trailing edge, so a batch
+        // landing inside that window publishes none; a debounced trailing refresh
+        // past TRAILING_HINT_MS catches it instead of stranding the view until the
+        // safety poll. A new hint resets the timer, so a burst yields one trailing
+        // refresh after the last hint, not one per hint.
+        if (trailingHint.current) clearTimeout(trailingHint.current);
+        trailingHint.current = setTimeout(() => { trailingHint.current = null; void refresh(); }, TRAILING_HINT_MS);
+      }
     });
     // Reuses the room's existing live subscription. Poll only while this pane exists.
-    const timer = setInterval(() => void refresh(), 5000);
-    return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
+    const timer = setInterval(() => void refresh(), RESOURCES_POLL_MS);
+    return () => {
+      unsubscribe(); clearInterval(timer); blocked.current = true; invalidate();
+      if (trailingHint.current) { clearTimeout(trailingHint.current); trailingHint.current = null; }
+    };
   }, [enabled, onEvent, roomId, refresh, revoke, invalidate, includeEnded]);
   const previousConnection = useRef(connectionRevision);
   useEffect(() => {
@@ -111,7 +132,6 @@ export function useRoomResources(
 export function useLocalSessionHistory(
   client: RoomResourceSource["client"], roomId: string, sessionId: string,
   latestEventSeq: number, revision: number, onAccessLost: () => void,
-  live?: { busy: boolean },
 ) {
   const [events, setEvents] = useState<LocalSessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,7 +174,7 @@ export function useLocalSessionHistory(
       if (run !== generation.current) return;
       const incoming = page.events.filter(event => event.seq > after && (direction !== "older" || event.seq < first));
       // A "newer"/"older" poll with nothing new keeps the existing array reference
-      // so unchanged rows skip re-rendering (the 1s busy tail polls every second).
+      // so unchanged rows skip re-rendering.
       if (direction === "latest" || incoming.length > 0) {
         const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
         for (const event of incoming) merged.set(event.seq, event);
@@ -181,14 +201,6 @@ export function useLocalSessionHistory(
   useEffect(() => {
     if (initialized.current && follow.current) void load("newer", { quiet: true });
   }, [revision, load]);
-  // Tail the session only while a turn runs. At idle the cadence is already
-  // useRoomResources' 5s poll -> `revision` -> the load("newer") effect above.
-  const tailBusy = live?.busy ?? false;
-  useEffect(() => {
-    if (!tailBusy) return;
-    const timer = setInterval(() => { if (initialized.current && follow.current) void load("newer", { quiet: true }); }, 1000);
-    return () => clearInterval(timer);
-  }, [tailBusy, load]);
   return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
     hasNewer: more || latestEventSeq > (events.at(-1)?.seq ?? 0) };
 }

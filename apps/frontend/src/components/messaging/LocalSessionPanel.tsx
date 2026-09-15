@@ -7,13 +7,13 @@ import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, type Person } from "./NativeSessionTranscript";
 
-export function LocalSessionPanel({ session, ownerName, roomId, client, revision, onAccessLost, onShare, participants = [] }: {
-  session: LocalSession; ownerName: string; roomId: string; client: RoomResourceSource["client"];
+export function LocalSessionPanel({ session, ownerName, own, roomId, client, revision, onAccessLost, onShare, participants = [] }: {
+  session: LocalSession; ownerName: string; own: boolean; roomId: string; client: RoomResourceSource["client"];
   revision: number; onAccessLost: () => void; onShare?: (url: string) => void;
   participants?: readonly Person[];
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { busy });
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
   const [text, setText] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const id = useId();
@@ -23,8 +23,8 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
   return <>
     <div className="local-session-summary native-session-header">
       <p className="native-session-title"><span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" /><span className="font-semibold">{target}</span>{session.cwdName && <span className="text-sm text-muted-foreground"> · ~/{session.cwdName}</span>}</p>
-      <p className="text-sm text-muted-foreground">{ownerName} · {sessionStatus[session.status]}{session.status === "waiting-approval" ? ` on ${ownerName}'s Mac` : ""}</p>
-      <p className="text-sm text-muted-foreground">Follow-ups {session.capabilities.sendMode === "queue" ? "queue" : "wait"} on {ownerName}&apos;s Mac. Approvals stay in their terminal.</p>
+      <p className="text-sm text-muted-foreground">{ownerName} · {sessionStatus[session.status]}{session.status === "waiting-approval" ? ` on ${own ? "your" : `${ownerName}'s`} Mac` : ""}</p>
+      <p className="text-sm text-muted-foreground">Follow-ups {session.capabilities.sendMode === "queue" ? "queue" : "wait"} on {own ? "your" : `${ownerName}'s`} Mac. Approvals stay in {own ? "your" : "their"} terminal.</p>
       {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Checkout changes detected. The next remote contribution asks the session to re-read relevant files; refresh is not proven.</p>}
       <div className="flex flex-wrap gap-2">

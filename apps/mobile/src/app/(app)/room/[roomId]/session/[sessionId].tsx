@@ -55,6 +55,7 @@ export default function SessionScreen() {
   const session = resources.data?.sessions.find((s) => s.sessionId === sessionId);
   const members = rooms.activeRoom?.members;
   const ownerName = session ? memberName(members, session.humanUserId) : "Room member";
+  const own = session ? session.humanUserId === userId : false;
   const name = useCallback(
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
@@ -136,8 +137,8 @@ export default function SessionScreen() {
         client={rooms.resourceSource.client}
         revision={resources.revision}
         onAccessLost={resources.revoke}
-        live={live}
         ownerName={ownerName}
+        own={own}
         name={name}
         bottomInset={insets.bottom}
       />
@@ -145,19 +146,19 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, live, ownerName, name, bottomInset }: {
+function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, bottomInset }: {
   roomId: string;
   session: LocalSession;
   client: RoomResourceSource["client"];
   revision: number;
   onAccessLost: () => void;
-  live: boolean;
   ownerName: string;
+  own: boolean;
   name: (who: string | null) => string;
   bottomInset: number;
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { busy: busy && live });
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
   const [text, setText] = useState("");
   const command = useSessionCommand(client, roomId, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
   const rows = useMemo(() => buildRows(history.events), [history.events]);
@@ -193,7 +194,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
           </Text>
         </View>
         <Text style={styles.meta} numberOfLines={2}>
-          {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${ownerName}’s Mac. Approvals stay in their terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
+          {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. Approvals stay in ${own ? "your" : "their"} terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
         </Text>
         {session.controlUnavailableReason && <Text style={styles.warn}>{unavailableReason[session.controlUnavailableReason]}</Text>}
       </View>

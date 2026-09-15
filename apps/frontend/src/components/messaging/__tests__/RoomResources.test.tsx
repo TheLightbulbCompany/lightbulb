@@ -350,13 +350,13 @@ it.each([new Error("network"), new ApiError(503, {}, "unavailable")])("preserves
   await act(async () => fireEvent.click(screen.getByRole("button", {name:"Send follow-up"})));
   const original = f.client.submitLocalSessionCommand.mock.calls[0];
   f.client.listResources.mockRejectedValueOnce(error);
-  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  await act(async () => vi.advanceTimersByTimeAsync(30000));
   expect(screen.getByRole("region", {name:"Native session history"})).toBeInTheDocument();
   expect(screen.getByText(/Could not refresh devices and sessions/)).toBeInTheDocument();
   expect(screen.getByText(/last successful snapshot/i)).toBeInTheDocument();
   expect(input).toHaveValue("Do not duplicate this follow-up");
   expect(screen.getByRole("button", {name:"Retry same request"})).toBeEnabled();
-  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  await act(async () => vi.advanceTimersByTimeAsync(30000));
   expect(screen.queryByText(/Could not refresh devices and sessions/)).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", {name:/Send to Codex/})).toBe(input);
   await act(async () => fireEvent.click(screen.getByRole("button", {name:"Retry same request"})));
@@ -409,7 +409,7 @@ it("renders only safe public text and labels native approval and capability limi
   const { container } = render(<RoomPanel {...f.props} />);
   await openSession();
   expect(await screen.findByLabelText("Native event 250")).toBeInTheDocument();
-  expect(screen.getByText(/Waiting for approval on/)).toBeInTheDocument();
+  expect(screen.getByText(/Waiting for input on/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
   expect(container.querySelector("script")).toBeNull();
   expect(container.querySelector('img[src="https://example.com/private.png"]')).toBeNull();
@@ -425,7 +425,7 @@ it("repairs missed hints by polling only while open and ignores repeated events"
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Devices & sessions" })));
   await act(async () => fireEvent.click(screen.getByRole("button", { name: /Open Codex/ })));
   f.client.listLocalSessionEvents.mockResolvedValue({ events: page(249, 1).events, nextAfterSeq: null });
-  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  await act(async () => vi.advanceTimersByTimeAsync(30000));
   expect(f.client.listResources).toHaveBeenCalledTimes(2);
   expect(screen.getAllByText("Native event 250")).toHaveLength(1);
   await act(async () => { f.emit("room.access.removed"); });

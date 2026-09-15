@@ -140,7 +140,7 @@ describe("WipeAccountDialog", () => {
     await user.click(wipeButton);
 
     expect(await within(dialog).findByText("timeout contacting ECS")).toBeInTheDocument();
-    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL);
+    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, undefined);
     expect(within(dialog).queryByRole("button", { name: /permanently wipe/i })).toBeNull();
   });
 
@@ -159,6 +159,59 @@ describe("WipeAccountDialog", () => {
 
     expect(await within(dialog).findByText(/email_mismatch/i)).toBeInTheDocument();
     expect(within(dialog).queryByText("timeout contacting ECS")).toBeNull();
+  });
+
+  it("keeps a workspace member's shared company and requires the workspace name", async () => {
+    mockPreview.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: {
+        owner_id: USER_ID,
+        dry_run: true,
+        shared_company: {
+          company_id: "company_abc",
+          org_id: "org_founder",
+          workspace_name: "Isol8",
+          owner_user_id: "user_owner",
+          owner_email: "founder@example.com",
+          member_count: 4,
+        },
+        steps: [
+          {
+            system: "paperclip_company",
+            action: "delete_company",
+            status: "refused",
+            detail: 'refused: company company_abc belongs to workspace "Isol8" — kept',
+            error: null,
+          },
+          {
+            system: "paperclip_membership",
+            action: "archive_member",
+            status: "would_delete",
+            detail: "only this member's membership is archived",
+            error: null,
+          },
+        ],
+      },
+    });
+    const { user, dialog } = await openDialog();
+    await within(dialog).findByText("delete_company");
+
+    expect(within(dialog).getByText("refused")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Paperclip company will be kept; only this member's membership is archived/),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/user_owner <founder@example.com>, 4 active members/)).toBeInTheDocument();
+
+    const wipeButton = within(dialog).getByRole("button", { name: /permanently wipe/i });
+    await user.type(within(dialog).getByLabelText(new RegExp(`Type ${EMAIL}`, "i")), EMAIL);
+    expect(wipeButton).toBeDisabled();
+
+    await user.type(within(dialog).getByLabelText(/Type Isol8 to confirm the workspace/i), "Isol8");
+    expect(wipeButton).toBeEnabled();
+
+    await user.click(wipeButton);
+    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, "Isol8");
   });
 
   it("disables the trigger when the account has no email on file", () => {

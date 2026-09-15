@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { nativeNotify } from "../desktopNotify";
+import { isDesktopApp, nativeNotify, notificationPermission } from "../desktopNotify";
 
 describe("nativeNotify — browser fallback (no Tauri)", () => {
   let instances: FakeNotification[];
@@ -106,5 +106,55 @@ describe("nativeNotify — Tauri desktop shell", () => {
   it("reports false when the command fails (unbundled dev binary), so the caller can toast", async () => {
     invoke.mockRejectedValue(new Error("ipc"));
     expect(await nativeNotify("Title", "Body")).toBe(false);
+  });
+});
+
+describe("notificationPermission", () => {
+  class FakeNotification {
+    static permission: NotificationPermission = "default";
+    static requestPermission = vi.fn();
+  }
+
+  beforeEach(() => {
+    FakeNotification.permission = "default";
+    FakeNotification.requestPermission.mockReset().mockResolvedValue("granted");
+    vi.stubGlobal("Notification", FakeNotification);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
+  });
+
+  it("reads the browser permission without prompting", async () => {
+    expect(await notificationPermission()).toBe("default");
+    FakeNotification.permission = "denied";
+    expect(await notificationPermission(true)).toBe("denied");
+    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+  });
+
+  it("prompts in the browser only while undecided, and returns the answer", async () => {
+    expect(await notificationPermission(true)).toBe("granted");
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+  });
+
+  it("is null without a Notification API", async () => {
+    vi.unstubAllGlobals();
+    expect(await notificationPermission()).toBeNull();
+    expect(isDesktopApp()).toBe(false);
+  });
+
+  it("asks the desktop app, never the webview's own Notification API", async () => {
+    const invoke = vi.fn().mockResolvedValue("denied");
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    expect(isDesktopApp()).toBe(true);
+    expect(await notificationPermission(true)).toBe("denied");
+    expect(invoke).toHaveBeenCalledWith("notification_permission", { request: true });
+    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+    // No bundle, or a desktop build that predates the command: unknown, not denied.
+    invoke.mockResolvedValue("unsupported");
+    expect(await notificationPermission()).toBeNull();
+    invoke.mockRejectedValue(new Error("command notification_permission not found"));
+    expect(await notificationPermission()).toBeNull();
   });
 });

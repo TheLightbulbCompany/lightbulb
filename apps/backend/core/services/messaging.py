@@ -1406,8 +1406,8 @@ async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsReq
 
 
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
-    owner_id = resolve_owner_id(auth)
-    meta, actor = await require_room_admin(owner_id, auth.user_id, room_id)
+    meta, actor = await require_room_admin(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     _deny_vendor_human_change(meta, request.kind)
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     if existing and existing.get("role") == "owner":

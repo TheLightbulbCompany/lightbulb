@@ -242,3 +242,27 @@ async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkey
 
 async def _noop() -> None:
     return None
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_admin_can_only_add_the_rooms_own_org_members(monkeypatch):
+    admin = _human("user_v", VENDOR, "admin")
+    agent_id = str(uuid.uuid4())
+    monkeypatch.setattr(messaging, "require_room_admin", AsyncMock(return_value=(META, admin)))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    load_agent_roster = AsyncMock(return_value=[{"id": agent_id, "name": "CEO"}])
+    monkeypatch.setattr(messaging, "load_agent_roster", load_agent_roster)
+    monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(return_value={"kind": "agent", "id": agent_id}))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[]))
+    upsert_member = AsyncMock(return_value=META)
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert_member)
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
+
+    await messaging.upsert_member(
+        AuthContext(user_id="user_v", org_id=VENDOR),
+        ROOM,
+        messaging.UpsertRoomMemberRequest(kind="agent", id=agent_id, role="member", listen_mode="mentions"),
+    )
+    assert load_agent_roster.await_args.args == (CUSTOMER,)
+    assert upsert_member.await_args.kwargs["owner_id"] == CUSTOMER

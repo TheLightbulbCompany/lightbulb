@@ -545,7 +545,9 @@ async def test_the_seeded_starter_room_reports_system_membership(monkeypatch, te
 async def test_adding_a_member_reports_the_adders_role(monkeypatch, telemetry):
     _, capture = telemetry
     monkeypatch.setattr(
-        messaging, "require_room_admin", AsyncMock(return_value=({"kind": "channel"}, _human_member(role="admin")))
+        messaging,
+        "require_room_admin",
+        AsyncMock(return_value=({"kind": "channel", "ownerId": OWNER}, _human_member(role="admin"))),
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": AGENT, "name": "Friday"}]))

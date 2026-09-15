@@ -93,6 +93,41 @@ against paying customers. Instead:
 - #2625 — the workspace backfill (`--skip-paid` keeps paying owners out until #2627 ran for them).
 - #2627 — the paying-owner runtime migration.
 
+## Status (2026-09-15 ~01:00Z)
+
+| step | state |
+|---|---|
+| Clerk cap to one org per user (prod + dev) | done |
+| Leonardo's personal residue + his two orphan companies | done |
+| Prod promotion carrying #2619/#2622/#2623/#2626 | done (run 34906557563) |
+| Workspace backfill, non-paying owners | done: 29 Clerk orgs |
+| Purge of personal residue | done: 37 owners, 0 failures; Paperclip 40 → 9 companies |
+| External Review (internal, paying) migration | data moved to `org_3JL4yREh34gkakAVsZ2GKspTdr0`, token row rebound, org container provisioning via the watchdog backstop |
+| Two external customers (paying, ChatGPT) | not started — dry runs pass ("Lull Brands", "Admin") |
+| Orphan companies "Bottled Fire" `817eb9fd…`, "Savor Social" `32644a40…` | referenced by no row and by no legacy owner; owner to decide |
+| Delete the personal legs + this doc | after the two customers |
+
+### Lessons from the External Review run (baked into the scripts since)
+
+- **SSM exec sessions die on inactivity.** The first run moved billing, then died
+  in the silent container drain; the drain and replica copy now print heartbeats.
+  A half-migrated owner looks unpaid to the purge: never run the purge while a
+  migration is mid-flight, and resume with `--org <id>`.
+- **The backend task role cannot read the replicas bucket.** The in-task replica
+  copy and the OAuth-seed harvest both need admin credentials in the exec
+  environment (below). Check the task log group afterwards: no credential
+  strings reached it on 2026-09-15.
+- **ChatGPT grants are bound to a workspace.** The provider row (`user_id`) and the
+  harness row (`user_id#harness`) carry `bound_owner_id`; every consumer reads
+  them with `bound_to=<container owner>`. The script now rebinds whichever exist
+  to the org, after the harvest (which needs the old binding), and names
+  `oauth_connector_user_id` on the org billing row.
+- **Clerk:** send a User-Agent, and never send `slug` — this instance has org
+  slugs disabled (`organization_slugs_disabled`).
+- `dispatch_provision` from a script spawns attempt 0 as a child that dies with
+  the session; the Step Functions watchdog still provisions after its 40-tick
+  (~40 min) backstop.
+
 ## Executing (the auto-mode classifier refuses prod writes from the agent)
 
 Run from the owner's terminal (the `!` prefix in this session works), after
@@ -121,7 +156,12 @@ run apps/backend/scripts/purge_legacy_personal_workspaces.py --apply \
 #    then user_3IEUfhBJrhDbABVjjcKo4ECy4wk and user_3IQ0sBQskW3v7XNiFSd1PIzZSQv).
 #    Dry run, apply with provisioning, verify chat/Teams/billing as the user, then purge the residue.
 run apps/backend/scripts/migrate_personal_owner_to_workspace.py --owner <user>
-run apps/backend/scripts/migrate_personal_owner_to_workspace.py --owner <user> --provision --apply
+# the apply needs S3 read on the replicas bucket, which the task role lacks:
+eval "$(aws configure export-credentials --profile isol8-admin --format env)"
+aws ecs execute-command --cluster lightbulb-prod-container --task "$TASK" --container backend --interactive \
+  --command "/bin/sh -c 'cd /app && AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN sh -c \"echo $(base64 < apps/backend/scripts/migrate_personal_owner_to_workspace.py | tr -d '\n') \
+  | base64 -d | uv run python - --owner <user> --provision --apply\"'"
 run apps/backend/scripts/purge_legacy_personal_workspaces.py --owner <user> --apply
 
 # 3. A workspace for every other legacy owner (dry run, then apply)

@@ -238,10 +238,6 @@ export function openMessagePanel(roomId: string, messageId?: string): void {
   if (descriptor && _api) addOrFocus(descriptor);
 }
 
-export function isDockAttached(): boolean {
-  return _api !== null;
-}
-
 let sessionIntent = 0;
 /** Retargets the Messages panel at a room+session; the session view itself
  *  lives inside Messages (spec §4), never as its own dock tab. */

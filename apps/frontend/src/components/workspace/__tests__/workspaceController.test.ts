@@ -7,7 +7,6 @@ import {
   openChatPanelWithDraft,
   openMessagePanel,
   openSessionPanel,
-  isDockAttached,
   closeSubjectDeleted,
   activateMessagesPanel,
   syncMessagesPanelAgent,
@@ -113,7 +112,6 @@ describe("workspaceController", () => {
   it("retargets the Messages panel for a session, bumping sessionIntent on repeat opens, and never duplicates it", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "friday-id");
-    expect(isDockAttached()).toBe(true);
     openSessionPanel("r1", "s1");
     expect(api.addPanel).toHaveBeenCalledTimes(1);
     expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "r1", sessionId: "s1", sessionIntent: "1" });

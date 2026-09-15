@@ -2,13 +2,13 @@
 
 import { useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
-import { sessionViewKey, useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
+import { sessionLabel, sessionViewKey, useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { ColumnGrip } from "./ColumnGrip";
-import { LocalSessionPanel, sessionLabel } from "./LocalSessionPanel";
+import { LocalSessionPanel } from "./LocalSessionPanel";
 import { useSessionColumnWidth } from "./sidebarPrefs";
 
-export interface SessionFocusTarget { sessionId: string; ownerUserId: string; ownerName: string; roomId: string | null }
+export interface SessionFocusTarget { sessionId: string; ownerUserId: string; ownerName: string; roomId: string | null; own: boolean }
 
 /**
  * Focus placement (spec §4): the session fills the middle; for someone else's
@@ -37,7 +37,7 @@ export function SessionFocus({ focus, source, own, onClose, conversation, scope 
         session={session} ownerName={focus.ownerName} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
     </div>
     {!own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">
-      <ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} value={column.value} min={column.min} max={column.max} />
+      <ColumnGrip {...column.grip} />
       {conversation}
     </aside>}
   </section>;

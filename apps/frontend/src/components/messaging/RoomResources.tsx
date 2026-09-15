@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Laptop, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { sessionViewKey, useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, sessionViewKey, useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
+import { LocalSessionPanel } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 
 export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare, onSessionOpenChange, resizeHandle }: {

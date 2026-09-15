@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -33,11 +33,9 @@ export interface MessagingWorkspaceValue {
   openSession: (sessionId: string, options: { from: "sidebar" | "link" | "room"; roomId?: string }) => Promise<void>;
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
-  currentUserId: string;
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
   sessionSource: RoomResourceSource;
   scope: string;
-  workspaceSessions: LocalSession[];
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -560,7 +558,7 @@ export function MessagingWorkspaceProvider({
     setThreadId(null);
     setTarget(null);
     setSessionTarget(null);
-    setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom });
+    setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom, own });
   }, [workspaceSessions.sessions, workspaceSessions.loading, userId, rooms.activeRoomId, rooms.rooms, selectDm, selectRoom, humanName]);
   useEffect(() => {
     const link = heldLink.current;
@@ -707,10 +705,8 @@ export function MessagingWorkspaceProvider({
     openSession,
     sessionFocus,
     closeSession,
-    currentUserId: userId ?? "",
     sessionSource: rooms.resourceSource,
     scope,
-    workspaceSessions: workspaceSessions.sessions,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible}
     onOpen={(roomId, targetThreadId) => {
       // The room may be the one focus covers; opening it has to uncover it.

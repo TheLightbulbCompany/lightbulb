@@ -88,5 +88,8 @@ export function useSessionColumnWidth(scope: string, panel: RefObject<HTMLElemen
   };
   const onCommit = () => { if (latest.current) writeSessionColumnWidth(scope, latest.current); };
   const style = (width ? { "--room-session-width": `${width}px` } : {}) as CSSProperties;
-  return { width, style, onDrag, onNudge, onCommit, value: width ?? panelWidth() / 2, min: SESSION_COLUMN_MIN, max: panelWidth() * 0.8 };
+  return {
+    style,
+    grip: { onDrag, onNudge, onCommit, value: width ?? panelWidth() / 2, min: SESSION_COLUMN_MIN, max: panelWidth() * 0.8 },
+  };
 }

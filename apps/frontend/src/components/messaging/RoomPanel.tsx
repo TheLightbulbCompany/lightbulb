@@ -653,7 +653,7 @@ function RoomContent({
       target={targetSession?.nonce !== consumedSession ? targetSession : null}
       onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
       onSessionOpenChange={setSessionOpen}
-      resizeHandle={<ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} value={column.value} min={column.min} max={column.max} />}
+      resizeHandle={<ColumnGrip {...column.grip} />}
       onShare={url => composer.onTextChange(composer.text ? `${composer.text}\n${url}` : url)} />}
     {showDetail && !showResources && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>

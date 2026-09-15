@@ -6,7 +6,7 @@ import { readSessionColumnWidth, useSessionColumnWidth, writeSessionColumnWidth 
 
 it("reports pointer drags, keyboard nudges, and commits exactly once per release gesture", () => {
   const onDrag = vi.fn(), onNudge = vi.fn(), onCommit = vi.fn();
-  render(<ColumnGrip onDrag={onDrag} onNudge={onNudge} onCommit={onCommit} />);
+  render(<ColumnGrip onDrag={onDrag} onNudge={onNudge} onCommit={onCommit} value={600} min={360} max={800} />);
   const grip = screen.getByRole("separator", { name: "Resize session column" });
   grip.setPointerCapture = vi.fn(); grip.releasePointerCapture = vi.fn(); grip.hasPointerCapture = vi.fn(() => true);
   fireEvent.pointerDown(grip, { pointerId: 1, clientX: 900 });
@@ -31,7 +31,7 @@ it("commits exactly once when a captured pointer is cancelled", () => {
   // lostpointercapture in turn -- jsdom does not cascade that second event,
   // so the test fires both explicitly to simulate what a real browser does.
   const onCommit = vi.fn();
-  render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} />);
+  render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} value={600} min={360} max={800} />);
   const grip = screen.getByRole("separator", { name: "Resize session column" });
   grip.setPointerCapture = vi.fn();
   fireEvent.pointerDown(grip, { pointerId: 1, clientX: 900 });
@@ -42,7 +42,7 @@ it("commits exactly once when a captured pointer is cancelled", () => {
 
 it("never calls releasePointerCapture once capture is already lost", () => {
   const onCommit = vi.fn();
-  render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} />);
+  render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} value={600} min={360} max={800} />);
   const grip = screen.getByRole("separator", { name: "Resize session column" });
   grip.setPointerCapture = vi.fn();
   grip.releasePointerCapture = vi.fn();
@@ -67,7 +67,7 @@ function Harness({ scope }: { scope: string }) {
   const panelRef = useRef<HTMLElement>(null);
   const column = useSessionColumnWidth(scope, panelRef);
   return <section ref={panelRef}>
-    <ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} value={column.value} min={column.min} max={column.max} />
+    <ColumnGrip {...column.grip} />
   </section>;
 }
 

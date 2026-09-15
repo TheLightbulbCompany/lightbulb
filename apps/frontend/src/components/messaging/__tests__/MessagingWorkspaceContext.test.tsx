@@ -704,7 +704,7 @@ it("opens someone else's session from the sidebar in focus with their DM, and cl
   // Resolved without activating; the DM is selected with the focus, in one render.
   expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: false });
   expect(state.selectRoom).toHaveBeenCalledWith("dm-colleague");
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague" });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague", own: false });
   act(() => directory.onSelectRoom("room-1"));
   expect(workspaceValue.sessionFocus).toBeNull();
 });
@@ -731,7 +731,7 @@ it("opens your own session with the current room as context and no DM", async ()
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
   await act(async () => { await directory.onSelectSession!("mine"); });
   expect(state.selectDm).not.toHaveBeenCalled();
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "mine", ownerUserId: "owner", ownerName: "You", roomId: "room-1" });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "mine", ownerUserId: "owner", ownerName: "You", roomId: "room-1", own: true });
 });
 
 /** Holds the provider's workspace-session fetch open (a cold load) until the test lands it. */
@@ -751,7 +751,7 @@ it("holds a permalink until the workspace session list lands, then opens a live 
   expect(panel.targetSession).toBeNull();
   await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
   expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: false });
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague" });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague", own: false });
   expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
   expect(panel.targetSession).toBeNull();
 });
@@ -812,7 +812,7 @@ it("lands in focus on the sharer's existing DM, and clears it when the active ro
   act(() => { opening = workspaceValue.openSession("s1", { from: "sidebar" }); });
   await act(async () => { await opening; });
   expect(workspaceValue.activeRoomId).toBe("dm-colleague");
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague" });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague", own: false });
   // ⌥↓ (like a notification click) moves the active room without the directory.
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
   expect(workspaceValue.activeRoomId).toBe("room-2");

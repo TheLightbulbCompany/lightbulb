@@ -7,8 +7,6 @@ import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, type Person } from "./NativeSessionTranscript";
 
-export { sessionLabel, sessionStatus } from "@lightbulb/shared";
-
 export function LocalSessionPanel({ session, ownerName, roomId, client, revision, onAccessLost, onShare, participants = [] }: {
   session: LocalSession; ownerName: string; roomId: string; client: RoomResourceSource["client"];
   revision: number; onAccessLost: () => void; onShare?: (url: string) => void;

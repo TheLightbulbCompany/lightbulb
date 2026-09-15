@@ -157,14 +157,11 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     for anyone who signed up alone, and that is exactly what must never happen
     again.
     """
-    # ponytail: legacy personal path. Refusing here is the fence; the personal
-    # legs of _reconcile_owner_seed / _ensure_paperclip_for_owner /
-    # arm_nightly_ceo / provision_runner step 0 survive only because the
-    # executor's wake path still reconciles the last paid personal owners who
-    # predate the 2026-09-10 cutover (resolve_owner_id already 409s them at
-    # every product API). Delete those legs once they are migrated to
-    # workspaces (the September 2026 migration tooling is in git history:
-    # #2624 purge, #2625 workspace backfill, #2627 paying-owner migration).
+    # Personal workspaces no longer exist, in the code or in the data: the
+    # September 2026 cohort was purged or migrated onto workspaces (#2624,
+    # #2625, #2627), and every helper below is org-only. Refusing here is the
+    # fence; resolve_owner_id 409s the same caller at every product API, and
+    # provision_runner step 0 refuses a non-org owner the executor is handed.
     if not auth.is_org_context:
         logger.info(
             "ensure_user_ready: personal (no-org) caller user=%s refused — a workspace is required",
@@ -191,23 +188,18 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # Safe to hoist: ``ensure_metronome_customer`` owns its own preconditions —
     # it short-circuits trial_local owners (who must never get a ledger) and
     # raises when no billing row exists, which the except below swallows. So a
-    # gated-for-any-other-reason owner (no subscription, pending invitation)
+    # gated-for-any-other-reason owner (no subscription, no provider chosen)
     # costs one DDB read and no Metronome traffic. Org members never run it:
     # the org's customer belongs to the org owner_id and an admin poll creates
     # it. Best-effort — a Metronome outage must never block provisioning.
     #
-    # "The next poll retries" is NOT a blanket guarantee — this function is
-    # only re-entered from a running container for org context, a failed
-    # Teams seed, or (since the ledger-missing dispatch in
-    # routers/container.py) a ledger-eligible owner with no
-    # metronome_customer_id yet. That third case is what makes a failure
-    # HERE actually retry for a personal owner: without it, this except
-    # swallowed the error and nothing ever called this function again for a
-    # healthy running personal container (see readiness_state.compute_status's
-    # `metronome_ledger_missing` and the incident it was added to fix). The
-    # short-circuit on the persisted id makes a retried steady state a single
-    # read either way.
-    if not auth.is_org_context or auth.is_org_admin:
+    # The next poll retries: routers/container.py re-dispatches this function
+    # for a ledger-eligible owner with no metronome_customer_id yet (see
+    # readiness_state.compute_status's `metronome_ledger_missing` and the
+    # incident it was added to fix), so a failure HERE does not strand a
+    # healthy running container without a ledger. The short-circuit on the
+    # persisted id makes a retried steady state a single read.
+    if auth.is_org_admin:
         try:
             await ensure_metronome_customer(owner_id=owner_id)
         except Exception:
@@ -220,10 +212,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
 
     # The gate check uses the same predicate as /container/status so
     # the helper and the endpoint can never disagree.
-    gate = await evaluate_provision_gate(
-        owner_id=owner_id,
-        is_admin=auth.is_org_admin if auth.is_org_context else True,
-    )
+    gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin)
     if gate is not None:
         # A provision gate speaks to CONTAINER-provisioning (and company-
         # CREATE) economics; it must NOT swallow an org-context caller's
@@ -239,22 +228,21 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         # returns gracefully when no ACTIVE company exists), so company
         # CREATE stays behind the gate — an admin bootstrapping a brand-new
         # org still needs the gate clear.
-        if auth.is_org_context:
-            try:
-                await _ensure_paperclip_for_member(
-                    org_id=auth.org_id,
-                    member_user_id=auth.user_id,
-                    member_email=auth.email or "",
-                )
-            except Exception:
-                put_metric("paperclip.seed.error")
-                logger.exception(
-                    "ensure_user_ready: paperclip membership-add failed for "
-                    "owner=%s user=%s (gate=%s) — will retry on next poll",
-                    owner_id,
-                    auth.user_id,
-                    gate.code,
-                )
+        try:
+            await _ensure_paperclip_for_member(
+                org_id=owner_id,
+                member_user_id=auth.user_id,
+                member_email=auth.email or "",
+            )
+        except Exception:
+            put_metric("paperclip.seed.error")
+            logger.exception(
+                "ensure_user_ready: paperclip membership-add failed for "
+                "owner=%s user=%s (gate=%s) — will retry on next poll",
+                owner_id,
+                auth.user_id,
+                gate.code,
+            )
         logger.debug(
             "ensure_user_ready: gate up for owner=%s code=%s — no-op",
             owner_id,
@@ -278,15 +266,13 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # single-flight — co-admins/members join the shared company the runner
     # creates, and the creator's own re-poll no-ops on their already-active
     # owner row. The owner company-CREATE is _provision_or_reconcile's job
-    # below. Personal owners have no join, so nothing runs in this block for
-    # them.
+    # below.
     try:
-        if auth.is_org_context:
-            await _ensure_paperclip_for_member(
-                org_id=auth.org_id,
-                member_user_id=auth.user_id,
-                member_email=auth.email or "",
-            )
+        await _ensure_paperclip_for_member(
+            org_id=owner_id,
+            member_user_id=auth.user_id,
+            member_email=auth.email or "",
+        )
     except Exception:
         put_metric("paperclip.seed.error")
         logger.exception(
@@ -294,35 +280,33 @@ async def ensure_user_ready(auth: AuthContext) -> None:
             owner_id,
         )
 
-    # Container + owner-seed, for container-owners only — personal user or org
-    # ADMIN. Org members ride the shared org container; they never spin one up.
-    # (This role check is about WHO SPINS UP THE BOX and is unrelated to
-    # Teams/Paperclip access, which is role-blind above.)
-    if not auth.is_org_context or auth.is_org_admin:
+    # Container + owner-seed, for org ADMINS only. Org members ride the shared
+    # org container; they never spin one up. (This role check is about WHO
+    # SPINS UP THE BOX and is unrelated to Teams/Paperclip access, which is
+    # role-blind above.)
+    if auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
     # The customer's channel shared with the Lightbulb workspace. Any member's poll
     # reconciles it (not only the container owner's); its own first read is the
     # short-circuit, so the steady-state cost is one consistent read per poll.
-    if auth.is_org_context:
-        from core.services.messaging import ensure_vendor_room
+    from core.services.messaging import ensure_vendor_room
 
-        try:
-            await ensure_vendor_room(owner_id)
-        except Exception:
-            put_metric("messaging.vendor_room.error")
-            logger.exception("vendor room reconcile failed for owner %s", owner_id)
+    try:
+        await ensure_vendor_room(owner_id)
+    except Exception:
+        put_metric("messaging.vendor_room.error")
+        logger.exception("vendor room reconcile failed for owner %s", owner_id)
 
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
     # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after
-    # the owner's Paperclip seed — every path to "paid + provider chosen" runs
-    # there. A personal owner's healthy running-container poll never
-    # re-dispatches ensure_user_ready, so this call is NOT a general catch-up:
-    # it is the org-context / failed-seed self-heal only (the states that do
-    # re-dispatch here). Never an org member; paid-only inside; idempotent;
-    # best-effort (never raises).
-    if not auth.is_org_context or auth.is_org_admin:
-        await _maybe_arm_nightly_ceo(auth, owner_id)
+    # the owner's Paperclip seed. This call is the poll-path self-heal, and since
+    # every org admin's running-container poll reaches it, it IS a general
+    # catch-up — kept cheap by the nightly_ceo_armed_company cache. Never an org
+    # member; gated inside on should_arm_nightly_ceo (paid OR an unexpired
+    # trial_local); idempotent; best-effort (never raises).
+    if auth.is_org_admin:
+        await _maybe_arm_nightly_ceo(owner_id)
 
 
 async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
@@ -385,39 +369,25 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
     """Run the OWNER company seed on the poll thread, for the one case the
     executor's step 0 cannot cover: no provision is going to run at all.
 
-    Personal owner → ``_ensure_paperclip_for_owner``: idempotent
-    (``provision_org`` short-circuits on an active row) and genuinely
-    reconciling on a ``failed`` one, which is the state this path exists for.
-
-    Org admin → ``_ensure_paperclip_for_org``, but only when the org has NO
-    active company. The JOIN half already ran on this thread
-    (``_ensure_paperclip_for_member``, role-blind, above); calling the
-    join-or-create helper unconditionally would re-issue that member-add — a
-    Paperclip round trip + a Clerk email lookup — on every ~3s poll of a
-    healthy org. What is left to reconcile here is CREATE only.
+    ``_ensure_paperclip_for_org``, but only when the org has NO active company.
+    The JOIN half already ran on this thread (``_ensure_paperclip_for_member``,
+    role-blind, above); calling the join-or-create helper unconditionally would
+    re-issue that member-add — a Paperclip round trip + a Clerk email lookup —
+    on every ~3s poll of a healthy org. What is left to reconcile here is
+    CREATE only, and only an admin creates.
     """
-    if auth.is_org_context:
-        if not auth.is_org_admin:
-            return  # members never create; they joined above
-        provisioning = await build_paperclip_provisioning()
-        try:
-            if await provisioning.find_org_owner(owner_id) is not None:
-                return
-        finally:
-            await close_paperclip_provisioning(provisioning)
-        await _ensure_paperclip_for_org(
-            org_id=owner_id,
-            user_id=auth.user_id,
-            email=auth.email or "",
-            is_admin=auth.is_org_admin,
-        )
-        return
-
-    await _ensure_paperclip_for_owner(
-        owner_id=owner_id,
-        owner_user_id=auth.user_id,
-        owner_email=auth.email or "",
-        org_id=None,
+    # Only reached from ensure_user_ready's ``if auth.is_org_admin:`` branch.
+    provisioning = await build_paperclip_provisioning()
+    try:
+        if await provisioning.find_org_owner(owner_id) is not None:
+            return
+    finally:
+        await close_paperclip_provisioning(provisioning)
+    await _ensure_paperclip_for_org(
+        org_id=owner_id,
+        user_id=auth.user_id,
+        email=auth.email or "",
+        is_admin=True,
     )
 
 
@@ -433,9 +403,8 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     (``scripts.provision_runner._seed_owner_paperclip``), right after the
     owner's Paperclip seed — every path to "paid + provider chosen" (org first
     provision, trial→paid conversion via reprovision_for_user, admin
-    reprovision, image roll) runs there. Org-vs-personal comes from the
-    ``owner_id`` prefix (``is_org_owner_id``), the executor's own rule; a
-    personal owner_id IS the user_id.
+    reprovision, image roll) runs there. ``owner_id`` is the workspace (Clerk
+    org) id; its company row comes from the authoritative owner resolver.
 
     Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``): paid buys
     always-on, and the nightly CEO is ALSO extended to live ``trial_local``
@@ -485,14 +454,9 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             # Confirm a COMMITTED active company before seeding. This is why
             # there is no orphan/failed-company cost leak: we only ever arm a
             # company provision_org actually finished (status="active").
-            row = (
-                await provisioning._repo.resolve_owner_row(owner_id)
-                if is_org_owner_id(owner_id)
-                else await provisioning.get_company_row(owner_id)
-            )
-            # ``row.org_id != owner_id``: a personal owner whose single row was
-            # re-pointed at an org they joined must not arm the ORG's company
-            # under their personal billing account.
+            row = await provisioning._repo.resolve_owner_row(owner_id)
+            # ``row.org_id != owner_id``: never arm a company that belongs to a
+            # different workspace under this workspace's billing account.
             if row is None or row.status != "active" or row.org_id != owner_id:
                 return _arm_status("company_not_active")
             company_id = row.company_id
@@ -538,10 +502,9 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
         raise
 
 
-async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
+async def _maybe_arm_nightly_ceo(owner_id: str) -> None:
     """Poll-path wrapper: best-effort ``arm_nightly_ceo`` that never raises, so
-    ``ensure_user_ready`` keeps answering the poll. ``auth`` is unused — the arm
-    derives org-vs-personal from the owner_id."""
+    ``ensure_user_ready`` keeps answering the poll."""
     try:
         await arm_nightly_ceo(owner_id)
     except Exception:
@@ -629,7 +592,6 @@ async def _ensure_paperclip_for_org(
                         owner_id=org_id,
                         owner_user_id=user_id,
                         owner_email=email,
-                        org_id=org_id,
                     )
                 except BaseException:
                     # Release the claim so the next poll (this instance or
@@ -657,12 +619,12 @@ async def _ensure_paperclip_for_org(
                 #
                 # The row must also belong to THIS org. provision_org
                 # short-circuits on repo.get(user_id) when the user already has
-                # an active row — and since rows are keyed per-user, a user who
-                # was provisioned in a PERSONAL context (row.org_id == their
-                # user_id) would make this read return that unrelated active row
-                # even though no org-indexed company exists. Checking org_id
-                # keeps us from holding the claim on a personal row while
-                # find_org_owner(org_id) stays None.
+                # an active row — and since rows are keyed per-user, a user
+                # whose row belongs to ANOTHER workspace would make this read
+                # return that unrelated active row even though no org-indexed
+                # company exists. Checking org_id keeps us from holding the
+                # claim on another workspace's row while find_org_owner(org_id)
+                # stays None.
                 row = await provisioning.get_company_row(user_id)
                 if row is None or row.status != "active" or row.org_id != org_id:
                     logger.warning(
@@ -692,30 +654,25 @@ async def _ensure_paperclip_for_owner(
     owner_id: str,
     owner_user_id: str,
     owner_email: str,
-    org_id: str | None,
 ) -> None:
-    """Ensure a Paperclip company exists for this owner.
+    """Ensure the org ``owner_id`` has a Paperclip company, created with
+    ``owner_user_id`` as its owner-of-record.
 
     Idempotent — ``provisioning.provision_org`` short-circuits on an
     existing active row (see ``core/services/paperclip_provisioning.py``
     ``provision_org`` docstring).
 
-    CALLERS: ``scripts.provision_runner._seed_owner_paperclip`` (step 0,
-    personal owners — the normal path, where the company CREATE inherits the
-    executor's one-runner-per-owner election), ``_ensure_paperclip_for_org``'s
-    create branch, and ``_reconcile_owner_seed`` when no provision will run at
-    all (container already running, or a deliberately parked trial box).
+    CALLER: ``_ensure_paperclip_for_org``'s create branch only, after it has
+    won the org create claim.
 
     Resolves ``owner_email`` via ``lookup_owner_email`` when not
     supplied by the caller (e.g. a runner invocation with no JWT
-    email claim). The caller is the source of truth for
-    org-vs-personal context and forwards ``org_id`` here explicitly —
-    None for personal owners, the Clerk org_id for orgs.
+    email claim).
     """
     if not owner_email:
         owner_email = (
             await lookup_owner_email(
-                org_id=org_id,
+                org_id=owner_id,
                 fallback_user_id=owner_user_id,
             )
             or ""
@@ -735,29 +692,6 @@ async def _ensure_paperclip_for_owner(
     try:
         try:
             before = await provisioning.get_company_row(owner_user_id)
-            if (
-                not is_org_owner_id(owner_id)
-                and before is not None
-                and before.status == "active"
-                and is_org_owner_id(before.org_id)
-            ):
-                # ONE paperclip-companies row per user, and this user's row
-                # belongs to an org they joined. Seeding a PERSONAL company
-                # here would mint a fresh one and re-point the row at it,
-                # dropping them from every org Teams surface (and the
-                # new-conversation picker) until their next org-context poll.
-                # That ping-pong hid a cofounder for three days: his own
-                # pre-invite personal workspace's nightly routine woke his old
-                # personal box, whose executor ran this seed. The org wins; a
-                # personal Teams workspace for an org member is the explicitly
-                # unsupported "no live path" state (2026-07-24).
-                logger.info(
-                    "ensure_user_ready (owner): %s belongs to org %s — personal Teams seed skipped",
-                    owner_user_id,
-                    before.org_id,
-                )
-                put_metric("paperclip.provision.personal_seed_skipped_org_member")
-                return
             company = await provisioning.provision_org(
                 owner_id=owner_id,
                 owner_user_id=owner_user_id,

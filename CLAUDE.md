@@ -709,7 +709,7 @@ you cannot guess from the filename:
   point. It is dispatched from `GET /container/status` polls **and** from the
   Teams reconcile path (`routers/teams/deps.py`) and the Paperclip-proxy
   handshake (`routers/paperclip_proxy.py`). Pre-gate steps:
-  `ensure_personal_trial_default` (auto `trial_local` row),
+  `ensure_workspace_trial_default` (auto `trial_local` row, org-only),
   `ensure_metronome_customer`, `evaluate_provision_gate`, and
   `_maybe_arm_nightly_ceo` (the poll-path self-heal only — the nightly CEO loop is
   armed DETERMINISTICALLY by the provision executor's step 0 via `arm_nightly_ceo`).
@@ -997,7 +997,7 @@ timestamps and the trial-idle sweep, never by UI connectivity.
 
 A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits a missing Paperclip company onto a pre-existing container.
 
-**The path is workspace-only. No NEW personal workspace is ever provisioned.** Every owner is a Clerk org. `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, and `ensure_user_ready` returns on its first statement for a non-org caller — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone. The legacy personal cohort from before the 2026-09-10 cutover was purged or moved onto workspaces in September 2026 (one-shot tooling in git history: #2624 purge, #2625 workspace backfill, #2627 paying-owner migration); the last paying personal owners are locked out of product APIs until they are migrated, and the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo` and `provision_runner` step 0 exist only because the executor's wake path still reconciles their boxes, and go when they do.
+**The path is workspace-only. Personal workspaces no longer exist in the data, and every provisioning door refuses them.** A few `owner_type` fallbacks that default to `"personal"` are still live (`update_service` falls back to `"personal"` for container rows without `owner_type`, and `config.py` maps it to `nodes.browser.mode: "auto"`), so do not delete them as dead code without deciding the org browser mode. Every owner is a Clerk org: the September 2026 personal cohort was purged or migrated onto workspaces (PRs #2624, #2625, #2627), and the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo`, `provision_runner` step 0 and the provision gate went with it. The fence stays: `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, `ensure_user_ready` returns on its first statement for a non-org caller, `evaluate_provision_gate` answers a non-org owner id with a `workspace_required` gate before reading billing, and `provision_runner` step 0 refuses a non-org owner with exit 10 — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone.
 
 ```
 Clerk sign-up  ->  workspace (Clerk org) created or joined
@@ -1009,7 +1009,8 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                   2. evaluate_provision_gate — subscription/credits/OAuth pre-checks
                   3. asyncio.create_task(dispatch_provision(owner_id))
                        └─ SFN watchdog started FIRST; attempt 0 = scripts/provision_runner.py
-                            0. _seed_owner_paperclip (single-flight under try_claim_provision)
+                            0. _seed_owner_paperclip (single-flight under try_claim_provision;
+                               org-only — a non-org owner exits 10 before anything is seeded)
                                  └─ paperclip_provisioning.provision_org
                                       ├─ sign up Paperclip user (Better Auth)
                                       ├─ create Paperclip company; bootstrap-admin invite/accept/approve
@@ -1071,7 +1072,7 @@ Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% che
 
 ### Free tier (no card) — `trial_local`
 
-A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a container **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Personal (non-org) signups no longer reach this at all — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, so only a workspace can start a trial; the three legacy paid personal owners keep their existing rows until migrated.
+A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a container **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Only a workspace can start a trial — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, and no personal billing rows remain.
 
 The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial window** (`trial_end` stamped locally at signup; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 
@@ -1090,7 +1091,7 @@ Trial containers scale to zero when idle and wake on the next `/container/status
 
 Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
 1. **Bedrock managed** (`bedrock_claude`) — platform-billed Bedrock inference, draws from per-owner Bedrock credits.
-2. **ChatGPT OAuth** (`chatgpt_oauth`) — available to personal owners AND org workspaces (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one container); user signs in to their own OpenAI account.
+2. **ChatGPT OAuth** (`chatgpt_oauth`) — available to every workspace (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one container); user signs in to their own OpenAI account.
 3. **BYO API key** (`byo_key`) — owner provides their own Anthropic / OpenAI key, stored **in AWS Secrets Manager** (`lightbulb/{env}/user-keys/{user}/{provider}`, referenced by the task def; no DynamoDB copy — `key_service.py`). Note: `ENCRYPTION_KEY`/Fernet no longer protects BYOK; it protects ChatGPT OAuth tokens + Paperclip credentials.
 
 The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner.

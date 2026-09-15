@@ -59,10 +59,10 @@ async def test_trial_expired_gate_emits_metric_and_dedup_telemetry():
         ),
         patch("core.services.provision_gate.capture_once_per_owner_per_day") as mock_capture,
     ):
-        gate = await provision_gate.evaluate_provision_gate(owner_id="user_x", is_admin=True)
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
     assert gate is not None
     assert gate.code == "trial_expired"
-    mock_capture.assert_called_once_with(owner_id="user_x", event="trial_expired_block")
+    mock_capture.assert_called_once_with(owner_id="org_x", event="trial_expired_block")
 
 
 @pytest.mark.asyncio

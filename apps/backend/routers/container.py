@@ -94,7 +94,7 @@ def _dispatch_watched(coro) -> None:
 
 def _owner_role(auth: AuthContext) -> str:
     """ "admin" | "member" — the role a Gate payload is rendered for."""
-    is_admin = auth.is_org_admin if auth.is_org_context else True
+    is_admin = auth.is_org_admin
     return "admin" if is_admin else "member"
 
 
@@ -204,32 +204,10 @@ async def container_status(
         # structured payload (402) so it can render the picker / "top up"
         # CTA instead of trapping the user in a generic "no container"
         # state.
-        is_admin = auth.is_org_admin if auth.is_org_context else True
-
         # Create the workspace's unarmed trial before the gate reads billing.
         await ensure_workspace_trial_default(auth, owner_id, signup_flow_id=flow)
-        gate = await evaluate_provision_gate(
-            owner_id=owner_id,
-            is_admin=is_admin,
-        )
+        gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin)
         if gate is not None:
-            # signup_required + admin == "owner has never started
-            # signup" (no billing row at all). The ProviderPicker on
-            # /chat is the only checkout entry point
-            # (POST /billing/trial-checkout); surfacing 402 here traps
-            # the admin in a Subscribe button that loops
-            # /onboarding → /chat with no way to start checkout.
-            # Return 404 so useProvisioningState maps it to
-            # phase="needs-signup" and renders the picker. Inactive-row
-            # gates (subscription_required for canceled/unpaid/paused,
-            # or payment_past_due) keep their 402 + structured action
-            # so the user gets routed to /settings/billing instead —
-            # those owners already have a subscription and
-            # trial-checkout would 409 already_subscribed on click.
-            # Members always see the gate so they get "ask your org
-            # admin" instead of a picker that would 403 on click.
-            if gate.code == "signup_required" and is_admin:
-                raise HTTPException(status_code=404, detail="No container found")
             raise HTTPException(status_code=402, detail=gate.to_payload())
 
         # Gate clear, no container row. After Tasks 6 + 7 stripped the
@@ -382,7 +360,7 @@ async def container_status(
         try:
             await _assert_provision_allowed(
                 owner_id,
-                is_admin=auth.is_org_admin if auth.is_org_context else True,
+                is_admin=auth.is_org_admin,
             )
         except HTTPException:
             pass
@@ -446,27 +424,15 @@ async def container_status(
                 container["substatus"] = "auto_retry"
                 _sync_contract_with_container(contract, container)
 
-    # Re-dispatch ensure_user_ready on the running-container poll for: (a) EVERY
-    # org-context user — idempotent paperclip-membership-add (a co-admin/member
-    # joining an already-provisioned org resolves to a container row here and would
-    # otherwise skip the add); (b) a PERSONAL owner whose Teams seed is currently
-    # failed — T1 made a seed failure non-fatal to the container, so without this a
-    # transient personal seed blip stays teams_status="failed" forever with no
-    # self-heal; and (c) ANY owner (personal or org) who is ledger-eligible but has
-    # no Metronome customer yet — `ensure_metronome_customer` is best-effort at
-    # every call site and a transient failure (a Metronome outage, a mid-migration
-    # Secrets Manager blip) otherwise strands a healthy running personal owner with
-    # no ledger forever: this poll only re-entered `ensure_user_ready` for org/
-    # teams-failed, so nothing ever re-called it. `metronome_ledger_missing` is
-    # computed in readiness_state.compute_status off the SAME billing-account read
-    # that composer already does — zero extra DDB reads — and is False once the
-    # ledger exists, so the happy path adds no dispatch. Gating personal on
-    # teams_status=="failed"/ledger-missing keeps the happy path free of a per-poll
-    # re-seed. Safe on a running box with no flag: ensure_user_ready reads the
-    # container row itself and reconciles the seed in-thread instead of
-    # dispatching a provision (see _provision_or_reconcile).
-    if auth.is_org_context or contract["teams_state"] == "failed" or contract.get("metronome_ledger_missing"):
-        _dispatch_watched(ensure_user_ready(auth))
+    # Re-dispatch ensure_user_ready on EVERY running-container poll. Every caller
+    # is an org user (resolve_owner_id 409s anyone else), and ensure_user_ready is
+    # the idempotent self-heal for a running box: the paperclip membership-add for
+    # a co-admin/member who joins an already-provisioned org, a failed Teams seed
+    # (non-fatal to the container, so nothing else retries it), and the Metronome
+    # customer for a ledger-eligible owner whose creation blipped. It reads the
+    # container row itself and reconciles in-thread instead of dispatching a
+    # provision (see _provision_or_reconcile).
+    _dispatch_watched(ensure_user_ready(auth))
 
     # Restore the browser session (cookies + localStorage) after a container
     # roll wiped the /tmp Chrome profile. Gated on runtime_phase=="ready" (the
@@ -609,7 +575,7 @@ async def container_wake_endpoint(
     result = await container_wake.request_wake(
         owner_id,
         reason=reason,
-        is_admin=auth.is_org_admin if auth.is_org_context else True,
+        is_admin=auth.is_org_admin,
     )
     if result.outcome == "blocked":
         raise HTTPException(status_code=402, detail=result.gate_payload)
@@ -721,7 +687,7 @@ async def container_provision(
     # callers asking about a container they already have.
     await _assert_provision_allowed(
         owner_id,
-        is_admin=auth.is_org_admin if auth.is_org_context else True,
+        is_admin=auth.is_org_admin,
     )
 
     # Provision new container via the PROVISION Step Functions executor (spec
@@ -767,7 +733,7 @@ async def container_retry(
     # a positive credit balance.
     await _assert_provision_allowed(
         owner_id,
-        is_admin=auth.is_org_admin if auth.is_org_context else True,
+        is_admin=auth.is_org_admin,
     )
 
     ecs_manager = get_ecs_manager()

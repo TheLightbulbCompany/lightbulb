@@ -33,14 +33,42 @@ function routeClicks(tauri: TauriBridge): void {
   }).catch(() => { routing = false; });
 }
 
+/** True inside the Lightbulb desktop app. */
+export function isDesktopApp(): boolean {
+  return getTauri() !== null;
+}
+
+/**
+ * Native notification permission on this device, in the browser's vocabulary:
+ * the desktop app's macOS permission, or the browser's. Null when there is no
+ * native path: no Notification API, no app bundle, or a desktop build older
+ * than the permission command. With `request` it asks — the browser or macOS
+ * prompt while undecided; in the desktop app a "denied" opens Lightbulb's page
+ * in System Settings, since macOS never prompts twice. A browser only prompts
+ * from a user gesture.
+ */
+export async function notificationPermission(request = false): Promise<NotificationPermission | null> {
+  const tauri = getTauri();
+  if (tauri) {
+    try {
+      const state = await tauri.invoke("notification_permission", { request });
+      return state === "granted" || state === "denied" || state === "default" ? state : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof window === "undefined" || !("Notification" in window)) return null;
+  if (request && window.Notification.permission === "default") return window.Notification.requestPermission();
+  return window.Notification.permission;
+}
+
 /**
  * Show a native OS notification. Resolves true when one was shown, so the
  * caller uses the in-app toast only when it resolves false: the desktop app
- * notifies natively (false only for an unbundled dev binary or a denied
- * System Settings permission), the web app natively once permission is
- * granted (see `MessageNotifications`' first-gesture `requestPermission()`),
- * and a plain browser without permission gets the toast. Callers decide what
- * counts as "already looking at it"; this never checks focus.
+ * notifies natively once macOS allows it, the web app once the browser does
+ * (both asked by `MessageNotifications`), and anything else gets the toast.
+ * Callers decide what counts as "already looking at it"; this never checks
+ * focus.
  */
 export async function nativeNotify(
   title: string,

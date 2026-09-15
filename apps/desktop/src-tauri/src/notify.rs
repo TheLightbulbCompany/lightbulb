@@ -3,16 +3,20 @@
 //! `tauri-plugin-notification` posts through `NSUserNotificationCenter`
 //! (deprecated since macOS 11) behind an `NSBundle.bundleIdentifier` swizzle;
 //! on a current macOS the app never registered under System Settings →
-//! Notifications and no banner ever appeared. This is the replacement: one
-//! authorization request at launch (which is what registers the app), a
+//! Notifications and no banner ever appeared. This is the replacement: a
 //! delegate that keeps banners visible while the window is frontmost — the
-//! webview already decides what counts as "already looking at it" — and a
-//! click that focuses the window and hands the notification's identifier back
-//! to the webview as `notification:clicked`.
+//! webview already decides what counts as "already looking at it" — a click
+//! that focuses the window and hands the notification's identifier back to the
+//! webview as `notification:clicked`, and `notification_permission`, which the
+//! webview calls once someone has signed in. Launch only registers the app
+//! provisionally, which lists it in System Settings without a prompt; the macOS
+//! prompt appears once, so it waits for the ask after sign-in.
 //!
-//! `UNUserNotificationCenter` only works from a real `.app` bundle. A bare
-//! `tauri dev` binary has no bundle id, so `native_notify` answers `false`
-//! there and the webview falls back to its in-app toast.
+//! `native_notify` answers `false` whenever macOS would not show the banner —
+//! not allowed yet, turned off in System Settings, or a bare `tauri dev` binary
+//! with no bundle id — so the webview falls back to its in-app toast. macOS
+//! itself accepts a request from an app that is switched off and then presents
+//! it as nothing, so the permission is checked before every request.
 
 use tauri::AppHandle;
 
@@ -23,13 +27,16 @@ pub fn install(app: &AppHandle) {
     let _ = app;
 }
 
-/// Shows a native notification; `true` once the OS accepted it. `tag` is the
-/// request identifier (a repeat replaces the earlier banner, like the browser
-/// API) and comes back on `notification:clicked`.
+/// Shows a native notification; `true` once the OS accepted it with permission
+/// to show it. `tag` is the request identifier (a repeat replaces the earlier
+/// banner, like the browser API) and comes back on `notification:clicked`.
 #[tauri::command]
 pub async fn native_notify(title: String, body: Option<String>, tag: Option<String>) -> bool {
     #[cfg(target_os = "macos")]
     {
+        if notification_permission(false).await != "granted" {
+            return false;
+        }
         let identifier = tag.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         match macos::schedule(&title, body.as_deref(), &identifier) {
             Some(accepted) => accepted.await.unwrap_or(false),
@@ -43,8 +50,49 @@ pub async fn native_notify(title: String, body: Option<String>, tag: Option<Stri
     }
 }
 
+/// Notification permission in the browser's vocabulary, so the webview treats
+/// the desktop app and a browser alike: "granted", "denied", "default" (not
+/// asked yet) or "unsupported" (no app bundle). With `request` it asks first: the
+/// macOS prompt while the answer is "default"; after a "denied" macOS never
+/// prompts again, so this opens Lightbulb's page in System Settings instead.
+#[tauri::command]
+pub async fn notification_permission(request: bool) -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_user_notifications::UNAuthorizationStatus as Status;
+        let Some(status) = macos::status() else {
+            return "unsupported";
+        };
+        match status.await.unwrap_or(Status::NotDetermined) {
+            Status::Authorized | Status::Ephemeral => "granted",
+            // Provisional is the silent launch registration: listed in System
+            // Settings but quiet, so the real prompt is still to come.
+            Status::NotDetermined | Status::Provisional if !request => "default",
+            Status::NotDetermined | Status::Provisional => {
+                if macos::request(macos::PROMPT).await.unwrap_or(false) {
+                    "granted"
+                } else {
+                    "denied"
+                }
+            }
+            _ => {
+                if request {
+                    macos::open_settings();
+                }
+                "denied"
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = request;
+        "unsupported"
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::ptr::NonNull;
     use std::sync::Mutex;
 
     use block2::{DynBlock, RcBlock};
@@ -53,9 +101,10 @@ mod macos {
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_foundation::{NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
     use objc2_user_notifications::{
-        UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
-        UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
-        UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+        UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
+        UNNotification, UNNotificationPresentationOptions, UNNotificationRequest,
+        UNNotificationResponse, UNNotificationSettings, UNNotificationSound,
+        UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
     use tauri::{AppHandle, Emitter};
     use tokio::sync::oneshot;
@@ -100,7 +149,8 @@ mod macos {
                 let identifier = response.notification().request().identifier().to_string();
                 let app = self.ivars().app.clone();
                 let focus = app.clone();
-                let _ = app.run_on_main_thread(move || crate::focus_or_recreate_main_window(&focus));
+                let _ =
+                    app.run_on_main_thread(move || crate::focus_or_recreate_main_window(&focus));
                 let _ = app.emit("notification:clicked", identifier);
                 completion.call(());
             }
@@ -132,22 +182,89 @@ mod macos {
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         // `delegate` is a weak property on the center; ours lives as long as the process.
         std::mem::forget(delegate);
-        let done = RcBlock::new(|granted: Bool, error: *mut NSError| {
+        // Provisional authorization shows no prompt but lists Lightbulb under
+        // System Settings → Notifications from first launch, so it can always
+        // be switched on there. A no-op once someone has answered the prompt.
+        drop(request(UNAuthorizationOptions::Provisional)); // answer is only logged
+    }
+
+    /// What the after-sign-in ask requests: the options that raise the prompt.
+    pub const PROMPT: UNAuthorizationOptions = UNAuthorizationOptions::Alert
+        .union(UNAuthorizationOptions::Sound)
+        .union(UNAuthorizationOptions::Badge);
+
+    /// The app's authorization status; `None` outside an app bundle.
+    pub fn status() -> Option<oneshot::Receiver<UNAuthorizationStatus>> {
+        if !bundled() {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        let done = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+            // SAFETY: the framework passes a live settings object for the
+            // duration of the completion callback.
+            let status = unsafe { settings.as_ref() }.authorizationStatus();
+            if let Some(tx) = tx.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = tx.send(status);
+            }
+        });
+        UNUserNotificationCenter::currentNotificationCenter()
+            .getNotificationSettingsWithCompletionHandler(&done);
+        Some(rx)
+    }
+
+    /// Requests `options`, resolving with the answer: `PROMPT` shows the macOS
+    /// prompt while nobody has answered it (provisional included).
+    pub fn request(options: UNAuthorizationOptions) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        let done = RcBlock::new(move |granted: Bool, error: *mut NSError| {
             log(&format!(
-                "[notify] authorization granted={} {}",
+                "[notify] authorization {options:?} granted={} {}",
                 granted.as_bool(),
                 describe(error)
             ));
+            if let Some(tx) = tx.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = tx.send(granted.as_bool());
+            }
         });
-        center.requestAuthorizationWithOptions_completionHandler(
-            UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
-            &done,
-        );
+        UNUserNotificationCenter::currentNotificationCenter()
+            .requestAuthorizationWithOptions_completionHandler(options, &done);
+        rx
+    }
+
+    /// Lightbulb's page under System Settings → Notifications, the only way
+    /// back once someone has said no.
+    pub fn open_settings() {
+        let id = NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        // The pre-Ventura pane id: System Settings still honours it (and the
+        // app id), and it is the only one macOS 11 and 12 understand.
+        let url = format!("x-apple.systempreferences:com.apple.preference.notifications?id={id}");
+        log("[notify] permission denied; opening System Settings");
+        // `open` exits as soon as it hands the URL over; waiting reaps it.
+        match std::process::Command::new("/usr/bin/open")
+            .arg(url)
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => log(&format!(
+                "[notify] could not open System Settings: {status}"
+            )),
+            Err(error) => log(&format!("[notify] could not open System Settings: {error}")),
+        }
     }
 
     /// Hands the request to the center; the receiver resolves with whether it
-    /// was accepted (denied permission answers `false` here, not with a throw).
-    pub fn schedule(title: &str, body: Option<&str>, identifier: &str) -> Option<oneshot::Receiver<bool>> {
+    /// was accepted. Acceptance says nothing about display: macOS accepts from
+    /// an app that is switched off, which is why `native_notify` asks first.
+    pub fn schedule(
+        title: &str,
+        body: Option<&str>,
+        identifier: &str,
+    ) -> Option<oneshot::Receiver<bool>> {
         if !bundled() {
             return None;
         }

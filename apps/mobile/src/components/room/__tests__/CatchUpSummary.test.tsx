@@ -20,7 +20,7 @@ const messages: CanonicalRoomMessage[] = [{
 
 describe("CatchUpSummary", () => {
   it("keeps a clearly labeled action in chat and renders a dismissible summary", async () => {
-    const view = render(<CatchUpSummary messages={messages} readSeq={1} offline={false} />);
+    const view = await render(<CatchUpSummary messages={messages} readSeq={1} offline={false} />);
 
     fireEvent.press(view.getByLabelText("Summary"));
     expect(view.getByText("Summarizing…")).toBeTruthy();
@@ -36,7 +36,7 @@ describe("CatchUpSummary", () => {
   });
 
   it("shows a recoverable empty state", async () => {
-    const view = render(<CatchUpSummary messages={messages} readSeq={2} offline={false} />);
+    const view = await render(<CatchUpSummary messages={messages} readSeq={2} offline={false} />);
     fireEvent.press(view.getByLabelText("Summary"));
 
     await waitFor(() => expect(view.getByText("You’re caught up — there are no new messages to summarize.")).toBeTruthy());
@@ -49,7 +49,7 @@ describe("CatchUpSummary", () => {
     >()
       .mockImplementationOnce(() => { throw new Error("generation failed"); })
       .mockImplementation(buildCatchUpSummary);
-    const view = render(
+    const view = await render(
       <CatchUpSummary
         messages={messages}
         readSeq={1}

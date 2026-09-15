@@ -49,7 +49,9 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
     }
     create = AsyncMock(return_value=(created, False))
     capture = AsyncMock()
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"kind": "channel"}, {})))
+    monkeypatch.setattr(
+        messaging, "require_room_member", AsyncMock(return_value=({"kind": "channel", "ownerId": "org_1"}, {}))
+    )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=members[2]))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
@@ -77,7 +79,7 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
 @pytest.mark.asyncio
 async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypatch):
     auth = AuthContext(user_id="user_owner", org_id="org_1")
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({}, {})))
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_1"}, {})))
     monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
     with pytest.raises(ApiProblem) as exc:
         await messaging.set_reaction(
@@ -91,7 +93,7 @@ async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypat
 @pytest.mark.asyncio
 async def test_update_rejects_missing_message_and_invalid_text(monkeypatch):
     auth = AuthContext(user_id="author", org_id="org_1")
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({}, {})))
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_1"}, {})))
     monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
     request = messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=0, text="edit")
     with pytest.raises(ApiProblem) as exc:

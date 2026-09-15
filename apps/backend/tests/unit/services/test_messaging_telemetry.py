@@ -102,7 +102,9 @@ def _wire_human_message(
     monkeypatch, members: list[dict], created: dict, room_kind: str = "channel", *, replayed: bool = False
 ) -> MagicMock:
     monkeypatch.setattr(
-        messaging, "require_room_member", AsyncMock(return_value=({"kind": room_kind}, _human_member()))
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=({"kind": room_kind, "ownerId": OWNER}, _human_member())),
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(side_effect=lambda *a, **k: members[-1]))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
@@ -567,7 +569,9 @@ async def test_adding_a_member_reports_the_adders_role(monkeypatch, telemetry):
 async def test_a_reaction_is_reported_only_when_added(monkeypatch, telemetry):
     _, capture = telemetry
     item = _message(3, {"kind": "human", "id": USER, "displayName": "Owner"})
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"kind": "dm"}, _human_member())))
+    monkeypatch.setattr(
+        messaging, "require_room_member", AsyncMock(return_value=({"kind": "dm", "ownerId": OWNER}, _human_member()))
+    )
     monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=item))
     monkeypatch.setattr(messaging.messaging_repo, "set_reaction", AsyncMock(return_value=item))
     publisher = MagicMock()

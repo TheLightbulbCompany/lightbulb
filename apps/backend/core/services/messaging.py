@@ -1526,8 +1526,8 @@ async def list_messages(auth: AuthContext, room_id: str, after_seq: int, limit: 
 async def update_message(
     auth: AuthContext, room_id: str, message_id: str, request: UpdateMessageRequest
 ) -> CanonicalMessage:
-    owner_id = resolve_owner_id(auth)
-    await require_room_member(owner_id, auth.user_id, room_id)
+    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     item = await messaging_repo.get_message_by_id(room_id, validate_uuid(message_id, label="message ID"))
     if item is None:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
@@ -1557,8 +1557,8 @@ async def set_reaction(
 ) -> CanonicalMessage:
     from core.services.live_events import get_live_event_publisher
 
-    owner_id = resolve_owner_id(auth)
-    meta, _ = await require_room_member(owner_id, auth.user_id, room_id)
+    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     message_id = validate_uuid(message_id, label="message ID")
     item = await messaging_repo.get_message_by_id(room_id, message_id)
     if item is None:
@@ -1770,8 +1770,8 @@ async def _validate_mentions(room_id: str, mentions: list[MemberRef]) -> list[di
 
 
 async def create_human_message(auth: AuthContext, room_id: str, request: CreateMessageRequest) -> CanonicalMessage:
-    owner_id = resolve_owner_id(auth)
-    meta, sender = await require_room_member(owner_id, auth.user_id, room_id)
+    meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
     await _validate_message_links(
         room_id,

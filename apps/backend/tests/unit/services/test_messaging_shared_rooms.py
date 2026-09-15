@@ -174,3 +174,71 @@ async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendo
         messaging.UpsertRoomMemberRequest(kind="agent", id=agent["id"], role="member", listen_mode="active"),
     )
     assert result == "detail"
+
+
+@pytest.mark.asyncio
+async def test_attachment_download_reads_the_rooms_owner_workspace_not_the_callers(monkeypatch):
+    from types import SimpleNamespace
+
+    from routers import messaging as router
+
+    seen: list[str] = []
+    monkeypatch.setattr(router.service, "require_room_member", AsyncMock(return_value=(META, _human("user_v", VENDOR))))
+    monkeypatch.setattr(
+        router.service,
+        "load_attachment",
+        lambda owner, room, attachment_id: (
+            seen.append(owner),
+            (SimpleNamespace(content_type="image/png", file_name="a.png"), b"x"),
+        )[1],
+    )
+    response = await router.get_room_attachment(ROOM, str(uuid.uuid4()), AuthContext(user_id="user_v", org_id=VENDOR))
+    assert response.status_code == 200 and seen == [CUSTOMER]
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkeypatch):
+    sender = _human("user_v", VENDOR)
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, sender)))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[sender]))
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Vee"))
+    stored = {
+        **META,
+        "messageId": str(uuid.uuid4()),
+        "messageSeq": 8,
+        "roomRevision": 2,
+        "author": {"kind": "human", "id": "user_v", "displayName": "Vee"},
+        "text": "hi",
+        "mentions": [],
+        "replyToMessageId": None,
+        "threadRootMessageId": None,
+        "createdAt": "2026-09-14T00:00:00Z",
+        "runId": None,
+        "dispatchTargets": [],
+    }
+    create = AsyncMock(return_value=(stored, False))
+    monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
+    touched, captured = [], []
+    monkeypatch.setattr(messaging, "_touch_last_interactive_quietly", lambda owner: touched.append(owner) or _noop())
+    monkeypatch.setattr(
+        "core.services.onboarding_brief.capture_first_workspace_message",
+        lambda owner, item: captured.append(owner) or _noop(),
+    )
+    await messaging.create_human_message(
+        AuthContext(user_id="user_v", org_id=VENDOR),
+        ROOM,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid4(),
+            text="hi",
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+    )
+    assert create.await_args.kwargs["owner_id"] == CUSTOMER
+    assert touched == [CUSTOMER] and captured == [CUSTOMER]
+
+
+async def _noop() -> None:
+    return None

@@ -357,8 +357,10 @@ async def upload_room_attachment(
     image: UploadFile = File(...),
     auth: AuthContext = Depends(get_current_user),
 ):
-    owner_id = resolve_owner_id(auth)
-    await service.require_room_member(owner_id, auth.user_id, room_id)
+    # Files live with the ROOM's owner, so a foreign member's upload lands where the
+    # room's own members can read it (and vice versa).
+    meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]
     # Read up to the largest per-type cap (not the old flat image cap) --
     # otherwise a legitimate PDF gets silently truncated before validation
     # ever sees its true size.
@@ -383,8 +385,10 @@ async def get_room_attachment(
     attachment_id: str,
     auth: AuthContext = Depends(get_current_user),
 ):
-    owner_id = resolve_owner_id(auth)
-    await service.require_room_member(owner_id, auth.user_id, room_id)
+    # Files live with the ROOM's owner, so a foreign member's upload lands where the
+    # room's own members can read it (and vice versa).
+    meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]
     attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
     return Response(
         content=data,

@@ -37,7 +37,7 @@ export function SessionFocus({ focus, source, own, onClose, conversation, scope 
         session={session} ownerName={focus.ownerName} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
     </div>
     {!own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">
-      <ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} />
+      <ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} value={column.value} min={column.min} max={column.max} />
       {conversation}
     </aside>}
   </section>;

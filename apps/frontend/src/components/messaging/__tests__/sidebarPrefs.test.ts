@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { readSidebarPrefs, writeSidebarPrefs } from "../sidebarPrefs";
+import { clampWidth, readSidebarPrefs, writeSidebarPrefs } from "../sidebarPrefs";
 
 it("round-trips a valid session column width and drops a bad one", () => {
   writeSidebarPrefs("org", { collapsed: [], sort: "alpha", sessionColumnWidth: 480 });
@@ -8,4 +8,10 @@ it("round-trips a valid session column width and drops a bad one", () => {
   expect(readSidebarPrefs("org").sessionColumnWidth).toBeUndefined();
   window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: [], sort: "alpha", sessionColumnWidth: 12 }));
   expect(readSidebarPrefs("org").sessionColumnWidth).toBeUndefined();
+});
+
+it("lets the 80% ceiling undercut the 360px floor on a narrow panel", () => {
+  // At 400px wide, 80% is 320 -- below the 360px floor. The middle pane must
+  // keep at least 20%, so the ceiling wins over the floor.
+  expect(clampWidth(1000, 400)).toBe(320);
 });

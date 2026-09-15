@@ -7,11 +7,16 @@ import { relativeTime } from "../../lib/relativeTime";
 
 /**
  * Everything a row needs of a member: the name it shows, the tile it draws,
- * and (for a human) whether they're online. `online` isn't on `RoomMember`
- * yet -- mobile has no presence data for humans, so it stays undefined until
- * that field reaches the app; see Avatar.tsx.
+ * and (for a human) whether they're online or sharing a live terminal
+ * session. `online` isn't on `RoomMember` yet -- mobile has no presence data
+ * for humans, so it stays undefined until that field reaches the app; see
+ * Avatar.tsx. `id` is kept so a caller can look a member up against a
+ * sharing set without re-deriving the list from `RoomMember[]`.
  */
-export type RowParticipant = Pick<RoomMember, "kind" | "displayName"> & { online?: boolean };
+export type RowParticipant = Pick<RoomMember, "kind" | "displayName" | "id"> & {
+  online?: boolean;
+  sharing?: boolean;
+};
 
 /**
  * The room's members minus the viewer — a DM is named after the OTHER party,
@@ -94,6 +99,7 @@ export function RoomRow({
             name={label}
             kind={participants[0]?.kind ?? "human"}
             online={participants[0]?.online}
+            sharing={participants[0]?.sharing}
             showPresence
           />
         </View>

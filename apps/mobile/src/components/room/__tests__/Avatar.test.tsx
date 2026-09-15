@@ -22,4 +22,16 @@ describe("Avatar presence dot", () => {
     await render(<Avatar name="Friday" kind="agent" />);
     expect(screen.queryByLabelText("Agent, always available")).toBeNull();
   });
+
+  it("shows a terminal badge for a human who is sharing when presence is on", async () => {
+    await render(<Avatar name="Alice Ray" kind="human" sharing showPresence />);
+    expect(screen.getByLabelText("Sharing a terminal session")).toBeTruthy();
+  });
+
+  it("hides the badge for agents and quiet faces", async () => {
+    await render(<Avatar name="Friday" kind="agent" sharing showPresence />);
+    expect(screen.queryByLabelText("Sharing a terminal session")).toBeNull();
+    await render(<Avatar name="Bob" kind="human" sharing />);
+    expect(screen.queryByLabelText("Sharing a terminal session")).toBeNull();
+  });
 });

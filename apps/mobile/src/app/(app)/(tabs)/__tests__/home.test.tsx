@@ -85,6 +85,16 @@ const mockRefreshRooms = jest.fn();
 const mockSetRoomPrefs = jest.fn(async (_roomId: string, _prefs: unknown) => {});
 const mockMarkUnread = jest.fn(async (_roomId: string) => {});
 let mockRoomsState: Record<string, unknown> = {};
+// Only useWorkspaceSessions' shape matters here -- this suite doesn't cover the
+// sharing badge itself, just that the list still renders around it. Declared
+// OUTSIDE the mock factory so it's the same object on every render -- a fresh
+// literal per call changes `client`'s identity every render, which re-fires
+// useWorkspaceSessions' effect forever.
+const mockResourceSource = {
+  client: { listWorkspaceSessions: jest.fn(async () => ({ sessions: [] })) },
+  onEvent: () => () => {},
+  connectionRevision: 0,
+};
 jest.mock("../../../../lib/rooms", () => ({
   useMobileRooms: () => ({
     rooms: mockRooms,
@@ -95,6 +105,7 @@ jest.mock("../../../../lib/rooms", () => ({
     refreshRooms: mockRefreshRooms,
     setRoomPrefs: mockSetRoomPrefs,
     markUnread: mockMarkUnread,
+    resourceSource: mockResourceSource,
     ...mockRoomsState,
   }),
 }));

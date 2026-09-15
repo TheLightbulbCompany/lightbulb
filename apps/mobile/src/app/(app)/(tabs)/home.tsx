@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import { roomDisplayName, type RoomSummary } from "@lightbulb/shared";
+import { roomDisplayName, useWorkspaceSessions, type RoomSummary } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -71,6 +71,8 @@ function ListSkeleton() {
 export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const { userId } = useAuth();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
+  const { sessions } = useWorkspaceSessions(rooms.resourceSource);
+  const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -86,8 +88,11 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const details = rooms.directoryRoomDetails;
   // A DM's name lives on the room DETAIL's member list, not on the summary.
   const participants = useCallback(
-    (room: RoomSummary) => otherMembers(details.get(room.roomId), userId),
-    [details, userId],
+    (room: RoomSummary) =>
+      otherMembers(details.get(room.roomId), userId).map((member) =>
+        member.kind === "human" ? { ...member, sharing: sharing.has(member.id) } : member,
+      ),
+    [details, userId, sharing],
   );
 
   const data = useMemo<Row[]>(() => {

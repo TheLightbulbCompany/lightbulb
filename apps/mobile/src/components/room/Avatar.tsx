@@ -1,3 +1,4 @@
+import Feather from "@expo/vector-icons/Feather";
 import { StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii } from "../../config/theme";
@@ -14,6 +15,7 @@ export function Avatar({
   size = 28,
   online,
   showPresence = false,
+  sharing,
 }: {
   name: string;
   kind: "human" | "agent" | "system";
@@ -29,6 +31,8 @@ export function Avatar({
   /** Off by default (stacked facepiles, message rows, the composer); turn on
    *  for a single DM face, mirroring web's ParticipantAvatar `showPresence` gate. */
   showPresence?: boolean;
+  /** The human owns a live shared terminal session right now. Ignored for agents. */
+  sharing?: boolean;
 }) {
   const initials =
     name
@@ -70,6 +74,14 @@ export function Avatar({
           accessibilityLabel={dotLabel}
         />
       )}
+      {showPresence && sharing && kind === "human" && (
+        <View
+          style={[styles.sharing, { width: Math.max(10, size * 0.42), height: Math.max(10, size * 0.42) }]}
+          accessibilityLabel="Sharing a terminal session"
+        >
+          <Feather name="terminal" size={Math.max(7, size * 0.28)} color={colors.white} />
+        </View>
+      )}
     </View>
   );
 }
@@ -87,6 +99,18 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     borderWidth: 2,
+    borderColor: colors.cream,
+  },
+  // Opposite corner from the presence dot -- a sharer can also be online.
+  sharing: {
+    position: "absolute",
+    left: -2,
+    bottom: -2,
+    borderRadius: 3,
+    backgroundColor: colors.forest,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
     borderColor: colors.cream,
   },
 });

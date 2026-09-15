@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail, type RoomResources } from "@lightbulb/shared";
+import type { ReactNode } from "react";
 
 jest.setTimeout(20000);
 
@@ -7,7 +8,13 @@ jest.mock("expo-router", () => {
   const { useEffect } = require("react");
   return {
     router: { push: jest.fn(), back: jest.fn(), canGoBack: () => true, replace: jest.fn() },
-    Stack: { Screen: () => null },
+    // Real react-navigation renders `options.headerRight` inside the native
+    // header; this mock is the whole navigator here, so it has to do that
+    // itself or the DM button would never mount at all -- see conversation.test.tsx.
+    Stack: {
+      Screen: ({ options }: { options?: { headerRight?: () => ReactNode } }) =>
+        options?.headerRight ? options.headerRight() : null,
+    },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
     useLocalSearchParams: () => ({ roomId: "room-1", sessionId: "sess-1" }),
   };
@@ -27,6 +34,7 @@ const mockRoom: RoomDetail = {
   updatedAt: "2026-09-11T10:02:00Z", lastReadSeq: 3, createdAt: "2026-09-11T09:00:00Z",
   members: [
     { kind: "human", id: "user-a", displayName: "Alice", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "x", joinedSeq: 0 },
+    { kind: "human", id: "user-b", displayName: "Bob", mentionHandle: null, role: "member", listenMode: null, joinedAt: "x", joinedSeq: 0 },
     { kind: "agent", id: "friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "x", joinedSeq: 0 },
   ],
 };
@@ -78,6 +86,8 @@ const mockLive = {
   runtime: {}, rpc: jest.fn(), getOperation: jest.fn(),
 };
 jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+
+import { router } from "expo-router";
 
 import SessionScreen from "../[roomId]/session/[sessionId]";
 
@@ -166,5 +176,20 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
     expect(mockListResources).toHaveBeenCalledWith("room-1", { includeEnded: true });
     expect(screen.queryByText("This session is no longer shared.")).toBeNull();
+  });
+
+  it("has no DM button on your own session", async () => {
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    expect(screen.queryByLabelText("Message Alice")).toBeNull();
+  });
+
+  it("opens the sharer's DM from someone else's session", async () => {
+    mockSession = { ...base, humanUserId: "user-b" };
+    mockLive.messaging.createRoom.mockResolvedValueOnce({ roomId: "dm-1" } as never);
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Message Bob"));
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith("/(app)/room/dm-1"));
   });
 });

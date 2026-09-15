@@ -1,10 +1,11 @@
+import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import {
   buildRows, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
   type LocalSession, type RoomResourceSource, type TranscriptRow,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState, FlatList, Pressable, StyleSheet, Text, View,
@@ -34,6 +35,7 @@ const BOTTOM_SLACK = 80;
  */
 export default function SessionScreen() {
   const { roomId, sessionId } = useLocalSearchParams<{ roomId: string; sessionId: string }>();
+  const { userId } = useAuth();
   const [focused, setFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
@@ -69,6 +71,24 @@ export default function SessionScreen() {
   const headerOptions = {
     // The back button is the (app) Stack's own: this is a pushed screen.
     title: session ? sessionLabel(session) : "Session",
+    // Only when someone ELSE is sharing this session -- no "message yourself".
+    headerRight: session && session.humanUserId !== userId ? () => (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Message ${ownerName}`}
+        hitSlop={8}
+        onPress={() =>
+          void rooms
+            .selectDm({ kind: "human", id: session.humanUserId }, { activate: false })
+            .then((dm) => { if (dm) router.push(`/(app)/room/${dm}`); })
+            // Rejection is already surfaced via rooms.selectRoomError below;
+            // this only stops it from becoming an unhandled rejection.
+            .catch(() => {})
+        }
+      >
+        <Feather name="message-circle" size={20} color={colors.inkSoft} />
+      </Pressable>
+    ) : undefined,
   };
 
   if (rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {

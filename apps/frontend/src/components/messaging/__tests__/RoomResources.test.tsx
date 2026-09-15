@@ -612,7 +612,7 @@ it("opens a session inline in the column with a way back to the list, and report
   await userEvent.click(await screen.findByRole("button", { name: "Open Claude · Load test" }));
   expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
   expect(onSessionOpenChange).toHaveBeenLastCalledWith(true);
-  await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+  await userEvent.click(screen.getByRole("button", { name: "Back to devices & sessions" }));
   expect(screen.getByRole("button", { name: "Open Claude · Load test" })).toBeInTheDocument();
   expect(onSessionOpenChange).toHaveBeenLastCalledWith(false);
 });

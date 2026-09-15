@@ -72,7 +72,6 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
     {selected && resizeHandle}
     <header className="room-context-header">
       <Button variant="ghost" aria-label={selected ? "Back to devices & sessions" : "Back to conversation"} onClick={back}><ArrowLeft aria-hidden="true" /></Button>
-      {selected && <Button variant="ghost" aria-label="Back to list" onClick={() => { setSelection(null); lastSelected.current = null; }}><ArrowLeft aria-hidden="true" />List</Button>}
       <h3 ref={heading} tabIndex={-1} className="font-semibold room-wrap">{selected ? sessionLabel(selected) : "Devices & sessions"}</h3>
     </header>
     {resources.error && <div role="alert" className="p-4"><p>{resources.error}</p>

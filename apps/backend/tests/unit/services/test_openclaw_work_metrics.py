@@ -36,7 +36,7 @@ def _dimension_sets(metrics, name):
     return [kwargs.get("dimensions") for metric_name, kwargs in metrics if metric_name == name]
 
 
-async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted, meta=None):
+async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted, meta=None, body=None, members=None):
     """Drive one ``_dispatch_message`` against a fake container + plugin."""
     ledger.setdefault("created", [])
     ledger.setdefault("ended", [])
@@ -63,7 +63,7 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
         return {"kind": "agent", "id": "a1"}
 
     async def fake_list_members(_room_id):
-        return []
+        return members or []
 
     async def fake_body(**_kwargs):
         return {"version": 1}
@@ -72,7 +72,7 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
     monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr(work.messaging_repo, "get_member", fake_get_member)
     monkeypatch.setattr(work.messaging_repo, "list_members", fake_list_members)
-    monkeypatch.setattr(work, "build_ingress_body", fake_body)
+    monkeypatch.setattr(work, "build_ingress_body", body or fake_body)
     monkeypatch.setattr(work.messaging_repo, "create_run", fake_create_run)
     monkeypatch.setattr(work.messaging_repo, "end_run", fake_end_run)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
@@ -479,3 +479,68 @@ async def test_build_ingress_body_carries_sessions_only_when_given(monkeypatch):
         meta=meta, target_agent_id="a1", event_kind="user_request", message=message, members=members
     )
     assert "sessions" not in without
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sends_the_live_session_summary(monkeypatch):
+    from core.services import local_sessions
+
+    seen: dict = {}
+
+    async def fake_live(owner, room_id, members):
+        seen["live"] = (owner, room_id)
+        return [{"sessionId": "s1"}]
+
+    async def fake_body(**kwargs):
+        seen["sessions"] = kwargs.get("sessions")
+        return {"version": 1}
+
+    monkeypatch.setattr(local_sessions, "live_sessions_for_room", fake_live)
+    metrics, ledger, posted = _capture_metrics(monkeypatch), {}, {}
+    await _dispatch(
+        monkeypatch,
+        answer=_Answer(202, {}),
+        event_kind="user_request",
+        metrics=metrics,
+        ledger=ledger,
+        posted=posted,
+        body=fake_body,
+    )
+    assert seen["live"] == ("owner-1", _ROOM)
+    assert seen["sessions"] == [{"sessionId": "s1"}]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sends_no_summary_into_a_room_with_a_foreign_member(monkeypatch):
+    """A shared vendor-room member carries ``homeOwnerId`` from another org --
+    session titles must not leak across that boundary (spec #2644)."""
+    from core.services import local_sessions
+
+    seen: dict = {}
+
+    async def fake_live(*_args, **_kwargs):
+        seen["live_called"] = True
+        return [{"sessionId": "should-not-appear"}]
+
+    async def fake_body(**kwargs):
+        seen["sessions"] = kwargs.get("sessions")
+        return {"version": 1}
+
+    monkeypatch.setattr(local_sessions, "live_sessions_for_room", fake_live)
+    metrics, ledger, posted = _capture_metrics(monkeypatch), {}, {}
+    foreign_members = [
+        {"kind": "agent", "id": "a1", "displayName": "Friday", "listenMode": "active"},
+        {"kind": "human", "id": "vendor-u1", "displayName": "Vendor Rep", "homeOwnerId": "other-owner"},
+    ]
+    await _dispatch(
+        monkeypatch,
+        answer=_Answer(202, {}),
+        event_kind="user_request",
+        metrics=metrics,
+        ledger=ledger,
+        posted=posted,
+        body=fake_body,
+        members=foreign_members,
+    )
+    assert "live_called" not in seen
+    assert seen["sessions"] == []

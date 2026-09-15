@@ -76,7 +76,8 @@ export default function SessionScreen() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Message ${ownerName}`}
-        hitSlop={8}
+        // 20pt icon + 12pt hitSlop on every side reaches the 44pt tap-target floor.
+        hitSlop={12}
         onPress={() =>
           void rooms
             .selectDm({ kind: "human", id: session.humanUserId }, { activate: false })
@@ -91,7 +92,7 @@ export default function SessionScreen() {
     ) : undefined,
   };
 
-  if (rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
+  if (rooms.accessRemoved || rooms.roomError) {
     return (
       <View style={styles.container}>
         <Stack.Screen options={headerOptions} />
@@ -126,6 +127,14 @@ export default function SessionScreen() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={headerOptions} />
+      {rooms.selectRoomError && (
+        // A failed DM open (the header button) is transient and must not hide
+        // the transcript underneath a full-screen blocked state -- see
+        // sessions.tsx's identical inline treatment of selectRoomError.
+        <View style={styles.banner}>
+          <Text accessibilityRole="alert" style={styles.errorText}>{rooms.selectRoomError}</Text>
+        </View>
+      )}
       <SessionBody
         key={`${session.sessionId}:${session.generation}:${resources.accessRevision}`}
         roomId={roomId ?? ""}
@@ -269,6 +278,9 @@ const styles = StyleSheet.create({
   listEmpty: { flexGrow: 1 },
   meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
   warn: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.warn },
+  // Full horizontal padding -- unlike errorCard below, this sits directly on
+  // the screen, not inside the transcript's already-padded list.
+  banner: { padding: spacing.lg, gap: spacing.xs },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, color: colors.forest, paddingVertical: spacing.xs },

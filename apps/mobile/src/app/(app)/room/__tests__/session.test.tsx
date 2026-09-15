@@ -192,4 +192,18 @@ describe("session screen", () => {
     await fireEvent.press(screen.getByLabelText("Message Bob"));
     await waitFor(() => expect(router.push).toHaveBeenCalledWith("/(app)/room/dm-1"));
   });
+
+  it("keeps the transcript on screen and shows an alert when the DM open fails", async () => {
+    (router.push as jest.Mock).mockClear();
+    mockSession = { ...base, humanUserId: "user-b" };
+    mockLive.messaging.createRoom.mockRejectedValueOnce(new Error("could not open"));
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Message Bob"));
+    await waitFor(() => expect(screen.getByText("could not open")).toBeTruthy());
+    // The transcript is still the same screen underneath the banner -- a
+    // failed DM open must not swap in the blocked/unavailable state.
+    expect(screen.getByText("run it")).toBeTruthy();
+    expect(router.push).not.toHaveBeenCalled();
+  });
 });

@@ -69,13 +69,16 @@ export function RoomRow({
   const label = roomDisplayName(room, participants);
   const count = muted ? 0 : unread;
   const isChannel = room.kind === "channel";
+  // The badge on the DM's avatar is invisible to VoiceOver -- the row's own
+  // label is the only thing it reads, and it otherwise says nothing about it.
+  const sharingSuffix = room.kind === "dm" && participants[0]?.sharing ? ", sharing a terminal session" : "";
   return (
     <Pressable
       testID={`room-row-${room.roomId}`}
       onPress={onPress}
       onLongPress={onLongPress}
       accessibilityRole="button"
-      accessibilityLabel={count > 0 ? `${label}, ${count} unread` : label}
+      accessibilityLabel={`${count > 0 ? `${label}, ${count} unread` : label}${sharingSuffix}`}
       style={({ pressed }) => [
         styles.row,
         muted && styles.rowMuted,

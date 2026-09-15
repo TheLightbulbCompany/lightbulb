@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { roomDisplayName, useWorkspaceSessions, type RoomSummary } from "@lightbulb/shared";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -70,8 +70,15 @@ function ListSkeleton() {
  */
 export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const { userId } = useAuth();
+  const [focused, setFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      return () => setFocused(false);
+    }, []),
+  );
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const { sessions } = useWorkspaceSessions(rooms.resourceSource);
+  const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
   const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());

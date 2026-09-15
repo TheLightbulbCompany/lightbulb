@@ -79,12 +79,14 @@ computes each org owner's room id.
 
 `ensure_vendor_room(owner_id)` lives beside `ensure_default_room` in
 `core/services/messaging.py`. Its seat is `core/services/user_provision.py`
-`ensure_user_ready`, immediately after the `_reconcile_owner_seed` try/except
-and only in org context. That point is reached on every `/container/status`
-poll of a running org container by any member, admin or not, which is how
-existing customers pick the room up with no backfill script. (The Paperclip
-seed block itself is the wrong seat: `_reconcile_owner_seed` returns before
-it for every org that already has a company.)
+`ensure_user_ready`, after the gate and right after the admin-only
+`_provision_or_reconcile` call, for every org-context caller regardless of
+role. That point is reached on every `/container/status` poll by any member
+of the org, which is how existing customers pick the room up with no backfill
+script. (Two wrong seats, both rejected: the Paperclip seed block returns
+early for every org that already has a company, and `_provision_or_reconcile`
+runs only for org admins and personal owners.) No running container is
+required.
 
 Preconditions: `settings.VENDOR_ORG_ID` is set, `owner_id` is an org, and
 `owner_id != VENDOR_ORG_ID`. If `get_room(vendor_room_id(owner_id))` returns a
@@ -119,6 +121,7 @@ First creation:
 Cap: `MAX_ROOM_MEMBERS` stays 32. Order is room owner, CEO, customer humans
 sorted by user id, then vendor humans sorted by user id; the list is cut at
 the cap and `messaging.vendor_room.capped` fires once.
+The owner id goes in a log line, never a metric dimension.
 `# ponytail: 32-member cap; raise MAX_ROOM_MEMBERS when a customer org exceeds ~25 humans`.
 
 ### Incremental membership (existing Clerk webhook)
@@ -260,8 +263,8 @@ One check per non-trivial path, in the existing suites:
 Two PRs: backend + infra env first (safe alone: no client reads the new
 fields yet), then web + mobile (safe alone: the fallback in §7). Dev deploys
 on merge; prod is a `deploy.yml` dispatch. Existing customers get the channel
-on the next `/container/status` poll by anyone in the org, once their
-container is running, after the backend promotion. Mobile
+on the next `/container/status` poll by anyone in the org after the
+backend promotion. Mobile
 merge ships an OTA.
 
 Delete this file in the PR that ships the second half.

@@ -839,7 +839,7 @@ And append to `apps/backend/tests/unit/services/test_user_provision.py`:
 ```python
 @pytest.mark.asyncio
 async def test_org_poll_on_a_running_container_reconciles_the_vendor_room():
-    """Any org member's poll on a running container reaches the vendor-room seat (spec §4)."""
+    """A plain org MEMBER's poll reaches the vendor-room seat (spec §4) — the seat is not behind the admin-only container path."""
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
@@ -949,7 +949,8 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
     )
     if len(members) > messaging_repo.MAX_ROOM_MEMBERS:
         # ponytail: 32-member cap; raise MAX_ROOM_MEMBERS when a customer org exceeds ~25 humans
-        put_metric("messaging.vendor_room.capped", dimensions={"owner": owner_id})
+        put_metric("messaging.vendor_room.capped")
+        logger.warning("vendor room capped at %d members for owner %s", messaging_repo.MAX_ROOM_MEMBERS, owner_id)
         members = members[: messaging_repo.MAX_ROOM_MEMBERS]
     for human in (m for m in members if m["kind"] == "human"):
         await messaging_repo.ensure_user_stream(human["homeOwnerId"], human["id"])
@@ -970,16 +971,26 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
     return room_id
 ```
 
-Check `put_metric`'s signature in `core/observability/metrics.py` accepts `dimensions=`; every other call in this file uses it that way.
+Metric dimensions stay low-cardinality (never an owner id): the owner goes in the log line.
 
 - [ ] **Step 4: Implement the seat**
 
-In `user_provision.py`, directly after the `_reconcile_owner_seed` try/except block (the one that logs "Paperclip seed reconcile failed"):
+Controller ruling (2026-09-14): the seat is in `ensure_user_ready` itself, NOT inside `_provision_or_reconcile`. `_provision_or_reconcile` (and the `_reconcile_owner_seed` try/except inside it) runs only for personal owners and org ADMINS (`if not auth.is_org_context or auth.is_org_admin:`), so an org member's poll would never create the room. `ensure_vendor_room` needs no running container (it waits on an ACTIVE Paperclip company instead), so there is no container precondition either.
+
+In `user_provision.py` `ensure_user_ready`, directly after the block
 
 ```python
+    if not auth.is_org_context or auth.is_org_admin:
+        await _provision_or_reconcile(auth, owner_id)
+```
+
+and before the nightly-CEO block, add:
+
+```python
+    # The customer's channel shared with the Lightbulb workspace. Any member's poll
+    # reconciles it (not only the container owner's); its own first read is the
+    # short-circuit, so the steady-state cost is one consistent read per poll.
     if auth.is_org_context:
-        # The customer's channel shared with the Lightbulb workspace. Its own
-        # first read is the short-circuit, so this is one consistent read per poll.
         from core.services.messaging import ensure_vendor_room
 
         try:
@@ -1146,7 +1157,8 @@ async def add_vendor_room_member(owner_id: str, user_id: str, *, home_owner_id: 
     try:
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
-        put_metric("messaging.vendor_room.capped", dimensions={"owner": owner_id})
+        put_metric("messaging.vendor_room.capped")
+        logger.warning("vendor room full; %s not added to owner %s", user_id, owner_id)
         return False
     await _publish_room_metadata(meta)
     return True

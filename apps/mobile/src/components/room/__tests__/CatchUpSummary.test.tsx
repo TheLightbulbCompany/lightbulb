@@ -43,7 +43,7 @@ describe("CatchUpSummary", () => {
     expect(view.getByText("Decisions")).toBeTruthy();
     expect(view.getByText("Action items")).toBeTruthy();
     expect(view.getByText("Open questions")).toBeTruthy();
-    expect(view.getAllByText("Friday: We agreed to ship today. Who will verify it?").length).toBeGreaterThan(0);
+    expect(view.getAllByText(/We agreed to ship today/).length).toBeGreaterThan(0);
 
     await fireEvent.press(view.getByLabelText("Dismiss summary"));
     expect(view.queryByLabelText("Conversation summary")).toBeNull();

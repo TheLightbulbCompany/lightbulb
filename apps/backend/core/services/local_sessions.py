@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from botocore.exceptions import ClientError
 from pydantic import Field, model_serializer, model_validator
@@ -35,7 +35,7 @@ def iso(epoch: int | None) -> str | None:
 
 logger = logging.getLogger(__name__)
 
-LIVE_STATUSES = frozenset({"idle", "busy", "waiting-approval", "unknown"})
+LIVE_STATUSES = frozenset(get_args(INPUT_STATUSES))
 WORKSPACE_SESSION_CAP = 100
 
 
@@ -532,7 +532,7 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
 async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSession]:
     """Per-human fetch/filter loop shared by every workspace-wide listing. Skips rows
     whose owner mismatches, whose device is no longer enrolled, or whose projected
-    status is not live."""
+    status is not live. Returned newest-`last_event_at`-first, every caller's order."""
     projections = await asyncio.gather(*(repo.list_user_sessions(owner, human) for human in humans))
     sessions: list[LocalSession] = []
     # One enrollment verdict per (human, device) per call: history piles up on one Mac.
@@ -557,6 +557,7 @@ async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSess
             public = _session_public(row)
             if public.status in LIVE_STATUSES:
                 sessions.append(public)
+    sessions.sort(key=lambda s: s.last_event_at or "", reverse=True)
     return sessions
 
 
@@ -567,7 +568,6 @@ async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
     humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
     sessions = await _live_public_sessions(owner, humans)
-    sessions.sort(key=lambda s: s.last_event_at or "", reverse=True)
     return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
 
 
@@ -576,25 +576,24 @@ SESSION_SUMMARY_CAP = 24
 
 async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) -> list[dict]:
     """Bounded projection of the room's live sessions for agent ingress.
-    Never raises: a missing summary is worse than a blocked dispatch, but not by much."""
+    Never raises: a missing summary is worse than a blocked dispatch, but not by much.
+    Session visibility is workspace-wide, so a room shared with another organization
+    (#2644) gets no summary: any member whose home differs from the room's owner
+    blanks the whole result before anything is queried."""
+    if any(messaging_repo.member_home(member, owner) != owner for member in members):
+        return []
     try:
         names = {member["id"]: member.get("displayName") for member in members if member.get("kind") == "human"}
         sessions = await _live_public_sessions(owner, list(names))
+        include = {"session_id", "provider", "cwd_name", "title", "status", "latest_event_seq", "last_event_at"}
         out = [
             {
-                "sessionId": s.session_id,
-                "humanUserId": s.human_user_id[:128],
-                "displayName": (names.get(s.human_user_id) or "Workspace member")[:120],
-                "provider": s.provider,
-                "cwdName": s.cwd_name,
-                "title": s.title,
-                "status": s.status,
-                "latestEventSeq": s.latest_event_seq,
-                "lastEventAt": s.last_event_at,
+                **s.model_dump(by_alias=True, include=include),
+                "humanUserId": s.human_user_id,
+                "displayName": names.get(s.human_user_id) or "Workspace member",
             }
             for s in sessions
         ]
-        out.sort(key=lambda row: row["lastEventAt"] or "", reverse=True)
         return out[:SESSION_SUMMARY_CAP]
     except Exception:
         logger.warning("Live session summary unavailable for room %s", room_id, exc_info=True)

@@ -484,11 +484,13 @@ async def test_build_ingress_body_carries_sessions_only_when_given(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("live", "sent"),
-    [([{"sessionId": "s1"}], [{"sessionId": "s1"}]), ([], None)],
+    [([{"sessionId": "s1"}], [{"sessionId": "s1"}]), ([], [])],
     ids=["live-session", "no-live-session"],
 )
-async def test_dispatch_sends_the_summary_only_when_a_session_is_live(monkeypatch, live, sent):
-    """No live session, no field: the plugin reads a missing one as ``[]``."""
+async def test_dispatch_passes_the_live_summary_through_unchanged(monkeypatch, live, sent):
+    """The dispatch call site no longer collapses an empty list to None -- that
+    conditionality now lives solely in build_ingress_body's ``if sessions:``
+    (covered by test_build_ingress_body_carries_sessions_only_when_given)."""
     from core.services import local_sessions
 
     seen: dict = {}
@@ -519,20 +521,15 @@ async def test_dispatch_sends_the_summary_only_when_a_session_is_live(monkeypatc
 @pytest.mark.asyncio
 async def test_dispatch_sends_no_summary_into_a_room_with_a_foreign_member(monkeypatch):
     """A shared vendor-room member carries ``homeOwnerId`` from another org --
-    session titles must not leak across that boundary (spec #2644)."""
-    from core.services import local_sessions
-
+    session titles must not leak across that boundary (spec #2644). The guard
+    lives inside live_sessions_for_room now (see test_local_sessions.py), so
+    it runs unmocked here rather than being asserted un-called."""
     seen: dict = {}
-
-    async def fake_live(*_args, **_kwargs):
-        seen["live_called"] = True
-        return [{"sessionId": "should-not-appear"}]
 
     async def fake_body(**kwargs):
         seen["sessions"] = kwargs.get("sessions")
         return {"version": 1}
 
-    monkeypatch.setattr(local_sessions, "live_sessions_for_room", fake_live)
     metrics, ledger, posted = _capture_metrics(monkeypatch), {}, {}
     foreign_members = [
         {"kind": "agent", "id": "a1", "displayName": "Friday", "listenMode": "active"},
@@ -548,5 +545,4 @@ async def test_dispatch_sends_no_summary_into_a_room_with_a_foreign_member(monke
         body=fake_body,
         members=foreign_members,
     )
-    assert "live_called" not in seen
-    assert seen["sessions"] is None
+    assert seen["sessions"] == []

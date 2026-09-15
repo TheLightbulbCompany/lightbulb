@@ -354,6 +354,9 @@ export function NewMessageSheet({
 
 const styles = StyleSheet.create({
   card: {
+    // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
+    // the list inside scrolls, instead of the footer overflowing off-screen.
+    flexShrink: 1,
     backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,

@@ -12,7 +12,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { initialWindowMetrics } from "react-native-safe-area-context";
 
-import { colors } from "../../config/theme";
+import { colors, spacing } from "../../config/theme";
 
 interface BottomSheetProps {
   visible: boolean;
@@ -54,11 +54,11 @@ const SPRING_CONFIG = {
 // version used for its off-screen translateY.
 const OFFSCREEN_Y = Dimensions.get("window").height;
 
-// The WINDOW's bottom inset — the home indicator. Not `useSafeAreaInsets()`:
-// that reads the insets of the screen that rendered the sheet, and a tab
-// screen's include the tab bar (83pt, not 34), while the Modal itself covers
-// the whole window above it.
-const HOME_INDICATOR = initialWindowMetrics?.insets.bottom ?? 0;
+// The card's foot: the WINDOW's bottom inset (the home indicator), and never
+// less than `md` on phones without one. Not `useSafeAreaInsets()`: that reads
+// the insets of the screen that rendered the sheet, and a tab screen's include
+// the tab bar (83pt, not 34), while the Modal itself covers the whole window.
+const SHEET_FOOT = Math.max(initialWindowMetrics?.insets.bottom ?? 0, spacing.md);
 
 // Release-velocity dismiss decision: projects the finger's momentum forward
 // (current position + velocity · a short time constant) rather than reading
@@ -184,11 +184,11 @@ export function BottomSheet({
             is the screen. A KeyboardAvoidingView inside the card measures
             itself against the sliding card and lifts it by little or nothing —
             which is how CreateIssueSheet's and ReasonSheet's inputs ended up
-            under the keyboard. The offset lets the home-indicator spacer below
-            tuck behind the keyboard instead of padding above it. */}
+            under the keyboard. The offset lets the card's foot below tuck
+            behind the keyboard instead of padding above it. */}
         <KeyboardAvoidingView
           behavior="padding"
-          keyboardVerticalOffset={-HOME_INDICATOR}
+          keyboardVerticalOffset={-SHEET_FOOT}
           style={styles.root}
         >
           <Animated.View style={[styles.scrim, scrimStyle]}>
@@ -203,7 +203,7 @@ export function BottomSheet({
               {children}
               {/* Every sheet card is cream; this extends it through the home
                   indicator so its last row is not in the swipe-home zone. */}
-              <View style={{ height: HOME_INDICATOR, backgroundColor: colors.cream }} />
+              <View style={{ height: SHEET_FOOT, backgroundColor: colors.cream }} />
             </Animated.View>
           </GestureDetector>
         </KeyboardAvoidingView>

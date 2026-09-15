@@ -251,6 +251,7 @@ function ingress(overrides: Record<string, unknown> = {}): LightbulbRoomIngress 
         mentions: [],
       }),
     ],
+    sessions: [],
     run: RUN,
     ...overrides,
   } as LightbulbRoomIngress;
@@ -834,6 +835,19 @@ describe("strict LightbulbRoomIngress", () => {
     expect(parseIngress(ingress({ run: { runId: RUN_ID } })).ok).toBe(false);
     expect(parseIngress(ingress({ run: { ...RUN, extra: 1 } })).ok).toBe(false);
   });
+
+  it("accepts a bounded live-session summary and defaults it to empty", () => {
+    const summary = { sessionId: "33333333-3333-4333-8333-333333333333", humanUserId: "user_1", displayName: "Founder", provider: "claude", cwdName: "repo", title: "Fix login", status: "busy", latestEventSeq: 12, lastEventAt: "2026-09-14T10:00:00Z" };
+    const parsed = parseIngress({ ...ingress(), sessions: [summary] });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.sessions).toEqual([summary]);
+    const absent = parseIngress(ingress());
+    if (absent.ok) expect(absent.value.sessions).toEqual([]);
+    const odd = parseIngress({ ...ingress(), sessions: [{ ...summary, status: "sleeping", cwdName: null, title: null, lastEventAt: null }] });
+    if (odd.ok) expect(odd.value.sessions[0]).toMatchObject({ status: "unknown", cwdName: null, title: null, lastEventAt: null });
+    expect(parseIngress({ ...ingress(), sessions: Array.from({ length: 25 }, () => summary) }).ok).toBe(false);
+    expect(parseIngress({ ...ingress(), sessions: [{ ...summary, provider: "gemini" }] }).ok).toBe(false);
+  });
 });
 
 describe("native inbound context and delivery", () => {
@@ -973,9 +987,10 @@ describe("native inbound context and delivery", () => {
   it("passes explicit open admission, event kind, mentions, and structured context", async () => {
     const sdk = inboundSdk();
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
+    const sessionSummary = { sessionId: "33333333-3333-4333-8333-333333333333", humanUserId: "user_1", displayName: "Founder", provider: "claude" as const, cwdName: "repo", title: "Fix login", status: "busy" as const, latestEventSeq: 12, lastEventAt: "2026-09-14T10:00:00Z" };
     await dispatchTurn(
       { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(dispatch), env: () => ENV, runs: fakeRuns() },
-      ingress(),
+      { ...ingress(), sessions: [sessionSummary] },
     );
     expect(sdk.resolveStableChannelMessageIngress).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1004,6 +1019,7 @@ describe("native inbound context and delivery", () => {
       },
     ]);
     expect(contextInput.extra.ChannelStructuredContext[0].payload.participants).toHaveLength(4);
+    expect(contextInput.extra.ChannelStructuredContext[0].payload.sessions).toEqual([sessionSummary]);
     expect(contextInput.access).toMatchObject({
       commands: { authorized: true },
       mentions: { wasMentioned: true, explicitlyMentionedBot: true },

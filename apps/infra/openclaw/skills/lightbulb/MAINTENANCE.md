@@ -20,7 +20,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/backend/core/services/{local_session_grants,local_sessions,local_session_relay,openclaw_work}.py;
                                  apps/backend/core/repositories/local_sessions_repo.py; apps/backend/routers/messaging.py;
                                  apps/desktop/src-tauri/src/local_sessions/{workspace,transport}.rs;
-                                 apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript}.tsx; apps/frontend/src/components/messaging/{RoomDirectory,SessionFocus}.tsx; apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
+                                 apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript,RoomDirectory,SessionFocus}.tsx; apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
                                  Optional adapter/tool availability requires the new container image; docs are not deployment evidence.
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);

@@ -17,7 +17,7 @@ export const accessLost = (error: unknown) => error instanceof ApiError && (erro
  *  primary; this only covers a dropped hint. */
 const RESOURCES_POLL_MS = 30_000;
 
-/** Must exceed local_session_relay's 1000ms per-room hint throttle (no trailing edge), so a
+/** Must exceed local_session_relay's 1000ms per-session hint throttle (no trailing edge), so a
  *  batch that lands inside that window and gets no hint of its own is still caught by this. */
 const TRAILING_HINT_MS = 1500;
 
@@ -104,7 +104,7 @@ export function useRoomResources(
         void refresh();
       } else if (event.type === "room.resources.changed") {
         void refresh();
-        // The backend throttles hints per room with no trailing edge, so a batch
+        // The backend throttles hints per session with no trailing edge, so a batch
         // landing inside that window publishes none; a debounced trailing refresh
         // past TRAILING_HINT_MS catches it instead of stranding the view until the
         // safety poll. A new hint resets the timer, so a burst yields one trailing

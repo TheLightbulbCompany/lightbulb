@@ -1421,6 +1421,47 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
     return room_id
 
 
+async def add_vendor_room_member(owner_id: str, user_id: str, *, home_owner_id: str) -> bool:
+    """Add one human to a customer's vendor room, keyed on THEIR home. Idempotent."""
+    room_id = messaging_repo.vendor_room_id(owner_id)
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or await messaging_repo.get_member(room_id, "human", user_id) is not None:
+        return False
+    await messaging_repo.ensure_user_stream(home_owner_id, user_id)
+    member = {
+        "kind": "human",
+        "id": user_id,
+        "displayName": await human_display_name(user_id),
+        "mentionHandle": None,
+        "role": "member",
+        "listenMode": None,
+        "homeOwnerId": home_owner_id,
+    }
+    try:
+        meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
+    except messaging_repo.MemberLimitExceeded:
+        put_metric("messaging.vendor_room.capped")
+        logger.warning("vendor room full; %s not added to owner %s", user_id, owner_id)
+        return False
+    await _publish_room_metadata(meta)
+    return True
+
+
+async def on_org_member_joined(org_id: str, user_id: str) -> None:
+    """Clerk ``organizationMembership.created``: keep 'everyone in both workspaces' true."""
+    vendor = settings.VENDOR_ORG_ID
+    if not vendor:
+        return
+    if org_id != vendor:
+        await add_vendor_room_member(org_id, user_id, home_owner_id=org_id)
+        return
+    # ponytail: full containers scan per vendor join; add a VENDORROOM# catalog row when org count makes this slow
+    for row in await container_repo.scan_all():
+        customer = row.get("owner_id")
+        if isinstance(customer, str) and is_org_owner_id(customer) and customer != vendor:
+            await add_vendor_room_member(customer, user_id, home_owner_id=vendor)
+
+
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     keys = [(member.kind, member.id) for member in request.members]

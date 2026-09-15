@@ -392,3 +392,70 @@ async def test_ensure_vendor_room_caps_customer_first(vendor, monkeypatch):
     assert all(m.get("homeOwnerId") == CUSTOMER for m in members[2:22])
     assert [m["id"] for m in members[22:]] == [f"user_v{i:02d}" for i in range(10)]
     assert "messaging.vendor_room.capped" in metrics
+
+
+@pytest.mark.asyncio
+async def test_add_vendor_room_member_adds_a_missing_human_with_their_home(vendor, monkeypatch):
+    room_id = messaging.messaging_repo.vendor_room_id(CUSTOMER)
+    meta = {**META, "roomId": room_id}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Vee"))
+    streams = AsyncMock(return_value="key")
+    upsert = AsyncMock(return_value={**meta, "revision": 3})
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", streams)
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+
+    assert await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR) is True
+    streams.assert_awaited_once_with(VENDOR, "user_v")
+    member = upsert.await_args.kwargs["member"]
+    assert (member["id"], member["role"], member["homeOwnerId"], member["displayName"]) == (
+        "user_v",
+        "member",
+        VENDOR,
+        "Vee",
+    )
+    assert upsert.await_args.kwargs["owner_id"] == CUSTOMER
+
+
+@pytest.mark.asyncio
+async def test_add_vendor_room_member_is_a_no_op_without_a_room_or_when_present(vendor, monkeypatch):
+    upsert = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=None))
+    assert await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR) is False
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=_human("user_v", VENDOR)))
+    assert await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR) is False
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_customer_join_adds_to_that_customers_room(vendor, monkeypatch):
+    add = AsyncMock(return_value=True)
+    monkeypatch.setattr(messaging, "add_vendor_room_member", add)
+    await messaging.on_org_member_joined(CUSTOMER, "user_d")
+    add.assert_awaited_once_with(CUSTOMER, "user_d", home_owner_id=CUSTOMER)
+
+
+@pytest.mark.asyncio
+async def test_vendor_join_fans_out_to_every_org_owner(vendor, monkeypatch):
+    add = AsyncMock(return_value=True)
+    monkeypatch.setattr(messaging, "add_vendor_room_member", add)
+    rows = [{"owner_id": CUSTOMER}, {"owner_id": "org_other"}, {"owner_id": "user_personal"}, {"owner_id": VENDOR}]
+    monkeypatch.setattr(messaging.container_repo, "scan_all", AsyncMock(return_value=rows))
+    await messaging.on_org_member_joined(VENDOR, "user_new")
+    assert add.await_args_list == [
+        call(CUSTOMER, "user_new", home_owner_id=VENDOR),
+        call("org_other", "user_new", home_owner_id=VENDOR),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_joins_are_ignored_when_the_feature_is_off(monkeypatch):
+    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "")
+    add = AsyncMock()
+    monkeypatch.setattr(messaging, "add_vendor_room_member", add)
+    await messaging.on_org_member_joined(CUSTOMER, "user_d")
+    add.assert_not_awaited()

@@ -372,7 +372,9 @@ async def _handle_organization_membership_created(
     """Record a membership lifecycle event, then join the org's Paperclip company.
 
     Room admission remains explicit; the member receives an opaque user stream
-    when they first request messaging live-config or are added to a room.
+    when they first request messaging live-config or are added to a room. The
+    one exception is the vendor shared channel, which ``on_org_member_joined``
+    keeps in step with org membership.
 
     The Paperclip join itself is delegated to
     ``core.services.user_provision._ensure_paperclip_for_member`` — the same
@@ -424,6 +426,14 @@ async def _handle_organization_membership_created(
             user_id,
         )
         put_metric("paperclip.member_add", dimensions={"outcome": "webhook_error"})
+
+    from core.services.messaging import on_org_member_joined
+
+    try:
+        await on_org_member_joined(org_id, user_id)
+    except Exception:
+        logger.exception("membership.created: vendor room add failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.vendor_room.error")
 
 
 async def _handle_organization_membership_deleted(

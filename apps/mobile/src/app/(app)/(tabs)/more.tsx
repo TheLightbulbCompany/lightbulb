@@ -13,7 +13,7 @@ interface MoreRow {
 }
 
 // An iOS tab bar fits four tabs, and Slack's four are Home · DMs · Activity ·
-// More. These three route trees are PUSHED screens on the (app) stack — not
+// More. These route trees are PUSHED screens on the (app) stack — not
 // hidden tabs — so each one arrives with a real native back button, and this
 // screen is the only way a user reaches them.
 const ROWS: MoreRow[] = [
@@ -22,6 +22,12 @@ const ROWS: MoreRow[] = [
     description: "Inbox, issues, and routines",
     icon: "inbox",
     route: "/(app)/teams",
+  },
+  {
+    label: "Shared sessions",
+    description: "Live Claude and Codex terminals in this workspace",
+    icon: "terminal",
+    route: "/(app)/sessions",
   },
   {
     label: "Control",

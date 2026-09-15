@@ -9,12 +9,13 @@ jest.mock("expo-router", () => ({
 
 import More from "../more";
 
-// These three route trees lost their tab when the bar went Slack-shaped
+// These route trees lost their tab when the bar went Slack-shaped
 // (Home · DMs · Activity · More), so this screen is the only way in.
-it("pushes the three route trees the tab bar no longer shows", async () => {
+it("pushes the route trees the tab bar no longer shows", async () => {
   await render(<More />);
   for (const [label, route] of [
     ["Teams", "/(app)/teams"],
+    ["Shared sessions", "/(app)/sessions"],
     ["Control", "/(app)/control"],
     ["Settings", "/(app)/settings"],
   ] as const) {

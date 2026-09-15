@@ -49,3 +49,18 @@ export function deviceSections(data: RoomResources, name: (humanUserId: string) 
     return { key: human, title: name(human), data: rows };
   });
 }
+
+const STATUS_RANK: Record<LocalSession["status"], number> = { busy: 0, "waiting-approval": 1, idle: 2, unknown: 2, offline: 3, ended: 3 };
+
+export interface WorkspaceSection { key: string; title: string; data: LocalSession[] }
+
+/** The sidebar's grouping on the phone: one section per person, mine first. */
+export function workspaceSections(sessions: readonly LocalSession[], currentUserId: string | null | undefined, name: (humanUserId: string) => string): WorkspaceSection[] {
+  const humans = [...new Set(sessions.map((s) => s.humanUserId))];
+  const title = (human: string) => (human === currentUserId ? "You" : name(human));
+  humans.sort((a, b) => Number(b === currentUserId) - Number(a === currentUserId) || title(a).localeCompare(title(b)));
+  return humans.map((human) => ({
+    key: human, title: title(human),
+    data: sessions.filter((s) => s.humanUserId === human).sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || (b.lastEventAt ?? "").localeCompare(a.lastEventAt ?? "")),
+  }));
+}

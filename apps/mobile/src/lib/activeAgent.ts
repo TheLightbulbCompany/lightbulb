@@ -31,9 +31,8 @@ export function getCurrentTarget(): CurrentTarget {
 }
 
 /** Monotonic id of the live claim. Identity, not value: two stacked screens can
- * hold the SAME roomId (a push for the room you are already in pushes a second
- * copy of it), and comparing by value would let the older one's blur clear the
- * newer one's claim. */
+ * hold the SAME roomId (the room, and a thread pushed over it), and comparing by
+ * value would let the older one's blur clear the newer one's claim. */
 let claim = 0;
 
 /**

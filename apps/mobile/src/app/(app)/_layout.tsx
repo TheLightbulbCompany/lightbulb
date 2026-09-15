@@ -4,6 +4,7 @@ import { getFocusedRouteNameFromRoute } from "expo-router/react-navigation";
 
 import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
+import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
@@ -105,6 +106,9 @@ export default function AppLayout() {
                 itself with the room route. */}
             <Stack.Screen name="agent/[agentId]" options={{ title: "Chat" }} />
           </Stack>
+          {/* After the Stack, inside the gates: a tap may only navigate once
+              this Stack exists (see NotificationTapRouter). */}
+          <NotificationTapRouter />
         </ProvisionGate>
       </AiConsentGate>
     </LiveEventsProvider>

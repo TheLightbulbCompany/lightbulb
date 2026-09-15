@@ -17,6 +17,10 @@ export const accessLost = (error: unknown) => error instanceof ApiError && (erro
  *  primary; this only covers a dropped hint. */
 const RESOURCES_POLL_MS = 30_000;
 
+/** Must exceed local_session_relay's 1000ms per-room hint throttle (no trailing edge), so a
+ *  batch that lands inside that window and gets no hint of its own is still caught by this. */
+const TRAILING_HINT_MS = 1500;
+
 /**
  * Mounted only by the open pane, keyed by owner, viewer, room and membership.
  * `enabled: false` neither fetches nor polls (a phone stacks several screens of
@@ -36,6 +40,7 @@ export function useRoomResources(
   const blocked = useRef(false);
   const refreshing = useRef(false);
   const queued = useRef(false);
+  const trailingHint = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Coalesced re-runs of the do-while below reuse the `refresh` closure that
   // was already in flight when a caller queued another pass; without this ref
   // that re-run would fetch with the `includeEnded` captured at the START of
@@ -97,11 +102,23 @@ export function useRoomResources(
         setData(null);
         setAccessRevision(v => v + 1);
         void refresh();
-      } else if (event.type === "room.resources.changed") void refresh();
+      } else if (event.type === "room.resources.changed") {
+        void refresh();
+        // The backend throttles hints per room with no trailing edge, so a batch
+        // landing inside that window publishes none; a debounced trailing refresh
+        // past TRAILING_HINT_MS catches it instead of stranding the view until the
+        // safety poll. A new hint resets the timer, so a burst yields one trailing
+        // refresh after the last hint, not one per hint.
+        if (trailingHint.current) clearTimeout(trailingHint.current);
+        trailingHint.current = setTimeout(() => { trailingHint.current = null; void refresh(); }, TRAILING_HINT_MS);
+      }
     });
     // Reuses the room's existing live subscription. Poll only while this pane exists.
     const timer = setInterval(() => void refresh(), RESOURCES_POLL_MS);
-    return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
+    return () => {
+      unsubscribe(); clearInterval(timer); blocked.current = true; invalidate();
+      if (trailingHint.current) { clearTimeout(trailingHint.current); trailingHint.current = null; }
+    };
   }, [enabled, onEvent, roomId, refresh, revoke, invalidate, includeEnded]);
   const previousConnection = useRef(connectionRevision);
   useEffect(() => {

@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from core.auth import is_org_owner_id
+from core.auth import WORKSPACE_REQUIRED_CODE, WORKSPACE_REQUIRED_MESSAGE, is_org_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_once_per_owner_per_day
 from core.repositories import billing_repo
@@ -438,9 +438,9 @@ async def _evaluate_provision_gate_inner(
     # handed a stale user_ id sees.
     if not is_org_owner_id(owner_id):
         return Gate(
-            code="workspace_required",
+            code=WORKSPACE_REQUIRED_CODE,
             title="Choose a workspace",
-            message="Choose or create a workspace to continue.",
+            message=WORKSPACE_REQUIRED_MESSAGE,
             action_label="Choose workspace",
             action_href="/onboarding",
             action_admin_only=False,

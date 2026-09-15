@@ -1,6 +1,6 @@
 """``provision.gate.blocked`` by code over the last 7 days, from CloudWatch.
 
-The gate emits the metric via EMF only (core/services/provision_gate.py:411,
+The gate emits the metric via EMF only (core/services/provision_gate.py (evaluate_provision_gate),
 ``put_metric("provision.gate.blocked", dimensions={"code": ...})``); nothing
 persists the code to DynamoDB, so CloudWatch is the only reader. The
 emitter publishes the FULL dimension set ``[env, service, code]``
@@ -36,6 +36,10 @@ GATE_CODES: tuple[str, ...] = (
     "trial_daily_cap",
     "trial_expired",
     "workspace_required",
+    # Retired 2026-09-15 with the personal-workspace code; still queried so the
+    # 7-day window does not drop their tail. Remove after 2026-09-22.
+    "signup_required",
+    "invitation_pending",
 )
 _WINDOW_S = 7 * 24 * 3600  # the query window — kept at 7 days
 _PERIOD_S = 86400  # the GetMetricData bucket size — daily, summed below

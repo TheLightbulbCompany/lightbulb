@@ -90,15 +90,17 @@ class AuthContext:
         return self.org_role == "org:admin"
 
 
+# Shared by resolve_owner_id's 409 and provision_gate's Layer-0 gate.
+WORKSPACE_REQUIRED_CODE = "workspace_required"
+WORKSPACE_REQUIRED_MESSAGE = "Choose or create a workspace to continue."
+
+
 def resolve_owner_id(auth: AuthContext) -> str:
     """Return the active organization workspace owner."""
     if not auth.org_id:
         raise HTTPException(
             status_code=409,
-            detail={
-                "code": "workspace_required",
-                "message": "Choose or create a workspace to continue.",
-            },
+            detail={"code": WORKSPACE_REQUIRED_CODE, "message": WORKSPACE_REQUIRED_MESSAGE},
         )
     return auth.org_id
 

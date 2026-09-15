@@ -96,6 +96,7 @@ from dataclasses import dataclass
 import boto3
 from botocore.exceptions import ClientError
 
+from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.logging import bind_log_context
 from core.repositories import container_repo
@@ -164,6 +165,14 @@ async def dispatch_provision(owner_id: str) -> None:
     # Re-bind correlation ids: dispatched via create_task, this can run in a
     # detached task where the HTTP-middleware binds did not propagate.
     bind_log_context(user_id=owner_id)
+    if not is_org_owner_id(owner_id):
+        # Personal workspaces no longer exist. Refuse here — the one funnel every
+        # door goes through — before a containers row is claimed or an SFN
+        # execution started (an admin reprovision whose Clerk lookup failed open
+        # hands this a user_ id). provision_runner step 0 refuses too, as a backstop.
+        logger.error("dispatch_provision: %s is not a workspace (org) — refusing to provision", owner_id)
+        emit_provision_metric("refused_non_org")
+        return
     try:
         await _dispatch_inner(owner_id)
     except Exception:  # noqa: BLE001 — dispatch must never take down the caller

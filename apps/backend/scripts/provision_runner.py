@@ -175,11 +175,12 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     without an email claim; passing it in avoids a redundant second lookup
     inside the helper.
 
-    After the seed, ``arm_nightly_ceo`` arms the paid nightly-CEO routine on
-    the freshly seeded CEO. It is gated paid-only INSIDE, so a free-trial
-    run is a metered no-op; arming here — not on a UI poll — is what makes it
-    deterministic for trial→paid conversions and org first-provisions, both of
-    which reach this executor. Its failures classify exactly like the seed's.
+    After the seed, ``arm_nightly_ceo`` arms the nightly-CEO routine on the
+    freshly seeded CEO. It is gated INSIDE on ``should_arm_nightly_ceo`` — paid
+    OR an unexpired ``trial_local``; an expired trial is a no-op — and arming
+    here, not only on a UI poll, is what makes it deterministic for org
+    first-provisions and trial→paid conversions, both of which reach this
+    executor. Its failures classify exactly like the seed's.
     ``trust_cache=False``: a retry of a run that died between the arm's claim
     write and its routine create must not trust the claim cache.
     """
@@ -228,6 +229,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
 
 
 async def run(owner_id: str, claim_id: str) -> int:
+    from core.auth import is_org_owner_id
     from core.observability.logging import bind_log_context
     from core.repositories import container_repo
     from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
@@ -264,7 +266,11 @@ async def run(owner_id: str, claim_id: str) -> int:
                 await container_repo.release_provision_to_error(
                     owner_id,
                     claim_id,
-                    last_error="provision seed: owner paperclip seed or nightly-CEO arm failed (see log)",
+                    last_error=(
+                        "provision refused: owner is not a workspace (org)"
+                        if not is_org_owner_id(owner_id)
+                        else "provision seed: owner paperclip seed or nightly-CEO arm failed (see log)"
+                    ),
                     retryable=(seed_exit == EXIT_TRANSIENT),
                     attempt_token=attempt_token,
                 )

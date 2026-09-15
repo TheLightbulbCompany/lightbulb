@@ -373,7 +373,7 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     failures retryable: the next /teams poll re-fires. (Codex P2.)
     """
     owner_id = resolve_owner_id(auth)
-    is_admin = auth.is_org_admin if auth.is_org_context else True
+    is_admin = auth.is_org_admin
 
     await ensure_workspace_trial_default(auth, owner_id)
     gate = await evaluate_provision_gate(

@@ -84,7 +84,7 @@ def containers_table():
 
 def _billing_row():
     return {
-        "owner_id": "user_cold",
+        "owner_id": "org_cold",
         "subscription_status": "active",
         "stripe_subscription_id": "sub_1",
         "provider_choice": "bedrock_claude",
@@ -118,9 +118,9 @@ def _real_manager() -> EcsManager:
 async def _run_cold_change(created_tasks: list) -> dict:
     """Drive change_provider bedrock_claude -> byo_key (cold: involves_byo)."""
     return await billing_service.change_provider(
-        owner_id="user_cold",
+        owner_id="org_cold",
         clerk_user_id="user_cold",
-        owner_type="personal",
+        owner_type="org",
         provider_choice="byo_key",
         byo_provider="anthropic",
     )
@@ -241,7 +241,7 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     """F1 fix: a RUNNING row is stopped first, so the SAME dispatch wins the
     claim and applies the new provider — no more silent stand-down."""
     env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
 
     result = await _run_cold_change(env["created"])
 
@@ -258,7 +258,7 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     # change_provider returned, the old-provider container was draining.
     env["manager"]._ecs.update_service.assert_called()
     assert env["manager"]._ecs.update_service.call_args.kwargs["desiredCount"] == 0
-    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row["status"] == "stopped"
 
     # The drain-wait + provision dispatch ran OFF the request path: exactly
@@ -279,7 +279,7 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
 
     # The row reflects a genuinely-claimed reprovision, not a silent stand-down:
     # try_claim_provision stamped it "provisioning" with a real fencing token.
-    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row["status"] == "provisioning"
     assert row["provision_claim_id"]
     # The new provider is committed on the billing row the runner reads.
@@ -293,7 +293,7 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
     proving the running-row fix above didn't regress the already-working
     stopped-row case."""
     env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "stopped"})
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "stopped"})
 
     result = await _run_cold_change(env["created"])
     assert result["restart"] is True
@@ -305,7 +305,7 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
 
     env["spawn"].assert_called_once()
 
-    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row["status"] == "provisioning"
     assert row["provision_claim_id"]
     assert result["provider_choice"] == "byo_key"
@@ -345,7 +345,7 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     # the NEW provider, exactly what the pre-F1 bare dispatch did for this case.
     env["spawn"].assert_called_once()
 
-    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row is not None and row["status"] == "provisioning"
     assert result["provider_choice"] == "byo_key"
 
@@ -361,13 +361,13 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     from core.repositories import container_repo
 
     env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
 
     await _run_cold_change(env["created"])
     assert len(env["created"]) == 1  # the drain task, not yet run
 
     # A status-poll wake lands NOW: real conditional claim on the stopped row.
-    poll_claim = await container_repo.try_claim_provision("user_cold")
+    poll_claim = await container_repo.try_claim_provision("org_cold")
     assert poll_claim, "poll should win the claim on the exposed stopped row"
 
     # Run the drain task. It must NOT reset the row to "stopped", and its
@@ -384,7 +384,7 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     env["sfn"].start_execution.assert_not_called()
 
     # The poll's claim survived untouched — still provisioning, same token.
-    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row["status"] == "provisioning"
     assert row["provision_claim_id"] == poll_claim
 
@@ -397,7 +397,7 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
     — the running container would otherwise keep the old provider forever
     (running rows are neither poll-retryable nor claimable)."""
     env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
     env["manager"]._ecs.update_service.side_effect = ClientError(
         {"Error": {"Code": "ClusterNotFoundException", "Message": "throttled"}},
         "UpdateService",
@@ -409,14 +409,14 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
 
     # The commit was REVERTED — the shared row-mirror reflects the old
     # provider again — and no reprovision task was dispatched.
-    account = await billing_service.billing_repo.get_by_owner_id("user_cold")
+    account = await billing_service.billing_repo.get_by_owner_id("org_cold")
     assert account["provider_choice"] == "bedrock_claude"
     assert env["created"] == []
 
     # The stop was NOT applied (ECS itself failed), so the row must NOT be
     # re-stamped "stopped" — that would trigger a pointless restart cycle
     # of a genuinely-running container on a transient ECS throttle.
-    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row["status"] == "running"
 
     # Retry once ECS recovers: NOT a noop — the full switch re-runs and the
@@ -444,7 +444,7 @@ async def test_stop_failure_reverts_legacy_row_to_default_not_stuck(cold_change_
     stranding the still-running container on the old provider forever."""
     env = cold_change_env
     del env["row"]["provider_choice"]  # legacy: never chose a provider
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
     env["manager"]._ecs.update_service.side_effect = ClientError(
         {"Error": {"Code": "ClusterNotFoundException", "Message": "throttled"}},
         "UpdateService",
@@ -455,7 +455,7 @@ async def test_stop_failure_reverts_legacy_row_to_default_not_stuck(cold_change_
 
     # Reverted to the resolved legacy default -- NOT left on the requested
     # byo_key (which would no-op the retry), NOT left absent (repo rejects None).
-    account = await billing_service.billing_repo.get_by_owner_id("user_cold")
+    account = await billing_service.billing_repo.get_by_owner_id("org_cold")
     assert account["provider_choice"] == "bedrock_claude"
     assert env["created"] == []  # nothing dispatched
 
@@ -473,8 +473,8 @@ async def test_cold_change_fences_out_in_flight_poll_wake_claim(cold_change_env)
     from core.repositories.container_repo import ProvisionSuperseded
 
     env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "stopped"})
-    poll_claim = await container_repo.try_claim_provision("user_cold")
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "stopped"})
+    poll_claim = await container_repo.try_claim_provision("org_cold")
     assert poll_claim, "poll wake should win the claim on the stopped row"
 
     result = await _run_cold_change(env["created"])
@@ -483,7 +483,7 @@ async def test_cold_change_fences_out_in_flight_poll_wake_claim(cold_change_env)
     # The in-flight poll run is SUPERSEDED: its next checkpoint raises
     # instead of letting it write the pre-commit provider's config.
     with pytest.raises(ProvisionSuperseded):
-        await container_repo.update_container_leased("user_cold", poll_claim, {"substatus": "poison"})
+        await container_repo.update_container_leased("org_cold", poll_claim, {"substatus": "poison"})
 
     # Our own dispatch proceeds end-to-end with the NEW provider.
     assert len(env["created"]) == 1
@@ -502,7 +502,7 @@ async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
     for those would leave the provider row committed with no dispatch and no
     convergence path."""
     env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
 
     update_status_mock = AsyncMock(
         side_effect=ClientError(
@@ -516,7 +516,7 @@ async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
     assert exc.value.code == "reprovision_stop_failed"
 
     # Reverted + nothing dispatched — same contract as the ECS-failure case.
-    account = await billing_service.billing_repo.get_by_owner_id("user_cold")
+    account = await billing_service.billing_repo.get_by_owner_id("org_cold")
     assert account["provider_choice"] == "bedrock_claude"
     assert env["created"] == []
 

@@ -188,7 +188,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # Safe to hoist: ``ensure_metronome_customer`` owns its own preconditions —
     # it short-circuits trial_local owners (who must never get a ledger) and
     # raises when no billing row exists, which the except below swallows. So a
-    # gated-for-any-other-reason owner (no subscription, pending invitation)
+    # gated-for-any-other-reason owner (no subscription, no provider chosen)
     # costs one DDB read and no Metronome traffic. Org members never run it:
     # the org's customer belongs to the org owner_id and an admin poll creates
     # it. Best-effort — a Metronome outage must never block provisioning.
@@ -290,21 +290,21 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # The customer's channel shared with the Lightbulb workspace. Any member's poll
     # reconciles it (not only the container owner's); its own first read is the
     # short-circuit, so the steady-state cost is one consistent read per poll.
-    if auth.is_org_context:
-        from core.services.messaging import ensure_vendor_room
+    from core.services.messaging import ensure_vendor_room
 
-        try:
-            await ensure_vendor_room(owner_id)
-        except Exception:
-            put_metric("messaging.vendor_room.error")
-            logger.exception("vendor room reconcile failed for owner %s", owner_id)
+    try:
+        await ensure_vendor_room(owner_id)
+    except Exception:
+        put_metric("messaging.vendor_room.error")
+        logger.exception("vendor room reconcile failed for owner %s", owner_id)
 
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
     # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after
-    # the owner's Paperclip seed — every path to "paid + provider chosen" runs
-    # there. This call is NOT a general catch-up: it is the admin-poll /
-    # failed-seed self-heal only. Never an org member; paid-only inside;
-    # idempotent; best-effort (never raises).
+    # the owner's Paperclip seed. This call is the poll-path self-heal, and since
+    # every org admin's running-container poll reaches it, it IS a general
+    # catch-up — kept cheap by the nightly_ceo_armed_company cache. Never an org
+    # member; gated inside on should_arm_nightly_ceo (paid OR an unexpired
+    # trial_local); idempotent; best-effort (never raises).
     if auth.is_org_admin:
         await _maybe_arm_nightly_ceo(owner_id)
 
@@ -376,8 +376,7 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
     on every ~3s poll of a healthy org. What is left to reconcile here is
     CREATE only, and only an admin creates.
     """
-    if not auth.is_org_admin:
-        return  # members never create; they joined above
+    # Only reached from ensure_user_ready's ``if auth.is_org_admin:`` branch.
     provisioning = await build_paperclip_provisioning()
     try:
         if await provisioning.find_org_owner(owner_id) is not None:

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-import { ApiError, useRoomResources, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources, type RoomResourceSource } from "@lightbulb/shared";
+import { ApiError, AUTO_CHECK_INTERVAL_MS, useRoomResources, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import { RoomResources as RoomResourcesPanel } from "../RoomResources";
 import { useState } from "react";
@@ -522,19 +522,31 @@ it("submits the follow-up on Enter, keeps Shift+Enter as a newline, and ignores 
 });
 
 it("cannot race a new send with a receipt check or erase the next draft", async () => {
+  vi.useFakeTimers();
   const f = setup();
   render(<RoomPanel {...f.props} />);
-  await openSession();
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Devices & sessions" })));
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: /Open Codex/ })));
   const input = screen.getByRole("textbox", { name: /Send to Codex/ });
-  await userEvent.type(input, "First follow-up");
-  await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
-  await userEvent.type(input, "Next follow-up");
+  fireEvent.change(input, { target: { value: "First follow-up" } });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send follow-up" })));
+  const original = f.client.submitLocalSessionCommand.mock.calls[0][2];
+  // Receipt stays "pending" (never settles): exhaust the background auto-check
+  // budget — derived from this fixture receipt's own deliverBy - createdAt,
+  // same formula useSessionCommand uses — so "Check delivery" appears at all.
+  const sample = f.receipt(original);
+  const autoCheckLimit = Math.max(1, Math.ceil((sample.deliverBy - sample.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
+  f.client.getLocalSessionCommand.mockResolvedValue(sample);
+  await act(async () => { await vi.advanceTimersByTimeAsync(autoCheckLimit * AUTO_CHECK_INTERVAL_MS); });
+  expect(f.client.getLocalSessionCommand).toHaveBeenCalledTimes(autoCheckLimit);
+  expect(screen.getByRole("button", { name: "Check delivery" })).toBeEnabled();
+  fireEvent.change(input, { target: { value: "Next follow-up" } });
   let finish!: (r: LocalSessionCommandReceipt) => void;
   f.client.getLocalSessionCommand.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  await userEvent.click(screen.getByRole("button", { name: "Check delivery" }));
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Check delivery" })));
   expect(input).toBeDisabled();
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
-  await act(async () => finish({ ...f.receipt(f.client.submitLocalSessionCommand.mock.calls[0][2]), state: "applied" }));
+  await act(async () => finish({ ...f.receipt(original), state: "applied" }));
   expect(input).toHaveValue("Next follow-up");
   expect(input).toBeEnabled();
 });

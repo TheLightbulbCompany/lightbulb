@@ -109,4 +109,99 @@ describe("useLocalSessionHistory tail stability", () => {
     expect(result.current.events).not.toBe(afterInitial);
     expect(result.current.events).toHaveLength(4);
   });
+
+  it("never flashes loading on the two background callers (revision bump, busy tail), and new events still arrive", async () => {
+    vi.useFakeTimers();
+    let resolveRevision!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    let resolveTail!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    const revisionFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveRevision = resolve; });
+    const tailFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveTail = resolve; });
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null })
+      .mockReturnValueOnce(revisionFetch)
+      .mockReturnValueOnce(tailFetch);
+    const client = { listLocalSessionEvents } as unknown as RoomResourceSource["client"];
+    const onAccessLost = () => {};
+    const { result, rerender } = renderHook(
+      ({ revision, busy }) => useLocalSessionHistory(client, "room-1", "session-1", 3, revision, onAccessLost, { busy }),
+      { initialProps: { revision: 0, busy: false } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.events).toHaveLength(3);
+
+    // Background caller 1: the revision effect, driven by useRoomResources' 5s poll.
+    rerender({ revision: 1, busy: false });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false); // stayed false while the fetch is in flight
+    await act(async () => { resolveRevision({ events: [ev(4)], nextAfterSeq: null }); await revisionFetch; });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.events).toHaveLength(4);
+
+    // Background caller 2: the 1s busy tail.
+    rerender({ revision: 1, busy: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(result.current.loading).toBe(false); // stayed false while the fetch is in flight
+    await act(async () => { resolveTail({ events: [ev(5)], nextAfterSeq: null }); await tailFetch; });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.events).toHaveLength(5);
+  });
+
+  it("still flashes loading for a user-initiated load (Load older/newer, Jump to latest, retry)", async () => {
+    vi.useFakeTimers();
+    let resolveManual!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    const manual = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveManual = resolve; });
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null })
+      .mockReturnValueOnce(manual);
+    const client = { listLocalSessionEvents } as unknown as RoomResourceSource["client"];
+    const onAccessLost = () => {};
+    const { result } = renderHook(({ revision }) => useLocalSessionHistory(client, "room-1", "session-1", 3, revision, onAccessLost), { initialProps: { revision: 0 } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false);
+
+    act(() => { void result.current.load("latest"); }); // e.g. "Jump to latest"
+    expect(result.current.loading).toBe(true);
+    await act(async () => { resolveManual({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null }); await manual; });
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("a foreground load supersedes an in-flight quiet background load instead of being dropped", async () => {
+    vi.useFakeTimers();
+    let resolveQuiet!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    const quietFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveQuiet = resolve; });
+    let resolveForeground!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    const foregroundFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveForeground = resolve; });
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [ev(48), ev(49), ev(50)], nextAfterSeq: null }) // initial "latest"
+      .mockReturnValueOnce(quietFetch) // background "newer" poll (quiet)
+      .mockReturnValueOnce(foregroundFetch); // the superseding "older" load
+    const client = { listLocalSessionEvents } as unknown as RoomResourceSource["client"];
+    const onAccessLost = () => {};
+    const { result, rerender } = renderHook(
+      ({ revision }) => useLocalSessionHistory(client, "room-1", "session-1", 50, revision, onAccessLost),
+      { initialProps: { revision: 0 } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.hasOlder).toBe(true); // "Load older" is on screen
+
+    rerender({ revision: 1 }); // the revision-driven quiet background poll, now pending on quietFetch
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false); // quiet: not flashing
+
+    act(() => { void result.current.load("older"); }); // a "Load older" click while the quiet poll is in flight
+    expect(result.current.loading).toBe(true); // the foreground request was issued, not dropped
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
+
+    await act(async () => { resolveForeground({ events: [ev(47)], nextAfterSeq: null }); await foregroundFetch; });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.events.some(e => e.seq === 47)).toBe(true); // its events landed
+    const eventsAfterForeground = result.current.events;
+
+    // The stale quiet promise resolving afterwards changes nothing.
+    await act(async () => { resolveQuiet({ events: [ev(51)], nextAfterSeq: null }); await quietFetch; });
+    expect(result.current.events).toBe(eventsAfterForeground);
+    expect(result.current.loading).toBe(false);
+  });
 });

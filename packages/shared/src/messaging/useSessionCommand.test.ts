@@ -6,7 +6,7 @@ import { ApiError } from "../api/error";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } from "./types";
 import type { RoomResourceSource } from "./useRoomResources";
 import { canSendToSession, sessionLabel } from "./localSessionLabels";
-import { useSessionCommand } from "./useSessionCommand";
+import { AUTO_CHECK_INTERVAL_MS, useSessionCommand } from "./useSessionCommand";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "claude",
@@ -19,6 +19,10 @@ const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt
   sessionId: session.sessionId, roomId: "room", actorUserId: "bob", commandSeq: 1, state,
   createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
 });
+// The auto-check budget the hook derives from THIS fixture's own deliverBy/createdAt,
+// not a hardcoded 15 — matches useSessionCommand's `Math.ceil((deliverBy - createdAt) / (interval/1000))`.
+const probeReceipt = receipt({ requestId: "probe", expectedGeneration: "g1", kind: "send", text: "" });
+const AUTO_CHECK_LIMIT = Math.max(1, Math.ceil((probeReceipt.deliverBy - probeReceipt.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
 const submit = vi.fn();
 const get = vi.fn();
 const client = { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: submit, getLocalSessionCommand: get } as unknown as RoomResourceSource["client"];
@@ -30,7 +34,7 @@ let uuidCounter = 0;
 const uuid = () => `req-${++uuidCounter}`;
 const hook = (s: LocalSession = session) => renderHook(() => useSessionCommand(client, "room", s, { uuid, onAccessLost, onSent }));
 
-afterEach(() => { cleanup(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
+afterEach(() => { cleanup(); vi.useRealTimers(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
 
 describe("labels", () => {
   it("labels a session by provider and title, and gates sending on verified control", () => {
@@ -110,6 +114,62 @@ describe("useSessionCommand", () => {
     const open = hook();
     await act(async () => { open.result.current.send("hello"); });
     expect(onAccessLost).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-settles a pending receipt on the first check: no canCheck at any point, checking never true", async () => {
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request, "pending"));
+    get.mockImplementation(async (_r: string, _s: string, requestId: string) => receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, "applied"));
+    const { result } = hook();
+    await act(async () => { result.current.send("hello"); });
+    expect(result.current.attempt?.state).toBe("received");
+    expect(result.current.canCheck).toBe(false);
+    expect(result.current.checking).toBe(false);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith("room", session.sessionId, "req-1");
+    expect(result.current.receiptText).toBe("Admitted to the native session — not completed work.");
+    expect(result.current.canCheck).toBe(false);
+    expect(result.current.checking).toBe(false);
+
+    // Settled: no further auto-checks are scheduled.
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it(`keeps canCheck false while a receipt stays dispatched, flips true only after the ${AUTO_CHECK_LIMIT}-check budget, checking exactly ${AUTO_CHECK_LIMIT} times`, async () => {
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request, "dispatched"));
+    get.mockImplementation(async (_r: string, _s: string, requestId: string) => receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, "dispatched"));
+    const { result } = hook();
+    await act(async () => { result.current.send("hello"); });
+    expect(result.current.canCheck).toBe(false);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_LIMIT * AUTO_CHECK_INTERVAL_MS - 1); }); // just under the window
+    expect(result.current.canCheck).toBe(false);
+    expect(get.mock.calls.length).toBeLessThan(AUTO_CHECK_LIMIT);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); }); // the last check lands
+    expect(get).toHaveBeenCalledTimes(AUTO_CHECK_LIMIT);
+    expect(result.current.canCheck).toBe(true);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); }); // exhausted: no further calls
+    expect(get).toHaveBeenCalledTimes(AUTO_CHECK_LIMIT);
+  });
+
+  it("stops auto-checking once the component unmounts", async () => {
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request, "dispatched"));
+    get.mockImplementation(async (_r: string, _s: string, requestId: string) => receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, "dispatched"));
+    const { result, unmount } = hook();
+    await act(async () => { result.current.send("hello"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
+    expect(get).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("prefixes an agent-issued receipt with the agent", async () => {

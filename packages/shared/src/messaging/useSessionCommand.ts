@@ -15,6 +15,12 @@ export type SessionCommandAttempt = {
 /** Canonical command JSON is bounded to 8 KiB UTF-8, including every field. */
 export const COMMAND_MAX_BYTES = 8192;
 
+// The auto-check interval. The per-request check budget is derived from the
+// receipt's own delivery window (deliverBy - createdAt: 30s for a human sender,
+// shorter for an agent invocation) so a caller never has to click "Check
+// delivery" before the server itself would have moved the receipt on.
+export const AUTO_CHECK_INTERVAL_MS = 2000;
+
 /** The receipt line both composers show; null when there is nothing to say. */
 export function receiptCopy(receipt: LocalSessionCommandReceipt | undefined): string | null {
   if (!receipt) return null;
@@ -41,12 +47,55 @@ export function useSessionCommand(
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
+  const [autoCheckExhaustedFor, setAutoCheckExhaustedFor] = useState<string | null>(null);
   const alive = useRef(true);
   const pending = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const canSend = canSendToSession(session);
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
+
+  // A future caller passing an inline onAccessLost would otherwise re-identity
+  // every render, restarting the effect below and resetting its budget forever.
+  const onAccessLostRef = useRef(onAccessLost);
+  onAccessLostRef.current = onAccessLost;
+
+  // Auto-settle a pending/dispatched receipt in the background so "Check delivery"
+  // only ever appears once delivery is genuinely stuck (owner report: it sat there
+  // needing a click for every follow-up). Never touches `checking` or `onSent`.
+  const requestId = attempt?.request.requestId;
+  const receiptPolling = attempt?.receipt?.state === "pending" || attempt?.receipt?.state === "dispatched";
+  useEffect(() => {
+    const receipt = attempt?.receipt;
+    if (!requestId || !receiptPolling || !receipt) return;
+    // The per-request budget: enough 2s checks to cover the server's own
+    // delivery window for THIS receipt, never fewer than one.
+    const limit = Math.max(1, Math.ceil((receipt.deliverBy - receipt.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
+    let cancelled = false;
+    let count = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        count += 1;
+        try {
+          const next = await client.getLocalSessionCommand(roomId, session.sessionId, requestId);
+          if (cancelled || !alive.current) return;
+          setAttempt(current => current && current.request.requestId === requestId
+            ? { ...current, state: "received", receipt: next, error: undefined } : current);
+          if (next.state !== "pending" && next.state !== "dispatched") return; // settled; stop
+        } catch (e) {
+          if (cancelled || !alive.current) return;
+          if (e instanceof ApiError && e.status === 403) { onAccessLostRef.current(); return; }
+          // network / 5xx: swallow and just wait for the next tick
+        }
+        if (cancelled) return;
+        if (count < limit) tick(); else setAutoCheckExhaustedFor(requestId);
+      }, AUTO_CHECK_INTERVAL_MS);
+    };
+    tick();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [requestId, receiptPolling, client, roomId, session.sessionId]);
 
   async function submit(request: LocalSessionCommand) {
     if (pending.current || !canSend) return;
@@ -103,6 +152,7 @@ export function useSessionCommand(
   }
 
   const receipt = attempt?.receipt;
-  const canCheck = attempt?.state === "uncertain" || (!!receipt && ["pending", "dispatched", "unknown"].includes(receipt.state));
+  const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
+    || (receiptPolling && autoCheckExhaustedFor === requestId);
   return { attempt, receipt, receiptText: receiptCopy(receipt), canSend, locked, checking, canCheck, send, retry, checkDelivery };
 }

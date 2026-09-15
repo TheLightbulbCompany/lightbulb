@@ -29,6 +29,37 @@ beforeEach(() => {
   vi.clearAllMocks();
   clerk.setActive.mockResolvedValue(undefined);
   clerk.update.mockResolvedValue(undefined);
+  window.sessionStorage.clear();
+});
+describe("a join link parked in this tab", () => {
+  const key = "lightbulb:workspace-join:org_join";
+  it("sends an account without a workspace back to the join page, not workspace creation", () => {
+    window.sessionStorage.setItem(key, "tok");
+    expect(renderHook(useOnboardingGate).result.current).toBe("redirecting");
+    expect(clerk.replace).toHaveBeenCalledWith("/join/org_join");
+    expect(clerk.replace).not.toHaveBeenCalledWith("/onboarding");
+  });
+  it("falls through to workspace creation once the join page has dropped the token", () => {
+    window.sessionStorage.setItem(key, "tok");
+    renderHook(useOnboardingGate).unmount();
+    window.sessionStorage.removeItem(key); // what the join page does when it settles
+    clerk.replace.mockClear();
+    renderHook(useOnboardingGate);
+    expect(clerk.replace).toHaveBeenCalledWith("/onboarding");
+    expect(clerk.replace).toHaveBeenCalledTimes(1);
+  });
+  it("ignores an empty token", () => {
+    window.sessionStorage.setItem(key, "");
+    renderHook(useOnboardingGate);
+    expect(clerk.replace).toHaveBeenCalledWith("/onboarding");
+  });
+  it("leaves an account with an active workspace alone", () => {
+    window.sessionStorage.setItem(key, "tok");
+    clerk.memberships = [{ organization: { id: "org_a" } }];
+    clerk.organization = { id: "org_a" }; clerk.orgId = "org_a";
+    expect(renderHook(useOnboardingGate).result.current).toBe("ready");
+    expect(clerk.replace).not.toHaveBeenCalled();
+  });
 });
 describe("workspace onboarding gate", () => {
   it.each(["hydrating", "signed out", "lists loading", "lists unavailable"])("holds while %s", (state) => {

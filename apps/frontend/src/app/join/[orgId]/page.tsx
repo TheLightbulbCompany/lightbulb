@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { SignInButton, useAuth, useOrganizationList } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
+import { joinTokenKey } from "@/lib/workspaceJoin";
 import { Button } from "@/components/ui/button";
 
 // =============================================================================
@@ -72,7 +73,7 @@ export default function JoinWorkspacePage() {
   const { isLoaded, isSignedIn } = useAuth();
   const { isLoaded: orgListLoaded, setActive } = useOrganizationList();
 
-  const tokenStorageKey = `lightbulb:workspace-join:${orgId}`;
+  const tokenStorageKey = joinTokenKey(orgId);
   const subscribe = useCallback(() => () => {}, []);
   const readToken = useCallback((): string | null => {
     if (typeof window === "undefined") return null;
@@ -90,7 +91,7 @@ export default function JoinWorkspacePage() {
   // Redeem is idempotent server-side, but StrictMode's double-invoke would
   // still fire two POSTs; one attempt per bump.
   const ran = useRef(-1);
-  const redeemed = useRef(false);
+  const settled = useRef(false);
 
   useEffect(() => {
     if (!token || typeof window === "undefined") return;
@@ -102,9 +103,10 @@ export default function JoinWorkspacePage() {
 
   useEffect(
     () => () => {
-      // Keep the captured token available while the success state renders.
-      // Navigation unmounts this page, which is the safe point to discard it.
-      if (redeemed.current) window.sessionStorage.removeItem(tokenStorageKey);
+      // Keep the captured token available while the outcome renders.
+      // Navigation unmounts this page, which is the safe point to discard it;
+      // after that the onboarding gate stops sending this tab back here.
+      if (settled.current) window.sessionStorage.removeItem(tokenStorageKey);
     },
     [tokenStorageKey],
   );
@@ -126,16 +128,23 @@ export default function JoinWorkspacePage() {
         // the surface that resolves memberships, so fall through to it.
         try {
           await setActive({ organization: result.org_id });
-          redeemed.current = true;
+          settled.current = true;
           router.push("/chat");
         } catch {
-          redeemed.current = true;
+          settled.current = true;
           router.push("/onboarding");
         }
       })
       .catch((err) => {
         if (cancelled) return;
         const { message, canRetry } = joinErrorMessage(err);
+        // Leaving through this page abandons the link (dropped on unmount). A
+        // dead link can never succeed, so drop it now too: nothing may route
+        // the tab back to it. A retryable one stays on purpose: a full page
+        // load to /chat brings an org-less tab back here to retry, not to
+        // /onboarding.
+        settled.current = true;
+        if (!canRetry) window.sessionStorage.removeItem(tokenStorageKey);
         setPhase({ kind: "failed", message, canRetry });
       });
 
@@ -180,7 +189,8 @@ export default function JoinWorkspacePage() {
     );
   }
 
-  if (!token) {
+  // A dead link's token is dropped on failure; keep showing why.
+  if (!token && phase.kind !== "failed") {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <h1 className="font-serif text-2xl text-midnight">Couldn&apos;t join</h1>
@@ -196,7 +206,14 @@ export default function JoinWorkspacePage() {
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <h1 className="font-serif text-2xl text-midnight">Join this workspace</h1>
         <p className="text-ui text-midnight-muted">Sign in first, then we&apos;ll add you.</p>
-        <SignInButton mode="modal">
+        {/* A brand-new Google/Apple account finishes its sign-up on /sign-in's
+            SSO callback, whose default is /chat. Pin both redirects back here,
+            where the parked token is waiting. The path carries no token. */}
+        <SignInButton
+          mode="modal"
+          forceRedirectUrl={`/join/${encodeURIComponent(orgId)}`}
+          signUpForceRedirectUrl={`/join/${encodeURIComponent(orgId)}`}
+        >
           <Button type="button">Sign in to join</Button>
         </SignInButton>
       </main>

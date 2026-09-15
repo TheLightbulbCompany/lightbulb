@@ -22,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
+from core.auth import is_org_owner_id  # noqa: F401  # consumed by ensure_vendor_room (next task)
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
@@ -183,6 +185,12 @@ class RoomSummary(ContractModel):
     # and is only needed for the room actually being subscribed.
     members: list[RoomMember] = []
     last_read_seq: int = Field(ge=0, default=0)
+    # The ROOM's opaque AppSync segment: a shared channel lives in the owning
+    # workspace, so a foreign member's client must subscribe with this, not its
+    # own. None only on rows written before the segment was stamped.
+    workspace_id: uuid.UUID | None = None
+    # The platform-managed channel shared with the Lightbulb workspace.
+    shared: bool = False
 
 
 class RoomDetail(RoomSummary):
@@ -1082,6 +1090,8 @@ def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, 
         "muted": bool(member.get("muted")),
         "section_id": member.get("sectionId"),
         "topic": meta.get("topic"),
+        "workspace_id": meta.get("workspaceId"),
+        "shared": is_vendor_room(meta),
     }
 
 
@@ -1183,6 +1193,18 @@ async def put_sections(auth: AuthContext, request: SectionsRequest) -> RoomListR
 def default_room_id(owner_id: str) -> str:
     """Stable identity for the one fresh-workspace general room."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
+
+
+def is_vendor_room(meta: dict) -> bool:
+    """The one channel a customer shares with the vendor org — by id, never by a stored flag."""
+    return bool(settings.VENDOR_ORG_ID) and meta.get("roomId") == messaging_repo.vendor_room_id(
+        meta.get("ownerId") or ""
+    )
+
+
+def _deny_vendor_human_change(meta: dict, kind: str) -> None:
+    if kind == "human" and is_vendor_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
 def _emit_room_created(owner_id: str, actor_user_id: str, kind: str, added: list[dict], *, by: str) -> None:
@@ -1344,6 +1366,8 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     # merged to main — this generalizes the same guard to updates-scoping.)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
+    if "name" in updates and is_vendor_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
     if not updates:
         return await _room_detail(meta, auth.user_id)
     try:
@@ -1384,6 +1408,7 @@ async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsReq
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     meta, actor = await require_room_admin(owner_id, auth.user_id, room_id)
+    _deny_vendor_human_change(meta, request.kind)
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
@@ -1416,6 +1441,7 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
         raise ApiProblem("INVALID_REQUEST", "Invalid member kind.")
     owner_id = resolve_owner_id(auth)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
+    _deny_vendor_human_change(meta, kind)
     target = await messaging_repo.get_member(room_id, kind, member_id)
     if target is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Room member not found.")
@@ -1429,6 +1455,7 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
     first — room deletion is out of scope, so this is a hard refusal."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    _deny_vendor_human_change(meta, "human")
     if member.get("role") == "owner":
         raise ApiProblem(
             "INVALID_REQUEST",

@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import AsyncMock, call
 
 import pytest
+from core.auth import AuthContext
 from core.services import messaging
 from core.services.messaging import ApiProblem
 
@@ -97,3 +98,79 @@ async def test_revoking_an_org_membership_only_touches_rooms_where_that_org_is_h
     removed.reset_mock()
     await messaging.revoke_human_membership(CUSTOMER, "user_v")
     removed.assert_not_awaited()
+
+
+@pytest.fixture
+def vendor(monkeypatch):
+    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", VENDOR)
+    return VENDOR
+
+
+def test_vendor_room_is_recognised_by_its_deterministic_id(vendor):
+    room_id = messaging.messaging_repo.vendor_room_id(CUSTOMER)
+    assert messaging.is_vendor_room({"roomId": room_id, "ownerId": CUSTOMER})
+    assert not messaging.is_vendor_room({"roomId": ROOM, "ownerId": CUSTOMER})
+    fields = messaging._room_summary_fields({**META, "roomId": room_id}, _human("user_c", CUSTOMER), 0)
+    assert fields["shared"] is True and fields["workspace_id"] == META["workspaceId"]
+    assert messaging._room_summary_fields(META, _human("user_c", CUSTOMER), 0)["shared"] is False
+
+
+def test_feature_off_means_no_room_is_ever_shared(monkeypatch):
+    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "")
+    assert not messaging.is_vendor_room(
+        {"roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER), "ownerId": CUSTOMER}
+    )
+
+
+@pytest.mark.asyncio
+async def test_vendor_room_membership_and_name_are_platform_managed(vendor, monkeypatch):
+    meta = {**META, "roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER)}
+    auth = AuthContext(user_id="user_c", org_id=CUSTOMER)
+    monkeypatch.setattr(
+        messaging, "require_room_admin", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
+    )
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER))))
+    attempts = [
+        messaging.upsert_member(
+            auth,
+            meta["roomId"],
+            messaging.UpsertRoomMemberRequest(kind="human", id="user_x", role="member", listen_mode=None),
+        ),
+        messaging.remove_member(auth, meta["roomId"], "human", "user_v"),
+        messaging.leave_room(auth, meta["roomId"]),
+        messaging.patch_room(auth, meta["roomId"], messaging.PatchRoomRequest(name="renamed")),
+    ]
+    for attempt in attempts:
+        with pytest.raises(ApiProblem) as exc:
+            await attempt
+        assert exc.value.error.code == "ROOM_FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendor, monkeypatch):
+    meta = {**META, "roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER)}
+    auth = AuthContext(user_id="user_c", org_id=CUSTOMER)
+    agent = {
+        "kind": "agent",
+        "id": str(uuid.uuid4()),
+        "role": "member",
+        "listenMode": "mentions",
+        "displayName": "CEO",
+        "mentionHandle": "ceo",
+    }
+    monkeypatch.setattr(
+        messaging, "require_room_admin", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=agent))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": agent["id"], "name": "CEO"}]))
+    monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(return_value={**agent, "listenMode": "active"}))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[agent]))
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
+    result = await messaging.upsert_member(
+        auth,
+        meta["roomId"],
+        messaging.UpsertRoomMemberRequest(kind="agent", id=agent["id"], role="member", listen_mode="active"),
+    )
+    assert result == "detail"

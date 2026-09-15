@@ -1,5 +1,16 @@
 use super::*;
 
+/// Rollout sources we mirror: the terminal CLI and the ChatGPT app's bundled
+/// codex (which writes `source: "vscode"` into the same `~/.codex`). `exec`
+/// and subagent rollouts stay out.
+const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
+/// Runtimes whose rollout grammar this parser was verified against.
+const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
+
+fn accepted_version(version: &str) -> bool {
+    ACCEPTED_VERSIONS.contains(&version)
+}
+
 fn from_rollout(
     root: &Path,
     process: Process,
@@ -13,8 +24,9 @@ fn from_rollout(
         .read_line(&mut line)
         .map_err(|_| "rollout unavailable")?;
     let row: Value = serde_json::from_str(&line).map_err(|_| "rollout metadata unavailable")?;
-    if row["type"] != "session_meta" || row["payload"]["source"] != "cli" {
-        return Err("not an ordinary CLI rollout".into());
+    let source = row["payload"]["source"].as_str().unwrap_or("");
+    if row["type"] != "session_meta" || !ACCEPTED_SOURCES.contains(&source) {
+        return Err("not a Codex CLI or app rollout".into());
     }
     let conversation = row["payload"]["id"]
         .as_str()
@@ -33,7 +45,7 @@ fn from_rollout(
         socket: None,
         socket_inode: None,
         version: reported.into(),
-        restriction: (reported != "0.149.0" || reported != version)
+        restriction: (!accepted_version(reported) || reported != version)
             .then(|| "runtime-unverified".into()),
         status: status.into(),
         title,
@@ -326,7 +338,8 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
         return Ok(vec![]);
     }
     if row["type"] == "session_meta"
-        && (row["payload"]["id"] != session || row["payload"]["cli_version"] != "0.149.0")
+        && (row["payload"]["id"] != session
+            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or("")))
     {
         return Err("runtime-unverified".into());
     }
@@ -694,6 +707,10 @@ mod tests {
         let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0","source":"cli"}});
         assert!(normalize("s", &meta).unwrap().is_empty());
         assert!(normalize("other", &meta).is_err());
+        let app_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode"}});
+        assert!(normalize("s", &app_meta).unwrap().is_empty());
+        let old_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.140.0","source":"cli"}});
+        assert!(normalize("s", &old_meta).is_err());
         let ts = "2026-09-12T10:00:00.000Z";
         let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
         let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
@@ -843,6 +860,13 @@ mod tests {
         fs::write(&path, format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\",\"cwd\":\"/tmp/{long}\"}}}}\n")).unwrap();
         let bounded_cwd = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
         assert_eq!(bounded_cwd.cwd_name.unwrap().chars().count(), 128);
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        let app = from_rollout(&root, process.clone(), &path, "0.153.4").unwrap();
+        assert_eq!((app.conversation.as_str(), app.version.as_str(), app.restriction), ("app", "0.153.4", None));
+        let unverified = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        assert_eq!(unverified.restriction.as_deref(), Some("runtime-unverified"));
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"cli_version\":\"0.150.0\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.150.0").unwrap().restriction.as_deref(), Some("runtime-unverified"));
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
         assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
     }

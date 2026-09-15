@@ -77,7 +77,7 @@ export function RoomHeaderActions({
         // feedback; a background tint on top of it would be two signals.
         style={[styles.button, starScale.style]}
       >
-        <SymbolView name="star" size={18} tintColor={colors.inkSoft} />
+        <SymbolView name={starred ? "star.fill" : "star"} size={18} tintColor={colors.inkSoft} />
       </AnimatedPressable>
       <AnimatedPressable
         onPress={() => {

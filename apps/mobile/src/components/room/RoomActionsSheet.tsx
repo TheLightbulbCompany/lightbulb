@@ -1,7 +1,7 @@
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
-import { useState, } from "react";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";

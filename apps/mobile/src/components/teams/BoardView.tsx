@@ -183,7 +183,7 @@ export function BoardView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView name="icloud.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}

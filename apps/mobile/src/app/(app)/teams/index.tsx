@@ -429,7 +429,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView name="icloud.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -538,7 +538,7 @@ function ApprovalsView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView name="icloud.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -574,7 +574,7 @@ function ApprovalsView() {
       }
       ListEmptyComponent={
         <CenteredState
-          glyph={<SymbolView name="checkmark.shield" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView name="shield" size={28} tintColor={colors.mute} />}
           title="No pending approvals."
           detail="Approval requests from your agents will show up here."
         />
@@ -808,7 +808,7 @@ function InboxView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView name="icloud.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}

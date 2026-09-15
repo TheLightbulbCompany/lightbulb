@@ -56,7 +56,7 @@ export function ApprovalCard({
   const Body = (
     <View style={styles.head}>
       <SymbolView
-        name="checkmark.shield"
+        name="shield"
         size={16}
         tintColor={colors.forest}
         style={styles.headIcon}

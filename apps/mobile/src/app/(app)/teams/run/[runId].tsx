@@ -146,7 +146,7 @@ export default function RunDetailScreen() {
     return (
       <View style={[styles.page, styles.centered]}>
         <SymbolView
-          name={isSubscription ? "lock" : "icloud.slash"}
+          name={isSubscription ? "lock" : "network.slash"}
           size={28}
           tintColor={colors.mute}
         />

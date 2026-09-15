@@ -1,6 +1,6 @@
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
-import { Fragment, } from "react";
+import { Fragment } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../../config/theme";

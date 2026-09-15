@@ -1,15 +1,19 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
-import type { RoomDetail, RoomMember, RoomSummary } from "@lightbulb/shared";
+import type { LocalSession, RoomDetail, RoomMember, RoomSummary } from "@lightbulb/shared";
 
 // Every out-of-scope name a jest.mock factory reaches for is `mock`-prefixed —
 // babel-plugin-jest-hoist rejects the rest — and every reference INSIDE a
 // factory is lazy: babel lowers these `const`s to `var`, and the factory runs
 // while the screen's own import is still resolving.
 const mockPush = jest.fn();
-jest.mock("expo-router", () => ({
-  router: { push: (...args: unknown[]) => mockPush(...args) },
-}));
+jest.mock("expo-router", () => {
+  const { useEffect } = require("react");
+  return {
+    router: { push: (...args: unknown[]) => mockPush(...args) },
+    useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(cb, [cb]),
+  };
+});
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ userId: "user-a" }),
   useOrganization: () => ({ organization: null }),
@@ -85,6 +89,16 @@ const mockRefreshRooms = jest.fn();
 const mockSetRoomPrefs = jest.fn(async (_roomId: string, _prefs: unknown) => {});
 const mockMarkUnread = jest.fn(async (_roomId: string) => {});
 let mockRoomsState: Record<string, unknown> = {};
+// Only useWorkspaceSessions' shape matters here -- this suite doesn't cover the
+// sharing badge itself, just that the list still renders around it. Declared
+// OUTSIDE the mock factory so it's the same object on every render -- a fresh
+// literal per call changes `client`'s identity every render, which re-fires
+// useWorkspaceSessions' effect forever.
+const mockResourceSource = {
+  client: { listWorkspaceSessions: jest.fn(async () => ({ sessions: [] as LocalSession[] })) },
+  onEvent: () => () => {},
+  connectionRevision: 0,
+};
 jest.mock("../../../../lib/rooms", () => ({
   useMobileRooms: () => ({
     rooms: mockRooms,
@@ -95,6 +109,7 @@ jest.mock("../../../../lib/rooms", () => ({
     refreshRooms: mockRefreshRooms,
     setRoomPrefs: mockSetRoomPrefs,
     markUnread: mockMarkUnread,
+    resourceSource: mockResourceSource,
     ...mockRoomsState,
   }),
 }));
@@ -270,6 +285,28 @@ describe("Home", () => {
     await waitFor(() =>
       expect(mockSetStringAsync).toHaveBeenCalledWith(expect.stringContaining("room=r3")),
     );
+  });
+
+  it("badges a DM row whose counterpart owns a live shared session", async () => {
+    const sharingRoom = mockSummary({ roomId: "r7", kind: "dm", lastMessageAt: "2026-09-11T12:30:00Z" });
+    const sharingDetail: RoomDetail = {
+      ...sharingRoom,
+      deliveryKey: "k",
+      lastReadSeq: 0,
+      createdAt: "2026-09-11T09:00:00Z",
+      pinnedMessageIds: [],
+      members: [mockMember({ role: "owner" }), mockMember({ id: "user-c", displayName: "Dana" })],
+    };
+    mockRoomsState = { rooms: [sharingRoom], directoryRoomDetails: new Map([["r7", sharingDetail]]) };
+    const sharingSession: LocalSession = {
+      sessionId: "s1", deviceId: "mac-1", humanUserId: "user-c", provider: "claude", generation: "g1",
+      status: "idle", providerVersion: "2.1.224", controlUnavailableReason: null, activeTurnId: null,
+      capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
+      latestEventSeq: 1,
+    };
+    mockResourceSource.client.listWorkspaceSessions.mockResolvedValueOnce({ sessions: [sharingSession] });
+    await render(<Home />);
+    await waitFor(() => expect(screen.getByLabelText("Dana, sharing a terminal session")).toBeTruthy());
   });
 });
 

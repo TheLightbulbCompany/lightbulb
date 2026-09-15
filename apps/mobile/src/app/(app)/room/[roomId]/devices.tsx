@@ -1,7 +1,7 @@
 import { SymbolView } from "expo-symbols";
 import { sessionLabel, sessionStatus, useRoomResources, type LocalSession } from "@lightbulb/shared";
-import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
@@ -17,13 +17,7 @@ import { useMobileRooms } from "../../../../lib/rooms";
  */
 export default function DevicesScreen() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
-  const [focused, setFocused] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      setFocused(true);
-      return () => setFocused(false);
-    }, []),
-  );
+  const focused = useIsFocused();
   // visible: false — this is not the room; it marks nothing read (the thread screen's rule).
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false });
   const selectRoomRef = useRef(rooms.selectRoom);

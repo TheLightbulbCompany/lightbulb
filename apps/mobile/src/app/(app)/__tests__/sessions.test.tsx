@@ -8,6 +8,7 @@ jest.mock("expo-router", () => {
     router: { push: (...args: unknown[]) => mockPush(...args) },
     Stack: { Screen: () => null },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(cb, [cb]),
+    useIsFocused: () => true,
   };
 });
 jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a" }) }));

@@ -16,6 +16,7 @@ jest.mock("expo-router", () => {
         options?.headerRight ? options.headerRight() : null,
     },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
+    useIsFocused: () => true,
     useLocalSearchParams: () => ({ roomId: "room-1", sessionId: "sess-1" }),
   };
 });

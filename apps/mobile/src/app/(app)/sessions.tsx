@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
-import { router, Stack, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { router, Stack, useIsFocused } from "expo-router";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
@@ -18,13 +18,7 @@ import { useMobileRooms } from "../../lib/rooms";
  */
 export default function SharedSessionsScreen() {
   const { userId } = useAuth();
-  const [focused, setFocused] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      setFocused(true);
-      return () => setFocused(false);
-    }, []),
-  );
+  const focused = useIsFocused();
   // visible: false — this list belongs to no single room, so it marks nothing read.
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const { sessions, error, loading, refresh } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });

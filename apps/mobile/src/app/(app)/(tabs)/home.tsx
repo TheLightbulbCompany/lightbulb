@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import { roomDisplayName, useWorkspaceSessions, type RoomSummary } from "@lightbulb/shared";
-import { router, useFocusEffect } from "expo-router";
+import { router, useIsFocused } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -70,13 +70,7 @@ function ListSkeleton() {
  */
 export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const { userId } = useAuth();
-  const [focused, setFocused] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      setFocused(true);
-      return () => setFocused(false);
-    }, []),
-  );
+  const focused = useIsFocused();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
   const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
   const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);

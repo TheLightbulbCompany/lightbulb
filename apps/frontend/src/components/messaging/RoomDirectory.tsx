@@ -272,6 +272,27 @@ function DirectoryContent({
     writeSidebarPrefs(ownerScopeId, next);
   };
 
+  function toggleCollapsed(groupId: string) {
+    updatePrefs({ collapsed: prefs.collapsed.includes(groupId) ? prefs.collapsed.filter((id) => id !== groupId) : [...prefs.collapsed, groupId] });
+  }
+
+  // Shared by the Sessions group and every room group below: collapse
+  // button, aria wiring, chevron, label, and an optional trailing badge.
+  function groupHeader({ id: groupId, label, listId, collapsed, grip, badge }: {
+    id: string; label: string; listId: string; collapsed: boolean; grip?: ReactNode; badge?: ReactNode;
+  }) {
+    return <div className="room-directory-group-header">
+      {grip}
+      <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId} data-group-id={groupId}
+        aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
+        onClick={() => toggleCollapsed(groupId)}>
+        {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+      </Button>
+      <h3 className="room-directory-group">{label}</h3>
+      {badge}
+    </div>;
+  }
+
   function selectNextUnread() {
     const next = nextUnreadRoomId(rooms, currentRoomId ?? null, 1);
     if (next) onSelectRoom(next);
@@ -352,15 +373,10 @@ function DirectoryContent({
       const collapsed = prefs.collapsed.includes("sessions");
       const listId = `${id}-group-sessions`;
       return <section aria-label="Sessions">
-        <div className="room-directory-group-header">
-          <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId} data-group-id="sessions"
-            aria-label={`${collapsed ? "Expand" : "Collapse"} Sessions`}
-            onClick={() => updatePrefs({ collapsed: collapsed ? prefs.collapsed.filter((groupId) => groupId !== "sessions") : [...prefs.collapsed, "sessions"] })}>
-            {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
-          </Button>
-          <h3 className="room-directory-group">Sessions</h3>
-          {collapsed && <span className="room-count" aria-label={`${sessions.length} live session${sessions.length === 1 ? "" : "s"}`}>{sessions.length}</span>}
-        </div>
+        {groupHeader({
+          id: "sessions", label: "Sessions", listId, collapsed,
+          badge: collapsed && <span className="room-count" aria-label={`${sessions.length} live session${sessions.length === 1 ? "" : "s"}`}>{sessions.length}</span>,
+        })}
         {/* Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared). */}
         {!collapsed && <ul id={listId}>{sessions.map(({ session, ownerName, own }) => {
           const label = sessionLabel(session);
@@ -399,16 +415,10 @@ function DirectoryContent({
             ? unreadOf(right) - unreadOf(left) : left.label.localeCompare(right.label));
         }
         return <>
-        <div className="room-directory-group-header">
-          {grip}
-          <Button variant="ghost" size="icon-sm" aria-expanded={!collapsed} aria-controls={listId} data-group-id={group.id}
-            aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.label}`}
-            onClick={() => updatePrefs({ collapsed: collapsed ? prefs.collapsed.filter((groupId) => groupId !== group.id) : [...prefs.collapsed, group.id] })}>
-            {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
-          </Button>
-          <h3 className="room-directory-group">{group.label}</h3>
-          {collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>}
-        </div>
+        {groupHeader({
+          id: group.id, label: group.label, listId, collapsed, grip,
+          badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
+        })}
         <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
           // A roster row is someone with no DM yet. It carries no overflow menu
           // (star, mute, mark-unread and copy-link all need a room), but it

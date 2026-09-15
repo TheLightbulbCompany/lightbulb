@@ -840,11 +840,20 @@ describe("strict LightbulbRoomIngress", () => {
     const summary = { sessionId: "33333333-3333-4333-8333-333333333333", humanUserId: "user_1", displayName: "Founder", provider: "claude", cwdName: "repo", title: "Fix login", status: "busy", latestEventSeq: 12, lastEventAt: "2026-09-14T10:00:00Z" };
     const parsed = parseIngress({ ...ingress(), sessions: [summary] });
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.value.sessions).toEqual([summary]);
-    const absent = parseIngress(ingress());
-    if (absent.ok) expect(absent.value.sessions).toEqual([]);
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.value.sessions).toEqual([summary]);
+
+    const { sessions: _omit, ...withoutSessions } = ingress();
+    const absent = parseIngress(withoutSessions);
+    expect(absent.ok).toBe(true);
+    if (!absent.ok) throw new Error(absent.error);
+    expect(absent.value.sessions).toEqual([]);
+
     const odd = parseIngress({ ...ingress(), sessions: [{ ...summary, status: "sleeping", cwdName: null, title: null, lastEventAt: null }] });
-    if (odd.ok) expect(odd.value.sessions[0]).toMatchObject({ status: "unknown", cwdName: null, title: null, lastEventAt: null });
+    expect(odd.ok).toBe(true);
+    if (!odd.ok) throw new Error(odd.error);
+    expect(odd.value.sessions[0]).toMatchObject({ status: "unknown", cwdName: null, title: null, lastEventAt: null });
+
     expect(parseIngress({ ...ingress(), sessions: Array.from({ length: 25 }, () => summary) }).ok).toBe(false);
     expect(parseIngress({ ...ingress(), sessions: [{ ...summary, provider: "gemini" }] }).ok).toBe(false);
   });

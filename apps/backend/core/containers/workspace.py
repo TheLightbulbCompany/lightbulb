@@ -1238,6 +1238,21 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
     env (``apps/infra/lib/stacks/container-stack.ts``) — without it doctor
     aborts at its native-service ownership inspection and the migration never
     runs.
+
+    2026-09-15 — the STORE moved too, which is why this function's own delete
+    finds nothing on 9.3. The shared store is no longer
+    ``agents/main/agent/openclaw-agent.sqlite``: 9.3 relocates it into the
+    state database (``state/openclaw.sqlite`` → ``config_machine_state`` row
+    ``authProfiles.store``, with ``auth.sharedStore`` recording
+    ``{"location":"state-db"}``), and a fresh 9.3 install has no
+    ``agents/main`` at all. Both live on container-local disk, so the sentinel
+    remains the only way to clear either — the boot script clears the
+    relocated row as well (``isol8-local-sqlite-boot.sh`` step 5). Without
+    that, doctor's import KEEPS the stored profile
+    (``mergeImportedAuthProfiles`` replaces one only when the stored
+    credential is malformed, and a spent token is still well-formed), so a
+    genuine new login is ignored. That is also why a reprovision must NOT
+    clear: the container's rotated token is fresher than the backend's seed.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")

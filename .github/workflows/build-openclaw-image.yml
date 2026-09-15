@@ -184,15 +184,14 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: [boot-chain-smoke, image-proof-tests]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    # A fixed Blacksmith label, deliberately NOT `vars.CI_RUNNER`. Every build
-    # on a standard 7 GB hosted runner since the `doctor` compile-cache bake
-    # was restored OOM-killed the VM ("the hosted runner lost communication
-    # with the server", no failed step, no logs). This job then lived on the
-    # self-hosted isol8-wsl box, which stalled every image build whenever the
-    # box was offline (2026-09-15: two builds queued with no runner). The
-    # 16 vCPU Blacksmith VM has 64 GB of memory, so the OOM does not apply;
-    # there is no warm layer cache, so a build runs cold (~25 min).
-    runs-on: blacksmith-16vcpu-ubuntu-2204
+    # Pinned to the box, deliberately NOT `vars.CI_RUNNER`. Every build on a
+    # standard hosted runner since the `doctor` compile-cache bake was restored
+    # OOM-killed the 7 GB VM — the annotation reads "the hosted runner lost
+    # communication with the server", with no failed step and no uploaded logs.
+    # The box has the memory, the disk, and a warm layer cache (~3 min vs ~25
+    # min cold). A 16 vCPU Blacksmith VM also works (see #2634/#2636) and is
+    # the fallback when the box is offline: builds sit queued with no runner.
+    runs-on: [self-hosted, isol8-wsl]
     # A hang bound, not a runtime budget: the box finishes in ~3m warm, while
     # a cold from-scratch rebuild of this ~7.8 GB image (bake included) ran
     # past 25m on a hosted runner.

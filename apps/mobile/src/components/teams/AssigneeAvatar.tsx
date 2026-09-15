@@ -1,4 +1,5 @@
-import { Image, StyleSheet, Text, View } from "react-native";
+import { Image } from "expo-image";
+import { StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts } from "../../config/theme";
 import type { AssigneeDisplay } from "../../lib/teamsData";
@@ -8,9 +9,8 @@ import type { AssigneeDisplay } from "../../lib/teamsData";
 // the deeper surface step; human members render up to two initials on the
 // lighter step, or their Clerk photo when one is present. Two steps, because
 // one initial vs two is not a distinction for a single-word human name. The
-// photo is drawn OVER the initials with the built-in RN Image (no native/remote
-// image dep), so a failed/slow image load simply falls back to the initials
-// underneath — no error state needed.
+// photo is drawn OVER the initials with expo-image, so a failed/slow image load
+// simply falls back to the initials underneath — no error state needed.
 // ---------------------------------------------------------------------------
 
 /** Single uppercase initial for agents; first+last initials for people. */

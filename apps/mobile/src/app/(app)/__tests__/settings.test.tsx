@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
 // Per-test billing fixture the mocked api client serves (factory is lazy —
-// the closure reads this at request time, after each test assigns it).
-let mockAccountFixture: Record<string, unknown>;
+// the closure reads this at request time, after each test assigns it). An
+// Error is served as a failed request.
+let mockAccountFixture: Record<string, unknown> | Error;
 const mockPost = jest.fn(async () => ({ status: "deleted" }));
 
 jest.mock("@clerk/clerk-expo", () => ({
@@ -30,9 +31,11 @@ jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({
     get: (path: string) =>
-      path === "/billing/account"
-        ? Promise.resolve(mockAccountFixture)
-        : Promise.reject(new Error("unavailable")),
+      path !== "/billing/account"
+        ? Promise.reject(new Error("unavailable"))
+        : mockAccountFixture instanceof Error
+          ? Promise.reject(mockAccountFixture)
+          : Promise.resolve(mockAccountFixture),
     del: () => Promise.resolve(),
     post: mockPost,
   }),
@@ -57,6 +60,23 @@ describe("Settings plan card", () => {
     expect(screen.getByText("Included with the free plan")).toBeTruthy();
     expect(screen.queryByText(/trial_local/i)).toBeNull();
     expect(screen.queryByText(/No provider selected/)).toBeNull();
+  });
+
+  it("says when billing fails to load, and Retry asks again", async () => {
+    mockAccountFixture = new Error("offline");
+    await render(<Settings />);
+    expect(await screen.findByText("Couldn’t load billing: offline")).toBeTruthy();
+
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+    };
+    await fireEvent.press(screen.getByText("Retry"));
+    expect(await screen.findByText("Lightbulb")).toBeTruthy();
+    expect(screen.queryByText(/Couldn’t load billing/)).toBeNull();
   });
 
   it("renders a paid account", async () => {

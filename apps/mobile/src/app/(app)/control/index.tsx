@@ -1,10 +1,8 @@
-import { SymbolView, type SFSymbol } from "expo-symbols";
+import { Section } from "@expo/ui/swift-ui";
+import type { SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
-import { Fragment } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../../config/theme";
-
+import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 
 interface PanelRow {
   key: string;
@@ -87,100 +85,18 @@ const PANELS: PanelRow[] = [
 
 export default function ControlIndex() {
   return (
-    <ScrollView
-      contentInsetAdjustmentBehavior="automatic"
-      style={styles.page}
-      contentContainerStyle={styles.content}
-    >
-      <Text style={styles.overline}>PANELS</Text>
-      <View style={styles.card}>
-        {PANELS.map((panel, i) => (
-          <Fragment key={panel.key}>
-            {i > 0 && <View style={styles.divider} />}
-            <Pressable
-              style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-              onPress={() => router.push(panel.route)}
-              accessibilityRole="button"
-              accessibilityLabel={panel.label}
-            >
-              <View style={styles.iconTile}>
-                <SymbolView accessibilityElementsHidden name={panel.icon} size={16} tintColor={colors.forest} />
-              </View>
-              <View style={styles.rowText}>
-                <Text style={styles.rowLabel} numberOfLines={1}>
-                  {panel.label}
-                </Text>
-                <Text style={styles.rowDescription} numberOfLines={1}>
-                  {panel.description}
-                </Text>
-              </View>
-              <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
-            </Pressable>
-          </Fragment>
+    <GroupedList>
+      <Section title="Panels">
+        {PANELS.map((panel) => (
+          <NavigationRow
+            key={panel.key}
+            title={panel.label}
+            subtitle={panel.description}
+            icon={panel.icon}
+            onPress={() => router.push(panel.route)}
+          />
         ))}
-      </View>
-    </ScrollView>
+      </Section>
+    </GroupedList>
   );
 }
-
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: {
-    padding: spacing.lg,
-    gap: spacing.sm,
-    paddingBottom: spacing.xl,
-  },
-  overline: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.mute,
-    paddingHorizontal: spacing.xs,
-  },
-
-  // Grouped white card (settings card pattern; radius lg, hairline edge).
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    overflow: "hidden",
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.edge,
-    marginLeft: spacing.lg,
-  },
-
-  // Panel row (spec §5 row: icon + text + chevron).
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-  },
-  rowPressed: { backgroundColor: colors.creamPressed },
-  iconTile: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.md,
-    backgroundColor: colors.forestTint,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  rowText: { flex: 1, gap: 2 },
-  rowLabel: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  rowDescription: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-});

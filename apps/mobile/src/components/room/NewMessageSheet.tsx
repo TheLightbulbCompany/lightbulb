@@ -10,6 +10,7 @@ import { useMobileRooms } from "../../lib/rooms";
 import { fetchMembers, useTeamsConfig } from "../../lib/teamsData";
 import { useLiveEvents } from "../../providers/live-events";
 import { BottomSheet } from "../ui/BottomSheet";
+import { SegmentedControl } from "../ui/SegmentedControl";
 import { Avatar } from "./Avatar";
 
 /** One pickable counterpart — a workspace human or one of the owner's agents. */
@@ -241,24 +242,13 @@ export function NewMessageSheet({
     >
       <View style={styles.card}>
         <Text style={styles.overline}>NEW MESSAGE</Text>
-        <View style={styles.toggle}>
-          {SEGMENTS.map((segment) => {
-            const active = mode === segment.key;
-            return (
-              <Pressable
-                key={segment.key}
-                onPress={() => changeMode(segment.key)}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                style={[styles.segment, active && styles.segmentActive]}
-              >
-                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
-                  {segment.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        <SegmentedControl
+          label="Conversation type"
+          segments={SEGMENTS}
+          value={mode}
+          onChange={changeMode}
+          style={styles.toggle}
+        />
         {mode === "channel" ? (
           <>
             <Text style={styles.fieldLabel}>Channel name</Text>
@@ -367,32 +357,9 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.sm,
   },
   toggle: {
-    flexDirection: "row",
     marginHorizontal: spacing.lg,
     marginBottom: spacing.sm,
-    padding: spacing.xs,
-    gap: spacing.xs,
-    borderRadius: radii.md,
-    backgroundColor: colors.creamDeeper,
   },
-  segment: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
-  },
-  segmentActive: {
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.edge,
-  },
-  segmentText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 17,
-    color: colors.mute,
-  },
-  segmentTextActive: { color: colors.ink },
   fieldLabel: {
     ...type.caption,
     fontFamily: fonts.sansMedium,

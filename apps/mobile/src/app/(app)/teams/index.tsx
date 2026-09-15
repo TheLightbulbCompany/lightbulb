@@ -18,6 +18,7 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { ApprovalCard } from "../../../components/teams/ApprovalCard";
 import { BoardView } from "../../../components/teams/BoardView";
 import { CreateIssueSheet } from "../../../components/teams/CreateIssueSheet";
+import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
   formatCents,
@@ -167,52 +168,21 @@ function OutlineButton({
 }
 
 // ---------------------------------------------------------------------------
-// Mode toggle — Inbox (flat assigned list) vs Board (status-grouped, movable).
+// Modes — Overview, Inbox (flat assigned list), Board (status-grouped,
+// movable) and Approvals, switched by iOS's own segmented control.
 // ---------------------------------------------------------------------------
 
 type TeamsMode = "overview" | "inbox" | "board" | "approvals";
 
-function SegmentedToggle({
-  mode,
-  onChange,
-}: {
-  mode: TeamsMode;
-  onChange: (mode: TeamsMode) => void;
-}) {
-  const segments: { key: TeamsMode; label: string }[] = [
-    { key: "overview", label: "Overview" },
-    { key: "inbox", label: "Inbox" },
-    { key: "board", label: "Board" },
-    { key: "approvals", label: "Approvals" },
-  ];
-  return (
-    <View style={styles.toggle}>
-      {segments.map((segment) => {
-        const active = mode === segment.key;
-        return (
-          <Pressable
-            key={segment.key}
-            style={[styles.segment, active && styles.segmentActive]}
-            onPress={() => onChange(segment.key)}
-            accessibilityRole="button"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={`${segment.label} view`}
-          >
-            <Text
-              style={[styles.segmentText, active && styles.segmentTextActive]}
-              numberOfLines={1}
-            >
-              {segment.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
+const MODES: readonly { key: TeamsMode; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "inbox", label: "Inbox" },
+  { key: "board", label: "Board" },
+  { key: "approvals", label: "Approvals" },
+];
 
 // ---------------------------------------------------------------------------
-// Screen — hosts the Inbox / Board toggle and the two modes.
+// Screen — hosts the mode switcher and the four modes.
 // ---------------------------------------------------------------------------
 
 export default function TeamsScreen() {
@@ -262,7 +232,7 @@ export default function TeamsScreen() {
         }}
       />
       <View style={styles.toggleBar}>
-        <SegmentedToggle mode={mode} onChange={setMode} />
+        <SegmentedControl label="Teams view" segments={MODES} value={mode} onChange={setMode} />
       </View>
       {mode === "overview" ? (
         <DashboardView onOpenApprovals={() => setMode("approvals")} />
@@ -888,40 +858,13 @@ const styles = StyleSheet.create({
   },
   headerBtnPressed: { opacity: 0.55 },
 
-  // Inbox / Board segmented toggle.
+  // The mode switcher's strip.
   toggleBar: {
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     paddingBottom: spacing.sm,
     backgroundColor: colors.cream,
   },
-  toggle: {
-    flexDirection: "row",
-    alignSelf: "stretch",
-    backgroundColor: colors.creamDeeper,
-    borderRadius: radii.md,
-    padding: spacing.xs,
-    gap: spacing.xs,
-  },
-  segment: {
-    flex: 1,
-    alignItems: "center",
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
-  },
-  segmentActive: {
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.edge,
-  },
-  segmentText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 17,
-    color: colors.mute,
-  },
-  segmentTextActive: { color: colors.ink },
 
   page: { flex: 1, backgroundColor: colors.cream },
   listContent: {

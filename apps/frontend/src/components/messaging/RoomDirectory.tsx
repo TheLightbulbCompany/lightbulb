@@ -399,7 +399,7 @@ function DirectoryContent({
             onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
             onMoveToSection={onSetPrefs && sections.length > 0
               ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
-            onLeave={onLeaveRoom && room.kind === "channel" ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
+            onLeave={onLeaveRoom && room.kind === "channel" && !room.shared ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
             onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
         })}</ul>
       </>;

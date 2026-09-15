@@ -84,6 +84,7 @@ export function RoomHeader({
         ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
         : <Icon size={20} aria-hidden="true" />}
       <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
+      {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
         event.preventDefault();
         void run(async () => { await onSetTopic!(topicDraft.trim() || null); }, "The topic could not be saved.", () => setEditingTopic(false));
@@ -126,7 +127,7 @@ export function RoomHeader({
         <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Conversation options"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
-          {onRenameRoom && canEditRoom && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
+          {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>
           {onLeaveRoom && canLeave && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}

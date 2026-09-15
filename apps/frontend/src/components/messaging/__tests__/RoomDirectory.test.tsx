@@ -622,3 +622,20 @@ it("locks Listening as a paid feature in the creation dialog on the free tier", 
   expect(within(mode).getByRole("option", { name: "Listening (paid plan)" })).toBeDisabled();
   expect(within(mode).getByRole("option", { name: "Mentions" })).toBeEnabled();
 });
+
+it("marks a shared channel and offers no Leave on it", async () => {
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} onLeaveRoom={vi.fn()} rooms={[
+      { ...base, roomId: "own", name: "Launch" },
+      { ...base, roomId: "ext", name: "lightbulb-acme", shared: true },
+    ]} />);
+  const shared = screen.getByRole("button", { name: /^lightbulb-acme/ });
+  expect(shared).toHaveTextContent("Shared");
+  expect(within(shared).getByText("Shared")).toHaveAttribute("title", "Shared between this workspace and Lightbulb");
+  expect(screen.getByRole("button", { name: /^Launch/ })).not.toHaveTextContent("Shared");
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
+  expect(await screen.findByRole("menuitem", { name: /Leave/ })).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for lightbulb-acme" }));
+  expect(screen.queryByRole("menuitem", { name: /Leave/ })).not.toBeInTheDocument();
+});

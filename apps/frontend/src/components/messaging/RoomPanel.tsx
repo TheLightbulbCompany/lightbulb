@@ -328,11 +328,11 @@ function RoomContent({
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
-  const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember;
+  const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember && !visibleRoom.shared;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
   const canEditRoom = visibleRoom?.kind !== "dm" && isRoomAdmin;
-  const canLeaveRoom = visibleRoom?.kind === "channel" && viewer?.role !== "owner";
+  const canLeaveRoom = visibleRoom?.kind === "channel" && viewer?.role !== "owner" && !visibleRoom?.shared;
   const removalTarget = management
     ? participants.find((member) => member.kind === management.kind && member.id === management.id && member.role !== "owner")
     : undefined;
@@ -620,7 +620,7 @@ function RoomContent({
             <ParticipantAvatar participant={participant} size="sm" />
             <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1 min-w-24" />
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
-            {canManageMembers && onRemoveMember && participant.role !== "owner" && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
+            {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
             {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={isRoomAdmin ? onListenModeChange : undefined} listeningAvailable={listeningAvailable} />}
           </li>)}</ul>

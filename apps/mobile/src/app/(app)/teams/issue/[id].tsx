@@ -4,15 +4,15 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState, type ReactElement, type ReactNode } from "react";
 import {
   Animated,
-  KeyboardAvoidingView,
   Linking,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { MessageMarkdown } from "../../../../components/chat/MessageMarkdown";
 import { usePulse } from "../../../../components/chat/usePulse";
@@ -260,6 +260,7 @@ function ChildCard({ child }: { child: ChildIssue }) {
 // ---------------------------------------------------------------------------
 
 export default function IssueDetailScreen() {
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ id: string; title?: string }>();
   const id = typeof params.id === "string" ? params.id : undefined;
   const seedTitle = typeof params.title === "string" ? params.title : undefined;
@@ -354,8 +355,13 @@ export default function IssueDetailScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.page}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={90}
+      behavior="padding"
+      // Measured, not guessed: the old `keyboardVerticalOffset={90}` stood in
+      // for a header that is 103-116pt tall, so the comment box sat 13-26pt
+      // under the keyboard. Same pairing as the room screen — the composer's
+      // own `insets.bottom` padding tucks behind the keyboard.
+      automaticOffset
+      keyboardVerticalOffset={-insets.bottom}
     >
       <Stack.Screen options={{ title: headerTitle }} />
       <ScrollView

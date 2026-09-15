@@ -8,6 +8,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 
@@ -24,6 +25,7 @@ export interface CommentComposerProps {
 }
 
 export function CommentComposer({ onSubmit }: CommentComposerProps) {
+  const insets = useSafeAreaInsets();
   const [value, setValue] = useState("");
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -44,7 +46,9 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
   };
 
   return (
-    <View style={styles.outer}>
+    // Clears the home indicator at rest; with the keyboard up the screen's
+    // KeyboardAvoidingView tucks `insets.bottom` behind it, leaving `sm`.
+    <View style={[styles.outer, { paddingBottom: insets.bottom + spacing.sm }]}>
       <View style={[styles.card, focused && styles.cardFocused]}>
         <View style={styles.inputZone}>
           <TextInput
@@ -90,7 +94,6 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
 const styles = StyleSheet.create({
   outer: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
     paddingTop: spacing.sm,
     backgroundColor: colors.cream,
     borderTopWidth: 1,

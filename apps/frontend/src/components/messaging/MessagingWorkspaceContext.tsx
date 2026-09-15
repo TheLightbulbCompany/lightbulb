@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -20,6 +20,7 @@ import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
+import type { SessionFocusTarget } from "./SessionFocus";
 import type { SidebarSession } from "./roomSections";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
@@ -29,7 +30,12 @@ export interface MessagingWorkspaceValue {
   roomProps: RoomPanelProps | null;
   selectAgentDm: (agentId: string) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
-  openSession: (roomId: string, sessionId: string) => void;
+  openSession: (sessionId: string, options: { from: "sidebar" | "link" | "room"; roomId?: string }) => Promise<void>;
+  sessionFocus: SessionFocusTarget | null;
+  closeSession: () => void;
+  currentUserId: string;
+  resourceSource: RoomResourceSource | undefined;
+  scope: string;
   workspaceSessions: LocalSession[];
 }
 
@@ -479,14 +485,41 @@ export function MessagingWorkspaceProvider({
   const [sessionTarget, setSessionTarget] = useState<{ roomId: string; sessionId: string; nonce: number } | null>(null);
   const sessionNonce = useRef(0);
   const selectRoom = rooms.selectRoom;
-  const openSession = useCallback((roomId: string, sessionId: string) => {
-    selectRoom(roomId);
+  const selectDm = rooms.selectDm;
+  // Focus placement: a session opened from the sidebar or a link takes the
+  // middle of the panel with the sharer's DM beside it, rather than the room's
+  // right column (which is where a session opened from a room stays).
+  const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
+  const closeSession = useCallback(() => setSessionFocus(null), []);
+  const openSession = useCallback(async (sessionId: string, { from, roomId }: { from: "sidebar" | "link" | "room"; roomId?: string }) => {
+    const live = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (from === "room" || !live) {
+      // Room placement, or a link to a session that is no longer live (ended history lives in the room list).
+      // ponytail: a link opened before the first session list lands also comes here; hold the intent until it settles if that bites.
+      if (!roomId) return;
+      selectRoom(roomId);
+      setThreadId(null);
+      setTarget(null);
+      setSessionFocus(null);
+      setSessionTarget({ roomId, sessionId, nonce: ++sessionNonce.current });
+      return;
+    }
+    const own = live.humanUserId === userId;
+    const contextRoom = own
+      ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
+      // A failed resolve is already on screen as selectRoomError.
+      : await selectDm({ kind: "human", id: live.humanUserId }, { activate: true }).catch(() => null);
+    // null: the resolve failed, or a room was picked while it ran (useRooms
+    // answers null when superseded). Either way the owner is elsewhere now.
+    if (!own && !contextRoom) return;
     setThreadId(null);
     setTarget(null);
-    setSessionTarget({ roomId, sessionId, nonce: ++sessionNonce.current });
-  }, [selectRoom]);
+    setSessionTarget(null);
+    setSessionFocus({ sessionId, ownerUserId: live.humanUserId, ownerName: own ? "You" : humanName(live.humanUserId), roomId: contextRoom });
+  }, [workspaceSessions.sessions, userId, rooms.activeRoomId, rooms.rooms, selectDm, selectRoom, humanName]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     setSessionTarget(null);
+    setSessionFocus(null);
     selectRoom(roomId);
     setTarget({ roomId, messageId });
   }, [selectRoom]);
@@ -532,8 +565,10 @@ export function MessagingWorkspaceProvider({
     participants: directoryParticipants,
     state: directoryState,
     currentRoomId: rooms.activeRoomId ?? undefined,
-    onSelectRoom: rooms.selectRoom,
-    onSelectParticipant: selectParticipant,
+    // Picking any conversation leaves focus placement — the session goes back
+    // to being something you open, not the thing you are looking at.
+    onSelectRoom: (roomId: string) => { setSessionFocus(null); rooms.selectRoom(roomId); },
+    onSelectParticipant: async (participant: DirectoryParticipant) => { setSessionFocus(null); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,
     onSetPrefs: rooms.setRoomPrefs,
@@ -545,6 +580,7 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
     sessions: sidebarSessions,
+    onSelectSession: (sessionId: string) => void openSession(sessionId, { from: "sidebar" }),
   };
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
     ownerScopeId: scope,
@@ -611,6 +647,11 @@ export function MessagingWorkspaceProvider({
     selectAgentDm: rooms.selectAgentDm,
     openMessage,
     openSession,
+    sessionFocus,
+    closeSession,
+    currentUserId: userId ?? "",
+    resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
+    scope,
     workspaceSessions: workspaceSessions.sessions,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
     onOpen={(roomId, targetThreadId) => {

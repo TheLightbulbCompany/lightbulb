@@ -334,3 +334,15 @@
 .room-directory-tag { flex: none; font-size: .75rem; color: var(--muted-foreground); }
 .room-directory-faces { display: inline-flex; flex: none; }
 .room-directory-faces > :nth-child(2) { margin-left: -6px; }
+
+/* Focus placement: a session opened from the sidebar or a link takes the middle
+   of the Messages panel, with the sharer's DM in the same column the room
+   placement puts the session in. Narrow viewports keep the session only. */
+.room-session-focus { display: grid; grid-template-columns: minmax(0, 1fr); }
+.room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
+@media (min-width: 1180px) {
+  .room-session-focus:has(> .room-session-side) { grid-template-columns: minmax(0, 1fr) var(--room-session-width, 50%); }
+  .room-session-side { display: flex; width: auto; position: relative; }
+  .room-session-side > .room-panel { flex: 1; min-width: 0; }
+}
+@media (max-width: 1179px) { .room-session-side { display: none; } }

@@ -53,7 +53,7 @@ describe("ChatPanel", () => {
     const props = makeProps();
     props.params = { roomId: "r1", sessionId: "s1", sessionIntent: "1" };
     const view = render(<ChatPanel {...props} />);
-    expect(openSession).toHaveBeenLastCalledWith("r1", "s1");
+    expect(openSession).toHaveBeenLastCalledWith("s1", { from: "link", roomId: "r1" });
     view.rerender(<ChatPanel {...props} />);
     expect(openSession).toHaveBeenCalledTimes(1);
     act(() => props.api.updateParameters({ roomId: "r1", sessionId: "s1", sessionIntent: "2" }));

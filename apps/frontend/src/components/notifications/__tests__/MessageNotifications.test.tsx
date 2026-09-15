@@ -1,18 +1,21 @@
 import { act, render, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Set<(event: LiveEvent) => void>(),
   getRoom: vi.fn(), listMessages: vi.fn(), nativeNotify: vi.fn(), notifySuccess: vi.fn(), capture: vi.fn(),
+  notificationPermission: vi.fn(), isDesktopApp: vi.fn(), notifyAttention: vi.fn(),
 }));
 const messaging = { getRoom: mocks.getRoom, listMessages: mocks.listMessages };
 const onEvent = (handler: (event: LiveEvent) => void) => { mocks.handlers.add(handler); return () => mocks.handlers.delete(handler); };
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "me", orgId: "org" }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ onEvent, messaging }) }));
 vi.mock("@/lib/analytics", () => ({ capture: mocks.capture }));
-vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: mocks.nativeNotify }));
-vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess }));
+vi.mock("@/lib/desktopNotify", () => ({
+  nativeNotify: mocks.nativeNotify, notificationPermission: mocks.notificationPermission, isDesktopApp: mocks.isDesktopApp,
+}));
+vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess, notifyAttention: mocks.notifyAttention }));
 import { MessageNotifications } from "../MessageNotifications";
 
 const event: LiveEvent = {
@@ -25,6 +28,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(document, "hasFocus").mockReturnValue(false);
   mocks.nativeNotify.mockResolvedValue(false);
+  mocks.notificationPermission.mockResolvedValue(null);
+  mocks.isDesktopApp.mockReturnValue(false);
+  localStorage.clear();
   mocks.getRoom.mockResolvedValue({ kind: "dm", lastReadSeq: 0 });
   mocks.listMessages.mockResolvedValue({ messages: [{ messageId: "message", text: "Hello", author: { kind: "human", id: "other", displayName: "Alice" } }] });
 });
@@ -116,44 +122,53 @@ it("suppresses delayed hints for a message already read on another client", asyn
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
 });
 
-describe("notification-permission priming", () => {
-  class FakeNotification {
-    static permission: NotificationPermission = "default";
-    static requestPermission = vi.fn().mockResolvedValue("granted");
-  }
+describe("asking to turn notifications on", () => {
+  const renderIt = () => render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
 
-  beforeEach(() => {
-    FakeNotification.permission = "default";
-    FakeNotification.requestPermission.mockClear();
-    vi.stubGlobal("Notification", FakeNotification);
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it("requests permission on the first pointerdown, then stops listening", () => {
-    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
-    document.dispatchEvent(new Event("pointerdown"));
-    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
-    document.dispatchEvent(new Event("pointerdown"));
-    document.dispatchEvent(new Event("keydown"));
-    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+  it("asks once, and Turn on requests the permission", async () => {
+    mocks.notificationPermission.mockResolvedValue("default");
+    const view = renderIt();
+    await waitFor(() => expect(mocks.notifyAttention).toHaveBeenCalledTimes(1));
+    const [message, opts] = mocks.notifyAttention.mock.calls[0];
+    expect(message).toMatch(/notified/i);
+    expect(opts.action.label).toBe("Turn on");
+    expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
+    opts.action.onClick();
+    expect(mocks.notificationPermission).toHaveBeenCalledWith(true);
+    view.unmount();
+    renderIt();
+    await act(async () => {});
+    expect(mocks.notifyAttention).toHaveBeenCalledTimes(1);
   });
 
-  it("requests permission on the first keydown too", () => {
-    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
-    document.dispatchEvent(new Event("keydown"));
-    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+  it("does not ask when notifications are already on", async () => {
+    mocks.notificationPermission.mockResolvedValue("granted");
+    renderIt();
+    await act(async () => {});
+    expect(mocks.notifyAttention).not.toHaveBeenCalled();
   });
 
-  it("does not request when permission is already decided", () => {
-    FakeNotification.permission = "granted";
-    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
-    document.dispatchEvent(new Event("pointerdown"));
-    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+  it("leaves a browser that was told no alone — it cannot be reopened from the page", async () => {
+    mocks.notificationPermission.mockResolvedValue("denied");
+    renderIt();
+    await act(async () => {});
+    expect(mocks.notifyAttention).not.toHaveBeenCalled();
   });
 
-  it("does not throw when the Notification API is missing", () => {
-    vi.unstubAllGlobals();
-    expect(() => render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />)).not.toThrow();
-    expect(() => document.dispatchEvent(new Event("pointerdown"))).not.toThrow();
+  it("asks in the desktop app after an earlier no, since Turn on opens System Settings", async () => {
+    mocks.notificationPermission.mockResolvedValue("denied");
+    mocks.isDesktopApp.mockReturnValue(true);
+    renderIt();
+    await waitFor(() => expect(mocks.notifyAttention).toHaveBeenCalledTimes(1));
+  });
+
+  it("waits for a later visit while there is no native path (an older desktop build)", async () => {
+    const view = renderIt();
+    await act(async () => {});
+    expect(mocks.notifyAttention).not.toHaveBeenCalled();
+    view.unmount();
+    mocks.notificationPermission.mockResolvedValue("default");
+    renderIt();
+    await waitFor(() => expect(mocks.notifyAttention).toHaveBeenCalledTimes(1));
   });
 });

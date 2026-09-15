@@ -4,8 +4,8 @@ import { useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
-import { nativeNotify } from "@/lib/desktopNotify";
-import { notifySuccess } from "@/lib/notify";
+import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
+import { notifyAttention, notifySuccess } from "@/lib/notify";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
@@ -18,23 +18,31 @@ export function MessageNotifications(props: {
   const current = useRef(props);
   useEffect(() => { current.current = props; });
 
-  // Browser notification permission can only be requested from a user
-  // gesture, not from the event-handling path below. Prime it on the first
-  // click/keypress anywhere in the app, once.
+  // Ask once per person on this device, as soon as they are signed in: a
+  // sticky toast whose button is the user gesture a browser requires, and
+  // which spends the one-time macOS or browser prompt only when chosen. The
+  // desktop app can also undo an earlier "no" (Turn on opens System
+  // Settings); a page cannot reopen a browser's, so that case is left alone.
   useEffect(() => {
-    if (typeof window === "undefined" || !("Notification" in window) || window.Notification.permission !== "default") return;
-    const requestOnce = () => {
-      document.removeEventListener("pointerdown", requestOnce);
-      document.removeEventListener("keydown", requestOnce);
-      void window.Notification.requestPermission();
-    };
-    document.addEventListener("pointerdown", requestOnce);
-    document.addEventListener("keydown", requestOnce);
-    return () => {
-      document.removeEventListener("pointerdown", requestOnce);
-      document.removeEventListener("keydown", requestOnce);
-    };
-  }, []);
+    if (!userId) return;
+    let cancelled = false;
+    void notificationPermission().then((state) => {
+      if (cancelled || state === null) return; // no native path yet: ask on a later visit
+      const key = `lightbulb.notifications.asked.${userId}`;
+      try {
+        if (localStorage.getItem(key)) return;
+        localStorage.setItem(key, "1");
+      } catch {
+        return;
+      }
+      if (state === "granted" || (state === "denied" && !isDesktopApp())) return;
+      notifyAttention("Get notified when someone messages you.", {
+        dedupeKey: "notifications:ask",
+        action: { label: "Turn on", onClick: () => void notificationPermission(true) },
+      });
+    });
+    return () => { cancelled = true; };
+  }, [userId]);
 
   useEffect(() => {
     const seen = new Set<string>();

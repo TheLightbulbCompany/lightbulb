@@ -28,9 +28,10 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
-from core.repositories import container_repo, messaging_repo
+from core.repositories import billing_repo, container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
+from core.services.provision_gate import has_always_on_entitlement
 from core.services.push_service import send_push_to_user
 from core.services import run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
@@ -93,6 +94,7 @@ API_ERROR_STATUS = {
     "LOCAL_SESSION_OFFLINE": 409,
     "INVALID_REQUEST": 400,
     "ROOM_FORBIDDEN": 403,
+    "PLAN_REQUIRED": 403,
     "ROOM_NOT_FOUND": 404,
     "MEMBER_NOT_FOUND": 404,
     "MESSAGE_NOT_FOUND": 404,
@@ -129,6 +131,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "runtime.resource.invalidated",
         "paperclip.event",
         "room.member.updated",
+        "workspace.sessions.changed",
     }
 )
 LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES
@@ -1034,6 +1037,24 @@ async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list
     }
 
 
+async def listening_available(owner_id: str) -> bool:
+    """Listening (``active``) is an always-on feature — an agent answering
+    traffic nobody addressed to it — so it rides the paid predicate. A
+    free-tier room's agents reply when mentioned."""
+    return has_always_on_entitlement(await billing_repo.get_by_owner_id(owner_id))
+
+
+async def _require_listening(owner_id: str, room_kind: str | None, members: list[Any]) -> None:
+    # Every DM message is addressed, so the mode is inert there — and every
+    # DM is created with ``active`` (packages/shared useRooms.selectDm).
+    if room_kind == "dm":
+        return
+    if any(m.kind == "agent" and m.listen_mode == "active" for m in members) and not await listening_available(
+        owner_id
+    ):
+        raise ApiProblem("PLAN_REQUIRED", "Listening is part of the paid plan. Free-tier agents reply when mentioned.")
+
+
 async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tuple[dict, dict]:
     room_id = validate_uuid(room_id, label="room ID")
     meta, member = await asyncio.gather(
@@ -1252,6 +1273,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     if any(agent_id not in agents for agent_id in starter_ids.values()):
         return None
     handles = mention_handles(roster)
+    ceo_mode = "active" if await listening_available(owner_id) else "mentions"
     members = [
         {
             "kind": "human",
@@ -1269,7 +1291,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
             "displayName": agents[starter_ids[key]]["name"],
             "mentionHandle": handles[starter_ids[key]],
             "role": "member",
-            "listenMode": "active" if key == "ceo" else "mentions",
+            "listenMode": ceo_mode if key == "ceo" else "mentions",
         }
         for key in _STARTER_KEYS
     )
@@ -1485,6 +1507,7 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
         raise ApiProblem("INVALID_REQUEST", "Room members must be unique and omit the creator.")
     if len(request.members) + 1 > messaging_repo.MAX_ROOM_MEMBERS:
         raise ApiProblem("MEMBER_LIMIT", f"Rooms hold at most {messaging_repo.MAX_ROOM_MEMBERS} members.")
+    await _require_listening(owner_id, request.kind, request.members)
     roster = await load_agent_roster(owner_id) if any(member.kind == "agent" for member in request.members) else []
     members = [
         {
@@ -1582,6 +1605,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
+    await _require_listening(owner_id, meta.get("kind"), [request])
     roster = await load_agent_roster(owner_id) if request.kind == "agent" else []
     member = await _resolved_member(owner_id, request, roster)
     if request.kind == "human":

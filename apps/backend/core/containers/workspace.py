@@ -854,6 +854,11 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     the next run. After first import the in-container OAuth manager refreshes the
     token in place.
 
+    2026-09-14: on 9.3+ "the in-container process imports this file on first
+    load" is no longer true — the import is a doctor-only migration run by boot
+    ``doctor --fix``, which needs ``OPENCLAW_SERVICE_REPAIR_POLICY=external``
+    in the task env. See ``clear_default_agent_auth_profile_row``.
+
     Args:
         user_id: the container owner id (org_id for orgs, user_id personal).
         oauth_tokens: dict with required keys ``access_token`` and
@@ -1219,6 +1224,20 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
     left the sentinel waiting for a boot no caller triggered — a reconnect
     staged a fresh token that never imported (founder-org prod incident,
     2026-08). Never raises on a missing store or table.
+
+    2026-09-14 — the importer moved. Everything above describes the OpenClaw
+    6.6 contract, where the in-container process imported ``oauth.json`` on
+    first load. On 9.3+ there is NO first-load importer: the import is a
+    doctor-only migration, and an unmigrated ``oauth.json`` alongside an empty
+    ``main`` store is a HARD per-turn error
+    (``src/agents/auth-profiles/legacy-source-diagnostic.ts`` —
+    ``requires legacy credential migration``, memoized for the process
+    lifetime, so only a restart clears it). The sentinel + restart path below
+    therefore depends on boot ``doctor --fix`` completing, which in turn
+    depends on ``OPENCLAW_SERVICE_REPAIR_POLICY=external`` being in the task
+    env (``apps/infra/lib/stacks/container-stack.ts``) — without it doctor
+    aborts at its native-service ownership inspection and the migration never
+    runs.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")

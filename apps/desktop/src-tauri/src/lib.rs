@@ -1507,6 +1507,7 @@ end tell"#,
             local_mcp_remove,
             claude_export::export_claude_context,
             notify::native_notify,
+            notify::notification_permission,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
@@ -1536,8 +1537,8 @@ end tell"#,
 
             tray::create_tray(app.handle())?;
 
-            // Registers the app under System Settings → Notifications on first
-            // launch and installs the click/foreground delegate.
+            // Click/foreground delegate only. Permission is asked by the webview
+            // once someone signs in (`notify::notification_permission`).
             notify::install(app.handle());
 
             // Native sharing is an independent consented service. A missing

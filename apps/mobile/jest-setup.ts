@@ -140,7 +140,10 @@ jest.mock("expo-device", () => ({ isDevice: true }), { virtual: true });
 jest.mock(
   "expo-image-picker",
   () => ({
+    requestMediaLibraryPermissionsAsync: jest.fn(async () => ({ granted: true, status: "granted" })),
+    requestCameraPermissionsAsync: jest.fn(async () => ({ granted: true, status: "granted" })),
     launchImageLibraryAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+    launchCameraAsync: jest.fn(async () => ({ canceled: true, assets: null })),
   }),
   { virtual: true },
 );

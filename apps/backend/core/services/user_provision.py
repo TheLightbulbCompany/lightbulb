@@ -160,10 +160,11 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # ponytail: legacy personal path. Refusing here is the fence; the personal
     # legs of _reconcile_owner_seed / _ensure_paperclip_for_owner /
     # arm_nightly_ceo / provision_runner step 0 survive only because the
-    # executor's wake path still reconciles the three paid personal owners who
+    # executor's wake path still reconciles the last paid personal owners who
     # predate the 2026-09-10 cutover (resolve_owner_id already 409s them at
     # every product API). Delete those legs once they are migrated to
-    # workspaces (docs/superpowers/plans/2026-09-14-legacy-personal-owner-migration.md).
+    # workspaces (the September 2026 migration tooling is in git history:
+    # #2624 purge, #2625 workspace backfill, #2627 paying-owner migration).
     if not auth.is_org_context:
         logger.info(
             "ensure_user_ready: personal (no-org) caller user=%s refused — a workspace is required",

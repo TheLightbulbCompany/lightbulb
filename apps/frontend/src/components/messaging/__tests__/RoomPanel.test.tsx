@@ -854,3 +854,24 @@ it("jumps from a pinned message back to it in the conversation", async () => {
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
+
+it("locks Listening as a paid feature and shows a stored Listening as Mentions on the free tier", async () => {
+  const user = userEvent.setup();
+  const onListenModeChange = vi.fn();
+  render(<RoomPanel {...props} participants={[owner, { ...friday, listenMode: "active" }]} listeningAvailable={false} onListenModeChange={onListenModeChange} />);
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  const mode = details.getByRole("combobox", { name: "Response for Friday" });
+  expect(mode).toHaveValue("mentions");
+  expect(within(mode).getByRole("option", { name: "Listening (paid plan)" })).toBeDisabled();
+  expect(details.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
+});
+
+it("offers Listening normally when the workspace is subscribed", async () => {
+  const user = userEvent.setup();
+  render(<RoomPanel {...props} onListenModeChange={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  expect(within(details.getByRole("combobox", { name: "Response for Friday" })).getByRole("option", { name: "Listening" })).toBeEnabled();
+  expect(details.queryByRole("link", { name: "See plans" })).not.toBeInTheDocument();
+});

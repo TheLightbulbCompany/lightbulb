@@ -288,6 +288,7 @@ async def test_default_room_uses_complete_renamed_starter_map_once_without_recon
         ),
     )
     monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
+    monkeypatch.setattr(messaging, "listening_available", AsyncMock(return_value=True))
 
     room_id = await messaging.ensure_default_room(OWNER, USER_A)
     assert room_id == messaging.default_room_id(OWNER)

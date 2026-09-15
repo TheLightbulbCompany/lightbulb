@@ -7,10 +7,13 @@ import {
   type RoomMember,
 } from "@lightbulb/shared";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  ActionSheetIOS,
+  Alert,
   Animated,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -54,6 +57,20 @@ const PRESS_SCALE = 0.96;
 const INPUT_MAX_LINES = 5;
 
 const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
+
+type PickedPhoto = ImagePicker.ImagePickerAsset;
+
+function photoMimeType(asset: PickedPhoto): string | null {
+  if (asset.mimeType) return asset.mimeType.startsWith("image/") ? asset.mimeType : null;
+  const name = asset.fileName ?? asset.uri;
+  if (/\.jpe?g$/i.test(name)) return "image/jpeg";
+  if (/\.png$/i.test(name)) return "image/png";
+  if (/\.gif$/i.test(name)) return "image/gif";
+  if (/\.webp$/i.test(name)) return "image/webp";
+  if (/\.heic$/i.test(name)) return "image/heic";
+  if (/\.heif$/i.test(name)) return "image/heif";
+  return null;
+}
 
 function ReconnectingBanner() {
   const pulse = usePulse(true, 0.3, 700);
@@ -116,6 +133,7 @@ export function RoomComposer({
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const nextAttachmentId = useRef(0);
 
   // Focus and press live on the UI thread as shared values, not in React state:
   // the bar's hairline used to hard-swap between two StyleSheet entries on a
@@ -173,41 +191,83 @@ export function RoomComposer({
     [text, trigger],
   );
 
-  const attach = useCallback(async () => {
+  const stagePhoto = useCallback((asset: PickedPhoto) => {
     setError(null);
-    const result = await ImagePicker.launchImageLibraryAsync({
-      // Images only — the spec's non-goal is "file attachments beyond images".
-      mediaTypes: ["images"],
-      allowsMultipleSelection: false,
-      quality: 1,
-    });
-    const asset = result.canceled ? undefined : result.assets?.[0];
-    if (!asset) return;
+    const mimeType = photoMimeType(asset);
+    if (!mimeType) {
+      setError(
+        "That file isn't a supported photo. Choose a JPEG, PNG, GIF, WebP, HEIC, or HEIF image.",
+      );
+      return;
+    }
     const candidate: PendingAttachment = {
-      // Placeholder id: the real one is the attachment id the upload returns.
-      id: asset.uri,
+      id: `${asset.uri}#${nextAttachmentId.current++}`,
       name: asset.fileName ?? "photo",
       size: asset.fileSize ?? 0,
       uri: asset.uri,
-      mimeType: asset.mimeType ?? "image/jpeg",
+      mimeType,
     };
     const { valid, error: oversized } = filterOversized([candidate]);
     if (oversized) setError(oversized);
     if (valid.length === 0) return;
-    setUploading(true);
+    setPending((current) => [...current, candidate]);
+  }, []);
+
+  const pickFromLibrary = useCallback(async () => {
     try {
-      const { id } = await onUploadAttachment({
-        uri: candidate.uri,
-        name: candidate.name,
-        type: candidate.mimeType,
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setError("Photo library access is needed. Allow it in Settings, then try again.");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: false,
+        quality: 1,
       });
-      setPending((current) => [...current, { ...candidate, id }]);
+      const asset = result.canceled ? undefined : result.assets?.[0];
+      if (asset) stagePhoto(asset);
     } catch {
-      setError("Couldn't attach that photo.");
-    } finally {
-      setUploading(false);
+      setError("Couldn't open your photo library. Try again.");
     }
-  }, [onUploadAttachment]);
+  }, [stagePhoto]);
+
+  const takePhoto = useCallback(async () => {
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        setError("Camera access is needed. Allow it in Settings, then try again.");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 1,
+      });
+      const asset = result.canceled ? undefined : result.assets?.[0];
+      if (asset) stagePhoto(asset);
+    } catch {
+      setError("Couldn't open the camera. Try again.");
+    }
+  }, [stagePhoto]);
+
+  const attach = useCallback(() => {
+    setError(null);
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ["Photo Library", "Take Photo", "Cancel"], cancelButtonIndex: 2 },
+        (index) => {
+          if (index === 0) void pickFromLibrary();
+          if (index === 1) void takePhoto();
+        },
+      );
+      return;
+    }
+    Alert.alert("Attach photo", undefined, [
+      { text: "Photo Library", onPress: () => void pickFromLibrary() },
+      { text: "Take Photo", onPress: () => void takePhoto() },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }, [pickFromLibrary, takePhoto]);
 
   const removeAttachment = useCallback(
     (id: string) => setPending((current) => current.filter((item) => item.id !== id)),
@@ -220,24 +280,49 @@ export function RoomComposer({
   const submit = useCallback(async () => {
     if (!hasContent || busy || disabled) return;
     setSending(true);
+    setUploading(pending.length > 0);
     onTypingChange?.(false);
+    setError(null);
+    let uploaded: Array<{ id: string }>;
+    try {
+      uploaded = await Promise.all(
+        pending.map((item) =>
+          onUploadAttachment({ uri: item.uri, name: item.name, type: item.mimeType }),
+        ),
+      );
+    } catch {
+      setError("Couldn't upload your photos. Check your connection and try again.");
+      setUploading(false);
+      setSending(false);
+      return;
+    }
+    setUploading(false);
     const draft: ComposedMessage = {
       text: body,
       mentions: resolveTypedMentions(body, members),
-      attachmentIds: pending.map((item) => item.id),
+      attachmentIds: uploaded.map((item) => item.id),
     };
-    // Cleared before the await: a failed send is drawn as its own retry row by
-    // the caller, which is where the text survives.
+    // Clear only after every upload succeeds. Upload failures keep the draft
+    // and previews in place so the person can retry without picking again.
     setText("");
     setCaret(null);
     setPending([]);
-    setError(null);
     try {
       await onSend(draft);
     } finally {
       setSending(false);
     }
-  }, [hasContent, busy, disabled, body, members, pending, onSend, onTypingChange]);
+  }, [
+    hasContent,
+    busy,
+    disabled,
+    body,
+    members,
+    pending,
+    onSend,
+    onTypingChange,
+    onUploadAttachment,
+  ]);
 
   return (
     <Reanimated.View
@@ -321,7 +406,7 @@ export function RoomComposer({
         <View style={styles.rail}>
           <Pressable
             style={styles.railButton}
-            onPress={() => void attach()}
+            onPress={attach}
             disabled={disabled || busy || pending.length >= MAX_PHOTOS}
             hitSlop={6}
             accessibilityRole="button"

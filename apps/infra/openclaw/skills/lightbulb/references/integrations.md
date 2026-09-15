@@ -1,7 +1,9 @@
 # Integrations and channels (connecting external services)
 
-The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
-connects external services. **Channels** (chat surfaces): Slack: one click from
+**Connections** (the plug icon on the workspace rail at flickmeon.ai/chat;
+Settings → Connections lands there too, and the Control Panel's Integrations
+tab shows the same rows) is where the owner connects external services.
+**Channels** (chat surfaces): Slack: one click from
 the agent's Channels tab (Add to Slack); Telegram/Discord: the bot wizard.
 
 **Integrations arrive on one of three rails — check the `actor` field, never
@@ -41,14 +43,14 @@ list reflects the live session catalog; if an MCP server failed to start
 (e.g. a connect timeout under load), its tools drop out silently even though
 the connection is healthy. So a missing tool means "not connected OR the
 server didn't come up this session" — before telling the owner it's
-disconnected, have them check the Integrations tab; if it shows Connected
+disconnected, have them check Connections; if it shows Connected
 there, the fix is a config regen or container restart, not reconnecting.
 
 **How to talk about an integration.** Check your own toolset/shell first (per
 rail, above): if it's there, use it. Otherwise read the two flags each
 **integration** entry carries — `requestable` and `byo_required` — and send
-the owner to the Integrations tab (Control Panel, flickmeon.ai/chat) with an
-accurate description of what they'll find there.
+the owner to Connections (the plug icon on the workspace rail at
+flickmeon.ai/chat) with an accurate description of what they'll find there.
 
 **The catalog is public and OWNERLESS**, so it cannot see per-owner access. Its
 `requestable` is therefore a hint about the *environment*, not a fact about
@@ -77,8 +79,8 @@ know exists. Do not raise it again on later turns.
 **Operator mindset — connect and DO, don't just draft.** When a task needs an
 external capability, first check the platform-info catalog: if the integration
 is connectable (`requestable: false`) but its tools aren't in your toolset yet,
-start it yourself if it's one-click (below); otherwise send the owner to the
-Integrations tab and describe what that row asks of them per the flags above.
+send the owner to Connections and describe what that row asks of them per the
+flags above (start it yourself only when they ask you to — below).
 Then do the real work once its tools appear. Do NOT
 silently produce copy (e.g. "here's your Instagram bio") as a substitute for
 connecting the integration and performing the task.
@@ -95,25 +97,32 @@ the platform can't do.
   (no restart needed); a CLI-rail service becomes usable in your shell with
   no toolset change at all. If an expected MCP tool is missing, the service
   is unconnected, disconnected, OR its server failed to start this session —
-  distinguish via the Integrations tab before declaring it disconnected.
-- **What you can start yourself — one-click connections.** For a catalog
-  entry with `requestable: false` AND `byo_required: false`, mint the
-  provider's sign-in link and put it in front of the owner in your own Chrome:
-  `/app/skills/lightbulb/scripts/lightbulb-connect.sh link <provider>`
-  prints the sign-in URL. It exits non-zero and names the HTTP status when it
-  cannot: 409 = already connected; 400/404 = not a one-click provider for this
-  owner — fall back to the tab; 503 = not available to connect yet — say so
-  (the tab would fail the same way); 502 = provider error — retry next turn;
-  401 = platform fault — tell the owner, never work around it. Open that URL with
-  your browser tool — the Browser panel surfaces on its own — and say *"I've
-  opened <service>'s sign-in in the Browser panel — sign in there and I'll take
-  it from here."* You cannot enter their credentials; once they finish, the
-  service arrives per its rail above (tools appear / binary authenticates).
+  distinguish via Connections before declaring it disconnected.
+- **One-click connections — the owner clicks Connect; you point at the door.**
+  For a catalog entry with `requestable: false` AND `byo_required: false`,
+  Lightbulb already has the integration, so your answer is: *"Open Connections
+  (the plug icon on the workspace rail at flickmeon.ai/chat) and click Connect
+  next to <service> — sign in there and I'll take it from here."* They are
+  almost always already signed in to <service> in their own browser, and the
+  OAuth finishes there with nothing to re-type. **Never open a third-party
+  sign-in page in your own Chrome unprompted** — the owner would have to log
+  in to <service> inside the Browser panel, which is slower and reads as the
+  wrong door. Only when the owner explicitly asks you to start it for them:
+  `/app/skills/lightbulb/scripts/lightbulb-connect.sh link <provider>` prints
+  the sign-in URL. It exits non-zero and names the HTTP status when it cannot:
+  409 = already connected; 400/404 = not a one-click provider for this owner —
+  send them to Connections; 503 = not available to connect yet — say so; 502 =
+  provider error — retry next turn; 401 = platform fault — tell the owner,
+  never work around it. Open that URL with your browser tool — the Browser
+  panel surfaces on its own — and say *"I've opened <service>'s sign-in in the
+  Browser panel — sign in there and I'll take it from here."* You cannot enter
+  their credentials; once they finish, the service arrives per its rail above
+  (tools appear / binary authenticates).
 - **What you cannot do:** you cannot authorize or disconnect a service
   yourself, and you cannot start BYO-app or `requestable` ones. For those,
-  name the service and send the owner to the Integrations tab (Control Panel
-  at flickmeon.ai/chat), describing the row per its catalog flags above — never
-  assert it's one click without checking.
+  name the service and send the owner to Connections (the plug icon on the
+  workspace rail at flickmeon.ai/chat), describing the row per its catalog
+  flags above — never assert it's one click without checking.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.

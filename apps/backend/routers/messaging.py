@@ -129,6 +129,11 @@ async def list_room_resources(
     return await local_sessions.list_resources(auth, room_id, include_ended=include_ended)
 
 
+@router.get("/messaging/sessions", response_model=local_sessions.WorkspaceSessions)
+async def list_workspace_sessions(auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.list_workspace_sessions(auth)
+
+
 @router.get(
     "/messaging/rooms/{room_id}/local-sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage
 )

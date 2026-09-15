@@ -4,6 +4,7 @@ import { createContext, useContext, useCallback, useEffect, useMemo, useRef, use
 import { useAuth } from "@clerk/nextjs";
 import { resolveTypedMentions, runView, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
+import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -371,6 +372,10 @@ export function MessagingWorkspaceProvider({
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
+  const { account: billingAccount } = useBilling();
+  // Listening is paid (backend `listening_available`). Assume it until the
+  // billing row loads so a paid room never flashes the lock.
+  const listeningAvailable = billingAccount?.is_subscribed ?? true;
   const composer: RoomComposerProps = {
     focusAgentId: rooms.activeRoom?.kind === "dm" && agentCounterparts.length === 1 ? agentCounterparts[0].id : undefined,
     text: draft,
@@ -386,6 +391,7 @@ export function MessagingWorkspaceProvider({
     onUploadAttachment: rooms.uploadAttachment,
     roomKind: rooms.activeRoom?.kind,
     runningAgentIds,
+    listeningAvailable,
   };
 
   const threadComposer: { parentMessageId: string; composer: RoomComposerProps } | undefined = threadId ? {
@@ -406,6 +412,7 @@ export function MessagingWorkspaceProvider({
       onUploadAttachment: rooms.uploadAttachment,
       roomKind: rooms.activeRoom?.kind,
       runningAgentIds,
+      listeningAvailable,
     },
   } : undefined;
 
@@ -507,6 +514,7 @@ export function MessagingWorkspaceProvider({
 
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: scope,
+    listeningAvailable,
     rooms: directoryRooms,
     sections: rooms.sections,
     participants: directoryParticipants,
@@ -554,6 +562,7 @@ export function MessagingWorkspaceProvider({
     onSelectParticipant: async (participant) => { await rooms.selectDm(participant); },
     onRetry: () => void rooms.refreshRoom(),
     ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
+    listeningAvailable,
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
     pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds ?? [],

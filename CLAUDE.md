@@ -956,8 +956,16 @@ non-room usage arrives on `POST /internal/messaging/usage/{ownerId}`.
 traffic wakes only `active` members as a `room_event`, and the source agent is
 always skipped. Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
-`#general` channel holding the whole starter roster, CEO `active` and the
-specialists `mentions`, plus one welcome message from the CEO.
+`#general` channel holding the whole starter roster plus one welcome message
+from the CEO: on a PAID workspace the CEO is `active` and the specialists
+`mentions`; on the free trial every agent is `mentions`. **Listening (`active`)
+is a paid feature** — `listening_available` (the `has_always_on_entitlement`
+predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
+`PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
+non-paid owner before waking the container. DMs are exempt: every DM message
+is addressed, so the mode is inert there, and the web client creates DMs with
+`active`. The UI shows the option as "Listening (paid plan)" and renders a
+stored `active` on a free-tier room as Mentions.
 
 **The rule that governs changes here: no second event bus.** SQS is the durable
 wakeup and nothing else; AppSync is the fanout; DynamoDB is the truth. No Kafka,
@@ -989,7 +997,7 @@ timestamps and the trial-idle sweep, never by UI connectivity.
 
 A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits a missing Paperclip company onto a pre-existing container.
 
-**The path is workspace-only. No NEW personal workspace is ever provisioned.** Every owner is a Clerk org. `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, and `ensure_user_ready` returns on its first statement for a non-org caller — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone. Legacy personal owners from before the 2026-09-10 cutover (three of them paying) are locked out until they are migrated onto a workspace (`docs/superpowers/plans/2026-09-14-legacy-personal-owner-migration.md`); the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo` and `provision_runner` step 0 exist only because the executor's wake path still reconciles their boxes, and go when they do.
+**The path is workspace-only. No NEW personal workspace is ever provisioned.** Every owner is a Clerk org. `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, and `ensure_user_ready` returns on its first statement for a non-org caller — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone. The legacy personal cohort from before the 2026-09-10 cutover was purged or moved onto workspaces in September 2026 (one-shot tooling in git history: #2624 purge, #2625 workspace backfill, #2627 paying-owner migration); the last paying personal owners are locked out of product APIs until they are migrated, and the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo` and `provision_runner` step 0 exist only because the executor's wake path still reconciles their boxes, and go when they do.
 
 ```
 Clerk sign-up  ->  workspace (Clerk org) created or joined
@@ -1027,7 +1035,7 @@ Key invariants:
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active`, `mentions`, or `observe`; ordinary members see the mode but cannot change it.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces only — a free trial seeds every agent on `mentions`) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
 - **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
 
 ### Legacy containers (pre-Paperclip provisioning)
@@ -1102,6 +1110,13 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 ### Config Patching Notes
 
 - `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
+- `OPENCLAW_SERVICE_REPAIR_POLICY=external` (container task env, `container-stack.ts`)
+  tells doctor that litestream owns the gateway process, so it skips its native
+  service-ownership inspection. Without it, boot `doctor --fix` aborts with
+  "Gateway service ownership or shutdown could not be verified" before running the
+  `credentials/oauth.json` migration that OpenClaw ≥9.3 made doctor-only — and every
+  ChatGPT-OAuth connect then leaves the container throwing `requires legacy credential
+  migration` on every turn.
 - `openclaw.json.lock` starts as the backend's legacy persistent `fcntl`
   sidecar. Boot recovery takes the persistent `.isol8-guard`, publishes a
   resumable `.isol8-protocol` transition, removes the legacy inode, and then
@@ -1267,7 +1282,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 
 Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (shipped 2026-08-30 — a fresh install relative to the old `co.isol8.desktop`; devices re-pair). Product name: **Lightbulb**; crate/binary `lightbulb-desktop`; keychain service and app-support dirs follow the bundle id; default docs folder `~/Lightbulb`; env vars `LIGHTBULB_API_BASE`/`LIGHTBULB_WS_URL`/`LIGHTBULB_CALLBACK_URL`. `LIGHTBULB_WS_URL` is compile-time-only (`option_env!` in `lib.rs`, set per env by `desktop-build.yml`) and now points at the `bv[-env]` **machine gateway relay** (`wss://bv[-env].flickmeon.ai/api/v1/gateway/ws`), not the old `ws[-env]` API Gateway door — it seeds the Mac node client's URL directly; the CLI node's loopback proxy instead reads the relay URL live from `/desktop/pair`'s `relayUrl` field (`gatewayUrl` there stays on `ws[-env]` for the local-session relay).
 
-- Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
+- Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and the real prompt comes from a one-time toast after sign-in through `notification_permission`; provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
 - Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
 - Sidecar binaries (`lightbulb-browser-service` externalBin, plus per-arch `node` and `openclaw-host`) are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)

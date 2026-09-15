@@ -188,10 +188,9 @@ jobs:
     # standard hosted runner since the `doctor` compile-cache bake was restored
     # OOM-killed the 7 GB VM — the annotation reads "the hosted runner lost
     # communication with the server", with no failed step and no uploaded logs.
-    # The box has the memory, the disk, and a warm layer cache. CI_RUNNER is a
-    # two-way switch and this job has only one working value, so it must not
-    # follow the switch: flipping CI_RUNNER back to hosted to escape a box
-    # outage would silently reintroduce the OOM here.
+    # The box has the memory, the disk, and a warm layer cache (~3 min vs ~25
+    # min cold). A 16 vCPU Blacksmith VM also works (see #2634/#2636) and is
+    # the fallback when the box is offline: builds sit queued with no runner.
     runs-on: [self-hosted, isol8-wsl]
     # A hang bound, not a runtime budget: the box finishes in ~3m warm, while
     # a cold from-scratch rebuild of this ~7.8 GB image (bake included) ran
@@ -270,8 +269,11 @@ jobs:
           BASE_DIGEST: ${{ steps.meta.outputs.base_digest }}
         run: |
           set -euo pipefail
+          # JSON, not '{{.Manifest.Digest}}': buildx 0.23.0 (what the Blacksmith
+          # runner ships) treats any template starting with {{.Manifest as a
+          # request for the human-readable summary and prints that instead.
           RESOLVED_DIGEST=$(docker buildx imagetools inspect \
-            "${BASE_IMAGE}" --format '{{.Manifest.Digest}}')
+            "${BASE_IMAGE}" --format '{{json .Manifest}}' | jq -r .digest)
           printf '%s\n' "${RESOLVED_DIGEST}" \
             | node scripts/openclaw-image-proof.mjs digest "${BASE_DIGEST}"
 

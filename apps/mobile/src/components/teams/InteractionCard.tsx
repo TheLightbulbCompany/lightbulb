@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -60,7 +60,7 @@ function summaryLine(interaction: IssueInteraction): string {
 function Checkbox({ checked }: { checked: boolean }) {
   return (
     <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-      {checked ? <Feather name="check" size={12} color={colors.white} /> : null}
+      {checked ? <SymbolView accessibilityElementsHidden name="checkmark" size={12} tintColor={colors.white} /> : null}
     </View>
   );
 }
@@ -140,7 +140,7 @@ export function InteractionCard({
   return (
     <View style={styles.card}>
       <View style={styles.head}>
-        <Feather name="help-circle" size={16} color={colors.forest} style={styles.headIcon} />
+        <SymbolView accessibilityElementsHidden name="questionmark.circle" size={16} tintColor={colors.forest} style={styles.headIcon} />
         <View style={styles.headText}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.meta} numberOfLines={1}>
@@ -155,14 +155,15 @@ export function InteractionCard({
 
       {!pending ? (
         <View style={styles.resolvedRow}>
-          <Feather
+          <SymbolView
+            accessibilityElementsHidden
             name={
               interaction.status === "accepted" || interaction.status === "answered"
-                ? "check-circle"
-                : "x-circle"
+                ? "checkmark.circle"
+                : "xmark.circle"
             }
             size={13}
-            color={
+            tintColor={
               interaction.status === "accepted" || interaction.status === "answered"
                 ? colors.forest
                 : colors.mute
@@ -334,7 +335,7 @@ export function InteractionCard({
                     accessibilityRole="button"
                     accessibilityLabel={payload?.acceptLabel ?? "Accept"}
                   >
-                    <Feather name="check" size={14} color={colors.white} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={colors.white} />
                     <Text style={styles.acceptText}>
                       {payload?.acceptLabel ?? "Accept"}
                     </Text>

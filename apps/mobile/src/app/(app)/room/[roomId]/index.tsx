@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import {
   buildTimeline,
   roomDisplayName,
@@ -388,7 +388,7 @@ function Conversation() {
           accessibilityRole="button"
           accessibilityLabel="Jump to latest"
         >
-          <Feather name="arrow-down" size={16} color={colors.white} />
+          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
         </AnimatedPressable>
       )}
       {(() => {

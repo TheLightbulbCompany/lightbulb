@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { agentDisplayName, useAgents, type MemberRef } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -277,7 +277,7 @@ export function NewMessageSheet({
           </>
         ) : null}
         <View style={styles.searchPill}>
-          <Feather name="search" size={14} color={colors.placeholder} />
+          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.placeholder} />
           <TextInput
             style={styles.searchInput}
             placeholder="Search people and agents"
@@ -326,7 +326,7 @@ export function NewMessageSheet({
                 <Text style={styles.name} numberOfLines={1}>
                   {item.displayName}
                 </Text>
-                {chosen ? <Feather name="check" size={16} color={colors.forest} /> : null}
+                {chosen ? <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} /> : null}
               </Pressable>
             );
           }}

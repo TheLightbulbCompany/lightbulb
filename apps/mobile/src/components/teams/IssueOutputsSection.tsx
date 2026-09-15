@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import {
@@ -34,14 +34,14 @@ import {
 // Each section self-hides when empty.
 // ---------------------------------------------------------------------------
 
-const WORK_PRODUCT_ICON: Record<string, keyof typeof Feather.glyphMap> = {
+const WORK_PRODUCT_ICON: Record<string, SFSymbol> = {
   preview_url: "globe",
-  runtime_service: "server",
-  pull_request: "git-pull-request",
-  branch: "git-branch",
-  commit: "git-commit",
-  artifact: "package",
-  document: "file-text",
+  runtime_service: "server.rack",
+  pull_request: "arrow.triangle.pull",
+  branch: "arrow.triangle.branch",
+  commit: "smallcircle.filled.circle",
+  artifact: "shippingbox",
+  document: "doc.text",
 };
 
 /** http(s)-only href gate (web safeHref parity). */
@@ -77,10 +77,11 @@ export function WorkProductsSection({
         return (
           <View key={wp.id} style={styles.card}>
             <View style={styles.rowHead}>
-              <Feather
-                name={WORK_PRODUCT_ICON[wp.type] ?? "box"}
+              <SymbolView
+                accessibilityElementsHidden
+                name={WORK_PRODUCT_ICON[wp.type] ?? "cube"}
                 size={15}
-                color={colors.forest}
+                tintColor={colors.forest}
                 style={styles.rowIcon}
               />
               <View style={styles.rowText}>
@@ -114,7 +115,7 @@ export function WorkProductsSection({
                   accessibilityRole="button"
                   accessibilityLabel={`Approve ${wp.title}`}
                 >
-                  <Feather name="check" size={13} color={colors.white} />
+                  <SymbolView accessibilityElementsHidden name="checkmark" size={13} tintColor={colors.white} />
                   <Text style={styles.approveText}>Approve</Text>
                 </Pressable>
                 <Pressable
@@ -165,7 +166,7 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
               accessibilityState={{ expanded: open }}
               accessibilityLabel={doc.title ?? doc.key}
             >
-              <Feather name="file-text" size={15} color={colors.forest} style={styles.rowIcon} />
+              <SymbolView accessibilityElementsHidden name="doc.text" size={15} tintColor={colors.forest} style={styles.rowIcon} />
               <View style={styles.rowText}>
                 <Text style={styles.rowTitle} numberOfLines={1}>
                   {doc.title ?? doc.key}
@@ -174,10 +175,11 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
                   <Text style={styles.rowMeta}>updated {timeAgo(doc.updatedAt)}</Text>
                 ) : null}
               </View>
-              <Feather
-                name={open ? "chevron-up" : "chevron-down"}
+              <SymbolView
+                accessibilityElementsHidden
+                name={open ? "chevron.up" : "chevron.down"}
                 size={15}
-                color={colors.muteSoft}
+                tintColor={colors.muteSoft}
               />
             </Pressable>
             {open ? (
@@ -235,10 +237,11 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
         accessibilityRole={isImage ? "button" : "none"}
         accessibilityLabel={isImage ? `Preview ${name}` : name}
       >
-        <Feather
-          name={isImage ? "image" : "paperclip"}
+        <SymbolView
+          accessibilityElementsHidden
+          name={isImage ? "photo" : "paperclip"}
           size={15}
-          color={colors.forest}
+          tintColor={colors.forest}
           style={styles.rowIcon}
         />
         <View style={styles.rowText}>
@@ -250,10 +253,11 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
         {loading ? (
           <ActivityIndicator size="small" color={colors.mute} />
         ) : isImage ? (
-          <Feather
-            name={preview ? "chevron-up" : "eye"}
+          <SymbolView
+            accessibilityElementsHidden
+            name={preview ? "chevron.up" : "eye"}
             size={15}
-            color={colors.muteSoft}
+            tintColor={colors.muteSoft}
           />
         ) : null}
       </Pressable>

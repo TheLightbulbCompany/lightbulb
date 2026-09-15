@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
@@ -102,7 +102,7 @@ function ModelPickerModal({
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>Model</Text>
             <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <Feather name="x" size={18} color={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={18} tintColor={colors.mute} />
             </Pressable>
           </View>
 
@@ -159,7 +159,7 @@ function ModelPickerModal({
                     <Text style={styles.pickerRef}>Inherit the gateway default</Text>
                   </View>
                   {currentRef == null && (
-                    <Feather name="check" size={18} color={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
                   )}
                 </Pressable>
               }
@@ -182,7 +182,7 @@ function ModelPickerModal({
                       </Text>
                     </View>
                     {selected && (
-                      <Feather name="check" size={18} color={colors.forest} />
+                      <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
                     )}
                   </Pressable>
                 );
@@ -222,7 +222,7 @@ function InfoRow({
           value
         )}
         {onPress && !disabled && (
-          <Feather name="chevron-right" size={16} color={colors.muteSoft} />
+          <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.muteSoft} />
         )}
       </View>
     </>
@@ -537,7 +537,7 @@ export default function AgentDetail() {
           accessibilityRole="button"
           accessibilityLabel="Delete agent"
         >
-          <Feather name="trash-2" size={16} color={colors.danger} />
+          <SymbolView accessibilityElementsHidden name="trash" size={16} tintColor={colors.danger} />
           <Text style={styles.deleteText}>Delete agent</Text>
         </Pressable>
       ) : null}

@@ -1,7 +1,7 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
-import { useState, type ComponentProps } from "react";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
@@ -9,7 +9,7 @@ import { roomUrl } from "../../lib/webLinks";
 import { BottomSheet } from "../ui/BottomSheet";
 
 interface ActionRow {
-  icon: ComponentProps<typeof Feather>["name"];
+  icon: SFSymbol;
   label: string;
   run: () => void;
 }
@@ -69,12 +69,12 @@ export function RoomActionsSheet({
       run: () => void savePrefs({ starred: !room.starred }, STAR_FAILED),
     },
     {
-      icon: room.muted ? "bell" : "bell-off",
+      icon: room.muted ? "bell" : "bell.slash",
       label: room.muted ? "Unmute conversation" : "Mute conversation",
       run: () => void savePrefs({ muted: !room.muted }, MUTE_FAILED),
     },
     {
-      icon: "mail",
+      icon: "envelope",
       label: "Mark unread",
       run: () => runAndClose(onMarkUnread),
     },
@@ -95,7 +95,7 @@ export function RoomActionsSheet({
             accessibilityRole="button"
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
           >
-            <Feather name={icon} size={16} color={colors.inkSoft} />
+            <SymbolView accessibilityElementsHidden name={icon} size={16} tintColor={colors.inkSoft} />
             <Text style={styles.rowLabel}>{label}</Text>
           </Pressable>
         ))}

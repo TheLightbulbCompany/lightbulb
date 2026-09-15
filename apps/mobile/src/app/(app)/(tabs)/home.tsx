@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { roomDisplayName, useWorkspaceSessions, type RoomSummary } from "@lightbulb/shared";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -145,7 +145,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
     <View style={styles.page}>
       <View style={styles.header}>
         <View style={styles.searchPill}>
-          <Feather name="search" size={14} color={colors.placeholder} />
+          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.placeholder} />
           <TextInput
             style={styles.searchInput}
             placeholder="Search"
@@ -164,7 +164,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           accessibilityLabel="New message"
           style={[styles.pencil, pencilScale.style]}
         >
-          <Feather name="edit-2" size={16} color={colors.cream} />
+          <SymbolView accessibilityElementsHidden name="square.and.pencil" size={16} tintColor={colors.cream} />
         </AnimatedPressable>
       </View>
       <FlatList
@@ -217,10 +217,11 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
               accessibilityState={{ expanded: !collapsed.has(item.title) }}
               style={({ pressed }) => [styles.sectionRow, pressed && styles.sectionPressed]}
             >
-              <Feather
-                name={collapsed.has(item.title) ? "chevron-right" : "chevron-down"}
+              <SymbolView
+                accessibilityElementsHidden
+                name={collapsed.has(item.title) ? "chevron.right" : "chevron.down"}
                 size={14}
-                color={colors.muteSoft}
+                tintColor={colors.muteSoft}
               />
               <Text style={styles.sectionLabel}>{item.title}</Text>
             </Pressable>

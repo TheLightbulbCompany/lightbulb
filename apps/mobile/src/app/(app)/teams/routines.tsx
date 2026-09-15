@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import {
   FlatList,
@@ -131,10 +131,11 @@ export default function RoutinesScreen() {
     const isSubscription = state.gate === "needs_subscription";
     return (
       <View style={[styles.page, styles.centered]}>
-        <Feather
-          name={isSubscription ? "lock" : "cloud-off"}
+        <SymbolView
+          accessibilityElementsHidden
+          name={isSubscription ? "lock" : "network.slash"}
           size={28}
-          color={colors.mute}
+          tintColor={colors.mute}
         />
         <Text style={styles.stateTitle}>
           {state.gate === "provisioning"
@@ -181,7 +182,7 @@ export default function RoutinesScreen() {
       }
       ListEmptyComponent={
         <View style={styles.centered}>
-          <Feather name="repeat" size={28} color={colors.mute} />
+          <SymbolView accessibilityElementsHidden name="repeat" size={28} tintColor={colors.mute} />
           <Text style={styles.stateTitle}>No routines yet</Text>
           <Text style={styles.stateDetail}>
             Create scheduled automations for your agents on flickmeon.ai.

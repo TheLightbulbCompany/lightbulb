@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
@@ -81,7 +81,7 @@ function ListingRow({ item }: { item: Listing }) {
           {byline}
         </Text>
       </View>
-      <Feather name="chevron-right" size={18} color={colors.muteSoft} />
+      <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
     </Pressable>
   );
 }
@@ -165,7 +165,7 @@ export default function MarketplacePanel() {
   return (
     <View style={styles.page}>
       <View style={styles.searchWrap}>
-        <Feather name="search" size={16} color={colors.mute} />
+        <SymbolView accessibilityElementsHidden name="magnifyingglass" size={16} tintColor={colors.mute} />
         <TextInput
           style={styles.searchInput}
           value={query}
@@ -184,7 +184,7 @@ export default function MarketplacePanel() {
             accessibilityRole="button"
             accessibilityLabel="Clear search"
           >
-            <Feather name="x" size={16} color={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="xmark" size={16} tintColor={colors.mute} />
           </Pressable>
         )}
       </View>

@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { Fragment, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -113,7 +113,7 @@ export function PickerSheet({
                     {option.label}
                   </Text>
                   {active ? (
-                    <Feather name="check" size={16} color={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} />
                   ) : (
                     <View style={styles.checkSpacer} />
                   )}

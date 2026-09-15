@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { Stack, router } from "expo-router";
 import { useEffect, useState, type ReactElement } from "react";
 import {
@@ -105,7 +105,7 @@ function InboxRow({ item }: { item: InboxItem }) {
           </Text>
         )}
       </View>
-      <Feather name="chevron-right" size={18} color={colors.muteSoft} />
+      <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
     </Pressable>
   );
 }
@@ -256,7 +256,7 @@ export default function TeamsScreen() {
               accessibilityRole="button"
               accessibilityLabel="New task"
             >
-              <Feather name="plus" size={22} color={colors.forest} />
+              <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={colors.forest} />
             </Pressable>
           ),
         }}
@@ -413,7 +413,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<Feather name="lock" size={28} color={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
             title="Teams requires an active subscription"
             detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
             action={
@@ -429,7 +429,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -481,9 +481,9 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         accessibilityRole="button"
         accessibilityLabel="Routines"
       >
-        <Feather name="repeat" size={16} color={colors.forest} />
+        <SymbolView accessibilityElementsHidden name="repeat" size={16} tintColor={colors.forest} />
         <Text style={styles.linkRowText}>Routines</Text>
-        <Feather name="chevron-right" size={16} color={colors.muteSoft} />
+        <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.muteSoft} />
       </Pressable>
     </ScrollView>
   );
@@ -522,7 +522,7 @@ function ApprovalsView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<Feather name="lock" size={28} color={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
             title="Teams requires an active subscription"
             detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
             action={
@@ -538,7 +538,7 @@ function ApprovalsView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -574,7 +574,7 @@ function ApprovalsView() {
       }
       ListEmptyComponent={
         <CenteredState
-          glyph={<Feather name="shield" size={28} color={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="shield" size={28} tintColor={colors.mute} />}
           title="No pending approvals."
           detail="Approval requests from your agents will show up here."
         />
@@ -666,7 +666,7 @@ function FailedRunRow({
   const title = `${agentName} — ${run.failureReason || "run failed"}`;
   return (
     <View style={styles.failedRow}>
-      <Feather name="alert-triangle" size={14} color={colors.danger} />
+      <SymbolView accessibilityElementsHidden name="exclamationmark.triangle" size={14} tintColor={colors.danger} />
       <View style={styles.failedRowText}>
         <Text style={styles.failedRowTitle} numberOfLines={2}>
           {title}
@@ -739,7 +739,7 @@ function InboxView() {
     <View style={styles.inboxControls}>
       <InboxTabChips tab={tab} onChange={setTab} />
       <View style={styles.searchBox}>
-        <Feather name="search" size={14} color={colors.mute} />
+        <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.mute} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search tasks"
@@ -758,7 +758,7 @@ function InboxView() {
             accessibilityRole="button"
             accessibilityLabel="Clear search"
           >
-            <Feather name="x" size={14} color={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={colors.mute} />
           </Pressable>
         )}
       </View>
@@ -791,7 +791,7 @@ function InboxView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<Feather name="lock" size={28} color={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
             title="Teams requires an active subscription"
             detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
             action={
@@ -808,7 +808,7 @@ function InboxView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}

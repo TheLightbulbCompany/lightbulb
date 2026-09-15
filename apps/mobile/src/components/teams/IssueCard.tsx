@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -27,12 +27,12 @@ const MAX_LABELS = 3;
  * hollow; done filled vs backlog hollow) per the contract's §3 guidance. */
 const FILLED_STATUSES = new Set(["in_progress", "done", "blocked"]);
 
-/** Feather icon per priority (contract §3 lucide → Feather nearest). */
-const PRIORITY_ICON: Record<string, keyof typeof Feather.glyphMap> = {
-  critical: "alert-triangle",
-  high: "arrow-up",
+/** SF Symbol per priority (contract §3 lucide → nearest SF Symbol). */
+const PRIORITY_ICON: Record<string, SFSymbol> = {
+  critical: "exclamationmark.triangle",
+  high: "arrow.up",
   medium: "minus",
-  low: "arrow-down",
+  low: "arrow.down",
 };
 
 function StatusDot({ status }: { status: string | null | undefined }) {
@@ -79,7 +79,7 @@ function PriorityIndicator({ priority }: { priority: string | null | undefined }
   if (!icon) return null;
   return (
     <View style={styles.priority}>
-      <Feather name={icon} size={13} color={color} />
+      <SymbolView accessibilityElementsHidden name={icon} size={13} tintColor={color} />
     </View>
   );
 }
@@ -170,7 +170,7 @@ function IssueCardBase({
               accessibilityLabel="Change status"
               style={({ pressed }) => [styles.moveBtn, pressed && styles.moveBtnPressed]}
             >
-              <Feather name="more-horizontal" size={16} color={colors.muteSoft} />
+              <SymbolView accessibilityElementsHidden name="ellipsis" size={16} tintColor={colors.muteSoft} />
             </Pressable>
           </View>
         </View>

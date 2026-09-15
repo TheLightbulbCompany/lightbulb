@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { Stack, useLocalSearchParams } from "expo-router";
 import {
   Animated,
@@ -145,10 +145,11 @@ export default function RunDetailScreen() {
     const isSubscription = state.gate === "needs_subscription";
     return (
       <View style={[styles.page, styles.centered]}>
-        <Feather
-          name={isSubscription ? "lock" : "cloud-off"}
+        <SymbolView
+          accessibilityElementsHidden
+          name={isSubscription ? "lock" : "network.slash"}
           size={28}
-          color={colors.mute}
+          tintColor={colors.mute}
         />
         <Text style={styles.stateTitle}>
           {isProvisioning
@@ -173,7 +174,7 @@ export default function RunDetailScreen() {
   if (state.kind === "error") {
     return (
       <View style={[styles.page, styles.centered]}>
-        <Feather name="alert-circle" size={28} color={colors.danger} />
+        <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={28} tintColor={colors.danger} />
         <Text style={styles.stateTitle}>Failed to load run</Text>
         <Text style={styles.stateDetail}>{state.message}</Text>
         <ActionButton label="Retry" onPress={() => void retry()} />

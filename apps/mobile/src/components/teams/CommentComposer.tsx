@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -78,10 +78,11 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
             {busy ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
-              <Feather
-                name="arrow-up"
+              <SymbolView
+                accessibilityElementsHidden
+                name="arrow.up"
                 size={16}
-                color={colors.white}
+                tintColor={colors.white}
               />
             )}
           </Pressable>

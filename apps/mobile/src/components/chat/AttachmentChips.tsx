@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { Image } from "expo-image";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -37,7 +37,7 @@ export function AttachmentChips({
               accessibilityLabel={`Preview ${a.name}`}
             />
           ) : (
-            <Feather name="file" size={12} color={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="doc" size={12} tintColor={colors.mute} />
           )}
           <Text style={styles.name} numberOfLines={1}>
             {a.name}
@@ -49,7 +49,7 @@ export function AttachmentChips({
             accessibilityRole="button"
             accessibilityLabel={`Remove ${a.name}`}
           >
-            <Feather name="x" size={12} color={colors.placeholder} />
+            <SymbolView accessibilityElementsHidden name="xmark" size={12} tintColor={colors.placeholder} />
           </Pressable>
         </View>
       ))}

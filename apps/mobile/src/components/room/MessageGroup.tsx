@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { SymbolView } from "expo-symbols";
 import { linkifyMentions, type CanonicalRoomMessage, type MessageAttachment, type RoomMember } from "@lightbulb/shared";
 import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
@@ -65,7 +65,7 @@ function AttachmentThumbnail({
         accessibilityLabel={label}
         style={({ pressed }) => [styles.fileRow, pressed && styles.fileRowPressed]}
       >
-        <Feather name="file" size={16} color={colors.mute} />
+        <SymbolView accessibilityElementsHidden name="doc" size={16} tintColor={colors.mute} />
         <Text style={styles.fileRowName} numberOfLines={1}>
           {attachment.fileName}
         </Text>
@@ -282,7 +282,7 @@ export function LocalMessageRows({
               onPress={() => onRetry(message.messageId)}
               accessibilityRole="button"
             >
-              <Feather name="alert-circle" size={12} color={colors.errorText} />
+              <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={12} tintColor={colors.errorText} />
               <Text style={styles.unsentText}>Not sent · tap to retry</Text>
             </Pressable>
           ) : null}

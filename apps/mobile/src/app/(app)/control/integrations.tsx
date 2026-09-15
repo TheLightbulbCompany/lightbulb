@@ -260,9 +260,9 @@ export default function IntegrationsPanel() {
 
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
     >
       {inner}
     </ScrollView>

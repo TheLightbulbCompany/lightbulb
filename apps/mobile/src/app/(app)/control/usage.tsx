@@ -370,9 +370,9 @@ export default function UsagePanel() {
 
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
     >
       {body}
     </ScrollView>

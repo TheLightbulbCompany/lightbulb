@@ -550,9 +550,9 @@ export default function Settings() {
 
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
     >
       {/* Profile (§5 footer user-card pattern) */}
       <Card>

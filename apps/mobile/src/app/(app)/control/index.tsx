@@ -89,9 +89,9 @@ const PANELS: PanelRow[] = [
 export default function ControlIndex() {
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
     >
       <Text style={styles.overline}>PANELS</Text>
       <View style={styles.card}>

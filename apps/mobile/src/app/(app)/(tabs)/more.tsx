@@ -40,9 +40,9 @@ const ROWS: MoreRow[] = [
 export default function More() {
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
     >
       <View style={styles.card}>
         {ROWS.map((row, i) => (

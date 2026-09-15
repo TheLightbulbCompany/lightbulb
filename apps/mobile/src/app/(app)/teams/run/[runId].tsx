@@ -196,9 +196,9 @@ export default function RunDetailScreen() {
 
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
     >
       <Stack.Screen options={{ title: `Run — ${agentName}` }} />
 

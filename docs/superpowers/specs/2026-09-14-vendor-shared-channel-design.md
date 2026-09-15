@@ -63,7 +63,7 @@ def is_vendor_room(meta: dict) -> bool:
     return meta["roomId"] == vendor_room_id(meta["ownerId"])
 ```
 
-The room is named `lightbulb-<customer org slug>` on both sides. That one
+The room is named `lightbulb-<customer slug>` on both sides, where the slug is the platform's own company slug (`company_slug_repo`, the one used for company hosts and agent mail); without one, the Clerk org slug with its trailing timestamp suffix stripped; empty ⇒ `lightbulb`. That one
 name tells the customer whose channel it is and tells Lightbulb staff which
 customer it is, so no per-side label, `customerName`, or auto-section exists.
 `PATCH /rooms/{id}` refuses a `name` change on the vendor room to keep the
@@ -98,9 +98,11 @@ First creation:
 
 1. `clerk_admin.list_organization_members(owner_id)` and
    `clerk_admin.list_organization_members(VENDOR_ORG_ID)`.
-2. `clerk_admin.get_organization(owner_id)` for the slug and `created_by`:
-   name `lightbulb-<slug>` (fall back to `lightbulb` if the slug is empty),
-   room `owner` = `created_by` (fall back to the first `org:admin`).
+2. `clerk_admin.get_organization(owner_id)` for `created_by` and the Clerk slug;
+   `company_slug_repo.get_by_owner(owner_id)` for the platform slug. Name
+   `lightbulb-<platform slug>`, else the Clerk slug with a trailing
+   `-<10+ digits>` stripped, else `lightbulb`. Room `owner` = `created_by`
+   (fall back to the first `org:admin`).
 3. Roster per §2. Customer humans carry `homeOwnerId = owner_id`, vendor
    humans `homeOwnerId = VENDOR_ORG_ID`. The CEO is included only when the
    Paperclip company is `active` and `starter_agent_ids["ceo"]` resolves in

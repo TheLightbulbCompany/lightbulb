@@ -717,7 +717,7 @@ git commit -m "fix(messaging): room-scoped writes and attachments key on the roo
 - Test: `apps/backend/tests/unit/services/test_messaging_shared_rooms.py`, `apps/backend/tests/unit/services/test_user_provision.py`
 
 **Interfaces:**
-- Consumes: `clerk_admin.get_organization(org_id) -> dict|None` (raw Clerk org: `slug`, `created_by`), `clerk_admin.list_organization_members(org_id) -> [{user_id, first_name, last_name, email, image_url, role}]`, `PaperclipRepo.resolve_owner_row`, `load_agent_roster`, `mention_handles`, `messaging_repo.create_room`, `messaging_repo.ensure_user_stream`.
+- Consumes: `clerk_admin.get_organization(org_id) -> dict|None` (raw Clerk org: `slug`, `created_by`), `company_slug_repo.get_by_owner(owner_id) -> dict|None` (`{"slug": ...}`, the platform's own company slug), `clerk_admin.list_organization_members(org_id) -> [{user_id, first_name, last_name, email, image_url, role}]`, `PaperclipRepo.resolve_owner_row`, `load_agent_roster`, `mention_handles`, `messaging_repo.create_room`, `messaging_repo.ensure_user_stream`.
 - Produces: `ensure_vendor_room(owner_id: str) -> str | None`; helpers `_display_name_from_membership(row) -> str`, `_vendor_room_human(row, home_owner_id, *, role="member") -> dict` (reused by Task 7).
 
 - [ ] **Step 1: Write the failing tests**
@@ -739,7 +739,8 @@ def _seed_env(monkeypatch, *, company_status="active", starter=None, room_exists
     repo_cls = lambda table_name: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))  # noqa: E731
     monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", repo_cls)
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value={"roomId": "x"} if room_exists else None))
-    get_org = AsyncMock(return_value={"id": CUSTOMER, "slug": "acme", "created_by": "user_c"})
+    get_org = AsyncMock(return_value={"id": CUSTOMER, "slug": "acme-1789347059550170402", "created_by": "user_c"})
+    monkeypatch.setattr("core.repositories.company_slug_repo.get_by_owner", AsyncMock(return_value={"slug": "acme"}))
     list_members = AsyncMock(side_effect=lambda org_id: (customer if customer is not None else [_membership("user_c", "org:admin", "Cal"), _membership("user_d")]) if org_id == CUSTOMER else (vendor_humans if vendor_humans is not None else [_membership("user_v", first="Vee")]))
     monkeypatch.setattr("core.services.clerk_admin.get_organization", get_org)
     monkeypatch.setattr("core.services.clerk_admin.list_organization_members", list_members)
@@ -769,6 +770,14 @@ async def test_ensure_vendor_room_seeds_both_orgs_and_the_ceo(vendor, monkeypatc
     ]
     assert members[0]["displayName"] == "Cal" and members[3]["displayName"] == "Vee"
     assert env.streams.await_args_list == [call(CUSTOMER, "user_c"), call(CUSTOMER, "user_d"), call(VENDOR, "user_v")]
+
+
+@pytest.mark.asyncio
+async def test_ensure_vendor_room_falls_back_to_the_clerk_slug_without_its_suffix(vendor, monkeypatch):
+    env = _seed_env(monkeypatch)
+    monkeypatch.setattr("core.repositories.company_slug_repo.get_by_owner", AsyncMock(return_value=None))
+    await messaging.ensure_vendor_room(CUSTOMER)
+    assert env.create.await_args.kwargs["name"] == "lightbulb-acme"
 
 
 @pytest.mark.asyncio
@@ -906,8 +915,14 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
     )
     if owner_user_id is None:
         return None
+    # The platform's own company slug (company hosts, agent mail) is the readable one;
+    # Clerk org slugs here carry a timestamp suffix ("acme-1789347059550170402").
+    from core.repositories import company_slug_repo
+
+    slug_row = await company_slug_repo.get_by_owner(owner_id)
+    slug = (slug_row or {}).get("slug") or re.sub(r"-\d{10,}$", "", org.get("slug") or "")
     try:
-        name = validate_room_name(f"lightbulb-{org.get('slug') or ''}".rstrip("-"))
+        name = validate_room_name(f"lightbulb-{slug}".rstrip("-"))
     except ValueError:
         name = "lightbulb"
 

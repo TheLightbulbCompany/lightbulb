@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
-from core.auth import is_org_owner_id  # noqa: F401  # consumed by ensure_vendor_room (next task)
+from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
@@ -1305,6 +1305,119 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         source_agent_id=ceo_id,
         client_message_id=None,
     )
+    return room_id
+
+
+def _display_name_from_membership(row: dict) -> str:
+    """Same precedence as ``_resolve_human_display_name``, from the Clerk membership row
+    we already hold — one roster read instead of one ``get_user`` per human."""
+    name = " ".join(part.strip() for part in (row.get("first_name") or "", row.get("last_name") or "") if part.strip())
+    if name:
+        return name[:256]
+    email = row.get("email") or ""
+    return (email.split("@", 1)[0] if email else row["user_id"])[:256]
+
+
+def _vendor_room_human(row: dict, home_owner_id: str, *, role: str = "member") -> dict:
+    return {
+        "kind": "human",
+        "id": row["user_id"],
+        "displayName": _display_name_from_membership(row),
+        "mentionHandle": None,
+        "role": role,
+        "listenMode": None,
+        "homeOwnerId": home_owner_id,
+    }
+
+
+async def ensure_vendor_room(owner_id: str) -> str | None:
+    """Create the customer's channel shared with the vendor org, once (spec §4).
+
+    Runs on every org-context poll of a running container; the steady-state cost is
+    one consistent ``get_room``. Creation waits for an ACTIVE Paperclip company so a
+    fresh workspace gets its CEO in the room. Returns the room id when it exists."""
+    vendor = settings.VENDOR_ORG_ID
+    if not vendor or owner_id == vendor or not is_org_owner_id(owner_id):
+        return None
+    room_id = messaging_repo.vendor_room_id(owner_id)
+    if await messaging_repo.get_room(room_id) is not None:
+        return room_id
+
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.clerk_admin import get_organization, list_organization_members
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    if getattr(company, "status", None) != "active":
+        return None
+    org = await get_organization(owner_id)
+    customer_humans = await list_organization_members(owner_id)
+    vendor_humans = await list_organization_members(vendor)
+    # list_organization_members returns [] on any Clerk failure; a half roster must never seed.
+    if org is None or not customer_humans or not vendor_humans:
+        return None
+    by_id = {row["user_id"]: row for row in customer_humans}
+    owner_user_id = (
+        org.get("created_by")
+        if org.get("created_by") in by_id
+        else next((uid for uid in sorted(by_id) if by_id[uid].get("role") == "org:admin"), None)
+    )
+    if owner_user_id is None:
+        return None
+    # The platform's own company slug (company hosts, agent mail) is the readable one;
+    # Clerk org slugs here carry a timestamp suffix ("acme-1789347059550170402").
+    from core.repositories import company_slug_repo
+
+    slug_row = await company_slug_repo.get_by_owner(owner_id)
+    slug = (slug_row or {}).get("slug") or re.sub(r"-\d{10,}$", "", org.get("slug") or "")
+    try:
+        name = validate_room_name(f"lightbulb-{slug}".rstrip("-"))
+    except ValueError:
+        name = "lightbulb"
+
+    members = [_vendor_room_human(by_id[owner_user_id], owner_id, role="owner")]
+    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
+    if ceo_id:
+        roster = await load_agent_roster(owner_id)
+        agents = {row["id"]: row for row in roster}
+        if ceo_id in agents:
+            members.append(
+                {
+                    "kind": "agent",
+                    "id": ceo_id,
+                    "displayName": agents[ceo_id]["name"],
+                    "mentionHandle": mention_handles(roster)[ceo_id],
+                    "role": "member",
+                    "listenMode": "mentions",
+                }
+            )
+    members.extend(_vendor_room_human(by_id[uid], owner_id) for uid in sorted(by_id) if uid != owner_user_id)
+    seen = {m["id"] for m in members}
+    members.extend(
+        _vendor_room_human(row, vendor)
+        for row in sorted(vendor_humans, key=lambda r: r["user_id"])
+        if row["user_id"] not in seen
+    )
+    if len(members) > messaging_repo.MAX_ROOM_MEMBERS:
+        # ponytail: 32-member cap; raise MAX_ROOM_MEMBERS when a customer org exceeds ~25 humans
+        put_metric("messaging.vendor_room.capped")
+        logger.warning("vendor room capped at %d members for owner %s", messaging_repo.MAX_ROOM_MEMBERS, owner_id)
+        members = members[: messaging_repo.MAX_ROOM_MEMBERS]
+    for human in (m for m in members if m["kind"] == "human"):
+        await messaging_repo.ensure_user_stream(human["homeOwnerId"], human["id"])
+    try:
+        await messaging_repo.create_room(
+            owner_id=owner_id,
+            room_id=room_id,
+            client_room_id=f"vendor-room-v1:{owner_id}",
+            creator_user_id=owner_user_id,
+            name=name,
+            kind="channel",
+            members=members,
+            req_hash=messaging_repo.request_hash(name, "channel", [(m["kind"], m["id"]) for m in members]),
+        )
+    except messaging_repo.IdempotencyConflict:
+        return room_id  # a concurrent poll created it with a different roster; it exists
+    _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
     return room_id
 
 

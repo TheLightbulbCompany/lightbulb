@@ -300,6 +300,18 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if not auth.is_org_context or auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
+    # The customer's channel shared with the Lightbulb workspace. Any member's poll
+    # reconciles it (not only the container owner's); its own first read is the
+    # short-circuit, so the steady-state cost is one consistent read per poll.
+    if auth.is_org_context:
+        from core.services.messaging import ensure_vendor_room
+
+        try:
+            await ensure_vendor_room(owner_id)
+        except Exception:
+            put_metric("messaging.vendor_room.error")
+            logger.exception("vendor room reconcile failed for owner %s", owner_id)
+
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
     # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after
     # the owner's Paperclip seed — every path to "paid + provider chosen" runs

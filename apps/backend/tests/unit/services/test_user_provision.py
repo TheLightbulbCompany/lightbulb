@@ -2266,3 +2266,18 @@ async def test_arm_skips_when_row_belongs_to_another_owner():
         assert await arm_nightly_ceo("user_p", trust_cache=False) == "company_not_active"
     claim.assert_not_awaited()
     seed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_poll_on_a_running_container_reconciles_the_vendor_room():
+    """A plain org MEMBER's poll reaches the vendor-room seat (spec §4) — the seat is not behind the admin-only container path."""
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch.object(user_provision.container_repo, "get_by_owner_id", AsyncMock(return_value={"status": "running"})),
+        patch.object(user_provision.wake_policy, "is_parked_trial", AsyncMock(return_value=False)),
+        patch("core.services.user_provision._reconcile_owner_seed", new=AsyncMock()),
+        patch("core.services.messaging.ensure_vendor_room", new=AsyncMock()) as vendor_room,
+    ):
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
+    vendor_room.assert_awaited_once_with("org_o")

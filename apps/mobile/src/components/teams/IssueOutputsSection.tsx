@@ -1,9 +1,9 @@
+import { Image } from "expo-image";
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -266,7 +266,7 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
         <Image
           source={{ uri: preview }}
           style={styles.imagePreview}
-          resizeMode="contain"
+          contentFit="contain"
           accessibilityLabel={name}
         />
       ) : null}

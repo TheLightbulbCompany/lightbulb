@@ -14,7 +14,7 @@
  * it sits seamlessly on any `colors.cream` page — which is where every mark
  * site is. On a deeper surface it would show its rectangle; use it on cream.
  */
-import { Image } from "react-native";
+import { Image } from "expo-image";
 import type { ImageStyle, StyleProp } from "react-native";
 
 const MARK = require("../../assets/images/mark.png");
@@ -44,7 +44,7 @@ export function LogoMark({
         { width: Math.round(size * ASPECT), height: size, alignSelf: "center" },
         style,
       ]}
-      resizeMode="contain"
+      contentFit="contain"
       accessible={!decorative}
       accessibilityElementsHidden={decorative}
       importantForAccessibility={decorative ? "no-hide-descendants" : "yes"}

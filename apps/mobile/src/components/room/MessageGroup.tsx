@@ -1,7 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import { linkifyMentions, type CanonicalRoomMessage, type MessageAttachment, type RoomMember } from "@lightbulb/shared";
+import { Image } from "expo-image";
 import { useEffect, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { hapticImpact, hapticSelection } from "../../lib/haptics";
@@ -75,7 +76,7 @@ function AttachmentThumbnail({
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
       {uri ? (
-        <Image source={{ uri }} style={styles.image} resizeMode="cover" />
+        <Image source={{ uri }} style={styles.image} contentFit="cover" />
       ) : (
         <View style={[styles.image, styles.imagePending]} />
       )}

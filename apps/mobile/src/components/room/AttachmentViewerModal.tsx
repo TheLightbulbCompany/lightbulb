@@ -1,10 +1,10 @@
 import { SymbolView } from "expo-symbols";
 import { File, Paths } from "expo-file-system";
+import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -105,7 +105,7 @@ function ZoomableImage({ uri, label }: { uri: string; label: string }) {
       showsVerticalScrollIndicator={false}
     >
       <Pressable onPress={handleTap} accessibilityLabel={label} accessibilityRole="image">
-        <Image source={{ uri }} style={{ width, height }} resizeMode="contain" />
+        <Image source={{ uri }} style={{ width, height }} contentFit="contain" />
       </Pressable>
     </ScrollView>
   );

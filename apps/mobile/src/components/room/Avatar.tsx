@@ -79,7 +79,7 @@ export function Avatar({
           style={[styles.sharing, { width: Math.max(10, size * 0.42), height: Math.max(10, size * 0.42) }]}
           accessibilityLabel="Sharing a terminal session"
         >
-          <SymbolView name="terminal" size={Math.max(7, size * 0.28)} tintColor={colors.white} />
+          <SymbolView accessibilityElementsHidden name="terminal" size={Math.max(7, size * 0.28)} tintColor={colors.white} />
         </View>
       )}
     </View>

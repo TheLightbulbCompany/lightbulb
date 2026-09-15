@@ -145,7 +145,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
     <View style={styles.page}>
       <View style={styles.header}>
         <View style={styles.searchPill}>
-          <SymbolView name="magnifyingglass" size={14} tintColor={colors.placeholder} />
+          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.placeholder} />
           <TextInput
             style={styles.searchInput}
             placeholder="Search"
@@ -164,7 +164,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           accessibilityLabel="New message"
           style={[styles.pencil, pencilScale.style]}
         >
-          <SymbolView name="square.and.pencil" size={16} tintColor={colors.cream} />
+          <SymbolView accessibilityElementsHidden name="square.and.pencil" size={16} tintColor={colors.cream} />
         </AnimatedPressable>
       </View>
       <FlatList
@@ -218,6 +218,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
               style={({ pressed }) => [styles.sectionRow, pressed && styles.sectionPressed]}
             >
               <SymbolView
+                accessibilityElementsHidden
                 name={collapsed.has(item.title) ? "chevron.right" : "chevron.down"}
                 size={14}
                 tintColor={colors.muteSoft}

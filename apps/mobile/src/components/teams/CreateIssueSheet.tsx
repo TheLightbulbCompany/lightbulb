@@ -227,7 +227,7 @@ export function CreateIssueSheet({
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <>
-                <SymbolView name="plus" size={15} tintColor={colors.white} />
+                <SymbolView accessibilityElementsHidden name="plus" size={15} tintColor={colors.white} />
                 <Text style={styles.createText}>Create</Text>
               </>
             )}

@@ -183,7 +183,7 @@ function EditableRow({
     >
       <Text style={styles.propLabel}>{label}</Text>
       <View style={styles.editValue}>{children}</View>
-      <SymbolView name="chevron.down" size={15} tintColor={colors.muteSoft} />
+      <SymbolView accessibilityElementsHidden name="chevron.down" size={15} tintColor={colors.muteSoft} />
     </Pressable>
   );
 }
@@ -566,7 +566,7 @@ function ReadyBody({
             accessibilityRole="button"
             accessibilityLabel="Edit description"
           >
-            <SymbolView name="pencil" size={13} tintColor={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="pencil" size={13} tintColor={colors.mute} />
           </Pressable>
         </View>
         {issue.description != null && issue.description.trim() !== "" ? (
@@ -627,7 +627,7 @@ function ReadyBody({
           accessibilityRole="button"
           accessibilityLabel="Add sub-issue"
         >
-          <SymbolView name="plus" size={15} tintColor={colors.forest} />
+          <SymbolView accessibilityElementsHidden name="plus" size={15} tintColor={colors.forest} />
           <Text style={styles.addChildText}>Add sub-issue</Text>
         </Pressable>
       </View>

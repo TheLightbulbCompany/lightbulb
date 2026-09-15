@@ -56,6 +56,7 @@ export function ApprovalCard({
   const Body = (
     <View style={styles.head}>
       <SymbolView
+        accessibilityElementsHidden
         name="shield"
         size={16}
         tintColor={colors.forest}
@@ -72,7 +73,7 @@ export function ApprovalCard({
         )}
       </View>
       {canOpen ? (
-        <SymbolView name="chevron.right" size={16} tintColor={colors.muteSoft} />
+        <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.muteSoft} />
       ) : null}
     </View>
   );
@@ -110,7 +111,7 @@ export function ApprovalCard({
               accessibilityRole="button"
               accessibilityLabel={`Approve ${label}`}
             >
-              <SymbolView name="checkmark" size={14} tintColor={colors.white} />
+              <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={colors.white} />
               <Text style={styles.approveText}>Approve</Text>
             </Pressable>
             <Pressable
@@ -123,7 +124,7 @@ export function ApprovalCard({
               accessibilityRole="button"
               accessibilityLabel={`Reject ${label}`}
             >
-              <SymbolView name="xmark" size={14} tintColor={colors.errorText} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={colors.errorText} />
               <Text style={styles.rejectText}>Reject</Text>
             </Pressable>
           </View>

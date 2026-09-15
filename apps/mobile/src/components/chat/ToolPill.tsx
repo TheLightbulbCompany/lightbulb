@@ -62,6 +62,7 @@ export function ToolPill({
           {label}
         </Text>
         <SymbolView
+          accessibilityElementsHidden
           name={expanded ? "chevron.down" : "chevron.right"}
           size={12}
           tintColor={trio.text}

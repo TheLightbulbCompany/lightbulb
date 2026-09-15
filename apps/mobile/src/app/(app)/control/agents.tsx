@@ -143,7 +143,7 @@ function CreateAgentModal({
               accessibilityRole="button"
               accessibilityLabel="Close"
             >
-              <SymbolView name="xmark" size={18} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={18} tintColor={colors.mute} />
             </Pressable>
           </View>
 
@@ -393,7 +393,7 @@ export default function AgentsPanel() {
               accessibilityRole="button"
               accessibilityLabel="New agent"
             >
-              <SymbolView name="plus" size={22} tintColor={colors.forest} />
+              <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={colors.forest} />
             </Pressable>
           ),
         }}

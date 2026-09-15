@@ -109,7 +109,7 @@ function DeviceCard({ row, onOpen }: { row: DeviceRow; onOpen: (session: LocalSe
     return (
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <SymbolView name="terminal" size={16} tintColor={colors.inkSoft} />
+          <SymbolView accessibilityElementsHidden name="terminal" size={16} tintColor={colors.inkSoft} />
           <Text style={styles.cardTitle}>Paired CLI endpoint · {row.deviceId.slice(0, 8)}</Text>
         </View>
         <Text style={styles.meta}>Availability unknown · no Mac association verified</Text>
@@ -119,7 +119,7 @@ function DeviceCard({ row, onOpen }: { row: DeviceRow; onOpen: (session: LocalSe
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
-        <SymbolView name="desktopcomputer" size={16} tintColor={colors.inkSoft} />
+        <SymbolView accessibilityElementsHidden name="desktopcomputer" size={16} tintColor={colors.inkSoft} />
         <Text style={styles.cardTitle}>Mac · {row.deviceId.slice(0, 8)}</Text>
       </View>
       {row.pairedLabel && <Text style={styles.meta}>{row.pairedLabel}</Text>}
@@ -140,7 +140,7 @@ function DeviceCard({ row, onOpen }: { row: DeviceRow; onOpen: (session: LocalSe
               {session.cwdName ? ` · ~/${session.cwdName}` : ""}
             </Text>
           </View>
-          <SymbolView name="chevron.right" size={16} tintColor={colors.mute} />
+          <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.mute} />
         </Pressable>
       ))}
       {row.sessions.length === 0 && <Text style={styles.meta}>No shared local sessions.</Text>}

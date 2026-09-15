@@ -146,6 +146,7 @@ export default function RunDetailScreen() {
     return (
       <View style={[styles.page, styles.centered]}>
         <SymbolView
+          accessibilityElementsHidden
           name={isSubscription ? "lock" : "network.slash"}
           size={28}
           tintColor={colors.mute}
@@ -173,7 +174,7 @@ export default function RunDetailScreen() {
   if (state.kind === "error") {
     return (
       <View style={[styles.page, styles.centered]}>
-        <SymbolView name="exclamationmark.circle" size={28} tintColor={colors.danger} />
+        <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={28} tintColor={colors.danger} />
         <Text style={styles.stateTitle}>Failed to load run</Text>
         <Text style={styles.stateDetail}>{state.message}</Text>
         <ActionButton label="Retry" onPress={() => void retry()} />

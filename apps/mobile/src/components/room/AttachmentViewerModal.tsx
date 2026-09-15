@@ -124,7 +124,7 @@ function AttachmentFallbackCard({
   return (
     <View style={styles.center}>
       <View style={styles.card}>
-        <SymbolView name="doc" size={40} tintColor={colors.cream} />
+        <SymbolView accessibilityElementsHidden name="doc" size={40} tintColor={colors.cream} />
         <Text style={styles.cardName} numberOfLines={2}>
           {attachment.fileName}
         </Text>
@@ -141,7 +141,7 @@ function AttachmentFallbackCard({
           {busy ? (
             <ActivityIndicator size="small" color={colors.forest} />
           ) : (
-            <SymbolView name="square.and.arrow.up" size={16} tintColor={colors.forest} />
+            <SymbolView accessibilityElementsHidden name="square.and.arrow.up" size={16} tintColor={colors.forest} />
           )}
           <Text style={styles.cardButtonText}>Open</Text>
         </Pressable>
@@ -290,7 +290,7 @@ export function AttachmentViewerModal({
               {sharing ? (
                 <ActivityIndicator size="small" color={colors.cream} />
               ) : (
-                <SymbolView name="square.and.arrow.up" size={20} tintColor={colors.cream} />
+                <SymbolView accessibilityElementsHidden name="square.and.arrow.up" size={20} tintColor={colors.cream} />
               )}
             </Pressable>
             <Pressable
@@ -299,7 +299,7 @@ export function AttachmentViewerModal({
               accessibilityLabel="Close"
               style={styles.iconButton}
             >
-              <SymbolView name="xmark" size={22} tintColor={colors.cream} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={22} tintColor={colors.cream} />
             </Pressable>
           </View>
         </View>
@@ -321,7 +321,7 @@ export function AttachmentViewerModal({
               accessibilityLabel="Previous attachment"
               style={[styles.iconButton, !canPrev && styles.iconButtonDisabled]}
             >
-              <SymbolView name="chevron.left" size={22} tintColor={colors.cream} />
+              <SymbolView accessibilityElementsHidden name="chevron.left" size={22} tintColor={colors.cream} />
             </Pressable>
             <Text style={styles.pagerLabel}>
               {index + 1} of {attachments.length}
@@ -333,7 +333,7 @@ export function AttachmentViewerModal({
               accessibilityLabel="Next attachment"
               style={[styles.iconButton, !canNext && styles.iconButtonDisabled]}
             >
-              <SymbolView name="chevron.right" size={22} tintColor={colors.cream} />
+              <SymbolView accessibilityElementsHidden name="chevron.right" size={22} tintColor={colors.cream} />
             </Pressable>
           </View>
         ) : null}

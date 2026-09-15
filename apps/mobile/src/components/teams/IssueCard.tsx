@@ -79,7 +79,7 @@ function PriorityIndicator({ priority }: { priority: string | null | undefined }
   if (!icon) return null;
   return (
     <View style={styles.priority}>
-      <SymbolView name={icon} size={13} tintColor={color} />
+      <SymbolView accessibilityElementsHidden name={icon} size={13} tintColor={color} />
     </View>
   );
 }
@@ -170,7 +170,7 @@ function IssueCardBase({
               accessibilityLabel="Change status"
               style={({ pressed }) => [styles.moveBtn, pressed && styles.moveBtnPressed]}
             >
-              <SymbolView name="ellipsis" size={16} tintColor={colors.muteSoft} />
+              <SymbolView accessibilityElementsHidden name="ellipsis" size={16} tintColor={colors.muteSoft} />
             </Pressable>
           </View>
         </View>

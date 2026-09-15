@@ -104,7 +104,7 @@ export default function ControlIndex() {
               accessibilityLabel={panel.label}
             >
               <View style={styles.iconTile}>
-                <SymbolView name={panel.icon} size={16} tintColor={colors.forest} />
+                <SymbolView accessibilityElementsHidden name={panel.icon} size={16} tintColor={colors.forest} />
               </View>
               <View style={styles.rowText}>
                 <Text style={styles.rowLabel} numberOfLines={1}>
@@ -114,7 +114,7 @@ export default function ControlIndex() {
                   {panel.description}
                 </Text>
               </View>
-              <SymbolView name="chevron.right" size={18} tintColor={colors.muteSoft} />
+              <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
             </Pressable>
           </Fragment>
         ))}

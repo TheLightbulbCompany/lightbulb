@@ -79,6 +79,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <SymbolView
+                accessibilityElementsHidden
                 name="arrow.up"
                 size={16}
                 tintColor={colors.white}

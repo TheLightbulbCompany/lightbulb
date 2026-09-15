@@ -415,7 +415,7 @@ export function RoomComposer({
             {uploading ? (
               <ActivityIndicator size="small" color={colors.mute} />
             ) : (
-              <SymbolView name="photo" size={18} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="photo" size={18} tintColor={colors.mute} />
             )}
           </Pressable>
           {onAbort && !hasContent ? (
@@ -425,7 +425,7 @@ export function RoomComposer({
               accessibilityRole="button"
               accessibilityLabel="Stop"
             >
-              <SymbolView name="stop.fill" size={14} tintColor={colors.white} />
+              <SymbolView accessibilityElementsHidden name="stop.fill" size={14} tintColor={colors.white} />
             </Pressable>
           ) : (
             <AnimatedPressable
@@ -450,7 +450,7 @@ export function RoomComposer({
               {sending ? (
                 <ActivityIndicator size="small" color={colors.white} />
               ) : (
-                <SymbolView name="arrow.up" size={16} tintColor={colors.white} />
+                <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={colors.white} />
               )}
             </AnimatedPressable>
           )}

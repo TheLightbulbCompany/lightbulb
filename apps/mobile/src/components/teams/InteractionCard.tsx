@@ -60,7 +60,7 @@ function summaryLine(interaction: IssueInteraction): string {
 function Checkbox({ checked }: { checked: boolean }) {
   return (
     <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-      {checked ? <SymbolView name="checkmark" size={12} tintColor={colors.white} /> : null}
+      {checked ? <SymbolView accessibilityElementsHidden name="checkmark" size={12} tintColor={colors.white} /> : null}
     </View>
   );
 }
@@ -140,7 +140,7 @@ export function InteractionCard({
   return (
     <View style={styles.card}>
       <View style={styles.head}>
-        <SymbolView name="questionmark.circle" size={16} tintColor={colors.forest} style={styles.headIcon} />
+        <SymbolView accessibilityElementsHidden name="questionmark.circle" size={16} tintColor={colors.forest} style={styles.headIcon} />
         <View style={styles.headText}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.meta} numberOfLines={1}>
@@ -156,6 +156,7 @@ export function InteractionCard({
       {!pending ? (
         <View style={styles.resolvedRow}>
           <SymbolView
+            accessibilityElementsHidden
             name={
               interaction.status === "accepted" || interaction.status === "answered"
                 ? "checkmark.circle"
@@ -334,7 +335,7 @@ export function InteractionCard({
                     accessibilityRole="button"
                     accessibilityLabel={payload?.acceptLabel ?? "Accept"}
                   >
-                    <SymbolView name="checkmark" size={14} tintColor={colors.white} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={colors.white} />
                     <Text style={styles.acceptText}>
                       {payload?.acceptLabel ?? "Accept"}
                     </Text>

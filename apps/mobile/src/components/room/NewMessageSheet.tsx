@@ -279,7 +279,7 @@ export function NewMessageSheet({
           </>
         ) : null}
         <View style={styles.searchPill}>
-          <SymbolView name="magnifyingglass" size={14} tintColor={colors.placeholder} />
+          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.placeholder} />
           <TextInput
             style={styles.searchInput}
             placeholder="Search people and agents"
@@ -328,7 +328,7 @@ export function NewMessageSheet({
                 <Text style={styles.name} numberOfLines={1}>
                   {item.displayName}
                 </Text>
-                {chosen ? <SymbolView name="checkmark" size={16} tintColor={colors.forest} /> : null}
+                {chosen ? <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} /> : null}
               </Pressable>
             );
           }}

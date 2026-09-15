@@ -87,7 +87,7 @@ export default function SessionScreen() {
             .catch(() => {})
         }
       >
-        <SymbolView name="bubble.left" size={20} tintColor={colors.inkSoft} />
+        <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={colors.inkSoft} />
       </Pressable>
     ) : undefined,
   };
@@ -254,7 +254,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, live, ow
           accessibilityRole="button"
           accessibilityLabel="Scroll to bottom"
         >
-          <SymbolView name="arrow.down" size={16} tintColor={colors.white} />
+          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
         </Pressable>
       )}
       <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />

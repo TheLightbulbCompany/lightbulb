@@ -125,7 +125,7 @@ export function MessageActionsSheet({
             accessibilityRole="button"
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
           >
-            <SymbolView name={icon} size={16} tintColor={colors.inkSoft} />
+            <SymbolView accessibilityElementsHidden name={icon} size={16} tintColor={colors.inkSoft} />
             <Text style={styles.rowLabel}>{label}</Text>
           </Pressable>
         ))}

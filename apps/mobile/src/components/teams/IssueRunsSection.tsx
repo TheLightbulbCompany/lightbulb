@@ -61,7 +61,7 @@ export function IssueRunsSection({
                 {agentName(run.agentId)}
               </Text>
               {when ? <Text style={styles.when}>{timeAgo(when)}</Text> : null}
-              <SymbolView name="chevron.right" size={14} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="chevron.right" size={14} tintColor={colors.mute} />
             </View>
             {errorSnippet ? (
               <Text style={styles.error} numberOfLines={2}>

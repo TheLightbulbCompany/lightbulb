@@ -45,7 +45,7 @@ export function SessionPromptRow({ session, text, onChangeText, command }: {
             accessibilityState={{ disabled: sendDisabled }}
             style={[styles.send, sendDisabled && styles.sendDisabled]}
           >
-            <SymbolView name="arrow.up" size={18} tintColor={colors.white} />
+            <SymbolView accessibilityElementsHidden name="arrow.up" size={18} tintColor={colors.white} />
           </Pressable>
         </View>
       )}

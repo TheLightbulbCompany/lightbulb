@@ -78,6 +78,7 @@ export function WorkProductsSection({
           <View key={wp.id} style={styles.card}>
             <View style={styles.rowHead}>
               <SymbolView
+                accessibilityElementsHidden
                 name={WORK_PRODUCT_ICON[wp.type] ?? "cube"}
                 size={15}
                 tintColor={colors.forest}
@@ -114,7 +115,7 @@ export function WorkProductsSection({
                   accessibilityRole="button"
                   accessibilityLabel={`Approve ${wp.title}`}
                 >
-                  <SymbolView name="checkmark" size={13} tintColor={colors.white} />
+                  <SymbolView accessibilityElementsHidden name="checkmark" size={13} tintColor={colors.white} />
                   <Text style={styles.approveText}>Approve</Text>
                 </Pressable>
                 <Pressable
@@ -165,7 +166,7 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
               accessibilityState={{ expanded: open }}
               accessibilityLabel={doc.title ?? doc.key}
             >
-              <SymbolView name="doc.text" size={15} tintColor={colors.forest} style={styles.rowIcon} />
+              <SymbolView accessibilityElementsHidden name="doc.text" size={15} tintColor={colors.forest} style={styles.rowIcon} />
               <View style={styles.rowText}>
                 <Text style={styles.rowTitle} numberOfLines={1}>
                   {doc.title ?? doc.key}
@@ -175,6 +176,7 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
                 ) : null}
               </View>
               <SymbolView
+                accessibilityElementsHidden
                 name={open ? "chevron.up" : "chevron.down"}
                 size={15}
                 tintColor={colors.muteSoft}
@@ -236,6 +238,7 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
         accessibilityLabel={isImage ? `Preview ${name}` : name}
       >
         <SymbolView
+          accessibilityElementsHidden
           name={isImage ? "photo" : "paperclip"}
           size={15}
           tintColor={colors.forest}
@@ -251,6 +254,7 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
           <ActivityIndicator size="small" color={colors.mute} />
         ) : isImage ? (
           <SymbolView
+            accessibilityElementsHidden
             name={preview ? "chevron.up" : "eye"}
             size={15}
             tintColor={colors.muteSoft}

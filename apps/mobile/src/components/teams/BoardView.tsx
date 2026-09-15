@@ -167,7 +167,7 @@ export function BoardView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<SymbolView name="lock" size={28} tintColor={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
             title="Teams requires an active subscription"
             detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
             action={
@@ -183,7 +183,7 @@ export function BoardView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView name="network.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}

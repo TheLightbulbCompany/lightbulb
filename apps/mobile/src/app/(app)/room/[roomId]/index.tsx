@@ -388,7 +388,7 @@ function Conversation() {
           accessibilityRole="button"
           accessibilityLabel="Jump to latest"
         >
-          <SymbolView name="arrow.down" size={16} tintColor={colors.white} />
+          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
         </AnimatedPressable>
       )}
       {(() => {

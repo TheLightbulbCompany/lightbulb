@@ -115,7 +115,7 @@ export function PickerSheet({
                     {option.label}
                   </Text>
                   {active ? (
-                    <SymbolView name="checkmark" size={16} tintColor={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} />
                   ) : (
                     <View style={styles.checkSpacer} />
                   )}

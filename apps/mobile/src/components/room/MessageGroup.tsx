@@ -65,7 +65,7 @@ function AttachmentThumbnail({
         accessibilityLabel={label}
         style={({ pressed }) => [styles.fileRow, pressed && styles.fileRowPressed]}
       >
-        <SymbolView name="doc" size={16} tintColor={colors.mute} />
+        <SymbolView accessibilityElementsHidden name="doc" size={16} tintColor={colors.mute} />
         <Text style={styles.fileRowName} numberOfLines={1}>
           {attachment.fileName}
         </Text>
@@ -282,7 +282,7 @@ export function LocalMessageRows({
               onPress={() => onRetry(message.messageId)}
               accessibilityRole="button"
             >
-              <SymbolView name="exclamationmark.circle" size={12} tintColor={colors.errorText} />
+              <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={12} tintColor={colors.errorText} />
               <Text style={styles.unsentText}>Not sent · tap to retry</Text>
             </Pressable>
           ) : null}

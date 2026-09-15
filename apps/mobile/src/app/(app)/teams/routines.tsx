@@ -132,6 +132,7 @@ export default function RoutinesScreen() {
     return (
       <View style={[styles.page, styles.centered]}>
         <SymbolView
+          accessibilityElementsHidden
           name={isSubscription ? "lock" : "network.slash"}
           size={28}
           tintColor={colors.mute}
@@ -181,7 +182,7 @@ export default function RoutinesScreen() {
       }
       ListEmptyComponent={
         <View style={styles.centered}>
-          <SymbolView name="repeat" size={28} tintColor={colors.mute} />
+          <SymbolView accessibilityElementsHidden name="repeat" size={28} tintColor={colors.mute} />
           <Text style={styles.stateTitle}>No routines yet</Text>
           <Text style={styles.stateDetail}>
             Create scheduled automations for your agents on flickmeon.ai.

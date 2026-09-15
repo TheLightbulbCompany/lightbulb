@@ -61,7 +61,7 @@ export default function More() {
               accessibilityLabel={row.label}
             >
               <View style={styles.iconTile}>
-                <SymbolView name={row.icon} size={16} tintColor={colors.forest} />
+                <SymbolView accessibilityElementsHidden name={row.icon} size={16} tintColor={colors.forest} />
               </View>
               <View style={styles.rowText}>
                 <Text style={styles.rowLabel} numberOfLines={1}>
@@ -71,7 +71,7 @@ export default function More() {
                   {row.description}
                 </Text>
               </View>
-              <SymbolView name="chevron.right" size={18} tintColor={colors.muteSoft} />
+              <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
             </Pressable>
           </Fragment>
         ))}

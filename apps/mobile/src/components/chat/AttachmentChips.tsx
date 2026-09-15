@@ -37,7 +37,7 @@ export function AttachmentChips({
               accessibilityLabel={`Preview ${a.name}`}
             />
           ) : (
-            <SymbolView name="doc" size={12} tintColor={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="doc" size={12} tintColor={colors.mute} />
           )}
           <Text style={styles.name} numberOfLines={1}>
             {a.name}
@@ -49,7 +49,7 @@ export function AttachmentChips({
             accessibilityRole="button"
             accessibilityLabel={`Remove ${a.name}`}
           >
-            <SymbolView name="xmark" size={12} tintColor={colors.placeholder} />
+            <SymbolView accessibilityElementsHidden name="xmark" size={12} tintColor={colors.placeholder} />
           </Pressable>
         </View>
       ))}

@@ -81,7 +81,7 @@ function ListingRow({ item }: { item: Listing }) {
           {byline}
         </Text>
       </View>
-      <SymbolView name="chevron.right" size={18} tintColor={colors.muteSoft} />
+      <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
     </Pressable>
   );
 }
@@ -165,7 +165,7 @@ export default function MarketplacePanel() {
   return (
     <View style={styles.page}>
       <View style={styles.searchWrap}>
-        <SymbolView name="magnifyingglass" size={16} tintColor={colors.mute} />
+        <SymbolView accessibilityElementsHidden name="magnifyingglass" size={16} tintColor={colors.mute} />
         <TextInput
           style={styles.searchInput}
           value={query}
@@ -184,7 +184,7 @@ export default function MarketplacePanel() {
             accessibilityRole="button"
             accessibilityLabel="Clear search"
           >
-            <SymbolView name="xmark" size={16} tintColor={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="xmark" size={16} tintColor={colors.mute} />
           </Pressable>
         )}
       </View>

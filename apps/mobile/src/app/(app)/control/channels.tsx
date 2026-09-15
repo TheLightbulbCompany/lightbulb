@@ -230,6 +230,7 @@ export default function ChannelsPanel() {
 
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.content}
       refreshControl={

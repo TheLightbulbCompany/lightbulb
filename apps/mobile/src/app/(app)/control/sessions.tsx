@@ -292,6 +292,7 @@ export default function SessionsPanel() {
   } else {
     body = (
       <FlatList
+        contentInsetAdjustmentBehavior="automatic"
         data={sessions}
         keyExtractor={(s) => s.key}
         style={styles.list}

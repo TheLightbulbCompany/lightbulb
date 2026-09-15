@@ -450,6 +450,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
 
   return (
     <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       contentContainerStyle={styles.dashContent}
       refreshControl={
@@ -551,6 +552,7 @@ function ApprovalsView() {
   const empty = pending.length === 0;
   return (
     <FlatList
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       data={pending}
       keyExtractor={(item) => item.id}
@@ -825,6 +827,8 @@ function InboxView() {
     <View style={styles.page}>
       {controls}
       <FlatList
+        contentInsetAdjustmentBehavior="automatic"
+        automaticallyAdjustKeyboardInsets
         style={styles.page}
         data={state.items}
         keyExtractor={(item) => item.id}

@@ -156,6 +156,8 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
         </AnimatedPressable>
       </View>
       <FlatList
+        contentInsetAdjustmentBehavior="automatic"
+        automaticallyAdjustKeyboardInsets
         data={data}
         keyExtractor={(row) => (row.kind === "header" ? row.title : row.room.roomId)}
         contentContainerStyle={[styles.list, data.length === 0 && styles.listGrow]}

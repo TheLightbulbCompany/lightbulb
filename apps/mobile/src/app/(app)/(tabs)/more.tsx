@@ -39,7 +39,11 @@ const ROWS: MoreRow[] = [
 
 export default function More() {
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.page}
+      contentContainerStyle={styles.content}
+      contentInsetAdjustmentBehavior="automatic"
+    >
       <View style={styles.card}>
         {ROWS.map((row, i) => (
           <Fragment key={row.label}>

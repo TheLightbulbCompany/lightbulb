@@ -266,6 +266,7 @@ export default function SkillsPanel() {
   } else {
     body = (
       <FlatList
+        contentInsetAdjustmentBehavior="automatic"
         data={entries}
         keyExtractor={(e) =>
           e.type === "header" ? `h-${e.state}` : `s-${e.skill.key}`

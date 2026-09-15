@@ -88,7 +88,11 @@ const PANELS: PanelRow[] = [
 
 export default function ControlIndex() {
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.page}
+      contentContainerStyle={styles.content}
+      contentInsetAdjustmentBehavior="automatic"
+    >
       <Text style={styles.overline}>PANELS</Text>
       <View style={styles.card}>
         {PANELS.map((panel, i) => (

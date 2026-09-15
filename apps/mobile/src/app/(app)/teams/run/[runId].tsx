@@ -195,7 +195,11 @@ export default function RunDetailScreen() {
   const trigger = [run.invocationSource, run.triggerDetail].filter(Boolean).join(" · ");
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.page}
+      contentContainerStyle={styles.content}
+      contentInsetAdjustmentBehavior="automatic"
+    >
       <Stack.Screen options={{ title: `Run — ${agentName}` }} />
 
       <View style={styles.headerBlock}>

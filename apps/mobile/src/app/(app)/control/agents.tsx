@@ -344,6 +344,7 @@ export default function AgentsPanel() {
   } else {
     body = (
       <FlatList
+        contentInsetAdjustmentBehavior="automatic"
         data={agents}
         keyExtractor={(a) => a.id}
         style={styles.list}

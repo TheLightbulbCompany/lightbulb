@@ -163,6 +163,7 @@ export default function RoutinesScreen() {
   const empty = state.routines.length === 0;
   return (
     <FlatList
+      contentInsetAdjustmentBehavior="automatic"
       style={styles.page}
       data={state.routines}
       keyExtractor={(r) => r.id}

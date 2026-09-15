@@ -198,15 +198,6 @@ jobs:
     # past 25m on a hosted runner.
     timeout-minutes: 90
     steps:
-      # The build plus the SOCI convert hold about three copies of a ~16 GB
-      # image. The runner image ships toolchains this job never uses; drop the
-      # big ones first and print what is left, so a disk shortfall shows here
-      # instead of as a late convert failure.
-      - name: Free disk
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost 2>/dev/null || true
-          df -h / /tmp /var/tmp 2>/dev/null | tail -4
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -279,8 +270,11 @@ jobs:
           BASE_DIGEST: ${{ steps.meta.outputs.base_digest }}
         run: |
           set -euo pipefail
+          # JSON, not '{{.Manifest.Digest}}': buildx 0.23.0 (what the Blacksmith
+          # runner ships) treats any template starting with {{.Manifest as a
+          # request for the human-readable summary and prints that instead.
           RESOLVED_DIGEST=$(docker buildx imagetools inspect \
-            "${BASE_IMAGE}" --format '{{.Manifest.Digest}}')
+            "${BASE_IMAGE}" --format '{{json .Manifest}}' | jq -r .digest)
           printf '%s\n' "${RESOLVED_DIGEST}" \
             | node scripts/openclaw-image-proof.mjs digest "${BASE_DIGEST}"
 

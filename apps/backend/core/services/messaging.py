@@ -1031,15 +1031,19 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
         messaging_repo.get_room(room_id),
         messaging_repo.get_member(room_id, "human", user_id),
     )
-    if meta is None or meta.get("ownerId") != owner_id:
+    if meta is None:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
-    if member is None:
+    if member is not None and messaging_repo.member_home(member) == owner_id:
+        return meta, member
+    # A human of the room's own workspace who lost access keeps the reconcile hint;
+    # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.
+    if member is None and meta.get("ownerId") == owner_id:
         raise ApiProblem(
             "ROOM_FORBIDDEN",
             "You no longer have access to this room.",
             reconcile_from_seq=int(meta.get("lastSeq", 0)),
         )
-    return meta, member
+    raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
 
 
 async def require_room_admin(owner_id: str, user_id: str, room_id: str) -> tuple[dict, dict]:
@@ -1445,7 +1449,8 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
     revision = int(meta["revision"]) + 1
     notices: list[dict] = []
     for human in humans:
-        key = await messaging_repo.ensure_user_stream(meta["ownerId"], human["id"])
+        home = messaging_repo.member_home(human)
+        key = await messaging_repo.ensure_user_stream(home, human["id"])
         removed = human["id"] == member_id
         event = make_live_event(
             "room.access.removed" if removed else "room.subscription.rotated",
@@ -1457,7 +1462,7 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
             room_id=meta["roomId"],
             room_revision=revision,
         )
-        notices.append({"userId": human["id"], "channelKey": key, "event": event})
+        notices.append({"userId": human["id"], "ownerId": home, "channelKey": key, "event": event})
     return await messaging_repo.remove_member(
         meta=meta,
         kind="human",
@@ -1476,7 +1481,7 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
         if member is None:
             continue
         meta = await messaging_repo.get_room(room_id)
-        if meta is None or meta.get("ownerId") != owner_id:
+        if meta is None or messaging_repo.member_home(member) != owner_id:
             continue
         await _remove_member_with_notices(meta, "human", user_id)
     await messaging_repo.deactivate_user_stream(owner_id, user_id)

@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import AsyncMock, call
 
 import pytest
+from botocore.exceptions import ClientError
 from core.auth import AuthContext
 from core.services import messaging
 from core.services.messaging import ApiProblem
@@ -423,6 +424,7 @@ async def test_add_vendor_room_member_adds_a_missing_human_with_their_home(vendo
 async def test_add_vendor_room_member_is_a_no_op_without_a_room_or_when_present(vendor, monkeypatch):
     upsert = AsyncMock()
     monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=None))
     assert await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR) is False
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
@@ -444,12 +446,14 @@ async def test_vendor_join_fans_out_to_every_org_owner(vendor, monkeypatch):
     add = AsyncMock(return_value=True)
     monkeypatch.setattr(messaging, "add_vendor_room_member", add)
     rows = [{"owner_id": CUSTOMER}, {"owner_id": "org_other"}, {"owner_id": "user_personal"}, {"owner_id": VENDOR}]
-    monkeypatch.setattr(messaging.container_repo, "scan_all", AsyncMock(return_value=rows))
+    scan_all = AsyncMock(return_value=rows)
+    monkeypatch.setattr(messaging.container_repo, "scan_all", scan_all)
     await messaging.on_org_member_joined(VENDOR, "user_new")
     assert add.await_args_list == [
         call(CUSTOMER, "user_new", home_owner_id=VENDOR),
         call("org_other", "user_new", home_owner_id=VENDOR),
     ]
+    scan_all.assert_awaited_once_with(consistent=True)
 
 
 @pytest.mark.asyncio
@@ -459,3 +463,74 @@ async def test_joins_are_ignored_when_the_feature_is_off(monkeypatch):
     monkeypatch.setattr(messaging, "add_vendor_room_member", add)
     await messaging.on_org_member_joined(CUSTOMER, "user_d")
     add.assert_not_awaited()
+
+
+def _cancelled_write() -> ClientError:
+    return ClientError({"Error": {"Code": "TransactionCanceledException", "Message": "x"}}, "TransactWriteItems")
+
+
+@pytest.mark.asyncio
+async def test_add_vendor_room_member_retries_a_lost_race(vendor, monkeypatch):
+    room_id = messaging.messaging_repo.vendor_room_id(CUSTOMER)
+    meta = {**META, "roomId": room_id}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Vee"))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value="key"))
+    upsert = AsyncMock(side_effect=[_cancelled_write(), {**meta, "revision": 3}])
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+
+    assert await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR) is True
+    assert upsert.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_add_vendor_room_member_is_a_no_op_when_the_race_already_landed(vendor, monkeypatch):
+    room_id = messaging.messaging_repo.vendor_room_id(CUSTOMER)
+    meta = {**META, "roomId": room_id}
+    get_member = AsyncMock(side_effect=[None, _human("user_v", VENDOR)])
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Vee"))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value="key"))
+    upsert = AsyncMock(side_effect=_cancelled_write())
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+
+    assert await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR) is False
+    upsert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_add_vendor_room_member_reraises_a_non_cancellation_client_error(vendor, monkeypatch):
+    room_id = messaging.messaging_repo.vendor_room_id(CUSTOMER)
+    meta = {**META, "roomId": room_id}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Vee"))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value="key"))
+    error = ClientError({"Error": {"Code": "ValidationException", "Message": "x"}}, "TransactWriteItems")
+    upsert = AsyncMock(side_effect=error)
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+
+    with pytest.raises(ClientError):
+        await messaging.add_vendor_room_member(CUSTOMER, "user_v", home_owner_id=VENDOR)
+    upsert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_vendor_fan_out_survives_one_failing_room(vendor, monkeypatch):
+    metrics = []
+    monkeypatch.setattr(messaging, "put_metric", lambda name, **kw: metrics.append(name))
+    add = AsyncMock(side_effect=[RuntimeError("boom"), True])
+    monkeypatch.setattr(messaging, "add_vendor_room_member", add)
+    rows = [{"owner_id": CUSTOMER}, {"owner_id": "org_other"}]
+    monkeypatch.setattr(messaging.container_repo, "scan_all", AsyncMock(return_value=rows))
+
+    await messaging.on_org_member_joined(VENDOR, "user_new")
+
+    assert add.await_args_list == [
+        call(CUSTOMER, "user_new", home_owner_id=VENDOR),
+        call("org_other", "user_new", home_owner_id=VENDOR),
+    ]
+    assert metrics.count("messaging.vendor_room.error") == 1

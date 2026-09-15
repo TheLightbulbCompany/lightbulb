@@ -138,9 +138,11 @@ export default function JoinWorkspacePage() {
       .catch((err) => {
         if (cancelled) return;
         const { message, canRetry } = joinErrorMessage(err);
-        // Leaving after a failure abandons the link. A dead link can never
-        // succeed, so drop it now: a full page load elsewhere must not bounce
-        // back here either.
+        // Leaving through this page abandons the link (dropped on unmount). A
+        // dead link can never succeed, so drop it now too: nothing may route
+        // the tab back to it. A retryable one stays on purpose: a full page
+        // load to /chat brings an org-less tab back here to retry, not to
+        // /onboarding.
         settled.current = true;
         if (!canRetry) window.sessionStorage.removeItem(tokenStorageKey);
         setPhase({ kind: "failed", message, canRetry });

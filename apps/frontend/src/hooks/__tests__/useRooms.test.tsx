@@ -508,9 +508,12 @@ describe("useRooms canonical reconciliation", () => {
   });
 
   it("loads history without waiting for the channel, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {
+    const roomWithWorkspace: typeof room = { ...room, workspaceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" };
+    messaging.getRoom.mockResolvedValue(roomWithWorkspace);
+
     const { result, rerender } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
-    expect(live.claimActiveRoomSubscription).toHaveBeenCalledWith({ roomId: room.roomId, deliveryKey: room.deliveryKey, workspaceId: null });
+    expect(live.claimActiveRoomSubscription).toHaveBeenCalledWith({ roomId: room.roomId, deliveryKey: room.deliveryKey, workspaceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" });
 
     // History does NOT wait for the subscription to be acknowledged. That
     // channel only ever delivered future messages, and any gap is closed by the
@@ -542,7 +545,7 @@ describe("useRooms canonical reconciliation", () => {
     act(() => {
       for (const handler of handlers) handler(rotated);
     });
-    expect(live.claimActiveRoomSubscription).toHaveBeenLastCalledWith({ roomId: room.roomId, deliveryKey: rotated.payload.deliveryKey, workspaceId: null });
+    expect(live.claimActiveRoomSubscription).toHaveBeenLastCalledWith({ roomId: room.roomId, deliveryKey: rotated.payload.deliveryKey, workspaceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" });
     releaseActiveRoomSubscription.mockClear();
 
     act(() => {

@@ -311,12 +311,18 @@ function Conversation() {
             ))}
           </View>
         }
+        // Upright inside the flipped list: the flip that rights every row is
+        // handed to the row through its own `style` prop, which a component
+        // that takes no `style` never applies — so the empty state drew upside
+        // down. This wrapper takes the flip instead.
         ListEmptyComponent={
-          rooms.historyLoading ? (
-            <TimelineSkeleton />
-          ) : (
-            <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
-          )
+          <View style={styles.emptyUpright}>
+            {rooms.historyLoading ? (
+              <TimelineSkeleton />
+            ) : (
+              <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
+            )}
+          </View>
         }
         ListFooterComponent={
           rooms.historyError ? (
@@ -435,6 +441,7 @@ const styles = StyleSheet.create({
   // bottom (against the composer) and `paddingBottom` at the top.
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
+  emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
   headerTitle: { alignItems: "center" },
   // System font, not Source Sans 3 — see `type.navTitle`.
   headerName: type.navTitle,

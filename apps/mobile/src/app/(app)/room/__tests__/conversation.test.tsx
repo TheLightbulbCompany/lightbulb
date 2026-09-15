@@ -291,6 +291,17 @@ describe("conversation screen", () => {
     expect(screen.queryByText("Start a conversation with your agent")).toBeNull();
   });
 
+  // The inverted list hands each row the flip that rights it through the row's
+  // own `style` prop. EmptyState takes no `style`, so the empty state drew
+  // upside down until a wrapper took the flip for it.
+  it("draws the empty state the right way up inside the inverted list", async () => {
+    mockMessages = [];
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("No messages yet")).toBeTruthy());
+    const empty = screen.getByTestId("room-timeline").props.ListEmptyComponent;
+    expect(empty.props.style).toMatchObject({ transform: [{ scaleY: -1 }] });
+  });
+
   it("keeps the keyboard dismissable by drag and taps landing on controls", async () => {
     await render(<Conversation />);
     const list = screen.getByTestId("room-timeline");

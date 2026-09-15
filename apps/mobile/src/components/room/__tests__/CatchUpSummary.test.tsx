@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 
 import { CatchUpSummary } from "../CatchUpSummary";
@@ -20,26 +20,26 @@ const messages: CanonicalRoomMessage[] = [{
 
 describe("CatchUpSummary", () => {
   it("keeps a clearly labeled action in chat and renders a dismissible summary", async () => {
-    render(<CatchUpSummary messages={messages} readSeq={1} offline={false} />);
+    const view = render(<CatchUpSummary messages={messages} readSeq={1} offline={false} />);
 
-    fireEvent.press(screen.getByLabelText("Summary"));
-    expect(screen.getByText("Summarizing…")).toBeTruthy();
-    await waitFor(() => expect(screen.getByText("Main discussion")).toBeTruthy());
-    expect(screen.getByText("Decisions")).toBeTruthy();
-    expect(screen.getByText("Action items")).toBeTruthy();
-    expect(screen.getByText("Open questions")).toBeTruthy();
-    expect(screen.getAllByText("Friday: We agreed to ship today. Who will verify it?").length).toBeGreaterThan(0);
+    fireEvent.press(view.getByLabelText("Summary"));
+    expect(view.getByText("Summarizing…")).toBeTruthy();
+    await waitFor(() => expect(view.getByText("Main discussion")).toBeTruthy());
+    expect(view.getByText("Decisions")).toBeTruthy();
+    expect(view.getByText("Action items")).toBeTruthy();
+    expect(view.getByText("Open questions")).toBeTruthy();
+    expect(view.getAllByText("Friday: We agreed to ship today. Who will verify it?").length).toBeGreaterThan(0);
 
-    fireEvent.press(screen.getByLabelText("Dismiss summary"));
-    expect(screen.queryByLabelText("Conversation summary")).toBeNull();
-    expect(screen.getByLabelText("Summary")).toBeTruthy();
+    fireEvent.press(view.getByLabelText("Dismiss summary"));
+    expect(view.queryByLabelText("Conversation summary")).toBeNull();
+    expect(view.getByLabelText("Summary")).toBeTruthy();
   });
 
   it("shows a recoverable empty state", async () => {
-    render(<CatchUpSummary messages={messages} readSeq={2} offline={false} />);
-    fireEvent.press(screen.getByLabelText("Summary"));
+    const view = render(<CatchUpSummary messages={messages} readSeq={2} offline={false} />);
+    fireEvent.press(view.getByLabelText("Summary"));
 
-    await waitFor(() => expect(screen.getByText("You’re caught up — there are no new messages to summarize.")).toBeTruthy());
+    await waitFor(() => expect(view.getByText("You’re caught up — there are no new messages to summarize.")).toBeTruthy());
   });
 
   it("labels offline scope and retries a generation failure", async () => {
@@ -49,7 +49,7 @@ describe("CatchUpSummary", () => {
     >()
       .mockImplementationOnce(() => { throw new Error("generation failed"); })
       .mockImplementation(buildCatchUpSummary);
-    render(
+    const view = render(
       <CatchUpSummary
         messages={messages}
         readSeq={1}
@@ -58,12 +58,12 @@ describe("CatchUpSummary", () => {
       />,
     );
 
-    fireEvent.press(screen.getByLabelText("Summary"));
-    await waitFor(() => expect(screen.getByText("Couldn’t generate the summary.")).toBeTruthy());
-    expect(screen.getByText("Offline · using messages already loaded on this device.")).toBeTruthy();
+    fireEvent.press(view.getByLabelText("Summary"));
+    await waitFor(() => expect(view.getByText("Couldn’t generate the summary.")).toBeTruthy());
+    expect(view.getByText("Offline · using messages already loaded on this device.")).toBeTruthy();
 
-    fireEvent.press(screen.getByLabelText("Retry summary"));
-    await waitFor(() => expect(screen.getByText("Main discussion")).toBeTruthy());
+    fireEvent.press(view.getByLabelText("Retry summary"));
+    await waitFor(() => expect(view.getByText("Main discussion")).toBeTruthy());
     expect(generate).toHaveBeenCalledTimes(2);
   });
 });

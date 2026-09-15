@@ -48,7 +48,7 @@ export function buildCatchUpSummary(
     .map(clean)
     .filter((line): line is string => line !== null);
   const actionItems = candidates
-    .filter((message) => (
+    .filter((message) => !message.text.includes("?") && (
       /\b(action item|todo|to-do|need to|needs to|will|should|please|follow up|follow-up)\b/i
         .test(message.text)
     ))

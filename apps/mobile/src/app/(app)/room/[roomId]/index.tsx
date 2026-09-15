@@ -231,6 +231,9 @@ function Conversation() {
             {members.length} {members.length === 1 ? "member" : "members"}
           </Text>
         ) : null}
+        {rooms.activeRoom?.shared ? (
+          <Text style={styles.headerMeta}>Shared with Lightbulb</Text>
+        ) : null}
       </View>
     ),
     headerRight: () => (

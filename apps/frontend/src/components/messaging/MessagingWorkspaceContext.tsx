@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -221,34 +221,35 @@ export function MessagingWorkspaceProvider({
   const online = usePresence(rooms.httpReady, scope);
   const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
   const sharing = useMemo(() => new Set(workspaceSessions.sessions.map((session) => session.humanUserId)), [workspaceSessions.sessions]);
-  const humanName = useCallback((id: string) => {
-    const member = humanRoster?.members?.find((candidate) => candidate.userId === id);
-    return member?.name || member?.email || "Workspace member";
-  }, [humanRoster]);
+  // A room member's online/sharing (human) or agentActivity (agent) decoration --
+  // the same ternary every member list below applies to its own room-member array.
+  const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
+    ? { ...member, agentActivity: activityByAgentId.get(member.id) }
+    : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) },
+  [activityByAgentId, online, sharing]);
+  // A roster row's display name, with the same "Workspace member" fallback everywhere one is missing.
+  const rosterName = (member: CompanyMember | undefined) => member?.name || member?.email || "Workspace member";
+  const humanName = useCallback((id: string) => rosterName(humanRoster?.members?.find((candidate) => candidate.userId === id)), [humanRoster]);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
     workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId }))),
     [workspaceSessions.sessions, userId, humanName]);
-  const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
-    ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-    : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online, sharing]);
+  const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
     // `getRoom` fan-out, so until it settled every DM row read "Direct message".
     participants: (room.members ?? [])
       .filter((member) => member.kind !== "human" || member.id !== userId)
-      .map((member) => member.kind === "agent"
-        ? { ...member, agentActivity: activityByAgentId.get(member.id) }
-        : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }),
-  })), [rooms.rooms, activityByAgentId, userId, online, sharing]);
+      .map(decorate),
+  })), [rooms.rooms, userId, decorate]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
     const people = (humanRoster?.members ?? [])
       .filter((member) => member.userId !== userId)
       .map((member) => ({
       kind: "human" as const,
       id: member.userId,
-      displayName: member.name || member.email || "Workspace member",
+      displayName: rosterName(member),
       mentionHandle: null,
       online: online.has(member.userId),
       sharing: sharing.has(member.userId),

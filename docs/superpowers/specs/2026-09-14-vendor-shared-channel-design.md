@@ -171,6 +171,7 @@ caller's workspace".
 | `messaging._remove_member_with_notices` | `ensure_user_stream(home(human), …)` per human; pass that home as the notice's `ownerId`. |
 | `messaging._resolved_member` | Unchanged for the public routes: humans added through the UI must still be in the room's org. The seed and webhook paths build member dicts directly with an explicit `homeOwnerId`. |
 | `routers/messaging.py` attachments | `store_attachment` / `load_attachment` take `meta["ownerId"]` from `require_room_member`, not the caller's workspace, so a file a Lightbulb human posts lands in the customer's EFS where the customer can read it. |
+| `messaging.create_human_message`, `update_message`, `set_reaction` | Every room-scoped write after `require_room_member` keys on `meta["ownerId"]`: the `MSG` row, the `WORK#` outbox and its FIFO group, the edit guard, `_touch_last_interactive_quietly`, `capture_first_workspace_message`, product events. The caller's workspace authorises and names the caller's own user-stream/prefs rows, nothing else. (Amendment 2026-09-14, from the Task 3 review: the first draft assumed these were room-keyed.) |
 | `apps/infra/lambda/messaging-projector/index.py` `_notify_members` | User-stream and reverse-mapping reads use `member.get("homeOwnerId") or ownerId`; the `member.ownerId == room owner` recheck stays (it is still true). Push follows for free. |
 | `routers/webhooks.py` | The two membership handlers call the §4 functions. |
 

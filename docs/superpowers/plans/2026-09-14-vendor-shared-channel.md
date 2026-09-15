@@ -651,6 +651,50 @@ In `upload_room_attachment`, replace the two lines `owner_id = resolve_owner_id(
 
 Make the identical replacement in `get_room_attachment`.
 
+- [ ] **Step 3b (controller ruling after the Task 3 review): every room-scoped write keys on the room owner**
+
+`create_human_message`, `update_message`, and `set_reaction` in `core/services/messaging.py` still pass the CALLER's workspace into repo writes that stamp `ownerId` (the `MSG` row, the `WORK#` outbox and its FIFO group, the edit guard in `messaging_repo.update_message`), into `_touch_last_interactive_quietly`, `capture_first_workspace_message`, and the product events. With a foreign member that mis-keys a vendor human's send to the vendor's container and blocks editing their own message. Rule: the caller's workspace is used for `require_room_member` only; everything after it uses the room's owner.
+
+In each of the three functions, replace the opening lines with this shape (keep everything below unchanged):
+
+```python
+    meta, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
+```
+
+(`update_message` currently discards the tuple — capture `meta`; `set_reaction` already has `meta, _` — keep `meta`.) Do not touch `patch_room_me`, `list_rooms`, `put_sections`, or the user-stream/prefs calls: those are the caller's own rows and stay keyed on the caller's workspace.
+
+Add this test to `test_messaging_shared_rooms.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkeypatch):
+    sender = _human("user_v", VENDOR)
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, sender)))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[sender]))
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Vee"))
+    stored = {**META, "messageId": str(uuid.uuid4()), "messageSeq": 8, "roomRevision": 2, "author": {"kind": "human", "id": "user_v", "displayName": "Vee"},
+              "text": "hi", "mentions": [], "replyToMessageId": None, "threadRootMessageId": None, "createdAt": "2026-09-14T00:00:00Z", "runId": None, "dispatchTargets": []}
+    create = AsyncMock(return_value=(stored, False))
+    monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
+    touched, captured = [], []
+    monkeypatch.setattr(messaging, "_touch_last_interactive_quietly", lambda owner: touched.append(owner) or _noop())
+    monkeypatch.setattr("core.services.onboarding_brief.capture_first_workspace_message", lambda owner, item: captured.append(owner) or _noop())
+    await messaging.create_human_message(
+        AuthContext(user_id="user_v", org_id=VENDOR), ROOM,
+        messaging.CreateMessageRequest(client_message_id=uuid.uuid4(), text="hi", mentions=[], reply_to_message_id=None, thread_root_message_id=None),
+    )
+    assert create.await_args.kwargs["owner_id"] == CUSTOMER
+    assert touched == [CUSTOMER] and captured == [CUSTOMER]
+
+
+async def _noop() -> None:
+    return None
+```
+
+If `create_human_message` awaits other collaborators the mock list above does not cover (read the function; e.g. `_validate_mentions`, `select_dispatch_targets`, telemetry), patch them with the smallest stub that lets the call reach `create_message` — the assertion that matters is the `owner_id` kwarg. `CreateMessageRequest` may require `attachment_ids`; pass `[]` if so.
+
 - [ ] **Step 4: Run the tests**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_messaging_shared_rooms.py tests/unit/services/test_messaging_service_review_findings.py -q`
@@ -660,7 +704,7 @@ Expected: PASS (the existing review-findings attachment test still passes becaus
 
 ```bash
 git add apps/backend/routers/messaging.py apps/backend/tests/unit/services/test_messaging_shared_rooms.py
-git commit -m "fix(messaging): attachments are keyed on the room owner, not the caller"
+git commit -m "fix(messaging): room-scoped writes and attachments key on the room owner, not the caller"
 ```
 
 ---

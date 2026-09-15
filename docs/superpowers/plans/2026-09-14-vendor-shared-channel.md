@@ -1303,33 +1303,14 @@ In `MAINTENANCE.md`, after the "Conversation list" anchor block, add:
 Run: `cd apps/backend && uv run pytest tests/ -q -x` and `cd apps/infra && npx jest`
 Expected: PASS. Then `cd apps/backend && uv run ruff check . && uv run ruff format --check .` clean.
 
-- [ ] **Step 4: Commit and open the backend PR**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add apps/infra/openclaw/skills/lightbulb/references/surfaces.md apps/infra/openclaw/skills/lightbulb/MAINTENANCE.md
 git commit -m "docs(skill): the Lightbulb shared channel"
-git push -u origin feat/vendor-shared-channel
-gh pr create --repo TheLightbulbCompany/lightbulb --title "feat(messaging): vendor shared channel (backend)" --body-file - <<'EOF'
-Every customer workspace gets one platform-managed channel shared with the Lightbulb workspace.
-
-Spec: docs/superpowers/specs/2026-09-14-vendor-shared-channel-design.md (this branch).
-
-- member rows carry `homeOwnerId`; the by-member GSI keys on it (no migration: existing rows already encode it)
-- authorisation, revocation, removal notices, attachments and the projector's private hints follow the member's home
-- `ensure_vendor_room` seeds the room from every org poll on a running container; Clerk membership webhooks keep it complete
-- human add/remove/leave and rename on that room are `ROOM_FORBIDDEN`
-- `RoomSummary` gains `workspaceId` and `shared` (clients follow in the next PR; safe alone)
-- `VENDOR_ORG_ID` per env; empty = off
-
-Both reviewers are down (CLAUDE.md): reviewed the diff with a subagent before merge.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-https://claude.ai/code/session_013yVPnu47Hgjo5N6gfmHXLu
-EOF
 ```
 
-Watch the dev deploy after merge: `gh run list --repo TheLightbulbCompany/lightbulb --workflow deploy.yml --limit 3`, then `gh run watch <id> --exit-status`.
+Push and the PR are NOT part of this task (controller ruling): they happen at the finish, after the whole-branch review. PR title for then: "feat(messaging): vendor shared channel (backend)".
 
 ---
 

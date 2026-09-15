@@ -404,8 +404,23 @@ class OpenClawWorkWorker:
             raise WorkRetry("gateway token unavailable")
         room_members = await messaging_repo.list_members(meta["roomId"])
         members = with_human_handles(room_members, await human_emails(room_members))
+        from core.services import local_sessions
+
+        # Session visibility is workspace-wide, so a room shared with another
+        # organization (#2644) gets no summary.
+        sessions = (
+            []
+            if await messaging_repo.has_foreign_members(meta["roomId"], owner_id)
+            else await local_sessions.live_sessions_for_room(owner_id, meta["roomId"], room_members)
+        )
         body = await build_ingress_body(
-            meta=meta, target_agent_id=member["id"], event_kind=event_kind, message=message, members=members
+            meta=meta,
+            target_agent_id=member["id"],
+            event_kind=event_kind,
+            message=message,
+            members=members,
+            # On the wire only when a session is live; the plugin reads a missing field as [].
+            sessions=sessions or None,
         )
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.

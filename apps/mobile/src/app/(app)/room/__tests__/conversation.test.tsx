@@ -252,6 +252,15 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());
   });
 
+  it("exposes the Summary action without posting into conversation history", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Summary")).toBeTruthy());
+
+    await fireEvent.press(screen.getByLabelText("Summary"));
+    await waitFor(() => expect(screen.getByText("Catch-up summary")).toBeTruthy());
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
   it("marks the room read up to the newest sequence once it is on screen", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));

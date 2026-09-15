@@ -88,6 +88,8 @@ export default function AppLayout() {
             <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
             <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
             <Stack.Screen name="teams/routines" options={{ title: "Routines" }} />
+            {/* Every live shared session in the workspace, grouped by person. */}
+            <Stack.Screen name="sessions" options={{ title: "Shared sessions" }} />
             <Stack.Screen name="control/index" options={{ title: "Control" }} />
             <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
             <Stack.Screen name="control/agents" options={{ title: "Agents" }} />

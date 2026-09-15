@@ -107,7 +107,7 @@ export type {
 export { accessLost, useLocalSessionHistory, useRoomResources } from "./messaging/useRoomResources";
 export type { RoomResourceSource } from "./messaging/useRoomResources";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
-export { canSendToSession, sessionLabel, sessionStatus, unavailableReason } from "./messaging/localSessionLabels";
+export { canSendToSession, sessionLabel, SESSION_STATUS_RANK, sessionStatus, unavailableReason } from "./messaging/localSessionLabels";
 export { COMMAND_MAX_BYTES, receiptCopy, useSessionCommand } from "./messaging/useSessionCommand";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {

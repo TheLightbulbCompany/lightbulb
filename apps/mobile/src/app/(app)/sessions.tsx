@@ -39,7 +39,9 @@ export default function SharedSessionsScreen() {
     try {
       const roomId = session.humanUserId === userId
         ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
-        // A failed resolve just means the tap does nothing; selectRoomError already covers it elsewhere.
+        // A rejected resolve sets rooms.selectRoomError, rendered below (this
+        // screen — unlike web's global banner — is its own error surface);
+        // swallow the throw so the fire-and-forget onPress doesn't reject unhandled.
         : await rooms.selectDm({ kind: "human", id: session.humanUserId }, { activate: false }).catch(() => null);
       if (roomId) router.push(`/(app)/room/${roomId}/session/${session.sessionId}`);
     } finally {
@@ -58,13 +60,18 @@ export default function SharedSessionsScreen() {
           </Pressable>
         </View>
       )}
+      {rooms.selectRoomError && (
+        <View style={styles.errorCard}>
+          <Text accessibilityRole="alert" style={styles.errorText}>{rooms.selectRoomError}</Text>
+        </View>
+      )}
       <SectionList
         sections={sections}
         keyExtractor={(row) => row.sessionId}
         contentContainerStyle={[styles.content, sections.length === 0 && styles.contentEmpty]}
         refreshing={loading}
         onRefresh={() => void refresh()}
-        renderSectionHeader={({ section }) => <Text style={styles.sectionTitle}>{section.title}</Text>}
+        renderSectionHeader={({ section }) => <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>}
         renderItem={({ item }) => (
           <Pressable
             accessibilityRole="button"

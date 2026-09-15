@@ -148,7 +148,7 @@ def check_preconditions(
     resumed = org_override is not None and (org_billing or {}).get("migrated_from") == owner_id
     if not still_entitled(billing) and not (resumed and still_entitled(org_billing)):
         return "not entitled — this is a purge candidate, not a migration"
-    if container is None:
+    if container is None and not resumed:
         return "no containers row — nothing to carry over"
     if pc_row is None:
         return "no paperclip-companies row"
@@ -351,7 +351,7 @@ async def main(argv: list[str]) -> int:
     out.append(
         f"{'APPLY' if args.apply else 'DRY RUN'} env={settings.ENVIRONMENT} owner={owner_id} "
         f"billing={billing.get('subscription_status')} provider={billing.get('provider_choice')} "
-        f"container={container.get('status')} company={pc_row.company_id} "
+        f"container={(container or {}).get('status', 'gone')} company={pc_row.company_id} "
         f"org={'(create ' + name + ')' if args.org is None else args.org}"
     )
     if not args.apply:
@@ -378,7 +378,8 @@ async def main(argv: list[str]) -> int:
         # before that row moves. It also needs S3 read on the replicas bucket,
         # which the backend task role lacks — pass admin credentials in the
         # exec environment (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN) for this run.
-        ("container", _stop_personal_box(owner_id, billing)),
+        # A resume whose personal box was already purged has nothing to stop.
+        ("container", _stop_personal_box(owner_id, billing) if container is not None else _noop("box already gone")),
         ("billing", _move_billing(owner_id, org_id, billing)),
         ("efs", asyncio.to_thread(_rename_efs, owner_id, org_id)),
         ("replicas", asyncio.to_thread(_copy_replicas, owner_id, org_id)),
@@ -396,6 +397,10 @@ async def main(argv: list[str]) -> int:
     out.append(f"next: verify chat/Teams/billing as the user on org {org_id}; then")
     out.append(f"      purge_legacy_personal_workspaces.py --owner {owner_id} --apply")
     return 0
+
+
+async def _noop(note: str) -> str:
+    return note
 
 
 async def _dispatch(dispatch_provision, org_id: str) -> str:

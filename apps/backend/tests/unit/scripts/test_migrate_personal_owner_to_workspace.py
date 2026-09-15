@@ -110,3 +110,8 @@ def test_resume_accepts_a_billing_row_already_moved_to_the_org():
     assert "purge" in check_preconditions(
         USER, None, BOX, _row(), [{"id": ORG}], org_override=ORG, org_billing=stranger
     )
+
+
+def test_resume_tolerates_a_personal_box_already_purged():
+    moved = {"owner_id": ORG, "subscription_status": "active", "migrated_from": USER}
+    assert check_preconditions(USER, None, None, _row(ORG), [{"id": ORG}], org_override=ORG, org_billing=moved) is None

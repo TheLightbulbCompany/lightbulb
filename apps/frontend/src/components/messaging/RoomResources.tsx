@@ -1,17 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Laptop, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { isDockAttached, openSessionPanel } from "@/components/workspace/workspaceController";
 import { useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 
-export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare }: {
+export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare, onSessionOpenChange, resizeHandle }: {
   roomId: string; source: RoomResourceSource; participants: readonly RoomParticipant[]; onClose: () => void;
   target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
+  onSessionOpenChange?: (open: boolean) => void; resizeHandle?: ReactNode;
 }) {
   const [includeEnded, setIncludeEnded] = useState(false);
   // A permalink target is one-shot (RoomPanel clears it via onTargetConsumed
@@ -39,6 +39,8 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
     ? resources.data?.sessions.find(session => session.sessionId === selection.id) : undefined;
   // A revoked selection must not reopen if this session is later shared again.
   if (selection && resources.data && !selected) setSelection(null);
+  const hasSelection = !!selected;
+  useEffect(() => { onSessionOpenChange?.(hasSelection); }, [hasSelection, onSessionOpenChange]);
   const name = (human: string) => participants.find(p => p.kind === "human" && p.id === human)?.displayName ?? "Room member";
   const humans = new Set([
     ...(resources.data?.devices.map(d => d.humanUserId) ?? []),
@@ -67,8 +69,10 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
   return <aside className="room-context" aria-label="Devices & sessions" onKeyDown={event => {
     if (event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
+    {selected && resizeHandle}
     <header className="room-context-header">
       <Button variant="ghost" aria-label={selected ? "Back to devices & sessions" : "Back to conversation"} onClick={back}><ArrowLeft aria-hidden="true" /></Button>
+      {selected && <Button variant="ghost" aria-label="Back to list" onClick={() => { setSelection(null); lastSelected.current = null; }}><ArrowLeft aria-hidden="true" />List</Button>}
       <h3 ref={heading} tabIndex={-1} className="font-semibold room-wrap">{selected ? sessionLabel(selected) : "Devices & sessions"}</h3>
     </header>
     {resources.error && <div role="alert" className="p-4"><p>{resources.error}</p>
@@ -99,7 +103,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
                 <ul aria-label={`Sessions on Mac ${mac.slice(0, 8)}`}>
                   {sessions.map(session => <li key={session.sessionId}><button type="button" className="room-resource-session" aria-label={`Open ${sessionLabel(session)}`}
                     ref={button => { if (button) buttons.current.set(session.sessionId, button); else buttons.current.delete(session.sessionId); }}
-                    onClick={() => { if (isDockAttached()) openSessionPanel(roomId, session.sessionId); else setSelection({ id: session.sessionId, accessRevision: resources.accessRevision }); }}>
+                    onClick={() => setSelection({ id: session.sessionId, accessRevision: resources.accessRevision })}>
                     <span>{sessionLabel(session)}</span><span className="text-sm text-muted-foreground">{sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
                   </button></li>)}
                 </ul>

@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useLocalSessionHistory, useRoomResources, type RoomResourceSource } from "./useRoomResources";
+import { useLocalSessionHistory, usePolledSnapshot, useRoomResources, type RoomResourceSource } from "./useRoomResources";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number): LocalSessionEvent => ({ seq, kind: "text", role: "assistant", text: `e${seq}`, truncated: false });
@@ -16,6 +16,44 @@ const source = {
 } as unknown as RoomResourceSource;
 
 afterEach(() => { cleanup(); vi.useRealTimers(); listResources.mockClear(); });
+
+describe("usePolledSnapshot", () => {
+  // enabled: false, so only the explicit refresh() calls below fetch.
+  const options = { enabled: false, intervalMs: 5000, isHint: () => false };
+
+  it("turns two refreshes during an in-flight fetch into exactly one follow-up fetch", async () => {
+    const pending: Array<() => void> = [];
+    const fetch = vi.fn(() => new Promise<void>(resolve => pending.push(resolve)));
+    const load = async () => { await fetch(); return () => {}; };
+    const { result } = renderHook(() => usePolledSnapshot(load, source, options));
+    act(() => { void result.current.refresh(); });
+    act(() => { void result.current.refresh(); void result.current.refresh(); });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await act(async () => pending[0]());
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await act(async () => pending[1]());
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("discards a response that started before invalidate(), and it cannot settle the new epoch", async () => {
+    const pending: Array<(value: string) => void> = [];
+    const applied: string[] = [];
+    const load = async () => {
+      const value = await new Promise<string>(resolve => pending.push(resolve));
+      return () => { applied.push(value); };
+    };
+    const { result } = renderHook(() => usePolledSnapshot(load, source, options));
+    act(() => { void result.current.refresh(); });
+    act(() => { result.current.invalidate(); void result.current.refresh(); });
+    await act(async () => pending[0]("old epoch"));
+    expect(applied).toEqual([]);
+    expect(result.current.loading).toBe(true); // the new epoch's fetch is still out
+    await act(async () => pending[1]("new epoch"));
+    expect(applied).toEqual(["new epoch"]);
+    expect(result.current.loading).toBe(false);
+  });
+});
 
 describe("useRoomResources enabled gate", () => {
   it("neither fetches nor polls while disabled, then fetches once enabled and polls every 5s", async () => {

@@ -72,8 +72,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const { userId } = useAuth();
   const focused = useIsFocused();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
-  const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);
+  const { sharing } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);

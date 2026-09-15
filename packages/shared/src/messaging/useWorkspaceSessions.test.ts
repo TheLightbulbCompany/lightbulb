@@ -38,6 +38,13 @@ describe("useWorkspaceSessions", () => {
     await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(2));
   });
 
+  it("reports who is sharing, from the same snapshot", async () => {
+    listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "s1", humanUserId: "alice" }, { sessionId: "s2", humanUserId: "alice" }] as never[] });
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+    expect(result.current.sharing).toEqual(new Set(["alice"]));
+  });
+
   it("keeps the last snapshot and reports an error when a refresh fails", async () => {
     listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "s1" } as never] }).mockRejectedValueOnce(new Error("boom"));
     const { result } = renderHook(() => useWorkspaceSessions(source));

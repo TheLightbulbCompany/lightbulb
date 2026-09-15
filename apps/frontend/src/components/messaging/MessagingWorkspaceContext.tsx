@@ -220,7 +220,7 @@ export function MessagingWorkspaceProvider({
 
   const online = usePresence(rooms.httpReady, scope);
   const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
-  const sharing = useMemo(() => new Set(workspaceSessions.sessions.map((session) => session.humanUserId)), [workspaceSessions.sessions]);
+  const sharing = workspaceSessions.sharing;
   // A room member's online/sharing (human) or agentActivity (agent) decoration --
   // the same ternary every member list below applies to its own room-member array.
   const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"

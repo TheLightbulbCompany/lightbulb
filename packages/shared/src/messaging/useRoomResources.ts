@@ -13,6 +13,70 @@ export interface RoomResourceSource {
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
 
+const inRoom = (event: LiveEvent, roomId: string) => "roomId" in event.payload && event.payload.roomId === roomId;
+
+/**
+ * One polled snapshot, coalesced: a refresh() while a fetch is in flight only
+ * queues one follow-up pass. Fetches when enabled, on each `isHint` live event,
+ * every `intervalMs` and on reconnect; `enabled: false` neither fetches nor polls.
+ *
+ * `load` fetches once and resolves to what applies the outcome, success or
+ * failure. It is applied only while that fetch is still current: not after
+ * `invalidate()` started a new epoch, nor once the caller's `blocked` flag is
+ * set. While `blocked` is set refresh() is a no-op; the polling effect clears
+ * it when it starts and sets it when it stops.
+ */
+export function usePolledSnapshot(
+  load: () => Promise<() => void>,
+  { onEvent, connectionRevision }: Pick<RoomResourceSource, "onEvent" | "connectionRevision">,
+  { enabled, intervalMs, isHint, blocked }: {
+    enabled: boolean; intervalMs: number; isHint: (event: LiveEvent) => boolean; blocked?: { current: boolean };
+  },
+) {
+  const [loading, setLoading] = useState(true);
+  const request = useRef(0);
+  const refreshing = useRef(false);
+  const queued = useRef(false);
+  const invalidate = useCallback(() => {
+    request.current += 1;
+    refreshing.current = false;
+    queued.current = false;
+  }, []);
+  const refresh = useCallback(async () => {
+    if (blocked?.current) return;
+    if (refreshing.current) { queued.current = true; return; }
+    refreshing.current = true;
+    const id = ++request.current;
+    const current = () => id === request.current && !blocked?.current;
+    setLoading(true);
+    try {
+      // Hints coalesce; each successful snapshot applies before the queued refresh.
+      do {
+        queued.current = false;
+        const apply = await load();
+        if (!current()) return;
+        apply();
+      } while (queued.current && current());
+    } finally {
+      if (id === request.current) { refreshing.current = false; setLoading(false); }
+    }
+  }, [load, blocked]);
+  useEffect(() => {
+    if (!enabled) return;
+    if (blocked) blocked.current = false;
+    void refresh();
+    const unsubscribe = onEvent(event => { if (isHint(event)) void refresh(); });
+    const timer = setInterval(() => void refresh(), intervalMs);
+    return () => { unsubscribe(); clearInterval(timer); if (blocked) blocked.current = true; invalidate(); };
+  }, [enabled, onEvent, refresh, invalidate, intervalMs, isHint, blocked]);
+  const previousConnection = useRef(connectionRevision);
+  useEffect(() => {
+    if (enabled && previousConnection.current !== connectionRevision) void refresh();
+    previousConnection.current = connectionRevision;
+  }, [enabled, connectionRevision, refresh]);
+  return { loading, setLoading, refresh, invalidate };
+}
+
 /**
  * Mounted only by the open pane, keyed by owner, viewer, room and membership.
  * `enabled: false` neither fetches nor polls (a phone stacks several screens of
@@ -25,85 +89,57 @@ export function useRoomResources(
 ) {
   const [data, setData] = useState<RoomResources | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
   const [accessRevision, setAccessRevision] = useState(0);
-  const request = useRef(0);
   const blocked = useRef(false);
-  const refreshing = useRef(false);
-  const queued = useRef(false);
-  // Coalesced re-runs of the do-while below reuse the `refresh` closure that
+  // Coalesced re-runs of the poller's do-while reuse the `load` closure that
   // was already in flight when a caller queued another pass; without this ref
   // that re-run would fetch with the `includeEnded` captured at the START of
   // the in-flight fetch, silently dropping a toggle flip that arrived mid-fetch.
   const includeEndedRef = useRef(includeEnded);
   includeEndedRef.current = includeEnded;
-  const invalidate = useCallback(() => {
-    request.current += 1;
-    refreshing.current = false;
-    queued.current = false;
-  }, []);
-  const revoke = useCallback(() => {
+  // `revoke` minus the poller's half, which a denied fetch does not need:
+  // `blocked` ends that pass, and the pass's `finally` settles loading.
+  const cutOff = useCallback(() => {
     blocked.current = true;
-    invalidate();
     setData(null);
-    setLoading(false);
     setAccessRevision(v => v + 1);
     setError("Access to these resources was removed. Reopen the panel to check access.");
-  }, [invalidate]);
-  const refresh = useCallback(async () => {
-    if (blocked.current) return;
-    if (refreshing.current) { queued.current = true; return; }
-    refreshing.current = true;
-    const id = ++request.current;
-    setLoading(true);
+  }, []);
+  // `includeEnded` is a dependency although read through the ref: a flip
+  // re-runs the polling effect, which refetches.
+  const load = useCallback(async () => {
     try {
-      // Hints coalesce; each successful snapshot applies before the queued refresh.
-      do {
-        queued.current = false;
-        try {
-          const next = await client.listResources(roomId, { includeEnded: includeEndedRef.current });
-          if (id !== request.current || blocked.current) return;
-          setData(next);
-          setError(null);
-          setRevision(v => v + 1);
-        } catch (e) {
-          if (id !== request.current) return;
-          if (accessLost(e)) { revoke(); return; }
-          // Availability failure is not an authorization epoch change. Keep
-          // the selected panel (and its immutable uncertain command) mounted.
-          setError("Could not refresh devices and sessions. Try again.");
-        }
-      } while (queued.current && id === request.current && !blocked.current);
-    } finally {
-      if (id === request.current) { refreshing.current = false; setLoading(false); }
+      const next = await client.listResources(roomId, { includeEnded: includeEndedRef.current });
+      return () => { setData(next); setError(null); setRevision(v => v + 1); };
+    } catch (e) {
+      return () => {
+        if (accessLost(e)) cutOff();
+        // Availability failure is not an authorization epoch change. Keep
+        // the selected panel (and its immutable uncertain command) mounted.
+        else setError("Could not refresh devices and sessions. Try again.");
+      };
     }
-  }, [client, roomId, revoke, includeEnded]);
+  }, [client, roomId, cutOff, includeEnded]);
+  const isHint = useCallback((event: LiveEvent) => inRoom(event, roomId) && event.type === "room.resources.changed", [roomId]);
+  // Reuses the room's existing live subscription. Poll only while this pane exists.
+  const { loading, setLoading, refresh, invalidate } = usePolledSnapshot(load, { onEvent, connectionRevision }, { enabled, intervalMs: 5000, isHint, blocked });
+  const revoke = useCallback(() => { cutOff(); invalidate(); setLoading(false); }, [cutOff, invalidate, setLoading]);
   useEffect(() => {
     if (!enabled) return;
-    blocked.current = false;
-    void refresh();
-    const unsubscribe = onEvent(event => {
-      if (!("roomId" in event.payload) || event.payload.roomId !== roomId) return;
-      if (event.type === "room.access.removed") { revoke(); return; }
-      if (event.type === "room.metadata.changed" || event.type === "room.subscription.rotated") {
+    return onEvent(event => {
+      if (!inRoom(event, roomId)) return;
+      if (event.type === "room.access.removed") revoke();
+      else if (event.type === "room.metadata.changed" || event.type === "room.subscription.rotated") {
         // Authorization changes start a new epoch immediately, without waiting
         // for an obsolete fetch; its completion cannot touch the new queue.
         invalidate();
         setData(null);
         setAccessRevision(v => v + 1);
         void refresh();
-      } else if (event.type === "room.resources.changed") void refresh();
+      }
     });
-    // Reuses the room's existing live subscription. Poll only while this pane exists.
-    const timer = setInterval(() => void refresh(), 5000);
-    return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
-  }, [enabled, onEvent, roomId, refresh, revoke, invalidate, includeEnded]);
-  const previousConnection = useRef(connectionRevision);
-  useEffect(() => {
-    if (enabled && previousConnection.current !== connectionRevision) void refresh();
-    previousConnection.current = connectionRevision;
-  }, [enabled, connectionRevision, refresh]);
+  }, [enabled, onEvent, roomId, revoke, invalidate, refresh]);
   return { data, error, loading, revision, accessRevision, refresh, revoke };
 }
 

@@ -13,7 +13,7 @@ export function LocalSessionPanel({ session, ownerName, own, roomId, client, rev
   participants?: readonly Person[];
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { busy });
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
   const [text, setText] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const id = useId();

@@ -13,6 +13,10 @@ export interface RoomResourceSource {
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
 
+/** Safety-net cadence for the resources poll. The push hint (`room.resources.changed`) is
+ *  primary; this only covers a dropped hint. */
+const RESOURCES_POLL_MS = 30_000;
+
 /**
  * Mounted only by the open pane, keyed by owner, viewer, room and membership.
  * `enabled: false` neither fetches nor polls (a phone stacks several screens of
@@ -96,7 +100,7 @@ export function useRoomResources(
       } else if (event.type === "room.resources.changed") void refresh();
     });
     // Reuses the room's existing live subscription. Poll only while this pane exists.
-    const timer = setInterval(() => void refresh(), 5000);
+    const timer = setInterval(() => void refresh(), RESOURCES_POLL_MS);
     return () => { unsubscribe(); clearInterval(timer); blocked.current = true; invalidate(); };
   }, [enabled, onEvent, roomId, refresh, revoke, invalidate, includeEnded]);
   const previousConnection = useRef(connectionRevision);
@@ -111,7 +115,6 @@ export function useRoomResources(
 export function useLocalSessionHistory(
   client: RoomResourceSource["client"], roomId: string, sessionId: string,
   latestEventSeq: number, revision: number, onAccessLost: () => void,
-  live?: { busy: boolean },
 ) {
   const [events, setEvents] = useState<LocalSessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,7 +157,7 @@ export function useLocalSessionHistory(
       if (run !== generation.current) return;
       const incoming = page.events.filter(event => event.seq > after && (direction !== "older" || event.seq < first));
       // A "newer"/"older" poll with nothing new keeps the existing array reference
-      // so unchanged rows skip re-rendering (the 1s busy tail polls every second).
+      // so unchanged rows skip re-rendering.
       if (direction === "latest" || incoming.length > 0) {
         const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
         for (const event of incoming) merged.set(event.seq, event);
@@ -181,14 +184,6 @@ export function useLocalSessionHistory(
   useEffect(() => {
     if (initialized.current && follow.current) void load("newer", { quiet: true });
   }, [revision, load]);
-  // Tail the session only while a turn runs. At idle the cadence is already
-  // useRoomResources' 5s poll -> `revision` -> the load("newer") effect above.
-  const tailBusy = live?.busy ?? false;
-  useEffect(() => {
-    if (!tailBusy) return;
-    const timer = setInterval(() => { if (initialized.current && follow.current) void load("newer", { quiet: true }); }, 1000);
-    return () => clearInterval(timer);
-  }, [tailBusy, load]);
   return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
     hasNewer: more || latestEventSeq > (events.at(-1)?.seq ?? 0) };
 }

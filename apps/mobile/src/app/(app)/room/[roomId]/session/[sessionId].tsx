@@ -137,7 +137,6 @@ export default function SessionScreen() {
         client={rooms.resourceSource.client}
         revision={resources.revision}
         onAccessLost={resources.revoke}
-        live={live}
         ownerName={ownerName}
         own={own}
         name={name}
@@ -147,20 +146,19 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, live, ownerName, own, name, bottomInset }: {
+function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, bottomInset }: {
   roomId: string;
   session: LocalSession;
   client: RoomResourceSource["client"];
   revision: number;
   onAccessLost: () => void;
-  live: boolean;
   ownerName: string;
   own: boolean;
   name: (who: string | null) => string;
   bottomInset: number;
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { busy: busy && live });
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
   const [text, setText] = useState("");
   const command = useSessionCommand(client, roomId, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
   const rows = useMemo(() => buildRows(history.events), [history.events]);

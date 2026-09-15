@@ -70,6 +70,24 @@ if (typeof Element !== 'undefined') {
   }
 }
 
+// JSDOM has no PointerEvent constructor at all (unlike the capture methods
+// above, which exist but throw), so `fireEvent.pointerDown/Move/Up` fall back
+// to a plain `Event` that silently drops `clientX`/`buttons`/`pointerId` --
+// any onPointer* handler reading those sees `undefined`. A MouseEvent subclass
+// covers the fields ColumnGrip-style drag handling needs.
+if (typeof window !== 'undefined' && !window.PointerEvent) {
+  class PointerEventPolyfill extends MouseEvent {
+    pointerId: number;
+    pointerType: string;
+    constructor(type: string, params: PointerEventInit = {}) {
+      super(type, params);
+      this.pointerId = params.pointerId ?? 0;
+      this.pointerType = params.pointerType ?? 'mouse';
+    }
+  }
+  window.PointerEvent = PointerEventPolyfill as unknown as typeof PointerEvent;
+}
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: vi.fn(),

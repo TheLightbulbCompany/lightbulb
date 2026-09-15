@@ -1,10 +1,12 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { ColumnGrip } from "./ColumnGrip";
 import { LocalSessionPanel, sessionLabel } from "./LocalSessionPanel";
+import { useSessionColumnWidth } from "./sidebarPrefs";
 
 export interface SessionFocusTarget { sessionId: string; ownerUserId: string; ownerName: string; roomId: string | null }
 
@@ -14,12 +16,14 @@ export interface SessionFocusTarget { sessionId: string; ownerUserId: string; ow
  * same resizable column the room placement uses. The room is also the
  * authorization context for events and follow-ups, so it must list the session.
  */
-export function SessionFocus({ focus, source, own, onClose, conversation }: {
-  focus: SessionFocusTarget; source: RoomResourceSource; own: boolean; onClose: () => void; conversation: ReactNode;
+export function SessionFocus({ focus, source, own, onClose, conversation, scope }: {
+  focus: SessionFocusTarget; source: RoomResourceSource; own: boolean; onClose: () => void; conversation: ReactNode; scope: string;
 }) {
   const resources = useRoomResources(focus.roomId ?? "", source, { enabled: !!focus.roomId, includeEnded: true });
   const session = resources.data?.sessions.find((candidate) => candidate.sessionId === focus.sessionId);
-  return <section className="room-panel room-session-focus" aria-label="Shared session">
+  const panelRef = useRef<HTMLElement>(null);
+  const column = useSessionColumnWidth(scope, panelRef);
+  return <section ref={panelRef} style={column.style} className="room-panel room-session-focus" aria-label="Shared session">
     <div className="room-session-main">
       <header className="room-context-header">
         {/* The session's own label, as in the room placement's header; who is
@@ -32,6 +36,9 @@ export function SessionFocus({ focus, source, own, onClose, conversation }: {
       {focus.roomId && session && <LocalSessionPanel key={`${session.sessionId}:${session.generation}:${resources.accessRevision}`}
         session={session} ownerName={focus.ownerName} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
     </div>
-    {!own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">{conversation}</aside>}
+    {!own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">
+      <ColumnGrip onDrag={column.onDrag} onNudge={column.onNudge} onCommit={column.onCommit} />
+      {conversation}
+    </aside>}
   </section>;
 }

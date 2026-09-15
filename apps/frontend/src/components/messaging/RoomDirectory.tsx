@@ -269,7 +269,11 @@ function DirectoryContent({
   const updatePrefs = (patch: Partial<SidebarPrefs>) => {
     const next = { ...prefs, ...patch };
     setPrefs(next);
-    writeSidebarPrefs(ownerScopeId, next);
+    // Read-merge-write against storage, not just this component's in-memory
+    // `prefs` -- the session column's own width write (useSessionColumnWidth)
+    // can land in storage between renders, and writing `next` here would
+    // silently clobber it back to unset.
+    writeSidebarPrefs(ownerScopeId, { ...readSidebarPrefs(ownerScopeId), ...patch });
   };
 
   function selectNextUnread() {

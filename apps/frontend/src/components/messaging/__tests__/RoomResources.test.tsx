@@ -605,7 +605,7 @@ it("keeps a permalinked ended session open after its one-shot target is consumed
   expect(screen.queryByText("Session unavailable in this conversation.")).not.toBeInTheDocument();
 });
 
-it("opens a session inline in the column with a way back to the list, and reports the open state", async () => {
+it("opens a session inline in the column with a way back to the list, and marks the open state for CSS", async () => {
   const sessionResources: RoomResources = {
     devices: [], pairedNodes: [],
     sessions: [{ sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.269", generation: "g",
@@ -618,13 +618,15 @@ it("opens a session inline in the column with a way back to the list, and report
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(),
   } as unknown as RoomResourceSource["client"];
   const source: RoomResourceSource = { client, connectionRevision: 1, onEvent: () => () => {} };
-  const onSessionOpenChange = vi.fn();
-  render(<RoomResourcesPanel roomId="room" source={source} onClose={() => {}} onSessionOpenChange={onSessionOpenChange}
+  render(<RoomResourcesPanel roomId="room" source={source} onClose={() => {}}
     participants={[{ kind: "human", id: "alice", displayName: "Alice", mentionHandle: null, role: "member", listenMode: null, joinedAt: "now", joinedSeq: 0 }]} />);
+  // `data-session` is what messaging.css's `.room-panel:has(> .room-context[data-session])` keys off.
+  const aside = screen.getByRole("complementary", { name: "Devices & sessions" });
+  expect(aside).not.toHaveAttribute("data-session");
   await userEvent.click(await screen.findByRole("button", { name: "Open Claude · Load test" }));
   expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
-  expect(onSessionOpenChange).toHaveBeenLastCalledWith(true);
+  expect(aside).toHaveAttribute("data-session", "true");
   await userEvent.click(screen.getByRole("button", { name: "Back to devices & sessions" }));
   expect(screen.getByRole("button", { name: "Open Claude · Load test" })).toBeInTheDocument();
-  expect(onSessionOpenChange).toHaveBeenLastCalledWith(false);
+  expect(aside).not.toHaveAttribute("data-session");
 });

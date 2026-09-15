@@ -8,10 +8,10 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { LocalSessionPanel } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 
-export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare, onSessionOpenChange, resizeHandle }: {
+export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare, resizeHandle }: {
   roomId: string; source: RoomResourceSource; participants: readonly RoomParticipant[]; onClose: () => void;
   target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
-  onSessionOpenChange?: (open: boolean) => void; resizeHandle?: ReactNode;
+  resizeHandle?: ReactNode;
 }) {
   const [includeEnded, setIncludeEnded] = useState(false);
   // A permalink target is one-shot (RoomPanel clears it via onTargetConsumed
@@ -40,7 +40,6 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
   // A revoked selection must not reopen if this session is later shared again.
   if (selection && resources.data && !selected) setSelection(null);
   const hasSelection = !!selected;
-  useEffect(() => { onSessionOpenChange?.(hasSelection); }, [hasSelection, onSessionOpenChange]);
   const name = (human: string) => participants.find(p => p.kind === "human" && p.id === human)?.displayName ?? "Room member";
   const humans = new Set([
     ...(resources.data?.devices.map(d => d.humanUserId) ?? []),
@@ -66,7 +65,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
     return () => window.removeEventListener("keydown", escape);
   }, [selectedId, onClose]);
   function back() { if (selected) setSelection(null); else onClose(); }
-  return <aside className="room-context" aria-label="Devices & sessions" onKeyDown={event => {
+  return <aside className="room-context" data-session={hasSelection || undefined} aria-label="Devices & sessions" onKeyDown={event => {
     if (event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
     {selected && resizeHandle}

@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ColumnGrip } from "../ColumnGrip";
-import { readSidebarPrefs, writeSidebarPrefs, useSessionColumnWidth } from "../sidebarPrefs";
+import { readSessionColumnWidth, useSessionColumnWidth, writeSessionColumnWidth } from "../sidebarPrefs";
 
 it("reports pointer drags, keyboard nudges, and commits exactly once per release gesture", () => {
   const onDrag = vi.fn(), onNudge = vi.fn(), onCommit = vi.fn();
@@ -82,26 +82,26 @@ it("commits the width from the most recent keyboard nudge, not a stale pre-nudge
   fireEvent.keyDown(grip, { key: "ArrowLeft" });
   // panelWidth 1200 -> unset-width default of 600, then two +24 nudges: 648.
   // A stale-closure regression would persist 624 (the pre-second-nudge value).
-  expect(readSidebarPrefs("grip-scope").sessionColumnWidth).toBe(648);
+  expect(readSessionColumnWidth("grip-scope")).toBe(648);
 });
 
-it("re-reads the stored width when scope changes without remounting, instead of carrying the old workspace's width over", () => {
+it("reads the new scope's width on a remount, the way RoomPanel's RoomBoundary key and SessionFocus's key={scope} remount this hook on a scope change", () => {
   window.localStorage.clear();
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
     { width: 1200, right: 1200, left: 0, top: 0, bottom: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect,
   );
-  writeSidebarPrefs("scope-a", { collapsed: [], sort: "alpha", sessionColumnWidth: 500 });
-  writeSidebarPrefs("scope-b", { collapsed: [], sort: "alpha", sessionColumnWidth: 700 });
-  const view = render(<Harness scope="scope-a" />);
+  writeSessionColumnWidth("scope-a", 500);
+  writeSessionColumnWidth("scope-b", 700);
+  const view = render(<Harness key="scope-a" scope="scope-a" />);
   expect(screen.getByRole("separator", { name: "Resize session column" })).toHaveAttribute("aria-valuenow", "500");
 
-  view.rerender(<Harness scope="scope-b" />);
+  view.rerender(<Harness key="scope-b" scope="scope-b" />);
   const grip = screen.getByRole("separator", { name: "Resize session column" });
   expect(grip).toHaveAttribute("aria-valuenow", "700");
 
   // Committing now must land under the NEW scope, not the carried-over width
   // clobbering scope-a's stored value.
   fireEvent.keyDown(grip, { key: "ArrowLeft" });
-  expect(readSidebarPrefs("scope-b").sessionColumnWidth).toBe(724);
-  expect(readSidebarPrefs("scope-a").sessionColumnWidth).toBe(500);
+  expect(readSessionColumnWidth("scope-b")).toBe(724);
+  expect(readSessionColumnWidth("scope-a")).toBe(500);
 });

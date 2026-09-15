@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type RefObject } from 
 import type { SidebarSort } from "./roomSections";
 
 const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
-export interface SidebarPrefs { collapsed: string[]; sort: SidebarSort; sessionColumnWidth?: number }
+export interface SidebarPrefs { collapsed: string[]; sort: SidebarSort }
 const EMPTY: SidebarPrefs = { collapsed: [], sort: "alpha" };
 
 export const SESSION_COLUMN_MIN = 360;
@@ -19,8 +19,6 @@ export function readSidebarPrefs(scope: string): SidebarPrefs {
     return {
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.filter((value) => typeof value === "string") : [],
       sort: parsed.sort === "unread" ? "unread" : "alpha",
-      ...(typeof parsed.sessionColumnWidth === "number" && Number.isFinite(parsed.sessionColumnWidth) && parsed.sessionColumnWidth >= SESSION_COLUMN_MIN
-        ? { sessionColumnWidth: parsed.sessionColumnWidth } : {}),
     };
   } catch {
     return EMPTY;
@@ -35,31 +33,40 @@ export function writeSidebarPrefs(scope: string, prefs: SidebarPrefs): void {
   }
 }
 
-/** Width of the session column for both placements, persisted per workspace. */
+// Its own key, not a field inside SidebarPrefs -- the width is written from a
+// drag/nudge gesture and the rest of the blob from sort/collapse toggles, and
+// sharing one key meant every writer had to read-merge-write around the other.
+const SESSION_COLUMN_KEY_PREFIX = "lightbulb.messaging.sessionColumnWidth.";
+
+export function readSessionColumnWidth(scope: string): number | undefined {
+  try {
+    const raw = window.localStorage.getItem(`${SESSION_COLUMN_KEY_PREFIX}${scope}`);
+    if (!raw) return undefined;
+    const width = Number(raw);
+    return Number.isFinite(width) && width >= SESSION_COLUMN_MIN ? width : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeSessionColumnWidth(scope: string, width: number): void {
+  try {
+    window.localStorage.setItem(`${SESSION_COLUMN_KEY_PREFIX}${scope}`, String(width));
+  } catch {
+    // Private windows and blocked site data: the sidebar simply forgets.
+  }
+}
+
+/** Width of the session column for both placements, persisted per workspace.
+ *  Callers remount this hook on a scope change (RoomPanel's RoomBoundary key,
+ *  SessionFocus's `key={scope}`), so it only ever needs to read `scope` once. */
 export function useSessionColumnWidth(scope: string, panel: RefObject<HTMLElement | null>) {
-  const [width, setWidth] = useState<number | undefined>(() => (typeof window === "undefined" ? undefined : readSidebarPrefs(scope).sessionColumnWidth));
+  const [width, setWidth] = useState<number | undefined>(() => (typeof window === "undefined" ? undefined : readSessionColumnWidth(scope)));
   // `onCommit` must persist the width from the MOST RECENT nudge/drag, not the
   // `width` state closed over at the render that handed ColumnGrip its props --
   // a keyboard nudge calls onNudge() then onCommit() in the same handler,
   // before React has re-rendered with the new state. A ref is always current.
   const latest = useRef(width);
-  // `width` only initializes from `scope` once (useState's initializer runs
-  // on mount only) -- without this, switching workspaces without a remount
-  // (the provider tree stays mounted, only `scope` changes) carries the
-  // previous workspace's width over and can persist it under the new scope's
-  // key on the next commit. Render-time "previous value" comparison, same
-  // pattern as MessagingWorkspaceContext's per-room draft reset.
-  const [seenScope, setSeenScope] = useState(scope);
-  if (seenScope !== scope) {
-    setSeenScope(scope);
-    setWidth(typeof window === "undefined" ? undefined : readSidebarPrefs(scope).sessionColumnWidth);
-  }
-  // Mutating a ref during render is disallowed (react-hooks/refs), so the
-  // scope-change branch above can only queue the state update -- this syncs
-  // `latest` right after, before the commit flushes and any new pointer/key
-  // event (the only way onCommit can fire) reaches the DOM. onDrag/onNudge's
-  // own direct ref writes are unaffected: they run in event handlers, not
-  // render, and this effect just re-assigns the same value they already set.
   useEffect(() => { latest.current = width; }, [width]);
   // Plain closures, not useCallback: nothing downstream keys an effect or a
   // memoized child on these identities, and wrapping them fights the React
@@ -79,7 +86,7 @@ export function useSessionColumnWidth(scope: string, panel: RefObject<HTMLElemen
     latest.current = next;
     setWidth(next);
   };
-  const onCommit = () => { if (latest.current) writeSidebarPrefs(scope, { ...readSidebarPrefs(scope), sessionColumnWidth: latest.current }); };
+  const onCommit = () => { if (latest.current) writeSessionColumnWidth(scope, latest.current); };
   const style = (width ? { "--room-session-width": `${width}px` } : {}) as CSSProperties;
   return { width, style, onDrag, onNudge, onCommit, value: width ?? panelWidth() / 2, min: SESSION_COLUMN_MIN, max: panelWidth() * 0.8 };
 }

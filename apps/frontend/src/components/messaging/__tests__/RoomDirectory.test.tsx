@@ -329,7 +329,9 @@ it("sorts unread first when asked and remembers the choice per owner scope", asy
 
 it("keeps a saved session column width when a sort/collapse change rewrites sidebar prefs", async () => {
   window.localStorage.clear();
-  window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: [], sort: "alpha", sessionColumnWidth: 480 }));
+  // Its own key, separate from the sidebar-prefs blob -- a sort/collapse
+  // rewrite of the blob below must not touch it.
+  window.localStorage.setItem("lightbulb.messaging.sessionColumnWidth.org", "480");
   const rooms = [
     { ...base, roomId: "alpha", name: "Alpha" },
     { ...base, roomId: "zulu", name: "Zulu", unreadCount: 2 },
@@ -338,7 +340,8 @@ it("keeps a saved session column width when a sort/collapse change rewrites side
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "Sidebar options" }));
   await userEvent.click(await screen.findByRole("menuitemradio", { name: "Unread first" }));
-  expect(JSON.parse(window.localStorage.getItem("lightbulb.messaging.sidebar.org")!).sessionColumnWidth).toBe(480);
+  expect(window.localStorage.getItem("lightbulb.messaging.sessionColumnWidth.org")).toBe("480");
+  expect(JSON.parse(window.localStorage.getItem("lightbulb.messaging.sidebar.org")!)).not.toHaveProperty("sessionColumnWidth");
 });
 
 it("collapses a group and keeps the collapse across a remount", async () => {

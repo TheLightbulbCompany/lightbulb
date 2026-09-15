@@ -34,7 +34,7 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
 export function MessagingConversation() {
   const { roomProps, sessionFocus, closeSession, sessionSource, scope } = useMessagingWorkspace();
   if (sessionFocus) {
-    return <SessionFocus key={scope} focus={sessionFocus} source={sessionSource} own={sessionFocus.own} onClose={closeSession}
+    return <SessionFocus key={scope} focus={sessionFocus} source={sessionSource} onClose={closeSession}
       conversation={roomProps ? <RoomPanel {...roomProps} /> : null} scope={scope} />;
   }
   return roomProps

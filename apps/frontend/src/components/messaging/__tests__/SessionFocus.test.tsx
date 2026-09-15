@@ -9,14 +9,14 @@ const client = { listResources: vi.fn(async () => ({ devices: [], pairedNodes: [
 const source: RoomResourceSource = { client, connectionRevision: 1, onEvent: () => () => {} };
 
 it("renders the session in the middle and the conversation on the right for someone else's session", async () => {
-  render(<SessionFocus focus={{ sessionId: "s1", ownerUserId: "alice", ownerName: "Alice", roomId: "dm-1", own: false }} source={source} own={false} onClose={vi.fn()} conversation={<section aria-label="Messages" />} scope="org" />);
+  render(<SessionFocus focus={{ sessionId: "s1", ownerUserId: "alice", ownerName: "Alice", roomId: "dm-1", own: false }} source={source} onClose={vi.fn()} conversation={<section aria-label="Messages" />} scope="org" />);
   expect(await screen.findByRole("heading", { name: /Load test/ })).toBeInTheDocument();
   expect(screen.getByRole("complementary", { name: "Conversation" })).toContainElement(screen.getByRole("region", { name: "Messages" }));
 });
 
 it("renders only the session for your own session and closes", async () => {
   const onClose = vi.fn();
-  render(<SessionFocus focus={{ sessionId: "s1", ownerUserId: "me", ownerName: "You", roomId: "general", own: true }} source={source} own onClose={onClose} conversation={<section aria-label="Messages" />} scope="org" />);
+  render(<SessionFocus focus={{ sessionId: "s1", ownerUserId: "me", ownerName: "You", roomId: "general", own: true }} source={source} onClose={onClose} conversation={<section aria-label="Messages" />} scope="org" />);
   expect(await screen.findByRole("heading", { name: /Load test/ })).toBeInTheDocument();
   expect(screen.queryByRole("complementary", { name: "Conversation" })).not.toBeInTheDocument();
   screen.getByRole("button", { name: "Close session" }).click();

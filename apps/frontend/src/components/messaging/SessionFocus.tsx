@@ -16,8 +16,8 @@ export interface SessionFocusTarget { sessionId: string; ownerUserId: string; ow
  * same resizable column the room placement uses. The room is also the
  * authorization context for events and follow-ups, so it must list the session.
  */
-export function SessionFocus({ focus, source, own, onClose, conversation, scope }: {
-  focus: SessionFocusTarget; source: RoomResourceSource; own: boolean; onClose: () => void; conversation: ReactNode; scope: string;
+export function SessionFocus({ focus, source, onClose, conversation, scope }: {
+  focus: SessionFocusTarget; source: RoomResourceSource; onClose: () => void; conversation: ReactNode; scope: string;
 }) {
   const resources = useRoomResources(focus.roomId ?? "", source, { enabled: !!focus.roomId, includeEnded: true });
   const session = resources.data?.sessions.find((candidate) => candidate.sessionId === focus.sessionId);
@@ -28,7 +28,7 @@ export function SessionFocus({ focus, source, own, onClose, conversation, scope 
       <header className="room-context-header">
         {/* The session's own label, as in the room placement's header; who is
             running it is the line directly under it, in the panel summary. */}
-        <h3 className="font-semibold room-wrap">{session ? sessionLabel(session) : own ? "Your session" : `${focus.ownerName}'s session`}</h3>
+        <h3 className="font-semibold room-wrap">{session ? sessionLabel(session) : focus.own ? "Your session" : `${focus.ownerName}'s session`}</h3>
         <Button variant="ghost" size="icon-sm" aria-label="Close session" className="ml-auto" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
       {!focus.roomId && <p role="status" className="p-4 text-sm text-muted-foreground">Open a conversation first so this session has somewhere to report.</p>}
@@ -36,7 +36,7 @@ export function SessionFocus({ focus, source, own, onClose, conversation, scope 
       {focus.roomId && session && <LocalSessionPanel key={sessionViewKey(session, resources.accessRevision)}
         session={session} ownerName={focus.ownerName} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
     </div>
-    {!own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">
+    {!focus.own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">
       <ColumnGrip {...column.grip} />
       {conversation}
     </aside>}

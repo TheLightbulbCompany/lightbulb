@@ -13,8 +13,13 @@ jest.mock("expo-router", () => {
 });
 jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a" }) }));
 const mockFetchMembers = jest.fn();
+// A stable reference, not a fresh {} per call -- the real useTeamsConfig
+// memoizes its adapter (empty deps array), and the screen's roster effect
+// depends on [config] on that promise: an unstable mock here would refire
+// the effect on every setRoster-triggered render, forever.
+const mockTeamsConfig = {};
 jest.mock("../../../lib/teamsData", () => ({
-  useTeamsConfig: () => ({}),
+  useTeamsConfig: () => mockTeamsConfig,
   fetchMembers: (...args: unknown[]) => mockFetchMembers(...args),
 }));
 
@@ -111,6 +116,16 @@ describe("shared sessions screen", () => {
     await render(<SharedSessionsScreen />);
     await waitFor(() => expect(screen.getByText("Carol Danvers")).toBeTruthy());
     expect(screen.queryByText("Room member")).toBeNull();
+  });
+
+  it("falls back to the room member's name when the roster fetch comes back empty", async () => {
+    // The default mockFetchMembers from beforeEach resolves []: the shape a
+    // 409 from a workspace without Teams produces (fetchMembers is
+    // best-effort). bobSession's owner IS in a shared room, so the fallback
+    // must still name them.
+    mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession] });
+    await render(<SharedSessionsScreen />);
+    await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
   });
 
   it("spins pull-to-refresh only for a pull, not for a background refresh", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useRef, useState, type CSSProperties, type RefObject } from "react";
 import type { SidebarSort } from "./roomSections";
 
 const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
@@ -66,8 +66,10 @@ export function useSessionColumnWidth(scope: string, panel: RefObject<HTMLElemen
   // `width` state closed over at the render that handed ColumnGrip its props --
   // a keyboard nudge calls onNudge() then onCommit() in the same handler,
   // before React has re-rendered with the new state. A ref is always current.
+  // `latest` is kept current by onDrag/onNudge themselves (each sets it before
+  // setWidth), so there is nothing left for a width-sync effect to do -- the
+  // ref and the state it mirrors always change together, in the same handler.
   const latest = useRef(width);
-  useEffect(() => { latest.current = width; }, [width]);
   // Plain closures, not useCallback: nothing downstream keys an effect or a
   // memoized child on these identities, and wrapping them fights the React
   // Compiler's dependency inference over ref reads for no benefit (it flags

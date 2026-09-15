@@ -133,7 +133,7 @@ export function MessagingWorkspaceProvider({
   const sideColumn = useSyncExternalStore(subscribeSideColumn, getSideColumn, getServerSideColumn);
   // Focus covers the room unless it is someone else's session with room for the
   // side column. A covered room must neither auto-read nor silence its notifications.
-  const roomVisible = subscribeToRoom && (!sessionFocus || (sessionFocus.ownerUserId !== userId && sideColumn));
+  const roomVisible = subscribeToRoom && (!sessionFocus || (!sessionFocus.own && sideColumn));
   const rooms = useRooms(initialAgentId, subscribeToRoom, roomVisible);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;

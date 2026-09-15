@@ -85,7 +85,12 @@ it("commits the width from the most recent keyboard nudge, not a stale pre-nudge
   expect(readSessionColumnWidth("grip-scope")).toBe(648);
 });
 
-it("reads the new scope's width on a remount, the way RoomPanel's RoomBoundary key and SessionFocus's key={scope} remount this hook on a scope change", () => {
+// This proves useSessionColumnWidth's own useState initializer reads the
+// right scope's width on a fresh mount -- it supplies the `key` itself, so it
+// does NOT cover RoomPanel's RoomBoundary key or SessionFocus's key={scope}
+// actually remounting on a scope change; that is a property of those callers,
+// not of this hook.
+it("reads the width stored under whatever scope a fresh mount receives, and commits back under that same scope", () => {
   window.localStorage.clear();
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
     { width: 1200, right: 1200, left: 0, top: 0, bottom: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect,

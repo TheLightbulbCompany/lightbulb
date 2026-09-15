@@ -1,11 +1,11 @@
 "use client";
 
 /** A visible grab bar on a column's left edge. Left arrow widens the column (it grows leftward). */
-export function ColumnGrip({ onDrag, onNudge, onCommit, label = "Resize session column", value, min, max }: {
-  onDrag: (clientX: number) => void; onNudge: (deltaPx: number) => void; onCommit: () => void; label?: string;
+export function ColumnGrip({ onDrag, onNudge, onCommit, value, min, max }: {
+  onDrag: (clientX: number) => void; onNudge: (deltaPx: number) => void; onCommit: () => void;
   value: number; min: number; max: number;
 }) {
-  return <div role="separator" aria-orientation="vertical" aria-label={label} tabIndex={0} title="Drag to resize" className="room-column-grip"
+  return <div role="separator" aria-orientation="vertical" aria-label="Resize session column" tabIndex={0} title="Drag to resize" className="room-column-grip"
     aria-valuenow={Math.round(value)}
     aria-valuemin={Math.round(min)}
     aria-valuemax={Math.round(max)}

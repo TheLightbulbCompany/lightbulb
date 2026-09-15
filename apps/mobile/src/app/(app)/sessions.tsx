@@ -29,19 +29,16 @@ export default function SharedSessionsScreen() {
   // This list is workspace-wide, so a live session can belong to someone the
   // viewer shares no room with -- name from the org roster first (the same
   // GET /teams/members NewMessageSheet uses), falling back to room members.
-  // Ref-pinned (NewMessageSheet's own pattern) so the fetch keys on mount
-  // alone: an adapter that changed identity per render would otherwise
-  // re-fire this effect, whose own setState re-renders -- an unbounded
-  // /teams/members loop.
+  // No ref-pin needed here (unlike NewMessageSheet's own per-open fetch):
+  // useTeamsConfig's adapter is already identity-stable (its own useMemo has
+  // an empty deps array), so plain [config] never re-fires this effect.
   const config = useTeamsConfig();
-  const configRef = useRef(config);
-  configRef.current = config;
   const [roster, setRoster] = useState<CompanyMember[]>([]);
   useEffect(() => {
     let alive = true;
-    void fetchMembers(configRef.current).then((list) => { if (alive) setRoster(list); });
+    void fetchMembers(config).then((list) => { if (alive) setRoster(list); });
     return () => { alive = false; };
-  }, []);
+  }, [config]);
   const sections = useMemo(
     () => workspaceSections(sessions, userId, (human) => {
       const member = roster.find((m) => m.userId === human);

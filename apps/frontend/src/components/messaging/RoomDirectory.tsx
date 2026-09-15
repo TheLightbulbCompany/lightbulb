@@ -15,7 +15,7 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { listenModeOptions } from "./respondHint";
-import { groupRooms, orderSidebarSessions, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
+import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -365,7 +365,8 @@ function DirectoryContent({
           <h3 className="room-directory-group">Sessions</h3>
           {collapsed && <span className="room-count" aria-label={`${sessions.length} live session${sessions.length === 1 ? "" : "s"}`}>{sessions.length}</span>}
         </div>
-        {!collapsed && <ul id={listId}>{orderSidebarSessions(sessions).map(({ session, ownerName, own }) => {
+        {/* Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared). */}
+        {!collapsed && <ul id={listId}>{sessions.map(({ session, ownerName, own }) => {
           const label = sessionLabel(session);
           const who = own ? "your session" : ownerName;
           return <li key={session.sessionId} className="room-directory-row room-directory-row--roster">

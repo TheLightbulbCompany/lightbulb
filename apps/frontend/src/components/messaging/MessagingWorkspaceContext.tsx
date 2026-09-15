@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, useWorkspaceSessions, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
+import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type LocalSession, type MemberRef, type RoomResourceSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -227,9 +227,10 @@ export function MessagingWorkspaceProvider({
     const member = humanRoster?.members?.find((candidate) => candidate.userId === id);
     return member?.name || member?.email || "Workspace member";
   }, [humanRoster]);
-  const sidebarSessions: SidebarSession[] = useMemo(() => workspaceSessions.sessions.map((session) => ({
-    session, own: session.humanUserId === userId, ownerName: session.humanUserId === userId ? "You" : humanName(session.humanUserId),
-  })), [workspaceSessions.sessions, userId, humanName]);
+  const sidebarSessions: SidebarSession[] = useMemo(() =>
+    workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
+      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId }))),
+    [workspaceSessions.sessions, userId, humanName]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
     ? { ...member, agentActivity: activityByAgentId.get(member.id) }
     : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) }) ?? [], [rooms.activeRoom, activityByAgentId, online, sharing]);

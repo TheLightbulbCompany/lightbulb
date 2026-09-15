@@ -1,12 +1,12 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { sessionLabel, sessionStatus, useWorkspaceSessions, type LocalSession } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
 import { colors, fonts, radii, spacing } from "../../config/theme";
-import { memberName, workspaceSections } from "../../lib/localSessions";
+import { memberName } from "../../lib/localSessions";
 import { relativeTime } from "../../lib/relativeTime";
 import { useMobileRooms } from "../../lib/rooms";
 

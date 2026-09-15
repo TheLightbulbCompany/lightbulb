@@ -31,12 +31,17 @@ const clerk = vi.hoisted(() => ({
   isSignedIn: true,
   orgListLoaded: true,
   setActive: vi.fn().mockResolvedValue(undefined),
+  signInButtonProps: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.isLoaded, isSignedIn: clerk.isSignedIn }),
   useOrganizationList: () => ({ isLoaded: clerk.orgListLoaded, setActive: clerk.setActive }),
-  SignInButton: ({ children }: { children: React.ReactNode }) => children,
+  // Keep the props: dropping them is how a missing redirect shipped untested.
+  SignInButton: ({ children, ...props }: { children: React.ReactNode }) => {
+    clerk.signInButtonProps = props;
+    return children;
+  },
 }));
 
 import { ApiError } from "@/lib/api";
@@ -50,6 +55,7 @@ describe("JoinWorkspacePage", () => {
     clerk.isLoaded = true;
     clerk.isSignedIn = true;
     clerk.orgListLoaded = true;
+    clerk.signInButtonProps = null;
     nav.params = { orgId: "org_1" };
     window.sessionStorage.clear();
     window.history.replaceState(null, "", "/join/org_1#s3cr3t-token");
@@ -88,6 +94,8 @@ describe("JoinWorkspacePage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/no longer valid/i);
     expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
     expect(nav.push).not.toHaveBeenCalled();
+    // Dropped at once, so the onboarding gate can't send the tab back to a dead link.
+    expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBeNull();
   });
 
   it("offers a retry for a transient failure", async () => {
@@ -100,6 +108,16 @@ describe("JoinWorkspacePage", () => {
     await user.click(retry);
 
     expect(await screen.findByText(/welcome to acme/i)).toBeInTheDocument();
+  });
+
+  it("keeps a retryable token until the holder leaves the page", async () => {
+    post.mockRejectedValue(new ApiError(502, { detail: "nope" }, "boom"));
+    const { unmount } = render(<JoinWorkspacePage />);
+
+    await screen.findByRole("button", { name: /try again/i });
+    expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBe("s3cr3t-token");
+    unmount();
+    expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBeNull();
   });
 
   it("falls back to /onboarding when Clerk cannot activate the new membership yet", async () => {
@@ -122,6 +140,18 @@ describe("JoinWorkspacePage", () => {
     expect(window.location.hash).toBe("");
     expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBe("s3cr3t-token");
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("sends every sign-in and sign-up, OAuth included, back to this page without the token", async () => {
+    clerk.isSignedIn = false;
+    render(<JoinWorkspacePage />);
+
+    await screen.findByRole("button", { name: /sign in to join/i });
+    expect(clerk.signInButtonProps).toEqual({
+      mode: "modal",
+      forceRedirectUrl: "/join/org_1",
+      signUpForceRedirectUrl: "/join/org_1",
+    });
   });
 
   it("waits for the organization switcher before redeeming", () => {

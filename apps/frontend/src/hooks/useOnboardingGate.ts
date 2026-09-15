@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
+import { pendingJoinOrgId } from "@/lib/workspaceJoin";
 
 export type OnboardingGatePhase = "loading" | "redirecting" | "selecting" | "ready";
 
@@ -24,7 +25,11 @@ export function useOnboardingGate(): OnboardingGatePhase {
     ? userMemberships?.data?.[0]?.organization.id : undefined;
 
   useEffect(() => {
-    if (redirect) router.replace("/onboarding");
+    if (!redirect) return;
+    // Every sign-up detour lands here. A join link parked in this tab beats
+    // workspace creation; the join page drops the token once it settles.
+    const joinOrgId = pendingJoinOrgId();
+    router.replace(joinOrgId ? `/join/${encodeURIComponent(joinOrgId)}` : "/onboarding");
   }, [redirect, router]);
 
   useEffect(() => {

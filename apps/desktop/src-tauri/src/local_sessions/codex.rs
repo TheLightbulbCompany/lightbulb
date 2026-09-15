@@ -4,7 +4,12 @@ use super::*;
 /// codex (which writes `source: "vscode"` into the same `~/.codex`). `exec`
 /// and subagent rollouts stay out.
 const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
-/// Runtimes whose rollout grammar this parser was verified against.
+/// Runtimes whose *paginated* rollout grammar this parser was verified
+/// against (`session_meta.payload.history_mode != "legacy"`). A `"legacy"`
+/// rollout carries none of the `item_completed` rows this parser reads —
+/// text lives in bare `user_message`/`agent_message` event_msgs and tool
+/// calls in `response_item` rows — so it is refused outright rather than
+/// mirrored blank; see the `history_mode` checks below.
 const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
 
 fn accepted_version(version: &str) -> bool {
@@ -27,6 +32,9 @@ fn from_rollout(
     let source = row["payload"]["source"].as_str().unwrap_or("");
     if row["type"] != "session_meta" || !ACCEPTED_SOURCES.contains(&source) {
         return Err("not a Codex CLI or app rollout".into());
+    }
+    if row["payload"]["history_mode"] == "legacy" {
+        return Err("legacy rollout grammar is not mirrored".into());
     }
     let conversation = row["payload"]["id"]
         .as_str()
@@ -339,7 +347,8 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     }
     if row["type"] == "session_meta"
         && (row["payload"]["id"] != session
-            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or("")))
+            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || row["payload"]["history_mode"] == "legacy")
     {
         return Err("runtime-unverified".into());
     }
@@ -711,6 +720,10 @@ mod tests {
         assert!(normalize("s", &app_meta).unwrap().is_empty());
         let old_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.140.0","source":"cli"}});
         assert!(normalize("s", &old_meta).is_err());
+        let legacy_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","history_mode":"legacy"}});
+        assert!(normalize("s", &legacy_meta).is_err());
+        let paginated_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","history_mode":"paginated"}});
+        assert!(normalize("s", &paginated_meta).unwrap().is_empty());
         let ts = "2026-09-12T10:00:00.000Z";
         let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
         let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
@@ -867,6 +880,15 @@ mod tests {
         assert_eq!(unverified.restriction.as_deref(), Some("runtime-unverified"));
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"cli_version\":\"0.150.0\"}}\n").unwrap();
         assert_eq!(from_rollout(&root, process.clone(), &path, "0.150.0").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        // The ChatGPT app's older history layout has none of the item_completed
+        // rows this parser reads (text/tools/title live elsewhere), so it is
+        // refused rather than mirrored blank.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"cli_version\":\"0.153.4\",\"history_mode\":\"legacy\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"cli_version\":\"0.153.4\",\"history_mode\":\"paginated\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.153.4").unwrap().restriction, None);
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":{\"subagent\":{}},\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.149.0").is_err());
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
         assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
     }

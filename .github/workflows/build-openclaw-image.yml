@@ -184,20 +184,29 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: [boot-chain-smoke, image-proof-tests]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    # Pinned to the box, deliberately NOT `vars.CI_RUNNER`. Every build on a
-    # standard hosted runner since the `doctor` compile-cache bake was restored
-    # OOM-killed the 7 GB VM — the annotation reads "the hosted runner lost
-    # communication with the server", with no failed step and no uploaded logs.
-    # The box has the memory, the disk, and a warm layer cache. CI_RUNNER is a
-    # two-way switch and this job has only one working value, so it must not
-    # follow the switch: flipping CI_RUNNER back to hosted to escape a box
-    # outage would silently reintroduce the OOM here.
-    runs-on: [self-hosted, isol8-wsl]
+    # A fixed Blacksmith label, deliberately NOT `vars.CI_RUNNER`. Every build
+    # on a standard 7 GB hosted runner since the `doctor` compile-cache bake
+    # was restored OOM-killed the VM ("the hosted runner lost communication
+    # with the server", no failed step, no logs). This job then lived on the
+    # self-hosted isol8-wsl box, which stalled every image build whenever the
+    # box was offline (2026-09-15: two builds queued with no runner). The
+    # 16 vCPU Blacksmith VM has 64 GB of memory, so the OOM does not apply;
+    # there is no warm layer cache, so a build runs cold (~25 min).
+    runs-on: blacksmith-16vcpu-ubuntu-2204
     # A hang bound, not a runtime budget: the box finishes in ~3m warm, while
     # a cold from-scratch rebuild of this ~7.8 GB image (bake included) ran
     # past 25m on a hosted runner.
     timeout-minutes: 90
     steps:
+      # The build plus the SOCI convert hold about three copies of a ~16 GB
+      # image. The runner image ships toolchains this job never uses; drop the
+      # big ones first and print what is left, so a disk shortfall shows here
+      # instead of as a late convert failure.
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost 2>/dev/null || true
+          df -h / /tmp /var/tmp 2>/dev/null | tail -4
+
       - name: Checkout
         uses: actions/checkout@v4
         with:

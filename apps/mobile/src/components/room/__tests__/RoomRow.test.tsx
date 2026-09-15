@@ -3,6 +3,11 @@ import type { RoomSummary } from "@lightbulb/shared";
 
 import { RoomRow } from "../RoomRow";
 
+// The bare row renders no Link (RoomListRow does); real expo-router pulls an
+// untransformed ESM dependency into jest, so it stands in empty. (jest hoists
+// this above the import.)
+jest.mock("expo-router", () => ({ Link: {} }));
+
 const room = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1", name: "launch", kind: "channel", roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null,
   unreadCount: 0, updatedAt: "2026-09-14T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null,

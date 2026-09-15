@@ -65,14 +65,26 @@ export default function AppLayout() {
             }}
           >
             {/* One header for the four tab roots, titled by whichever is
-                focused. A nested navigator cannot set its parent's options, and
-                a Stack per tab would be four files of pure chrome. */}
+                focused; a Stack per tab would be four files of pure chrome.
+                Home and DMs add their search bar and compose button to it
+                themselves (RoomsScreen, via the parent navigation).
+
+                No large title: UIKit collapses one against a single content
+                scroll view per stack screen, and these four tabs are ONE stack
+                screen whose tab bar swaps the list underneath it — only the
+                first tab's list would ever collapse it
+                (software-mansion/react-native-screens#1997). */}
             <Stack.Screen
               name="(tabs)"
               options={({ route }) => ({
                 // undefined until the tab navigator has state — i.e. the first
                 // render, which is always Home.
                 title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "home"] ?? "Home",
+                // A header search bar forces the bar translucent, which lays the
+                // screen out UNDER it. Pinned on for all four tabs, or every
+                // switch between a list tab and Activity/More would re-lay the
+                // whole tab controller out under and back below the bar.
+                unstable_nativeProps: { headerConfig: { translucent: true } },
               })}
             />
             {/* The conversation and its threads. Both set their own title from

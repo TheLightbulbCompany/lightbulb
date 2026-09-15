@@ -43,7 +43,10 @@ describe("CatchUpSummary", () => {
   });
 
   it("labels offline scope and retries a generation failure", async () => {
-    const generate = jest.fn<typeof buildCatchUpSummary>()
+    const generate = jest.fn<
+      ReturnType<typeof buildCatchUpSummary>,
+      Parameters<typeof buildCatchUpSummary>
+    >()
       .mockImplementationOnce(() => { throw new Error("generation failed"); })
       .mockImplementation(buildCatchUpSummary);
     render(

@@ -122,53 +122,65 @@ it("suppresses delayed hints for a message already read on another client", asyn
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
 });
 
-describe("asking to turn notifications on", () => {
+describe("asking for notification permission", () => {
   const renderIt = () => render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
 
-  it("asks once, and Turn on requests the permission", async () => {
+  it("raises the macOS prompt itself in the desktop app, once per person on this device", async () => {
     mocks.notificationPermission.mockResolvedValue("default");
-    const view = renderIt();
-    await waitFor(() => expect(mocks.notifyAttention).toHaveBeenCalledTimes(1));
-    const [message, opts] = mocks.notifyAttention.mock.calls[0];
-    expect(message).toMatch(/notified/i);
-    expect(opts.action.label).toBe("Turn on");
-    expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
-    opts.action.onClick();
-    expect(mocks.notificationPermission).toHaveBeenCalledWith(true);
-    view.unmount();
-    renderIt();
-    await act(async () => {});
-    expect(mocks.notifyAttention).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not ask when notifications are already on", async () => {
-    mocks.notificationPermission.mockResolvedValue("granted");
-    renderIt();
-    await act(async () => {});
-    expect(mocks.notifyAttention).not.toHaveBeenCalled();
-  });
-
-  it("leaves a browser that was told no alone — it cannot be reopened from the page", async () => {
-    mocks.notificationPermission.mockResolvedValue("denied");
-    renderIt();
-    await act(async () => {});
-    expect(mocks.notifyAttention).not.toHaveBeenCalled();
-  });
-
-  it("asks in the desktop app after an earlier no, since Turn on opens System Settings", async () => {
-    mocks.notificationPermission.mockResolvedValue("denied");
     mocks.isDesktopApp.mockReturnValue(true);
+    const view = renderIt();
+    await waitFor(() => expect(mocks.notificationPermission).toHaveBeenCalledWith(true));
+    expect(mocks.notifyAttention).not.toHaveBeenCalled(); // no in-app ask in front of it
+    view.unmount();
+    mocks.notificationPermission.mockClear();
     renderIt();
-    await waitFor(() => expect(mocks.notifyAttention).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
   });
 
-  it("waits for a later visit while there is no native path (an older desktop build)", async () => {
+  it("waits for a user gesture in a browser, which is all its prompt needs", async () => {
+    mocks.notificationPermission.mockResolvedValue("default");
+    renderIt();
+    await act(async () => {});
+    expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
+    document.dispatchEvent(new Event("pointerdown"));
+    expect(mocks.notificationPermission).toHaveBeenCalledWith(true);
+    document.dispatchEvent(new Event("pointerdown"));
+    document.dispatchEvent(new Event("keydown"));
+    expect(mocks.notificationPermission.mock.calls.filter(([request]) => request === true)).toHaveLength(1);
+  });
+
+  it("stops listening for the gesture once unmounted", async () => {
+    mocks.notificationPermission.mockResolvedValue("default");
     const view = renderIt();
     await act(async () => {});
-    expect(mocks.notifyAttention).not.toHaveBeenCalled();
+    view.unmount();
+    document.dispatchEvent(new Event("pointerdown"));
+    expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
+  });
+
+  it("never asks again once the answer is in, either way", async () => {
+    for (const state of ["granted", "denied"] as const) {
+      mocks.notificationPermission.mockReset().mockResolvedValue(state);
+      for (const desktop of [true, false]) {
+        mocks.isDesktopApp.mockReturnValue(desktop);
+        const view = renderIt();
+        await act(async () => {});
+        document.dispatchEvent(new Event("pointerdown"));
+        expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
+        view.unmount();
+      }
+    }
+  });
+
+  it("tries again on a later visit while there is no native path (an older desktop build)", async () => {
+    mocks.isDesktopApp.mockReturnValue(true);
+    const view = renderIt();
+    await act(async () => {});
+    expect(mocks.notificationPermission).not.toHaveBeenCalledWith(true);
     view.unmount();
     mocks.notificationPermission.mockResolvedValue("default");
     renderIt();
-    await waitFor(() => expect(mocks.notifyAttention).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.notificationPermission).toHaveBeenCalledWith(true));
   });
 });

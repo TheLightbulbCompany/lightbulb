@@ -52,9 +52,10 @@ pub async fn native_notify(title: String, body: Option<String>, tag: Option<Stri
 
 /// Notification permission in the browser's vocabulary, so the webview treats
 /// the desktop app and a browser alike: "granted", "denied", "default" (not
-/// asked yet) or "unsupported" (no app bundle). With `request` it asks first: the
-/// macOS prompt while the answer is "default"; after a "denied" macOS never
-/// prompts again, so this opens Lightbulb's page in System Settings instead.
+/// asked yet) or "unsupported" (no app bundle). With `request` it raises the
+/// macOS prompt, which macOS shows only while nobody has answered it. After a
+/// "denied" the only way back is System Settings, where the provisional
+/// registration at launch keeps Lightbulb listed.
 #[tauri::command]
 pub async fn notification_permission(request: bool) -> &'static str {
     #[cfg(target_os = "macos")]
@@ -64,23 +65,19 @@ pub async fn notification_permission(request: bool) -> &'static str {
             return "unsupported";
         };
         match status.await.unwrap_or(Status::NotDetermined) {
-            Status::Authorized | Status::Ephemeral => "granted",
+            Status::Authorized | Status::Ephemeral => return "granted",
             // Provisional is the silent launch registration: listed in System
             // Settings but quiet, so the real prompt is still to come.
-            Status::NotDetermined | Status::Provisional if !request => "default",
-            Status::NotDetermined | Status::Provisional => {
-                if macos::request(macos::PROMPT).await.unwrap_or(false) {
-                    "granted"
-                } else {
-                    "denied"
-                }
-            }
-            _ => {
-                if request {
-                    macos::open_settings();
-                }
-                "denied"
-            }
+            Status::NotDetermined | Status::Provisional => {}
+            _ => return "denied",
+        }
+        if !request {
+            return "default";
+        }
+        if macos::request(macos::PROMPT).await.unwrap_or(false) {
+            "granted"
+        } else {
+            "denied"
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -231,30 +228,6 @@ mod macos {
         UNUserNotificationCenter::currentNotificationCenter()
             .requestAuthorizationWithOptions_completionHandler(options, &done);
         rx
-    }
-
-    /// Lightbulb's page under System Settings → Notifications, the only way
-    /// back once someone has said no.
-    pub fn open_settings() {
-        let id = NSBundle::mainBundle()
-            .bundleIdentifier()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-        // The pre-Ventura pane id: System Settings still honours it (and the
-        // app id), and it is the only one macOS 11 and 12 understand.
-        let url = format!("x-apple.systempreferences:com.apple.preference.notifications?id={id}");
-        log("[notify] permission denied; opening System Settings");
-        // `open` exits as soon as it hands the URL over; waiting reaps it.
-        match std::process::Command::new("/usr/bin/open")
-            .arg(url)
-            .status()
-        {
-            Ok(status) if status.success() => {}
-            Ok(status) => log(&format!(
-                "[notify] could not open System Settings: {status}"
-            )),
-            Err(error) => log(&format!("[notify] could not open System Settings: {error}")),
-        }
     }
 
     /// Hands the request to the center; the receiver resolves with whether it

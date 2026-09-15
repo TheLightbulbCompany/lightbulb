@@ -25,13 +25,18 @@ it("reports pointer drags, keyboard nudges, and commits exactly once per release
   expect(onNudge).toHaveBeenCalledWith(-24);
 });
 
-it("commits once on pointer cancellation, without requiring an explicit release first", () => {
+it("commits exactly once when a captured pointer is cancelled", () => {
+  // Per the Pointer Events spec, cancelling a captured pointer implicitly
+  // releases capture right after pointercancel fires, which fires
+  // lostpointercapture in turn -- jsdom does not cascade that second event,
+  // so the test fires both explicitly to simulate what a real browser does.
   const onCommit = vi.fn();
   render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} />);
   const grip = screen.getByRole("separator", { name: "Resize session column" });
   grip.setPointerCapture = vi.fn();
   fireEvent.pointerDown(grip, { pointerId: 1, clientX: 900 });
   fireEvent.pointerCancel(grip, { pointerId: 1 });
+  fireEvent.lostPointerCapture(grip, { pointerId: 1 });
   expect(onCommit).toHaveBeenCalledTimes(1);
 });
 

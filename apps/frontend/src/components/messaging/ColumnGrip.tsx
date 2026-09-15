@@ -15,12 +15,15 @@ export function ColumnGrip({ onDrag, onNudge, onCommit, label = "Resize session 
     }}
     onPointerMove={(event) => { if (event.buttons & 1) onDrag(event.clientX); }}
     onPointerUp={(event) => {
-      // Release only -- the commit happens on lostpointercapture below, which
-      // fires right after a release AND on cancellation/loss without one, so
-      // there is exactly one commit per gesture regardless of how it ends.
+      // Release only -- the commit happens on lostpointercapture below.
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     }}
-    onPointerCancel={() => onCommit()}
+    // No separate onPointerCancel: per the Pointer Events spec, cancelling a
+    // captured pointer implicitly releases capture right after pointercancel
+    // fires, which fires lostpointercapture in turn -- so pointercancel
+    // always cascades into this handler too. Committing on both would double
+    // commit a cancelled gesture in a real browser (jsdom does not cascade
+    // the event, which is why a naive test would not catch it).
     onLostPointerCapture={() => onCommit()}
     onKeyDown={(event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;

@@ -28,6 +28,8 @@ import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 export interface ActiveRoomSubscription {
   roomId: string;
   deliveryKey: string;
+  /** The room's workspace segment; falls back to the caller's for rows without one. */
+  workspaceId?: string | null;
 }
 
 export interface LiveEventsContextValue extends RuntimeRpcSource {
@@ -80,7 +82,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
-  const roomChannel = config && activeRoom ? `/ws/${config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;
+  const roomChannel = config && activeRoom ? `/ws/${activeRoom.workspaceId ?? config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;
   const live = useSharedLiveEvents({
     config: config ?? null,
     getToken: () => getToken({ template: "lightbulb-appsync" }),

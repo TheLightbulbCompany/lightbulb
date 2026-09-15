@@ -39,6 +39,14 @@ export interface RoomSummary {
    */
   members: RoomMember[];
   lastReadSeq: number;
+  /**
+   * The room's own AppSync workspace segment. A shared channel lives in the
+   * owning workspace, so the live channel path must use this, not the caller's
+   * live-config workspace. Absent on rows the backend has not stamped yet.
+   */
+  workspaceId?: string | null;
+  /** The platform-managed channel shared with the Lightbulb team. */
+  shared?: boolean;
 }
 
 export interface RoomDetail extends RoomSummary {

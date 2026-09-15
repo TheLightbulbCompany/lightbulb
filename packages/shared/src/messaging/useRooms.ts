@@ -47,7 +47,7 @@ export type { LiveRoomRun } from "./timeline";
 export interface RoomsLiveSource {
   messaging: MessagingClient;
   onEvent(handler: (event: LiveEvent) => void): () => void;
-  claimActiveRoomSubscription(room: { roomId: string; deliveryKey: string }): () => void;
+  claimActiveRoomSubscription(room: { roomId: string; deliveryKey: string; workspaceId?: string | null }): () => void;
   liveChannels: readonly string[];
   connectionRevision: number;
   liveConnected: boolean;
@@ -241,18 +241,20 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   }, [roomError, activeRoomId]);
 
   const subscription = activeRoom && deliveryOverride?.roomId === activeRoom.roomId && deliveryOverride.roomRevision >= activeRoom.roomRevision
-    ? { roomId: activeRoom.roomId, deliveryKey: deliveryOverride.deliveryKey }
-    : activeRoom ? { roomId: activeRoom.roomId, deliveryKey: activeRoom.deliveryKey } : null;
+    ? { roomId: activeRoom.roomId, deliveryKey: deliveryOverride.deliveryKey, workspaceId: activeRoom.workspaceId ?? null }
+    : activeRoom ? { roomId: activeRoom.roomId, deliveryKey: activeRoom.deliveryKey, workspaceId: activeRoom.workspaceId ?? null } : null;
   const subscriptionRoomId = subscription?.roomId ?? null;
   const subscriptionDeliveryKey = subscription?.deliveryKey ?? null;
+  const subscriptionWorkspaceId = subscription?.workspaceId ?? null;
 
   useEffect(() => {
     if (!subscribeToRoom || accessRemoved || !subscriptionRoomId || !subscriptionDeliveryKey) return;
     return claimActiveRoomSubscription({
       roomId: subscriptionRoomId,
       deliveryKey: subscriptionDeliveryKey,
+      workspaceId: subscriptionWorkspaceId,
     });
-  }, [claimActiveRoomSubscription, subscriptionRoomId, subscriptionDeliveryKey, accessRemoved, subscribeToRoom]);
+  }, [claimActiveRoomSubscription, subscriptionRoomId, subscriptionDeliveryKey, subscriptionWorkspaceId, accessRemoved, subscribeToRoom]);
 
   /**
    * Coalesced room-list refresh.

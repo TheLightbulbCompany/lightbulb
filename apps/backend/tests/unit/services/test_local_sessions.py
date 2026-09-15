@@ -981,3 +981,45 @@ async def test_stray_projection_never_attributes_another_humans_session(db):
         await service.live_sessions_for_room(OWNER, ROOM, [{"kind": "human", "id": BOB.user_id, "displayName": "Bob"}])
         == []
     )
+
+
+async def test_live_listing_checks_enrollment_once_per_device(db):
+    sids = {await registered(conversation=f"conv-{n}") for n in range(3)}
+    calls = []
+    real = service._enrolled
+
+    async def counting(owner, human, device):
+        calls.append((owner, human, device))
+        return await real(owner, human, device)
+
+    with patch.object(service, "_enrolled", counting):
+        listed = await service._live_public_sessions(OWNER, [ALICE.user_id, BOB.user_id])
+    assert {s.session_id for s in listed} == sids
+    assert calls == [(OWNER, ALICE.user_id, MAC)]
+
+
+async def test_agent_cannot_read_sessions_in_a_room_shared_with_another_org(db, monkeypatch):
+    """The vendor shared channel (#2644): the customer's agent must not relay
+    customer sessions to vendor staff. Humans keep their own org's access."""
+    from core.services import local_session_grants as grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    agent = "33333333-3333-4333-8333-333333333333"
+    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}", "kind": "agent", "id": agent})
+    caller = grants.verify(grants.mint(OWNER, ROOM, agent, "44444444-4444-4444-8444-444444444444"))
+    sid = await registered()
+    assert [s.session_id for s in (await service.list_resources(caller, ROOM)).sessions] == [sid]
+    db[0].put_item(
+        Item={
+            "pk": f"ROOM#{ROOM}",
+            "sk": "MEMBER#human#user_vendor",
+            "kind": "human",
+            "id": "user_vendor",
+            "ownerId": OWNER,
+            "homeOwnerId": "org_vendor",
+        }
+    )
+    with pytest.raises(ApiProblem) as refused:
+        await service.list_resources(caller, ROOM)
+    assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    assert [s.session_id for s in (await service.list_resources(ALICE, ROOM)).sessions] == [sid]

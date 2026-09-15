@@ -397,6 +397,12 @@ async def list_members(room_id: str) -> list[dict]:
     return await _query(room_pk(room_id), begins_with="MEMBER#")
 
 
+async def has_foreign_members(room_id: str, owner_id: str) -> bool:
+    """The room is shared with another organization (#2644): some member's home
+    workspace is not ``owner_id``, the room's owner."""
+    return any(member_home(m, owner_id) != owner_id for m in await list_members(room_id))
+
+
 async def get_message(room_id: str, seq: int) -> dict | None:
     return await _get(room_pk(room_id), msg_sk(seq))
 

@@ -165,4 +165,43 @@ describe("useLocalSessionHistory tail stability", () => {
     await act(async () => { resolveManual({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null }); await manual; });
     expect(result.current.loading).toBe(false);
   });
+
+  it("a foreground load supersedes an in-flight quiet background load instead of being dropped", async () => {
+    vi.useFakeTimers();
+    let resolveQuiet!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    const quietFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveQuiet = resolve; });
+    let resolveForeground!: (v: { events: LocalSessionEvent[]; nextAfterSeq: number | null }) => void;
+    const foregroundFetch = new Promise<{ events: LocalSessionEvent[]; nextAfterSeq: number | null }>(resolve => { resolveForeground = resolve; });
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [ev(48), ev(49), ev(50)], nextAfterSeq: null }) // initial "latest"
+      .mockReturnValueOnce(quietFetch) // background "newer" poll (quiet)
+      .mockReturnValueOnce(foregroundFetch); // the superseding "older" load
+    const client = { listLocalSessionEvents } as unknown as RoomResourceSource["client"];
+    const onAccessLost = () => {};
+    const { result, rerender } = renderHook(
+      ({ revision }) => useLocalSessionHistory(client, "room-1", "session-1", 50, revision, onAccessLost),
+      { initialProps: { revision: 0 } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.hasOlder).toBe(true); // "Load older" is on screen
+
+    rerender({ revision: 1 }); // the revision-driven quiet background poll, now pending on quietFetch
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.loading).toBe(false); // quiet: not flashing
+
+    act(() => { void result.current.load("older"); }); // a "Load older" click while the quiet poll is in flight
+    expect(result.current.loading).toBe(true); // the foreground request was issued, not dropped
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
+
+    await act(async () => { resolveForeground({ events: [ev(47)], nextAfterSeq: null }); await foregroundFetch; });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.events.some(e => e.seq === 47)).toBe(true); // its events landed
+    const eventsAfterForeground = result.current.events;
+
+    // The stale quiet promise resolving afterwards changes nothing.
+    await act(async () => { resolveQuiet({ events: [ev(51)], nextAfterSeq: null }); await quietFetch; });
+    expect(result.current.events).toBe(eventsAfterForeground);
+    expect(result.current.loading).toBe(false);
+  });
 });

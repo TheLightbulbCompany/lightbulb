@@ -108,7 +108,7 @@ export { accessLost, useLocalSessionHistory, useRoomResources } from "./messagin
 export type { RoomResourceSource } from "./messaging/useRoomResources";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, sessionLabel, SESSION_STATUS_RANK, sessionStatus, unavailableReason } from "./messaging/localSessionLabels";
-export { COMMAND_MAX_BYTES, receiptCopy, useSessionCommand } from "./messaging/useSessionCommand";
+export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, receiptCopy, useSessionCommand } from "./messaging/useSessionCommand";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {
   LocalSession,

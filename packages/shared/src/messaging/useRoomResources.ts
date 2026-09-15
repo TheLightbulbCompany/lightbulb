@@ -125,16 +125,28 @@ export function useLocalSessionHistory(
   const follow = useRef(true);
   const initialized = useRef(false);
   const lastDirection = useRef<"latest" | "older" | "newer">("latest");
+  // Whether the in-flight load (if any) was quiet. A foreground load arriving
+  // while a quiet background one is in flight supersedes it (bumping the epoch
+  // so the stale quiet request's result/finally become no-ops below) instead of
+  // being silently dropped — otherwise "Load older"/"Retry" clicks land on a
+  // busy hook that no longer shows `loading` to disable them. A quiet load, or
+  // a foreground load arriving while another foreground one is in flight, still
+  // returns (in the foreground case the buttons are disabled anyway).
+  const inFlightQuiet = useRef(false);
   const load = useCallback(async (direction: "latest" | "older" | "newer", { quiet = false }: { quiet?: boolean } = {}) => {
-    if (busy.current) return;
-    const run = generation.current;
     const first = rows.current[0]?.seq ?? 1;
     const after = direction === "latest" ? Math.max(0, latest.current - 50)
       : direction === "older" ? Math.max(0, first - 51) : rows.current.at(-1)?.seq ?? 0;
     const limit = direction === "older" ? Math.min(50, first - 1) : 50;
     if (limit < 1) return;
+    if (busy.current) {
+      if (inFlightQuiet.current && !quiet) generation.current += 1;
+      else return;
+    }
+    const run = generation.current;
     lastDirection.current = direction;
     busy.current = true;
+    inFlightQuiet.current = quiet;
     if (!quiet) setLoading(true);
     setError(null);
     try {

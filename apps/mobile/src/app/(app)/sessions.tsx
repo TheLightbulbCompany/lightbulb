@@ -28,6 +28,8 @@ export default function SharedSessionsScreen() {
   // visible: false — this list belongs to no single room, so it marks nothing read.
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const { sessions, error, loading, refresh } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
+  // The spinner is for a pull only: `loading` is also true for every 30 s poll and hint.
+  const [pulling, setPulling] = useState(false);
   const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);
   const sections = useMemo(
     () => workspaceSections(sessions, userId, (human) => memberName(members, human)),
@@ -73,11 +75,15 @@ export default function SharedSessionsScreen() {
         </View>
       )}
       <SectionList
+        testID="shared-sessions"
         sections={sections}
         keyExtractor={(row) => row.sessionId}
         contentContainerStyle={[styles.content, sections.length === 0 && styles.contentEmpty]}
-        refreshing={loading}
-        onRefresh={() => void refresh()}
+        refreshing={pulling}
+        onRefresh={() => {
+          setPulling(true);
+          void refresh().finally(() => setPulling(false));
+        }}
         renderSectionHeader={({ section }) => <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>}
         renderItem={({ item }) => (
           <Pressable

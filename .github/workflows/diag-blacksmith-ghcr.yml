@@ -1,0 +1,48 @@
+# THROWAWAY diagnostic for the Blacksmith image-build failure (run 34916357491,
+# "Verify base image digest"). Delete with the PR; never merge.
+name: diag-blacksmith-ghcr
+on:
+  pull_request:
+    paths: [".github/workflows/diag-blacksmith-ghcr.yml"]
+permissions:
+  contents: read
+  packages: read
+jobs:
+  diag:
+    runs-on: blacksmith-16vcpu-ubuntu-2204
+    steps:
+      - name: Runner docker setup
+        run: |
+          echo "--- versions"; docker version --format 'client={{.Client.Version}} server={{.Server.Version}}' || true
+          docker buildx version || true
+          echo "--- builders"; docker buildx ls || true
+          echo "--- daemon"; docker info --format 'driver={{.Driver}} mirrors={{json .RegistryConfig.Mirrors}} insecure={{json .RegistryConfig.IndexConfigs}}' 2>&1 | cut -c1-600 || true
+          docker info 2>/dev/null | grep -iE "storage driver|driver-type|containerd|snapshotter|proxy|mirror" || true
+          echo "--- daemon.json"; sudo cat /etc/docker/daemon.json 2>&1 || true
+          echo "--- buildkitd.toml"; sudo find / -xdev -name "buildkitd.toml" 2>/dev/null | head -3 | xargs -r sudo cat 2>/dev/null | head -40 || true
+          echo "--- env"; env | grep -iE 'proxy|docker|buildx|buildkit|registry' | grep -viE 'token|secret|password|key' || echo none
+          echo "--- dns"; getent hosts ghcr.io pkg-containers.githubusercontent.com || true; grep -iE "ghcr|github" /etc/hosts || echo "no hosts overrides"
+          echo "--- docker config (keys only)"; jq -r 'del(.auths[]?.auth) | keys, (.auths|keys? // []), (.credHelpers // {}), (.credsStore // "none"), (.proxies // {})' ~/.docker/config.json 2>/dev/null || echo "no ~/.docker/config.json"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reproduce the failing digest check
+        env:
+          BASE_IMAGE: ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.2
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "--- docker config after login (keys only)"; jq -r '(.auths|keys? // []), (.credsStore // "none"), (.credHelpers // {})' ~/.docker/config.json || true
+          echo "--- exact command from the build"
+          out=$(docker buildx imagetools inspect "$BASE_IMAGE" --format '{{.Manifest.Digest}}' 2>/tmp/stderr.txt); rc=$?
+          echo "exit=$rc bytes=${#out}"; printf '%s' "$out" | od -c | head -12; echo "stderr:"; head -c 1500 /tmp/stderr.txt; echo
+          echo "--- json manifest"; docker buildx imagetools inspect "$BASE_IMAGE" --format '{{json .Manifest}}' 2>&1 | head -c 800; echo
+          echo "--- default output"; docker buildx imagetools inspect "$BASE_IMAGE" 2>&1 | head -25
+          echo "--- registry HEAD"
+          ref="${BASE_IMAGE#ghcr.io/}"; repo="${ref%:*}"; tag="${ref##*:}"
+          token=$(curl -fsS -u "x-access-token:${GHCR_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | jq -r .token)
+          echo "::add-mask::${token}"
+          curl -sSI -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" "https://ghcr.io/v2/${repo}/manifests/${tag}" | tr -d '\r' | grep -viE 'set-cookie|authorization'
+          echo "--- curl verbose connect (where does ghcr.io resolve and who answers)"
+          curl -sv -o /dev/null "https://ghcr.io/v2/" 2>&1 | grep -E "^\* (Connected|Trying|Server certificate|subject|issuer)|^< (HTTP|server|via|x-)" | head -12

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Laptop, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
+import { sessionViewKey, useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
@@ -77,7 +77,7 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
     {resources.error && <div role="alert" className="p-4"><p>{resources.error}</p>
       {resources.data && <p>Showing the last successful snapshot; availability may be stale.</p>}
       <Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
-    {selected ? <LocalSessionPanel key={`${selected.sessionId}:${selected.generation}:${resources.accessRevision}`}
+    {selected ? <LocalSessionPanel key={sessionViewKey(selected, resources.accessRevision)}
       session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare}
       participants={participants} />
       : <div className="room-context-body">

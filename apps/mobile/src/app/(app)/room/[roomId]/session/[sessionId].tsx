@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  buildRows, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
+  buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
   type LocalSession, type RoomResourceSource, type TranscriptRow,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -130,7 +130,7 @@ export default function SessionScreen() {
         </View>
       )}
       <SessionBody
-        key={`${session.sessionId}:${session.generation}:${resources.accessRevision}`}
+        key={sessionViewKey(session, resources.accessRevision)}
         roomId={roomId ?? ""}
         session={session}
         client={rooms.resourceSource.client}

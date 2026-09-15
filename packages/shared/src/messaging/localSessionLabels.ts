@@ -22,6 +22,11 @@ export const canSendToSession = (session: LocalSession): boolean =>
   !session.controlUnavailableReason && session.capabilities.sendMode !== "none" &&
   !(session.status === "busy" && session.capabilities.sendMode === "immediate" && !session.activeTurnId);
 
+/** The access-epoch remount key for a shared session's panel/body: a fresh
+ *  generation or access grant is a fresh mount, everywhere one is rendered. */
+export const sessionViewKey = (session: Pick<LocalSession, "sessionId" | "generation">, accessRevision: number): string =>
+  `${session.sessionId}:${session.generation}:${accessRevision}`;
+
 export interface WorkspaceSection { key: string; title: string; data: LocalSession[] }
 
 /** The sidebar's grouping, shared by web and mobile: one section per person, mine

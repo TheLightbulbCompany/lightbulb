@@ -2,7 +2,7 @@
 
 import { useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
-import { useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
+import { sessionViewKey, useRoomResources, type RoomResourceSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { ColumnGrip } from "./ColumnGrip";
 import { LocalSessionPanel, sessionLabel } from "./LocalSessionPanel";
@@ -33,7 +33,7 @@ export function SessionFocus({ focus, source, own, onClose, conversation, scope 
       </header>
       {!focus.roomId && <p role="status" className="p-4 text-sm text-muted-foreground">Open a conversation first so this session has somewhere to report.</p>}
       {focus.roomId && !session && <p role="status" className="p-4 text-sm text-muted-foreground">{resources.loading ? "Loading session…" : resources.error ?? "This session is no longer shared."}</p>}
-      {focus.roomId && session && <LocalSessionPanel key={`${session.sessionId}:${session.generation}:${resources.accessRevision}`}
+      {focus.roomId && session && <LocalSessionPanel key={sessionViewKey(session, resources.accessRevision)}
         session={session} ownerName={focus.ownerName} roomId={focus.roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />}
     </div>
     {!own && focus.roomId && <aside className="room-context room-session-side" aria-label="Conversation">

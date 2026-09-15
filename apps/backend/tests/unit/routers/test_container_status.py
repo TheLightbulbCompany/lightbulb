@@ -704,50 +704,6 @@ class TestContainerStatusGate:
         assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_admin_signup_required_returns_404_for_picker(self):
-        """Router mapping: a signup_required gate for an admin owner → 404, so
-        the frontend renders the ProviderPicker (the checkout entry point)
-        rather than a Subscribe button that loops /onboarding → /chat. A fresh
-        personal signup no longer produces signup_required (it gets a
-        trial_local default first — see
-        test_personal_no_billing_creates_trial_before_gate); this mapping
-        governs the code wherever the gate still emits it."""
-        from fastapi import HTTPException
-
-        from core.services.provision_gate import Gate
-        from routers.container import container_status
-
-        fake_gate = Gate(
-            code="signup_required",
-            title="Subscribe to start your container",
-            message="An active subscription is required to provision a container.",
-            action_label="Subscribe",
-            action_href="/onboarding",
-            action_admin_only=True,
-            owner_role="admin",
-        )
-
-        mock_auth = _workspace_auth()
-
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
-
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch(
-                "routers.container.evaluate_provision_gate",
-                new_callable=AsyncMock,
-                return_value=fake_gate,
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-        ):
-            with pytest.raises(HTTPException) as exc:
-                await container_status(auth=mock_auth)
-
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
     async def test_personal_context_requires_workspace_before_provisioning(self):
         from routers.container import container_status
 
@@ -759,10 +715,9 @@ class TestContainerStatusGate:
 
     @pytest.mark.asyncio
     async def test_org_admin_no_billing_returns_team_billing_required_402(self):
-        """Org admin with no billing row: no trial is created (personal-only),
-        the gate returns the distinct team_billing_required code, and /status
-        402s with the structured payload the Teams-billing paywall keys off —
-        NOT the personal signup_required 404."""
+        """Org admin with no billing row: the gate returns the distinct
+        team_billing_required code, and /status 402s with the structured
+        payload the workspace-billing paywall keys off."""
         from fastapi import HTTPException
 
         from core.services.provision_gate import Gate
@@ -797,8 +752,8 @@ class TestContainerStatusGate:
     @pytest.mark.asyncio
     async def test_admin_subscription_required_still_returns_402(self):
         """Admin with an *inactive* existing billing row
-        (canceled/unpaid/paused) hits subscription_required, NOT
-        signup_required. /status must still 402 with the structured
+        (canceled/unpaid/paused) hits subscription_required. /status must
+        402 with the structured
         action so the frontend routes them to /settings/billing — not
         the picker, which would 409 already_subscribed on click."""
         from fastapi import HTTPException
@@ -837,47 +792,6 @@ class TestContainerStatusGate:
         assert exc.value.status_code == 402
         assert exc.value.detail["blocked"]["code"] == "subscription_required"
         assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing"
-
-    @pytest.mark.asyncio
-    async def test_member_signup_required_still_returns_402(self):
-        """Non-admin org member with no billing row on the org: gate fires
-        signup_required, but /status keeps the 402 so the member sees
-        'ask your org admin' instead of a ProviderPicker that would 403
-        on click."""
-        from fastapi import HTTPException
-
-        from core.services.provision_gate import Gate
-        from routers.container import container_status
-
-        fake_gate = Gate(
-            code="signup_required",
-            title="Subscribe to start your container",
-            message="An active subscription is required to provision a container.",
-            action_label="Subscribe",
-            action_href="/onboarding",
-            action_admin_only=True,
-            owner_role="member",
-        )
-
-        mock_auth = _org_member_auth(user_id="user_x", org_id="org_x")
-
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
-
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch(
-                "routers.container.evaluate_provision_gate",
-                new_callable=AsyncMock,
-                return_value=fake_gate,
-            ),
-        ):
-            with pytest.raises(HTTPException) as exc:
-                await container_status(auth=mock_auth)
-
-        assert exc.value.status_code == 402
-        assert exc.value.detail["blocked"]["code"] == "signup_required"
 
 
 class TestContainerStatusEnsureUserReadyDispatch:

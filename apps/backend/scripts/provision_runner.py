@@ -146,11 +146,11 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     poll thread keeps only the org member JOIN (see
     ``core.services.user_provision.ensure_user_ready``).
 
-    Reuses the SAME service helpers ensure_user_ready uses
-    (``_ensure_paperclip_for_owner`` / ``_ensure_paperclip_for_org``) — no seed
-    logic is duplicated. Those helpers keep their own swallows: 409 (a benign
-    concurrent-seed no-op) and 422 (a duplicate-email orphan, recorded as a
-    paperclip-row failure — Teams degraded, but the container must still boot,
+    Reuses the SAME service helper ensure_user_ready uses
+    (``_ensure_paperclip_for_org``) — no seed logic is duplicated. It keeps
+    its own swallows: 409 (a benign concurrent-seed no-op) and 422 (a
+    duplicate-email orphan, recorded as a paperclip-row failure — Teams
+    degraded, but the container must still boot,
     so it is NOT a reason to fail the whole provision). Only a GENUINE seed
     failure — a non-409/422 Paperclip error, a timeout/connection error, or a
     config bug — propagates here, where it is classified into the exit-code ABI
@@ -159,13 +159,15 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     stops). This ties seed success to the execution instead of the old
     poll-thread swallow that booted the box regardless.
 
-    Org-vs-personal is derived from the ``owner_id`` prefix
-    (``is_org_owner_id``). The dispatch carries ONLY owner_id
-    (the dispatch path drops the triggering user_id, and threading it
-    into the execution input would break Branch-A idempotency — the input must
-    stay byte-identical across a claim's re-issues, but the triggering admin
-    can differ between two polls). So the org path resolves the company's
-    bootstrap identity from Clerk: the org CREATOR
+    Org-only. Personal workspaces no longer exist (the September 2026 cohort
+    was purged or migrated), so a non-org ``owner_id`` is refused with
+    EXIT_DETERMINISTIC before anything is seeded — the executor's own fence,
+    matching ``ensure_user_ready``'s refusal of a no-org caller. The dispatch
+    carries ONLY owner_id (the dispatch path drops the triggering user_id, and
+    threading it into the execution input would break Branch-A idempotency —
+    the input must stay byte-identical across a claim's re-issues, but the
+    triggering admin can differ between two polls). So step 0 resolves the
+    company's bootstrap identity from Clerk: the org CREATOR
     (``get_organization().created_by``) — always an admin, and a STABLE
     per-org choice the executor's determinism prefers over "whichever admin's
     poll won the race". ``owner_email`` is resolved via ``lookup_owner_email``
@@ -185,47 +187,38 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     from core.repositories.container_repo import classify_provision_error
     from core.services import clerk_admin
     from core.services.paperclip_owner_email import lookup_owner_email
-    from core.services.user_provision import (
-        _ensure_paperclip_for_org,
-        _ensure_paperclip_for_owner,
-        arm_nightly_ceo,
-    )
+    from core.services.user_provision import _ensure_paperclip_for_org, arm_nightly_ceo
+
+    if not is_org_owner_id(owner_id):
+        logger.error("seed step 0: owner %s is not a workspace (org) — refusing to provision", owner_id)
+        return EXIT_DETERMINISTIC
 
     try:
-        if is_org_owner_id(owner_id):
-            org = await clerk_admin.get_organization(owner_id)
-            creator_user_id = (org or {}).get("created_by")
-            if not creator_user_id:
-                # No resolvable bootstrap identity for the org. A Clerk hiccup
-                # (or an unset CLERK_SECRET_KEY in a misconfigured env) is the
-                # likely cause — a genuinely creator-less Clerk org is
-                # vanishingly rare — so treat it as transient and let SFN retry
-                # rather than fail the provision on a momentary blip.
-                logger.warning(
-                    "seed step 0: org %s has no resolvable Clerk creator — deferring (transient)",
-                    owner_id,
-                )
-                return EXIT_TRANSIENT
-            owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=creator_user_id) or ""
-            # is_admin=True: the org creator is definitionally an org admin, so
-            # the create branch of _ensure_paperclip_for_org is authorized. When
-            # the company already exists (an idempotent re-run) this same call
-            # falls through to the JOIN path and no-ops on the creator's already
-            # -active owner row.
-            await _ensure_paperclip_for_org(
-                org_id=owner_id,
-                user_id=creator_user_id,
-                email=owner_email,
-                is_admin=True,
+        org = await clerk_admin.get_organization(owner_id)
+        creator_user_id = (org or {}).get("created_by")
+        if not creator_user_id:
+            # No resolvable bootstrap identity for the org. A Clerk hiccup
+            # (or an unset CLERK_SECRET_KEY in a misconfigured env) is the
+            # likely cause — a genuinely creator-less Clerk org is
+            # vanishingly rare — so treat it as transient and let SFN retry
+            # rather than fail the provision on a momentary blip.
+            logger.warning(
+                "seed step 0: org %s has no resolvable Clerk creator — deferring (transient)",
+                owner_id,
             )
-        else:
-            owner_email = await lookup_owner_email(org_id=None, fallback_user_id=owner_id) or ""
-            await _ensure_paperclip_for_owner(
-                owner_id=owner_id,
-                owner_user_id=owner_id,
-                owner_email=owner_email,
-                org_id=None,
-            )
+            return EXIT_TRANSIENT
+        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=creator_user_id) or ""
+        # is_admin=True: the org creator is definitionally an org admin, so
+        # the create branch of _ensure_paperclip_for_org is authorized. When
+        # the company already exists (an idempotent re-run) this same call
+        # falls through to the JOIN path and no-ops on the creator's already
+        # -active owner row.
+        await _ensure_paperclip_for_org(
+            org_id=owner_id,
+            user_id=creator_user_id,
+            email=owner_email,
+            is_admin=True,
+        )
         await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
@@ -235,7 +228,6 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
 
 
 async def run(owner_id: str, claim_id: str) -> int:
-    from core.auth import is_org_owner_id
     from core.observability.logging import bind_log_context
     from core.repositories import container_repo
     from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
@@ -301,12 +293,12 @@ async def run(owner_id: str, claim_id: str) -> int:
             )
         else:
             provider_choice, byo_provider = await _resolve_provider(owner_id)
-            owner_type = "org" if is_org_owner_id(owner_id) else "personal"
+            # Step 0 has already refused a non-org owner.
             await manager.provision_user_container(
                 owner_id,
                 provider_choice=provider_choice,
                 byo_provider=byo_provider,
-                owner_type=owner_type,
+                owner_type="org",
                 claim_id=claim_id,
                 generation=generation,
                 attempt_token=attempt_token,

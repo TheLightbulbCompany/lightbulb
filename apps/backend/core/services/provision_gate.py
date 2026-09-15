@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from core.auth import is_org_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_once_per_owner_per_day
 from core.repositories import billing_repo
@@ -299,9 +300,8 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
 
     OAuth tokens live in the ``oauth-tokens`` DynamoDB table keyed by Clerk
     user_id (see ``core.services.oauth_service``). Callers pass the resolved
-    token owner — for orgs that is the *connector* (the workspace owner who
-    completed the device-code flow, ``connector_from_account``), not the
-    polling user; for personal owners the connector is the user themselves.
+    token owner — the *connector* (the workspace owner who completed the
+    device-code flow, ``connector_from_account``), not the polling user.
 
     ``owner_id`` is the workspace whose container consumes the tokens; we pass
     it as ``bound_to`` so a row the connector claimed for a *different*
@@ -365,49 +365,10 @@ def trial_expired_gate(owner_role: str) -> Gate:
     )
 
 
-async def _first_touch_pending_invitation(owner_id: str) -> bool:
-    """Whether this PERSONAL owner's first touch should block on a pending
-    Clerk org invitation.
-
-    Called only from the no-billing-row personal branch of the gate, so
-    ``owner_id`` IS the Clerk user_id. The Clerk lookup runs first: it is
-    the common-case short-circuit (returns ``[]`` immediately when there are
-    no invitations, and ``clerk_admin`` stubs it to ``[]`` without creds or
-    on any Clerk error — fail-open, a Clerk blip must never wedge a
-    legitimate signup). The containers read runs only when an invitation
-    actually exists, guarding the "no existing personal world" half of the
-    predicate: a user who somehow has a container but lost their billing
-    row must keep the existing signup_required routing, not be walled off
-    behind their invitation. Note the caller path re-runs this on every
-    ~3s poll while the user sits invitation-blocked — the same cadence
-    ``ensure_personal_trial_default``'s own Gate-B Clerk lookup already
-    runs at in that state; accepted (bounded by how many users sit on an
-    unaccepted invitation at once).
-    """
-    from core.services import clerk_admin
-
-    if not await clerk_admin.list_pending_invitations_for_user(owner_id):
-        return False
-
-    from core.repositories import container_repo
-
-    try:
-        if await container_repo.get_by_owner_id(owner_id):
-            return False
-    except Exception:  # noqa: BLE001 — fail-open: never block signup on a read blip
-        logger.warning(
-            "invitation gate: containers read failed for owner %s — not blocking",
-            owner_id,
-            exc_info=True,
-        )
-        return False
-    return True
-
-
 async def evaluate_provision_gate(
     *,
     owner_id: str,
-    is_admin: bool = True,  # personal owners are always admin of themselves
+    is_admin: bool = True,  # server-side callers (webhooks, wake paths) read as the workspace admin
 ) -> Gate | None:
     """Evaluate the provision gate, emitting a metric on a blocked decision.
 
@@ -456,73 +417,44 @@ async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate 
 async def _evaluate_provision_gate_inner(
     *,
     owner_id: str,
-    is_admin: bool = True,  # personal owners are always admin of themselves
+    is_admin: bool = True,
 ) -> Gate | None:
     """Return a Gate if provisioning should be blocked, else None.
 
     Layers (matches existing _assert_provision_allowed logic):
+    0. The owner must be a workspace (Clerk org).
     1. Subscription must be active or trialing (or legacy stripe_subscription_id present).
     2. For bedrock_claude: credit balance must be > 0.
     3. For chatgpt_oauth: OAuth tokens must exist for the connector — the
-       owner who completed the device-code flow (the polling user in orgs is
-       irrelevant). Personal owners are their own connector.
+       owner who completed the device-code flow (the polling user is
+       irrelevant).
     """
     owner_role = "admin" if is_admin else "member"
+
+    # Layer 0 — workspace. Personal workspaces no longer exist (the September
+    # 2026 cohort was purged or migrated), so a non-org owner has nothing to
+    # provision. Product APIs 409 such a caller in resolve_owner_id before they
+    # get here; this is what a server-side door (wake, webhook, admin probe)
+    # handed a stale user_ id sees.
+    if not is_org_owner_id(owner_id):
+        return Gate(
+            code="workspace_required",
+            title="Choose a workspace",
+            message="Choose or create a workspace to continue.",
+            action_label="Choose workspace",
+            action_href="/onboarding",
+            action_admin_only=False,
+            owner_role=owner_role,
+        )
 
     # Layer 1 — subscription.
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:
-        # No billing row at all means the owner has never started signup.
-        # This is *distinct* from an inactive subscription below, which
-        # has its own re-activation path.
-        if owner_id.startswith("org_"):
-            # The free tier is personal-only, so a workspace never falls into
-            # card-less trial_local. Surface the stable distinct code rather
-            # than routing a workspace to the personal provider picker.
-            return _team_billing_required_gate(owner_role)
-        # FIRST-TOUCH invitation check: a fresh personal signup whose email
-        # holds a PENDING org invitation must not be funneled into the
-        # personal signup path (signup_required → ProviderPicker →
-        # trial_local world) — they are meant to accept the invite and
-        # become a seat, and the personal world built in the meantime is
-        # instant junk (container + billing row + a throwaway Paperclip
-        # company). Only fires on a genuine first touch — no billing row
-        # (this branch) AND no container row — so an established personal
-        # owner who is later invited to an org is untouched (their org/
-        # personal routing is the onboarding gate's job, not this one's).
-        # KNOWN LIMITATION: Clerk matches invitations to VERIFIED emails
-        # only, so an unverified-email signup — and an OAuth signup whose
-        # primary email differs from the invited address — still reads as
-        # a plain personal signup here. This closes the common path, not
-        # every path.
-        if await _first_touch_pending_invitation(owner_id):
-            return Gate(
-                code="invitation_pending",
-                title="You have a pending team invitation",
-                message=(
-                    "Your email has a pending invitation to join a team. "
-                    "Accept it to join your team's workspace instead of "
-                    "starting a personal one."
-                ),
-                action_label="View invitation",
-                action_href="/onboarding",
-                action_admin_only=False,
-                owner_role=owner_role,
-            )
-        # Personal owner, no row. Surfaced separately from the inactive
-        # cases so /container/status can route to the ProviderPicker (which
-        # calls POST /billing/trial-checkout — the only way to create the
-        # first billing row) without short-circuiting the
-        # canceled/unpaid/paused cases that need /settings/billing instead.
-        return Gate(
-            code="signup_required",
-            title="Subscribe to start your container",
-            message="An active subscription is required to provision a container.",
-            action_label="Subscribe",
-            action_href="/onboarding",
-            action_admin_only=True,
-            owner_role=owner_role,
-        )
+        # No billing row at all: the workspace's trial row was never written
+        # (ensure_workspace_trial_default creates it before the gate). Distinct
+        # from an inactive subscription below, which has its own re-activation
+        # path.
+        return _team_billing_required_gate(owner_role)
     if not is_subscription_active(account):
         status = account.get("subscription_status")
         if status == "past_due":
@@ -545,13 +477,6 @@ async def _evaluate_provision_gate_inner(
         # already_subscribed regardless of whether stripe_subscription_id
         # is still set (cancel_subscription clears it but leaves
         # status="canceled").
-        #
-        # Conversely, when status is None — the row exists but Stripe
-        # never assigned a state (e.g. /billing/trial-checkout wrote the
-        # row, then Checkout-session creation failed or the user closed
-        # the Stripe tab) — trial-checkout will proceed. Surface
-        # signup_required so the frontend re-renders the picker for a
-        # restart.
         if is_trial_blocked(account):
             return Gate(
                 code="subscription_required",
@@ -562,24 +487,12 @@ async def _evaluate_provision_gate_inner(
                 action_admin_only=True,
                 owner_role=owner_role,
             )
-        # An org with a customer row but no subscription state (status None)
-        # is a team that STARTED team checkout and abandoned it — the customer
-        # row was written by create_customer_for_owner before the Stripe tab.
-        # Route it back to the Teams paywall, NOT the personal /onboarding
-        # picker below (which would funnel an org admin into the personal
-        # signup path). The /billing/team-checkout 409 guard excepts a
+        # A workspace with a customer row but no subscription state (status
+        # None) STARTED checkout and abandoned it — the customer row was
+        # written by create_customer_for_owner before the Stripe tab. Route it
+        # back to the workspace paywall; the checkout 409 guard excepts a
         # None-status row, so the retry from the paywall proceeds cleanly.
-        if owner_id.startswith("org_"):
-            return _team_billing_required_gate(owner_role)
-        return Gate(
-            code="signup_required",
-            title="Subscribe to start your container",
-            message="An active subscription is required to provision a container.",
-            action_label="Subscribe",
-            action_href="/onboarding",
-            action_admin_only=True,
-            owner_role=owner_role,
-        )
+        return _team_billing_required_gate(owner_role)
 
     # trial_local short-circuit — a no-card local trial has NO
     # provider_choice on the row (its provider is a config-path mode resolved
@@ -613,8 +526,7 @@ async def _evaluate_provision_gate_inner(
             message=("Choose Bedrock-managed credits, ChatGPT OAuth, or your own API key to continue."),
             action_label="Pick provider",
             action_href="/chat?panel=llm&action=change-provider",
-            # Personal owners are always admin of themselves; org members
-            # can't change the org's provider — only the admin can.
+            # Org members can't change the org's provider — only the admin can.
             action_admin_only=True,
             owner_role=owner_role,
         )
@@ -662,9 +574,9 @@ async def _evaluate_provision_gate_inner(
                 message="Complete the ChatGPT sign-in to start your container.",
                 action_label="Sign in with ChatGPT",
                 action_href="/chat?provider=chatgpt_oauth",
-                # Org workspaces: only an admin (the owner) may bind a
-                # ChatGPT account to the shared container.
-                action_admin_only=owner_id.startswith("org_"),
+                # Only an admin (the owner) may bind a ChatGPT account to the
+                # shared container.
+                action_admin_only=True,
                 owner_role=owner_role,
             )
 

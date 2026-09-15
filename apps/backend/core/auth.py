@@ -60,7 +60,6 @@ class AuthContext:
 
     Provides convenient properties for checking user context:
     - is_org_context: True when user has active organization selected
-    - is_personal_context: True when user is in personal mode
     - is_org_admin: True when user has admin role in current org
     """
 
@@ -84,11 +83,6 @@ class AuthContext:
     def is_org_context(self) -> bool:
         """True when user has active organization selected."""
         return self.org_id is not None
-
-    @property
-    def is_personal_context(self) -> bool:
-        """True when user is in personal mode (no active org)."""
-        return self.org_id is None
 
     @property
     def is_org_admin(self) -> bool:

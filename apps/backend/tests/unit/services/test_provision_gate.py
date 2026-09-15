@@ -35,30 +35,24 @@ def test_should_arm_nightly_ceo(account, expected):
 
 
 @pytest.mark.asyncio
-async def test_no_billing_account_returns_signup_required():
-    """No billing row at all — never started signup. Distinct code from
-    subscription_required (which is for inactive existing rows) so the
-    /container/status endpoint can route admins to the ProviderPicker
-    without short-circuiting the canceled/unpaid/paused path."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value=None)
-        gate = await evaluate_provision_gate(
-            owner_id="user_x",
-        )
+async def test_non_org_owner_returns_workspace_required():
+    """Personal workspaces no longer exist: a user_ owner id is refused with
+    workspace_required before any billing read — the one gate a server-side
+    door (wake, webhook, admin probe) handed a stale user_ id can see."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        gate = await evaluate_provision_gate(owner_id="user_x")
     assert gate is not None
-    assert gate.code == "signup_required"
-    assert gate.action_admin_only is True
+    assert gate.code == "workspace_required"
+    repo.get_by_owner_id.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_no_billing_org_owner_returns_team_billing_required():
     """An org owner (owner_id starts with 'org_') with no billing row gets a
-    DISTINCT team_billing_required code, not generic signup_required. An org
-    with no billing needs a Workspace Stripe subscription, and the frontend
-    keys its workspace-billing CTA off this stable compatibility code."""
+    DISTINCT team_billing_required code. An org with no billing needs a
+    Workspace Stripe subscription, and the frontend keys its workspace-billing
+    CTA off this stable compatibility code."""
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch("core.services.trial_cap.billing_repo", repo),
@@ -68,135 +62,6 @@ async def test_no_billing_org_owner_returns_team_billing_required():
     assert gate is not None
     assert gate.code == "team_billing_required"
     assert gate.action_admin_only is True
-
-
-# ---------------------------------------------------------------------------
-# First-touch pending-invitation gate
-# ---------------------------------------------------------------------------
-#
-# A fresh personal signup (no billing row, no container row) whose email
-# holds a PENDING Clerk org invitation must be blocked with a structured
-# invitation_pending card instead of being funneled into the personal
-# signup path — otherwise a full personal trial world (container + billing
-# + throwaway Paperclip company) is built for a user who is about to
-# become an org seat. Known limitation (documented at the gate): Clerk only
-# matches invitations to VERIFIED emails, so unverified-email signups still
-# read as plain personal signups.
-
-
-@pytest.mark.asyncio
-async def test_pending_invitation_first_touch_returns_invitation_pending():
-    """No billing row + no container row + a pending org invitation →
-    invitation_pending, routed to /onboarding to accept the invite."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-        patch(
-            "core.services.clerk_admin.list_pending_invitations_for_user",
-            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
-        ),
-        patch(
-            "core.repositories.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value=None)
-        gate = await evaluate_provision_gate(owner_id="user_x")
-    assert gate is not None
-    assert gate.code == "invitation_pending"
-    assert gate.action_href == "/onboarding"
-    assert gate.action_admin_only is False
-
-
-@pytest.mark.asyncio
-async def test_pending_invitation_with_existing_container_keeps_signup_required():
-    """A user who already HAS a personal world (container row present, even
-    with the billing row gone) is not walled off behind their invitation —
-    the existing signup_required routing stands. No regression for personal
-    users later invited to orgs."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-        patch(
-            "core.services.clerk_admin.list_pending_invitations_for_user",
-            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
-        ),
-        patch(
-            "core.repositories.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"owner_id": "user_x", "status": "running"}),
-        ),
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value=None)
-        gate = await evaluate_provision_gate(owner_id="user_x")
-    assert gate is not None
-    assert gate.code == "signup_required"
-
-
-@pytest.mark.asyncio
-async def test_no_pending_invitation_keeps_signup_required_without_container_read():
-    """No invitations → the common case: signup_required, and the containers
-    read is never spent (Clerk-first ordering — the container check only
-    guards the rare invitation-exists path)."""
-    container_read = AsyncMock(return_value=None)
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-        patch(
-            "core.services.clerk_admin.list_pending_invitations_for_user",
-            new=AsyncMock(return_value=[]),
-        ),
-        patch("core.repositories.container_repo.get_by_owner_id", container_read),
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value=None)
-        gate = await evaluate_provision_gate(owner_id="user_x")
-    assert gate is not None
-    assert gate.code == "signup_required"
-    container_read.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_existing_billing_row_never_reaches_the_invitation_check():
-    """An established owner (billing row present) is untouched: the
-    invitation lookup must not run — this gate is FIRST-TOUCH only, and a
-    per-poll Clerk call for every active owner would be a regression."""
-    invites = AsyncMock(return_value=[{"id": "orginv_1"}])
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-        patch("core.services.clerk_admin.list_pending_invitations_for_user", invites),
-    ):
-        repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "subscription_status": "active",
-                "provider_choice": "byo_key",
-                "byo_provider": "anthropic",
-            },
-        )
-        gate = await evaluate_provision_gate(owner_id="user_x")
-    assert gate is None
-    invites.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_invitation_container_read_failure_fails_open_to_signup_required():
-    """A containers-read blip must never wedge a legitimate signup — the
-    gate falls open to the normal signup_required routing."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-        patch(
-            "core.services.clerk_admin.list_pending_invitations_for_user",
-            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
-        ),
-        patch(
-            "core.repositories.container_repo.get_by_owner_id",
-            new=AsyncMock(side_effect=RuntimeError("ddb down")),
-        ),
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value=None)
-        gate = await evaluate_provision_gate(owner_id="user_x")
-    assert gate is not None
-    assert gate.code == "signup_required"
 
 
 @pytest.mark.asyncio
@@ -220,7 +85,7 @@ async def test_inactive_billing_account_with_subscription_id_returns_subscriptio
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is not None
     assert gate.code == "subscription_required"
@@ -228,48 +93,12 @@ async def test_inactive_billing_account_with_subscription_id_returns_subscriptio
 
 
 @pytest.mark.asyncio
-async def test_billing_account_without_subscription_id_returns_signup_required():
-    """/billing/trial-checkout creates the billing-account row BEFORE the
-    Stripe Checkout session, so a user who
-    cancels Stripe (or whose checkout-session creation fails after the
-    row is written) lands here with an account but no
-    stripe_subscription_id and no subscription_status. /settings/billing
-    has nothing to manage in that case — the gate must fire
-    signup_required so the frontend re-renders the picker, which
-    trial-checkout will accept (is_trial_blocked is False without a
-    Stripe-side status)."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-    ):
-        repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_x",
-                "stripe_customer_id": "cus_x",
-                # provider_choice may be set (trial-checkout writes it
-                # synchronously before creating the Checkout session).
-                "provider_choice": "bedrock_claude",
-                # No stripe_subscription_id, no subscription_status —
-                # checkout was abandoned before Stripe issued a sub.
-            },
-        )
-        gate = await evaluate_provision_gate(
-            owner_id="user_x",
-        )
-    assert gate is not None
-    assert gate.code == "signup_required"
-    assert gate.action_href == "/onboarding"
-
-
-@pytest.mark.asyncio
 async def test_org_abandoned_team_checkout_returns_team_billing_required():
     """An org that STARTED /billing/team-checkout and abandoned it has a
     customer row (create_customer_for_owner writes stripe_customer_id before
-    the Stripe tab) with no subscription_status. The personal companion above
-    routes such a None-status row to signup_required (/onboarding) — but an
-    org must NOT be funneled into the personal picker. It routes back to the
-    Teams paywall (team_billing_required, /settings/billing), from which
-    team-checkout can be retried (the 409 guard excepts a None-status row)."""
+    the Stripe tab) with no subscription_status. It routes back to the
+    workspace paywall (team_billing_required, /settings/billing), from which
+    checkout can be retried (the 409 guard excepts a None-status row)."""
     with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
             return_value={
@@ -300,7 +129,7 @@ async def test_canceled_subscription_with_cleared_subscription_id_routes_to_bill
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "user_x",
+                "owner_id": "org_x",
                 "stripe_customer_id": "cus_x",
                 "subscription_status": "canceled",
                 # cancel_subscription clears stripe_subscription_id —
@@ -308,7 +137,7 @@ async def test_canceled_subscription_with_cleared_subscription_id_routes_to_bill
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is not None
     assert gate.code == "subscription_required"
@@ -329,7 +158,7 @@ async def test_active_subscription_bedrock_blocked_returns_credits_required():
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is not None
     assert gate.code == "credits_required"
@@ -349,7 +178,7 @@ async def test_trialing_with_credits_returns_none():
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is None  # all gates pass
 
@@ -374,7 +203,7 @@ async def test_trial_local_no_provider_choice_returns_none():
         # Under the daily cap → the cap-check does not fire, short-circuit to None.
         repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is None  # Layer-2 provider_required must not fire
 
@@ -393,7 +222,7 @@ async def test_trial_local_over_cap_returns_trial_daily_cap():
     ):
         repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
         repo.get_trial_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)  # at cap
-        gate = await evaluate_provision_gate(owner_id="user_x")
+        gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "trial_daily_cap"
     assert gate.action_admin_only is False
@@ -416,7 +245,7 @@ async def test_trial_local_expired_returns_trial_expired_gate():
                 "trial_end": int(time.time()) - 60,  # 1 minute ago
             },
         )
-        gate = await evaluate_provision_gate(owner_id="user_x")
+        gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "trial_expired"
     assert gate.title == "Your free trial has ended"
@@ -442,7 +271,7 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_under_cap():
             },
         )
         repo.get_trial_daily_spend = AsyncMock(return_value=0)
-        gate = await evaluate_provision_gate(owner_id="user_x")
+        gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is None
 
 
@@ -465,7 +294,7 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_over_cap():
             },
         )
         repo.get_trial_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)
-        gate = await evaluate_provision_gate(owner_id="user_x")
+        gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "trial_daily_cap"
 
@@ -486,7 +315,7 @@ async def test_trial_local_missing_trial_end_not_expired():
             },
         )
         repo.get_trial_daily_spend = AsyncMock(return_value=0)
-        gate = await evaluate_provision_gate(owner_id="user_x")
+        gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is None
 
 
@@ -509,7 +338,7 @@ async def test_active_subscription_no_provider_choice_returns_provider_required(
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is not None
     assert gate.code == "provider_required"
@@ -531,7 +360,7 @@ async def test_past_due_returns_payment_past_due():
             return_value={"subscription_status": "past_due", "stripe_subscription_id": "sub_x"},
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is not None
     assert gate.code == "payment_past_due"
@@ -576,7 +405,7 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
         )
         ht.return_value = False
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
         )
     assert gate is not None
     assert gate.code == "oauth_required"
@@ -587,12 +416,12 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
 
 
 @pytest.mark.asyncio
-async def test_personal_gate_rejects_row_bound_to_other_workspace():
-    """THE P1 GATE GUARD. A personal owner (user_x) has a token row, but it is
-    bound to an ORG (they connected ChatGPT for an org under the same Clerk
-    user). The personal gate must pass owner_id (user_x) as bound_to so the
-    org-bound row reads as no-tokens and oauth_required fires — otherwise the
-    personal container provisions on tokens that back the org container.
+async def test_gate_rejects_connector_row_bound_to_other_workspace():
+    """THE P1 GATE GUARD. The workspace's connector (user_x) has a token row,
+    but it is bound to ANOTHER workspace (they connected ChatGPT there under
+    the same Clerk user). The gate must pass owner_id (org_x) as bound_to so
+    that row reads as no-tokens and oauth_required fires — otherwise this
+    container provisions on tokens that back the other workspace's container.
     """
 
     async def active_for(*, user_id: str, bound_to: str | None = None):
@@ -614,13 +443,14 @@ async def test_personal_gate_rejects_row_bound_to_other_workspace():
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "user_x",
+                "owner_id": "org_x",
                 "subscription_status": "active",
                 "stripe_subscription_id": "sub_x",
                 "provider_choice": "chatgpt_oauth",
+                "oauth_connector_user_id": "user_x",
             },
         )
-        gate = await evaluate_provision_gate(owner_id="user_x")
+        gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "oauth_required"
 
@@ -738,40 +568,6 @@ async def test_org_gate_oauth_required_is_admin_only():
 
 
 @pytest.mark.asyncio
-async def test_personal_gate_oauth_required_is_not_admin_only():
-    """Personal owner with no tokens still gets oauth_required, but the
-    action stays member-actionable (action_admin_only False) — owner_id
-    doesn't start with 'org_', and a personal user is admin of themselves
-    so the sign-in button must render for them.
-    """
-
-    async def active_for(*, user_id: str, bound_to: str | None = None):
-        return False
-
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch(
-            "core.services.oauth_service.has_active_oauth",
-            new=AsyncMock(side_effect=active_for),
-        ),
-    ):
-        repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_x",
-                "subscription_status": "active",
-                "stripe_subscription_id": "sub_x",
-                "provider_choice": "chatgpt_oauth",
-            },
-        )
-        gate = await evaluate_provision_gate(
-            owner_id="user_x",
-        )
-    assert gate is not None
-    assert gate.code == "oauth_required"
-    assert gate.action_admin_only is False
-
-
-@pytest.mark.asyncio
 async def test_byo_key_without_byo_provider_returns_byo_provider_required():
     """provider_choice='byo_key' + byo_provider=None must block ECS
     dispatch with code='byo_provider_required'.
@@ -784,7 +580,7 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
     rejects with "byo_provider is required when provider_choice ==
     'byo_key'".
 
-    Symmetric with the chatgpt_oauth gate for personal owners.
+    Symmetric with the chatgpt_oauth gate.
     """
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
@@ -799,7 +595,7 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
             is_admin=True,
         )
     assert gate is not None
@@ -808,9 +604,7 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
     # the frontend; the canonical BYO sub-choice path is the
     # ?provider=byo_key wizard mounted on /chat.
     assert gate.action_href == "/chat?provider=byo_key"
-    # Member-actionable: the user must pick anthropic/openai themselves;
-    # admin-only would mis-block the action UI for owners who are admin
-    # of themselves (personal users).
+    # Member-actionable: the user picks anthropic/openai themselves.
     assert gate.action_admin_only is False
 
 
@@ -833,7 +627,7 @@ async def test_byo_key_with_byo_provider_set_passes():
             },
         )
         gate = await evaluate_provision_gate(
-            owner_id="user_x",
+            owner_id="org_x",
             is_admin=True,
         )
     assert gate is None  # all gates pass
@@ -1083,7 +877,7 @@ async def test_probe_provision_gate_skips_metric_emission(monkeypatch):
         lambda *a, **kw: emitted.append(("capture", a, kw)),
     )
 
-    gate = await provision_gate.probe_provision_gate(owner_id="user_x")
+    gate = await provision_gate.probe_provision_gate(owner_id="org_x")
     assert gate is sentinel
     assert emitted == []
 
@@ -1146,9 +940,9 @@ class TestMaybeRestoreTrialBedrock:
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
         ):
-            await maybe_restore_trial_bedrock(owner_id="user_x", container=container)
+            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
 
-        restore.assert_awaited_once_with("user_x")
+        restore.assert_awaited_once_with("org_x")
         assert container["bedrock_revoked"] is False
 
     @pytest.mark.asyncio
@@ -1171,7 +965,7 @@ class TestMaybeRestoreTrialBedrock:
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
         ):
-            await maybe_restore_trial_bedrock(owner_id="user_x", container=container)
+            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
 
         restore.assert_not_awaited()
         assert container["bedrock_revoked"] is True
@@ -1199,7 +993,7 @@ class TestMaybeRestoreTrialBedrock:
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
         ):
-            await maybe_restore_trial_bedrock(owner_id="user_x", container=container)
+            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
 
         restore.assert_not_awaited()
         assert container["bedrock_revoked"] is True
@@ -1216,11 +1010,11 @@ class TestMaybeRestoreTrialBedrock:
             patch("core.services.provision_gate.billing_repo.get_by_owner_id", new=billing_read),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
         ):
-            await maybe_restore_trial_bedrock(owner_id="user_x", container={"status": "running"})
+            await maybe_restore_trial_bedrock(owner_id="org_x", container={"status": "running"})
             await maybe_restore_trial_bedrock(
-                owner_id="user_x", container={"status": "running", "bedrock_revoked": False}
+                owner_id="org_x", container={"status": "running", "bedrock_revoked": False}
             )
-            await maybe_restore_trial_bedrock(owner_id="user_x", container=None)
+            await maybe_restore_trial_bedrock(owner_id="org_x", container=None)
 
         billing_read.assert_not_called()
         restore.assert_not_awaited()
@@ -1246,7 +1040,7 @@ class TestMaybeRestoreTrialBedrock:
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
         ):
             # Must not raise.
-            await maybe_restore_trial_bedrock(owner_id="user_x", container=container)
+            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
 
         restore.assert_awaited_once()
         assert container["bedrock_revoked"] is True  # unchanged — restore never landed

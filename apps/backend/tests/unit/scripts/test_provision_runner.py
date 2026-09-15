@@ -79,22 +79,20 @@ def test_module_is_invocable_as_dash_m():
 
 async def test_running_row_exits_zero(monkeypatch, manager, repo):
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     # The claim_id pass-through is the fencing seam: the runner must thread
     # the machine's claim into provision_user_container unchanged, or the
     # leased checkpoints fence out the machine's own run.
     manager.provision_user_container.assert_awaited_once_with(
-        "user_a",
+        "org_a",
         provider_choice="bedrock_claude",
         byo_provider=None,
-        owner_type="personal",
+        owner_type="org",
         claim_id="claim",
         generation=None,
         attempt_token="claim",  # no PROVISION_ATTEMPT_TOKEN env -> falls back to claim_id
     )
-    manager.wait_for_running.assert_awaited_once_with(
-        "user_a", claim_id="claim", generation=None, attempt_token="claim"
-    )
+    manager.wait_for_running.assert_awaited_once_with("org_a", claim_id="claim", generation=None, attempt_token="claim")
 
 
 async def test_first_action_is_claim_attempt(monkeypatch, manager, repo):
@@ -102,8 +100,8 @@ async def test_first_action_is_claim_attempt(monkeypatch, manager, repo):
     provision_user_container -- fences out a straggler from a superseded
     attempt (spec §7 hazard 1) as early as possible."""
     _row(monkeypatch, {"status": "running"})
-    await provision_runner.run("user_a", "claim")
-    repo.claim_attempt.assert_awaited_once_with("user_a", "claim", "claim")
+    await provision_runner.run("org_a", "claim")
+    repo.claim_attempt.assert_awaited_once_with("org_a", "claim", "claim")
 
 
 async def test_reads_generation_off_the_row_not_the_cli(monkeypatch, manager, repo):
@@ -113,7 +111,7 @@ async def test_reads_generation_off_the_row_not_the_cli(monkeypatch, manager, re
     Branch-A idempotency once create_user_service mints it mid-execution)."""
     repo.get_by_owner_id = AsyncMock(return_value={"provision_generation": "01ARZGENERATION"})
     _row(monkeypatch, {"status": "running"})
-    await provision_runner.run("user_a", "claim")
+    await provision_runner.run("org_a", "claim")
     kwargs = manager.provision_user_container.await_args.kwargs
     assert kwargs["generation"] == "01ARZGENERATION"
 
@@ -132,22 +130,22 @@ async def test_wait_for_running_fences_on_post_mint_generation(monkeypatch, mana
         ]
     )
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
 
     # provision_user_container got the pre-mint value (correct — the row
     # still carried it when the run started)...
     assert manager.provision_user_container.await_args.kwargs["generation"] == "gen-OLD"
     # ...and wait_for_running fences on the refreshed, post-mint value.
     manager.wait_for_running.assert_awaited_once_with(
-        "user_a", claim_id="claim", generation="gen-MINTED", attempt_token="claim"
+        "org_a", claim_id="claim", generation="gen-MINTED", attempt_token="claim"
     )
 
 
 async def test_attempt_token_from_env_overrides_claim_id_fallback(monkeypatch, manager, repo):
     monkeypatch.setenv("PROVISION_ATTEMPT_TOKEN", "fresh-retry-token")
     _row(monkeypatch, {"status": "running"})
-    await provision_runner.run("user_a", "claim")
-    repo.claim_attempt.assert_awaited_once_with("user_a", "claim", "fresh-retry-token")
+    await provision_runner.run("org_a", "claim")
+    repo.claim_attempt.assert_awaited_once_with("org_a", "claim", "fresh-retry-token")
     kwargs = manager.provision_user_container.await_args.kwargs
     assert kwargs["attempt_token"] == "fresh-retry-token"
 
@@ -156,13 +154,13 @@ async def test_claim_attempt_superseded_exits_20_before_any_provisioning(monkeyp
     """A straggler whose claim was taken over entirely (not just its attempt)
     must stop at the very first checkpoint -- never touch ECS."""
     repo.claim_attempt = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
     manager.provision_user_container.assert_not_awaited()
 
 
 async def test_superseded_exits_20(monkeypatch, manager, repo):
     manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
 
 
 async def test_wait_for_running_superseded_exits_20(monkeypatch, manager, repo):
@@ -171,7 +169,7 @@ async def test_wait_for_running_superseded_exits_20(monkeypatch, manager, repo):
     provision_user_container checkpoints but loses the race on the terminal
     running/error write."""
     manager.wait_for_running.side_effect = ProvisionSuperseded("taken over mid-wait")
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +189,7 @@ async def test_superseded_with_successor_claim_stands_down_quietly(monkeypatch, 
     and the runner must NOT second-guess the successor with a release."""
     manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
     repo.get_by_owner_id = AsyncMock(return_value={"status": "provisioning", "provision_claim_id": "claim-successor"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
     repo.release_stranded_stop_to_error.assert_not_awaited()
 
 
@@ -200,7 +198,7 @@ async def test_superseded_with_row_gone_stands_down_quietly(monkeypatch, manager
     fixture's get_by_owner_id defaults to None, so this is also the shape the
     older superseded tests above run through.)"""
     manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
     repo.release_stranded_stop_to_error.assert_not_awaited()
 
 
@@ -211,9 +209,9 @@ async def test_superseded_stranded_stopped_row_is_released_to_error(monkeypatch,
     (the machine ABI is unchanged; the row write is the recovery arm)."""
     manager.provision_user_container.side_effect = ProvisionSuperseded("clobbered")
     repo.get_by_owner_id = AsyncMock(return_value={"status": "stopped"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
     repo.release_stranded_stop_to_error.assert_awaited_once()
-    assert repo.release_stranded_stop_to_error.await_args.args == ("user_a",)
+    assert repo.release_stranded_stop_to_error.await_args.args == ("org_a",)
     assert "no successor" in repo.release_stranded_stop_to_error.await_args.kwargs["last_error"]
 
 
@@ -223,7 +221,7 @@ async def test_superseded_unclaimed_provisioning_row_is_not_touched(monkeypatch,
     stands down; flipping it to error would clobber their in-process poller."""
     manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
     repo.get_by_owner_id = AsyncMock(return_value={"status": "provisioning"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
     repo.release_stranded_stop_to_error.assert_not_awaited()
 
 
@@ -233,31 +231,31 @@ async def test_superseded_release_failure_still_exits_20(monkeypatch, manager, r
     manager.provision_user_container.side_effect = ProvisionSuperseded("clobbered")
     repo.get_by_owner_id = AsyncMock(return_value={"status": "stopped"})
     repo.release_stranded_stop_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
 
 
 async def test_deterministic_error_exits_10(monkeypatch, manager, repo):
     manager.provision_user_container.side_effect = Exception(
         "byo_provider is required when provider_choice == 'byo_key'"
     )
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
 
 
 async def test_transient_error_exits_11(monkeypatch, manager, repo):
     manager.provision_user_container.side_effect = Exception("ECS ThrottlingException")
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_TRANSIENT
 
 
 async def test_error_row_maps_by_retryable_field(monkeypatch, manager, repo):
     _row(monkeypatch, {"status": "error", "retryable": False})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
     _row(monkeypatch, {"status": "error", "retryable": True})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_TRANSIENT
 
 
 async def test_external_state_change_exits_zero(monkeypatch, manager, repo):
     _row(monkeypatch, {"status": "stopped"})  # admin stop mid-wait: not ours to fight
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -282,13 +280,13 @@ async def test_container_leg_skipped_when_box_already_healthy(monkeypatch, manag
     """Healthy live task → NO provision_user_container, but wait_for_running
     still runs: it is the fenced writer of the terminal running transition, so
     the claimed row must not be left sitting in "provisioning"."""
-    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a", "provision_generation": "gen-1"})
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-org_a", "provision_generation": "gen-1"})
     _live_box(manager)
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     manager.provision_user_container.assert_not_awaited()
     manager.wait_for_running.assert_awaited_once_with(
-        "user_a", claim_id="claim", generation="gen-1", attempt_token="claim"
+        "org_a", claim_id="claim", generation="gen-1", attempt_token="claim"
     )
 
 
@@ -297,11 +295,11 @@ async def test_seed_still_runs_when_container_leg_is_skipped(monkeypatch, manage
     Skipping the container work must never skip the seed."""
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-org_a"})
     _live_box(manager)
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
-    seed.assert_awaited_once_with("user_a")
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
+    seed.assert_awaited_once_with("org_a")
     manager.provision_user_container.assert_not_awaited()
 
 
@@ -311,7 +309,7 @@ async def test_container_leg_runs_for_brand_new_owner(monkeypatch, manager, repo
     repo.get_by_owner_id = AsyncMock(return_value=None)
     _live_box(manager)  # would say "healthy" if it were ever consulted
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     manager.resolve_running_container.assert_not_awaited()
     manager.provision_user_container.assert_awaited_once()
 
@@ -319,10 +317,10 @@ async def test_container_leg_runs_for_brand_new_owner(monkeypatch, manager, repo
 async def test_container_leg_runs_when_task_is_undiscoverable(monkeypatch, manager, repo):
     """Service exists but ECS has no task IP → provision (this is the crashed
     box the self-heal is for)."""
-    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-org_a"})
     manager.resolve_running_container = AsyncMock(return_value=({"status": "error"}, None))
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     manager.provision_user_container.assert_awaited_once()
 
 
@@ -331,10 +329,10 @@ async def test_container_leg_runs_when_gateway_is_unhealthy(monkeypatch, manager
     The redeploy is the ONLY thing that heals that, so the skip must not
     trigger — this is why the probe is is_healthy and not has_live_service
     (an ACTIVE service with desiredCount>0 is true for a wedged box)."""
-    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-org_a"})
     _live_box(manager, healthy=False)
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     manager.provision_user_container.assert_awaited_once()
 
 
@@ -347,11 +345,11 @@ async def test_container_leg_runs_when_service_is_draining(monkeypatch, manager,
     full attempt timeout against a service pinned at 0 (founder-org 30-min
     provision hang, 2026-08-20). has_live_service is the guard: not live →
     full provision, whose scale-from-zero branch restarts the box."""
-    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-org_a"})
     _live_box(manager)  # the draining task would still pass the probe
     manager.has_live_service = AsyncMock(return_value=False)
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     manager.provision_user_container.assert_awaited_once()
     # The probe must not even run: its answer is meaningless during a drain.
     manager.resolve_running_container.assert_not_awaited()
@@ -360,10 +358,10 @@ async def test_container_leg_runs_when_service_is_draining(monkeypatch, manager,
 async def test_container_leg_runs_when_probe_raises(monkeypatch, manager, repo):
     """An indeterminate probe (ECS throttle, describe blip) provisions as
     today — the skip is the special case, never the fallback."""
-    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-org_a"})
     manager.resolve_running_container = AsyncMock(side_effect=RuntimeError("throttled"))
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
     manager.provision_user_container.assert_awaited_once()
 
 
@@ -384,8 +382,8 @@ async def test_seed_step_0_always_runs_then_provisions_container(monkeypatch, ma
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
     _row(monkeypatch, {"status": "running"})
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
-    seed.assert_awaited_once_with("user_a")
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
+    seed.assert_awaited_once_with("org_a")
     repo.claim_attempt.assert_awaited_once()
     manager.provision_user_container.assert_awaited_once()
 
@@ -396,7 +394,7 @@ async def test_seed_step_0_deterministic_fail_exits_10_skips_container_surfaces_
     failure instead of looping it."""
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
     manager.provision_user_container.assert_not_awaited()
     repo.release_provision_to_error.assert_awaited_once()
     kwargs = repo.release_provision_to_error.await_args.kwargs
@@ -409,7 +407,7 @@ async def test_seed_step_0_transient_fail_exits_11_skips_container_retryable_err
     row flipped to error(retryable=True) for the poll's auto-retry."""
     seed = AsyncMock(return_value=provision_runner.EXIT_TRANSIENT)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_TRANSIENT
     manager.provision_user_container.assert_not_awaited()
     repo.release_provision_to_error.assert_awaited_once()
     assert repo.release_provision_to_error.await_args.kwargs["retryable"] is True
@@ -421,7 +419,7 @@ async def test_seed_step_0_error_release_failure_still_returns_exit_code(monkeyp
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
     repo.release_provision_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
     manager.provision_user_container.assert_not_awaited()
 
 
@@ -431,7 +429,7 @@ async def test_seed_step_0_superseded_claim_stands_down_before_seeding(monkeypat
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
     repo.claim_attempt = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
-    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
     seed.assert_not_awaited()
     manager.provision_user_container.assert_not_awaited()
 
@@ -448,29 +446,10 @@ def _stub_arm_nightly_ceo(monkeypatch):
     return arm
 
 
-def _stub_personal_seed(monkeypatch):
-    seed = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_owner", seed)
-    monkeypatch.setattr(
-        "core.services.paperclip_owner_email.lookup_owner_email",
-        AsyncMock(return_value="p@example.com"),
-    )
-    return seed
-
-
-async def test_seed_helper_arms_nightly_ceo_after_personal_seed(monkeypatch, _stub_arm_nightly_ceo):
-    """The nightly CEO arm runs AFTER the personal seed, with the owner_id."""
-    order = MagicMock()
-    order.attach_mock(_stub_personal_seed(monkeypatch), "seed")
-    order.attach_mock(_stub_arm_nightly_ceo, "arm")
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_OK
-    assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
-    _stub_arm_nightly_ceo.assert_awaited_once_with("user_p", trust_cache=False)
-
-
-async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_arm_nightly_ceo):
-    """Same for an org owner: arm AFTER _ensure_paperclip_for_org, with the org_id."""
-    seed = AsyncMock()
+def _stub_org_seed(monkeypatch, seed=None):
+    """Patch the org seed's collaborators: the Clerk creator lookup, the owner
+    email lookup, and ``_ensure_paperclip_for_org`` itself (returned)."""
+    seed = seed or AsyncMock()
     monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", seed)
     monkeypatch.setattr(
         "core.services.clerk_admin.get_organization",
@@ -480,8 +459,27 @@ async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_ar
         "core.services.paperclip_owner_email.lookup_owner_email",
         AsyncMock(return_value="c@example.com"),
     )
+    return seed
+
+
+async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_arm_nightly_ceo):
+    """Personal workspaces no longer exist: a user_ owner is refused with
+    EXIT_DETERMINISTIC before Clerk, the seed or the arm is touched — the
+    runner then flips the row to error(retryable=False) instead of seeding a
+    personal company."""
+    seed = _stub_org_seed(monkeypatch)
+    get_org = AsyncMock()
+    monkeypatch.setattr("core.services.clerk_admin.get_organization", get_org)
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
+    get_org.assert_not_awaited()
+    seed.assert_not_awaited()
+    _stub_arm_nightly_ceo.assert_not_awaited()
+
+
+async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_arm_nightly_ceo):
+    """The nightly CEO arm runs AFTER _ensure_paperclip_for_org, with the org_id."""
     order = MagicMock()
-    order.attach_mock(seed, "seed")
+    order.attach_mock(_stub_org_seed(monkeypatch), "seed")
     order.attach_mock(_stub_arm_nightly_ceo, "arm")
     assert await provision_runner._seed_owner_paperclip("org_x") == provision_runner.EXIT_OK
     assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
@@ -492,36 +490,18 @@ async def test_seed_helper_arm_5xx_exits_11(monkeypatch, _stub_arm_nightly_ceo):
     """An arm failure classifies like a seed failure: 5xx → EXIT_TRANSIENT."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    _stub_personal_seed(monkeypatch)
+    _stub_org_seed(monkeypatch)
     _stub_arm_nightly_ceo.side_effect = PaperclipApiError("boom", status_code=503, body={})
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT
 
 
 async def test_seed_helper_arm_4xx_exits_10(monkeypatch, _stub_arm_nightly_ceo):
     """4xx → EXIT_DETERMINISTIC."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    _stub_personal_seed(monkeypatch)
+    _stub_org_seed(monkeypatch)
     _stub_arm_nightly_ceo.side_effect = PaperclipApiError("bad", status_code=400, body={})
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
-
-
-async def test_seed_helper_personal_calls_ensure_paperclip_for_owner(monkeypatch):
-    """Personal owner_id: owner_email resolved via lookup_owner_email, then
-    _ensure_paperclip_for_owner with owner_id == owner_user_id, org_id=None."""
-    ensure_owner = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_owner", ensure_owner)
-    monkeypatch.setattr(
-        "core.services.paperclip_owner_email.lookup_owner_email",
-        AsyncMock(return_value="p@example.com"),
-    )
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_OK
-    ensure_owner.assert_awaited_once_with(
-        owner_id="user_p",
-        owner_user_id="user_p",
-        owner_email="p@example.com",
-        org_id=None,
-    )
+    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_DETERMINISTIC
 
 
 async def test_seed_helper_org_resolves_creator_then_calls_ensure_paperclip_for_org(monkeypatch):
@@ -563,30 +543,16 @@ async def test_seed_helper_deterministic_paperclip_4xx_exits_10(monkeypatch):
     DETERMINISTIC → EXIT_DETERMINISTIC (SFN stops, surfaced not looped)."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    monkeypatch.setattr(
-        "core.services.paperclip_owner_email.lookup_owner_email",
-        AsyncMock(return_value="p@example.com"),
-    )
-    monkeypatch.setattr(
-        "core.services.user_provision._ensure_paperclip_for_owner",
-        AsyncMock(side_effect=PaperclipApiError("bad request", status_code=400, body={})),
-    )
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
+    _stub_org_seed(monkeypatch, AsyncMock(side_effect=PaperclipApiError("bad request", status_code=400, body={})))
+    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_DETERMINISTIC
 
 
 async def test_seed_helper_transient_paperclip_5xx_exits_11(monkeypatch):
     """A Paperclip 5xx classifies TRANSIENT → EXIT_TRANSIENT (SFN retries)."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    monkeypatch.setattr(
-        "core.services.paperclip_owner_email.lookup_owner_email",
-        AsyncMock(return_value="p@example.com"),
-    )
-    monkeypatch.setattr(
-        "core.services.user_provision._ensure_paperclip_for_owner",
-        AsyncMock(side_effect=PaperclipApiError("boom", status_code=503, body={})),
-    )
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_TRANSIENT
+    _stub_org_seed(monkeypatch, AsyncMock(side_effect=PaperclipApiError("boom", status_code=503, body={})))
+    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT
 
 
 async def test_seed_helper_transient_connection_error_exits_11(monkeypatch):
@@ -594,12 +560,5 @@ async def test_seed_helper_transient_connection_error_exits_11(monkeypatch):
     → EXIT_TRANSIENT, same as the container path's classifier."""
     import httpx
 
-    monkeypatch.setattr(
-        "core.services.paperclip_owner_email.lookup_owner_email",
-        AsyncMock(return_value="p@example.com"),
-    )
-    monkeypatch.setattr(
-        "core.services.user_provision._ensure_paperclip_for_owner",
-        AsyncMock(side_effect=httpx.ConnectError("connection refused")),
-    )
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_TRANSIENT
+    _stub_org_seed(monkeypatch, AsyncMock(side_effect=httpx.ConnectError("connection refused")))
+    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT

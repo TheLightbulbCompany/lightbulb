@@ -13,7 +13,7 @@ the query's StartTime, so a single week-long period silently straddles that
 alignment at the edges instead of cleanly covering the window.
 
 ponytail: explicit code list — switch to a SEARCH() expression if codes
-multiply; today there are 11 and they are literals in provision_gate.py.
+multiply; today there are 10 and they are literals in provision_gate.py.
 """
 
 from __future__ import annotations
@@ -28,15 +28,14 @@ from core.dynamodb import run_in_thread
 GATE_CODES: tuple[str, ...] = (
     "byo_provider_required",
     "credits_required",
-    "invitation_pending",
     "oauth_required",
     "payment_past_due",
     "provider_required",
-    "signup_required",
     "subscription_required",
     "team_billing_required",
     "trial_daily_cap",
     "trial_expired",
+    "workspace_required",
 )
 _WINDOW_S = 7 * 24 * 3600  # the query window — kept at 7 days
 _PERIOD_S = 86400  # the GetMetricData bucket size — daily, summed below

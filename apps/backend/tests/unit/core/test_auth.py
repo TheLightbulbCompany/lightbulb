@@ -83,16 +83,6 @@ class TestAuthContext:
         ctx = AuthContext(user_id="user_123")
         assert ctx.is_org_context is False
 
-    def test_is_personal_context_true_when_no_org_id(self):
-        """is_personal_context returns True when org_id is None."""
-        ctx = AuthContext(user_id="user_123")
-        assert ctx.is_personal_context is True
-
-    def test_is_personal_context_false_when_org_id_present(self):
-        """is_personal_context returns False when org_id is set."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456")
-        assert ctx.is_personal_context is False
-
     def test_is_org_admin_true_for_admin_role(self):
         """is_org_admin returns True for org:admin role."""
         ctx = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")
@@ -272,7 +262,7 @@ class TestGetCurrentUser:
 
             assert isinstance(result, AuthContext)
             assert result.user_id == "user_123"
-            assert result.is_personal_context is True
+            assert result.is_org_context is False
 
     @pytest.mark.asyncio
     async def test_returns_auth_context_with_org_claims(self, mock_credentials, valid_jwks):

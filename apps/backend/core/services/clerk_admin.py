@@ -472,46 +472,6 @@ def _is_already_member(response: httpx.Response) -> bool:
     return any(isinstance(e, dict) and e.get("code") in _ALREADY_MEMBER_CODES for e in errors)
 
 
-async def list_pending_invitations_for_user(user_id: str) -> list[dict]:
-    """List a Clerk user's pending org invitations. Empty list if none.
-
-    Used by Gate B (personal trial-checkout) to refuse a personal
-    subscription when the caller has unaccepted org invitations.
-    Stubs to [] when CLERK_SECRET_KEY is unset.
-    """
-    if not settings.CLERK_SECRET_KEY:
-        return []
-
-    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    params = {"status": "pending", "limit": 100}
-
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            response = await client.get(
-                f"{_CLERK_API_BASE}/users/{user_id}/organization_invitations",
-                headers=headers,
-                params=params,
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("clerk_admin.list_pending_invitations_for_user network error: %s", e)
-        return []
-
-    if response.status_code >= 400:
-        logger.warning(
-            "clerk_admin.list_pending_invitations_for_user HTTP %s user=%s",
-            response.status_code,
-            user_id,
-        )
-        return []
-
-    payload = response.json()
-    # Clerk paginated responses have shape {data: [...], total_count: int}
-    # for invitation listings — extract data list when present.
-    if isinstance(payload, dict) and "data" in payload:
-        return payload["data"] or []
-    return payload if isinstance(payload, list) else []
-
-
 class SlugTakenError(Exception):
     """Raised by ``create_organization`` when Clerk 422s because the
     requested slug is already in use by another organization.

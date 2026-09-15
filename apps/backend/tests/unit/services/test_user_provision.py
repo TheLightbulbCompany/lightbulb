@@ -311,8 +311,9 @@ async def test_gate_up_membership_add_failure_is_swallowed_and_metered():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
-    """Personal owner → provision_org with owner_id == user_id."""
+async def test_ensure_paperclip_for_owner_calls_provision_org():
+    """Org owner → provision_org with the creator as owner-of-record, then the
+    default room for the fresh workspace."""
     starter_ids = {
         key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
@@ -332,17 +333,16 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
     ):
         await _ensure_paperclip_for_owner(
-            owner_id="user_p",
+            owner_id="org_p",
             owner_user_id="user_p",
             owner_email="p@example.com",
-            org_id=None,
         )
     fake_provisioning.provision_org.assert_awaited_once_with(
-        owner_id="user_p",
+        owner_id="org_p",
         owner_user_id="user_p",
         owner_email="p@example.com",
     )
-    ensure_default_room.assert_awaited_once_with("user_p", "user_p")
+    ensure_default_room.assert_awaited_once_with("org_p", "user_p")
 
 
 @pytest.mark.asyncio
@@ -351,7 +351,7 @@ async def test_existing_active_starter_workspace_does_not_gain_default_room():
     starter_ids = {
         key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
-    existing = MagicMock(status="active", org_id="user_p", starter_agent_ids=starter_ids)
+    existing = MagicMock(status="active", org_id="org_p", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
     fake_provisioning.get_company_row = AsyncMock(return_value=existing)
     fake_provisioning.provision_org = AsyncMock(return_value=existing)
@@ -362,25 +362,24 @@ async def test_existing_active_starter_workspace_does_not_gain_default_room():
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
     ):
         await _ensure_paperclip_for_owner(
-            owner_id="user_p",
+            owner_id="org_p",
             owner_user_id="user_p",
             owner_email="p@example.com",
-            org_id=None,
         )
 
     ensure_default_room.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_personal_workspace_does_not_suppress_new_org_default_room():
+async def test_other_workspace_row_does_not_suppress_new_org_default_room():
     """A row for another workspace is absent for org onboarding freshness."""
     starter_ids = {
         key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
-    personal = MagicMock(status="active", org_id="user_p", starter_agent_ids=starter_ids)
+    other = MagicMock(status="active", org_id="org_old", starter_agent_ids=starter_ids)
     new_org = MagicMock(status="active", org_id="org_new", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(side_effect=[personal, new_org])
+    fake_provisioning.get_company_row = AsyncMock(side_effect=[other, new_org])
     fake_provisioning.provision_org = AsyncMock(return_value=new_org)
     ensure_default_room = AsyncMock()
     with (
@@ -393,7 +392,6 @@ async def test_personal_workspace_does_not_suppress_new_org_default_room():
                 owner_id="org_new",
                 owner_user_id="user_p",
                 owner_email="p@example.com",
-                org_id="org_new",
             )
 
     ensure_default_room.assert_awaited_once_with("org_new", "user_p")
@@ -416,13 +414,12 @@ async def test_partial_starter_workspace_gets_default_room_after_completion():
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
     ):
         await _ensure_paperclip_for_owner(
-            owner_id="user_p",
+            owner_id="org_p",
             owner_user_id="user_p",
             owner_email="p@example.com",
-            org_id=None,
         )
 
-    ensure_default_room.assert_awaited_once_with("user_p", "user_p")
+    ensure_default_room.assert_awaited_once_with("org_p", "user_p")
 
 
 @pytest.mark.asyncio
@@ -482,10 +479,10 @@ async def test_org_admin_create_without_active_row_releases_claim():
 
 
 @pytest.mark.asyncio
-async def test_org_admin_create_personal_row_mismatch_releases_claim():
-    """If provision_org short-circuits on the admin's pre-existing PERSONAL
-    row (rows are keyed per-user), the strongly-consistent read returns an
-    active row whose org_id is NOT this org. That must NOT count as a
+async def test_org_admin_create_other_workspace_row_mismatch_releases_claim():
+    """If provision_org short-circuits on the admin's pre-existing row for
+    ANOTHER workspace (rows are keyed per-user), the strongly-consistent read
+    returns an active row whose org_id is NOT this org. That must NOT count as a
     successful org create — release the claim so it isn't held with no
     org-indexed company."""
     fake_provisioning = MagicMock()
@@ -493,9 +490,9 @@ async def test_org_admin_create_personal_row_mismatch_releases_claim():
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
-    # Active row exists, but it belongs to the user's personal context.
+    # Active row exists, but it belongs to another workspace.
     fake_provisioning.get_company_row = AsyncMock(
-        return_value=MagicMock(status="active", org_id="user_admin"),
+        return_value=MagicMock(status="active", org_id="org_other"),
     )
     fake_provisioning.provision_member = AsyncMock()
 
@@ -947,10 +944,9 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
     ):
         # Should NOT raise.
         await _ensure_paperclip_for_owner(
-            owner_id="user_123",
+            owner_id="org_123",
             owner_user_id="user_123",
             owner_email="u@example.com",
-            org_id=None,
         )
     fake_provisioning.provision_org.assert_awaited_once()
 
@@ -963,7 +959,7 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
 
     Exercises the helper directly. ensure_user_ready now catches this at its
     own seed boundary and continues to the container dispatch (best-effort —
-    see test_personal_seed_failure_does_not_block_container_dispatch); the
+    see test_seed_failure_does_not_block_container_dispatch); the
     409-vs-non-409 distinction this test guards lives in
     _ensure_paperclip_for_owner."""
     from core.services.paperclip_admin_client import PaperclipApiError
@@ -989,10 +985,9 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
     ):
         with pytest.raises(PaperclipApiError) as exc:
             await _ensure_paperclip_for_owner(
-                owner_id="user_123",
+                owner_id="org_123",
                 owner_user_id="user_123",
                 owner_email="u@example.com",
-                org_id=None,
             )
     assert exc.value.status_code == 502
 
@@ -1033,10 +1028,9 @@ async def test_ensure_paperclip_for_owner_records_duplicate_422_without_reraisin
         # MUST NOT raise — a duplicate is an expected terminal outcome, not an
         # error to escalate every poll.
         await _ensure_paperclip_for_owner(
-            owner_id="user_123",
+            owner_id="org_123",
             owner_user_id="user_123",
             owner_email="u@example.com",
-            org_id=None,
         )
     fake_provisioning.provision_org.assert_awaited_once()
     # Recorded as a duplicate FAILURE — distinct from the 409 success no-op
@@ -1314,11 +1308,7 @@ async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_m
 
 @pytest.fixture
 def _fresh_workspace_signup(monkeypatch):
-    from core.services import clerk_admin
-
     monkeypatch.setattr(user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
-    invites = AsyncMock(side_effect=AssertionError("Workspace initialization must not query invitations"))
-    monkeypatch.setattr(clerk_admin, "list_pending_invitations_for_user", invites)
 
 
 @pytest.mark.asyncio
@@ -1469,11 +1459,9 @@ async def test_workspace_trial_drops_invalid_flow_and_preserves_event_dedup(
 
 
 def _arm_provisioning(row):
-    """A fake PaperclipProvisioning whose company-row lookup returns ``row``.
-
-    Personal owners read via get_company_row(user_id); org owners via the
-    repository's authoritative owner resolver.
-    """
+    """A fake PaperclipProvisioning whose authoritative owner resolver returns
+    ``row`` (``get_company_row`` / ``find_org_owner`` too, so a test can prove
+    the arm never reads them)."""
     fake = MagicMock()
     fake.find_org_owner = AsyncMock(return_value=row)
     fake.get_company_row = AsyncMock(return_value=row)
@@ -1484,13 +1472,11 @@ def _arm_provisioning(row):
 
 
 def _paid_account(**extra):
-    return {"owner_id": "user_p", "subscription_status": "active", **extra}
+    return {"owner_id": "org_p", "subscription_status": "active", **extra}
 
 
-def _company_row(
-    company_id="co1", status="active", friday="friday1", atlas="atlas1", starter_ids=None, org_id="user_p"
-):
-    """``org_id`` is the row's owner: the personal user id, or the org id for an org row."""
+def _company_row(company_id="co1", status="active", friday="friday1", atlas="atlas1", starter_ids=None, org_id="org_p"):
+    """``org_id`` is the workspace the row belongs to."""
     seeded = [x for x in (friday, atlas) if x is not None] or None
     return MagicMock(
         org_id=org_id,
@@ -1515,7 +1501,7 @@ async def test_arm_paid_seeds_nightly_routine_for_friday():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
 
     seed.assert_awaited_once()
     kwargs = seed.await_args.kwargs
@@ -1538,7 +1524,7 @@ async def test_arm_paid_prefers_starter_ceo_for_nightly_routine():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
 
     assert seed.await_args.kwargs["agent_id"] == "starter-ceo"
 
@@ -1549,7 +1535,7 @@ async def test_arm_active_trial_now_seeds():
     the nightly CEO through the same Paperclip path as paid, with reconcile on."""
     provisioning = _arm_provisioning(_company_row())
     seed = AsyncMock(return_value="rid-nightly")
-    trial = {"owner_id": "user_p", "subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}
+    trial = {"owner_id": "org_p", "subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}
     with (
         patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=trial)),
         patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
@@ -1558,7 +1544,7 @@ async def test_arm_active_trial_now_seeds():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     seed.assert_awaited_once()
     assert seed.await_args.kwargs["reconcile_paused"] is True
 
@@ -1568,12 +1554,12 @@ async def test_arm_expired_trial_not_armed():
     """An EXPIRED trial_local (trial_end in the past) is NOT armed — returns
     before any Paperclip call."""
     build = AsyncMock()
-    expired = {"owner_id": "user_p", "subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}
+    expired = {"owner_id": "org_p", "subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}
     with (
         patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=expired)),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     build.assert_not_awaited()
     assert should_arm_nightly_ceo(expired) is False
 
@@ -1586,7 +1572,7 @@ async def test_arm_no_account_never_armed():
         patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     build.assert_not_awaited()
 
 
@@ -1601,7 +1587,7 @@ async def test_arm_opt_out_honored():
         ),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     build.assert_not_awaited()
 
 
@@ -1621,7 +1607,7 @@ async def test_arm_cache_hit_skips_claim_and_seed():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", claim),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     claim.assert_not_awaited()
     seed.assert_not_awaited()
 
@@ -1640,7 +1626,7 @@ async def test_arm_friday_not_seeded_yet_skips():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", claim),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     claim.assert_not_awaited()
     seed.assert_not_awaited()
 
@@ -1657,7 +1643,7 @@ async def test_arm_company_not_active_skips():
         patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+        await _maybe_arm_nightly_ceo("org_p")
     seed.assert_not_awaited()
 
 
@@ -1684,8 +1670,8 @@ async def test_arm_concurrency_only_one_seeds():
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
         await _asyncio.gather(
-            _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p"),
-            _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p"),
+            _maybe_arm_nightly_ceo("org_p"),
+            _maybe_arm_nightly_ceo("org_p"),
         )
     assert seed.await_count == 1
 
@@ -1709,8 +1695,8 @@ async def test_arm_seed_failure_releases_claim_and_never_raises():
         ),
     ):
         # Must NOT raise.
-        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
-    release.assert_awaited_once_with("user_p", "co1")
+        await _maybe_arm_nightly_ceo("org_p")
+    release.assert_awaited_once_with("org_p", "co1")
 
 
 @pytest.mark.asyncio
@@ -1729,7 +1715,7 @@ async def test_arm_org_admin_uses_authoritative_owner_resolver():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), "org_xyz")
+        await _maybe_arm_nightly_ceo("org_xyz")
     provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
     provisioning.find_org_owner.assert_not_awaited()
     seed.assert_awaited_once()
@@ -1740,7 +1726,7 @@ async def test_arm_org_admin_uses_authoritative_owner_resolver():
 
 
 def _arm_patches(provisioning, **overrides):
-    """The full collaborator set for a paid personal owner, as (mocks, patchers)."""
+    """The full collaborator set for a paid workspace owner, as (mocks, patchers)."""
     mocks = {
         "billing_repo.get_by_owner_id": AsyncMock(return_value=_paid_account()),
         "build_paperclip_provisioning": AsyncMock(return_value=provisioning),
@@ -1755,18 +1741,19 @@ def _arm_patches(provisioning, **overrides):
 
 
 @pytest.mark.asyncio
-async def test_arm_nightly_ceo_returns_armed_and_seeds_for_personal_owner():
+async def test_arm_nightly_ceo_returns_armed_and_seeds_for_workspace_owner():
     provisioning = _arm_provisioning(_company_row())
     mocks, patches = _arm_patches(provisioning)
     with patch("core.services.user_provision.put_metric") as metric:
         for p in patches:
             p.start()
         try:
-            assert await arm_nightly_ceo("user_p") == "armed"
+            assert await arm_nightly_ceo("org_p") == "armed"
         finally:
             for p in patches:
                 p.stop()
-    provisioning.get_company_row.assert_awaited_once_with("user_p")
+    provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_p")
+    provisioning.get_company_row.assert_not_awaited()
     provisioning.find_org_owner.assert_not_awaited()
     assert mocks["create_enabled_schedule_routine"].await_args.kwargs["agent_id"] == "friday1"
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "armed"})
@@ -1782,7 +1769,7 @@ async def test_arm_nightly_ceo_expired_trial_is_not_entitled():
             "core.services.user_provision.billing_repo.get_by_owner_id",
             AsyncMock(
                 return_value={
-                    "owner_id": "user_p",
+                    "owner_id": "org_p",
                     "subscription_status": "trial_local",
                     "trial_end": int(time.time()) - 86400,
                 }
@@ -1791,7 +1778,7 @@ async def test_arm_nightly_ceo_expired_trial_is_not_entitled():
         patch("core.services.user_provision.build_paperclip_provisioning", build),
         patch("core.services.user_provision.put_metric") as metric,
     ):
-        assert await arm_nightly_ceo("user_p") == "not_entitled"
+        assert await arm_nightly_ceo("org_p") == "not_entitled"
     build.assert_not_awaited()
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "not_entitled"})
 
@@ -1852,7 +1839,7 @@ async def test_arm_nightly_ceo_executor_ignores_claim_cache():
     for p in patches:
         p.start()
     try:
-        assert await arm_nightly_ceo("user_p", trust_cache=False) == "armed"
+        assert await arm_nightly_ceo("org_p", trust_cache=False) == "armed"
     finally:
         for p in patches:
             p.stop()
@@ -1870,7 +1857,7 @@ async def test_arm_nightly_ceo_trusts_claim_cache_by_default():
     for p in patches:
         p.start()
     try:
-        assert await arm_nightly_ceo("user_p") == "already_armed"
+        assert await arm_nightly_ceo("org_p") == "already_armed"
     finally:
         for p in patches:
             p.stop()
@@ -1893,11 +1880,11 @@ async def test_arm_nightly_ceo_seed_failure_releases_claim_and_raises():
             p.start()
         try:
             with pytest.raises(RuntimeError):
-                await arm_nightly_ceo("user_p")
+                await arm_nightly_ceo("org_p")
         finally:
             for p in patches:
                 p.stop()
-    mocks["billing_repo.release_nightly_arm"].assert_awaited_once_with("user_p", "co1")
+    mocks["billing_repo.release_nightly_arm"].assert_awaited_once_with("org_p", "co1")
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "error"})
 
 
@@ -1905,7 +1892,7 @@ async def test_arm_nightly_ceo_seed_failure_releases_claim_and_raises():
 async def test_maybe_arm_wrapper_swallows():
     """The poll-path wrapper never raises."""
     with patch("core.services.user_provision.arm_nightly_ceo", AsyncMock(side_effect=RuntimeError("x"))):
-        assert await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p") is None
+        assert await _maybe_arm_nightly_ceo("org_p") is None
 
 
 # --- Invocation gating (uses the autouse _stub_arm_nightly mock) -------------
@@ -1913,7 +1900,7 @@ async def test_maybe_arm_wrapper_swallows():
 
 @pytest.mark.asyncio
 async def test_ensure_user_ready_invokes_arm_for_workspace_owner(_stub_trial_default, _stub_arm_nightly):
-    """Owner path → _maybe_arm_nightly_ceo awaited once with (auth, owner_id)."""
+    """Owner path → _maybe_arm_nightly_ceo awaited once with the owner_id."""
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()),
@@ -1921,7 +1908,7 @@ async def test_ensure_user_ready_invokes_arm_for_workspace_owner(_stub_trial_def
     ):
         await ensure_user_ready(_org_admin_auth("user_p", "org_p"))
     _stub_arm_nightly.assert_awaited_once()
-    assert _stub_arm_nightly.await_args.args[1] == "org_p"
+    assert _stub_arm_nightly.await_args.args == ("org_p",)
 
 
 @pytest.mark.asyncio
@@ -1934,7 +1921,7 @@ async def test_ensure_user_ready_invokes_arm_for_org_admin(_stub_arm_nightly):
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
     _stub_arm_nightly.assert_awaited_once()
-    assert _stub_arm_nightly.await_args.args[1] == "org_xyz"
+    assert _stub_arm_nightly.await_args.args == ("org_xyz",)
 
 
 @pytest.mark.asyncio
@@ -2225,34 +2212,9 @@ async def test_org_members_never_provision_a_metronome_customer(_mock_ensure_met
 
 
 @pytest.mark.asyncio
-async def test_personal_seed_skipped_when_row_belongs_to_an_org():
-    """One paperclip-companies row per user: when it already belongs to an org
-    the user joined, a PERSONAL seed must not mint a second company and steal
-    the row (that ping-pong hid a cofounder from the org for three days)."""
-    org_row = MagicMock(status="active", org_id="org_home", company_id="co_org")
-    fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=org_row)
-    fake_provisioning.provision_org = AsyncMock()
-    ensure_default_room = AsyncMock()
-    with (
-        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
-        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
-        patch("core.services.messaging.ensure_default_room", ensure_default_room),
-    ):
-        await _ensure_paperclip_for_owner(
-            owner_id="user_p",
-            owner_user_id="user_p",
-            owner_email="p@example.com",
-            org_id=None,
-        )
-    fake_provisioning.provision_org.assert_not_awaited()
-    ensure_default_room.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_arm_skips_when_row_belongs_to_another_owner():
-    """A personal owner whose row was re-pointed at an org they joined must not
-    arm the ORG's company under their personal billing account."""
+    """A company row that belongs to a different workspace is never armed
+    under this workspace's billing account."""
     provisioning = _arm_provisioning(_company_row(org_id="org_home"))
     claim = AsyncMock(return_value=True)
     seed = AsyncMock()
@@ -2263,7 +2225,7 @@ async def test_arm_skips_when_row_belongs_to_another_owner():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", claim),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        assert await arm_nightly_ceo("user_p", trust_cache=False) == "company_not_active"
+        assert await arm_nightly_ceo("org_p", trust_cache=False) == "company_not_active"
     claim.assert_not_awaited()
     seed.assert_not_awaited()
 

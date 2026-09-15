@@ -790,3 +790,47 @@ it("clears focus when the active room moves off its conversation by any path, an
   view.rerender(tree());
   expect(workspaceValue.sessionFocus).toBeNull();
 });
+
+it("keeps the newest focus request when a colleague's slow DM resolve settles after your own session was opened", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [
+    { sessionId: "s-colleague", humanUserId: "colleague", status: "idle" } as never,
+    { sessionId: "s-own", humanUserId: "owner", status: "busy" } as never,
+  ] });
+  let resolveDm!: (roomId: string) => void;
+  state.selectDm = vi.fn(() => new Promise<string>((resolve) => { resolveDm = resolve; }));
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(2));
+
+  let colleagueOpen!: Promise<void>;
+  act(() => { colleagueOpen = workspaceValue.openSession("s-colleague", { from: "sidebar" }); });
+  act(() => { void workspaceValue.openSession("s-own", { from: "sidebar" }); });
+  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s-own", ownerName: "You" });
+
+  // The colleague's DM resolve was still in flight when the own-session open
+  // (synchronous, no DM to resolve) already won. Its late arrival must not
+  // overwrite that newer focus.
+  await act(async () => { resolveDm("dm-colleague"); await colleagueOpen; });
+
+  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s-own", ownerName: "You" });
+});
+
+it("stays out of focus when closeSession runs before a slow colleague DM resolve settles", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [
+    { sessionId: "s-colleague", humanUserId: "colleague", status: "idle" } as never,
+  ] });
+  let resolveDm!: (roomId: string) => void;
+  state.selectDm = vi.fn(() => new Promise<string>((resolve) => { resolveDm = resolve; }));
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+
+  let opening!: Promise<void>;
+  act(() => { opening = workspaceValue.openSession("s-colleague", { from: "sidebar" }); });
+  act(() => { workspaceValue.closeSession(); });
+  expect(workspaceValue.sessionFocus).toBeNull();
+
+  await act(async () => { resolveDm("dm-colleague"); await opening; });
+
+  expect(workspaceValue.sessionFocus).toBeNull();
+});

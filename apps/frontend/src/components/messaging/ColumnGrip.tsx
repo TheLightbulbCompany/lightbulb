@@ -14,7 +14,14 @@ export function ColumnGrip({ onDrag, onNudge, onCommit, label = "Resize session 
       event.currentTarget.setPointerCapture(event.pointerId);
     }}
     onPointerMove={(event) => { if (event.buttons & 1) onDrag(event.clientX); }}
-    onPointerUp={(event) => { event.currentTarget.releasePointerCapture(event.pointerId); onCommit(); }}
+    onPointerUp={(event) => {
+      // Release only -- the commit happens on lostpointercapture below, which
+      // fires right after a release AND on cancellation/loss without one, so
+      // there is exactly one commit per gesture regardless of how it ends.
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    }}
+    onPointerCancel={() => onCommit()}
+    onLostPointerCapture={() => onCommit()}
     onKeyDown={(event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();

@@ -2,22 +2,52 @@ import { useRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ColumnGrip } from "../ColumnGrip";
-import { readSidebarPrefs, useSessionColumnWidth } from "../sidebarPrefs";
+import { readSidebarPrefs, writeSidebarPrefs, useSessionColumnWidth } from "../sidebarPrefs";
 
-it("reports pointer drags, keyboard nudges, and commits on release", () => {
+it("reports pointer drags, keyboard nudges, and commits exactly once per release gesture", () => {
   const onDrag = vi.fn(), onNudge = vi.fn(), onCommit = vi.fn();
   render(<ColumnGrip onDrag={onDrag} onNudge={onNudge} onCommit={onCommit} />);
   const grip = screen.getByRole("separator", { name: "Resize session column" });
-  grip.setPointerCapture = vi.fn(); grip.releasePointerCapture = vi.fn();
+  grip.setPointerCapture = vi.fn(); grip.releasePointerCapture = vi.fn(); grip.hasPointerCapture = vi.fn(() => true);
   fireEvent.pointerDown(grip, { pointerId: 1, clientX: 900 });
   fireEvent.pointerMove(grip, { pointerId: 1, clientX: 850, buttons: 1 });
   expect(onDrag).toHaveBeenCalledWith(850);
   fireEvent.pointerUp(grip, { pointerId: 1 });
+  expect(grip.releasePointerCapture).toHaveBeenCalledWith(1);
+  // Releasing alone must not commit -- a real browser fires lostpointercapture
+  // right after, and that is the single place the commit happens.
+  expect(onCommit).not.toHaveBeenCalled();
+  fireEvent.lostPointerCapture(grip, { pointerId: 1 });
   expect(onCommit).toHaveBeenCalledTimes(1);
   fireEvent.keyDown(grip, { key: "ArrowLeft" });
   expect(onNudge).toHaveBeenCalledWith(24);
   fireEvent.keyDown(grip, { key: "ArrowRight" });
   expect(onNudge).toHaveBeenCalledWith(-24);
+});
+
+it("commits once on pointer cancellation, without requiring an explicit release first", () => {
+  const onCommit = vi.fn();
+  render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} />);
+  const grip = screen.getByRole("separator", { name: "Resize session column" });
+  grip.setPointerCapture = vi.fn();
+  fireEvent.pointerDown(grip, { pointerId: 1, clientX: 900 });
+  fireEvent.pointerCancel(grip, { pointerId: 1 });
+  expect(onCommit).toHaveBeenCalledTimes(1);
+});
+
+it("never calls releasePointerCapture once capture is already lost", () => {
+  const onCommit = vi.fn();
+  render(<ColumnGrip onDrag={vi.fn()} onNudge={vi.fn()} onCommit={onCommit} />);
+  const grip = screen.getByRole("separator", { name: "Resize session column" });
+  grip.setPointerCapture = vi.fn();
+  grip.releasePointerCapture = vi.fn();
+  grip.hasPointerCapture = vi.fn(() => false);
+  fireEvent.pointerDown(grip, { pointerId: 1, clientX: 900 });
+  // Capture was already lost (cancellation, or the OS took it) by the time
+  // pointerup fires -- calling releasePointerCapture here throws in a real
+  // browser, so it must be guarded.
+  fireEvent.pointerUp(grip, { pointerId: 1 });
+  expect(grip.releasePointerCapture).not.toHaveBeenCalled();
 });
 
 it("announces its current width and allowed range for assistive tech", () => {
@@ -48,4 +78,25 @@ it("commits the width from the most recent keyboard nudge, not a stale pre-nudge
   // panelWidth 1200 -> unset-width default of 600, then two +24 nudges: 648.
   // A stale-closure regression would persist 624 (the pre-second-nudge value).
   expect(readSidebarPrefs("grip-scope").sessionColumnWidth).toBe(648);
+});
+
+it("re-reads the stored width when scope changes without remounting, instead of carrying the old workspace's width over", () => {
+  window.localStorage.clear();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    { width: 1200, right: 1200, left: 0, top: 0, bottom: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect,
+  );
+  writeSidebarPrefs("scope-a", { collapsed: [], sort: "alpha", sessionColumnWidth: 500 });
+  writeSidebarPrefs("scope-b", { collapsed: [], sort: "alpha", sessionColumnWidth: 700 });
+  const view = render(<Harness scope="scope-a" />);
+  expect(screen.getByRole("separator", { name: "Resize session column" })).toHaveAttribute("aria-valuenow", "500");
+
+  view.rerender(<Harness scope="scope-b" />);
+  const grip = screen.getByRole("separator", { name: "Resize session column" });
+  expect(grip).toHaveAttribute("aria-valuenow", "700");
+
+  // Committing now must land under the NEW scope, not the carried-over width
+  // clobbering scope-a's stored value.
+  fireEvent.keyDown(grip, { key: "ArrowLeft" });
+  expect(readSidebarPrefs("scope-b").sessionColumnWidth).toBe(724);
+  expect(readSidebarPrefs("scope-a").sessionColumnWidth).toBe(500);
 });

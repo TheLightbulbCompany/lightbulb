@@ -494,8 +494,15 @@ export function MessagingWorkspaceProvider({
   // a new tab, a deep link) cannot yet tell a live session from an ended one,
   // so it waits here and is replayed once the list settles.
   const heldLink = useRef<{ sessionId: string; roomId?: string } | null>(null);
-  const closeSession = useCallback(() => { heldLink.current = null; setSessionFocus(null); }, []);
+  // openSession awaits selectDm() for someone else's live session. Bumped at
+  // the start of every openSession call and by every path that clears
+  // sessionFocus (closeSession, the directory picks that route through it,
+  // openMessage, and the room-change clear effect below), so a slow resolve
+  // that lands after a newer open/close/pick can never overwrite it.
+  const focusRequest = useRef(0);
+  const closeSession = useCallback(() => { focusRequest.current += 1; heldLink.current = null; setSessionFocus(null); }, []);
   const openSession = useCallback(async (sessionId: string, { from, roomId }: { from: "sidebar" | "link" | "room"; roomId?: string }) => {
+    const requestId = ++focusRequest.current;
     heldLink.current = null; // the latest intent wins
     const live = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (from === "link" && !live && workspaceSessions.loading) {
@@ -517,6 +524,9 @@ export function MessagingWorkspaceProvider({
       ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
       // A failed resolve is already on screen as selectRoomError.
       : await selectDm({ kind: "human", id: live.humanUserId }, { activate: true }).catch(() => null);
+    // Stale: a newer open, a close, or a directory pick already won while
+    // this awaited selectDm() was in flight.
+    if (focusRequest.current !== requestId) return;
     // null: the resolve failed, or a room was picked while it ran (useRooms
     // answers null when superseded). Either way the owner is elsewhere now.
     if (!own && !contextRoom) return;
@@ -543,7 +553,10 @@ export function MessagingWorkspaceProvider({
     // Room changes that bypass the directory (a notification, ⌥↑/⌥↓) leave focus
     // too, unless they land on its own conversation (selectDm activating the DM).
     // A held link is kept: a cold load's automatic first room is a change as well.
-    if (moved && sessionFocus?.roomId !== rooms.activeRoomId) setSessionFocus(null);
+    if (moved && sessionFocus?.roomId !== rooms.activeRoomId) {
+      focusRequest.current += 1;
+      setSessionFocus(null);
+    }
     previousSelectedRoom.current = rooms.activeRoomId;
   }, [rooms.activeRoomId, rooms.accessRemoved, sessionTarget, sessionFocus]);
   useEffect(() => {

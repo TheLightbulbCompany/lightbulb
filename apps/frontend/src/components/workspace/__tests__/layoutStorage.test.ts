@@ -110,21 +110,41 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-artifacts"].title).toBe("Library");
   });
 
-  it("sanitizer remaps a persisted session dock panel to 'missing' — the kind is retired (task-8)", () => {
-    // Same handling as any other retired/unregistered contentComponent (see
-    // the "ghost" case above): "session" is gone from PANEL_COMPONENT_KEYS,
-    // so a layout saved before the retirement no longer resolves to a real
-    // component and falls to the shared unknown-component default.
-    const dirty = minimalLayout({
-      "session:s1": {
-        id: "session:s1",
-        contentComponent: "session",
-        title: "stale",
-        params: { roomId: "r", sessionId: "s" },
+  it("sanitizer drops a persisted session dock panel entirely, pruning its now-empty leaf, instead of leaving a dead 'missing' tab", () => {
+    // Unlike an ordinary unrecognized contentComponent (the "ghost" case
+    // above), a docked session panel is a KNOWN retired shape: remapping it to
+    // 'missing' would just strand a dead tab in the restored layout forever.
+    // It is dropped the same way a retired-panel duplicate is dropped, so an
+    // empty leaf left behind gets pruned along with it.
+    const dirty: SerializedDockview = {
+      grid: {
+        root: {
+          type: "branch",
+          data: [
+            { type: "leaf", data: { id: "group-session", views: ["session:s1"], activeView: "session:s1" } },
+            { type: "leaf", data: { id: "group-messages", views: [MESSAGES_PANEL_ID], activeView: MESSAGES_PANEL_ID } },
+          ],
+        },
+        height: 600,
+        width: 800,
+        orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
       },
-    });
+      panels: {
+        "session:s1": { id: "session:s1", contentComponent: "session", title: "stale", params: { roomId: "r", sessionId: "s" } },
+        [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: {} },
+      },
+    };
     const clean = sanitizeLayout(dirty);
-    expect(clean.panels["session:s1"].contentComponent).toBe("missing");
+    expect(clean.panels["session:s1"]).toBeUndefined();
+    expect(clean.panels[MESSAGES_PANEL_ID]).toBeDefined();
+    // The leaf that held only the retired session panel is pruned, not kept
+    // empty — the surviving sibling is promoted to the root.
+    const root = clean.grid.root as unknown as { type: string; data: { id?: string } };
+    expect(root.type).toBe("leaf");
+    expect((root.data as { id: string }).id).toBe("group-messages");
+
+    writeLayout("u-session", dirty);
+    expect(readLayout("u-session")).toEqual(clean);
   });
 
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {

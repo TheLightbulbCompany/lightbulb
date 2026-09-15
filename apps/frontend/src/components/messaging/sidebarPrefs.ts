@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import type { SidebarSort } from "./roomSections";
 
 const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
@@ -43,6 +43,24 @@ export function useSessionColumnWidth(scope: string, panel: RefObject<HTMLElemen
   // a keyboard nudge calls onNudge() then onCommit() in the same handler,
   // before React has re-rendered with the new state. A ref is always current.
   const latest = useRef(width);
+  // `width` only initializes from `scope` once (useState's initializer runs
+  // on mount only) -- without this, switching workspaces without a remount
+  // (the provider tree stays mounted, only `scope` changes) carries the
+  // previous workspace's width over and can persist it under the new scope's
+  // key on the next commit. Render-time "previous value" comparison, same
+  // pattern as MessagingWorkspaceContext's per-room draft reset.
+  const [seenScope, setSeenScope] = useState(scope);
+  if (seenScope !== scope) {
+    setSeenScope(scope);
+    setWidth(typeof window === "undefined" ? undefined : readSidebarPrefs(scope).sessionColumnWidth);
+  }
+  // Mutating a ref during render is disallowed (react-hooks/refs), so the
+  // scope-change branch above can only queue the state update -- this syncs
+  // `latest` right after, before the commit flushes and any new pointer/key
+  // event (the only way onCommit can fire) reaches the DOM. onDrag/onNudge's
+  // own direct ref writes are unaffected: they run in event handlers, not
+  // render, and this effect just re-assigns the same value they already set.
+  useEffect(() => { latest.current = width; }, [width]);
   // Plain closures, not useCallback: nothing downstream keys an effect or a
   // memoized child on these identities, and wrapping them fights the React
   // Compiler's dependency inference over ref reads for no benefit (it flags

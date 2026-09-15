@@ -24,6 +24,24 @@ describe("groupRooms", () => {
     expect(groups[3].rooms.map((value) => value.roomId)).toEqual(["dm-1"]);
   });
 
+  it("separates shared channels into External connections using the canonical attribute", () => {
+    const groups = groupRooms(
+      [room("internal"), room("shared", { shared: true })],
+      [],
+      { sort: "alpha", nameOf },
+    );
+    expect(groups.map((group) => group.label)).toEqual(["Channels", "External connections"]);
+    expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["internal"]);
+    expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["shared"]);
+  });
+
+  it("hides empty built-in channel groups for external-only and internal-only lists", () => {
+    expect(groupRooms([room("shared", { shared: true })], [], { sort: "alpha", nameOf }).map((group) => group.label))
+      .toEqual(["External connections"]);
+    expect(groupRooms([room("internal")], [], { sort: "alpha", nameOf }).map((group) => group.label))
+      .toEqual(["Channels"]);
+  });
+
   it("keeps group DMs inside Direct messages", () => {
     const groups = groupRooms([room("g", { kind: "group-dm" }), room("d", { kind: "dm" })], [], { sort: "alpha", nameOf });
     expect(groups.map((group) => group.label)).toEqual(["Direct messages"]);

@@ -637,13 +637,18 @@ it("locks Listening as a paid feature in the creation dialog on the free tier", 
   expect(within(mode).getByRole("option", { name: "Mentions" })).toBeEnabled();
 });
 
-it("marks a shared channel and offers no Leave on it", async () => {
+it("separates shared channels into External connections, retains their indicator, and preserves actions", async () => {
   render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} onLeaveRoom={vi.fn()} rooms={[
       { ...base, roomId: "own", name: "Launch" },
       { ...base, roomId: "ext", name: "lightbulb-acme", shared: true },
     ]} />);
-  const shared = screen.getByRole("button", { name: /^lightbulb-acme/ });
+  const channels = screen.getByRole("region", { name: "Channels" });
+  const external = screen.getByRole("region", { name: "External connections" });
+  expect(within(channels).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
+  expect(within(channels).queryByRole("button", { name: /^lightbulb-acme/ })).not.toBeInTheDocument();
+  const shared = within(external).getByRole("button", { name: /^lightbulb-acme/ });
+  expect(screen.getAllByRole("button", { name: /^lightbulb-acme/ })).toHaveLength(1);
   expect(shared).toHaveTextContent("Shared");
   expect(within(shared).getByText("Shared")).toHaveAttribute("title", "Shared between this workspace and Lightbulb");
   expect(screen.getByRole("button", { name: /^Launch/ })).not.toHaveTextContent("Shared");
@@ -652,6 +657,31 @@ it("marks a shared channel and offers no Leave on it", async () => {
   await userEvent.keyboard("{Escape}");
   await userEvent.click(screen.getByRole("button", { name: "Conversation actions for lightbulb-acme" }));
   expect(screen.queryByRole("menuitem", { name: /Leave/ })).not.toBeInTheDocument();
+});
+
+it("hides empty Channels and External connections sections", () => {
+  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
+    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn() };
+  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, shared: true }]} />);
+  expect(screen.getByRole("region", { name: "External connections" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Channels" })).not.toBeInTheDocument();
+  rerender(<RoomDirectory {...props} rooms={[base]} />);
+  expect(screen.getByRole("region", { name: "Channels" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "External connections" })).not.toBeInTheDocument();
+});
+
+it("keeps the selected external channel visible when External connections is collapsed", async () => {
+  window.localStorage.clear();
+  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]} currentRoomId="selected-external"
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} rooms={[
+      { ...base, roomId: "selected-external", name: "Selected external", shared: true, unreadCount: 2 },
+      { ...base, roomId: "other-external", name: "Other external", shared: true, unreadCount: 3 },
+    ]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Collapse External connections" }));
+  expect(screen.queryByRole("button", { name: /^Other external/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Selected external/ })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByLabelText("5 unread messages in External connections")).toHaveTextContent("5");
+  expect(screen.getByRole("button", { name: "Expand External connections" })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("lists live sessions above the room groups, hides the section when empty, and opens one on click", async () => {

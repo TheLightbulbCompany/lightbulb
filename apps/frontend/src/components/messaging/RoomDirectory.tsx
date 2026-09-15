@@ -519,7 +519,7 @@ function DirectoryContent({
       <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { if (manageTrigger.current?.isConnected) { event.preventDefault(); manageTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle>Manage sections</DialogTitle>
-          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels or Direct messages.</DialogDescription>
+          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels, External connections, or Direct messages.</DialogDescription>
         </DialogHeader>
         {sections.length > 0 && <ul className="grid gap-2">{sections.map((section) => <li key={section.id} className="room-section-edit">
           {/* Both accessible names stay on the SAVED name: a control whose name
@@ -550,7 +550,7 @@ function DirectoryContent({
         {blankName && <p id={blankHintId} className="text-sm text-muted-foreground">Every section needs a name.</p>}
         {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
-          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels or Direct messages.</p>
+          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels, External connections, or Direct messages.</p>
           <div className="room-composer-actions">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}

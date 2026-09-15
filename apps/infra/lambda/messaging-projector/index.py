@@ -491,12 +491,13 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple
         member = _get_item(f"ROOM#{room_id}", f"MEMBER#human#{user_id}")
         if not member or member.get("ownerId") != owner_id or seq <= member.get("joinedSeq", 0):
             continue
-        mapping = _get_item(f"OWNER#{owner_id}", f"USERSTREAM#{user_id}")
+        home = member.get("homeOwnerId") or owner_id
+        mapping = _get_item(f"OWNER#{home}", f"USERSTREAM#{user_id}")
         if not mapping or mapping.get("active") is not True:
             continue
         key = _require_uuid(mapping.get("channelKey"), "channelKey")
         reverse = _get_item(f"STREAM#{key}", "META")
-        if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != owner_id or reverse.get("userId") != user_id:
+        if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != home or reverse.get("userId") != user_id:
             continue
         workspace_id = _workspace_id_for_meta(f"STREAM#{key}", "META", reverse)
         if workspace_id is None:

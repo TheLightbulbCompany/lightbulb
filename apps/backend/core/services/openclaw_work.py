@@ -26,6 +26,7 @@ from core.services.messaging import (
     ApiProblem,
     canonical_message,
     human_emails,
+    listening_available,
     json_body_size,
     make_live_event,
     with_human_handles,
@@ -381,6 +382,12 @@ class OpenClawWorkWorker:
         event_kind: str,
     ) -> None:
         owner_id = meta["ownerId"]
+        if event_kind == "room_event" and not await listening_available(owner_id):
+            # Listening is paid. A row that still says ``active`` on a free-tier
+            # room (seeded before the gate) must not wake the container for
+            # traffic its agent will never answer.
+            put_metric("messaging.ambient_gate", dimensions={"outcome": "plan_gate", "event_kind": event_kind})
+            return
         manager = get_ecs_manager()
         container, ip = await manager.resolve_running_container(owner_id)
         if not container or not ip:

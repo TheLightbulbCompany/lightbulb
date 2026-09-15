@@ -612,3 +612,13 @@ it("reverts an optimistic reorder when the save fails", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Sections could not be saved.");
   expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Ship", "Admin"]);
 });
+
+it("locks Listening as a paid feature in the creation dialog on the free tier", () => {
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={vi.fn()} listeningAvailable={false} />);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  const dialog = screen.getByRole("dialog", { name: "Create a channel" });
+  fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
+  const mode = within(dialog).getByLabelText("Response for Atlas");
+  expect(within(mode).getByRole("option", { name: "Listening (paid plan)" })).toBeDisabled();
+  expect(within(mode).getByRole("option", { name: "Mentions" })).toBeEnabled();
+});

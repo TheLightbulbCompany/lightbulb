@@ -6,6 +6,7 @@ import time
 
 import httpx
 import pytest
+from unittest.mock import AsyncMock
 
 from core.config import settings
 from core.services import openclaw_work as work
@@ -68,6 +69,7 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
         return {"version": 1}
 
     monkeypatch.setattr(work, "get_ecs_manager", lambda: FakeManager())
+    monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr(work.messaging_repo, "get_member", fake_get_member)
     monkeypatch.setattr(work.messaging_repo, "list_members", fake_list_members)
     monkeypatch.setattr(work, "build_ingress_body", fake_body)
@@ -329,6 +331,7 @@ async def test_wake_outcome_is_recorded_when_the_runtime_is_down(monkeypatch, wa
         return wake_result
 
     monkeypatch.setattr(work, "get_ecs_manager", lambda: FakeManager())
+    monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr("core.services.container_wake.request_wake_silent", fake_wake)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
 

@@ -37,4 +37,8 @@ describe("respondHint", () => {
   it("is empty when the room has no agents", () => {
     expect(respondHint("channel", [person], [], [])).toBe("");
   });
+  it("shows a Listening agent as mention-only while Listening is a paid feature the room lacks", () => {
+    expect(respondHint("channel", [friday], [], [], false)).toBe("Friday when mentioned");
+    expect(respondHint("channel", [friday], [{ kind: "agent", id: "agent-friday" }], [], false)).toBe("Friday will reply");
+  });
 });

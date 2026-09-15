@@ -956,8 +956,16 @@ non-room usage arrives on `POST /internal/messaging/usage/{ownerId}`.
 traffic wakes only `active` members as a `room_event`, and the source agent is
 always skipped. Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
-`#general` channel holding the whole starter roster, CEO `active` and the
-specialists `mentions`, plus one welcome message from the CEO.
+`#general` channel holding the whole starter roster plus one welcome message
+from the CEO: on a PAID workspace the CEO is `active` and the specialists
+`mentions`; on the free trial every agent is `mentions`. **Listening (`active`)
+is a paid feature** — `listening_available` (the `has_always_on_entitlement`
+predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
+`PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
+non-paid owner before waking the container. DMs are exempt: every DM message
+is addressed, so the mode is inert there, and the web client creates DMs with
+`active`. The UI shows the option as "Listening (paid plan)" and renders a
+stored `active` on a free-tier room as Mentions.
 
 **The rule that governs changes here: no second event bus.** SQS is the durable
 wakeup and nothing else; AppSync is the fanout; DynamoDB is the truth. No Kafka,
@@ -1027,7 +1035,7 @@ Key invariants:
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active`, `mentions`, or `observe`; ordinary members see the mode but cannot change it.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces only — a free trial seeds every agent on `mentions`) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
 - **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
 
 ### Legacy containers (pre-Paperclip provisioning)

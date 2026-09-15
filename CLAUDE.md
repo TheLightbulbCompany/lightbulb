@@ -1110,6 +1110,15 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 ### Config Patching Notes
 
 - `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
+- **ChatGPT OAuth re-import is a boot-only path on OpenClaw 9.3+.** The shared
+  auth store lives in the state DB (`config_machine_state` → `authProfiles.store`),
+  not `agents/main`, and `oauth.json` is imported only by boot `doctor --fix`
+  (which needs `OPENCLAW_SERVICE_REPAIR_POLICY=external`). Doctor keeps an
+  existing profile unless it is malformed, so a genuine new login only lands
+  when the clear-auth sentinel wipes the store first — the boot script clears
+  BOTH the legacy per-agent row and the relocated one. A reprovision re-stages
+  but never clears, because the container's rotated token is fresher than the
+  backend's seed.
 - `OPENCLAW_SERVICE_REPAIR_POLICY=external` (container task env, `container-stack.ts`)
   tells doctor that litestream owns the gateway process, so it skips its native
   service-ownership inspection. Without it, boot `doctor --fix` aborts with

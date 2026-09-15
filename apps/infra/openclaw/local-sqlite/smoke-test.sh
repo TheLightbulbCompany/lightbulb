@@ -243,6 +243,32 @@ out=$(run_boot "$L" 2>&1) || fail "sentinel-no-db exited nonzero: $out"
 [ ! -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "junk DB created by sentinel apply"
 echo "PASS 4b sentinel benign"
 
+# ---- 4e. OpenClaw >= 9.3 keeps the SHARED auth store in the state database
+# instead of agents/main, so a sentinel that only clears the per-agent row
+# leaves the old profile in place and a freshly staged login is ignored
+# (doctor replaces an existing profile only when it is malformed).
+L="$WORK/t4d/local"; mkdir -p "$L/state"
+sqlite3 "$L/state/openclaw.sqlite" "CREATE TABLE config_machine_state(state_key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL); INSERT INTO config_machine_state VALUES('authProfiles.store','{\"version\":1}',1),('auth.sharedStore','{\"location\":\"state-db\"}',1),('plugins.installedIndex','{}',1);"
+echo '{"agent_ids":["main"],"requested_at":"now"}' > "$L/clear-auth-profiles.json"
+out=$(run_boot "$L" 2>&1) || fail "relocated-store sentinel run exited nonzero: $out"
+[ "$(sqlite3 "$L/state/openclaw.sqlite" "SELECT count(*) FROM config_machine_state WHERE state_key='authProfiles.store';")" = "0" ] \
+  || fail "relocated shared auth store not cleared: $out"
+# The location marker and unrelated machine state must survive.
+[ "$(sqlite3 "$L/state/openclaw.sqlite" "SELECT count(*) FROM config_machine_state WHERE state_key IN ('auth.sharedStore','plugins.installedIndex');")" = "2" ] \
+  || fail "sentinel deleted unrelated machine state: $out"
+[ ! -f "$L/clear-auth-profiles.json" ] || fail "sentinel not removed"
+echo "PASS 4e sentinel clears the relocated shared auth store"
+
+# ---- 4f. an unreadable state database is the same class as 4c: consuming the
+# sentinel would drop the only retry request on disk and the owner would keep
+# using the spent token with nothing left to re-fire the import.
+L="$WORK/t4e/local"; mkdir -p "$L/state"
+printf 'not a database' > "$L/state/openclaw.sqlite"
+echo '{"agent_ids":["main"],"requested_at":"now"}' > "$L/clear-auth-profiles.json"
+out=$(run_boot "$L" 2>&1) || fail "unreadable-state-db run exited nonzero: $out"
+[ -f "$L/clear-auth-profiles.json" ] || fail "sentinel consumed despite a failed relocated-store clear: $out"
+echo "PASS 4f a failed relocated-store clear keeps the sentinel"
+
 # ---- 4c. a non-benign sentinel failure must KEEP the sentinel (so the next
 # boot retries) instead of silently consuming the retry request.
 L="$WORK/t4c/local"; mkdir -p "$L/agents/main/agent"
@@ -264,6 +290,16 @@ rows=$(sqlite3 "$L/agents/other/agent/openclaw-agent.sqlite" "SELECT count(*) FR
 [ "$rows" = "1" ] || fail "non-default agent auth row was cleared"
 echo "$out" | grep -q "ignoring non-default agent" || fail "no ignore log: $out"
 echo "PASS 4d non-default sentinel ignored"
+
+# ---- 4g. the non-default fence covers the relocated store too: it IS main's
+# store under another name, so a sentinel that never names main must not wipe it.
+L="$WORK/t4g/local"; mkdir -p "$L/state"
+sqlite3 "$L/state/openclaw.sqlite" "CREATE TABLE config_machine_state(state_key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL); INSERT INTO config_machine_state VALUES('authProfiles.store','{\"version\":1}',1);"
+echo '{"agent_ids":["someagent"],"requested_at":"now"}' > "$L/clear-auth-profiles.json"
+out=$(run_boot "$L" 2>&1) || fail "non-default relocated-store run exited nonzero: $out"
+[ "$(sqlite3 "$L/state/openclaw.sqlite" "SELECT count(*) FROM config_machine_state WHERE state_key='authProfiles.store';")" = "1" ] \
+  || fail "non-default sentinel wiped the relocated shared auth store: $out"
+echo "PASS 4g non-default sentinel leaves the relocated store alone"
 
 # ---- 5. the mount-order fence: if state/ or agents/ ends up on the network
 # filesystem (ECS mounts in array order, so a reordering shadows the ephemeral

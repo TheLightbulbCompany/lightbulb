@@ -27,7 +27,8 @@
 #   2. enumerate S3: agent tombstones + replicated databases
 #   3. restore every replicated database, integrity-checked
 #   4. cold-start log (nothing to migrate — see the note there)
-#   5. apply the backend's clear-auth sentinel
+#   5. apply the backend's clear-auth sentinel (legacy per-agent row AND
+#      the 9.3 relocated store in the state database)
 #   6. exec litestream replicate -exec <doctor+gateway>
 #
 # Fail-loud: any enumeration or restore error exits non-zero so ECS
@@ -295,6 +296,9 @@ if [ -f "$SENTINEL" ]; then
       log "sentinel: ignoring non-default agent '$agent' (only main may be cleared)"
       continue
     fi
+    # The relocated store below is main's store under another name, so it is
+    # cleared only when the sentinel actually asks for main — the same fence.
+    SENTINEL_WANTS_MAIN=1
     db="$STATE_ROOT/agents/$agent/agent/openclaw-agent.sqlite"
     if [ -f "$db" ]; then
       if _serr=$(sqlite3 "$db" "DELETE FROM auth_profile_store WHERE store_key = 'primary';" 2>&1); then
@@ -316,6 +320,39 @@ if [ -f "$SENTINEL" ]; then
       log "sentinel: no DB for agent $agent yet (benign)"
     fi
   done
+  # OpenClaw >= 9.3 RELOCATES the shared auth store out of
+  # agents/main/agent/openclaw-agent.sqlite and into the state database
+  # (config_machine_state row "authProfiles.store"; "auth.sharedStore" records
+  # {"location":"state-db"}). A 9.3 install has no agents/main at all, so the
+  # loop above clears nothing there. Doctor's import then KEEPS the stored
+  # profile — mergeImportedAuthProfiles replaces an existing profile only when
+  # the stored credential is malformed, and a spent token is still well-formed
+  # — so a genuinely new login is ignored and the owner keeps using the dead
+  # one. Clear the relocated store for the same reason the legacy row is
+  # cleared, with the same retry discipline.
+  #
+  # The "auth.sharedStore" location marker and every unrelated machine-state
+  # row stay: dropping the marker would leave store ownership to be
+  # re-derived on the next load, which is not what a credential change asks
+  # for. Only the two profile rows go.
+  state_db="$STATE_ROOT/state/openclaw.sqlite"
+  if [ "${SENTINEL_WANTS_MAIN:-0}" != "1" ]; then
+    :
+  elif [ -f "$state_db" ]; then
+    if _serr=$(sqlite3 "$state_db" "DELETE FROM config_machine_state WHERE state_key IN ('authProfiles.store','authProfiles.state');" 2>&1); then
+      log "sentinel: cleared the relocated shared auth store"
+    else
+      case "$_serr" in
+        *"no such table"*) log "sentinel: no config_machine_state table yet (benign)" ;;
+        *)
+          log "sentinel: FAILED clearing the relocated shared auth store ($_serr) — keeping sentinel for the next boot"
+          SENTINEL_RETRY=1
+          ;;
+      esac
+    fi
+  else
+    log "sentinel: no state database yet (benign)"
+  fi
   [ "${SENTINEL_RETRY:-0}" = "1" ] || rm -f "$SENTINEL"
 fi
 

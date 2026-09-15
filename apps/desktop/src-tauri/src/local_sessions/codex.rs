@@ -104,11 +104,18 @@ fn from_rollout(
     })
 }
 
-pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<NativeSession> {
+/// A single Codex process can host more than one thread at once (the ChatGPT
+/// / Codex Desktop app runs one `codex app-server` pid for every open
+/// conversation), each with its own rollout file open. Mirror every rollout
+/// `from_rollout` accepts; a rollout it refuses (exec, subagent, legacy
+/// grammar, other originator) is skipped rather than failing the whole
+/// process, unless none is accepted, in which case the first refusal's error
+/// is returned so existing single-rollout refusal assertions keep meaning.
+pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec<NativeSession>> {
     let execution = process(pid)?;
     let root = home.join(".codex/sessions");
     confined_path(home, &root)?;
-    let paths: Vec<_> = open_files(pid)
+    let mut paths: Vec<_> = open_files(pid)
         .await?
         .into_iter()
         .filter(|p| {
@@ -118,15 +125,28 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Nat
                 && p.extension().is_some_and(|e| e == "jsonl")
         })
         .collect();
-    if paths.len() != 1 {
+    if paths.is_empty() {
         return Err("native rollout is not available yet".into());
     }
+    paths.sort();
     let version = runtime_version(&execution, program, "codex")
         .await
         .unwrap_or_default();
-    let found = from_rollout(&root, execution.clone(), &paths[0], &version)?;
+    let mut found = Vec::with_capacity(paths.len());
+    let mut refusal = None;
+    for path in &paths {
+        match from_rollout(&root, execution.clone(), path, &version) {
+            Ok(session) => found.push(session),
+            Err(e) => {
+                refusal.get_or_insert(e);
+            }
+        };
+    }
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
+    }
+    if found.is_empty() {
+        return Err(refusal.unwrap_or_else(|| "native rollout is not available yet".into()));
     }
     Ok(found)
 }
@@ -148,8 +168,8 @@ pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
         if !name.contains("/codex") {
             continue;
         }
-        if let Ok(session) = capture(home, &program, pid).await {
-            found.push(session);
+        if let Ok(sessions) = capture(home, &program, pid).await {
+            found.extend(sessions);
         }
     }
     Ok(found)
@@ -942,6 +962,56 @@ mod tests {
         assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
     }
     #[tokio::test]
+    async fn local_sessions_codex_capture_mirrors_every_accepted_rollout_one_process_holds_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(dir.path()).unwrap();
+        let root = home.join(".codex/sessions");
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("rollout-first.jsonl");
+        let second = root.join("rollout-second.jsonl");
+        let refused = root.join("rollout-refused.jsonl");
+        fs::write(&first, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&second, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"two\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&refused, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"three\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+
+        // One real process holding three rollout files open at once, the way a
+        // single `codex app-server` pid holds one file per live thread -- `tail
+        // -f` opens and keeps every argument open without an intermediate shell.
+        let mut child = tokio::process::Command::new("/usr/bin/tail")
+            .arg("-f")
+            .args([&first, &second, &refused])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+
+        // `tail` opens its files early but asynchronously relative to this
+        // spawn; poll instead of racing it.
+        let mut sessions = None;
+        for _ in 0..200 {
+            match capture(&home, Path::new("/nonexistent-codex-binary"), pid).await {
+                Ok(found) => {
+                    sessions = Some(found);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        let _ = child.kill().await;
+        let sessions = sessions.expect("codex process never exposed its held-open rollouts");
+
+        assert_eq!(sessions.len(), 2, "the refused exec-sourced rollout is skipped");
+        let mut conversations: Vec<_> = sessions.iter().map(|s| s.conversation.clone()).collect();
+        conversations.sort();
+        assert_eq!(conversations, vec!["one".to_string(), "two".to_string()]);
+        assert_ne!(sessions[0].conversation, sessions[1].conversation);
+        assert_eq!(sessions[0].process, sessions[1].process);
+    }
+
+    #[tokio::test]
     #[ignore = "requires an explicitly owned disposable native Codex PID and conversation ID"]
     async fn local_sessions_owned_codex_capture_binds_the_running_binary() {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
@@ -951,7 +1021,12 @@ mod tests {
             .unwrap();
         let conversation = std::env::var("LIGHTBULB_TEST_CODEX_THREAD").unwrap();
         let program = provider_program(&home, "codex").unwrap();
-        let session = capture(&home, &program, pid).await.unwrap();
+        let session = capture(&home, &program, pid)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.conversation == conversation)
+            .unwrap();
         assert_eq!(session.conversation, conversation);
         assert_eq!(session.restriction, None);
         assert_eq!(session.version, "0.149.0");

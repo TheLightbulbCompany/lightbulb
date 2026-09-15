@@ -1067,7 +1067,11 @@ impl Host {
             )
             .await?
         } else {
-            codex::capture(&self.home, &program, native.process.pid).await?
+            codex::capture(&self.home, &program, native.process.pid)
+                .await?
+                .into_iter()
+                .find(|s| s.conversation == native.conversation)
+                .ok_or("native identity changed")?
         };
         if current.restriction.is_some()
             || current.process != native.process
@@ -2103,7 +2107,12 @@ mod tests {
             .await
             .unwrap()
         } else {
-            codex::capture(&home, &program, pid).await.unwrap()
+            codex::capture(&home, &program, pid)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|s| s.conversation == conversation)
+                .unwrap()
         };
         assert_eq!(native.conversation, conversation);
         assert_eq!(native.restriction, None);

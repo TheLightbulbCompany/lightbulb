@@ -91,3 +91,58 @@ class TestRuntimeRequest:
 
     def test_is_tagged_with_its_owner(self):
         assert self._req()["tags"]["owner_id"] == "org_abc"
+
+
+class TestRuntimeEnv:
+    def _env(self, **kw):
+        base = dict(
+            owner_id="org_abc",
+            api_base="https://api-dev.flickmeon.ai/",
+            hook_token="hook-123",
+            litestream_bucket="lightbulb-dev-openclaw-replicas",
+        )
+        base.update(kw)
+        return ar.build_runtime_env(**base)
+
+    def test_carries_the_callback_identity_the_gateway_needs(self):
+        # Without these the gateway boots but cannot report runs or post agent replies.
+        env = self._env()
+        assert env["ISOL8_OWNER_ID"] == "org_abc"
+        assert env["OPENCLAW_HOOK_TOKEN"] == "hook-123"
+
+    def test_strips_the_trailing_slash_from_the_api_base(self):
+        # The plugin concatenates paths onto this; a double slash breaks the hook routes.
+        assert self._env()["ISOL8_API_URL"] == "https://api-dev.flickmeon.ai"
+
+    def test_supplies_the_static_block_ecs_gets_from_its_task_definition(self):
+        env = self._env()
+        for key in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "AWS_CONFIG_FILE", "CLAWHUB_WORKDIR"):
+            assert key in env, key
+
+    def test_omits_the_browser_variables_since_that_stack_is_stripped(self):
+        env = self._env()
+        assert "DISPLAY" not in env
+        assert "BROWSER_EGRESS_PROXY_PORT" not in env
+
+    def test_disables_respawn_so_a_restart_cannot_kill_the_microvm(self):
+        # The update-restart path spawns a detached child and exits, taking litestream -exec
+        # with it -- which on ECS killed the task outright on 2026-09-14.
+        assert self._env()["OPENCLAW_NO_RESPAWN"] == "1"
+
+    def test_gate_bearer_is_optional_and_omitted_when_absent(self):
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in self._env()
+        assert self._env(gate_bearer="tok")["AWS_BEARER_TOKEN_BEDROCK"] == "tok"
+
+    def test_request_carries_the_environment(self):
+        req = ar.build_runtime_request(
+            owner_id="org_abc",
+            image_uri="img",
+            role_arn="arn:role",
+            efs_access_point_arn="arn:ap",
+            subnets=["s"],
+            security_groups=["sg"],
+            idle_timeout_s=14400,
+            max_lifetime_s=28800,
+            environment=self._env(),
+        )
+        assert req["environmentVariables"]["ISOL8_OWNER_ID"] == "org_abc"

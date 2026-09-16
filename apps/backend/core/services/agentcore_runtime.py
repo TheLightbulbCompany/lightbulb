@@ -103,6 +103,57 @@ async def ensure_agentcore_trust(owner_id: str, role_name: str, account_id: str)
     return True
 
 
+def build_runtime_env(
+    *,
+    owner_id: str,
+    api_base: str,
+    hook_token: str,
+    litestream_bucket: str,
+    gate_bearer: str | None = None,
+) -> dict[str, str]:
+    """The gateway's environment on AgentCore.
+
+    On ECS this arrives from two places: a static block in the CDK task definition and a
+    per-owner list built in ecs_manager. A runtime has no task definition, so both sets are
+    supplied here or the gateway boots unable to call back, publish, or reach a model.
+
+    Deliberately NOT carried over: DISPLAY and BROWSER_EGRESS_PROXY_PORT (the browser stack is
+    stripped from this image) and CHOKIDAR_USEPOLLING (an EFS/NFS workaround for the config
+    watcher — openclaw.json is still on EFS, so this one is re-evaluated when the config
+    watcher is verified on a microVM, not assumed).
+
+    ⚠️ SECRETS. ``gate_bearer`` is a bearer token and AgentCore environment variables are
+    plaintext on a control-plane resource, readable by any principal with
+    ``bedrock-agentcore:GetAgentRuntime`` — a wider audience than an ECS task definition. This
+    matches today's posture (the gate bearer is already plaintext in the task definition's
+    ``environment``, not ``secrets``) so it is not a regression, but the spec's P6 calls for
+    fetching it from Secrets Manager at boot instead. Do that before prod: a rotation also only
+    reaches new sessions, so env is the wrong home for it twice over.
+    """
+    env: dict[str, str] = {
+        # Per-owner identity and callback path.
+        "ISOL8_OWNER_ID": owner_id,
+        "ISOL8_API_URL": api_base.rstrip("/"),
+        "OPENCLAW_HOOK_TOKEN": hook_token,
+        "LITESTREAM_S3_BUCKET": litestream_bucket,
+        # The static block the CDK task definition supplies on ECS.
+        "HOME": "/home/node",
+        "XDG_CONFIG_HOME": "/home/node/.openclaw/.config",
+        "XDG_DATA_HOME": "/home/node/.openclaw/.local/share",
+        "AWS_CONFIG_FILE": "/home/node/.openclaw/.aws/config",
+        "CLAWHUB_WORKDIR": "/home/node/.openclaw",
+        "GOG_KEYRING_BACKEND": "file",
+        "OPENCLAW_DISABLE_BONJOUR": "true",
+        "OPENCLAW_GATEWAY_STARTUP_TRACE": "1",
+        # A routine in-process restart must not end the microVM: the update-restart path
+        # spawns a detached child and exits, which would kill litestream -exec with it.
+        "OPENCLAW_NO_RESPAWN": "1",
+    }
+    if gate_bearer:
+        env["AWS_BEARER_TOKEN_BEDROCK"] = gate_bearer
+    return env
+
+
 def build_runtime_request(
     *,
     owner_id: str,
@@ -113,6 +164,7 @@ def build_runtime_request(
     security_groups: list[str],
     idle_timeout_s: int,
     max_lifetime_s: int,
+    environment: dict[str, str] | None = None,
 ) -> dict:
     """The CreateAgentRuntime request for one workspace.
 
@@ -138,5 +190,6 @@ def build_runtime_request(
         "filesystemConfigurations": [
             {"efsAccessPoint": {"accessPointArn": efs_access_point_arn, "mountPath": "/mnt/oc"}}
         ],
+        "environmentVariables": environment or {},
         "tags": {"owner_id": owner_id, "Environment": _env(), "ManagedBy": "lightbulb-backend"},
     }

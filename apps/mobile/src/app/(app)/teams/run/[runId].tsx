@@ -19,6 +19,7 @@ import {
   useRunDetail,
   type RunDetail,
 } from "../../../../lib/teamsRunDetail";
+import { useStackedRows } from "../../../../lib/textScale";
 import { teamsDetailUrl } from "../../../../lib/webLinks";
 
 // Run-detail screen (web RunDetailPanel parity): status + actions
@@ -68,10 +69,11 @@ function fmtDuration(start?: string | null, end?: string | null): string | null 
 }
 
 function Prop({ label, value }: { label: string; value: string | null | undefined }) {
+  const stacked = useStackedRows();
   if (value == null || value === "") return null;
   return (
-    <View style={styles.prop}>
-      <Text style={styles.propLabel}>{label}</Text>
+    <View style={[styles.prop, stacked && styles.propStacked]}>
+      <Text style={[styles.propLabel, stacked && styles.propLabelStacked]}>{label}</Text>
       <Text style={styles.propValue}>{value}</Text>
     </View>
   );
@@ -525,6 +527,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.edge,
   },
+  // At accessibility text sizes the label takes its own line, the way UIKit's
+  // own list rows do — an 88pt column breaks the longer labels mid-word.
+  propStacked: { flexDirection: "column", gap: spacing.xs },
+  propLabelStacked: { width: "auto" },
   propLabel: {
     width: 88,
     fontFamily: fonts.mono,

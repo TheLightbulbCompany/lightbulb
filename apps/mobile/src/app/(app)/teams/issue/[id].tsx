@@ -61,6 +61,7 @@ import {
   type TeamsAgent,
   type TeamsApproval,
 } from "../../../../lib/teamsData";
+import { useStackedRows } from "../../../../lib/textScale";
 import { teamsDetailUrl } from "../../../../lib/webLinks";
 
 const UNASSIGNED_KEY = "__unassigned__";
@@ -154,9 +155,10 @@ function StatusSwatch({ status }: { status: string | null | undefined }) {
 
 /** A static, non-editable property row (e.g. CREATED). */
 function StaticRow({ label, value }: { label: string; value: string }) {
+  const stacked = useStackedRows();
   return (
-    <View style={styles.propRow}>
-      <Text style={styles.propLabel}>{label}</Text>
+    <View style={[styles.propRow, stacked && styles.propRowStacked]}>
+      <Text style={[styles.propLabel, stacked && styles.propLabelStacked]}>{label}</Text>
       <Text style={styles.propValue} numberOfLines={2}>
         {value}
       </Text>
@@ -174,16 +176,30 @@ function EditableRow({
   onPress: () => void;
   children: ReactNode;
 }) {
+  const stacked = useStackedRows();
   return (
     <Pressable
-      style={({ pressed }) => [styles.propRow, styles.editRow, pressed && styles.editRowPressed]}
+      style={({ pressed }) => [
+        styles.propRow,
+        styles.editRow,
+        stacked && styles.propRowStacked,
+        pressed && styles.editRowPressed,
+      ]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={`Edit ${label.toLowerCase()}`}
     >
-      <Text style={styles.propLabel}>{label}</Text>
-      <View style={styles.editValue}>{children}</View>
-      <SymbolView accessibilityElementsHidden name="chevron.down" size={15} tintColor={colors.muteSoft} />
+      <Text style={[styles.propLabel, stacked && styles.propLabelStacked]}>{label}</Text>
+      {/* Value and chevron stay on one line even when the label moves above. */}
+      <View style={[styles.editValue, stacked && styles.editValueStacked]}>
+        {children}
+        <SymbolView
+          accessibilityElementsHidden
+          name="chevron.down"
+          size={15}
+          tintColor={colors.muteSoft}
+        />
+      </View>
     </Pressable>
   );
 }
@@ -793,6 +809,11 @@ const styles = StyleSheet.create({
     color: colors.mute,
     width: 72,
   },
+  // At accessibility text sizes the label takes its own line, the way UIKit's
+  // own list rows do — a 72pt column breaks "PRIORITY" mid-word.
+  propRowStacked: { flexDirection: "column", alignItems: "stretch", gap: spacing.xs },
+  propLabelStacked: { width: "auto" },
+  editValueStacked: { width: "100%" },
   propValue: {
     flex: 1,
     fontFamily: fonts.sansMedium,
@@ -811,7 +832,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
-    flexShrink: 1,
+    // Fills the row so the chevron stays pinned to its right edge.
+    flex: 1,
   },
   swatch: { width: 12, height: 12, borderRadius: 6, borderWidth: 1.5 },
   priorityDot: { width: 10, height: 10, borderRadius: 5 },

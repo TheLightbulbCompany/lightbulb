@@ -231,11 +231,13 @@ function Conversation() {
     title,
     headerTitle: () => (
       <View style={styles.headerTitle}>
-        <Text style={styles.headerName} numberOfLines={1}>
+        {/* Fixed like UIKit's own navigation titles, which do not scale with
+            the reader's text size — the bar's height does not grow either. */}
+        <Text style={styles.headerName} numberOfLines={1} maxFontSizeMultiplier={1}>
           {title}
         </Text>
         {isChannel && members ? (
-          <Text style={styles.headerMeta}>
+          <Text style={styles.headerMeta} numberOfLines={1} maxFontSizeMultiplier={1}>
             {members.length} {members.length === 1 ? "member" : "members"}
             {rooms.activeRoom?.shared ? " · Shared with Lightbulb" : ""}
           </Text>

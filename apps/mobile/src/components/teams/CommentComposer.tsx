@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { useScaledHeight } from "../../lib/textScale";
 
 // ---------------------------------------------------------------------------
 // Issue-comment composer — the chat composer's look (floating white card on
@@ -26,10 +27,19 @@ export interface CommentComposerProps {
 
 export function CommentComposer({ onSubmit }: CommentComposerProps) {
   const insets = useSafeAreaInsets();
+  // One line at rest, roughly six before it scrolls — both at the reader's
+  // text size, so a large size gets a taller box rather than fewer lines.
+  const minHeight = useScaledHeight(24);
+  const maxHeight = useScaledHeight(140);
   const [value, setValue] = useState("");
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [height, setHeight] = useState(24);
+  // State holds what the field MEASURED, not the height we draw: the reader can
+  // change their text size while this is on screen, and a height seeded from
+  // the old scale would stay until they next typed. Clamping at render instead
+  // lets the box follow the scale immediately.
+  const [contentHeight, setContentHeight] = useState(0);
+  const height = Math.min(maxHeight, Math.max(minHeight, contentHeight));
 
   const canSend = value.trim().length > 0 && !busy;
 
@@ -40,7 +50,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
     const ok = await onSubmit(trimmed);
     if (ok) {
       setValue("");
-      setHeight(24);
+      setContentHeight(0);
     }
     setBusy(false);
   };
@@ -61,13 +71,15 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
             editable={!busy}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            onContentSizeChange={(e) =>
-              setHeight(Math.min(140, Math.max(24, e.nativeEvent.contentSize.height)))
-            }
+            onContentSizeChange={(e) => setContentHeight(e.nativeEvent.contentSize.height)}
           />
         </View>
         <View style={styles.rail}>
-          <Text style={styles.hint}>Comment</Text>
+          {/* A caption on the send rail, not content: it may grow a little,
+              but not enough to wrap the rail or push the button off it. */}
+          <Text style={styles.hint} maxFontSizeMultiplier={1.4}>
+            Comment
+          </Text>
           <Pressable
             style={[styles.sendButton, !canSend && styles.sendDisabled]}
             onPress={send}

@@ -34,6 +34,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { filterOversized, type PendingAttachment } from "../../lib/attachments";
 import type { ComposedMessage } from "../../lib/rooms";
+import { useScaledHeight } from "../../lib/textScale";
 import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
@@ -53,7 +54,8 @@ const PRESS_SPRING = { duration: 120, dampingRatio: 1 } as const;
 /** Pressed size for the send button — Apple's own press scale, near enough. */
 const PRESS_SCALE = 0.96;
 
-/** Five lines of the input's own 22pt leading, then it scrolls. */
+/** Five lines of the input's own 22pt leading (scaled by the reader's text
+ * size), then it scrolls. */
 const INPUT_MAX_LINES = 5;
 
 const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
@@ -126,6 +128,7 @@ export function RoomComposer({
   onTypingChange?: (typing: boolean) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
   const [text, setText] = useState("");
   // Null until the field reports a collapsed caret: no caret, no typeahead.
   const [caret, setCaret] = useState<number | null>(null);
@@ -383,7 +386,7 @@ export function RoomComposer({
         <AttachmentChips attachments={pending} onRemove={removeAttachment} />
         <View style={styles.inputZone}>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { maxHeight: inputMaxHeight }]}
             placeholder={placeholder}
             placeholderTextColor={colors.placeholder}
             value={text}
@@ -518,7 +521,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 22,
-    maxHeight: 22 * INPUT_MAX_LINES,
     color: colors.ink,
     paddingTop: 0,
     paddingBottom: 0,

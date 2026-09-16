@@ -41,6 +41,7 @@ class Descriptor(ContractModel):
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
+    kind: Literal["interactive", "background"] = "interactive"
 
 
 class Register(ContractModel):

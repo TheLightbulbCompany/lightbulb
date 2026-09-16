@@ -840,6 +840,19 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
 
 
 @pytest.mark.asyncio
+async def test_background_job_registration_persists_its_kind_and_omitted_reads_interactive(transport):
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    job = await relay(transport).handle_message("conn-1", registration(kind="background"))
+    assert (await repo.get_session(OWNER, job["sessionId"]))["kind"] == "background"
+    # A desktop that predates background jobs sends no kind at all.
+    terminal = await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2"))
+    assert (await repo.get_session(OWNER, terminal["sessionId"]))["kind"] == "interactive"
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-3", kind="cron"))
+
+
+@pytest.mark.asyncio
 async def test_http_dispatch_failure_returns_durable_receipt_without_logging_text(transport, caplog):
     from core.auth import get_current_user
     from routers.messaging import router

@@ -146,6 +146,8 @@ class LocalSession(ContractModel):
     last_event_at: str | None = None
     ended_at: str | None = None
     last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
+    # A Claude Code background job: agent knowledge, never a human listing.
+    kind: Literal["interactive", "background"] = "interactive"
 
 
 class PairedNode(ContractModel):
@@ -513,7 +515,9 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
         for projection in await repo.list_user_sessions(owner, human):
             try:
                 row, _ = await authorize_session(auth, room_id, projection["sessionId"])
-                sessions.append(_session_public(row))
+                public = _session_public(row)
+                if public.kind == "interactive" or isinstance(auth, AgentInvocation):
+                    sessions.append(public)
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
@@ -567,7 +571,7 @@ async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
     owner = caller_owner(auth)
     humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
-    sessions = await _live_public_sessions(owner, humans)
+    sessions = [s for s in await _live_public_sessions(owner, humans) if s.kind == "interactive"]
     return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
 
 
@@ -585,6 +589,8 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
     try:
         names = {member["id"]: member.get("displayName") for member in members if member.get("kind") == "human"}
         sessions = await _live_public_sessions(owner, list(names))
+        # Background jobs are listed too. No `kind` key yet: the baked plugin 400s an unknown
+        # session field, so it lands here only after an image whose parser accepts it is rolled.
         include = {"session_id", "provider", "cwd_name", "title", "status", "latest_event_seq", "last_event_at"}
         out = [
             {

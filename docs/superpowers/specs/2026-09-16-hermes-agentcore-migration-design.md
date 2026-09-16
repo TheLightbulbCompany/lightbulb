@@ -60,7 +60,7 @@ Anthropic SDK), the gate ledger admits and debits the owner's AIP, and run ledge
 | Agent mail (`lightbulb-email:` hook sessions), Slack app | Keep (both enter through the backend); mail gets an `eventKind` on the same inbound door | M1 |
 | Paperclip-driven runs (Teams issues, routines, nightly CEO) through the `openclaw_gateway` adapter over the relay | Rebuild: a Paperclip adapter posting to a backend door that invokes the bridge (`eventKind: paperclip_run`) | M1 |
 | Trial park/wake ("Agents asleep", wake budget) driven by ECS stop/start | Rebuild as a backend judgement from `last_interactive_at`; gates already run at dispatch | M4 |
-| Desktop node: exec, screen, camera, notify, notifications, location, device | Backend terminates the node protocol; bridge-side `lightbulb_node` terminal backend + `nodes` tool over one hook-token route | M2, M3 |
+| Desktop node: exec, screen, camera, notify, notifications, location, device | Backend terminates the node protocol; one `lightbulb_node` plugin (terminal backend + `nodes` tool) over one hook-token route | M2, M3 |
 | Config writer (`write_openclaw_config`): providers/AIPs + costs, model policy, per-agent roster/identity, exec policy + tool deny, MCP servers + OAuth refresh, env.vars, integrations, memory, ACP coding harnesses | Per-profile `config.yaml` + `.env` writer | M4 |
 | Bundled skills (lightbulb, paperclip, shopify) + Linux skill binaries | Keep; one pass swaps tool names; binaries bake into the Hermes image | M1, M4 |
 | ChatGPT OAuth, BYO keys | Keep the product flows; tokens land in the profile as Hermes provider auth | M4 |
@@ -88,7 +88,9 @@ version) constructs nothing.
   (202 then the turn in a thread), `/plugins/lightbulb-channel/rpc`, `/runs/{id}/{abort|steer}`.
 - Hook-token callbacks to the backend: `run.started` / `run.heartbeat` (30 s) / `run.ended`
   with usage, `agent-messages`, `usage`.
-- AppSync run frames published with the execution role (SigV4; port of `appsync.ts`).
+- AppSync run frames published with the execution role (SigV4, one POST per frame): lifecycle,
+  tool and final-text frames first; per-token `chunk`/`thinking` deltas and batching only once
+  Hermes exposes a stream callback and someone asks for streaming text.
 - Profile sync: restore from S3 on an agent's first turn per process, save after each turn
   (SQLite through the backup API, WAL/SHM skipped).
 - Node commands go out as HTTP calls to the backend (§4.4); the spike's `/ws` echo and the
@@ -137,12 +139,12 @@ watchdog (close 4000 at twice `tickIntervalMs`), a 15 s post-connect deadline, a
   differ) makes one HTTP call per command on the hook-token rail the run callbacks already
   use: `POST /api/v1/internal/node/invoke/{ownerId} {command, paramsJSON, timeoutMs}`. The
   backend forwards it as `node.invoke.request` on the held socket and returns the
-  `node.invoke.result` payload. Device commands are a `nodes` tool over the same route.
+  `node.invoke.result` payload. Device commands are a `nodes` tool registered by the same
+  `lightbulb_node` plugin over the same route.
 - **Cross-instance routing:** the desktop's socket is pinned to the backend task that
   accepted it, and the bridge's call can land on any of the 2–4 tasks. The presence row in
   `ws-connections` (written by the accepting task, refreshed every 60 s) gains the task's
-  address, and the internal route forwards to it; the alternative is a short-TTL claim item the
-  socket-owning task picks up, the claim-lease pattern provisioning already uses.
+  address, and the internal route forwards to it.
 - `strip_env_keys` on the provider strips the gate bearer and the Paperclip key from every
   subprocess the agent spawns (replaces `paperclip-exec-creds`). File sync is not needed for
   exec; `file.*` and `dir.*` results ride the same route.
@@ -261,15 +263,15 @@ that exists on AgentCore.
   drive it through that provider, with the bridge exporting the execution role's rotating
   credentials into the subprocess env per turn and capturing the session id from the
   provider's output so the backend can mint the panel's live-view URL. Hermes's raw
-  `browser_cdp` escape hatch (plain `websockets.connect`, no headers) stays disabled. The
-  loopback SigV4 relay provider is the fallback if the native provider cannot attach to a
-  backend-started session.
-- **Backend/frontend:** a per-workspace browser-session row `{owner, browserId, sessionId,
-  profileId, expiresAt}`; `POST /browser/session` starts or reuses the session and returns a
-  presigned live-view URL + viewport; `BrowserDockPanel` swaps noVNC for `BrowserLiveView` with a
-  refresh-before-expiry timer and a take-control button; `browser_view.py` and
-  `browserViewUrl.ts` are deleted; the `bv-` CloudFront door stays for the gateway and
-  local-session relays.
+  `browser_cdp` escape hatch (plain `websockets.connect`, no headers) stays disabled.
+- **Backend/frontend:** the workspace's browser session lives as four attributes on the
+  containers row (`browser_id`, `browser_session_id`, `browser_profile_id`,
+  `browser_session_expires_at`); `POST /browser/session` starts or reuses the session and
+  returns a presigned live-view URL + viewport; `BrowserDockPanel` swaps noVNC for
+  `BrowserLiveView` with a refresh-before-expiry timer (the DCV view already takes human
+  input; a take-control switch waits until an agent/human input conflict is observed);
+  `browser_view.py` and `browserViewUrl.ts` are deleted; the `bv-` CloudFront door stays for
+  the gateway and local-session relays.
 - **Shopify door:** the CLI's OAuth redirect is loopback-bound (`http://127.0.0.1:13387/…` on
   the host running `shopify store auth`), and the AgentCore Browser is not that host. The
   `shopify.ts` handler ports verbatim into the bridge (it is dependency-injected) and the CLI
@@ -292,10 +294,11 @@ So the migration is ours: a one-shot per-workspace job (backend script, reading 
 home the way `agent_export` does today) that materializes each Paperclip agent's profile from
 the config writer (§4.5) plus the carried user data: `workspace-<agentId>/SOUL.md` and
 `AGENTS.md`, `MEMORY.md` / `USER.md` into `memories/`, daily memory files, per-agent and
-shared skills into `skills/`, exec-approval allowlists. OpenClaw session transcripts and the
+shared skills into `skills/` (exec-approval allowlists are not carried: Hermes runs unattended
+behind the deny backstop, §4.5). OpenClaw session transcripts and the
 state DB are **not** carried (they are OpenClaw runtime state; the room history lives in
 DynamoDB and is replayed as `recentHistory` on every turn). The job writes the profiles to
-`<owner>/<agentId>/` in the Hermes state bucket (§4.9) and flips the row.
+`<owner>/hermes/<agentId>/` in the replicas bucket (§4.9) and flips the row.
 
 ### 4.9 Provisioning, secrets, wake and park on Hermes
 (Detail: research report 04, "Provisioning flow on Hermes".)
@@ -314,9 +317,10 @@ DynamoDB and is replayed as `recentHistory` on every turn). The job writes the p
   execution role. The gate-token supersede drain (`bedrock_gate_tokens.py`), which today reads
   ECS task definitions to decide when an old token is safe to revoke, learns to read the
   runtime's version instead.
-- **State bucket:** a Hermes-specific prefix scheme in a CDK-declared bucket (not a repurposed
-  `LITESTREAM_BUCKET`), with an `AGENTCORE_HERMES_IMAGE` variable and a build workflow for
-  `apps/infra/hermes/`.
+- **State bucket:** the existing replicas bucket under the prefix `<owner>/hermes/<agentId>/`
+  (the owner role already grants `<owner>/*`; the spike uses it); the CDK variable is renamed
+  to say what it holds, no new bucket. An `AGENTCORE_HERMES_IMAGE` variable and a build
+  workflow for `apps/infra/hermes/` are added.
 - **Wake and park:** AgentCore parks an idle microVM invisibly, and `stop_user_service` is a
   no-op for AgentCore rows, so `is_parked_trial` never fires today. On Hermes "asleep" is a
   backend judgement from `last_interactive_at` against the runtime's idle timeout, the trial

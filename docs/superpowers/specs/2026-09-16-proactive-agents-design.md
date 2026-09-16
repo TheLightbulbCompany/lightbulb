@@ -100,10 +100,7 @@ agent, so a promise made in chat with no issue behind it becomes create → chec
 monitor in that turn. `nextCheckAt`, `notes`, `timeoutAt`, `maxAttempts` and
 `recoveryPolicy` are Paperclip's fields with Paperclip's semantics.
 
-Paperclip stores no origin and no room. The one fork change in this spec is unrelated to
-routing: the attention service gains a `monitor` source kind so a monitor that fired and
-was not handled appears in the Teams "Needs you" feed (the known #2007 gap). A promise
-nobody kept is a "needs a human" state.
+Paperclip stores no origin and no room, and this spec changes nothing in the fork.
 
 ## 6. Lightbulb's view
 
@@ -168,7 +165,6 @@ Listening room today except a seeded CEO in #general, so slice one implements ru
    monitor and posts "still waiting, checking again at 5pm".
 6. Room: Forge's message appears in Leo's thread, attributed to Forge. Other members
    are dispatched on it like any message, so the follow-up can start a conversation.
-7. If Forge never handles the fired monitor, the Teams "Needs you" feed shows it.
 
 Origin missing at step 5 (registered in a turn that died, or a routine without one) is
 not an error: the ladder continues to rung 3, then 4.
@@ -220,6 +216,10 @@ teammate would mention. That judgement is the agent's, inside the run, for now (
   container. For ticks and events it should run in the backend so a "no" never wakes
   the microVM. Not needed while proactive volume is a handful of monitors a day.
 - **Trial rules.** Out of scope by ruling.
+- **A fired monitor nobody handled, in "Needs you" (#2007).** A second-order failure
+  we have not observed: the wake itself dying after the monitor fires. Not built until it
+  happens. If it does, it is one rule in the fork's attention service beside the `review`
+  rule, a `monitor` source kind, a "Follow-up" label and a Check now action on our side.
 
 ## 12. Testing and verification
 
@@ -238,8 +238,7 @@ teammate would mention. That judgement is the agent's, inside the run, for now (
 1. **Backend.** Origin registry rows and routes, DM door, member resolution. Tests.
 2. **Skill.** `references/follow-ups.md`, routing row, two non-negotiables,
    `lightbulb-api.sh` subcommands, `MAINTENANCE.md` anchors. Ships with an image rebuild.
-3. **Fork.** `monitor` attention source kind (#2007). Lands on the next Paperclip pin.
-4. **Slice two**, its own spec section promoted to a plan once packets 1–3 are live and
-   a Listening room exists somewhere real.
+3. **Slice two**, its own spec section promoted to a plan once packets 1 and 2 are live
+   and a Listening room exists somewhere real.
 
-Packets 1 and 2 close the Forge case. Packet 3 makes a broken promise visible.
+Packets 1 and 2 close the Forge case.

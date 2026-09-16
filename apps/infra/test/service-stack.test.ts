@@ -1180,8 +1180,21 @@ describe("ServiceStack — messaging environment and least privilege", () => {
         Statement: Match.arrayWith([
           Match.objectLike({
             Sid: "AgentCoreRuntimeManage",
-            Action: Match.arrayWith(["bedrock-agentcore:CreateAgentRuntime", "bedrock-agentcore:InvokeAgentRuntime"]),
-            Resource: "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/*",
+            // CreateAgentRuntime also creates the DEFAULT endpoint on the caller's behalf.
+            Action: Match.arrayWith([
+              "bedrock-agentcore:CreateAgentRuntime",
+              "bedrock-agentcore:CreateAgentRuntimeEndpoint",
+              "bedrock-agentcore:InvokeAgentRuntime",
+            ]),
+            Resource: Match.arrayWith([
+              "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/*",
+              "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/*/runtime-endpoint/*",
+            ]),
+          }),
+          Match.objectLike({
+            Sid: "AgentCoreWorkloadIdentityManage",
+            // ...and the runtime's workload identity, which the denial names if it is missing.
+            Action: Match.arrayWith(["bedrock-agentcore:CreateWorkloadIdentity", "bedrock-agentcore:DeleteWorkloadIdentity"]),
           }),
         ]),
       }),

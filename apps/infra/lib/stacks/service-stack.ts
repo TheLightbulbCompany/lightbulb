@@ -482,6 +482,12 @@ export class ServiceStack extends cdk.Stack {
     // AgentCore Runtime lifecycle, per workspace. Control plane creates/updates/deletes the
     // owner's runtime; data plane invokes it and stops its session for sleep. Scoped to this
     // account's runtimes; List has no resource-level scoping in the API.
+    //
+    // CreateAgentRuntime is not one action: AWS also creates the runtime's DEFAULT endpoint
+    // and its workload identity ON THE CALLER'S BEHALF (CloudTrail shows CreateWorkloadIdentity
+    // with invokedBy bedrock-agentcore.amazonaws.com under the caller's identity), and
+    // DeleteAgentRuntime mirrors both. Missing either is an AccessDenied on the create.
+    const agentcoreArn = (suffix: string) => `arn:aws:bedrock-agentcore:${this.region}:${this.account}:${suffix}`;
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "AgentCoreRuntimeManage",
@@ -490,16 +496,35 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:GetAgentRuntime",
           "bedrock-agentcore:UpdateAgentRuntime",
           "bedrock-agentcore:DeleteAgentRuntime",
+          "bedrock-agentcore:CreateAgentRuntimeEndpoint",
+          "bedrock-agentcore:GetAgentRuntimeEndpoint",
+          "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
+          "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
+          "bedrock-agentcore:ListAgentRuntimeEndpoints",
           "bedrock-agentcore:InvokeAgentRuntime",
           "bedrock-agentcore:StopRuntimeSession",
         ],
-        resources: [`arn:aws:bedrock-agentcore:${this.region}:${this.account}:runtime/*`],
+        resources: [agentcoreArn("runtime/*"), agentcoreArn("runtime/*/runtime-endpoint/*")],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreWorkloadIdentityManage",
+        actions: [
+          "bedrock-agentcore:CreateWorkloadIdentity",
+          "bedrock-agentcore:GetWorkloadIdentity",
+          "bedrock-agentcore:DeleteWorkloadIdentity",
+        ],
+        resources: [
+          agentcoreArn("workload-identity-directory/default"),
+          agentcoreArn("workload-identity-directory/default/workload-identity/*"),
+        ],
       }),
     );
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "AgentCoreRuntimeList",
-        actions: ["bedrock-agentcore:ListAgentRuntimes"],
+        actions: ["bedrock-agentcore:ListAgentRuntimes", "bedrock-agentcore:ListWorkloadIdentities"],
         resources: ["*"],
       }),
     );

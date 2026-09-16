@@ -31,6 +31,8 @@ Owner rulings, 2026-09-16:
 - Self-directed: agents create their own tasks and monitors, no approval gate.
 - Governed: the promise is a task on the board, in the activity log, cancellable there.
 - Paperclip may know where work came from, never where to speak.
+- Everything about a request lives in the thread under it, in channels and group DMs.
+  DMs stay linear.
 - No timers that are not attached to work. No sweeper, no scheduler, no wake table.
 - No budgets, no trial rules, nothing built for a failure not observed.
 
@@ -48,6 +50,20 @@ Every mechanism in that sentence exists. What is missing is the agent knowing it
 one identifier the room turn does not hand over yet.
 
 ## 5. How it works
+
+**Threads first.** Today an agent's reply to a top-level message is the next top-level
+message; only a reply to a message already in a thread stays in the thread. From now on
+the reply target in channels and group DMs is `message.threadRootMessageId ??
+message.messageId`: the first reply opens the thread under the request, and everything
+that follows lives there, as in Slack. The acknowledgement, the run frames and the run
+card, the outcome, later follow-ups, a Listening chime-in. DMs stay linear, since a DM is
+already one conversation. The plugin derives that one value, `replyThreadRootId(room,
+message)`, and uses it in the two places that name a thread: the durable final's
+`threadId` (`channel.ts:964`) and the run record the frame publisher reads
+(`channel.ts:1071`). Nothing else moves. Thread replies already notify the request's
+author and every human in the thread (`messaging-projector`, `_notify_members`), and the
+web and mobile timelines already render a run whose `threadRootMessageId` is set inside
+that thread and show the reply count on the root.
 
 **File.** In the room turn, the agent files the work as a Paperclip task assigned to
 itself, `--status todo` if it should start now or `backlog` if not, and puts the message
@@ -119,8 +135,10 @@ result. If CI is still running at the tick, Forge re-arms and says nothing.
 - **`paperclip` skill.** One sentence at the top of `references/monitors.md`: *A
   promise you made in chat that depends on an external thing is a monitor on the task,
   not a sentence.* The `SKILL.md` "Wait on an external thing" row already routes there.
-- **Plugin.** `message: { id, threadRootMessageId }` added to the "Lightbulb room"
-  structured context payload in `channel.ts`.
+- **Plugin.** Two changes in `channel.ts`: `message: { id, threadRootMessageId }` added
+  to the "Lightbulb room" structured context payload, and one derived
+  `replyThreadRootId(room, message)` used for the durable final's `threadId` and the run
+  record's `threadRootMessageId` (DMs excepted).
 - **`MAINTENANCE.md`** anchors for both skills.
 
 Ships as one image rebuild and pin flip. No backend, no infrastructure, no Paperclip
@@ -150,6 +168,8 @@ change.
 - **Routing unsolicited output** (Listening rooms, DMs to the item's human): a later
   spec, once routine output needs a home. The ladder and DM door from the second draft
   live in git history.
+- **A "working in thread" hint on the root message** while a run is active in its
+  thread; today the root shows the reply count only once a reply exists.
 - **Timers not tied to work**, budgets, the backend-side "worth saying" gate, and fired
   monitors nobody handled in "Needs you" (#2007). Not observed, not built.
 
@@ -157,10 +177,14 @@ change.
 
 - Skill: the existing skill tests read the new reference and rows; `MAINTENANCE.md`
   lists the anchors.
-- Plugin: one unit test that the structured payload carries `message.id` and
-  `message.threadRootMessageId`, beside the existing context tests.
+- Plugin: unit tests that the structured payload carries `message.id` and
+  `message.threadRootMessageId`; that a top-level request in a channel is answered with
+  `threadId` = the request's id and the run record carries the same thread root; and
+  that a DM reply stays top-level.
 - Dev, end to end: in a dev room, ask Forge for something that takes a few minutes.
-  Confirm the task exists with the permalink and a run started; confirm the reply lands
-  in the thread. Then ask for something that waits on CI; confirm the monitor row on the
+  Confirm the task exists with the permalink and a run started. Confirm the agent's
+  first reply opened a thread under the asking message, the run card rendered inside
+  that thread and not in the main timeline, and the root shows the reply count. In a DM
+  with the agent, confirm replies stay top-level. Then ask for something that waits on CI; confirm the monitor row on the
   task, exactly one "waiting" reply, silence on a no-change tick, and the result in
   the thread, all under the original message and never top-level.

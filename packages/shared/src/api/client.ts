@@ -43,6 +43,13 @@ export interface ApiClientConfig {
 export interface ApiCallOptions {
   credentials?: RequestCredentials;
   retryOn401?: boolean;
+  /**
+   * Aborts the underlying fetch when it fires. Plumbed straight through to
+   * the `fetch()` call below; the caller owns the `AbortController`/timer
+   * (see `createMessagingClient`'s `sendMessage`, which times a hung POST
+   * out rather than let it hang forever).
+   */
+  signal?: AbortSignal;
 }
 
 export interface UploadedFile {
@@ -194,6 +201,7 @@ export function createAuthenticatedFetch(config: ApiClientConfig) {
       const response = await fetch(`${config.apiUrl}${endpoint}`, {
         ...options,
         headers,
+        signal: apiOpts.signal,
         // Opt-in only: Teams calls pass `credentials: "include"` so the
         // browser attaches the `.isol8.co` Paperclip cookie. Every other
         // caller omits this and keeps fetch's default (`same-origin`).

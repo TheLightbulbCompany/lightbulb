@@ -69,7 +69,43 @@ describe("messaging HTTP client", () => {
     await client.createRoom(create);
     await client.sendMessage(roomId, send);
     expect(methods.post).toHaveBeenNthCalledWith(1, "/messaging/rooms", create);
-    expect(methods.post).toHaveBeenNthCalledWith(2, `/messaging/rooms/${roomId}/messages`, send);
+    // sendMessage also passes an AbortSignal (see the timeout test below) --
+    // a bare-body createRoom call carries no third argument at all.
+    expect(methods.post).toHaveBeenNthCalledWith(
+      2, `/messaging/rooms/${roomId}/messages`, send, { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it("aborts a hung send after its timeout instead of letting the fetch hang forever", () => {
+    // Regression: a prod send whose POST never settled (server had already
+    // stored + returned 201) left the optimistic row on "Sending..." forever.
+    // This only proves the client-side half -- that a hung fetch eventually
+    // rejects; useRooms.test.tsx covers the resulting "uncertain" state.
+    vi.useFakeTimers();
+    try {
+      const capturedSignals: AbortSignal[] = [];
+      const methods = {
+        get: vi.fn(async () => ({})),
+        post: vi.fn((_path: string, _body: unknown, opts?: { signal?: AbortSignal }) => {
+          if (opts?.signal) capturedSignals.push(opts.signal);
+          return new Promise(() => {}); // never settles, like the hung fetch in prod
+        }),
+        put: vi.fn(async () => ({})),
+        patch: vi.fn(async () => ({})),
+        del: vi.fn(async () => null),
+      };
+      const client = createMessagingClient(methods as unknown as ApiMethods);
+      void client.sendMessage(roomId, {
+        clientMessageId: messageId, text: "hi", mentions: [],
+        replyToMessageId: null, threadRootMessageId: null,
+      });
+      expect(capturedSignals).toHaveLength(1);
+      expect(capturedSignals[0].aborted).toBe(false);
+      vi.advanceTimersByTime(30_000);
+      expect(capturedSignals[0].aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses exact mutation verbs, paths, and bodies without server-owned owner/author fields", async () => {

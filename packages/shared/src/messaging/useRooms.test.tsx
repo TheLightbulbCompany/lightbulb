@@ -310,4 +310,79 @@ describe("useRooms platform seams", () => {
     expect(result.current.messages).toHaveLength(0);
     await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100));
   });
+
+  describe("optimistic send reconciled by a live event", () => {
+    // Prod incident: the server stored + returned 201, the canonical copy
+    // arrived over the live channel and rendered, but the browser's own fetch
+    // for the POST never settled -- so the optimistic row stayed on
+    // "Sending..." forever, duplicating the canonical message.
+    const sendRequest = {
+      clientMessageId: "client-1", text: "shipping now",
+      mentions: [] as never[], replyToMessageId: null, threadRootMessageId: null,
+    };
+    const confirmedEvent = (overrides: Partial<CanonicalRoomMessage> = {}): LiveEvent => ({
+      schemaVersion: 1, eventId: "evt-confirmed", type: "room.message.created",
+      occurredAt: "2026-09-15T00:00:01Z", roomId: room.roomId, messageSeq: 2, roomRevision: 1,
+      payload: {
+        ...message, messageId: "msg-confirmed", messageSeq: 2,
+        author: { kind: "human", id: "user-a", displayName: "Alice" },
+        text: sendRequest.text, replyToMessageId: null, threadRootMessageId: null,
+        ...overrides,
+      },
+    });
+
+    it("clears the optimistic row and marks the attempt persisted while the POST is still pending", async () => {
+      messaging.sendMessage.mockImplementation(() => new Promise(() => {})); // never settles
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+      act(() => { void result.current.sendMessage(sendRequest); });
+      await waitFor(() => expect(result.current.sendState("client-1")).toBe("sending"));
+      expect(result.current.optimisticMessages.some((m) => m.clientMessageId === "client-1")).toBe(true);
+
+      act(() => { for (const handler of handlers) handler(confirmedEvent()); });
+
+      expect(result.current.optimisticMessages.some((m) => m.clientMessageId === "client-1")).toBe(false);
+      expect(result.current.sendState("client-1")).toBe("persisted");
+    });
+
+    it("does not downgrade an already-persisted attempt when the hung POST later rejects", async () => {
+      let rejectSend: ((reason: unknown) => void) | undefined;
+      messaging.sendMessage.mockImplementation(
+        () => new Promise((_resolve, reject) => { rejectSend = reject; }),
+      );
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+      let sendPromise: Promise<unknown> = Promise.resolve();
+      act(() => { sendPromise = result.current.sendMessage(sendRequest).catch(() => {}); });
+      await waitFor(() => expect(result.current.sendState("client-1")).toBe("sending"));
+
+      act(() => { for (const handler of handlers) handler(confirmedEvent()); });
+      expect(result.current.sendState("client-1")).toBe("persisted");
+
+      await act(async () => {
+        rejectSend?.(new DOMException("The operation was aborted.", "AbortError"));
+        await sendPromise;
+      });
+      expect(result.current.sendState("client-1")).toBe("persisted");
+    });
+
+    it("classifies a send whose POST aborts (times out) as uncertain, not rejected", async () => {
+      const abortError = new DOMException("The operation was aborted.", "AbortError");
+      messaging.sendMessage.mockRejectedValue(abortError);
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+      await act(async () => {
+        await expect(result.current.sendMessage(sendRequest)).rejects.toBe(abortError);
+      });
+
+      expect(result.current.sendState("client-1")).toBe("uncertain");
+      expect(result.current.optimisticMessages.some((m) => m.clientMessageId === "client-1")).toBe(false);
+    });
+  });
 });

@@ -175,6 +175,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const [optimistic, setOptimistic] = useState<OptimisticRoomMessage[]>([]);
+  const optimisticRef = useRef(optimistic);
+  optimisticRef.current = optimistic;
   const [attempts, setAttempts] = useState(new Map<string, SendState>());
   const requests = useRef(new Map<string, CreateMessageRequest>());
   const [typing, setTyping] = useState(new Map<string, TypingMember>());
@@ -276,6 +278,40 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     if (roomsRefresh.current) clearTimeout(roomsRefresh.current);
   }, []);
 
+  /**
+   * Clear any pending optimistic placeholder that a just-arrived canonical
+   * message — from the live event OR a reconcile fetch, whichever wins the
+   * race with this device's own `sendMessage` promise — has already made
+   * redundant. Mirrors exactly what the success path in `sendMessage` does
+   * (drop the optimistic row, mark the attempt `persisted`) so `sendState`
+   * reporting stays consistent no matter which of the two settles first.
+   *
+   * The wire contract has no `clientMessageId` on a canonical message (only
+   * the outgoing `CreateMessageRequest` carries one — see
+   * `core/services/messaging.py`'s `canonical_message()` and the
+   * messaging-projector's field allowlist, neither of which forward it), so
+   * this can't do the id match the success path uses. It matches on (own
+   * human author + identical text/reply/thread target) instead.
+   *
+   * ponytail: two identical pending sends from this user, to the same
+   * reply/thread target, could both match the first confirmation. Add
+   * `clientMessageId` to the canonical payload if that ever proves to matter
+   * in practice.
+   */
+  const clearPersistedOptimistic = useCallback((incoming: readonly CanonicalRoomMessage[]) => {
+    if (!userId) return;
+    for (const message of incoming) {
+      if (message.author.kind !== "human" || message.author.id !== userId) continue;
+      const match = optimisticRef.current.find((row) =>
+        row.text === message.text &&
+        row.replyToMessageId === message.replyToMessageId &&
+        row.threadRootMessageId === message.threadRootMessageId);
+      if (!match) continue;
+      setOptimistic((current) => current.filter((row) => row.clientMessageId !== match.clientMessageId));
+      setAttempts((current) => new Map(current).set(match.clientMessageId, "persisted"));
+    }
+  }, [userId]);
+
   const reconcile = useCallback((afterSeq: number) => {
     if (!activeRoomId || accessRemoved) return Promise.resolve();
     requestedAfter.current = requestedAfter.current === null ? afterSeq : Math.min(requestedAfter.current, afterSeq);
@@ -294,6 +330,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
           if (generation.current !== runGeneration) return;
           const valid = page.messages.filter((message) => message.roomId === roomId);
           const merged = mergeCanonicalMessages(messagesRef.current, valid);
+          // A reconcile fetch can deliver the very message a still-pending
+          // `sendMessage` POST is waiting on (e.g. another live event's
+          // sequence gap pulls in history while this device's own hung fetch
+          // hasn't settled yet) -- clear its optimistic placeholder here too.
+          clearPersistedOptimistic(valid);
           if (page.nextAfterSeq === null) {
             if (completeHistory) setHistoryComplete(true);
             applyMessages(roomId, merged, completeHistory ? true : undefined);
@@ -317,7 +358,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       if (requestedAfter.current !== null) void reconcile(requestedAfter.current).catch(() => {});
     });
     return reconciliation.current;
-  }, [activeRoomId, accessRemoved, messaging, applyMessages]);
+  }, [activeRoomId, accessRemoved, messaging, applyMessages, clearPersistedOptimistic]);
 
   // `room.run.frame` (carrying the terminal `run_ended`) is EPHEMERAL over the
   // live channel, unlike `room.message.created` -- it has no `afterSeq` gap
@@ -427,6 +468,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     if (event.type === "room.message.created" && event.payload.roomId === activeRoomId) {
       const previous = lastSequence(messagesRef.current);
       applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [event.payload]));
+      // Own send, confirmed by the live event before this device's own POST
+      // promise settled -- clear the optimistic duplicate now rather than
+      // waiting on that fetch (which may be hung; see sendMessage's timeout).
+      clearPersistedOptimistic([event.payload]);
       if (event.payload.messageSeq > previous + 1) void reconcile(previous).catch(() => {});
       refreshRoomsSoon();
       return;
@@ -462,7 +507,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon]);
+  }), [activeRoomId, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic]);
 
   useEffect(() => {
     if (typing.size === 0) return;
@@ -555,7 +600,14 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     } catch (error) {
       if (generation.current === sendGeneration) {
         setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
-        setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
+        // A live event (or a reconcile fetch) can already have confirmed this
+        // exact send via `clearPersistedOptimistic` while this POST was still
+        // hanging -- e.g. it's what eventually times out and lands here. Don't
+        // let that late rejection downgrade an already-`persisted` attempt
+        // back to `uncertain`.
+        setAttempts((current) => current.get(request.clientMessageId) === "persisted"
+          ? current
+          : new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
       }
       throw error;
     }

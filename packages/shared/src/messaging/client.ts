@@ -39,6 +39,23 @@ export type RoomAttachmentInput = Blob | { uri: string; name: string; type: stri
 const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
 const localSessionPath = (roomId: string, sessionId: string) => `${roomPath(roomId)}/local-sessions/${encodeURIComponent(sessionId)}`;
 
+/**
+ * Prod incident: the server stored + returned 201 within the same second, but
+ * the browser's own `fetch` for the POST never settled — no error, no
+ * response, forever — so `useRooms.sendMessage`'s optimistic row sat on
+ * "Sending…" as a permanent duplicate of the canonical message that had
+ * already arrived over the live channel.
+ *
+ * There's nothing else in this package timing a mutation POST to copy: the
+ * one existing precedent (`useOnboardingStatus`'s `FETCH_TIMEOUT_MS`, 10s) is
+ * tuned for a lightweight status GET polled every 5-15s, where a hung fetch
+ * blocks a tight loop. A message send is a one-shot user action with more
+ * variable latency (persistence + fanout), so reusing that value risks
+ * marking a merely-slow send "uncertain". Nothing comparable exists, so this
+ * uses the documented fallback.
+ */
+const SEND_MESSAGE_TIMEOUT_MS = 30_000;
+
 export interface MessagingClient {
   listResources(roomId: string, options?: { includeEnded?: boolean }): Promise<RoomResources>;
   listWorkspaceSessions(): Promise<WorkspaceSessions>;
@@ -94,7 +111,17 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     listMessages: (roomId, afterSeq, limit = 100) => api.get(
       `${roomPath(roomId)}/messages?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<MessagePage>,
-    sendMessage: (roomId, request) => api.post(`${roomPath(roomId)}/messages`, request) as Promise<CanonicalRoomMessage>,
+    sendMessage: (roomId, request) => {
+      // A timeout, not a retry: the caller (`useRooms.sendMessage`) already
+      // treats a non-`ApiError` rejection as "uncertain" and offers
+      // `reconcileSend`, which re-reads history before deciding whether to
+      // resend — exactly the right response to "did this actually go
+      // through?", which is what a hung fetch can never answer on its own.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), SEND_MESSAGE_TIMEOUT_MS);
+      return (api.post(`${roomPath(roomId)}/messages`, request, { signal: controller.signal }) as Promise<CanonicalRoomMessage>)
+        .finally(() => clearTimeout(timer));
+    },
     uploadAttachment: (roomId, image) => {
       const body = new FormData();
       body.append("image", image as Blob);

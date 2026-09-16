@@ -51,6 +51,10 @@ export { accumulateStreamText } from "./live/streamText";
 export { useLiveEvents } from "./live/useLiveEvents";
 export type { ChatIncomingMessage, LiveEvent, LiveEventOf } from "./live/types";
 export { createMessagingClient } from "./messaging/client";
+export { wrapSelection } from "./messaging/composerText";
+export type { MarkdownStyle } from "./messaging/composerText";
+export { LISTEN_MODE_LABELS, listenModeOptions, respondHint } from "./messaging/respondHint";
+export type { RespondTarget } from "./messaging/respondHint";
 export {
   GROUP_WINDOW_MS,
   buildTimeline,

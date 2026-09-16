@@ -1,4 +1,4 @@
-import type { ListenMode, MemberRef, RoomKind } from "@lightbulb/shared";
+import type { ListenMode, MemberRef, RoomKind } from "./types";
 
 /**
  * What people see for each stored listen mode. The stored values predate these

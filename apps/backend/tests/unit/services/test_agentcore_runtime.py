@@ -308,3 +308,32 @@ class TestEnsureRuntime:
         with pytest.raises(RuntimeError, match="access_point_id/hook_token"):
             await ar.ensure_runtime("org_abc")
         assert wired["created"] == []
+
+
+class TestRequestMatchesTheRealServiceModel:
+    """No mock: the request we build must validate against the botocore model that ships in
+    the lock. The first dev flip 500'd because the pinned botocore (1.42.68) predated
+    ``filesystemConfigurations`` and every other test mocked the client away."""
+
+    def test_create_agent_runtime_request_validates_against_botocore(self):
+        import boto3
+        from botocore.validate import validate_parameters
+
+        request = ar.build_runtime_request(
+            owner_id="org_abc",
+            image_uri="1234.dkr.ecr.us-east-1.amazonaws.com/gw:v5",
+            role_arn="arn:aws:iam::999999999999:role/r",
+            efs_access_point_arn="arn:aws:elasticfilesystem:us-east-1:999999999999:access-point/fsap-1",
+            subnets=["subnet-a"],
+            security_groups=["sg-1"],
+            idle_timeout_s=ar.IDLE_TIMEOUT_S,
+            max_lifetime_s=ar.MAX_LIFETIME_S,
+            environment={"ISOL8_OWNER_ID": "org_abc"},
+        )
+        shape = (
+            boto3.client("bedrock-agentcore-control", region_name="us-east-1")
+            .meta.service_model.operation_model("CreateAgentRuntime")
+            .input_shape
+        )
+        validate_parameters(request, shape)  # raises ParamValidationError on any unknown/invalid member
+        assert "filesystemConfigurations" in shape.members

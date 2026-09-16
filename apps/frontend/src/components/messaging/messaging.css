@@ -75,7 +75,7 @@
 .room-composer-actions > button { width: 28px; height: 28px; border-radius: 6px; }
 .room-send { margin-left: auto; }
 .room-send:disabled { background: transparent; border-color: transparent; color: var(--midnight-faint); }
-.room-attachment-previews, .room-message-attachments, .room-message-images { display: flex; flex-wrap: wrap; gap: 8px; }
+.room-attachment-previews, .room-message-attachments { display: flex; flex-wrap: wrap; gap: 8px; }
 .room-image-preview { position: relative; display: grid; gap: 2px; }
 .room-image-preview img, .room-message-attachments img { width: 112px; height: 112px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
 .room-image-preview button { position: absolute; top: 2px; right: 2px; background: var(--background); }

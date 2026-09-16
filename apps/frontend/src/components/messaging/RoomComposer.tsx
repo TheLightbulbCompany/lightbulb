@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import { MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_CONTENT_TYPES, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_CONTENT_TYPES, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -248,10 +248,10 @@ function ComposerAttempt({
   }
 
   function uploadError(reason: unknown): string {
-    if (!(reason instanceof Error)) return "Upload failed. Try again.";
-    if (/\b400\b|bad request|invalid_request/i.test(reason.message)) {
+    if (reason instanceof ApiError && reason.status === 400) {
       return "The server rejected this file. Check that its contents match its type and the file is within the size limit.";
     }
+    if (!(reason instanceof Error)) return "Upload failed. Try again.";
     return reason.message || "Upload failed. Try again.";
   }
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ApiError } from "@lightbulb/shared";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 
@@ -156,12 +157,12 @@ it("does not silently discard a failed upload when text is present", async () =>
   expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
 });
 
-it("replaces a raw API 400 upload failure with an actionable reason", async () => {
-  render(<RoomComposer {...baseProps} onUploadAttachment={vi.fn().mockRejectedValue(new Error("API 400 Bad Request"))} />);
+it("replaces an API 400 upload failure with an actionable reason", async () => {
+  render(<RoomComposer {...baseProps} onUploadAttachment={vi.fn().mockRejectedValue(new ApiError(400, { code: "INVALID_REQUEST" }, "Upload rejected"))} />);
   const pdf = new File(["%PDF"], "brief.pdf", { type: "application/pdf" });
   fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [pdf] } });
 
   expect(await screen.findByText("The server rejected this file. Check that its contents match its type and the file is within the size limit.")).toBeInTheDocument();
-  expect(screen.queryByText(/API 400/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Upload rejected")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Retry brief.pdf" })).toBeEnabled();
 });

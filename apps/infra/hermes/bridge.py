@@ -288,6 +288,43 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
     return 404, {"error": "not_found", "path": path}
 
 
+# ---- /ws door probe (throwaway: M2 replaces this echo with the node protocol) ----------------
+_ws_seen: list[dict] = []
+
+
+def _ws_accept(key: str) -> str:
+    import base64, hashlib  # noqa: E401
+
+    return base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+
+
+def _ws_read_frame(rfile):
+    import struct
+
+    head = rfile.read(2)
+    if len(head) < 2:
+        return None, b""
+    op, masked, ln = head[0] & 0x0F, head[1] & 0x80, head[1] & 0x7F
+    if ln == 126:
+        ln = struct.unpack(">H", rfile.read(2))[0]
+    elif ln == 127:
+        ln = struct.unpack(">Q", rfile.read(8))[0]
+    mask = rfile.read(4) if masked else b""
+    data = rfile.read(ln)
+    if masked:
+        data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+    return op, data
+
+
+def _ws_send(wfile, data: bytes, op: int = 1) -> None:
+    import struct
+
+    n = len(data)
+    head = bytes([0x80 | op]) + (bytes([n]) if n < 126 else bytes([126]) + struct.pack(">H", n) if n < 65536 else bytes([127]) + struct.pack(">Q", n))
+    wfile.write(head + data)
+    wfile.flush()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -299,9 +336,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _ws_echo(self) -> None:
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", _ws_accept(self.headers.get("Sec-WebSocket-Key") or ""))
+        self.end_headers()
+        seen = {k: v for k, v in self.headers.items() if k.lower().startswith(("x-amzn", "sec-websocket", "x-lightbulb"))}
+        _ws_seen.append({"at": _now(), "path": self.path, "headers": seen})
+        log.info("ws open %s headers=%s", self.path, seen)
+        while True:
+            op, data = _ws_read_frame(self.rfile)
+            if op is None or op == 8:
+                break
+            if op == 9:
+                _ws_send(self.wfile, data, 10)  # ping -> pong
+            elif op in (1, 2):
+                _ws_send(self.wfile, b'{"echo":' + data + b"}" if op == 1 else data, op)
+        log.info("ws closed %s", self.path)
+        self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/ping":
             return self._send(200, {"status": "HealthyBusy" if _busy else "Healthy", "time_of_last_update": int(time.time())})
+        if self.path.split("?")[0] == "/ws" and (self.headers.get("Upgrade") or "").lower() == "websocket":
+            return self._ws_echo()
         self._send(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -315,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
         if env.get("diagnostic"):  # bring-up escape hatch, deleted after the spike
             cmd = env.get("cmd")
             out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60).stdout if cmd else ""
-            return self._send(200, {"uptime_s": round(time.time() - STARTED, 1), "busy": _busy, "restored": sorted(_restored), "runs": _runs, "last_turn_s": _last_turn, "cmd": out[-6000:]})
+            return self._send(200, {"uptime_s": round(time.time() - STARTED, 1), "busy": _busy, "restored": sorted(_restored), "runs": _runs, "last_turn_s": _last_turn, "ws_seen": _ws_seen[-3:], "cmd": out[-6000:]})
         code, obj = handle_plugin(env.get("path") or "", (env.get("method") or "POST").upper(), env.get("headers") or {}, env.get("body"))
         # Same shape the OpenClaw contract server returns: the gateway's status and body inside.
         self._send(200, {"status": code, "headers": {"content-type": "application/json"}, "body": obj})

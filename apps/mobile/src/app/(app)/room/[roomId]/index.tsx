@@ -334,7 +334,13 @@ function Conversation() {
               currentUserId={userId ?? ""}
             />
             {runs.map((run) => (
-              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
+              <RunBlock
+                key={run.runId}
+                run={run}
+                name={agentName(run.agentId)}
+                onAbort={() => rooms.abortRun(run.runId)}
+                onSteer={(text) => rooms.steerRun(run.runId, text)}
+              />
             ))}
           </View>
         }

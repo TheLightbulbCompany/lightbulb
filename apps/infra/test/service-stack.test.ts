@@ -1180,7 +1180,7 @@ describe("ServiceStack — messaging environment and least privilege", () => {
         Statement: Match.arrayWith([
           Match.objectLike({
             Sid: "AgentCoreRuntimeManage",
-            Action: Match.arrayWith(["bedrock-agentcore-control:CreateAgentRuntime", "bedrock-agentcore:InvokeAgentRuntime"]),
+            Action: Match.arrayWith(["bedrock-agentcore:CreateAgentRuntime", "bedrock-agentcore:InvokeAgentRuntime"]),
             Resource: "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/*",
           }),
         ]),

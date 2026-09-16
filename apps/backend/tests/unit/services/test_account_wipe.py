@@ -29,6 +29,7 @@ from core.services.account_wipe import (
     WipeStep,
     preview_wipe,
     resolve_account_emails,
+    resolve_shared_company,
     wipe_account,
 )
 from core.services.paperclip_user_delete import BootstrapUserProtectedError
@@ -102,7 +103,10 @@ def _paperclip_company(**overrides) -> PaperclipCompany:
     now = datetime.now(timezone.utc)
     defaults = dict(
         user_id=OWNER_ID,
-        org_id="org_shared",
+        # A PERSONAL row: provisioning writes org_id=owner_id. This default used
+        # to be "org_shared" — a workspace member's shape — and the suite still
+        # expected the company delete, which is the 2026-09-15 incident.
+        org_id=OWNER_ID,
         company_id="company_abc",
         paperclip_user_id="pc_user_abc",
         paperclip_password_encrypted="enc-pw",
@@ -161,7 +165,14 @@ def wipe_mocks():
     paperclip_repo_instance.delete = paperclip_row_delete
     paperclip_repo_instance.get_pending_brief = pending_brief_get
     paperclip_repo_instance.delete_pending_brief = pending_brief_delete
+    # The shared-company check: by default the company is this owner's alone.
+    company_user_ids = AsyncMock(return_value=[OWNER_ID])
+    find_owner_row = AsyncMock(return_value=None)
+    paperclip_repo_instance.get_user_ids_for_company = company_user_ids
+    paperclip_repo_instance.find_owner_row = find_owner_row
     paperclip_repo_cls = MagicMock(return_value=paperclip_repo_instance)
+    clerk_get_organization = AsyncMock(return_value={"id": "org_founder", "name": "Isol8"})
+    paperclip_archive_member = AsyncMock(return_value=None)
 
     billing_get = AsyncMock(return_value=_billing_row())
     billing_delete = AsyncMock(return_value=None)
@@ -233,6 +244,8 @@ def wipe_mocks():
         ("core.services.account_wipe.billing_repo.get_by_owner_id", billing_get),
         ("core.services.account_wipe.billing_repo.delete", billing_delete),
         ("core.services.account_wipe._delete_paperclip_company_call", paperclip_company_delete),
+        ("core.services.account_wipe._archive_paperclip_member_call", paperclip_archive_member),
+        ("core.services.account_wipe.clerk_admin.get_organization", clerk_get_organization),
         ("core.services.account_wipe.delete_paperclip_user", paperclip_user_delete_fn),
         ("core.services.account_wipe.get_ecs_manager", get_ecs_manager_fn),
         ("core.services.account_wipe.get_workspace", get_workspace_fn),
@@ -283,6 +296,10 @@ def wipe_mocks():
             pending_brief_delete=pending_brief_delete,
             paperclip_repo_instance=paperclip_repo_instance,
             paperclip_repo_cls=paperclip_repo_cls,
+            company_user_ids=company_user_ids,
+            find_owner_row=find_owner_row,
+            clerk_get_organization=clerk_get_organization,
+            paperclip_archive_member=paperclip_archive_member,
             billing_get=billing_get,
             billing_delete=billing_delete,
             paperclip_company_delete=paperclip_company_delete,
@@ -722,6 +739,130 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
 
 
 # ---------------------------------------------------------------------------
+# Shared company — 2026-09-15: an admin wipe of a joined workspace MEMBER
+# resolved the company from the member's per-user row (every member carries the
+# workspace's company_id) and hard-deleted the whole workspace's company.
+# ---------------------------------------------------------------------------
+
+SHARED_ORDER = ["paperclip_company", "paperclip_membership", *EXPECTED_ORDER[1:]]
+
+
+def _member_of_workspace(wipe_mocks) -> None:
+    wipe_mocks.paperclip_get.return_value = _paperclip_company(org_id="org_founder")
+    wipe_mocks.company_user_ids.return_value = [OWNER_ID, "user_owner", "user_b", "user_c"]
+    wipe_mocks.find_owner_row.return_value = _paperclip_company(
+        user_id="user_owner", org_id="org_founder", paperclip_email="founder@example.com"
+    )
+
+
+@pytest.mark.asyncio
+async def test_member_of_workspace_wipe_never_deletes_the_company_and_archives_membership(wipe_mocks):
+    _member_of_workspace(wipe_mocks)
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    wipe_mocks.paperclip_company_delete.assert_not_awaited()
+    wipe_mocks.paperclip_archive_member.assert_awaited_once_with(OWNER_ID)
+    # Their own Better Auth identity still goes — its FKs only cascade sessions.
+    wipe_mocks.paperclip_user_delete_fn.assert_awaited_once()
+    wipe_mocks.company_user_ids.assert_awaited_once_with("company_abc")
+    wipe_mocks.clerk_get_organization.assert_awaited_once_with("org_founder")
+
+    assert [s.system for s in report.steps] == SHARED_ORDER
+    by_system = {s.system: s for s in report.steps}
+    refused = by_system["paperclip_company"]
+    assert refused.status == "refused"
+    for fragment in (
+        'workspace "Isol8"',
+        "org_founder",
+        "user_owner <founder@example.com>",
+        "4 active member(s)",
+        "kept",
+    ):
+        assert fragment in refused.detail, refused.detail
+    assert by_system["paperclip_membership"].status == "ok"
+    assert by_system["clerk_user"].status == "ok"
+    assert report.shared_company == {
+        "company_id": "company_abc",
+        "org_id": "org_founder",
+        "workspace_name": "Isol8",
+        "owner_user_id": "user_owner",
+        "owner_email": "founder@example.com",
+        "member_count": 4,
+    }
+
+
+@pytest.mark.asyncio
+async def test_company_named_by_another_users_row_is_never_deleted(wipe_mocks):
+    """Belt and braces: even a row whose org_id is a USER id (the personal
+    shape) is shared when any other active row names the same company."""
+    wipe_mocks.company_user_ids.return_value = [OWNER_ID, "user_other"]
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    wipe_mocks.paperclip_company_delete.assert_not_awaited()
+    wipe_mocks.paperclip_archive_member.assert_awaited_once_with(OWNER_ID)
+    # Not a workspace, so there is no Clerk org or owner row to look up.
+    wipe_mocks.clerk_get_organization.assert_not_awaited()
+    wipe_mocks.find_owner_row.assert_not_awaited()
+    step = {s.system: s for s in report.steps}["paperclip_company"]
+    assert step.status == "refused"
+    assert "a shared workspace" in step.detail
+
+
+@pytest.mark.asyncio
+async def test_personal_owner_wipe_still_deletes_the_company(wipe_mocks):
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    wipe_mocks.paperclip_company_delete.assert_awaited_once_with("company_abc")
+    wipe_mocks.paperclip_archive_member.assert_not_awaited()
+    assert report.shared_company is None
+    assert {s.system: s for s in report.steps}["paperclip_company"].status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_shared_lookup_failure_stops_the_wipe_before_any_delete(wipe_mocks):
+    """Unsure is not "personal": a failed membership read must never fall
+    through to the company delete."""
+    wipe_mocks.company_user_ids.side_effect = RuntimeError("ddb down")
+
+    with pytest.raises(RuntimeError):
+        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    wipe_mocks.paperclip_company_delete.assert_not_awaited()
+    wipe_mocks.paperclip_user_delete_fn.assert_not_awaited()
+    wipe_mocks.clerk_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preview_marks_a_shared_company_refused_and_exposes_the_workspace(wipe_mocks):
+    _member_of_workspace(wipe_mocks)
+
+    report = await preview_wipe(OWNER_ID)
+
+    assert [s.system for s in report.steps] == SHARED_ORDER
+    by_system = {s.system: s for s in report.steps}
+    assert by_system["paperclip_company"].status == "refused"
+    assert by_system["paperclip_membership"].status == "would_delete"
+    assert "only this member's membership" in by_system["paperclip_membership"].detail
+    assert report.to_dict()["shared_company"]["workspace_name"] == "Isol8"
+    wipe_mocks.paperclip_company_delete.assert_not_awaited()
+    wipe_mocks.paperclip_archive_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_shared_company_reads_the_owners_current_row(wipe_mocks):
+    _member_of_workspace(wipe_mocks)
+    wipe_mocks.clerk_get_organization.return_value = None  # Clerk unavailable
+
+    shared = await resolve_shared_company(OWNER_ID)
+
+    wipe_mocks.paperclip_get.assert_awaited_once_with(OWNER_ID)
+    assert shared["org_id"] == "org_founder"
+    assert shared["workspace_name"] is None
+
+
+# ---------------------------------------------------------------------------
 # preview_wipe
 # ---------------------------------------------------------------------------
 
@@ -926,6 +1067,7 @@ def test_wipe_report_to_dict_shape():
     assert d == {
         "owner_id": OWNER_ID,
         "dry_run": True,
+        "shared_company": None,
         "steps": [
             {
                 "system": "paperclip_company",

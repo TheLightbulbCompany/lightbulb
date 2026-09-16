@@ -53,6 +53,13 @@ def non_admin_env(app):
         app.dependency_overrides.pop(get_current_user, None)
 
 
+@pytest.fixture(autouse=True)
+def shared_company():
+    """Default: the target's Paperclip company is theirs alone (no workspace confirm)."""
+    with patch("routers.admin.resolve_shared_company", new=AsyncMock(return_value=None)) as mock:
+        yield mock
+
+
 @pytest.fixture
 def mock_audit_repo():
     with patch(
@@ -285,6 +292,50 @@ class TestWipeExecute:
     async def test_missing_confirm_email_422(self, async_client, admin_env):
         res = await async_client.post("/api/v1/admin/users/user_target/wipe", json={})
         assert res.status_code == 422
+
+    @pytest.mark.parametrize("confirm_workspace", [None, "", "Other Co"])
+    @pytest.mark.asyncio
+    async def test_shared_company_without_the_workspace_name_400_and_no_wipe(
+        self, async_client, admin_env, mock_audit_repo, shared_company, confirm_workspace
+    ):
+        """A member's company is the whole workspace's: the admin must name the
+        workspace as well as the account, or nothing runs."""
+        shared_company.return_value = {"org_id": "org_founder", "workspace_name": "Isol8"}
+        body = {"confirm_email": "owner@example.com"}
+        if confirm_workspace is not None:
+            body["confirm_workspace"] = confirm_workspace
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
+            patch("routers.admin.wipe_account", new=AsyncMock()) as mock_wipe,
+        ):
+            res = await async_client.post("/api/v1/admin/users/user_target/wipe", json=body)
+        assert res.status_code == 400
+        assert res.json()["detail"] == "workspace_mismatch"
+        mock_wipe.assert_not_awaited()
+        mock_audit_repo.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("workspace_name", "typed"),
+        [("Isol8", "  isol8 "), (None, "org_founder")],  # no Clerk name -> the org id is the phrase
+    )
+    @pytest.mark.asyncio
+    async def test_shared_company_with_the_workspace_name_executes(
+        self, async_client, admin_env, mock_audit_repo, shared_company, workspace_name, typed
+    ):
+        shared_company.return_value = {"org_id": "org_founder", "workspace_name": workspace_name}
+        report = _sample_report(dry_run=False)
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
+            patch("routers.admin.wipe_account", new=AsyncMock(return_value=report)) as mock_wipe,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_target/wipe",
+                json={"confirm_email": "owner@example.com", "confirm_workspace": typed},
+            )
+        assert res.status_code == 200
+        shared_company.assert_awaited_once_with("user_target")
+        mock_wipe.assert_awaited_once()
+        mock_audit_repo.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_partial_failure_report_still_returns_200_with_audit(self, async_client, admin_env, mock_audit_repo):

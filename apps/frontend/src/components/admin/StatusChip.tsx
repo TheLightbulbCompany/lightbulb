@@ -28,6 +28,8 @@ const CLASSES: Record<string, string> = {
   starting: TONE.info,
   // wipe preview — flags what a dry run would remove
   would_delete: TONE.warn,
+  // wipe guard kept the resource on purpose — neither a success nor a delete
+  refused: TONE.info,
   // stopped / warn
   stopped: TONE.warn,
   scaled_to_zero: TONE.warn,

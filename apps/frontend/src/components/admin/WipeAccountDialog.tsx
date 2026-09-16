@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import {
   executeAccountWipe,
   previewAccountWipe,
+  type SharedCompany,
   type WipeStep,
 } from "@/app/admin/_actions/wipe";
 
@@ -52,11 +53,19 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
   const [previewSteps, setPreviewSteps] = React.useState<WipeStep[] | null>(null);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
   const [typedEmail, setTypedEmail] = React.useState("");
+  // Set when the account is a workspace member: its Paperclip company is the
+  // whole workspace's, so the backend keeps it and demands the workspace name.
+  const [shared, setShared] = React.useState<SharedCompany | null>(null);
+  const [typedWorkspace, setTypedWorkspace] = React.useState("");
   const [executing, setExecuting] = React.useState(false);
   const [resultSteps, setResultSteps] = React.useState<WipeStep[] | null>(null);
   const [executeError, setExecuteError] = React.useState<string | null>(null);
 
-  const matches = email != null && typedEmail === email;
+  const workspacePhrase = shared ? shared.workspace_name || shared.org_id : null;
+  const matches =
+    email != null &&
+    typedEmail === email &&
+    (workspacePhrase === null || typedWorkspace === workspacePhrase);
   const wipeDisabled = !matches || executing || previewSteps === null || resultSteps !== null;
 
   async function loadPreview() {
@@ -69,7 +78,10 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         setPreviewError(result.error ?? "preview_failed");
         return;
       }
-      const report = result.data as { steps?: WipeStep[] } | undefined;
+      const report = result.data as
+        | { steps?: WipeStep[]; shared_company?: SharedCompany | null }
+        | undefined;
+      setShared(report?.shared_company ?? null);
       setPreviewSteps(report?.steps ?? []);
     } finally {
       setPreviewLoading(false);
@@ -84,6 +96,8 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
       setPreviewError(null);
       setPreviewSteps(null);
       setTypedEmail("");
+      setShared(null);
+      setTypedWorkspace("");
       setResultSteps(null);
       setExecuteError(null);
       void loadPreview();
@@ -96,7 +110,11 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
     setExecuting(true);
     setExecuteError(null);
     try {
-      const result = await executeAccountWipe(userId, typedEmail);
+      const result = await executeAccountWipe(
+        userId,
+        typedEmail,
+        workspacePhrase === null ? undefined : typedWorkspace,
+      );
       if (!result.ok) {
         setExecuteError(result.error ?? "wipe_failed");
         return;
@@ -144,6 +162,9 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
           </div>
         ) : previewSteps ? (
           <div className="space-y-4">
+            {shared ? (
+              <ErrorBanner variant="info" error={sharedCompanyNotice(shared)} />
+            ) : null}
             <div className="space-y-2">
               <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
                 Will delete
@@ -170,6 +191,28 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
                 aria-label={`Type ${email} to confirm`}
               />
             </div>
+            {workspacePhrase ? (
+              <div className="space-y-1">
+                <label
+                  htmlFor="wipe-confirm-workspace"
+                  className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
+                >
+                  Type{" "}
+                  <span className="font-mono font-semibold text-foreground">{workspacePhrase}</span>{" "}
+                  to confirm the workspace
+                </label>
+                <Input
+                  id="wipe-confirm-workspace"
+                  value={typedWorkspace}
+                  onChange={(e) => setTypedWorkspace(e.target.value)}
+                  placeholder={workspacePhrase}
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={executing}
+                  aria-label={`Type ${workspacePhrase} to confirm the workspace`}
+                />
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -193,6 +236,19 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+function sharedCompanyNotice(shared: SharedCompany): string {
+  const workspace = shared.workspace_name
+    ? `workspace "${shared.workspace_name}"`
+    : "a shared workspace";
+  const owner = shared.owner_user_id ?? "unknown";
+  const ownerEmail = shared.owner_email ? ` <${shared.owner_email}>` : "";
+  const members = `${shared.member_count} active member${shared.member_count === 1 ? "" : "s"}`;
+  return (
+    `This account is a member of ${workspace} (${shared.org_id}, owner ${owner}${ownerEmail}, ${members}). ` +
+    "The workspace's Paperclip company will be kept; only this member's membership is archived."
   );
 }
 

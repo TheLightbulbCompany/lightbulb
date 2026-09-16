@@ -126,10 +126,13 @@ the platform can't do.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.
-- **Shopify is not a Connections row.** It is a baked CLI skill
-  (`/app/skills/shopify`): YOU connect the store, with `shopify store auth`,
-  and the owner finishes the sign-in in your Browser panel — the one sanctioned
-  case for opening a sign-in page in your own Chrome, because the CLI's OAuth
-  callback only resolves inside your container. Read that skill before any
-  Shopify task; never send the owner to Connections for it.
+- **Shopify signs in from inside your container, two doors, one session.**
+  Its Connections row (`acquisition: container_login`) has a store-domain box:
+  Connect starts `shopify store auth` in your container and opens Shopify's
+  sign-in in the Browser panel, where the owner finishes it. You can start the
+  identical login yourself with the baked CLI skill (`/app/skills/shopify`) —
+  the one sanctioned case for opening a sign-in page in your own Chrome,
+  because the CLI's OAuth callback only resolves inside your container. If the
+  owner is at the keyboard, Connections is the faster door; if they asked you
+  to do it, follow the skill. Read that skill before any Shopify task.
 

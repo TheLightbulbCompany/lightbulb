@@ -1,6 +1,9 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { localSessionTool } from "./local-sessions.js";
+import { SHOPIFY_ROUTE_PREFIX, createShopifyHandler } from "./shopify.js";
 import { 
 // `abortEmbeddedAgentRun` is only reachable under its public alias.
 abortAgentHarnessRun as abortEmbeddedAgentRun, onAgentEvent, queueAgentHarnessMessage, resolveActiveEmbeddedRunSessionId, } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -168,6 +171,22 @@ export default defineChannelPluginEntry({
             match: "exact",
             gatewayRuntimeScopeSurface: "trusted-operator",
             handler: createRpcHandler({ dispatch: dispatchGatewayMethod, readBody: readJsonWebhookBodyOrReject }),
+        });
+        // The Shopify Connections door: start/poll/drop a `shopify store auth` login in
+        // THIS container (its OAuth callback is loopback-bound, so nowhere else can).
+        // Gateway-auth like the RPC route above; see shopify.ts for the fences.
+        api.registerHttpRoute({
+            path: SHOPIFY_ROUTE_PREFIX,
+            auth: "gateway",
+            match: "prefix",
+            gatewayRuntimeScopeSurface: "trusted-operator",
+            handler: createShopifyHandler({
+                spawn,
+                readBody: readJsonWebhookBodyOrReject,
+                env: () => process.env,
+                readFile: (file, encoding) => readFile(file, encoding),
+                writeFile: (file, text, encoding) => writeFile(file, text, encoding),
+            }),
         });
         api.on("agent_end", createUsageHook({
             post: async (path, body) => {

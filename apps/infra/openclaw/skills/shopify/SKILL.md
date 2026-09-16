@@ -71,6 +71,13 @@ list, a missing store, or missing scopes means connect first.
 Need a scope you did not request? Re-run `store auth` with the extra scopes.
 The CLI merges them with what the store already granted.
 
+**The owner can do all of this themselves** from Connections (the plug icon on
+the workspace rail at flickmeon.ai/chat): the Shopify row takes the store domain
+and its Connect button runs this exact login, opening the Browser panel for
+them. If they are at the keyboard, that is the faster door — say *"Open
+Connections and click Connect next to Shopify; sign in in the Browser panel
+when it opens."* Either door stores the one session this skill reads.
+
 ## Queries
 
 Set this up once per session. Every example below goes through `gql`:

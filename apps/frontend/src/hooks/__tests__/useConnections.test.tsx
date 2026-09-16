@@ -11,6 +11,21 @@ vi.mock("@clerk/nextjs", () => ({
   }),
 }));
 
+// pollUntil sleeps 3 s between checks; the hook's contract (stop on connected,
+// stop with the message on failed, give up on timeout) is what matters here.
+vi.mock("@/lib/externalAuth", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/externalAuth")>();
+  return {
+    ...mod,
+    pollUntil: async (check: () => Promise<boolean>) => {
+      for (let i = 0; i < 6; i += 1) {
+        if (await check()) return true;
+      }
+      return false;
+    },
+  };
+});
+
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
 );
@@ -169,5 +184,60 @@ describe("useConnections", () => {
       });
       expect(result.current.connections[0].status).toBe("connected");
     });
+  });
+
+  it("startContainerLogin posts the store, polls status until connected, then refetches", async () => {
+    const calls: string[] = [];
+    let statusPolls = 0;
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.endsWith("/connections/shopify/login")) {
+        return jsonResponse({ status: "awaiting_login", provider: "shopify", store: "mystore.myshopify.com" });
+      }
+      if (url.includes("/connections/shopify/login/status?store=mystore.myshopify.com")) {
+        statusPolls += 1;
+        return jsonResponse({ status: statusPolls < 2 ? "pending" : "connected" });
+      }
+      return jsonResponse({ connections: [] });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useConnections(), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(() => result.current.startContainerLogin("shopify", "mystore.myshopify.com"));
+
+    expect(calls.some((c) => c.startsWith("POST") && c.endsWith("/connections/shopify/login"))).toBe(true);
+    expect(statusPolls).toBe(2);
+    // The SWR row is refetched once the CLI holds the session.
+    expect(calls.filter((c) => c.startsWith("GET") && c.endsWith("/connections")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("startContainerLogin surfaces the CLI's failure instead of polling on", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/connections/shopify/login")) {
+        return jsonResponse({ status: "awaiting_login", provider: "shopify", store: "mystore.myshopify.com" });
+      }
+      if (url.includes("/login/status")) {
+        return jsonResponse({ status: "failed", error: "Timed out waiting for OAuth callback." });
+      }
+      return jsonResponse({ connections: [] });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useConnections(), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Caught inside act: a rejection propagated THROUGH act re-renders the hook
+    // first, and this file's Clerk mock mints a fresh getToken per render, so
+    // the assertion would see the re-render's auth error instead of ours.
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.startContainerLogin("shopify", "mystore.myshopify.com");
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/Timed out waiting for OAuth callback/);
   });
 });

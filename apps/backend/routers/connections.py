@@ -33,6 +33,7 @@ from core.services.credentials import (
     registry,
 )
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
+from core.services import shopify_login
 from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_lifecycle import owner_lifecycle_guard
@@ -538,6 +539,62 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     return {"status": "connected", "provider": provider}
 
 
+class ContainerLoginBody(BaseModel):
+    store: str = Field(min_length=1, max_length=512)
+
+
+@router.post("/{provider}/login")
+async def container_login(provider: str, body: ContainerLoginBody, auth: AuthContext = Depends(get_current_user)):
+    """Start a `container_login` provider's sign-in INSIDE the owner's container.
+
+    Shopify's CLI runs the OAuth grant, but its callback is loopback-bound to the
+    host running the CLI, so nothing redirects the owner's browser: the container
+    runs `shopify store auth`, its Chrome gets the authorize page, and the owner
+    finishes in the Browser panel. The row is marked connected by the status
+    poll below, never here — the CLI has stored nothing yet.
+    """
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    p = _get_provider_or_404(provider, owner_id)
+    if p.acquisition != "container_login":
+        raise HTTPException(status_code=400, detail=f"{provider} does not sign in from the container")
+    try:
+        store = shopify_login.normalize_store(body.store)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await shopify_login.start_login(owner_id, store)
+    return {"status": "awaiting_login", "provider": provider, "store": store}
+
+
+@router.get("/{provider}/login/status")
+async def container_login_status(provider: str, store: str, auth: AuthContext = Depends(get_current_user)):
+    """The poll behind the Connect button: `connected` once the CLI's own session
+    list holds the store (the row is written then, with the store as identity),
+    `pending` while the CLI still waits on Shopify's callback, `failed` with the
+    CLI's last line otherwise."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    p = _get_provider_or_404(provider, owner_id)
+    if p.acquisition != "container_login":
+        raise HTTPException(status_code=400, detail=f"{provider} does not sign in from the container")
+    try:
+        store = shopify_login.normalize_store(store)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    state = await shopify_login.login_status(owner_id, store)
+    if state["connected"]:
+        await integrations_repo.put_status(owner_id, provider, "connected", identity=store)
+        return {"status": "connected", "provider": provider, "store": store}
+    if state["pending"]:
+        return {"status": "pending", "provider": provider, "store": store}
+    return {
+        "status": "failed",
+        "provider": provider,
+        "store": store,
+        "error": state["error"] or "The sign-in did not complete.",
+    }
+
+
 @router.get("/{provider}/aws-setup")
 async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)):
     """Stage the AWS read-only connect: mint (or reuse) the per-owner STS
@@ -834,6 +891,13 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
     # vended sessions expire within 1h (DurationSeconds cap).
     # Drop the retained secret (no-op for actor providers, which never stored
     # one) and the status row, then blank any per-agent openclaw.json slots.
+    # container_login (Shopify): the session is the CLI's own, on the owner's
+    # EFS; ask the container to drop it. Best-effort — see shopify_login.logout.
+    if p.acquisition == "container_login":
+        row = await integrations_repo.get(owner_id, provider)
+        store = (row or {}).get("identity")
+        if isinstance(store, str) and store:
+            await shopify_login.logout(owner_id, store)
     await integration_secret_store.delete(owner_id, provider)
     await integrations_repo.delete(owner_id, provider)
     # NB: a DCR provider's cached public client in oauth_app_store is deliberately

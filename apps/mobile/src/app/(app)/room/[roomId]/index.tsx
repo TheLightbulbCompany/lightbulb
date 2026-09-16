@@ -95,12 +95,25 @@ function Conversation() {
 
   // selectRoom's identity changes with every message (it closes over
   // markVisibleRead), and each call bumps the hook's selection-cancellation
-  // counter — so fire it on roomId only, through a ref.
+  // counter — so it goes through a ref, and only fires when the answer below
+  // actually changes.
   const selectRoomRef = useRef(rooms.selectRoom);
   selectRoomRef.current = rooms.selectRoom;
+  // A peek has to select the room: that is what loads the messages it shows.
+  // But a dismissed peek leaves this route preloaded and unfocused for the
+  // rest of the session, and a selected room polls its detail every 60s — peek
+  // a few rows and those polls just accumulate. So a route that was ONLY ever
+  // a preview lets go again; one the reader actually opened holds on, because
+  // pushing a thread over it unfocuses it too.
+  const opened = useRef(false);
+  const selection = useRef<string | null>(null);
   useEffect(() => {
-    if (roomId) selectRoomRef.current(roomId);
-  }, [roomId]);
+    if (focused) opened.current = true;
+    const want = roomId && (preview || focused || opened.current) ? roomId : null;
+    if (selection.current === want) return;
+    selection.current = want;
+    selectRoomRef.current(want);
+  }, [roomId, preview, focused]);
 
   // Pinned at open so the "New messages" line does not walk down the list as
   // messages are marked read (mirrors MessagingWorkspaceContext's readSeqAtOpen).

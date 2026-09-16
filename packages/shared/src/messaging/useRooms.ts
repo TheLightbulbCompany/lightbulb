@@ -594,7 +594,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   }, [activeRoomId, messaging]);
   const downloadAttachment = useCallback((roomId: string, attachmentId: string) => messaging.downloadAttachment(roomId, attachmentId), [messaging]);
 
-  const selectRoom = useCallback((roomId: string) => {
+  /** `null` releases the selection, which also stops the room-detail poll. */
+  const selectRoom = useCallback((roomId: string | null) => {
     selectionRequest.current += 1;
     if (manuallyUnreadRoom.current === roomId) {
       manuallyUnreadRoom.current = null;

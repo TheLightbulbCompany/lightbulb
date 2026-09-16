@@ -21,6 +21,11 @@ const mockPush = jest.fn();
 // thread screen causes. Upstream this is navigation; here it is the only way to
 // reach the transition at all.
 const mockFocus: { blur?: () => void; focus?: () => void } = {};
+// Whether navigation considers the screen focused. Upstream, a dep change
+// re-subscribes the focus effect but only RUNS it on a focused screen — which
+// is the difference between a peek the reader opened and one they dismissed,
+// so the mock has to carry it. Defaults to focused; reset in beforeEach.
+let mockFocused = true;
 // The blocked-state tests each need their own SWR cache entry (the shared
 // room machine's `useSWR(["messaging-room", scope, activeRoomId], ...)` is
 // keyed off this), so a getRoom override in one test can't be served from
@@ -52,12 +57,14 @@ jest.mock("expo-router", () => {
     },
     useFocusEffect: (cb: () => undefined | (() => void)) =>
       useEffect(() => {
-        let cleanup = cb();
+        let cleanup = mockFocused ? cb() : undefined;
         mockFocus.blur = () => {
+          mockFocused = false;
           cleanup?.();
           cleanup = undefined;
         };
         mockFocus.focus = () => {
+          mockFocused = true;
           cleanup = cb();
         };
         return () => cleanup?.();
@@ -206,6 +213,7 @@ describe("conversation screen", () => {
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
     mockIsPreview = false;
+    mockFocused = true;
   });
 
   it("shows the author name once per run and a day divider above the first message", async () => {
@@ -245,6 +253,34 @@ describe("conversation screen", () => {
     await act(async () => { await Promise.resolve(); });
     expect(mockMarkRead).not.toHaveBeenCalled();
     expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
+  });
+
+  // A peek is also not a subscription. Dismissing one leaves this route
+  // preloaded and unfocused for the rest of the session, and a room it still
+  // held selected would poll its detail every 60s from then on — once per row
+  // ever peeked. So the dismissed peek lets the room go; opening it properly
+  // selects it again, off the history already cached.
+  it("lets the room go when a peek is dismissed without being opened", async () => {
+    // Fake timers only here: the assertion is about a 60s poll not running.
+    jest.useFakeTimers({ doNotFake: ["performance"] });
+    mockIsPreview = true;
+    const view = await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+
+    // The peek is dismissed: this route stays mounted, and unfocused.
+    mockFocused = false;
+    mockIsPreview = false;
+    await view.rerender(<Conversation />);
+    await act(async () => { await Promise.resolve(); });
+    const settled = mockLive.messaging.getRoom.mock.calls.length;
+    await act(async () => { jest.advanceTimersByTime(180_000); });
+    // Three minutes of a 60s poll is three fetches, if it is still running.
+    expect(mockLive.messaging.getRoom).toHaveBeenCalledTimes(settled);
+
+    // Opening it for real takes the room back, so it polls again.
+    await act(async () => mockFocus.focus?.());
+    await waitFor(() => expect(mockLive.messaging.getRoom).toHaveBeenCalled());
+    jest.useRealTimers();
   });
 
   // The thread screen deliberately marks nothing read (Slack's rule), so the

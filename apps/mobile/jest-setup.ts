@@ -41,12 +41,15 @@ class FakeFileReader {
 (globalThis as { FileReader?: unknown }).FileReader = FakeFileReader;
 
 // expo-file-system: a real dep (the attachment viewer caches a downloaded
-// attachment on disk before rendering/sharing it). Mocked with a minimal
-// in-memory-ish stand-in for File/Directory/Paths so tests never touch the
-// native filesystem.
+// attachment on disk before rendering/sharing it, and `lib/localStore` keeps
+// drafts and emoji recents there). Mocked with an in-memory stand-in for
+// File/Directory/Paths so tests never touch the native filesystem — contents
+// live in the exported `__files` map, keyed by uri, so a suite can read back
+// what was written or corrupt it on purpose.
 jest.mock(
   "expo-file-system",
   () => {
+    const files = new Map<string, string>();
     const joinUri = (parts: unknown[]) =>
       `file:///fake/${parts
         .map((part) => (typeof part === "string" ? part : ((part as { uri?: string })?.uri ?? "")))
@@ -56,22 +59,38 @@ jest.mock(
       constructor(...parts: unknown[]) {
         this.uri = joinUri(parts);
       }
+      get exists() {
+        return true;
+      }
+      create() {}
     }
     class FakeFile {
       uri: string;
-      exists = false;
       constructor(...parts: unknown[]) {
         this.uri = joinUri(parts);
       }
-      create() {
-        this.exists = true;
+      get exists() {
+        return files.has(this.uri);
       }
-      write() {}
+      create() {
+        if (!files.has(this.uri)) files.set(this.uri, "");
+      }
+      write(contents: string) {
+        files.set(this.uri, contents);
+      }
+      textSync() {
+        return files.get(this.uri) ?? "";
+      }
       delete() {
-        this.exists = false;
+        files.delete(this.uri);
       }
     }
-    return { File: FakeFile, Directory: FakeDirectory, Paths: { cache: new FakeDirectory("cache") } };
+    return {
+      File: FakeFile,
+      Directory: FakeDirectory,
+      Paths: { cache: new FakeDirectory("cache"), document: new FakeDirectory("document") },
+      __files: files,
+    };
   },
   { virtual: true },
 );

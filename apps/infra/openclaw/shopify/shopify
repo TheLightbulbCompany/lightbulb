@@ -1,0 +1,23 @@
+#!/bin/sh
+# `shopify` on PATH — a fixed-environment wrapper around the baked
+# @shopify/cli (see the Dockerfile layer that installs it). Agents call plain
+# `shopify …` from the exec tool with NO env overrides (the exec guard blocks
+# BROWSER and friends), so everything the CLI needs to behave inside a headless
+# container is pinned here rather than left to the caller:
+#
+#   CODESPACES=1        makes cli-kit's isCloudEnvironment() true, so
+#                       `store auth` PRINTS its authorize URL instead of
+#                       spawning a browser. Without it, `open` execs Debian's
+#                       x-www-browser alternative (Chrome) and reports success
+#                       the moment the process spawns — the URL is never
+#                       printed and the login can never start.
+#   CI=1                skips the CLI's self-upgrade (an npm install at
+#                       runtime, inside a pinned image) and its upgrade nags.
+#   SHOPIFY_CLI_NO_ANALYTICS=1 / OPT_OUT_INSTRUMENTATION=true
+#                       no usage telemetry to shopify.dev from owner runs.
+#
+# The store session it writes lives under $XDG_CONFIG_HOME
+# (/home/node/.openclaw/.config on the task def — EFS), so a login survives
+# task restarts and image rolls.
+export CODESPACES=1 CI=1 SHOPIFY_CLI_NO_ANALYTICS=1 OPT_OUT_INSTRUMENTATION=true
+exec node /usr/local/lib/node_modules/@shopify/cli/bin/run.js "$@"

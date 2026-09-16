@@ -109,6 +109,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  /app/skills/lightbulb/scripts/lightbulb-connect.sh (the mint door — never an inline header, see the redaction note)
   - Connections door ........ references/integrations.md + references/surfaces.md + SKILL.md boundaries table
                               <- apps/frontend/src/components/control/panels/ConnectionsPanel.tsx (rail panel); apps/frontend/src/components/workspace/WorkspaceHeader.tsx (rail label)
+  - Shopify (CLI, not a row) references/integrations.md
+                              <- apps/infra/openclaw/skills/shopify/SKILL.md (the connect + query recipe); apps/infra/openclaw/Dockerfile
+                                 (the @shopify/cli bake + shopify/shopify wrapper); NOT core/services/credentials/providers.yaml —
+                                 the paste-token row was removed 2026-09-16 and must not come back as a Connections entry
   - Paperclip org model ..... references/company-and-plans.md
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                                  services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)

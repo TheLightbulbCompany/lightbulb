@@ -82,6 +82,12 @@ const INPUT_MAX_LINES = 5;
 
 const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
 
+/** Keeps a remembered range inside text that may have changed since. */
+function clampRange(range: { start: number; end: number }, length: number) {
+  const start = Math.max(0, Math.min(range.start, length));
+  return { start, end: Math.max(start, Math.min(range.end, length)) };
+}
+
 type PickedPhoto = ImagePicker.ImagePickerAsset;
 
 // ponytail: HEIC/HEIF are detected but the messaging endpoint does not accept
@@ -172,10 +178,18 @@ export function RoomComposer({
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
   const draft = useComposerDraft({ key: draftKey, uploadAttachment: onUploadAttachment });
   const { text, setText } = draft;
+  // The text as of RIGHT NOW, not as of the last render: `applyEdit` writes it
+  // ahead of React so a second edit in the same tick reads what the first one
+  // produced. Re-synced here for changes that come from elsewhere — a restored
+  // draft, a send clearing the field.
+  const textRef = useRef(text);
+  textRef.current = text;
   // Null until the field reports a collapsed caret: no caret, no typeahead.
   const [caret, setCaret] = useState<number | null>(null);
   // The live selection, and a selection we are asking the field to adopt.
   const selection = useRef({ start: 0, end: 0 });
+  // Whether the reader has ever put a cursor in the field.
+  const touched = useRef(false);
   const [pendingSelection, setPendingSelection] = useState<{ start: number; end: number } | null>(
     null,
   );
@@ -223,14 +237,39 @@ export function RoomComposer({
     (event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
       const { start, end } = event.nativeEvent.selection;
       selection.current = { start, end };
+      touched.current = true;
       setCaret(start === end ? start : null);
-      // The native field has caught up with a selection we asked for, so stop
-      // asking — leaving it controlled fights the reader's own cursor.
-      setPendingSelection((pending) =>
-        pending && pending.start === start && pending.end === end ? null : pending,
-      );
+      // Released on the FIRST report, whatever it says — either iOS has taken
+      // the caret we asked for, or the reader has moved it themselves, and in
+      // both cases continuing to drive it fights them. Waiting for an exact
+      // match instead meant a reader who tapped elsewhere before the echo
+      // arrived was never released at all, and every later render snapped the
+      // caret back to wherever the toolbar had left it.
+      setPendingSelection(null);
     },
     [],
+  );
+
+  /**
+   * Applies an edit that also moves the caret — the toolbar, a typeahead
+   * completion, an emoji insert.
+   *
+   * The new text and selection are written to their refs HERE, synchronously,
+   * rather than waiting for iOS to echo them back. That echo is a round trip,
+   * and two taps fit inside one easily: a second edit reading the pre-edit
+   * offsets would slice a string that had already changed under it, and since
+   * this setter is the persisted draft's, the corruption would be written to
+   * disk and restored the next time the room was opened.
+   */
+  const applyEdit = useCallback(
+    (next: { text: string; start: number; end: number }) => {
+      textRef.current = next.text;
+      selection.current = { start: next.start, end: next.end };
+      setCaret(next.start === next.end ? next.start : null);
+      setText(next.text);
+      setPendingSelection({ start: next.start, end: next.end });
+    },
+    [setText],
   );
 
   /**
@@ -239,32 +278,31 @@ export function RoomComposer({
    *
    * The resulting caret is driven back into the field, which is what makes an
    * empty selection useful: tapping Bold inserts `****` and leaves the cursor
-   * between the markers, ready to type. It is asked for once and released as
-   * soon as iOS reports it, so the reader's own cursor is never held hostage.
+   * between the markers, ready to type.
    */
   const format = useCallback(
     (style: MarkdownStyle) => {
-      const { start, end } = selection.current;
-      const next = wrapSelection(text, start, end, style);
-      setText(next.text);
-      setPendingSelection({ start: next.selectionStart, end: next.selectionEnd });
+      const current = textRef.current;
+      // A field nobody has put a cursor in yet gets one at the end, not at the
+      // start — wrapping the front of a draft you just came back to is never
+      // what was meant.
+      const { start, end } = touched.current
+        ? clampRange(selection.current, current.length)
+        : { start: current.length, end: current.length };
+      const next = wrapSelection(current, start, end, style);
+      applyEdit({ text: next.text, start: next.selectionStart, end: next.selectionEnd });
       hapticSelection();
     },
-    [text, setText],
+    [applyEdit],
   );
 
-  // ponytail: the native caret is not driven back, so completing mid-draft
-  // leaves iOS's cursor at the end of the field. Fixing it needs a controlled
-  // `selection` prop, which brings its own cursor-jump bugs on a multiline
-  // input; the next onSelectionChange re-syncs this state either way.
   const complete = useCallback(
     (token: string) => {
       if (!trigger) return;
-      const next = applyCompletion(text, trigger, token);
-      setText(next.text);
-      setCaret(next.caret);
+      const next = applyCompletion(textRef.current, trigger, token);
+      applyEdit({ text: next.text, start: next.caret, end: next.caret });
     },
-    [text, trigger, setText],
+    [trigger, applyEdit],
   );
 
   const stagePhoto = useCallback(
@@ -570,11 +608,15 @@ export function RoomComposer({
         visible={emojiOpen}
         onClose={() => setEmojiOpen(false)}
         onPick={(emoji) => {
-          const { start, end } = selection.current;
-          setText(`${text.slice(0, start)}${emoji}${text.slice(end)}`);
-          setPendingSelection({
-            start: start + emoji.length,
-            end: start + emoji.length,
+          const current = textRef.current;
+          const { start, end } = touched.current
+            ? clampRange(selection.current, current.length)
+            : { start: current.length, end: current.length };
+          const caretAfter = start + emoji.length;
+          applyEdit({
+            text: `${current.slice(0, start)}${emoji}${current.slice(end)}`,
+            start: caretAfter,
+            end: caretAfter,
           });
           setEmojiOpen(false);
         }}

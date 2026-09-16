@@ -197,6 +197,56 @@ describe("RoomComposer", () => {
     expect(screen.getByPlaceholderText("Message").props.value).toBe("half a thought");
   });
 
+  // Two toolbar taps fit inside one native round trip easily. If the second
+  // read the offsets the first was working from, it would slice a string that
+  // had already changed under it — and since this is the persisted draft, the
+  // corruption would be written to disk and restored next time.
+  it("formats correctly when a second tap lands before iOS reports the first", async () => {
+    await setup();
+    const input = screen.getByPlaceholderText("Message");
+    await fireEvent.changeText(input, "hello world");
+    await fireEvent(input, "selectionChange", {
+      nativeEvent: { selection: { start: 6, end: 11 } },
+    });
+
+    // Bold, then italic, with NO selectionChange echo in between.
+    await fireEvent.press(screen.getByLabelText("Bold"));
+    await fireEvent.press(screen.getByLabelText("Italic"));
+
+    expect(screen.getByPlaceholderText("Message").props.value).toBe("hello **_world_**");
+  });
+
+  // The controlled selection used to release only on an exact match, so a
+  // reader who moved the caret before the echo arrived was never released —
+  // and every later render snapped it back to where the toolbar left it.
+  it("stops driving the caret as soon as the reader moves it", async () => {
+    await setup();
+    const input = screen.getByPlaceholderText("Message");
+    await fireEvent.changeText(input, "hello");
+    await fireEvent.press(screen.getByLabelText("Bold"));
+    expect(screen.getByPlaceholderText("Message").props.selection).toBeTruthy();
+
+    // The reader taps somewhere else entirely; not the range we asked for.
+    await fireEvent(input, "selectionChange", {
+      nativeEvent: { selection: { start: 1, end: 1 } },
+    });
+    expect(screen.getByPlaceholderText("Message").props.selection).toBeUndefined();
+  });
+
+  // A remembered range can outlive the text it referred to (the draft was
+  // restored, a send cleared the field). Slicing past the end must not happen.
+  it("keeps a stale selection inside the text it is applied to", async () => {
+    await setup();
+    const input = screen.getByPlaceholderText("Message");
+    await fireEvent.changeText(input, "a longer draft");
+    await fireEvent(input, "selectionChange", {
+      nativeEvent: { selection: { start: 5, end: 14 } },
+    });
+    await fireEvent.changeText(input, "short");
+    await fireEvent.press(screen.getByLabelText("Bold"));
+    expect(screen.getByPlaceholderText("Message").props.value).toContain("short");
+  });
+
   it("refuses to send past the limits the server enforces", async () => {
     const onSend = jest.fn(async () => {});
     await setup(onSend);

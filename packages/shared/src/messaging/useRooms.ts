@@ -386,6 +386,52 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   }, [messaging]);
 
   /**
+   * A run enters the map from `room.run.frame`, and the frame that declares one
+   * (`run_active`) is published ONCE, at turn start. Only tabs subscribed at
+   * that instant ever saw it: open, reload or re-select the room a minute later
+   * and an agent that is still working shows nothing — no bubble, no Stop.
+   *
+   * The room detail carries the server's run ledger (`activeRuns`), so seed
+   * from it. Frames merge on top of a seed unchanged (empty text/thinking/frames
+   * is exactly what a run starts with), and a key already in the map is left
+   * alone — including one this client watched END, since ended runs stay in the
+   * map and a re-seed must never resurrect them.
+   *
+   * `reconcileRuns` then runs on every detail load. At the first seed the map is
+   * still empty, so it costs nothing; on a later load it re-checks runs seeded
+   * earlier against the ledger, which is what stops a seed that raced its run's
+   * end from saying "Working" forever.
+   */
+  // Depending on the ARRAY, not on `activeRoom`: a read-mark rewrites the
+  // detail in place (`mutateRoom(current => ({...current, unreadCount: 0}))`)
+  // and would otherwise re-run this — and its reconcile — on every read.
+  const activeRunSeeds = activeRoom?.roomId === activeRoomId ? activeRoom?.activeRuns : undefined;
+  useEffect(() => {
+    if (!activeRoomId || accessRemoved) return;
+    if (activeRunSeeds?.length) {
+      setRuns((current) => {
+        let next: Map<string, LiveRoomRun> | null = null;
+        for (const seed of activeRunSeeds) {
+          const key = `${activeRoomId}:${seed.agentId}:${seed.runId}`;
+          if (current.has(key)) continue;
+          (next ??= new Map(current)).set(key, {
+            roomId: activeRoomId,
+            agentId: seed.agentId,
+            runId: seed.runId,
+            threadRootMessageId: null,
+            text: "",
+            thinking: "",
+            frames: [],
+            state: "running",
+          });
+        }
+        return next ?? current;
+      });
+    }
+    reconcileRuns();
+  }, [activeRunSeeds, activeRoomId, accessRemoved, reconcileRuns]);
+
+  /**
    * Load history as soon as there IS a room — not when its live channel is
    * acknowledged.
    *

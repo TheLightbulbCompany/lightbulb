@@ -1635,6 +1635,21 @@ async def claim_usage_receipt(owner_id: str, run_id: str) -> bool:
         raise
 
 
+async def list_open_runs_for_room(owner_id: str, room_id: str) -> list[dict]:
+    """The room's in-progress ledger rows — what a client that opened the room
+    mid-run has no other way to learn (the live ``run_active`` frame is
+    published once, at turn start).
+
+    Owner-partition query, not the ``by-run-deadline`` GSI: that index is
+    KEYS_ONLY and has ONE partition-key value ("open") for the whole fleet, so
+    a room open would read every tenant's in-flight runs and still need a
+    follow-up get per hit. This reads one owner's ``RUN#`` rows — TTL-bounded
+    to 7 days — exactly like ``has_open_runs`` below.
+    """
+    rows = await _query(owner_pk(owner_id), begins_with="RUN#")
+    return [row for row in rows if "sweep" in row and row.get("roomId") == room_id]
+
+
 async def has_open_runs(owner_id: str) -> bool:
     """Any ledger row still carrying the sweep marker (removed by ``end_run``)."""
     rows = await _query(owner_pk(owner_id), begins_with="RUN#")

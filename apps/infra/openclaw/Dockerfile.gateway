@@ -852,4 +852,5 @@ EXPOSE 8080
 USER 1000
 WORKDIR /home/node
 
-CMD ["/opt/agentcore/boot-layout.sh"]
+# The contract server only; the layout + gateway chain start on the first invocation.
+CMD ["node", "/opt/agentcore/contract-server.mjs"]

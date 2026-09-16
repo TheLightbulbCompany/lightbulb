@@ -48,10 +48,14 @@ const MAX_RESTARTS = Number(process.env.OPENCLAW_MAX_RESTARTS ?? 2);
 let restarts = 0;
 let child = null;
 
+// The launcher builds ~/.openclaw from the session's EFS mount (which only exists once a
+// session is assigned — see boot-layout.sh), then execs the gateway chain.
+const LAUNCHER = process.env.OPENCLAW_GATEWAY_LAUNCHER ?? "/opt/agentcore/boot-layout.sh";
+
 function spawnGateway() {
   gatewayStarted = true;
-  child = spawn(GATEWAY_CMD, GATEWAY_ARGS, { stdio: ["ignore", "inherit", "inherit"], env: process.env });
-  log(`spawned gateway pid=${child.pid} (attempt ${restarts + 1}/${MAX_RESTARTS + 1}): ${GATEWAY_CMD} ${GATEWAY_ARGS.join(" ")}`);
+  child = spawn(LAUNCHER, [GATEWAY_CMD, ...GATEWAY_ARGS], { stdio: ["ignore", "inherit", "inherit"], env: process.env });
+  log(`spawned gateway pid=${child.pid} (attempt ${restarts + 1}/${MAX_RESTARTS + 1}): ${LAUNCHER} ${GATEWAY_CMD} ${GATEWAY_ARGS.join(" ")}`);
   child.on("exit", (code, signal) => {
     gatewayReady = false;
     const uptime = ((Date.now() - startedAt) / 1000).toFixed(1);

@@ -236,7 +236,7 @@ def run_turn(agent_id: str, body: dict) -> None:
         _post_backend(
             f"agent-messages/{OWNER}",
             {
-                "eventId": f"{body.get('eventId')}:reply",
+                "eventId": f"{body.get('eventId')}:{agent_id}:reply",  # one ingress eventId fans out to N agents
                 "roomId": room.get("id"),
                 "agentId": agent_id,
                 "text": reply,

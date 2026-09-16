@@ -62,6 +62,17 @@ async def test_already_a_member_is_success_for_every_clerk_code(code):
 
 
 @pytest.mark.asyncio
+async def test_member_cap_is_a_terminal_409_not_a_retryable_502():
+    patcher, _ = _patched_post(
+        _response(403, {"errors": [{"code": "organization_membership_quota_exceeded", "message": "quota"}]})
+    )
+    with patcher, pytest.raises(HTTPException) as err:
+        await clerk_admin.create_organization_membership(org_id="org_1", user_id="user_1")
+    assert err.value.status_code == 409
+    assert err.value.detail == clerk_admin.MEMBER_CAP_REACHED
+
+
+@pytest.mark.asyncio
 async def test_other_clerk_failures_raise_without_echoing_clerk_internals():
     """The caller here is an arbitrary signed-in user, not an admin."""
     patcher, _ = _patched_post(_response(400, {"errors": [{"code": "form_param_nil", "message": "x"}]}))

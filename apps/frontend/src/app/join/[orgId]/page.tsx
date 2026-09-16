@@ -56,6 +56,10 @@ export function joinErrorMessage(err: unknown): { message: string; canRetry: boo
     if (err.status === 401 || err.status === 403) {
       return { message: "Sign in again, then reopen the link.", canRetry: false };
     }
+    if (err.status === 409 && typeof detail === "string" && detail) {
+      // The workspace's member cap is full; retrying cannot change that.
+      return { message: detail, canRetry: false };
+    }
     return {
       message: "We couldn't add you to that workspace just now. Try again in a moment.",
       canRetry: true,

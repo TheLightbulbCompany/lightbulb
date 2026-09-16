@@ -7,7 +7,8 @@
     "onStartup": false
   },
   "contracts": {
-    "gatewayMethodDispatch": ["authenticated-request"]
+    "gatewayMethodDispatch": ["authenticated-request"],
+    "tools": ["lightbulb_local_sessions"]
   },
   "channels": [
     "lightbulb"

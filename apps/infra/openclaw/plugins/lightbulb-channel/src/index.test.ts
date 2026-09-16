@@ -472,6 +472,10 @@ describe("strict package and channel configuration", () => {
       configSchema: { type: "object", properties: {}, additionalProperties: false },
     });
     expect(manifest.channelConfigs.lightbulb.schema).toEqual(CHANNEL_CONFIG_JSON_SCHEMA);
+    // OpenClaw drops, with only a log line, any tool whose name the manifest does not declare.
+    const registerTool = vi.fn();
+    entry.register({ registrationMode: "full", registerChannel: vi.fn(), registerTool, registerHttpRoute: vi.fn(), on: vi.fn(), runtime: { nodes: { list: vi.fn() } } } as any);
+    expect(registerTool.mock.calls.flatMap(([, opts]) => opts.names)).toEqual(manifest.contracts.tools);
     expect(entry.id).toBe("lightbulb");
     expect(lightbulbChannelPlugin.id).toBe("lightbulb");
   });

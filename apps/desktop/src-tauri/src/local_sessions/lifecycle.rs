@@ -181,9 +181,13 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
 /// (`Tea or coffee? (Tea / Coffee)`), or the call a permission prompt is about
 /// (`Wants to run Bash(git push)`) -- a permission prompt needs the frame, a
 /// question is already one.
+///
+/// `AskUserQuestion` reaches here down both paths. Whichever of its two hooks a
+/// reader sees first, it reads as the question: "Wants to run
+/// AskUserQuestion(Tea or coffee?)" is not how anyone asks one.
 fn waiting_reason(event: &HookEvent) -> Option<String> {
     let summary = event.waiting_text.as_deref().unwrap_or("").trim();
-    if event.event != "PermissionRequest" {
+    if event.event != "PermissionRequest" || event.tool_name.as_deref() == Some("AskUserQuestion") {
         return (!summary.is_empty()).then(|| summary.to_owned());
     }
     let call = match event.tool_name.as_deref().unwrap_or("").trim() {
@@ -210,6 +214,10 @@ pub(crate) fn transition(event: &HookEvent) -> Transition {
                 text: waiting_reason(event),
             }
         }
+        // A question fires BOTH hooks, in no guaranteed order and with no
+        // guarantee both arrive. Neither is dropped -- either alone must still
+        // show the prompt -- so they are worded alike here and paired into one
+        // row by the transport.
         "PermissionRequest" => Transition::Waiting {
             text: waiting_reason(event),
         },
@@ -340,6 +348,15 @@ mod tests {
             transition(&ev("PermissionRequest")),
             Transition::Waiting { text: None },
             "still a waiting row: the status is the point, the reason is a bonus"
+        );
+        assert_eq!(
+            transition(&HookEvent {
+                tool_name: Some("AskUserQuestion".into()),
+                waiting_text: Some("Tea or coffee? (Tea / Coffee)".into()),
+                ..permission.clone()
+            }),
+            waiting("Tea or coffee? (Tea / Coffee)"),
+            "a question reads as a question down either of its two hooks"
         );
         // The prefix is part of the bound, not on top of it.
         let long = HookEvent { waiting_text: Some("x".repeat(WAITING_TEXT_MAX)), ..permission };

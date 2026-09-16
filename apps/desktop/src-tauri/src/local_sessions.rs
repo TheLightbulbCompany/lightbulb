@@ -841,10 +841,35 @@ async fn open_files(pid: u32) -> Result<Vec<PathBuf>> {
     .collect())
 }
 
+/// One install can reach the same binary under two names: Claude's installer
+/// hard-links `<root>/ClaudeCode.app/Contents/MacOS/claude` onto the
+/// `<root>/versions/<v>` file the PATH launcher resolves to, and sessions started
+/// after that run under the bundle path. Accept a second name only when it is
+/// literally the same file -- same device, same inode -- reached without a symlink
+/// from inside the install root. Nothing here is ever executed: `installed`, the
+/// PATH-resolved binary, stays the only path this module runs.
+fn same_installed_file(executable: &Path, installed: &Path) -> Result<()> {
+    if executable == installed {
+        return Ok(());
+    }
+    let root = installed
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("runtime-unverified")?;
+    confined_path(root, executable).map_err(|_| "runtime-unverified")?;
+    let running = fs::symlink_metadata(executable).map_err(|_| "runtime-unverified")?;
+    let known = fs::metadata(installed).map_err(|_| "runtime-unverified")?;
+    if !running.is_file() || running.dev() != known.dev() || running.ino() != known.ino() {
+        return Err("runtime-unverified".into());
+    }
+    Ok(())
+}
+
 async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -> Result<String> {
     // Never execute an arbitrary path obtained from a registration or process row.
-    // The mapped executable must be the resolved installed provider binary.
-    if expected.executable != installed || process(expected.pid)? != *expected {
+    // The mapped executable must be another name for the installed provider binary.
+    same_installed_file(&expected.executable, installed)?;
+    if process(expected.pid)? != *expected {
         return Err("runtime-unverified".into());
     }
     let before = fs::metadata(installed).map_err(|_| "runtime-unverified")?;
@@ -868,7 +893,8 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
             inode = value.parse::<u64>().ok();
         }
         if let Some(value) = line.strip_prefix('n') {
-            if Path::new(value) == installed && inode == Some(before.ino()) {
+            // The inode is the identity; the name may be the install's other one.
+            if Path::new(value) == expected.executable && inode == Some(before.ino()) {
                 matched = true;
             }
         }
@@ -1060,6 +1086,36 @@ fn unsendable(original: &Value) -> Value {
     marker
 }
 
+/// Which prompt a session is waiting on. One prompt can be reported twice --
+/// `AskUserQuestion` fires `PreToolUse` AND `PermissionRequest`, in no
+/// guaranteed order and with no guarantee both arrive -- so identity has to
+/// survive one of the two showing up without a tool-use id.
+///
+/// `summary` is the REDACTED reason: a command line can hold a token, and this
+/// is persisted to disk.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct WaitingPrompt {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    summary: String,
+}
+
+impl WaitingPrompt {
+    /// The same prompt reported twice, or a second prompt that reads alike?
+    /// Tool-use ids settle it when both sides carry one -- the same command
+    /// denied and asked again is two prompts. Otherwise the tool and what it is
+    /// asking about do, which is what pairs a question's two hooks.
+    fn is(&self, other: &Self) -> bool {
+        match (&self.id, &other.id) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => self.tool == other.tool && self.summary == other.summary,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Mirror {
     #[serde(default)]
@@ -1082,14 +1138,11 @@ struct Mirror {
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
     ended_sent: bool,
-    // The prompt a waiting row has already been queued for, as a dedupe key:
-    // the tool-use id when the hook carried one, else the REDACTED reason (a
-    // command line can hold a token and this field is persisted), else "" --
-    // so a waiting episode with no identity at all still gets exactly one row.
-    // `None` means "not waiting": every other transition clears it, so the same
-    // prompt asked again after an answer is news rather than a repeat.
+    // The prompt a waiting row has already been queued for. `None` means "not
+    // waiting": every other transition clears it, so the same prompt asked again
+    // after an answer is news rather than a repeat.
     #[serde(default)]
-    waiting_key: Option<String>,
+    waiting: Option<WaitingPrompt>,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1534,6 +1587,44 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_app_bundle_is_the_installed_binary_but_a_lookalike_is_not() {
+        // Mirrors the real layout: `<root>/versions/<v>` is what PATH resolves to and
+        // `<root>/ClaudeCode.app/Contents/MacOS/claude` is a hard link onto it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let installed = root.join("versions/2.1.273");
+        fs::create_dir_all(root.join("versions")).unwrap();
+        fs::write(&installed, b"binary").unwrap();
+        let bundle = root.join("ClaudeCode.app/Contents/MacOS/claude");
+        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::hard_link(&installed, &bundle).unwrap();
+
+        assert_eq!(same_installed_file(&installed, &installed), Ok(()));
+        assert_eq!(
+            same_installed_file(&bundle, &installed),
+            Ok(()),
+            "the install's other name for the same inode is the same binary"
+        );
+
+        // Same bytes, different file, inside the root: still not the installed binary.
+        let copy = root.join("ClaudeCode.app/Contents/MacOS/claude-copy");
+        fs::write(&copy, b"binary").unwrap();
+        assert!(same_installed_file(&copy, &installed).is_err());
+
+        // A hard link to the same inode from outside the root is refused on the root.
+        let away = tempfile::tempdir().unwrap();
+        let outside = fs::canonicalize(away.path()).unwrap();
+        let elsewhere = outside.join("claude");
+        fs::hard_link(&installed, &elsewhere).unwrap();
+        assert!(same_installed_file(&elsewhere, &installed).is_err());
+
+        // And a symlink that leaves the root cannot smuggle one back in.
+        let escape = root.join("escape");
+        symlink(&outside, &escape).unwrap();
+        assert!(same_installed_file(&escape.join("claude"), &installed).is_err());
+    }
+
+    #[test]
     fn local_sessions_discovery_deduplicates_running_sessions_and_replaces_pid_reuse() {
         let native = NativeSession {
             provider: "codex".into(),
@@ -1646,7 +1737,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1723,7 +1814,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1799,7 +1890,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1890,7 +1981,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1946,7 +2037,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         }
     }
 

@@ -343,25 +343,32 @@ fn registration_socket() -> Result<tokio::net::UnixDatagram> {
     tokio::net::UnixDatagram::bind(path).map_err(|_| "registration channel unavailable".into())
 }
 
+/// The one descriptor a hook must never be able to speak on: its stdout, the
+/// only channel Claude reads a permission decision from.
+const HOOK_DECISION_FD: std::os::unix::io::RawFd = 1;
+
 /// A hook's stdout is a control channel: Claude reads it for a
 /// `PermissionRequest`/`PreToolUse` decision (`allow` / `deny` / `ask`) and for
-/// `continue: false`. Ours only reports what a session is waiting on, so fd 1
-/// is pointed at /dev/null before a byte is read -- no future log line, and
-/// nothing a library prints, can answer a prompt on the user's behalf.
-fn silence_stdout() {
+/// `continue: false`. Ours only reports what a session is waiting on, so the
+/// descriptor is pointed at /dev/null before a byte is read -- no future log
+/// line, and nothing a library prints, can answer a prompt on the user's behalf.
+///
+/// Takes the descriptor rather than assuming 1 so the guard can be proved on one
+/// a test owns; production always passes [`HOOK_DECISION_FD`].
+fn silence(fd: std::os::unix::io::RawFd) {
     use std::os::unix::io::AsRawFd;
     if let Ok(devnull) = fs::OpenOptions::new().write(true).open("/dev/null") {
-        // Replaces fd 1 rather than closing it: a closed fd 1 would be handed
-        // to the next file this process opens.
-        unsafe { libc::dup2(devnull.as_raw_fd(), 1) };
+        // Replaces the descriptor rather than closing it: a closed fd 1 would be
+        // handed to the next file this process opens.
+        unsafe { libc::dup2(devnull.as_raw_fd(), fd) };
     }
 }
 
 /// Hooks send the bounded lifecycle datagram built from their stdin JSON, or
 /// a plain wake byte when stdin isn't a JSON object; never a credential, an
-/// authority, or a permission decision (see [`silence_stdout`]).
+/// authority, or a permission decision (see [`silence`]).
 pub fn hook(provider: &str) {
-    silence_stdout();
+    silence(HOOK_DECISION_FD);
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
@@ -1243,50 +1250,49 @@ mod tests {
         assert!(!state.join("skill-paths.json").exists());
     }
 
-    /// Restores the process's real stdout however this test leaves the stack --
-    /// a panic mid-test would otherwise leave fd 1 on a temp file for every
-    /// test that runs after it.
-    struct RealStdout(i32);
-    impl Drop for RealStdout {
-        fn drop(&mut self) {
-            unsafe {
-                libc::dup2(self.0, 1);
-                libc::close(self.0);
-            }
-        }
-    }
-
     /// The hook subcommand must never emit a permission decision. Every path
     /// through it is silent today; this pins the guard that keeps it that way.
     ///
-    /// The guard under test operates on fd 1 by definition, so the test has to
-    /// take fd 1 over process-wide -- cargo runs tests as threads, so for the
-    /// few syscalls this holds, a direct fd-1 write from another test would
-    /// land in our file. Nothing in this suite does that: libtest captures the
-    /// print macros per thread, and the only direct writer is this test.
+    /// The descriptor is this test's own, not the process's fd 1. Taking fd 1
+    /// over is what the guard does in production, but cargo runs tests as
+    /// threads and libtest's capture is per-thread, so any direct fd-1 write
+    /// from another thread -- a `println!` off a tokio worker, say -- lands in
+    /// this test's file and fails it. `silence` is the same `dup2` whatever the
+    /// number, so the guard is proved on a descriptor nobody else can touch.
     #[test]
     fn local_sessions_hook_stdout_can_never_answer_a_permission_prompt() {
         use std::io::Write;
-        use std::os::unix::io::AsRawFd;
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        const ALLOW: &[u8] = br#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#;
         let dir = tempfile::tempdir().unwrap();
         let captured = dir.path().join("stdout");
         let file = fs::File::create(&captured).unwrap();
-        let saved = unsafe { libc::dup(1) };
-        assert!(saved >= 0);
-        {
-            let _restore = RealStdout(saved);
-            unsafe { libc::dup2(file.as_raw_fd(), 1) };
-            silence_stdout();
-            // Written through `Stdout`, not `println!`: the harness captures
-            // the macro, so only a direct fd-1 write proves where fd 1 points.
-            let mut out = std::io::stdout();
-            let _ = out.write_all(br#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#);
-            let _ = out.flush();
-        }
+        // Stands in for a hook's stdout: whatever is written here would reach
+        // Claude. `silence` closes this end by replacing what it points at, so
+        // the `File` keeps owning the number and closes it on drop.
+        let out = unsafe { libc::dup(file.as_raw_fd()) };
+        assert!(out >= 0);
+        let mut stdout = unsafe { fs::File::from_raw_fd(out) };
+        stdout.write_all(b"reachable").unwrap();
+        stdout.flush().unwrap();
         assert_eq!(
             fs::read(&captured).unwrap(),
-            b"",
+            b"reachable",
+            "the descriptor has to reach the reader, or the guard proves nothing"
+        );
+
+        silence(out);
+        let _ = stdout.write_all(ALLOW);
+        let _ = stdout.flush();
+        assert_eq!(
+            fs::read(&captured).unwrap(),
+            b"reachable",
             "a hook that reaches stdout can allow or deny a tool call"
+        );
+        assert_eq!(
+            HOOK_DECISION_FD,
+            libc::STDOUT_FILENO,
+            "and the hook silences its real stdout, which is what Claude reads"
         );
     }
 

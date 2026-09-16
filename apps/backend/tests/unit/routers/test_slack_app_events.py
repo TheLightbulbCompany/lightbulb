@@ -17,6 +17,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import runtime_transport
 from main import app
 
 APP_SECRET = "app-signing-secret"
@@ -218,6 +219,46 @@ def test_forward_is_byte_identical_and_re_signed_with_hook_token(client):
     assert req.headers["content-type"] == "application/json"
     assert "authorization" not in {k.lower() for k in req.headers}
     assert "x-forwarded-for" not in {k.lower() for k in req.headers}
+
+
+def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
+    """An owner on AgentCore is never Cloud-Map-discovered -- addressing comes
+    from the container row's ARN, and the forward goes through
+    ``runtime_transport.request`` instead of the ECS httpx client."""
+    body = _event()
+    agentcore_container = {**CONTAINER, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    sent = _headers(body)
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["container"] = container
+        captured["path"] = path
+        captured["ip"] = ip
+        captured["content"] = content
+        captured["headers"] = headers
+        return runtime_transport.RuntimeResponse(200, '{"ok":true}', {})
+
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        _container(agentcore_container),
+        _billing(),
+        patch("routers.slack_app.ecs_manager.discover_ip") as discover_ip,
+        patch("routers.slack_app.runtime_transport.request", fake_request),
+    ):
+        r = client.post("/api/v1/slack/events", content=body, headers=sent)
+
+    assert r.status_code == 200
+    assert r.content == b'{"ok":true}'
+    discover_ip.assert_not_called()
+    assert captured["container"] is agentcore_container
+    assert captured["path"] == f"/slack/events/{TEAM}"
+    assert captured["ip"] == runtime_transport.AGENTCORE_ADDRESS
+    assert captured["content"] == body
+    assert captured["headers"]["X-Slack-Signature"] == _sig(HOOK_TOKEN, sent["X-Slack-Request-Timestamp"], body)
 
 
 def test_dedup_recorded_only_before_forward(client):

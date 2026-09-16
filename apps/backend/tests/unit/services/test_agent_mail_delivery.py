@@ -10,6 +10,7 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import agent_mail_delivery as delivery  # noqa: E402
+from core.services import runtime_transport  # noqa: E402
 
 
 def _fake_ecs(container, ip):
@@ -240,6 +241,49 @@ async def test_pre_flag_container_rejecting_session_key_retries_unthreaded(monke
     assert len(calls) == 2, "one threaded attempt, then one unthreaded retry"
     assert "sessionKey" in calls[0]
     assert "sessionKey" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_delivers_through_the_runtime_transport_seam(monkeypatch):
+    """An owner on AgentCore never dials an IP -- the request goes through
+    ``runtime_transport.request`` instead, and the ECS client is never built."""
+    agentcore_container = {
+        "hook_token": "tok_abc",
+        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:x",
+    }
+    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs(agentcore_container, "agentcore"))
+
+    def _boom_client_factory():
+        raise AssertionError("ECS client must not be built for an agentcore row")
+
+    monkeypatch.setattr(delivery, "_client_factory", _boom_client_factory)
+
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["container"] = container
+        captured["path"] = path
+        captured["ip"] = ip
+        captured["json_body"] = json_body
+        captured["headers"] = headers
+        return runtime_transport.RuntimeResponse(200, '{"ok": true, "runId": "run_1"}', {})
+
+    monkeypatch.setattr(runtime_transport, "request", fake_request)
+
+    result = await delivery.deliver_to_agent(
+        owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
+    )
+
+    assert result == "delivered"
+    assert captured["container"] is agentcore_container
+    assert captured["path"] == "/hooks/agent"
+    assert captured["ip"] == "agentcore"
+    assert captured["headers"] == {"Authorization": "Bearer tok_abc"}
+    assert captured["json_body"]["message"] == "hi"
+    assert captured["json_body"]["agentId"] == "agent_friday"
 
 
 @pytest.mark.asyncio

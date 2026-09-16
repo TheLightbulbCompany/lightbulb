@@ -51,7 +51,7 @@ from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, oauth_state_repo, slack_installs_repo
-from core.services import slack_install_service, slack_signing, webhook_dedup
+from core.services import runtime_transport, slack_install_service, slack_signing, webhook_dedup
 from core.services.credentials import platform_oauth_app_store
 from core.services.provision_gate import has_always_on_entitlement
 
@@ -185,9 +185,12 @@ async def receive_slack_event(request: Request) -> Response:
         # Phase 1 is paid-only. Phase 2 replaces this with wake + templated reply.
         return Response(status_code=200, headers={"x-slack-no-retry": "1"})
 
-    # Offload so a slow Cloud Map response can't block the event loop (same
-    # reasoning as the other async caller in ecs_manager.py:~2504).
-    ip = await asyncio.to_thread(ecs_manager.discover_ip, container["service_name"])
+    if runtime_transport.host_for(container) == "agentcore":
+        ip = runtime_transport.AGENTCORE_ADDRESS
+    else:
+        # Offload so a slow Cloud Map response can't block the event loop (same
+        # reasoning as the other async caller in ecs_manager.py:~2504).
+        ip = await asyncio.to_thread(ecs_manager.discover_ip, container["service_name"])
     if not ip:
         return Response(
             status_code=503,
@@ -213,6 +216,27 @@ async def receive_slack_event(request: Request) -> Response:
         )
         if seen == webhook_dedup.WebhookDedupResult.ALREADY_SEEN:
             return Response(status_code=200)
+
+    if runtime_transport.host_for(container) == "agentcore":
+        path = f"/slack/events/{quote(team_id, safe='')}"
+        try:
+            upstream = await runtime_transport.request(
+                container, path, ip=ip, content=body, headers=headers, timeout_s=FORWARD_TIMEOUT_S
+            )
+        except httpx.RequestError as exc:
+            logger.warning("slack events: forward failed owner=%s err=%s", owner_id, exc)
+            put_metric("slack.forward_failed", 1, dimensions={"reason": "request_error"})
+            return Response(status_code=200)
+        if upstream.status_code >= 300:
+            logger.warning("slack events: container answered %s owner=%s", upstream.status_code, owner_id)
+            put_metric("slack.forward_failed", 1, dimensions={"reason": f"upstream_{upstream.status_code // 100}xx"})
+            return Response(status_code=200)
+        return Response(
+            status_code=upstream.status_code,
+            content=upstream.text.encode("utf-8"),
+            media_type=upstream.headers.get("content-type", "application/json"),
+        )
+
     try:
         async with _client_factory() as client:
             upstream = await client.post(target, headers=headers, content=body)

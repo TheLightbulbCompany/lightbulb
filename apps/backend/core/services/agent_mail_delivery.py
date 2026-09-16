@@ -35,6 +35,7 @@ import httpx
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.repositories import container_repo
+from core.services import runtime_transport
 from core.services.trial_cap import trial_block_reason
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,32 @@ async def deliver_to_agent(
             "deliver": False,
         }
         headers = {"Authorization": f"Bearer {hook_token}"}
+
+        if runtime_transport.host_for(container or {}) == "agentcore":
+            response = await runtime_transport.request(
+                container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
+            )
+            # Same pre-flag backward compatibility as the ECS branch below.
+            if response.status_code == 400 and session_key:
+                logger.info(
+                    "agent_mail_delivery: container rejected sessionKey (pre-flag config), "
+                    "retrying unthreaded owner=%s agent=%s",
+                    owner_id,
+                    agent_id,
+                )
+                body.pop("sessionKey", None)
+                response = await runtime_transport.request(
+                    container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
+                )
+            if response.status_code >= 400:
+                logger.warning(
+                    "agent_mail_delivery failed owner=%s agent=%s err=agentcore hook returned %s",
+                    owner_id,
+                    agent_id,
+                    response.status_code,
+                )
+                return "error"
+            return "delivered"
 
         async with _client_factory() as client:
             response = await client.post(target, json=body, headers=headers)

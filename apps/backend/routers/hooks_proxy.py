@@ -43,6 +43,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.containers import get_ecs_manager
 from core.repositories import billing_repo, container_repo
+from core.services import runtime_transport
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.rate_bucket import RateBucket
 
@@ -170,7 +171,7 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
         )
 
     # 5. Resolve container IP
-    _, ip = await ecs_manager.resolve_running_container(owner_id)
+    resolved_container, ip = await ecs_manager.resolve_running_container(owner_id)
     if not ip:
         return Response(
             status_code=503,
@@ -187,13 +188,37 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     # ``?challenge=``, custom ``?routing_key=``, etc.). Dropping it
     # silently breaks those handshakes.
     query = request.url.query  # raw query string (no leading '?'), '' if absent
-    target = f"http://{ip}:{GATEWAY_PORT}/hooks/{hook_path}"
-    if query:
-        target = f"{target}?{query}"
 
     upstream_status = 502
     upstream_body = b""
     upstream_headers: dict[str, str] = {}
+
+    if runtime_transport.host_for(resolved_container or {}) == "agentcore":
+        path = f"/hooks/{hook_path}" + (f"?{query}" if query else "")
+        try:
+            upstream = await runtime_transport.request(
+                resolved_container, path, ip=ip, content=body, headers=headers, timeout_s=30.0
+            )
+            upstream_status = upstream.status_code
+            upstream_body = upstream.text.encode("utf-8")
+            upstream_headers = {
+                k: v
+                for k, v in upstream.headers.items()
+                if k.lower() not in ("content-length", "transfer-encoding", "connection")
+            }
+        except httpx.RequestError as exc:
+            logger.warning("hook proxy upstream error owner=%s err=%s", owner_id, exc)
+            upstream_body = b'{"detail":"upstream_unreachable"}'
+        return Response(
+            status_code=upstream_status,
+            content=upstream_body,
+            headers=upstream_headers,
+            media_type=upstream_headers.get("content-type", "application/json"),
+        )
+
+    target = f"http://{ip}:{GATEWAY_PORT}/hooks/{hook_path}"
+    if query:
+        target = f"{target}?{query}"
     try:
         async with _client_factory() as client:
             upstream = await client.post(target, headers=headers, content=body)

@@ -210,6 +210,12 @@ export function createShopifyHandler(deps) {
         if (st && !st.exited)
             st.child.kill();
         logins.delete(store);
+        // ponytail: unlocked read-modify-write of the CLI's own conf file. The CLI
+        // has no logout command and takes no lock itself (conf writes tmp+rename),
+        // so a `store auth` for ANOTHER store landing in the same instant can be
+        // clobbered by this write — the cost is that store logging in again. A
+        // lock here would not coordinate with the CLI anyway; the real fix is a
+        // CLI-side logout, upstream.
         const file = sessionsFilePath(deps.env());
         let text;
         try {

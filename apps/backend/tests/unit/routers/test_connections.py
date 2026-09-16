@@ -2902,3 +2902,58 @@ class TestContainerLogin:
             "error": "Timed out waiting for OAuth callback.",
         }
         mock_repo.put_status.assert_not_awaited()
+
+
+class TestDisconnectContainerLogin:
+    """DELETE /api/v1/connections/shopify — the CLI session goes before the row."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.logout", new_callable=AsyncMock)
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_drops_the_cli_session_for_the_row_s_store_before_deleting_the_row(
+        self, mock_repo, mock_store, mock_patcher, logout, async_client
+    ):
+        # The store is the row's identity, so the plugin must be asked to drop the
+        # CLI session BEFORE the row goes — afterwards nothing remembers which
+        # store to log out.
+        order: list[str] = []
+        mock_repo.get = AsyncMock(
+            return_value={
+                "owner_id": "o",
+                "provider": "shopify",
+                "status": "connected",
+                "identity": "mystore.myshopify.com",
+            }
+        )
+        mock_repo.delete = AsyncMock(side_effect=lambda *a, **k: order.append("delete"))
+        mock_store.delete = AsyncMock()
+        logout.side_effect = lambda *a, **k: order.append("logout")
+
+        response = await async_client.delete("/api/v1/connections/shopify")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "shopify"}
+        assert logout.await_args.args[1] == "mystore.myshopify.com"
+        assert order == ["logout", "delete"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.logout", new_callable=AsyncMock)
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_without_a_store_identity_skips_the_plugin(
+        self, mock_repo, mock_store, mock_patcher, logout, async_client
+    ):
+        # A row written before identities existed (or never connected) has no
+        # store to log out; the disconnect still clears the row.
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/shopify")
+
+        assert response.status_code == 200
+        logout.assert_not_awaited()
+        mock_repo.delete.assert_awaited_once()

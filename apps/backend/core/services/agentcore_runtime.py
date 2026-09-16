@@ -232,6 +232,9 @@ async def ensure_runtime(owner_id: str) -> dict:
     hook_token = row.get("hook_token")
     if not access_point_id or not hook_token:
         raise RuntimeError(f"container row for {owner_id} lacks access_point_id/hook_token; provision on ECS first")
+    if row.get("status") != "stopped":
+        # A live ECS task next to the new microVM is two gateways on one access point.
+        raise RuntimeError(f"{owner_id} is {row.get('status')!r} on ECS; stop it before moving it")
 
     aip_arns = await ensure_owner_aips(owner_id)
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
@@ -262,6 +265,10 @@ async def ensure_runtime(owner_id: str) -> dict:
     control = boto3.client("bedrock-agentcore-control")
     created = await run_in_thread(control.create_agent_runtime, **request)
     arn = created["agentRuntimeArn"]
-    await container_repo.update_fields(owner_id, {"runtime_host": "agentcore", "agentcore_runtime_arn": arn})
+    # ``running`` from here on: AgentCore wakes on invoke, so every "stopped → start ECS" door
+    # must see a live workspace. The ECS manager's start/stop chokepoints no-op for this row.
+    await container_repo.update_fields(
+        owner_id, {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running"}
+    )
     logger.info("agentcore runtime created owner=%s arn=%s", owner_id, arn)
     return {"owner_id": owner_id, "runtime_arn": arn, "created": True}

@@ -37,6 +37,7 @@ from core.containers.config import (
 from core.containers.workspace import get_workspace
 from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
+from core.services import runtime_transport
 from core.services.owner_lifecycle import serialize_owner_lifecycle
 
 logger = logging.getLogger(__name__)
@@ -1414,6 +1415,15 @@ class EcsManager:
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
 
+    async def _hosted_on_agentcore(self, user_id: str) -> bool:
+        """An AgentCore workspace has no ECS task to start or stop: AWS wakes the microVM on
+        invoke and parks it on idle. Both chokepoints answer "nothing to do", so no door — the
+        status poll, chat wake, agent mail, the trial-idle sweep, an admin click — can start a
+        second gateway on the workspace's access point or flip its row back to ``stopped``.
+        Rollout scaffolding: deleted with the ECS path once the last workspace has moved."""
+        row = await container_repo.get_by_owner_id(user_id)
+        return bool(row) and runtime_transport.host_for(row) == "agentcore"
+
     @serialize_owner_lifecycle
     async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
         """Scale a user's ECS service to 0 (stopped).
@@ -1436,6 +1446,9 @@ class EcsManager:
                 already-deleted box) all want to proceed, mirroring
                 delete_user_service's not-found handling below.
         """
+        if await self._hosted_on_agentcore(user_id):
+            logger.info("stop_user_service(%s): workspace is on AgentCore, which parks itself; no-op", reason)
+            return
         service_name = self._service_name(user_id)
         put_metric(
             "container.lifecycle.state_change",
@@ -1680,6 +1693,9 @@ class EcsManager:
             ContainerStartRefused: If a start guard is up (and not ``force``).
             EcsManagerError: If the ECS update_service call fails.
         """
+        if await self._hosted_on_agentcore(user_id):
+            logger.info("start_user_service: workspace is on AgentCore, which wakes on invoke; no-op")
+            return
         if not force:
             await self._assert_start_allowed(user_id)
 
@@ -2624,6 +2640,12 @@ class EcsManager:
             Tuple of (container_dict, task_ip) or (None, None) if no active container.
         """
         container = await container_repo.get_by_owner_id(user_id)
+        if container and runtime_transport.host_for(container) == "agentcore":
+            # No task IP to discover: AWS wakes the microVM on invoke. The sentinel is truthy
+            # so no caller mistakes this workspace for a stopped box and starts its old ECS
+            # service next to the microVM (two gateways on one access point corrupt the
+            # litestream replica set silently — reproduced 2026-09-16).
+            return container, runtime_transport.AGENTCORE_ADDRESS
         if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 

@@ -160,7 +160,7 @@ class TestEnsureRuntime:
         "owner_id": "org_abc",
         "access_point_id": "fsap-123",
         "hook_token": "hook-xyz",
-        "status": "running",
+        "status": "stopped",
     }
 
     @pytest.fixture
@@ -218,7 +218,10 @@ class TestEnsureRuntime:
         assert out["runtime_arn"].endswith("runtime/x-1")
         # The row is what makes runtime_transport route to AgentCore from now on.
         assert wired["fields"] == [
-            ("org_abc", {"runtime_host": "agentcore", "agentcore_runtime_arn": out["runtime_arn"]})
+            (
+                "org_abc",
+                {"runtime_host": "agentcore", "agentcore_runtime_arn": out["runtime_arn"], "status": "running"},
+            )
         ]
 
     @pytest.mark.asyncio
@@ -264,6 +267,26 @@ class TestEnsureRuntime:
         assert out == {"owner_id": "org_abc", "runtime_arn": "arn:existing", "created": False}
         assert wired["created"] == []  # no second runtime, no second EFS mount
         assert wired["fields"] == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_row_whose_ecs_task_may_still_be_running(self, wired, monkeypatch):
+        # A live task next to the new microVM is two gateways on one access point.
+        import core.repositories.container_repo as repo
+
+        async def _get(owner_id, consistent=False):
+            return {**self.ROW, "status": "running"}
+
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        with pytest.raises(RuntimeError, match="stop it before moving it"):
+            await ar.ensure_runtime("org_abc")
+        assert wired["created"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_flip_marks_the_row_running_so_no_door_wakes_ecs(self, wired):
+        await ar.ensure_runtime("org_abc")
+        ((_, fields),) = wired["fields"]
+        assert fields["status"] == "running"
+        assert fields["runtime_host"] == "agentcore"
 
     @pytest.mark.asyncio
     async def test_refuses_when_the_platform_is_not_configured(self, wired, monkeypatch):

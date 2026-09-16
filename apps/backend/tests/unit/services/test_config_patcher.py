@@ -1240,7 +1240,9 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
         entries = json.load(f)["plugins"]["entries"]
     assert entries["memory-core"] == memory_plugin_entries("user_p")["memory-core"]
     assert entries["memory-core"]["config"]["dreaming"]["enabled"] is True
-    assert entries["memory-core"]["config"]["dreaming"]["phases"]["deep"] == {"enabled": False}
+    # No per-phase overrides: on 9.x ``phases.deep.enabled: false`` removes
+    # the whole managed sweep (see memory_plugin_entries).
+    assert "phases" not in entries["memory-core"]["config"]["dreaming"]
 
 
 @pytest.mark.asyncio

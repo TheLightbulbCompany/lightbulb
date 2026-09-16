@@ -199,14 +199,14 @@ class TestOpenclawConfigShape:
         assert entries["tokenjuice"] == {"enabled": True}
         assert entries["sage-openclaw"] == {"enabled": True}
 
-    def test_memory_core_dreaming_enabled_light_and_rem(self):
-        """memory-core's dreaming subsystem is enabled at provision with the
-        light and REM phases ON and deep OFF. Light-phase consolidates recent
-        session transcripts into dated memory/<day>.md notes that auto-load —
-        cross-session continuity without relying on discretionary writes. REM
-        writes DREAMS.md narratives, now surfaced by the Dreams control panel's
-        Diary tab. Deep stays OFF by default — it is an opt-in per-container
-        toggle, not a builder flip. Only schema-legal keys may appear under
+    def test_memory_core_dreaming_enabled_no_phase_overrides(self):
+        """memory-core's dreaming subsystem is enabled at provision with
+        upstream's phase defaults and NO ``phases`` block. On the 9.x image
+        dreaming is ONE managed cron sweep built from the DEEP config
+        (``enabled = dreaming.enabled && phases.deep.enabled``), so the old
+        ``phases.deep.enabled: False`` removed the sweep fleet-wide — no cron
+        job, no light notes, no diary. Pin the absence so it cannot come back.
+        Only schema-legal keys may appear under
         plugins.entries.memory-core.config — the upstream configSchema is
         additionalProperties:false at every level, so a stray key bricks the
         container at boot."""
@@ -222,9 +222,7 @@ class TestOpenclawConfigShape:
         assert rest == "3 * * *"
         assert 0 <= int(minute) <= 59
         assert dreaming["timezone"] == "UTC"
-        assert dreaming["phases"]["light"] == {"enabled": True}
-        assert dreaming["phases"]["rem"] == {"enabled": True}
-        assert dreaming["phases"]["deep"] == {"enabled": False}
+        assert "phases" not in dreaming
         assert set(entry["config"].keys()) == {"dreaming"}
 
     def test_memory_wiki_shared_company_vault(self):

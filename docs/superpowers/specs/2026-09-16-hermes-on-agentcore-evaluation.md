@@ -87,8 +87,7 @@ Every inference call must go through the bedrock-gate with a per-owner bearer; o
 
 **Litestream, and whether we still need it.** Today litestream exists because the gateway's SQLite files ARE the product's memory of every session, and an ECS task loses its disk. On Hermes the honest split is:
 - Chat history: our rooms are the canonical transcript already (DynamoDB, `seq`-ordered). The Runs API accepts `conversation_history` per run, so the backend can hand each turn the room context it needs and the container's session store becomes a cache. Nothing to replicate.
-- Agent memory and skills (the things that must survive): small per profile. Options in order of laziness: sync the profile dir with S3 at first invocation and after each turn (what AWS's own sample does with `workspace_sync.py`); or a Hermes memory provider backed by a managed store (AgentCore Memory is the obvious one); or litestream per `state.db` exactly as today.
-- Litestream stays only if we want crash-consistent replication of the container's own store. With chat history owned by the backend, that is a much weaker requirement than it is for OpenClaw. The spike decides between S3 sync and litestream by measuring restore time.
+- Agent memory and skills (the things that must survive): small per profile. Sync the profile dir with S3 on the agent's first turn and after each turn, the way AWS's own sample does. Litestream is the fallback only if crash-consistency of the container's own store turns out to matter, which with chat history owned by the backend it should not.
 
 **Multiple users in one Hermes.** Yes in the sense that matters, no in the sense that would save money. A Hermes "user" is a chat participant; sessions are keyed by user and memory is per profile (per agent), so all the humans in a workspace already share one Hermes with six agent profiles, exactly like today's one gateway per workspace. What we should not do is put several *workspaces* in one Hermes process: multiplexing isolates profiles by context-local scope, not by OS boundary, the terminal tool runs as one OS user for every profile, and MCP discovery is process-global. The security boundary between customers is the microVM, one per workspace, which is also AgentCore's billing unit. So: one Hermes per workspace, N agent profiles inside it, any number of human members.
 
@@ -111,12 +110,12 @@ Run cost per workspace on AgentCore: memory is the continuous charge. At ~0.4 GB
 
 Same shape as the spike that greenlit AgentCore. One runtime, the throwaway dev workspace, criteria fixed before starting:
 
-1. Hermes image (Hermes + our skill binaries) on AgentCore: **cold start per turn ≤ 20 s**, warm turn ≤ 5 s, image ≤ 1 GB compressed.
-2. **Six profiles multiplexed** in one microVM, resident ≤ 1 GB, two profiles running turns concurrently.
-3. **A room turn end to end** through our messaging plane: backend → invoke → `/p/<agent>/v1/runs` with the room's `conversation_history` → SSE events relayed → reply in the room, run started/ended in the ledger.
-4. **Bedrock through the gate** with the owner's application-inference-profile ARN and bearer, by route §4.3(1) or (2); usage settles in the gate ledger. ChatGPT OAuth seeded into the Codex provider for one profile.
-5. **State**: profile memory + skills survive a session roll via S3 sync (or litestream, whichever restores faster); the warm pool never starts a gateway.
-6. `hermes claw migrate` on a real dev workspace's `~/.openclaw`: memories and skills present in the profile; the `lightbulb`/`paperclip` skills load; the nine MCP integrations configured from our existing rows.
+1. Hermes image (Hermes + the bridge) on AgentCore: **cold start per turn ≤ 20 s**, warm turn ≤ 5 s; compressed image size reported against the 2.048 GB cap (the base is 0.95 GB).
+2. **Six agent profiles** in one microVM, resident ≤ 1 GB, two agents running turns concurrently.
+3. **A room turn end to end** through our messaging plane with **no backend change**: the bridge serves the `lightbulb-channel` ingress contract, the row is flipped, an `@CEO` message in `#general` gets the CEO's reply, run started/ended in the ledger.
+4. **Bedrock through the gate** with the owner's application-inference-profile ARN and bearer via the SDK's bearer mode (§4.3); usage settles in the gate ledger.
+5. **State**: profile memory + skills survive a session roll via S3 sync, restore ≤ 5 s; the warm pool constructs nothing.
+6. `hermes claw migrate` on a real dev workspace's `~/.openclaw`: memories and skills present in the profile; the `lightbulb`/`paperclip` skills load.
 
 Pass → plan Hermes as the runtime (the P4–P6 items re-scoped onto it; the OpenClaw cutover is the bridge until then). Fail on 1, 3 or 4 → stay on OpenClaw and revisit in two quarters.
 

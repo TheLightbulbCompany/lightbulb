@@ -343,10 +343,25 @@ fn registration_socket() -> Result<tokio::net::UnixDatagram> {
     tokio::net::UnixDatagram::bind(path).map_err(|_| "registration channel unavailable".into())
 }
 
+/// A hook's stdout is a control channel: Claude reads it for a
+/// `PermissionRequest`/`PreToolUse` decision (`allow` / `deny` / `ask`) and for
+/// `continue: false`. Ours only reports what a session is waiting on, so fd 1
+/// is pointed at /dev/null before a byte is read -- no future log line, and
+/// nothing a library prints, can answer a prompt on the user's behalf.
+fn silence_stdout() {
+    use std::os::unix::io::AsRawFd;
+    if let Ok(devnull) = fs::OpenOptions::new().write(true).open("/dev/null") {
+        // Replaces fd 1 rather than closing it: a closed fd 1 would be handed
+        // to the next file this process opens.
+        unsafe { libc::dup2(devnull.as_raw_fd(), 1) };
+    }
+}
+
 /// Hooks send the bounded lifecycle datagram built from their stdin JSON, or
-/// a plain wake byte when stdin isn't a JSON object; never a credential or
-/// authority.
+/// a plain wake byte when stdin isn't a JSON object; never a credential, an
+/// authority, or a permission decision (see [`silence_stdout`]).
 pub fn hook(provider: &str) {
+    silence_stdout();
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
@@ -1226,6 +1241,53 @@ mod tests {
             .join(".codex/skills/lightbulb-session-sharing/SKILL.md")
             .exists());
         assert!(!state.join("skill-paths.json").exists());
+    }
+
+    /// Restores the process's real stdout however this test leaves the stack --
+    /// a panic mid-test would otherwise leave fd 1 on a temp file for every
+    /// test that runs after it.
+    struct RealStdout(i32);
+    impl Drop for RealStdout {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.0, 1);
+                libc::close(self.0);
+            }
+        }
+    }
+
+    /// The hook subcommand must never emit a permission decision. Every path
+    /// through it is silent today; this pins the guard that keeps it that way.
+    ///
+    /// The guard under test operates on fd 1 by definition, so the test has to
+    /// take fd 1 over process-wide -- cargo runs tests as threads, so for the
+    /// few syscalls this holds, a direct fd-1 write from another test would
+    /// land in our file. Nothing in this suite does that: libtest captures the
+    /// print macros per thread, and the only direct writer is this test.
+    #[test]
+    fn local_sessions_hook_stdout_can_never_answer_a_permission_prompt() {
+        use std::io::Write;
+        use std::os::unix::io::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let captured = dir.path().join("stdout");
+        let file = fs::File::create(&captured).unwrap();
+        let saved = unsafe { libc::dup(1) };
+        assert!(saved >= 0);
+        {
+            let _restore = RealStdout(saved);
+            unsafe { libc::dup2(file.as_raw_fd(), 1) };
+            silence_stdout();
+            // Written through `Stdout`, not `println!`: the harness captures
+            // the macro, so only a direct fd-1 write proves where fd 1 points.
+            let mut out = std::io::stdout();
+            let _ = out.write_all(br#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#);
+            let _ = out.flush();
+        }
+        assert_eq!(
+            fs::read(&captured).unwrap(),
+            b"",
+            "a hook that reaches stdout can allow or deny a tool call"
+        );
     }
 
     #[test]

@@ -117,7 +117,9 @@ describe("lifecycleLabel", () => {
     expect(lifecycleLabel(row("turn_end", "not-a-number"))).toBe("");
     expect(lifecycleLabel(row("turn_aborted", ""))).toBe("Interrupted");
     expect(lifecycleLabel(row("compaction", ""))).toBe("Context compacted");
-    expect(lifecycleLabel(row("approval_pending", ""))).toBe("Waiting for approval on the owner's Mac");
+    expect(lifecycleLabel(row("approval_pending", ""))).toBe("Waiting for input");
+    expect(lifecycleLabel(row("approval_pending", "Tea or coffee? (Tea / Coffee)"))).toBe("Waiting for input: Tea or coffee? (Tea / Coffee)");
+    expect(lifecycleLabel(row("approval_pending", "Wants to run Bash(git push)"))).toBe("Waiting for input: Wants to run Bash(git push)");
     expect(lifecycleLabel(row("turn_start", ""))).toBe("Turn started");
   });
 });

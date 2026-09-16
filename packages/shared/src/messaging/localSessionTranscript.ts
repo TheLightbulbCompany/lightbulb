@@ -178,7 +178,10 @@ export function lifecycleLabel(row: Extract<TranscriptRow, { kind: "lifecycle" }
     }
     case "turn_aborted": return "Interrupted";
     case "compaction": return "Context compacted";
-    case "approval_pending": return "Waiting for approval on the owner's Mac";
+    // Matches the session-status label, and carries the reason the desktop's
+    // hook captured — Claude writes neither a pending question nor a
+    // permission prompt to its transcript, so this row is the only record.
+    case "approval_pending": return row.text ? `Waiting for input: ${row.text}` : "Waiting for input";
     default: return "Turn started";
   }
 }

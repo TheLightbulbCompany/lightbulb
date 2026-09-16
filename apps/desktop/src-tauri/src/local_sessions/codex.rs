@@ -791,6 +791,55 @@ mod tests {
         assert!(!bare.path().join(".codex").exists());
     }
 
+    /// Claude has two hooks Codex must never be given (`PreToolUse`,
+    /// `PermissionRequest`). Codex trusts a hook group by a hash of its identity
+    /// at an index, so one extra installed entry silently invalidates keys and
+    /// Codex then skips the group. This pins the whole set -- events, commands
+    /// and trust hashes -- to exactly what shipped.
+    #[test]
+    fn local_sessions_codex_hook_set_and_trust_hashes_are_frozen() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(home.path().join(".codex/hooks.json")).unwrap())
+                .unwrap();
+        let hooks = doc["hooks"].as_object().unwrap();
+        assert_eq!(
+            hooks.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
+            "Codex installs the five shared events minus Notification, and nothing else"
+        );
+        for (event, timeout, is_async) in [
+            ("SessionStart", json!(5), json!(true)),
+            ("UserPromptSubmit", json!(5), json!(true)),
+            ("Stop", json!(5), json!(true)),
+            ("SessionEnd", json!(1), json!(false)),
+        ] {
+            assert_eq!(
+                hooks[event],
+                json!([{"hooks":[{"type":"command","command":"'/app' local-session-hook codex",
+                    "timeout":timeout,"async":is_async}]}]),
+                "{event}"
+            );
+        }
+        let config = fs::read_to_string(home.path().join(".codex/config.toml")).unwrap();
+        let path = home.path().join(".codex/hooks.json");
+        for (index, label, hash) in [
+            (0, "session_start", "sha256:e92f980584c0d2e69241c742b5098cc77ee3c72dde0acf0000958fef54d406c2"),
+            (0, "user_prompt_submit", "sha256:1b9663f4792c847238b9ce60fa8356836634675cf6edcd96b9660a8bbac50d5a"),
+            (0, "stop", "sha256:560328742055693cdfd246bce82c94a8b396c388029444fb0adb39b8899b547e"),
+            (0, "session_end", "sha256:73824c3fd7c65d780e2b8aa1740084f4ce2090a802322de8aac307784a3698d8"),
+        ] {
+            let key = lifecycle::codex_trust_key(&path, label, index);
+            assert!(
+                config.contains(&format!("[hooks.state.\"{key}\"]\ntrusted_hash = \"{hash}\"")),
+                "{label} trust entry moved"
+            );
+        }
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
+    }
+
     #[test]
     fn local_sessions_codex_refuses_a_path_the_trust_table_cannot_quote() {
         let root = tempfile::tempdir().unwrap();

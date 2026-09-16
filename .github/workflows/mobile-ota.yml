@@ -42,10 +42,23 @@ name: mobile-ota
       - '!apps/mobile/android/**'
   workflow_dispatch: {}
 
-# Coalesce rapid merges — only the newest main OTA matters.
+# Coalesce rapid merges — only the newest main OTA matters — but never kill a
+# publish that is already running.
+#
+# This job takes ~30 minutes and shares one self-hosted Mac with the deploy and
+# desktop pipelines, so much of that is spent queued. With
+# `cancel-in-progress: true`, ANY merge inside that window killed it, and on a
+# busy evening merges simply outpace the job: six consecutive runs were
+# cancelled on 2026-09-16 and nothing reached a device between 22:45 and 04:36,
+# across five merged mobile PRs. A publish that can never finish is not
+# coalescing, it is a stall.
+#
+# `false` lets a running publish finish. Pending runs still coalesce — GitHub
+# holds one pending run per group and evicts the rest — which is the behaviour
+# that was actually wanted here, since the newest publish carries everything.
 concurrency:
   group: mobile-ota-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ota-update:

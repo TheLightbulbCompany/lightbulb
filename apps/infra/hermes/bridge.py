@@ -175,10 +175,18 @@ def run_turn(agent_id: str, body: dict) -> None:
     session_key = f"agent:{agent_id}:lightbulb:{room.get('kind', 'channel')}:{room.get('id')}"
     _busy_add(1)
     outcome, error_kind, reply = "completed", None, ""
+    usage = {"model": MODEL, "inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0}
     t0 = time.time()
+    done = threading.Event()
+
+    def _heartbeat() -> None:  # the backend sweeper closes a run silent for 90 s
+        while not done.wait(30):
+            _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.heartbeat", "at": _now(), "sessionKey": session_key})
+
     try:
         restore_profile(agent_id)
         _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": _now(), "sessionKey": session_key})
+        threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         token = set_hermes_home_override(_profile_dir(agent_id))
@@ -207,13 +215,22 @@ def run_turn(agent_id: str, body: dict) -> None:
                 conversation_history=_history(body, agent_id) or None,
             )
             reply = (result or {}).get("final_response") or ""
-            if not reply:
+            usage.update(
+                inputTokens=int(getattr(agent, "session_input_tokens", 0) or 0),
+                outputTokens=int(getattr(agent, "session_output_tokens", 0) or 0),
+                cacheReadTokens=int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+                cacheWriteTokens=int(getattr(agent, "session_cache_write_tokens", 0) or 0),
+            )
+            if not (result or {}).get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
+                outcome, error_kind, reply = "error", "model_unavailable", ""
+            elif not reply:
                 outcome, error_kind = "error", "empty_response"
         finally:
             reset_hermes_home_override(token)
     except Exception as exc:  # noqa: BLE001
         outcome, error_kind = "error", type(exc).__name__
         log.error("turn %s failed: %s\n%s", run_id, exc, traceback.format_exc())
+    done.set()
     took = time.time() - t0
     if reply:
         _post_backend(
@@ -230,7 +247,7 @@ def run_turn(agent_id: str, body: dict) -> None:
         )
     _post_backend(
         f"runs/{OWNER}/events",
-        {"runId": run_id, "type": "run.ended", "at": _now(), "sessionKey": session_key, "outcome": outcome, "errorKind": error_kind},
+        {"runId": run_id, "type": "run.ended", "at": _now(), "sessionKey": session_key, "outcome": outcome, "errorKind": error_kind, "usage": usage},
     )
     try:
         save_profile(agent_id)

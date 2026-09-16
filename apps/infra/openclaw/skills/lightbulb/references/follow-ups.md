@@ -8,47 +8,60 @@ where you make it.
 
 ## 1. File the work as a task that carries the permalink
 
-The room context (`Lightbulb room` structured context) gives you `room.id` and
-`message.id` / `message.threadRootMessageId`. Build the permalink of the message you
-are answering:
+The room context (`Lightbulb room` structured context) gives you `room.id`,
+`message.id` and `message.threadRootMessageId`. The permalink must point at the
+**thread root**, the message the reply thread hangs off, because that is the id the
+later run replies into and the only kind of message the room timeline can link to:
 
 ```
-https://flickmeon.ai/chat?panel=chat&room=<room.id>&message=<message.id>
+thread.id = message.threadRootMessageId if it is set, otherwise message.id
+https://flickmeon.ai/chat?panel=chat&room=<room.id>&message=<thread.id>
 ```
 
 (on dev, where `$ISOL8_API_URL` contains `api-dev`, the host is `dev.flickmeon.ai`).
+Never write `message.id` when `message.threadRootMessageId` is set: that is a reply
+inside a thread, and a message posted "under" a reply is invisible on the web.
 
 File the task to yourself, and put the permalink in the description:
+
+The heredoc below is a template: substitute the three ids yourself (the quoted heredoc expands nothing).
 
 ```bash
 /app/skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" \
   --title "Allow emoji reactions on teammate messages" \
   --assignee "$PAPERCLIP_AGENT_ID" --status todo <<'EOF'
-Filed from https://flickmeon.ai/chat?panel=chat&room=<room.id>&message=<message.id>
+Filed from https://flickmeon.ai/chat?panel=chat&room=<room.id>&message=<thread.id>
 
 Leo cannot react to a teammate's message; the API returns 400. Ship a PR.
 EOF
 ```
 
-`--status todo` starts a run immediately. Use `backlog` only when the work should
-wait. A GitHub issue alone is NOT a task: nothing wakes you from it.
+Choose the status by the paperclip skill's create-status table (`SKILL.md`
+§ "Creating work for someone else"): `--status todo` only when doing the work now is
+what was asked; it starts a run on you at once, possibly before this turn ends.
+Everything else is `--status backlog`. A GitHub issue alone is NOT a task: nothing
+wakes you from it.
 
 ## 2. Reply in the room with what you filed
 
 "Filed ISOA-320. I'll post the PR link here." The task identifier is the receipt.
+This is your ordinary turn reply; the plugin already places it in the thread under
+the request. Do not send it with the `message` tool. If you ever use the `message`
+tool from a room turn, pass `threadId: "<thread.id>"` explicitly, or the send lands
+top-level in the room.
 
 ## 3. When the run finishes or the plan changes, reply in the thread
 
 Every later wake on that task (the run starting, a comment, a monitor firing, a
 blocker clearing) reads the task, and the task's description holds the permalink.
-Post the outcome **in the thread under that message, never top-level**, with the
+Post the outcome **in the thread the permalink names, never top-level**, with the
 `message` tool:
 
 ```
 message  action: "send"
          channel: "lightbulb"
          target: "lightbulb:<room.id>"
-         threadId: "<message.threadRootMessageId if set, otherwise message.id>"
+         threadId: "<the message id from the permalink>"
          message: "PR is up: https://github.com/…/pull/2700 — merges once CI passes."
 ```
 

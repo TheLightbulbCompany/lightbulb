@@ -457,6 +457,8 @@ Roll the dev test workspace's container onto the new image with the audited admi
 3. Confirm the agent's reply in the room names the task identifier.
 4. Confirm the agent's **first** reply opened a thread under the asking message (not a new top-level message), that the run card rendered inside that thread and not in the main timeline, and that the root shows the reply count. When the run ends, confirm the outcome is in that same thread.
 4b. In a DM with the agent, confirm replies stay top-level.
+5. Expected consequences to recognise, not file as bugs: the run card now sits inside the thread, so the main timeline shows nothing until the first reply exists; a channel answer now pushes to the asker as a thread participant (before, only an @mention did); mobile banners the asker while the room is open, because the room screen's thread is not the reply's thread.
+6. Latency gate for the prod pin (Task 5): every channel final now carries a thread root, which activates two full-room-history scans that were previously rare — `_validate_message_links` on the agent reply write and the projector's thread-participant scan before fan-out. On the dev room with the longest history, record `messaging.projector.notify.latency` and the agent reply write latency before and after rolling this image. If either regresses materially, the follow-up (separate PR, not this branch) is the projector's dm/group-dm short-circuit and dropping the existence check for agent finals.
 5. Ask for something that waits on CI. Confirm the task shows a Monitor row, exactly one "waiting" reply in the thread, no reply on a no-change tick, and the result in the thread after the monitor fires.
 
 Expected: all five hold. If step 2 fails, the skill text is not on the container (check the running task-def's image tag before touching the text).
@@ -468,7 +470,7 @@ Expected: all five hold. If step 2 fails, the skill text is not on the container
 **Files:**
 - Modify: `openclaw-version.json` (`prod.tag` + digests + notes).
 
-- [ ] **Step 1: Flip the prod pin to the same tag and digests** (same PR shape as Task 4 Step 5, `prod.*` fields), merge.
+- [ ] **Step 1: Only after Task 4 Step 6 item 6 shows no material regression: Flip the prod pin to the same tag and digests** (same PR shape as Task 4 Step 5, `prod.*` fields), merge.
 - [ ] **Step 2: Owner dispatches prod** (`gh workflow run deploy.yml --ref main` only after `gh run list --workflow deploy.yml --json status --jq '[.[]|select(.status!="completed")]|length'` reads `0`). Watch it to success.
 - [ ] **Step 3: Reroll the founder container first** via the admin `apply-image-update` route, then the rest of the prod fleet, per the existing reroll practice in `openclaw-version.json` notes.
 - [ ] **Step 4: Prod proof**: repeat Task 4 Step 6 items 1–4 in a founder room. Then delete `docs/superpowers/specs/2026-09-16-proactive-agents-design.md` and this plan in a final PR (disposable-plans rule), leaving the `MAINTENANCE.md` anchors as the durable record.

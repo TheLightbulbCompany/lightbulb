@@ -66,15 +66,17 @@ web and mobile timelines already render a run whose `threadRootMessageId` is set
 that thread and show the reply count on the root.
 
 **File.** In the room turn, the agent files the work as a Paperclip task assigned to
-itself, `--status todo` if it should start now or `backlog` if not, and puts the message
-permalink in the description:
+itself, `--status todo` only when doing it now is what was asked, else `backlog`, per
+the paperclip skill's create-status table; a `todo` run may start before the filing
+turn ends, and puts the permalink of the thread root in the description (the message
+the reply thread hangs off: `threadRootMessageId ?? messageId`):
 
 ```
-Filed from https://flickmeon.ai/chat?panel=chat&room=<roomId>&message=<messageId>
+Filed from https://flickmeon.ai/chat?panel=chat&room=<roomId>&message=<threadRootMessageId ?? messageId>
 ```
 
 The plugin's "Lightbulb room" structured context already gives the agent `room.id`; it
-gains `message.id` and `message.threadRootMessageId` so the permalink is thread-precise
+gains `message.id` and `message.threadRootMessageId` so the permalink names the thread root
 (one line in `channel.ts`, beside `room`). The agent replies in the room with the task
 identifier and what it will do: "Filed ISOA-320. I'll post the PR link here."
 
@@ -84,8 +86,9 @@ another. The run reads the task, sees the permalink, and knows where it came fro
 
 **Report.** The run posts its outcome in the **thread under the message the promise
 answered, never top-level in the room**: the `message` tool, `action: send`, target
-`lightbulb:<roomId>`, thread set to the permalink's message id, which the plugin maps
-onto `threadRootMessageId` (`channel.ts:217`). Then the task comment, as today.
+`lightbulb:<roomId>`, thread set to the permalink's message id (always a thread root, by
+§5 File), which the plugin maps onto `threadRootMessageId` (`channel.ts:217`). Then the
+task comment, as today.
 
 **When to speak, and when not.** The thread hears about outcomes and changed plans,
 nothing else:

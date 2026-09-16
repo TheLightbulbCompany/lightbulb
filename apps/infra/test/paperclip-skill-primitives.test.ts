@@ -401,6 +401,10 @@ describe("liveness primitives are documented", () => {
     expect(monitorsMd).not.toContain("External Objects");
   });
 
+  it("states waiting is a task, not a sentence", () => {
+    expect(monitorsMd).toContain("not a sentence");
+  });
+
   it("states the unblockDescriptor+blocked-status precondition", () => {
     expect(heartbeatRefMd).toContain(
       "`unblockDescriptor` is only accepted together with\n`status: \"blocked\"`",

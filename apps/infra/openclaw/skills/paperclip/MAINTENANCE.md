@@ -86,3 +86,7 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       when supplied, otherwise resolve the root CEO by `role: ceo` and an empty
       `reportsTo`; never fall back to a literal agent name. Fresh Lightbulb
       workspaces no longer guarantee named Friday/Atlas identities.
+  11. Monitors-for-promises sentence (references/monitors.md, first paragraph after
+      the H1): ties a chat promise that waits on an external thing to a monitor and
+      points at the lightbulb skill's references/follow-ups.md. Lightbulb-local;
+      upstream's monitors.md has no chat concept. Re-apply on re-vendor.

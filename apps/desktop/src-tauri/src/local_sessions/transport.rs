@@ -190,8 +190,7 @@ impl Host {
                 .map(serde_json::to_value)
                 .transpose()
                 .map_err(|e| e.to_string())?;
-            let generation =
-                fingerprint(&serde_json::to_string(&native.process).map_err(|e| e.to_string())?);
+            let generation = native.process.generation();
             let mut invalidate = before.is_none();
             let mut revived = false;
             if let Some(mirror) = self.mirrors.get_mut(&key) {
@@ -1751,7 +1750,7 @@ mod tests {
         let key = native_key(&native);
         let mut mirror = test_mirror(
             SID,
-            &fingerprint(&serde_json::to_string(&native.process).unwrap()),
+            &native.process.generation(),
         );
         mirror.native = native.clone();
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
@@ -2301,7 +2300,7 @@ mod tests {
         };
         assert_eq!(native.conversation, conversation);
         assert_eq!(native.restriction, None);
-        let generation = fingerprint(&serde_json::to_string(&native.process).unwrap());
+        let generation = native.process.generation();
         let sid = uuid::Uuid::new_v4().to_string();
         let request = uuid::Uuid::new_v4().to_string();
         let marker = format!(

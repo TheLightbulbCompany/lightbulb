@@ -669,11 +669,29 @@ fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Process {
     pid: u32,
     birth_micros: u64,
     executable: PathBuf,
+}
+
+/// A process is its pid and start time; `executable` is only the name it was read
+/// under. macOS reports a hard-linked binary by whichever name was looked up last
+/// (Claude's `versions/<v>` and `ClaudeCode.app/Contents/MacOS/claude`), so comparing
+/// paths ended live sessions and minted new generations for unchanged processes.
+impl PartialEq for Process {
+    fn eq(&self, other: &Self) -> bool {
+        self.pid == other.pid && self.birth_micros == other.birth_micros
+    }
+}
+
+impl Eq for Process {}
+
+impl Process {
+    fn generation(&self) -> String {
+        fingerprint(&format!("{}:{}", self.pid, self.birth_micros))
+    }
 }
 
 fn process(pid: u32) -> Result<Process> {
@@ -893,8 +911,10 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
             inode = value.parse::<u64>().ok();
         }
         if let Some(value) = line.strip_prefix('n') {
-            // The inode is the identity; the name may be the install's other one.
-            if Path::new(value) == expected.executable && inode == Some(before.ino()) {
+            // The inode is the identity; lsof may report the install's other name.
+            if (Path::new(value) == expected.executable || Path::new(value) == installed)
+                && inode == Some(before.ino())
+            {
                 matched = true;
             }
         }
@@ -1178,8 +1198,7 @@ impl Mirror {
             return false;
         };
         self.previous_generation = self.registration.acknowledged.clone();
-        self.generation =
-            fingerprint(&serde_json::to_string(&native.process).expect("process serialization"));
+        self.generation = native.process.generation();
         self.native = native;
         true
     }
@@ -1571,6 +1590,15 @@ mod tests {
         assert!(actual.executable.is_absolute());
         assert_eq!(process(std::process::id()).unwrap(), actual);
         assert!(process(u32::MAX).is_err());
+        // Another name for the same process is the same process and generation.
+        let mut renamed = actual.clone();
+        renamed.executable = "/elsewhere/claude".into();
+        assert_eq!(renamed, actual);
+        assert_eq!(renamed.generation(), actual.generation());
+        let mut restarted = actual.clone();
+        restarted.birth_micros += 1;
+        assert_ne!(restarted, actual);
+        assert_ne!(restarted.generation(), actual.generation());
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 **Goal:** An agent that promises "I'll post the link here" files the work as a Paperclip task carrying the message permalink, and the run that finishes or re-plans that task replies in the thread under that message.
 
-**Architecture:** No backend, infrastructure, or Paperclip change. One line in the `lightbulb-channel` plugin exposes the triggering message's id and thread root in the "Lightbulb room" structured context; the `lightbulb` skill gains a follow-ups reference, a routing row and two non-negotiables; the `paperclip` skill's monitors reference gains one sentence. All of it ships in one extended-image build and a pin flip.
+**Architecture:** No backend, infrastructure, or Paperclip change. The `lightbulb-channel` plugin exposes the triggering message's id and thread root in the "Lightbulb room" structured context and derives one reply-thread rule (a request in a channel or group DM is answered in the thread under it; DMs stay linear) used for both the durable final and the run record; the `lightbulb` skill gains a follow-ups reference, a routing row and two non-negotiables; the `paperclip` skill's monitors reference gains one sentence. All of it ships in one extended-image build and a pin flip.
 
 **Tech Stack:** TypeScript plugin (`vitest`, `tsc`, committed `dist/`), Markdown skills baked into the image, `openclaw-version.json` pins, GitHub Actions `build-openclaw-image.yml`.
 

@@ -1411,7 +1411,7 @@ export class ServiceStack extends cdk.Stack {
       // workspace until the image is promoted deliberately.
       AGENTCORE_GATEWAY_IMAGE:
         env === "dev"
-          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v5`
+          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v7`
           : "",
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,

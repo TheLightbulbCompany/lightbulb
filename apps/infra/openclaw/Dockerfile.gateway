@@ -1,0 +1,855 @@
+# Extended OpenClaw image — bundles Linux skill binaries so they're available
+# at runtime without paying install cost on every container cold-start.
+#
+# Multi-stage build:
+#   builder -> compiles all Go binaries (Go toolchain + build-essential live here)
+#   final   -> upstream openclaw + runtime-only apt packages + copied binaries
+#
+# Splitting the stages keeps the ~600 MB Go toolchain and ~500 MB build-essential
+# out of the final image. Targets ~2-3 GB instead of ~8.6 GB so the image fits
+# within Fargate's default 20 GiB ephemeral storage with room to spare.
+#
+# Bump UPSTREAM = `openclaw-version.json#upstream` field. Keep the FROM lines
+# below in sync with that field manually until automation lands.
+
+# =============================================================================
+# Stage 1: builder — compiles every Go binary, produces /out/bin
+# =============================================================================
+FROM debian:bookworm-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      build-essential ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin Go from go.dev — Debian 12's apt golang-go is 1.19, and the version-pinned
+# tools below carry go.mod directives up to `go 1.26.7` (eightctl, spogo).
+# GO_VERSION must be >= the highest of those. Check the floor with:
+#   curl -s https://proxy.golang.org/<lowercased-module-path>/@v/<version>.mod \
+#     | grep '^go '
+# The tarball is checksummed the same way the litestream layer is, from go.dev's
+# own published hash: curl -s 'https://go.dev/dl/?mode=json' | jq.
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
+RUN set -eux; \
+    curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz"; \
+    echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/go.tgz -C /usr/local; \
+    rm /tmp/go.tgz
+
+# GOTOOLCHAIN defaults to "auto", which answers a go.mod directive newer than the
+# installed toolchain by silently DOWNLOADING a second toolchain mid-build. That
+# is how GO_VER sat at 1.24.2 in this file for months while the tools it builds
+# drifted to a 1.26.7 floor: every build passed, on a compiler nothing in this
+# repo names, re-chosen on each rebuild. "local" turns that into a loud build
+# failure that names the module that moved and the version to raise GO_VERSION to.
+ENV PATH=/usr/local/go/bin:$PATH \
+    GOPATH=/opt/go \
+    GOBIN=/out/bin \
+    GOTOOLCHAIN=local
+# CGO_ENABLED is left at Go's default (=1) so a tool with C-binding deps
+# (go-sqlite3 and friends) still builds rather than emitting a
+# `..._requires_cgo_enabled_1_for_go_sqlite3` stub-import compile error.
+# Pure-Go tools build identically at CGO=1 vs CGO=0; build-essential is
+# already installed above (Layer 1) so gcc is available, and the final image
+# FROMs Debian-based openclaw so dynamic libc linking works at runtime.
+
+RUN mkdir -p /out/bin
+
+# Steipete + community Go tools — `go install` writes binaries into GOBIN (=/out/bin).
+#
+# EVERY LINE IS VERSION-PINNED, and the versions below are simply what `@latest`
+# resolved to on 2026-09-07 — this was a freeze, not a bump. `@latest` meant two
+# rebuilds of the same commit could produce different binaries, and worse, it
+# silently moved the Go floor underneath the pinned toolchain above: on
+# 2026-09-07 `wacli@latest` resolved to v0.18.0, whose go.mod requires Go
+# >= 1.27, and `goplaces@latest` to v0.4.9 requiring >= 1.26.7. With GOTOOLCHAIN
+# unset (= "auto") Go answers that by downloading a whole second toolchain
+# mid-build instead of failing, so the drift is invisible in the build log.
+#
+# A version tag is weaker than the ARG + SHA256 + smoke-test pattern the
+# litestream layer below uses, because a git tag is mutable at the origin. It is
+# not as weak as it looks: `go install` resolves through proxy.golang.org and
+# verifies every module against sum.golang.org, so the BYTES for a given version
+# are fixed even though the tag name is not. There is no equivalent of a
+# published checksums.txt to hash here, which is why this stops at the tag.
+#
+# To bump one: read the release notes, then
+#   curl -s https://proxy.golang.org/<lowercased-module-path>/@latest
+# and change the tag here. Do not reintroduce `@latest`.
+#
+# Module-path subtlety: github transferred most of these repos from steipete/*
+# to openclaw/* in early 2026, so browser URLs 301-redirect. But `go install`
+# resolves the canonical path from each release's go.mod, NOT from github
+# redirects. So per tool we use whichever path THAT VERSION declares:
+#   gogcli@v0.39.1 → openclaw/gogcli (flipped 2026-08 at v0.35.0, whose go.mod
+#     declares the new path — the steipete/* install path started failing with
+#     "module declares its path as: github.com/openclaw/gogcli")
+#   everything else → still steipete/* (their go.mod hasn't been bumped)
+# When a future release of one ships with `module github.com/openclaw/*` in its
+# go.mod, flip its path as part of the version bump. Verify with:
+#   curl -s https://raw.githubusercontent.com/<owner>/<tool>/<tag>/go.mod | head -1
+RUN go install github.com/steipete/eightctl/cmd/eightctl@v0.2.5 && \
+    go install github.com/Hyaxia/blogwatcher/cmd/blogwatcher@v0.0.4 && \
+    go install github.com/steipete/ordercli/cmd/ordercli@v0.1.0 && \
+    go install github.com/steipete/sonoscli/cmd/sonos@v0.3.4 && \
+    go install github.com/steipete/gifgrep/cmd/gifgrep@v0.4.0 && \
+    go install github.com/steipete/blucli/cmd/blu@v0.1.5 && \
+    go install github.com/steipete/songsee/cmd/songsee@v0.1.2 && \
+    go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 && \
+    go install github.com/steipete/spogo/cmd/spogo@v0.10.8
+
+# DELETED (2026-09-07), both from the list above — neither binary was ever
+# reachable by an agent on this fleet:
+#   wacli    — its skill is extensions/whatsapp/skills/wacli, and `whatsapp` is
+#              in the base image's EXCLUDED_CORE_BUNDLED_PLUGIN_DIRS
+#              (scripts/lib/bundled-plugin-build-entries.mjs), so the skill that
+#              would use it is not in the image at all.
+#   goplaces — its skill declares requires.env ["GOOGLE_PLACES_API_KEY"], which
+#              is set nowhere in this repo, so the skill is never eligible.
+#   notesmd-cli — see the deleted obsidian-cli symlink in the final stage.
+
+# openhue — `go build` from repo root (skipping `make build`/GoReleaser).
+# Tag-pinned for the same reason as the `go install` lines above: a
+# `--depth=1` clone of the default branch is HEAD-at-build-time, not a version.
+ARG OPENHUE_VERSION=0.24
+RUN git clone --depth=1 --branch "${OPENHUE_VERSION}" \
+      https://github.com/openhue/openhue-cli.git /tmp/openhue && \
+    cd /tmp/openhue && go build -o /out/bin/openhue .
+
+# =============================================================================
+# Stage 2: final — runtime-only image
+# =============================================================================
+# Fat (non-slim) variant: bundles plugin runtime deps so first-use of
+# browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
+FROM lightbulb/agent:2026.9.3-isol8.2-arm64
+# PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
+# plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
+# line on npm. The FROM tag is on the stable 2026.9.3 line, so all eight baked
+# plugins pin to the exact 2026.9.3 dist to stay in lockstep with the host;
+# promoting this base to dev and then prod is the separate
+# dev.tag/prod.tag flip in openclaw-version.json. Keep these
+# pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
+# channel inbound-dispatch contract (turn-adoption ack), so a stale channel
+# plugin (slack/discord) on a newer host is not a safe skew. The dev canary boots
+# the built image to confirm every baked plugin converges on the host.
+
+USER root
+
+# ---- Layer 1: runtime apt packages ----
+# Dropped from upstream extended image: build-essential, make (build-only).
+# Keeps git/curl/wget/gnupg — runtime tools (skills shell out, clawhub uses git).
+#
+# The VNC/display packages back the container browser live view (the workspace
+# Browser panel). Two generations coexist here so one image tag serves both
+# boot commands during the transition — the same decoupling that let the
+# original xvfb layer ship ahead of its DISPLAY flip:
+#
+#   current: tigervnc (Xvnc = X server + VNC server in ONE resident process,
+#            with native client-driven SetDesktopSize resize — the thing
+#            x11vnc cannot do, and what lets the dock panel resize the actual
+#            display) + matchbox (kiosk window manager: every window
+#            borderless-fullscreen, re-fit on display resize — without it
+#            Chrome floats at its default size on a black root window)
+#   legacy:  xvfb + x11vnc (+ socat spawn-per-connection), kept until no
+#            pinned tag's boot command references them, then removable
+#
+# Upstream's sandbox recipe (scripts/docker/sandbox/Dockerfile.browser) uses
+# the xvfb+x11vnc generation; we do NOT use their sandbox feature — it spawns
+# a sibling container via `docker run`, and Fargate has no Docker daemon. We
+# run the processes in this one container, which also drops their CDP relay
+# (it exists only to cross a container boundary ours does not have).
+#
+# Debian ships TigerVNC's server binary as Xtigervnc; the boot command guards
+# on and launches /usr/bin/Xvnc, so pin that name to a real path via the
+# update-alternatives symlink the package installs (asserted by the ln -sf
+# below in case the alternatives link ever changes shape).
+#
+# All of this is inert until DISPLAY is set on the task definition; see the
+# display block in container-stack.ts startupCommand.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      ffmpeg jq ripgrep tmux poppler-utils \
+      socat python3-pip sqlite3 python3 \
+      curl wget ca-certificates gnupg git unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
+RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-2.17.0.zip" -o /tmp/awscliv2.zip && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/aws /tmp/awscliv2.zip
+
+# ---- Layer 2: (REMOVED) 1Password CLI ----
+# Deleted 2026-09-07. It satisfied the bundled `1password` skill (requires.bins
+# ["op"]), so the skill WAS eligible and sat in every agent's prompt — pointing
+# at a vault nobody on this platform has. There is no 1Password anywhere in
+# Lightbulb: no `op` in any skill, service, materializer or task definition,
+# no OP_* env var, no vault reference. Secrets reach a container from AWS
+# Secrets Manager via openclaw.json `env.vars`
+# (provisioning_landing.build_provisioned_env) and from per-owner EFS files
+# written by core/services/credentials/materializers/. If an owner ever wants
+# 1Password, that is a credential-materializer, not a baked CLI.
+
+# ---- Layer 3: GitHub CLI (apt repo) ----
+# Was previously a `curl … | tar xz` pipe of the GitHub release tarball,
+# which broke on the bookworm-slim base when the gh tarball download went
+# through GitHub's release-assets redirect. The apt-repo path is what GitHub
+# officially recommends (it also used to match the 1Password layer above, which
+# this file no longer has).
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=arm64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update -qq && apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- Layer 4: uv + uvx (Python package manager) ----
+# The astral.sh installer drops BOTH `uv` and `uvx` into /tmp/.local/bin/.
+# uv runs the package manager; uvx runs a one-shot tool from a transient
+# venv (e.g. `uvx arxiv-mcp-server`). Without uvx on PATH, any
+# user-configured MCP server invoked as `uvx <package>` fails at spawn
+# with "uvx: not found" — bundle-mcp reports "Connection closed" and
+# re-attempts on every session prep, eventually driving the container
+# into ECS-healthcheck-unhealthy replacement.
+#
+# Version-pinned: the bare /uv/install.sh URL always installs whatever astral
+# released most recently, so the same commit produced different uv builds on
+# different days. The versioned URL is astral's own supported form. The script
+# itself verifies the SHA256 of the archive it downloads, which is why there is
+# no separate `sha256sum -c` here the way the litestream layer below has one —
+# what is pinned is the version, and the installer covers the bytes.
+# Bump with: curl -s https://api.github.com/repos/astral-sh/uv/releases/latest
+ARG UV_VERSION=0.12.10
+RUN curl -sSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | HOME=/tmp sh && \
+    install -m 755 /tmp/.local/bin/uv /usr/local/bin/uv && \
+    install -m 755 /tmp/.local/bin/uvx /usr/local/bin/uvx && \
+    uv --version && uvx --version
+
+# ---- Layer 5: pip packages (no cache, pre-built wheels only) ----
+# nano-pdf entry points land on PATH via system python (/usr/local/bin).
+#
+# openai-whisper was REMOVED (2026-08-17). It pulled the PyPI linux-x86_64
+# torch wheel, which drags the whole NVIDIA CUDA runtime -- torch, triton,
+# cudnn, cublas, nccl, cusparse, cusolver, cufft, nvrtc, ~3.4 GB of wheels
+# compressing to a 2.87 GB layer (37% of the whole image) -- onto a CPU-only
+# Fargate box. Nothing in the fleet could reach it: write_openclaw_config
+# emits tools.media.audio.enabled=false for EVERY owner, so the
+# media-understanding path that would invoke local STT is off fleet-wide.
+# The only other consumer is OpenClaw's OPTIONAL bundled `openai-whisper`
+# skill (requires.bins ["whisper"], brew install path), which an agent would
+# have to invoke by hand and which is useless on 1 vCPU without a GPU.
+# Removing it does NOT speed up the image pull -- SOCI lazy-loads layers
+# >=10 MiB, so those bytes were never in the pull window. What it buys is
+# ephemeral-storage headroom (Fargate's 20 GiB ceiling holds the compressed
+# AND uncompressed image; this file targets 2-3 GB and had reached 7.79 GB)
+# and less background decompression competing with the boot chain on one
+# vCPU -- the same CPU contention that inflates `doctor --fix` from ~43s
+# standalone to ~4 min during boot. It also drops doctor's local-STT probe.
+# If audio understanding is ever enabled, do NOT restore this line as-is:
+# install torch from the CPU wheel index
+# (--index-url https://download.pytorch.org/whl/cpu) and keep CUDA out.
+RUN pip install --no-cache-dir --break-system-packages \
+      websockets nano-pdf
+
+# ---- Layer 6: Go-built skills (copied from builder) ----
+# 10 binaries built in the builder stage — Go toolchain itself stays out
+# of the final image, saving ~600 MB.
+COPY --from=builder /out/bin/ /usr/local/bin/
+
+# REMOVED 2026-09-07: the `obsidian-cli` symlink onto notesmd-cli, and the
+# notesmd-cli build that fed it (see the builder stage). The comment here used
+# to say the `obsidian` skill requires bin "obsidian-cli" — it does not, and at
+# no tag we have run did it. At v2026.8.1-isol8.3 that skill's frontmatter is
+# `requires: { bins: ["obsidian"] }`, and its body says outright "Do not rely on
+# third-party `obsidian-cli` unless user explicitly asks for it". The only other
+# consumer, extensions/memory-wiki, calls resolveCommand("obsidian") and warns
+# `obsidian-cli-missing` when THAT is absent. So the alias never made anything
+# eligible; it just shipped a binary. The real `obsidian` CLI cannot be
+# installed here anyway — it is a component of the Obsidian desktop app and
+# talks to the running app over IPC.
+
+# ---- Layer 7: (REMOVED) himalaya ----
+# Deleted 2026-09-07. It installed to /usr/local/bin/himalaya, which satisfied
+# the bundled `himalaya` skill (requires.bins ["himalaya"]) and put an IMAP/SMTP
+# mail CLI in every agent's prompt — while apps/infra/openclaw/skills/lightbulb
+# spends prose telling the same agent that "Lightbulb does not use Gmail,
+# himalaya, or an OpenClaw email channel". Agent mail on this platform is
+# {agent}@{slug}.thelightbulb.company over SES (ses-inbound-stack + the
+# agent-mail scripts), and an owner watching Friday hunt for a mail account
+# through himalaya is a logged incident (core/services/onboarding_brief.py).
+# It was also the only network-fetched binary in this file with no version, no
+# checksum and no smoke test: `curl | sh` of an install script on the upstream
+# repo's `master` branch. Removing it removes both the misdirection and the
+# unpinned fetch at once.
+
+# ---- Layer 8: Node packages ----
+# Globals install with --ignore-scripts (faster, no build deps) EXCEPT the three
+# below that fetch a native binary in postinstall (claude-code, xurl, opencode).
+# qmd was previously installed here; removed 2026-05-02. qmd's
+# better-sqlite3 store on EFS deadlocked the gateway's V8 main thread
+# (`rpc_wait_bit_killable` — Linux NFS client retries forever).
+# We now use openclaw's `builtin` memory backend (flat MEMORY.md
+# files), which doesn't open a sqlite connection on EFS at all.
+ENV NPM_CONFIG_PREFIX=/usr/local
+# @paperclipai/mcp-server is the Friday<->Paperclip MCP and is required on
+# EVERY container. Bake it as a global bin (`paperclip-mcp-server` on PATH) so
+# that once this image tag is rolled out, config.py can switch the seeded
+# command from `npx -y @paperclipai/mcp-server` to the bare `paperclip-mcp-server`
+# — instant spawn, off the per-run npx connect storm, and tools that load
+# reliably (a bare command with no installed bin silently exposes zero tools).
+# The config switch is deferred to a follow-up so it only lands after this baked
+# tag is live. Pinned like the other bakes.
+# mcporter exposes any configured MCP server's tools as deterministic CLI
+# commands (`mcporter call <server>.<tool>`). Lobster workflow steps cannot
+# invoke MCP tools — those are surfaced only to the agent LLM's tool loop — so
+# this is the bridge that lets pipelines reach hosted-OAuth MCP servers (e.g.
+# Attio) the same way they call any other CLI. Baked as a global bin to stay
+# off the per-run npx connect storm; its auth comes from a pre-seeded vault.
+# The five formerly-unpinned globals below are now pinned too, to what npm
+# resolved on 2026-09-07 (freeze, not bump) — an unpinned global meant a rebuild
+# of the same commit could ship a different clawhub or gemini-cli than the tag
+# it was built from. Bump with `npm view <pkg> version`.
+RUN npm i -g --ignore-scripts \
+      clawhub@0.23.3 openai@7.10.0 \
+      @steipete/oracle@0.19.0 @steipete/summarize@0.21.13 \
+      @google/gemini-cli@0.58.0 \
+      mcporter@0.12.0 \
+      @paperclipai/mcp-server@2026.529.0
+
+# Claude Code: the ACP coding harness for bedrock_claude owners (see backend
+# _build_bedrock_acp_harness_env). Its platform binary arrives via a postinstall
+# hook, so like xurl and opencode below it stays outside the --ignore-scripts
+# install above — with scripts skipped the `claude` wrapper is present but every
+# invocation dies with "claude native binary not installed", so the harness could
+# never launch. The smoke test fails the build if the binary didn't materialize.
+# 2026.8.1 BASE / npm allowScripts: the base image now runs
+# `npm install --global npm@latest`, and the newer npm BLOCKS install scripts by
+# default unless the package is named in --allow-scripts:
+#
+#   npm warn install-scripts 1 package had install scripts blocked because they
+#   are not covered by allowScripts: <pkg> (postinstall: ...)
+#
+# The three layers below deliberately skip the --ignore-scripts global install
+# above precisely because they need their postinstall to fetch a platform-native
+# binary. Without --allow-scripts the JS wrapper installs and every invocation
+# then dies ("claude native binary not installed", "xurl binary not found").
+# Each layer keeps its own smoke test, which is what fails the build if the
+# binary did not materialise -- this cannot regress silently.
+# xurl downloads its native Go binary in npm postinstall. Keep it outside the
+# --ignore-scripts global install above; otherwise the JS wrapper is present but
+# every `xurl` invocation fails with "xurl binary not found".
+RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
+
+# Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
+# real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral
+# container FS, wiped on every task restart. Point them at the per-user EFS mount instead,
+# so a workflow's queues/counters/cursors survive restarts and are shared with the agent
+# loop (same uid, same EFS). This is why no custom KV tool is needed: the engine already
+# ships durable state; it just needs to be aimed at EFS. (`fast-io` is fictional — it's the
+# Fast.io SaaS, never wired into mcp.servers — so workflows use `state.*`, not `fast-io`.)
+ENV LOBSTER_STATE_DIR=/home/node/.openclaw/lobster-state
+
+# ---- Layer 9: (REMOVED) Playwright Chrome-for-Testing binary ----
+# History, because this WILL come up again: PR #596 baked Playwright's
+# Chrome-for-Testing here when the image had NO browser at all (upstream
+# gates its install behind OPENCLAW_INSTALL_BROWSER, empty by default) --
+# one install then served BOTH the browser tool and Playwright-based MCPs,
+# and pre-baking closed a ~6-minute first-use download (#443). Real Chrome
+# (layer 9b) now serves the browser tool, whose Playwright usage is
+# connectOverCDP ONLY -- a library call against the already-running Chrome
+# that never needs the CfT binary (playwright-core the LIBRARY still ships
+# in /app; only the ~170MB browser download is gone).
+#
+# What this costs, knowingly accepted (2026-08-17): an owner who connects a
+# Playwright-based MCP (none ship by default; marketplace hires can carry
+# them, e.g. Resy-style) gets Playwright's own runtime download at first
+# use, re-fetched per task restart since ~/.cache is ephemeral. If such
+# MCPs become common, re-add the bake rather than debugging slow first-runs.
+#
+# The GUI libs the old --with-deps installed now arrive as the Chrome deb's
+# dependencies; the FONTS it installed do NOT (the deb only Recommends
+# them and layer 9b installs with --no-install-recommends), so they are
+# installed explicitly in 9b below -- without them Chrome renders tofu.
+
+# ---- Layer 10: externalized channel plugins (Slack, Discord) ----
+# Upstream OpenClaw externalized these channel plugins out of the core image
+# (@openclaw/slack and @openclaw/discord are pruned from the published ghcr
+# image, which keeps only the still-bundled channels like telegram). Without
+# the plugin present on a discovery root, the gateway hard-throws
+# "Channel is unavailable: <id>" at send time for the channels we enable in
+# openclaw.json. We bake them into the stock plugin root /app/dist/extensions/<id>
+# so they are root-owned (the loader rejects any plugin dir not owned by uid 0)
+# and auto-activate from the existing channels.<id>.enabled config. A runtime
+# `openclaw plugins install` would also work — it installs into the per-user EFS
+# plugin root as uid 1000, which the loader accepts there — but baking avoids the
+# per-container download/install cost on the constrained box and keeps the plugin
+# present uniformly across the whole fleet. Each plugin's runtime deps are co-located
+# under its own node_modules so node resolution finds them. Versions are pinned
+# to the host OpenClaw version; bump them in lockstep with the FROM tag /
+# openclaw-version.json#upstream.
+RUN set -eux; \
+    for P in slack discord; do \
+      mkdir -p "/opt/stage-$P"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.9.3"; \
+      mkdir -p "/app/dist/extensions/$P"; \
+      cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
+      mkdir -p "/app/dist/extensions/$P/node_modules"; \
+      cp -R /opt/stage-$P/node_modules/. "/app/dist/extensions/$P/node_modules/"; \
+      rm -rf "/app/dist/extensions/$P/node_modules/@openclaw/$P"; \
+      rm -rf "/opt/stage-$P"; \
+    done; \
+    chown -R root:root /app/dist/extensions/slack /app/dist/extensions/discord
+
+# ---- Layer 11: externalized Amazon Bedrock provider plugin ----
+# Upstream externalized the Bedrock provider out of the core image at this
+# version: the gateway logs "plugin not installed: amazon-bedrock" and every
+# Bedrock-backed run fails with "No API provider registered for api:
+# bedrock-converse-stream". A runtime `openclaw plugins install` would also work
+# (into the per-user EFS plugin root as uid 1000), but we bake it root-owned into
+# the stock plugin root to avoid the per-container install cost and keep it
+# uniform across the fleet. The npm package
+# is `@openclaw/amazon-bedrock-provider`; the plugin id (and the discovery dir
+# the loader keys on) is `amazon-bedrock`. anthropic/openai providers stay
+# bundled in the base image, so only Bedrock needs baking. Pin in lockstep with
+# the FROM tag / openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-amazon-bedrock; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.9.3"; \
+    mkdir -p /app/dist/extensions/amazon-bedrock; \
+    cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
+    mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \
+    cp -R /opt/stage-amazon-bedrock/node_modules/. /app/dist/extensions/amazon-bedrock/node_modules/; \
+    rm -rf /app/dist/extensions/amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider; \
+    rm -rf /opt/stage-amazon-bedrock; \
+    chown -R root:root /app/dist/extensions/amazon-bedrock
+
+# ---- Layer 12: externalized lobster workflow plugin ----
+# Upstream externalized the `lobster` workflow engine out of the core image in
+# the same wave as the channel/provider plugins above: the gateway logs
+# "plugin not installed: lobster" and every `.lobster` pipeline fails to run.
+# Lobster is the execution engine behind the Atlas recruiter seed agent (whose
+# entire methodology is .lobster pipelines) and any agent built on pipelines,
+# and core/containers/config.py enables it on every container via
+# workflow_plugin_entries(), so it must be present fleet-wide. The npm package
+# and plugin id are both `lobster`; its discovery dir is /app/dist/extensions/lobster.
+# (`llm-task`, the other workflow extension we enable, stays bundled in the base
+# image, so only lobster needs baking.) A runtime `openclaw plugins install` would
+# also work, but bake it root-owned for the same reasons as the layers above,
+# pinned in lockstep with the FROM tag / openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-lobster; \
+    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.9.3"; \
+    mkdir -p /app/dist/extensions/lobster; \
+    cp -R /opt/stage-lobster/node_modules/@openclaw/lobster/. /app/dist/extensions/lobster/; \
+    mkdir -p /app/dist/extensions/lobster/node_modules; \
+    cp -R /opt/stage-lobster/node_modules/. /app/dist/extensions/lobster/node_modules/; \
+    rm -rf /app/dist/extensions/lobster/node_modules/@openclaw/lobster; \
+    rm -rf /opt/stage-lobster; \
+    chown -R root:root /app/dist/extensions/lobster
+
+# ---- Layer 12b: externalized web-search provider (parallel) ----
+# OpenClaw 6.10 stopped auto-selecting a keyless web_search provider, so agents
+# that call the native web_search tool fail with "disabled or no provider"
+# unless one is explicitly configured. core/containers/config.py sets
+# tools.web.search.provider="parallel-free" + plugins.entries.parallel.enabled
+# on every container; parallel-free is Parallel's keyless hosted Search MCP
+# (search.parallel.ai/mcp), reliable from Fargate (unlike the rate-limited
+# DuckDuckGo fallback). The npm package is `@openclaw/parallel-plugin`; its
+# plugin id + discovery dir are `parallel`. Bake it root-owned, pinned in
+# lockstep with the FROM tag, same as the layers above.
+RUN set -eux; \
+    mkdir -p /opt/stage-parallel; \
+    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.9.3"; \
+    mkdir -p /app/dist/extensions/parallel; \
+    cp -R /opt/stage-parallel/node_modules/@openclaw/parallel-plugin/. /app/dist/extensions/parallel/; \
+    mkdir -p /app/dist/extensions/parallel/node_modules; \
+    cp -R /opt/stage-parallel/node_modules/. /app/dist/extensions/parallel/node_modules/; \
+    rm -rf /app/dist/extensions/parallel/node_modules/@openclaw/parallel-plugin; \
+    rm -rf /opt/stage-parallel; \
+    chown -R root:root /app/dist/extensions/parallel
+
+# ---- Layer 12c: externalized web-fetch fallback provider (firecrawl) ----
+# OpenClaw's keyless Firecrawl fetch provider is the Readability-failure
+# fallback that tools.web.fetch selects: core/containers/config.py sets
+# tools.web.fetch.provider="firecrawl" + plugins.entries.firecrawl.enabled on
+# every container. Like the parallel provider above, firecrawl is externalized
+# out of the base image — but it also ships ONLY on the npm `beta` dist-tag (no
+# stable release-line dist), which is the spec OpenClaw's doctor resolves for
+# this plugin id. With firecrawl configured but absent from every discovery
+# root, OpenClaw 7.2's doctor-on-boot npm-installs
+# `@openclaw/firecrawl-plugin@beta` into the per-user EFS plugin root on EVERY
+# cold start — measured +2-4 min of dead boot time (dev log gap: `Installed
+# missing configured plugin "firecrawl" from @openclaw/firecrawl-plugin@beta`).
+# Baking it root-owned into the stock plugin root makes the doctor find the
+# plugin id already present and skip the install fleet-wide (the loader rejects
+# any plugin dir not owned by uid 0; it auto-activates from
+# plugins.entries.firecrawl.enabled). The npm package is
+# `@openclaw/firecrawl-plugin`; its plugin id + discovery dir are `firecrawl`.
+# We pin the stable 2026.9.3 dist explicitly — the same dist every other baked
+# plugin pins to on this host — so it stays in lockstep with the FROM
+# tag rather than tracking whatever `@beta` resolves to on the day of the build;
+# re-resolve `npm view @openclaw/firecrawl-plugin@beta version` on each base
+# bump. Bake it root-owned, same as the layers above.
+RUN set -eux; \
+    mkdir -p /opt/stage-firecrawl; \
+    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.9.3"; \
+    mkdir -p /app/dist/extensions/firecrawl; \
+    cp -R /opt/stage-firecrawl/node_modules/@openclaw/firecrawl-plugin/. /app/dist/extensions/firecrawl/; \
+    mkdir -p /app/dist/extensions/firecrawl/node_modules; \
+    cp -R /opt/stage-firecrawl/node_modules/. /app/dist/extensions/firecrawl/node_modules/; \
+    rm -rf /app/dist/extensions/firecrawl/node_modules/@openclaw/firecrawl-plugin; \
+    rm -rf /opt/stage-firecrawl; \
+    chown -R root:root /app/dist/extensions/firecrawl
+
+# ---- Layer 12d: first-party Isol8 marketplace tool plugin ----
+# Read-only agent tools (marketplace_search, recommend_agents) so an agent can
+# name real marketplace listings instead of waving at a URL. Enabled fleet-wide
+# via plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
+#
+# Second first-party plugin in-repo, same shape as plugins/aws-exec-profile
+# (Layer 14): the committed dist/ IS the baked artifact, so this is a plain
+# COPY — no npm install and no build step in the image. Rebuilding dist/ is a
+# local `npm run build`, and the plugin's own .gitignore overrides the repo-root
+# dist/ ignore so it stays tracked.
+#
+# It ships NO node_modules of its own. Its two imports resolve from the host by
+# self-referencing the `openclaw` package from /app — `openclaw/plugin-sdk/
+# tool-plugin` exactly as aws-exec-profile does, and `typebox` from
+# /app/node_modules (openclaw depends on typebox 1.3.18, which the plugin pins
+# in lockstep). The `openclaw` devDependency exists only to typecheck the build
+# locally and is ~460MB; it must never reach the image, which this COPY-only
+# layer guarantees structurally.
+#
+# Root-owned like every other baked plugin — the loader rejects any plugin dir
+# not owned by uid 0. Enabled fleet-wide via
+# plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
+COPY plugins/lightbulb-marketplace /app/dist/extensions/lightbulb-marketplace
+RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
+
+# ---- Layer 12e: native Lightbulb multiplayer channel ----
+# Dependency-free first-party channel plugin. The committed dist/ is the baked
+# artifact; its public plugin-sdk imports resolve from /app via Layer 17.
+COPY --chown=root:root plugins/lightbulb-channel /app/dist/extensions/lightbulb-channel
+
+# ---- Layer 13b: tokenjuice exec-output compaction plugin ----
+# Official @openclaw plugin that registers agentToolResultMiddleware compacting
+# noisy `exec`/`bash` tool results AFTER the command runs, before the result
+# re-enters the agent session. Compaction is deterministic rule-driven
+# reducers (no LLM aux calls); exact file-content reads stay raw and unsafe
+# mixed command sequences pass through untouched, so commands, exit codes,
+# and semantics are never altered. Every compacted token is tokens we don't
+# pay for on the managed-Bedrock/trial paths (bedrock-gate meters input
+# tokens) and context-window pressure the size-based pruning patch doesn't
+# have to absorb. Enabled fleet-wide via plugins.entries.tokenjuice
+# (core/containers/config.py workflow_plugin_entries()); its configSchema is
+# strict-empty, so the entry is enable-only. Not bundled in the published
+# base image (the release build passes no OPENCLAW_EXTENSIONS), so bake it
+# root-owned like the layers above. Pin in lockstep with the FROM tag /
+# openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-tokenjuice; \
+    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.9.3"; \
+    mkdir -p /app/dist/extensions/tokenjuice; \
+    cp -R /opt/stage-tokenjuice/node_modules/@openclaw/tokenjuice/. /app/dist/extensions/tokenjuice/; \
+    mkdir -p /app/dist/extensions/tokenjuice/node_modules; \
+    cp -R /opt/stage-tokenjuice/node_modules/. /app/dist/extensions/tokenjuice/node_modules/; \
+    rm -rf /app/dist/extensions/tokenjuice/node_modules/@openclaw/tokenjuice; \
+    rm -rf /opt/stage-tokenjuice; \
+    chown -R root:root /app/dist/extensions/tokenjuice
+
+# ---- Layer 13c: Gen Sage ADR safety plugin + fleet ~/.sage config ----
+# Third-party (Gen Digital, github.com/gendigitalinc/sage) Agent Detection &
+# Response layer: intercepts exec/read/write/edit/web_fetch/apply_patch tool
+# calls BEFORE execution and allow/ask/denies against ~300 local YAML threat
+# rules (reverse shells, credential exfil, persistence, typosquats) plus
+# cloud URL/file/package reputation. Channel-exposed agents (Telegram/Slack/
+# Discord senders) are an untrusted-input surface; Sage is the only guard
+# between an injected "run this curl|bash" and the container's exec: full.
+# UNLIKE the @openclaw layers above this is versioned independently of the
+# host — bump deliberately, not on base bumps (compat: pluginApi >=2026.3.28).
+# Plugin id (and discovery dir) is `sage-openclaw`; configSchema is
+# strict-empty so the plugins.entries entry is enable-only, and ALL behavior
+# config lives in ~/.sage/config.json. /home/node/.sage is NOT under the
+# per-user EFS mount (only ~/.openclaw is), so the baked config below is the
+# fleet-wide policy. It is the product of a rule-by-rule audit of the v0.11.0
+# threat YAMLs against what our agents legitimately do (2026-07-17); the
+# levers are preset-only thresholds + per-rule disabled_threats:
+#   - sensitivity=relaxed: instant-deny only >=0.95-confidence rules — 13
+#     Linux-relevant, all attack-shaped (curl|bash, rm -rf /, mkfs,
+#     base64|sh, /etc/shadow, authorized_keys tampering, PEM-in-content,
+#     unicode smuggling). 0.70-0.95 verdicts return requireApproval with
+#     timeoutBehavior:"deny": they ride the host plugin-approval broker
+#     (exec-approval delivery rails; the agent's own LLM canNOT approve —
+#     older conversation-relay docs are stale) and FAIL CLOSED after the
+#     120s host default when nobody answers, the normal case for unattended
+#     Paperclip routine/heartbeat runs. That ask band is reverse shells /
+#     exfil chains / obfuscation — patterns legit agent work essentially
+#     never emits.
+#   - NEVER set balanced/paranoid fleet-wide: their 0.50-0.70 band includes
+#     "export of credential env var" + "reading credential file" (conf 0.60)
+#     — our seeded Paperclip flow exports PAPERCLIP_API_KEY from
+#     paperclip-claimed-api-key.json on EVERY write, so balanced would
+#     stall+deny the entire Teams surface fleet-wide.
+#   - disabled_threats CLT-CRED-001/006 (raw API-key-string patterns,
+#     match_on command+content, conf 0.80/0.92): they fire on a BYOK owner's
+#     own sk-/AKIA/ghp_/sk_live keys being written to .env or curl'd —
+#     routine, user-visible work. The exfil-SHAPED rules (dotfile-piped-to-
+#     curl, env-dump-and-send) stay active, so injection exfil is still
+#     covered without punishing legitimate key handling.
+#   - community_iq=false (never ship tenant detection metadata to Gen's
+#     cloud); pi_check left default-off (runtime ML model download — wrong
+#     for this box). URL/file/package cloud reputation stays ON (known-
+#     malicious URL/package blocking; sends URLs/package names — not file
+#     contents — to Gen's reputation API).
+# Runtime writes audit logs to ~/.sage/audit.jsonl, hence chown to node
+# (uid 1000); logs are ephemeral with the task, like the rest of overlay-fs.
+RUN set -eux; \
+    mkdir -p /opt/stage-sage; \
+    npm install --prefix /opt/stage-sage "@gendigital/sage-openclaw@0.11.0"; \
+    mkdir -p /app/dist/extensions/sage-openclaw; \
+    cp -R /opt/stage-sage/node_modules/@gendigital/sage-openclaw/. /app/dist/extensions/sage-openclaw/; \
+    mkdir -p /app/dist/extensions/sage-openclaw/node_modules; \
+    cp -R /opt/stage-sage/node_modules/. /app/dist/extensions/sage-openclaw/node_modules/; \
+    rm -rf /app/dist/extensions/sage-openclaw/node_modules/@gendigital/sage-openclaw; \
+    rm -rf /opt/stage-sage; \
+    chown -R root:root /app/dist/extensions/sage-openclaw
+COPY sage/config.json /home/node/.sage/config.json
+RUN chown -R 1000:1000 /home/node/.sage
+
+# ---- Layer 14: baked aws-exec-profile plugin ----
+# Hand-written, dependency-free OpenClaw plugin (lives in-repo, NOT an npm
+# package). Registers a `resolve_exec_env` hook that injects
+# AWS_PROFILE=lightbulb-connector into the agent's exec'd commands ONLY when the
+# owner's connector AWS profile has been materialized at AWS_CONFIG_FILE — the
+# node/harness process (and Bedrock's in-process AWS SDK) keeps the host ECS
+# task-role identity. COPY lands it root-owned in the stock plugin root (the
+# loader rejects any plugin dir not owned by uid 0); it auto-activates from
+# plugins.entries.aws-exec-profile.enabled (set by core/containers/config.py).
+# Its only import is the host SDK (`openclaw/plugin-sdk/plugin-entry`), resolved
+# by self-referencing the `openclaw` package from /app — same mechanism the
+# baked extensions above use — so it ships no node_modules of its own.
+COPY plugins/aws-exec-profile /app/dist/extensions/aws-exec-profile
+RUN chown -R root:root /app/dist/extensions/aws-exec-profile
+
+# ---- Layer 14b: baked paperclip-exec-creds plugin ----
+# Same shape and same rationale as the layer above, for a different secret.
+# Registers a `resolve_exec_env` hook that injects this AGENT's PAPERCLIP_*
+# credentials into its exec'd commands only, read per-agent from
+# workspace-<agentId>/paperclip-claimed-api-key.json (the file
+# core/services/friday_identity.py seeds).
+#
+# WHY: the seeded AGENTS.md used to instruct the agent to
+# `export PAPERCLIP_API_KEY=$(jq -r .token …)` before every Paperclip call,
+# because `export` does not survive between exec calls. The model therefore
+# re-materialized the token every turn and printed it into its visible
+# reasoning — a long-lived key in the owner's chat transcript, which persists
+# to SQLite and replicates to S3. Injecting here means the model never holds
+# the token at all, so it cannot echo what it does not have.
+COPY plugins/paperclip-exec-creds /app/dist/extensions/paperclip-exec-creds
+RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
+
+# ---- Layer 15: bundled Paperclip skill ----
+# The `paperclip` skill is the agent's operating manual for the Paperclip
+# control plane — checking assignments, updating issues, posting comments,
+# approvals, and (critically) managing ROUTINES, the single governed home for
+# recurring agent work now that the in-container `cron` tool is denied.
+# OpenClaw auto-discovers bundled skills at /app/skills/<name>/SKILL.md (see
+# the fork's src/skills/loading), so we COPY the vendored skill there. COPY
+# lands it root-owned, matching /app and the externalized-plugin bakes above.
+# Vendored from the Paperclip skills-catalog at the 2026.6 (June) line, kept in
+# step with the deployed Paperclip backend in paperclip-version.json (NOT with
+# the @paperclipai/mcp-server bin baked above, which is unwired and pinned
+# separately). NOTE: this vendored copy carries a deliberate Isol8 write-path
+# customization — every API write goes through skills/paperclip/scripts/paperclip-api.sh
+# (jq-built, string-safe bodies) instead of hand-written jq/inline JSON, because
+# a model-emitted malformed body (e.g. `{body:}`) once silently failed a write
+# and stalled a prod run forever. When re-vendoring from upstream, re-apply that
+# helper mandate (see the SKILL.md header comment) rather than letting it revert.
+# The skill drives Paperclip's REST API directly; each agent
+# authenticates with its OWN company-scoped key, loaded from a per-agent
+# workspace file (~/.openclaw/workspaces/{agent_id}/paperclip-claimed-api-key.json,
+# staged at provision — see core/services/{paperclip_api_key,friday_identity}).
+# The agent's AGENTS.md seed exports PAPERCLIP_API_KEY / API_URL / COMPANY_ID /
+# AGENT_ID from that file itself; they are NOT container-wide task env.
+COPY skills/paperclip /app/skills/paperclip
+
+# ---- Layer 16: bundled Lightbulb platform skill ----
+# The `lightbulb` skill is every agent's authoritative reference for the
+# platform itself — UI surfaces (incl. the Integrations tab), marketplace
+# mechanics, plans/providers, the Paperclip org model, and hard boundaries.
+# Baked (not seeded) so the WHOLE fleet — Friday, Atlas, scaffolded
+# specialists, marketplace hires — gets identical, current platform
+# knowledge on every image promotion, with no per-agent seeding and no
+# reprovision. Dynamic per-owner state deliberately lives OUTSIDE the image
+# in ~/.openclaw/lightbulb-facts.json (written by the backend — see
+# core/services/owner_facts.py); the skill points agents at it.
+# Authored in-repo (not vendored). Keep in lockstep with the anchors listed
+# in the SKILL.md maintenance header.
+COPY skills/lightbulb /app/skills/lightbulb
+
+# Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
+# Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still
+# honors is /usr/share/google-chrome/extensions/<ID>.json pointing at a local .crx —
+# Chrome installs it into the (ephemeral, /tmp) profile on every launch. No flag, no
+# policy, no server. popups-to-tabs folds every new window (window.open OAuth popups)
+# into the main window as a tab, so the kiosk WM never hides one window behind another
+# in the live view. The JSON filename IS the extension id (derived from the packing key).
+COPY chrome-extensions/popups-to-tabs.crx /opt/isol8/chrome-extensions/popups-to-tabs.crx
+COPY chrome-extensions/popups-to-tabs.external.json /usr/share/google-chrome/extensions/fdojippeikcjnafolmkpdgfcjlbnalpo.json
+RUN chmod 0644 /opt/isol8/chrome-extensions/popups-to-tabs.crx \
+      /usr/share/google-chrome/extensions/fdojippeikcjnafolmkpdgfcjlbnalpo.json
+
+
+# ---- Layer 17: resolve the `openclaw` peer dependency for baked plugins ----
+# @openclaw/* plugins declare `openclaw` (the fork core package; its package.json
+# is /app/package.json, which exports plugin-sdk/*) as a PEER dependency, so the
+# `npm install @openclaw/<p>` steps above never install it. The fork's own
+# bundled plugins under /app/extensions are pnpm workspace members and get
+# `openclaw` linked automatically; our npm-baked plugins under
+# /app/dist/extensions do NOT — so any baked-plugin code importing `openclaw` /
+# `openclaw/plugin-sdk/*` throws ERR_MODULE_NOT_FOUND. A plugin's main entry
+# doesn't import it eagerly (runtime plugin load succeeds), but its doctor
+# contribution does — e.g. the discord plugin's security-doctor imports
+# `openclaw/plugin-sdk/channel-policy` — which crashed the boot-time
+# `openclaw doctor --fix` (startupCommand Step C3) before it could migrate legacy
+# per-workspace state, leaving every agent failing the un-migrated-state gate.
+# Symlink the `openclaw` package root (/app) into each baked plugin's node_modules
+# so the peer resolves to /app/package.json's exports. Root-owned to match the
+# plugin dirs (the loader rejects non-root plugin trees).
+RUN set -eux; \
+    for d in /app/dist/extensions/*/; do \
+      [ -d "$d" ] || continue; \
+      mkdir -p "${d}node_modules"; \
+      ln -sfn /app "${d}node_modules/openclaw"; \
+      chown -h root:root "${d}node_modules/openclaw"; \
+    done
+
+
+# ---- Layer 18: pre-populated V8 compile cache ----
+# The fork enables Node's compile cache on every CLI start
+# (src/entry.compile-cache.ts) but defaults its base to os.tmpdir() —
+# container-ephemeral, so every cold start recompiles the whole import graph
+# (doctor pays it first, then the gateway process pays it again). The cache
+# subdirectory key is <base>/openclaw/<pkg version>/<package.json mtimeMs-size>
+# — all three components frozen at image build — so a cache populated HERE
+# lands at the exact path both boot-time processes resolve at runtime. The
+# warm run is a throwaway-state doctor pass (imports the state-migration,
+# config-snapshot, and plugin-plan graphs); runtime processes add whatever it
+# missed. Must run AFTER the last /app mutation (Layer 17) so compiled
+# modules match what ships.
+ENV NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
+# The warm pass runs the real `doctor` so the cache covers what the boot
+# chain actually pays: the state-migration, config-snapshot and plugin-plan
+# graphs, not just the CLI entry. It briefly holds a ~760MB heap. That was
+# survivable on a dedicated runner but killed buildkit when two builds
+# collided on the shared self-hosted VM (2026-08-12 03:55); CI now runs on
+# hosted runners with an isolated VM per job, and the concurrency group below
+# keeps two OpenClaw builds from overlapping, so the peak has room. Bounded
+# by a 120s timeout and `|| true` — a cold cache is a slow boot, never a
+# failed build. Node validates entries per file, so a partial cache is a
+# partial win, never a wrong load.
+RUN set -eux; \
+    mkdir -p /var/tmp/openclaw-compile-cache; \
+    OPENCLAW_STATE_DIR=/tmp/compile-warm HOME=/tmp/compile-warm-home \
+      timeout 120 node /app/openclaw.mjs doctor --non-interactive < /dev/null > /dev/null 2>&1 || true; \
+    rm -rf /tmp/compile-warm /tmp/compile-warm-home; \
+    chown -R node:node /var/tmp/openclaw-compile-cache
+
+# ---- Litestream + local-SQLite boot chain ----
+# Every environment runs this chain — the per-env storage gate was removed once
+# dev proved the layout, so any tag pinned in openclaw-version.json MUST be
+# built from a commit containing apps/infra/openclaw/local-sqlite/. Version pinned
+# with the checksum from the release's published checksums.txt; v0.5.15 is
+# the stabilization release of the LTX line (silent-replication fix #1037
+# landed in v0.5.9, ECS container-credential fix in v0.5.11).
+ARG LITESTREAM_VERSION=0.5.15
+ARG LITESTREAM_SHA256=2b7d6c6b8cfefab545e632bf8a77b5d1e1a95ff9fd0d2754a67c8a046391125c
+RUN set -eux; \
+    curl -fsSL -o /tmp/litestream.tgz \
+      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-arm64.tar.gz"; \
+    echo "${LITESTREAM_SHA256}  /tmp/litestream.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream; \
+    rm /tmp/litestream.tgz; \
+    litestream version
+COPY local-sqlite/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-boot.sh
+COPY local-sqlite/isol8-local-sqlite-app.sh /usr/local/bin/isol8-local-sqlite-app.sh
+COPY local-sqlite/isol8-litestream.yml /etc/isol8-litestream.yml
+RUN chmod 0755 /usr/local/bin/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-app.sh
+
+# ---- Layer 12h: Intuit's official QuickBooks MCP server (stdio, vendor build) ----
+# Built from source at a PINNED COMMIT because Intuit publishes no npm package —
+# package.json calls itself @qboapi/qbo-mcp-server 0.0.1 and the registry 404s it.
+# The pin is not a formality: the tip we pin IS PR #111 (2026-08-10), which added
+# QUICKBOOKS_TOKEN_STORE_PATH — the host-env override the whole integration rests
+# on. Without it their client resolves .env next to the compiled module, which on
+# this image is ephemeral container disk, so every task restart would lose the
+# rotated refresh token and force the owner to reconnect. Moving this pin means
+# re-reading src/clients/quickbooks-client.ts to confirm the override survives.
+#
+# NOT patched — this is their build, unmodified. The credential reaches it as a
+# file on the owner's EFS (core/services/credentials/materializers/qbo_dotenv.py);
+# openclaw.json carries only the path. An env var cannot be used: OpenClaw spawns
+# stdio servers via the MCP SDK's getDefaultEnvironment(), which inherits only
+# [HOME, LOGNAME, PATH, SHELL, TERM, USER].
+#
+# --include=dev is LOAD-BEARING, not belt-and-braces: the base image ships
+# NODE_ENV=production and we inherit it, under which `npm ci` silently omits
+# devDependencies. Their build script is `tsc && shx chmod +x dist/*.js`, so
+# without it the compiler is never installed and the layer dies with exit 127
+# (command not found) rather than anything that names the real cause. Verified
+# by reproducing both halves locally. The prune afterwards takes them back out,
+# so the runtime layer still carries only what the server imports.
+ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
+RUN set -eux; \
+    mkdir -p /opt/quickbooks-mcp; \
+    cd /opt/quickbooks-mcp; \
+    git init -q .; \
+    git remote add origin https://github.com/intuit/quickbooks-online-mcp-server.git; \
+    git fetch -q --depth 1 origin "$QUICKBOOKS_MCP_COMMIT"; \
+    git checkout -q FETCH_HEAD; \
+    rm -rf .git; \
+    npm ci --include=dev --ignore-scripts; \
+    npm run build; \
+    npm prune --omit=dev; \
+    test -f /opt/quickbooks-mcp/dist/index.js; \
+    chown -R root:root /opt/quickbooks-mcp
+
+# ---- /home/node ownership ----
+# The gateway runs as uid 1000: container-stack.ts boots as root (it has to —
+# the ECS ephemeral volumes materialise root:root) and then hands the gateway
+# over with `setpriv --reuid=1000`. So nothing in that user's HOME may ship
+# root-owned, or the gateway cannot write it.
+#
+# Build steps run as root, but with HOME=/root — which is why npm's cache
+# lands in /root/.npm and never here. What DOES land root-owned is anything a
+# COPY or a base-image step creates under /home/node (the `COPY sage/config.json`
+# above is exactly that, hence its own chown, and the base's Playwright branch
+# does the same to .cache whenever OPENCLAW_INSTALL_BROWSER is set). Fix those
+# in the layer rather than repairing them on every container boot: the boot has
+# no idea what the image baked, so the repair there was a blind sweep.
+#
+# maxdepth 1: the entries are dotfiles and directory inodes, so this is metadata
+# only — never a recursive copy-up of a large tree into a new layer.
+# .openclaw is excluded on purpose. In the image it is an empty node-owned
+# mountpoint, but at runtime it IS the per-user EFS mount, whose ownership comes
+# from the access point's uid squash. The image must never have an opinion there.
+RUN find /home/node -maxdepth 1 -uid 0 ! -name .openclaw -exec chown -h node:node {} +
+
+
+# ---- AgentCore contract server ----
+# AgentCore Runtime runs OUR entrypoint (unlike the harness, which overrides ENTRYPOINT/CMD) and
+# requires a server on 0.0.0.0:8080 with GET /ping and POST /invocations. The gateway itself
+# speaks plain HTTP on 18789, so this process translates the envelope and supervises the
+# gateway. P3 bring-up scope: no /ws relay, no ready/ending callbacks, no prepare-stop yet.
+COPY agentcore/contract-server.mjs /opt/agentcore/contract-server.mjs
+COPY agentcore/boot-layout.sh /opt/agentcore/boot-layout.sh
+RUN chmod 0755 /opt/agentcore/boot-layout.sh
+EXPOSE 8080
+
+# ---- Restore runtime context ----
+USER 1000
+WORKDIR /home/node
+
+CMD ["/opt/agentcore/boot-layout.sh"]

@@ -1,13 +1,17 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView, type SFSymbol } from "expo-symbols";
 import {
   activeTrigger,
   applyCompletion,
   resolveTypedMentions,
+  respondHint,
   searchEmoji,
+  wrapSelection,
+  type MarkdownStyle,
+  type RoomKind,
   type RoomMember,
 } from "@lightbulb/shared";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   ActionSheetIOS,
@@ -35,12 +39,30 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
 import { checkPhoto, useComposerDraft } from "../../lib/composerDraft";
 import type { ComposedMessage } from "../../lib/rooms";
 import { useScaledHeight } from "../../lib/textScale";
+import { hapticSelection } from "../../lib/haptics";
 import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
+import { EmojiPickerSheet } from "./EmojiPickerSheet";
 
 /** Web composer parity: at most four images on one message. */
 const MAX_PHOTOS = 4;
+
+/**
+ * The formatting toolbar, in the web composer's order. Icon-only: a phone has
+ * no room for labels above the keyboard, and these are the glyphs iOS readers
+ * already know from Notes and Mail.
+ */
+const FORMAT_CONTROLS: { style: MarkdownStyle; icon: SFSymbol; label: string }[] = [
+  { style: "bold", icon: "bold", label: "Bold" },
+  { style: "italic", icon: "italic", label: "Italic" },
+  { style: "strike", icon: "strikethrough", label: "Strikethrough" },
+  { style: "code", icon: "chevron.left.forwardslash.chevron.right", label: "Code" },
+  { style: "codeblock", icon: "curlybraces", label: "Code block" },
+  { style: "ul", icon: "list.bullet", label: "Bulleted list" },
+  { style: "ol", icon: "list.number", label: "Numbered list" },
+  { style: "link", icon: "link", label: "Link" },
+];
 
 /**
  * Both springs are CRITICALLY damped (`dampingRatio: 1`) — neither is a
@@ -108,6 +130,8 @@ export function RoomComposer({
   onAbort,
   onTypingChange,
   draftKey,
+  roomKind,
+  runningAgentIds,
 }: {
   members: readonly RoomMember[];
   placeholder: string;
@@ -139,6 +163,10 @@ export function RoomComposer({
    * nothing is kept.
    */
   draftKey: string | null;
+  /** For the "who will answer" line; omitted on surfaces that have no room. */
+  roomKind?: RoomKind;
+  /** Agents mid-run right now — they answer whether or not they are addressed. */
+  runningAgentIds?: readonly string[];
 }) {
   const insets = useSafeAreaInsets();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
@@ -146,6 +174,12 @@ export function RoomComposer({
   const { text, setText } = draft;
   // Null until the field reports a collapsed caret: no caret, no typeahead.
   const [caret, setCaret] = useState<number | null>(null);
+  // The live selection, and a selection we are asking the field to adopt.
+  const selection = useRef({ start: 0, end: 0 });
+  const [pendingSelection, setPendingSelection] = useState<{ start: number; end: number } | null>(
+    null,
+  );
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -183,12 +217,40 @@ export function RoomComposer({
       : [];
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
 
+  // The toolbar wraps whatever is selected, so the whole range is tracked, not
+  // only the collapsed caret the typeahead needs.
   const onSelectionChange = useCallback(
     (event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
       const { start, end } = event.nativeEvent.selection;
+      selection.current = { start, end };
       setCaret(start === end ? start : null);
+      // The native field has caught up with a selection we asked for, so stop
+      // asking — leaving it controlled fights the reader's own cursor.
+      setPendingSelection((pending) =>
+        pending && pending.start === start && pending.end === end ? null : pending,
+      );
     },
     [],
+  );
+
+  /**
+   * Wraps the selection in markdown, the way the web toolbar does — the same
+   * shared `wrapSelection`, so `**bold**` here and there mean the same thing.
+   *
+   * The resulting caret is driven back into the field, which is what makes an
+   * empty selection useful: tapping Bold inserts `****` and leaves the cursor
+   * between the markers, ready to type. It is asked for once and released as
+   * soon as iOS reports it, so the reader's own cursor is never held hostage.
+   */
+  const format = useCallback(
+    (style: MarkdownStyle) => {
+      const { start, end } = selection.current;
+      const next = wrapSelection(text, start, end, style);
+      setText(next.text);
+      setPendingSelection({ start: next.selectionStart, end: next.selectionEnd });
+      hapticSelection();
+    },
+    [text, setText],
   );
 
   // ponytail: the native caret is not driven back, so completing mid-draft
@@ -297,6 +359,9 @@ export function RoomComposer({
       : mentions.length > 32
         ? "Mention at most 32 room members."
         : null;
+  // Who this message will actually reach, by the same rule the backend
+  // dispatches on — so the answer is not a guess the two could disagree about.
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds ?? []);
   const hasContent = !!body || draft.attachments.length > 0;
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather
@@ -393,6 +458,7 @@ export function RoomComposer({
               onTypingChange?.(!!next.trim());
             }}
             onSelectionChange={onSelectionChange}
+            selection={pendingSelection ?? undefined}
             multiline
             editable={!disabled && !sending}
             onFocus={() => {
@@ -404,7 +470,44 @@ export function RoomComposer({
             }}
           />
         </View>
+        {/* Formatting, above the send rail: the selection is right there, and
+            the row scrolls rather than wrapping when the text size grows. */}
+        <ScrollView
+          horizontal
+          keyboardShouldPersistTaps="always"
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.formatRow}
+        >
+          {FORMAT_CONTROLS.map((control) => (
+            <Pressable
+              key={control.style}
+              style={styles.formatButton}
+              onPress={() => format(control.style)}
+              disabled={disabled || sending}
+              hitSlop={4}
+              accessibilityRole="button"
+              accessibilityLabel={control.label}
+            >
+              <SymbolView
+                accessibilityElementsHidden
+                name={control.icon}
+                size={16}
+                tintColor={colors.mute}
+              />
+            </Pressable>
+          ))}
+        </ScrollView>
         <View style={styles.rail}>
+          <Pressable
+            style={styles.railButton}
+            onPress={() => setEmojiOpen(true)}
+            disabled={disabled || sending}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Insert emoji"
+          >
+            <SymbolView accessibilityElementsHidden name="face.smiling" size={18} tintColor={colors.mute} />
+          </Pressable>
           <Pressable
             style={styles.railButton}
             onPress={attach}
@@ -457,11 +560,46 @@ export function RoomComposer({
           )}
         </View>
       </View>
+      {/* Who will answer, under the bar — the last thing read before sending. */}
+      {hint !== "" && (
+        <Text style={styles.hint} maxFontSizeMultiplier={1.6} numberOfLines={2}>
+          {hint}
+        </Text>
+      )}
+      <EmojiPickerSheet
+        visible={emojiOpen}
+        onClose={() => setEmojiOpen(false)}
+        onPick={(emoji) => {
+          const { start, end } = selection.current;
+          setText(`${text.slice(0, start)}${emoji}${text.slice(end)}`);
+          setPendingSelection({
+            start: start + emoji.length,
+            end: start + emoji.length,
+          });
+          setEmojiOpen(false);
+        }}
+      />
     </Reanimated.View>
   );
 }
 
 const styles = StyleSheet.create({
+  formatRow: { flexDirection: "row", gap: spacing.xs, paddingHorizontal: spacing.sm },
+  formatButton: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.md,
+  },
+  hint: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.mute,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs,
+  },
   // A flat bar on the page ground, delineated by one hairline against the
   // timeline above it — not a card floating over it. `borderTopColor` is left
   // to the animated style (it springs on focus); this is only its width.

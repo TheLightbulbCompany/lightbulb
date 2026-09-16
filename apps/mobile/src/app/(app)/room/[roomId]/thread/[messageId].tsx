@@ -302,6 +302,7 @@ export default function ThreadScreen() {
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
         draftKey={composerDraftKey}
+        roomKind={rooms.activeRoom?.kind}
       />
     </KeyboardAvoidingView>
   );

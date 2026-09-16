@@ -222,6 +222,11 @@ function Conversation() {
   }, []);
 
   const runningRun = runs.find((run) => run.state === "running");
+  // An agent already working answers whether or not this message addresses it.
+  const runningAgentIds = useMemo(
+    () => runs.filter((run) => run.state === "running").map((run) => run.agentId),
+    [runs],
+  );
   const agentName = useCallback(
     (agentId: string) =>
       members?.find((member) => member.kind === "agent" && member.id === agentId)?.displayName ??
@@ -463,6 +468,8 @@ function Conversation() {
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
         draftKey={composerDraftKey}
+        roomKind={rooms.activeRoom?.kind}
+        runningAgentIds={runningAgentIds}
       />
     </KeyboardAvoidingView>
   );

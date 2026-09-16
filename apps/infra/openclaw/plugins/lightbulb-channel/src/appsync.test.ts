@@ -33,6 +33,64 @@ describe("ecsCredentialsProvider", () => {
   });
 });
 
+describe("ecsCredentialsProvider on AgentCore (MMDS)", () => {
+  // A microVM has no ECS credential endpoint and no static keys. Without this source the
+  // plugin throws and an agent's reply frames never reach AppSync — the turn runs and the UI
+  // never sees it. Proven necessary in dev 2026-09-16.
+  const mmdsFetch = (overrides: Record<string, any> = {}) =>
+    vi.fn(async (url: string, init?: any) => {
+      if (url.endsWith("/latest/api/token")) {
+        expect(init.method).toBe("PUT");
+        expect(init.headers["X-aws-ec2-metadata-token-ttl-seconds"]).toBe("21600");
+        return overrides.token ?? { status: 200, text: async () => "TOKEN123" };
+      }
+      if (url.endsWith("/security-credentials/")) {
+        expect(init.headers["X-aws-ec2-metadata-token"]).toBe("TOKEN123");
+        return overrides.role ?? { status: 200, text: async () => "lightbulb-dev-agentcore-gw" };
+      }
+      if (url.endsWith("/security-credentials/lightbulb-dev-agentcore-gw")) {
+        expect(init.headers["X-aws-ec2-metadata-token"]).toBe("TOKEN123");
+        return overrides.creds ?? {
+          status: 200,
+          json: async () => ({ AccessKeyId: "AKIA_MMDS", SecretAccessKey: "secret", Token: "sess" }),
+        };
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+  it("resolves the execution role through the token-gated metadata service", async () => {
+    const fetch = mmdsFetch();
+    const provider = ecsCredentialsProvider(() => ({}), fetch as any);
+    expect(await provider()).toMatchObject({ accessKeyId: "AKIA_MMDS", secretAccessKey: "secret", sessionToken: "sess" });
+  });
+
+  it("prefers the ECS endpoint and never touches MMDS when one is present", async () => {
+    const fetch = vi.fn(async () => ({ status: 200, json: async () => ({ AccessKeyId: "ECS", SecretAccessKey: "s" }) }));
+    const provider = ecsCredentialsProvider(() => ({ AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/c" }), fetch as any);
+    expect((await provider()).accessKeyId).toBe("ECS");
+    expect(fetch.mock.calls.every(([u]: any[]) => !String(u).includes("169.254.169.254"))).toBe(true);
+  });
+
+  it("prefers static env keys over MMDS", async () => {
+    const fetch = mmdsFetch();
+    const provider = ecsCredentialsProvider(() => ({ AWS_ACCESS_KEY_ID: "STATIC", AWS_SECRET_ACCESS_KEY: "s" }), fetch as any);
+    expect((await provider()).accessKeyId).toBe("STATIC");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still throws the original error when MMDS is unreachable — we are simply not on a microVM", async () => {
+    const fetch = vi.fn(async () => { throw new Error("connect ECONNREFUSED"); });
+    const provider = ecsCredentialsProvider(() => ({}), fetch as any);
+    await expect(provider()).rejects.toThrow("no AWS credential source");
+  });
+
+  it("throws rather than returning half-credentials when MMDS answers without a token", async () => {
+    const fetch = mmdsFetch({ token: { status: 401, text: async () => "" } });
+    const provider = ecsCredentialsProvider(() => ({}), fetch as any);
+    await expect(provider()).rejects.toThrow("no AWS credential source");
+  });
+});
+
 describe("createFramePublisher", () => {
   it("coalesces up to five events per publish and flushes on the timer", async () => {
     vi.useFakeTimers();

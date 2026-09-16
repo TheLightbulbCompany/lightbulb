@@ -67,19 +67,35 @@ it("does not flicker when dragging into child elements", () => {
   expect(form).not.toHaveAttribute("data-dropping");
 });
 
-it("shows hint for non-image files but does not upload them", async () => {
-  const upload = vi.fn(async () => attachment);
+it("uploads a supported PDF dropped on the composer", async () => {
+  const pdfAttachment: MessageAttachment = { id: "att-pdf", fileName: "doc.pdf", contentType: "application/pdf", size: 3 };
+  const upload = vi.fn(async () => pdfAttachment);
   render(<Harness onUploadAttachment={upload} />);
   const form = screen.getByRole("form", { name: "Message composer" });
   const pdf = new File(["pdf"], "doc.pdf", { type: "application/pdf" });
 
   fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
   expect(form).toHaveAttribute("data-dropping", "true");
-  expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+  expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
 
   fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [pdf] } });
   expect(form).not.toHaveAttribute("data-dropping");
+  await waitFor(() => expect(upload).toHaveBeenCalledWith(pdf));
+  expect(screen.getByText("application/pdf · 3 B")).toBeInTheDocument();
+  expect(await screen.findByText("Ready")).toBeInTheDocument();
+});
+
+it("keeps an unsupported dropped file as an actionable error without uploading it", () => {
+  const upload = vi.fn(async () => attachment);
+  render(<Harness onUploadAttachment={upload} />);
+  const form = screen.getByRole("form", { name: "Message composer" });
+  const executable = new File(["bin"], "setup.exe", { type: "application/x-msdownload" });
+
+  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [executable] } });
+
   expect(upload).not.toHaveBeenCalled();
+  expect(screen.getByText("Unsupported file type. Attach PNG, JPEG, WebP, GIF, or PDF files.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove setup.exe" })).toBeEnabled();
 });
 
 it("external drop target handler uses current onUploadAttachment after re-render", async () => {

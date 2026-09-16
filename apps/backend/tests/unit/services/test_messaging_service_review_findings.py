@@ -1,11 +1,13 @@
 import uuid
 import asyncio
+from io import BytesIO
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import UploadFile
 from core.containers.workspace import Workspace
 from core.services import messaging
-from routers.messaging import get_room_attachment
+from routers.messaging import get_room_attachment, upload_room_attachment
 
 from core.auth import AuthContext
 from core.services.messaging import (
@@ -210,6 +212,24 @@ def test_pdf_validation_accepts_valid_bytes_rejects_spoofed_and_oversized():
     oversized = b"%PDF-1.7\n" + b"0" * (messaging.PDF_MAX_BYTES + 1)
     with pytest.raises(ValueError):
         validate_attachment_bytes("application/pdf", oversized)
+
+
+@pytest.mark.asyncio
+async def test_text_file_upload_reproduces_clear_api_400_at_attachment_validation(monkeypatch):
+    auth = AuthContext(user_id="user", org_id="owner")
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=({"ownerId": "owner"}, {"kind": "human", "id": "user"})),
+    )
+    upload = UploadFile(filename="notes.txt", file=BytesIO(b"hello"), headers={"content-type": "text/plain"})
+
+    with pytest.raises(ApiProblem) as exc_info:
+        await upload_room_attachment("room-1", upload, auth)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.error.code == "INVALID_REQUEST"
+    assert "PNG, JPEG, WebP, GIF, or PDF" in exc_info.value.error.message
 
 
 def test_message_attachment_enforces_per_type_size_cap():

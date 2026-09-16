@@ -72,4 +72,33 @@ describe("RoomImageAttachments", () => {
     expect(within(dialog).queryByRole("button", { name: /next attachment/i })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /previous attachment/i })).not.toBeInTheDocument();
   });
+
+  it("renders a sent PDF as an accessible authenticated file card", async () => {
+    const user = userEvent.setup();
+    const pdf: MessageAttachment = { id: "pdf-1", fileName: "brief.pdf", contentType: "application/pdf", size: 5000 };
+    const authenticatedDownload = vi.fn(async () => new Blob(["%PDF-1.7"], { type: "application/pdf" }));
+    render(<RoomImageAttachments roomId="room-1" attachments={[pdf]} download={authenticatedDownload} />);
+
+    const card = await screen.findByRole("button", { name: "Open brief.pdf" });
+    expect(authenticatedDownload).toHaveBeenCalledWith("room-1", "pdf-1");
+    expect(screen.getByText("PDF · 4.9 KB")).toBeInTheDocument();
+    await user.click(card);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+  });
+
+  it("offers an actionable retry when an authenticated file download fails", async () => {
+    const user = userEvent.setup();
+    const pdf: MessageAttachment = { id: "pdf-1", fileName: "brief.pdf", contentType: "application/pdf", size: 5000 };
+    const authenticatedDownload = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(new Blob(["%PDF-1.7"], { type: "application/pdf" }));
+    render(<RoomImageAttachments roomId="room-1" attachments={[pdf]} download={authenticatedDownload} />);
+
+    await user.click(await screen.findByRole("button", { name: "Retry brief.pdf" }));
+
+    expect(await screen.findByRole("button", { name: "Open brief.pdf" })).toBeEnabled();
+    expect(authenticatedDownload).toHaveBeenCalledTimes(2);
+  });
 });

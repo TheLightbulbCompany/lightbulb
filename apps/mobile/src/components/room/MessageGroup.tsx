@@ -299,8 +299,9 @@ const styles = StyleSheet.create({
   // Web's `.room-message-mentions-me`.
   mentionsMe: { backgroundColor: colors.mentionRowBg, borderRadius: radii.sm },
   head: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  author: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 22, color: colors.ink },
-  time: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
+  // The name gives way (truncates) so the time stays on screen at large text sizes.
+  author: { flexShrink: 1, fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 22, color: colors.ink },
+  time: { flexShrink: 0, fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
   collapsedTime: { marginBottom: 2 },
   body: { paddingLeft: MESSAGE_BODY_INDENT, marginTop: 2 },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute, fontStyle: "italic" },

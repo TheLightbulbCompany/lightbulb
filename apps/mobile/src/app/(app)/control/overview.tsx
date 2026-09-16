@@ -353,15 +353,13 @@ export default function Overview() {
                 styles.statusLabel,
                 status.tone === "down" && styles.statusLabelDown,
               ]}
-              numberOfLines={1}
             >
               {status.label}
             </Text>
-            {status.detail != null && (
-              <Text style={styles.statusDetail} numberOfLines={2}>
-                {status.detail}
-              </Text>
-            )}
+            {/* Never clipped: when the workspace is blocked this card is the
+                only place that says why, so it has to survive a large text
+                size. The panel scrolls, so a taller card costs nothing. */}
+            {status.detail != null && <Text style={styles.statusDetail}>{status.detail}</Text>}
           </View>
         </View>
 
@@ -408,7 +406,8 @@ const styles = StyleSheet.create({
   // Status card (full-width; spec §5 HealthIndicator adapted to a card).
   statusCard: {
     flexDirection: "row",
-    alignItems: "center",
+    // The dot stays beside the label's first line once the text wraps.
+    alignItems: "flex-start",
     gap: spacing.md,
     backgroundColor: colors.white,
     borderRadius: radii.lg,
@@ -416,7 +415,8 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
     padding: spacing.lg,
   },
-  statusDot: { width: 10, height: 10, borderRadius: 5 },
+  // `marginTop` centres it on the label's first line (20pt leading, 10pt dot).
+  statusDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
   statusText: { flex: 1, gap: 2 },
   statusLabel: {
     fontFamily: fonts.sansMedium,

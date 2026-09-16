@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { useScaledHeight } from "../../lib/textScale";
 
 // ---------------------------------------------------------------------------
 // Issue-comment composer — the chat composer's look (floating white card on
@@ -26,10 +27,14 @@ export interface CommentComposerProps {
 
 export function CommentComposer({ onSubmit }: CommentComposerProps) {
   const insets = useSafeAreaInsets();
+  // One line at rest, roughly six before it scrolls — both at the reader's
+  // text size, so a large size gets a taller box rather than fewer lines.
+  const minHeight = useScaledHeight(24);
+  const maxHeight = useScaledHeight(140);
   const [value, setValue] = useState("");
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [height, setHeight] = useState(24);
+  const [height, setHeight] = useState(minHeight);
 
   const canSend = value.trim().length > 0 && !busy;
 
@@ -40,7 +45,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
     const ok = await onSubmit(trimmed);
     if (ok) {
       setValue("");
-      setHeight(24);
+      setHeight(minHeight);
     }
     setBusy(false);
   };
@@ -62,12 +67,16 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onContentSizeChange={(e) =>
-              setHeight(Math.min(140, Math.max(24, e.nativeEvent.contentSize.height)))
+              setHeight(Math.min(maxHeight, Math.max(minHeight, e.nativeEvent.contentSize.height)))
             }
           />
         </View>
         <View style={styles.rail}>
-          <Text style={styles.hint}>Comment</Text>
+          {/* A caption on the send rail, not content: it may grow a little,
+              but not enough to wrap the rail or push the button off it. */}
+          <Text style={styles.hint} maxFontSizeMultiplier={1.4}>
+            Comment
+          </Text>
           <Pressable
             style={[styles.sendButton, !canSend && styles.sendDisabled]}
             onPress={send}

@@ -55,13 +55,18 @@ export function Avatar({
         ]}
       >
         {emoji ? (
-          <Text style={{ fontSize: size * 0.5 }}>{emoji}</Text>
+          <Text style={{ fontSize: size * 0.5 }} maxFontSizeMultiplier={1}>
+            {emoji}
+          </Text>
         ) : (
+          // Sized to the fixed circle, so it must not also scale with the
+          // reader's text size or it spills out of it.
           <Text
             style={[
               kind === "agent" ? styles.agent : styles.human,
               { fontSize: size * 0.45 },
             ]}
+            maxFontSizeMultiplier={1}
           >
             {kind === "agent" ? initials[0] : initials}
           </Text>

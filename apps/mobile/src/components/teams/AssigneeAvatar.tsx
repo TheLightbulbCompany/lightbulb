@@ -46,6 +46,7 @@ export function AssigneeAvatar({ assignee, size = 18 }: AssigneeAvatarProps) {
       ]}
     >
       <Text
+        maxFontSizeMultiplier={1}
         style={[
           styles.glyph,
           { fontSize, lineHeight: fontSize + 2 },

@@ -1185,6 +1185,8 @@ describe("ServiceStack — messaging environment and least privilege", () => {
               "bedrock-agentcore:CreateAgentRuntime",
               "bedrock-agentcore:CreateAgentRuntimeEndpoint",
               "bedrock-agentcore:InvokeAgentRuntime",
+              // The create request tags the runtime; Tag is a separate action (fourth dev flip).
+              "bedrock-agentcore:TagResource",
             ]),
             Resource: Match.arrayWith([
               "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/*",

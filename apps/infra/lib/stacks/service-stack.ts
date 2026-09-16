@@ -503,6 +503,10 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:ListAgentRuntimeEndpoints",
           "bedrock-agentcore:InvokeAgentRuntime",
           "bedrock-agentcore:StopRuntimeSession",
+          // The create request tags the runtime (owner, env); Tag/Untag are separate actions.
+          "bedrock-agentcore:TagResource",
+          "bedrock-agentcore:UntagResource",
+          "bedrock-agentcore:ListTagsForResource",
         ],
         resources: [agentcoreArn("runtime/*"), agentcoreArn("runtime/*/runtime-endpoint/*")],
       }),

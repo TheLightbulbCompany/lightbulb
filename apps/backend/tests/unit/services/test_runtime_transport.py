@@ -191,9 +191,10 @@ class TestAgentCoreTransport:
             await rt.request({"runtime_host": "agentcore", "owner_id": "o"}, "/x")
 
     @pytest.mark.asyncio
-    async def test_never_resends_and_outlasts_a_cold_start(self, monkeypatch):
-        """boto3's defaults would re-send a timed-out POST (a duplicate turn) and cut a long RPC
-        off at 60s — under a cold start that AgentCore holds for ~35s before answering."""
+    async def test_never_resends_and_the_read_timeout_is_the_callers_budget(self, monkeypatch):
+        """boto3's defaults would re-send a timed-out POST (a duplicate turn) and cap every call
+        at 60s regardless of the caller's budget. The budget is the caller's: room ingress passes
+        one that outlasts a cold start; a probe passes a short one."""
         seen = {}
 
         class _Body:
@@ -212,7 +213,7 @@ class TestAgentCoreTransport:
         )
         assert seen["name"] == "bedrock-agentcore"
         assert seen["config"].retries == {"total_max_attempts": 1}
-        assert seen["config"].read_timeout == 45.0 + 60.0
+        assert seen["config"].read_timeout == 45.0 + 5.0  # the ECS transport's margin, same shape
         assert seen["config"].connect_timeout == 10
 
     @pytest.mark.asyncio

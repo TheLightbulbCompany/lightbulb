@@ -44,13 +44,9 @@ AGENTCORE_ADDRESS = "agentcore"
 #: AgentCore requires a session id of at least 33 characters.
 _MIN_SESSION_ID_LEN = 33
 
-#: A cold session is held by AgentCore for ~35s of microVM start before the contract server
-#: answers at all. boto3's default 60s read timeout would cut a long RPC off under that.
-_COLD_START_ALLOWANCE_S = 60.0
-
-#: Invokes run on their own pool. A caller's ``wait_for`` can give up on a cold start while
-#: the invoke keeps running to its read timeout; that thread must never sit in the default
-#: executor that DynamoDB and every other ``to_thread`` user share.
+#: Invokes run on their own pool: one blocks a thread for the caller's whole budget (90s on a
+#: cold-start ingress), and that thread must never sit in the default executor that DynamoDB
+#: and every other ``to_thread`` user share.
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="agentcore-invoke")
 
 
@@ -175,6 +171,15 @@ async def _request_agentcore(
     elif json_body is not None:
         envelope["body"] = json_body
 
+    # The caller's budget is the whole budget. A cold session is held by AgentCore through the
+    # microVM start and gateway boot (54-57s measured), so the one caller that wakes a parked
+    # workspace — room ingress — passes a budget that outlasts it; probes pass a short one and
+    # simply report "not ready". boto's read timeout is the caller's budget plus the same margin
+    # the ECS transport uses, and the outer wait sits just above it so the THREAD gives up first:
+    # an invoke never outlives its caller, so a retried delivery cannot race an abandoned one.
+    margin = min(5.0, timeout_s)
+    read_timeout = timeout_s + margin
+
     def _invoke() -> RuntimeResponse:
         import boto3
         from botocore.config import Config
@@ -184,7 +189,7 @@ async def _request_agentcore(
             "bedrock-agentcore",
             config=Config(
                 connect_timeout=10,
-                read_timeout=timeout_s + _COLD_START_ALLOWANCE_S,
+                read_timeout=read_timeout,
                 # Never re-send. An ingress POST is a turn; retry is the caller's decision.
                 retries={"total_max_attempts": 1},
             ),
@@ -226,7 +231,7 @@ async def _request_agentcore(
     # boto3 is synchronous; keep it off the event loop, and off the shared default pool.
     loop = asyncio.get_running_loop()
     try:
-        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, _invoke), timeout=timeout_s + 10.0)
+        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, _invoke), timeout=read_timeout + 2.0)
     except asyncio.TimeoutError as exc:
         # Same shape as the ECS transport's httpx timeout, so callers need one except clause.
-        raise httpx.ReadTimeout(f"agentcore invoke exceeded {timeout_s + 10.0:.0f}s") from exc
+        raise httpx.ReadTimeout(f"agentcore invoke exceeded {read_timeout:.0f}s") from exc

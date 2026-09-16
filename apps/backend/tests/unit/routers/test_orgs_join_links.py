@@ -222,6 +222,25 @@ def test_revoke_kills_the_link(app, admin_auth, repo, clerk):
     assert client.post("/api/v1/orgs/org_test/join", json={"token": token}).status_code == 404
 
 
+def test_status_survives_a_missing_encryption_key(app, admin_auth, repo):
+    """No key at all (a partial local config) is a misconfiguration, not a 500 on read."""
+    from core import encryption
+
+    _override_auth(app, admin_auth)
+    repo.rows["org_test"] = {
+        "org_id": "org_test",
+        "token_hash": workspace_join._hash_token("t"),
+        "token_enc": "bm90LWEtZmVybmV0LXRva2Vu",
+        "created_by": "user_admin",
+        "created_at": "2026-09-01T00:00:00+00:00",
+    }
+    with patch.object(encryption.settings, "ENCRYPTION_KEY", ""):
+        resp = TestClient(app).get("/api/v1/orgs/org_test/join-link")
+    assert resp.status_code == 200
+    assert resp.json()["exists"] is True
+    assert resp.json().get("join_url") is None
+
+
 # --- Admin gating ------------------------------------------------------------
 
 

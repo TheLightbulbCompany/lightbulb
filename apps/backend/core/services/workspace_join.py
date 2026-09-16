@@ -123,7 +123,10 @@ async def describe_join_link(org_id: str) -> dict | None:
     if row.get("token_enc"):
         try:
             join_url = build_join_url(org_id, encryption.decrypt(row["token_enc"]))
-        except ValueError:
+        except (ValueError, RuntimeError):
+            # ValueError: rotated key or corrupt row. RuntimeError: no key
+            # configured at all. Either way the link still redeems; it just
+            # cannot be shown.
             logger.warning("orgs.join_link.undecryptable org_id=%s", org_id)
     return {
         "join_url": join_url,

@@ -632,6 +632,25 @@ describe("routing and outbound adapter", () => {
     });
   });
 
+  it("publishes the platform-send attempt identity before the POST", async () => {
+    const order: string[] = [];
+    const fetch = vi.fn(async () => {
+      order.push("post");
+      return new Response(
+        JSON.stringify({ messageId: "canonical-1", roomId: ROOM, createdAt: CREATED_AT }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    });
+    const adapter = createOutbound({ fetch, env: () => ENV });
+    await adapter.sendText(
+      sendContext({
+        onPlatformSendDispatch: async () => void order.push("dispatch"),
+        assertDirectAdapterHandoff: () => void order.push("fence"),
+      }),
+    );
+    expect(order).toEqual(["dispatch", "fence", "post"]);
+  });
+
   it("names missing runtime configuration without exposing values", async () => {
     expect(() => resolveEnv({ ...ENV, OPENCLAW_HOOK_TOKEN: undefined })).toThrowError(
       expect.objectContaining({ name: "LightbulbConfigurationError" }),

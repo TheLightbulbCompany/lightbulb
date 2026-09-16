@@ -666,6 +666,20 @@ pub(super) const HOOK_EVENTS: [(&str, bool); 5] = [
     ("SessionEnd", false),
 ];
 
+/// The two hooks only Claude has, with the tool matcher each is scoped to:
+/// a pending `AskUserQuestion` and a pending permission prompt, neither of
+/// which reaches the transcript until it is answered. Deliberately NOT in
+/// `HOOK_EVENTS` -- Codex installs from that list and every entry's trust hash
+/// is keyed by what is in it.
+///
+/// Both install `async`, and `enrollment::hook` writes nothing to stdout on any
+/// path (it silences fd 1 before it reads a byte), so this hook cannot allow,
+/// deny or ask on the user's behalf. It reports; it never decides.
+pub(super) const CLAUDE_HOOK_EVENTS: [(&str, Option<&str>); 2] = [
+    ("PreToolUse", Some("AskUserQuestion")),
+    ("PermissionRequest", None),
+];
+
 fn quoted(executable: &Path) -> Result<String> {
     Ok(executable
         .to_str()
@@ -706,12 +720,23 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
     let hooks = settings["hooks"]
         .as_object_mut()
         .ok_or("invalid Claude hooks")?;
-    for (event, is_async) in HOOK_EVENTS {
+    let installed = HOOK_EVENTS
+        .iter()
+        .map(|&(event, is_async)| (event, is_async, None))
+        .chain(
+            CLAUDE_HOOK_EVENTS
+                .iter()
+                .map(|&(event, matcher)| (event, true, matcher)),
+        );
+    for (event, is_async, matcher) in installed {
         let mut hook = json!({"type":"command","command":command});
         if is_async {
             hook["async"] = json!(true);
         }
-        let entry = json!({ "hooks": [hook] });
+        let entry = match matcher {
+            Some(matcher) => json!({"matcher": matcher, "hooks": [hook]}),
+            None => json!({ "hooks": [hook] }),
+        };
         let slot = if enabled {
             Some(hooks.entry(event).or_insert_with(|| json!([])))
         } else {
@@ -858,7 +883,11 @@ mod tests {
     fn local_sessions_claude_hook_install_is_reversible_and_preserves_other_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        let original = json!({"permissions":{"ask":["Bash"]},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"my-hook"}]}]},"model":"keep"});
+        // Their own matcher-form hook on an event we now install into: removal
+        // is by exact entry, so theirs must survive both halves of the round trip.
+        let original = json!({"permissions":{"ask":["Bash"]},"hooks":{
+            "SessionStart":[{"hooks":[{"type":"command","command":"my-hook"}]}],
+            "PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-lint"}]}]},"model":"keep"});
         fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
         let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
         configure_hooks(&path, exe, true).unwrap();
@@ -867,6 +896,8 @@ mod tests {
             changed["hooks"]["SessionStart"].as_array().unwrap().len(),
             2
         );
+        assert_eq!(changed["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(changed["hooks"]["PreToolUse"][0], original["hooks"]["PreToolUse"][0]);
         assert_eq!(changed["permissions"], original["permissions"]);
         configure_hooks(&path, exe, true).unwrap();
         let twice: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -877,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_claude_hooks_cover_five_events_and_strip_legacy_entry() {
+    fn local_sessions_claude_hooks_cover_seven_events_and_strip_legacy_entry() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         fs::write(&settings, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/app' local-session-hook"}]}]},"other":1}"#).unwrap();
@@ -889,6 +920,8 @@ mod tests {
             "Stop",
             "Notification",
             "SessionEnd",
+            "PreToolUse",
+            "PermissionRequest",
         ] {
             let entries = v["hooks"][event].as_array().unwrap();
             assert_eq!(entries.len(), 1, "{event}");
@@ -905,6 +938,16 @@ mod tests {
                 }
             );
         }
+        // The question hook is scoped by matcher, and written the way Claude
+        // reads it: matcher beside `hooks`, not inside the command entry.
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0],
+            json!({"matcher":"AskUserQuestion","hooks":[{"type":"command","command":"'/app' local-session-hook claude","async":true}]})
+        );
+        assert!(
+            v["hooks"]["PermissionRequest"][0].get("matcher").is_none(),
+            "every permission prompt is reportable, whatever the tool"
+        );
         assert_eq!(v["other"], 1);
         // A re-assert that changes nothing must leave the file alone: restore
         // runs it on every launch, and a write would re-minify the user's

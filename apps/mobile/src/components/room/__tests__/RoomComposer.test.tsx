@@ -3,6 +3,7 @@ import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
 import { colors } from "../../../config/theme";
 import type { RoomMember } from "@lightbulb/shared";
+import { saveDraft } from "../../../lib/composerDraft";
 import { RoomComposer } from "../RoomComposer";
 
 // `attachments.ts` → `adapter.ts` reaches expo-crypto at import time.
@@ -38,6 +39,11 @@ const members: RoomMember[] = [
   },
 ];
 
+// A fresh draft key per case, so one case's kept draft never leaks into the
+// next (the store is a module-level singleton, as it is on the device).
+let keySeq = 0;
+const draftKey = () => `test-owner|room-${keySeq++}|`;
+
 // RNTL 14's render/fireEvent are async — every call here is awaited, the
 // convention the other room suites already follow.
 const setup = async (
@@ -53,6 +59,7 @@ const setup = async (
       reconnecting={false}
       onSend={onSend}
       onUploadAttachment={onUploadAttachment}
+      draftKey={draftKey()}
       onTypingChange={onTypingChange}
     />,
   );
@@ -143,7 +150,9 @@ describe("RoomComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("uploads a picked photo and sends its attachment id", async () => {
+  // A photo uploads when it is PICKED, not when the message is sent, so
+  // sending is instant and the draft can hold an id that survives leaving.
+  it("uploads a picked photo straight away and sends its attachment id", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
@@ -153,19 +162,7 @@ describe("RoomComposer", () => {
     const onSend = jest.fn(async () => {});
     const { onUploadAttachment } = await setup(onSend);
     await fireEvent.press(screen.getByLabelText("Attach photo"));
-    // The chip proves the photo is attached before the message goes out.
     expect(await screen.findByText("a.png")).toBeTruthy();
-    expect(screen.getByLabelText("Preview a.png")).toBeTruthy();
-    expect(onUploadAttachment).not.toHaveBeenCalled();
-    await fireEvent.press(screen.getByLabelText("Remove a.png"));
-    expect(screen.queryByLabelText("Preview a.png")).toBeNull();
-    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
-      canceled: false,
-      assets: [{ uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 }],
-    });
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
-    await waitFor(() => expect(screen.getByLabelText("Preview a.png")).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
       expect(onUploadAttachment).toHaveBeenCalledWith({
         uri: "file:///a.png",
@@ -173,9 +170,54 @@ describe("RoomComposer", () => {
         type: "image/png",
       }),
     );
+    await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
     );
+    // Sending did not re-upload what was already uploaded.
+    expect(onUploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  // The composer reads the conversation's stored draft on mount — which is
+  // what makes backing out of a room and returning keep the message.
+  it("opens showing the draft left in this conversation", async () => {
+    const key = draftKey();
+    saveDraft(key, { text: "half a thought", attachments: [] });
+    await render(
+      <RoomComposer
+        members={members}
+        placeholder="Message"
+        disabled={false}
+        reconnecting={false}
+        onSend={jest.fn(async () => {})}
+        onUploadAttachment={jest.fn(async () => ({ id: "att-1" }))}
+        draftKey={key}
+      />,
+    );
+    expect(screen.getByPlaceholderText("Message").props.value).toBe("half a thought");
+  });
+
+  it("refuses to send past the limits the server enforces", async () => {
+    const onSend = jest.fn(async () => {});
+    await setup(onSend);
+    await fireEvent.changeText(screen.getByPlaceholderText("Message"), "x".repeat(100_001));
+    expect(screen.getByText("Keep your message within 100,000 UTF-8 bytes.")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("drops a removed photo from the message", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 }],
+    });
+    await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByLabelText("Preview a.png")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Remove a.png"));
+    expect(screen.queryByLabelText("Preview a.png")).toBeNull();
   });
 
   it("reports typing as the draft goes non-empty and empty again", async () => {
@@ -203,18 +245,21 @@ describe("RoomComposer", () => {
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("rejects a photo over the 10MB cap without uploading it", async () => {
+  // The messaging endpoint caps an image at 5MB. The composer used to check
+  // against a 10MB cap belonging to an unrelated endpoint, so a 6MB photo
+  // passed here, failed on the server, and was reported as a network problem.
+  it("rejects a photo over the messaging endpoint's own 5MB cap, and says so", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
       canceled: false,
       assets: [
-        { uri: "file:///big.png", fileName: "big.png", mimeType: "image/png", fileSize: 11e6 },
+        { uri: "file:///big.png", fileName: "big.png", mimeType: "image/png", fileSize: 6e6 },
       ],
     });
     const { onUploadAttachment } = await setup();
     await fireEvent.press(screen.getByLabelText("Attach photo"));
-    await waitFor(() => expect(screen.getByText("big.png exceeds the 10MB limit")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/The limit is 5MB/)).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
   });
 
@@ -265,12 +310,12 @@ describe("RoomComposer", () => {
     });
     const { onUploadAttachment } = await setup();
     await fireEvent.press(screen.getByLabelText("Attach photo"));
-    expect(await screen.findByText(/isn't a supported photo/)).toBeTruthy();
+    expect(await screen.findByText(/isn't a photo we can send/)).toBeTruthy();
     expect(onUploadAttachment).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Attach photo")).toBeTruthy();
   });
 
-  it("shows an upload failure and allows the user to retry", async () => {
+  it("keeps a failed upload on its own chip, retryable", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValue({
@@ -292,17 +337,19 @@ describe("RoomComposer", () => {
         reconnecting={false}
         onSend={onSend}
         onUploadAttachment={onUploadAttachment}
+        draftKey={draftKey()}
       />,
     );
     await fireEvent.press(screen.getByLabelText("Attach photo"));
-    expect(await screen.findByLabelText("Preview a.png")).toBeTruthy();
+    // The failure belongs to the photo, not to the message: the chip offers
+    // the retry, and the rest of the draft is untouched.
+    expect(await screen.findByLabelText("Retry uploading a.png")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Retry uploading a.png"));
+    await waitFor(() => expect(screen.queryByLabelText("Retry uploading a.png")).toBeNull());
     await fireEvent.press(screen.getByLabelText("Send"));
-    expect(
-      await screen.findByText("Couldn't upload your photos. Check your connection and try again."),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("Preview a.png")).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText("Send"));
-    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
+    );
     expect(onUploadAttachment).toHaveBeenCalledTimes(2);
   });
 });

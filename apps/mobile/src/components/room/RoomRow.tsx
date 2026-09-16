@@ -69,6 +69,7 @@ export function RoomRow({
   participants,
   unread,
   muted,
+  hasDraft = false,
   onPress,
   accessibilityActions,
   onAccessibilityAction,
@@ -77,6 +78,8 @@ export function RoomRow({
   participants: readonly RowParticipant[];
   unread: number;
   muted: boolean;
+  /** An unsent message is waiting here — Slack's own "Draft" tag. */
+  hasDraft?: boolean;
   /** Supplied by `RoomListRow`'s `Link.Trigger`, which owns navigation. */
   onPress?: () => void;
   accessibilityActions?: PressableProps["accessibilityActions"];
@@ -95,7 +98,9 @@ export function RoomRow({
       accessibilityActions={accessibilityActions}
       onAccessibilityAction={onAccessibilityAction}
       accessibilityRole="button"
-      accessibilityLabel={`${count > 0 ? `${label}, ${count} unread` : label}${sharingSuffix}`}
+      accessibilityLabel={`${count > 0 ? `${label}, ${count} unread` : label}${
+        hasDraft ? ", draft" : ""
+      }${sharingSuffix}`}
       style={({ pressed }) => [
         styles.row,
         muted && styles.rowMuted,
@@ -128,6 +133,8 @@ export function RoomRow({
         {label}
       </Text>
       {/* Colour (the dimmed row) is never the only signal — the word too. */}
+      {/* Says what is true of the row, in a word — colour alone never does. */}
+      {hasDraft && <Text style={styles.draftTag}>Draft</Text>}
       {muted && <Text style={styles.mutedTag}>Muted</Text>}
       {room.shared && <Text style={styles.mutedTag}>Shared</Text>}
       <Text style={styles.time}>{relativeTime(Date.parse(room.lastMessageAt ?? ""))}</Text>
@@ -201,10 +208,12 @@ let openRow: SwipeableMethods | null = null;
 export function RoomListRow({
   room,
   participants,
+  hasDraft,
   onAction,
 }: {
   room: RoomSummary;
   participants: readonly RowParticipant[];
+  hasDraft?: boolean;
   onAction: (room: RoomSummary, action: RoomRowAction) => void;
 }) {
   const self = useRef<SwipeableMethods>(null);
@@ -262,6 +271,7 @@ export function RoomListRow({
             participants={participants}
             unread={room.unreadCount}
             muted={room.muted}
+            hasDraft={hasDraft}
             accessibilityActions={[
               { name: readAction, label: readLabel },
               { name: "mute", label: muteLabel },
@@ -319,6 +329,7 @@ const styles = StyleSheet.create({
   label: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, flex: 1, color: colors.inkSoft },
   labelUnread: { fontFamily: fonts.sansSemiBold, color: colors.ink },
   mutedTag: { ...type.caption },
+  draftTag: { ...type.caption, color: colors.errorText },
   time: { ...type.caption },
   badge: {
     minWidth: 18,

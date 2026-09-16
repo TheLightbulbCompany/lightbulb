@@ -16,6 +16,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { colors, spacing, type } from "../config/theme";
@@ -70,25 +71,31 @@ export default function RootLayout() {
   // UIKit keyboard-layout observer for the whole app, and the shared values it
   // publishes are what let the composer track an interactive dismiss drag
   // frame-for-frame (RN's own Keyboard events only fire at the ends).
+  //
+  // GestureHandlerRootView is where gesture-handler recognizes gestures at all
+  // (the conversation list's swipe actions); expo-router mounts none itself.
   return (
-    <KeyboardProvider>
-      <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: colors.cream },
-          }}
-        >
-          <Stack.Screen name="(auth)" />
-          <Stack.Screen name="(app)" />
-        </Stack>
-        <StatusBar style="dark" />
-      </ClerkProvider>
-    </KeyboardProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <KeyboardProvider>
+        <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: colors.cream },
+            }}
+          >
+            <Stack.Screen name="(auth)" />
+            <Stack.Screen name="(app)" />
+          </Stack>
+          <StatusBar style="dark" />
+        </ClerkProvider>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1 },
   center: {
     flex: 1,
     alignItems: "center",

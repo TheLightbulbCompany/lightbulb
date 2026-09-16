@@ -9,7 +9,7 @@ import {
   type MemberPrefsRequest,
   type TimelineItem,
 } from "@lightbulb/shared";
-import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useIsPreview, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
@@ -38,7 +38,7 @@ import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
-/** RoomHeader.tsx's own copy — the same two strings the room list's sheet shows. */
+/** RoomHeader.tsx's own copy — the same two strings the room list shows. */
 const STAR_FAILED = "The star could not be saved.";
 const MUTE_FAILED = "The notification setting could not be saved.";
 
@@ -60,22 +60,30 @@ export default function ConversationRoute() {
 function Conversation() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
   const { userId } = useAuth();
+  // A long press on a room-list row peeks this screen (Link.Preview). A peek
+  // is read-only: its navigation always reports focus, so it opts out of the
+  // focus effect below entirely — no read marking, no live subscription, no
+  // push-target claim — and it has no header of its own to set.
+  const preview = useIsPreview();
   // The SCREEN's own focus. expo-router blurs a pushed screen (a thread) without
   // backgrounding the app, and read marking is "on screen AND foregrounded".
-  const [focused, setFocused] = useState(true);
+  // Starts false: the same peek preloads this route into the stack unfocused,
+  // and it stays mounted there after the peek is dismissed.
+  const [focused, setFocused] = useState(false);
   // The same effect also claims the push handler's target — this conversation,
   // no thread — so a message the reader is watching arrive does not banner.
   // One effect, not two: focus and the target are the same event, and the
   // suite's focus mock keeps one handle per screen.
   useFocusEffect(
     useCallback(() => {
+      if (preview) return;
       setFocused(true);
       const release = claimRoomTarget(roomId ?? null, null);
       return () => {
         setFocused(false);
         release();
       };
-    }, [roomId]),
+    }, [roomId, preview]),
   );
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused });
 
@@ -254,7 +262,7 @@ function Conversation() {
         : "unavailable" as const;
     return (
       <View style={styles.container}>
-        <Stack.Screen options={headerOptions} />
+        {!preview && <Stack.Screen options={headerOptions} />}
         <RoomBlockedState
           state={blockedState}
           onRetry={blockedState === "unavailable" ? rooms.refreshRoom : undefined}
@@ -276,7 +284,7 @@ function Conversation() {
       // padding lifts the visible bar back flush on top of it.
       keyboardVerticalOffset={-insets.bottom}
     >
-      <Stack.Screen options={headerOptions} />
+      {!preview && <Stack.Screen options={headerOptions} />}
       {prefsError && (
         <Text accessibilityRole="alert" style={styles.prefsError}>
           {prefsError}

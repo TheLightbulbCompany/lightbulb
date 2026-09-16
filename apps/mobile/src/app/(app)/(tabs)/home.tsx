@@ -1,31 +1,47 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
-import { roomDisplayName, useWorkspaceSessions, type RoomSummary } from "@lightbulb/shared";
-import { router, useIsFocused } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  Animated,
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+  roomDisplayName,
+  useWorkspaceSessions,
+  type MemberPrefsRequest,
+  type RoomSummary,
+} from "@lightbulb/shared";
+import * as Clipboard from "expo-clipboard";
+import {
+  router,
+  useIsFocused,
+  useNavigation,
+  useRoute,
+  type NativeStackNavigationProp,
+} from "expo-router";
+import { useNavigationState, type ParamListBase } from "expo-router/react-navigation";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Animated, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import type { SearchBarCommands } from "react-native-screens";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { LogoMark } from "../../../components/LogoMark";
 import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
-import { RoomActionsSheet } from "../../../components/room/RoomActionsSheet";
-import { RoomRow, byRecency, otherMembers } from "../../../components/room/RoomRow";
+import {
+  RoomListRow,
+  byRecency,
+  otherMembers,
+  type RoomRowAction,
+} from "../../../components/room/RoomRow";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
 import { useMobileRooms } from "../../../lib/rooms";
+import { roomUrl } from "../../../lib/webLinks";
+import { useLiveEvents } from "../../../providers/live-events";
 
 /** One flattened list entry — a section header, or a conversation. */
 type Row = { kind: "header"; title: string } | { kind: "room"; room: RoomSummary };
 
 const SECTION_ORDER = ["Starred", "Channels", "Direct messages"] as const;
+
+/** RoomHeader.tsx's own copy — the same two strings the room screen's header shows. */
+const STAR_FAILED = "The star could not be saved.";
+const MUTE_FAILED = "The notification setting could not be saved.";
 
 /**
  * Home's three sections, newest activity first inside each. A starred room
@@ -61,6 +77,24 @@ function ListSkeleton() {
   );
 }
 
+/** The header's compose button, top right, where iOS Messages keeps it. */
+function ComposeButton({ onPress }: { onPress: () => void }) {
+  const scale = usePressScale();
+  return (
+    <AnimatedPressable
+      onPress={onPress}
+      onPressIn={scale.onPressIn}
+      onPressOut={scale.onPressOut}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel="New message"
+      style={[styles.compose, scale.style]}
+    >
+      <SymbolView accessibilityElementsHidden name="square.and.pencil" size={18} tintColor={colors.inkSoft} />
+    </AnimatedPressable>
+  );
+}
+
 /**
  * The conversation list. `direct` is the DMs tab: the same rows restricted to
  * `dm`/`group-dm`, unsectioned.
@@ -72,19 +106,53 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const { userId } = useAuth();
   const focused = useIsFocused();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
+  const { messaging } = useLiveEvents();
   const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
   const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
-  // The room a long press is acting on; dropping it starts the sheet's close
-  // animation. `lastActionRoom` keeps the sheet's content stable through that
-  // close — RoomActionsSheet stays mounted and is only ever toggled via
-  // `visible`, so it needs a non-null `room` for its whole exit animation.
-  const [actionRoom, setActionRoom] = useState<RoomSummary | null>(null);
-  const lastActionRoom = useRef<RoomSummary | null>(null);
-  if (actionRoom) lastActionRoom.current = actionRoom;
-  const pencilScale = usePressScale();
+  const [refreshing, setRefreshing] = useState(false);
+  // A native menu closes on selection, so a failed star/mute lands here, above
+  // the rows — the room screen does the same with its header buttons.
+  const [prefsError, setPrefsError] = useState<string | null>(null);
+
+  // The search field and the compose button live in the (app) Stack's header,
+  // which all four tabs share, so the list writes them there — keyed on the
+  // tab bar's SELECTION, not on focus. A room pushed over the tabs blurs this
+  // screen too, and stripping the header then would pull the search bar out
+  // of the outgoing nav bar mid-push and drop it back in at the end of a
+  // swipe back. Leaving the tab cancels the search, so the field is empty
+  // whichever tab takes the header next.
+  const header = useNavigation<NativeStackNavigationProp<ParamListBase>>("/(app)");
+  const { key } = useRoute();
+  const selected = useNavigationState((state) => state.routes[state.index]?.key === key);
+  const searchBar = useRef<SearchBarCommands>(null);
+  useLayoutEffect(() => {
+    if (!selected) return;
+    header.setOptions({
+      headerSearchBarOptions: {
+        ref: searchBar,
+        placeholder: "Search",
+        autoCapitalize: "none",
+        // In the nav bar, under the title — not folded into a toolbar or the
+        // tab bar the way iOS 26 otherwise may.
+        placement: "stacked",
+        // UIKit hides it against ONE scroll view per stack screen, and all four
+        // tabs are one stack screen: on DMs it would follow Home's list.
+        hideWhenScrolling: false,
+        onChangeText: (event) => setQuery(event.nativeEvent.text),
+        onCancelButtonPress: () => setQuery(""),
+      },
+      headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} />,
+    });
+    return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- the bar mounts after this effect runs; only the cleanup-time ref reaches it
+      searchBar.current?.cancelSearch();
+      setQuery("");
+      header.setOptions({ headerSearchBarOptions: undefined, headerRight: undefined });
+    };
+  }, [header, selected]);
 
   const details = rooms.directoryRoomDetails;
   // A DM's name lives on the room DETAIL's member list, not on the summary.
@@ -135,57 +203,80 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
     });
   }, []);
 
+  const refresh = () => {
+    setRefreshing(true);
+    void rooms.refreshRooms().finally(() => setRefreshing(false));
+  };
+
+  const savePrefs = (roomId: string, prefs: MemberPrefsRequest, failure: string) => {
+    setPrefsError(null);
+    void rooms.setRoomPrefs(roomId, prefs).catch(() => setPrefsError(failure));
+  };
+  // One handler for every row, from its menu, its swipes and VoiceOver alike.
+  // A failed read-state change shows as the badge not changing, as on the room
+  // screen's own Mark unread.
+  const onRowAction = (room: RoomSummary, action: RoomRowAction) => {
+    switch (action) {
+      case "star":
+        savePrefs(room.roomId, { starred: !room.starred }, STAR_FAILED);
+        break;
+      case "mute":
+        savePrefs(room.roomId, { muted: !room.muted }, MUTE_FAILED);
+        break;
+      case "markUnread":
+        void rooms.markUnread(room.roomId).catch(() => {});
+        break;
+      case "markRead":
+        // The room machine only marks the room it has open, and the list opens
+        // none — so straight to the cursor, then the list for the new count.
+        void messaging
+          .markRead(room.roomId, { lastReadSeq: room.lastMessageSeq })
+          .then(() => rooms.refreshRooms())
+          .catch(() => {});
+        break;
+      case "copyLink":
+        void Clipboard.setStringAsync(roomUrl(room.roomId));
+        break;
+    }
+  };
+
   return (
     <View style={styles.page}>
-      <View style={styles.header}>
-        <View style={styles.searchPill}>
-          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.placeholder} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search"
-            placeholderTextColor={colors.placeholder}
-            value={query}
-            onChangeText={setQuery}
-            autoCorrect={false}
-            returnKeyType="search"
-          />
-        </View>
-        <AnimatedPressable
-          onPress={() => setPickerOpen(true)}
-          onPressIn={pencilScale.onPressIn}
-          onPressOut={pencilScale.onPressOut}
-          accessibilityRole="button"
-          accessibilityLabel="New message"
-          style={[styles.pencil, pencilScale.style]}
-        >
-          <SymbolView accessibilityElementsHidden name="square.and.pencil" size={16} tintColor={colors.cream} />
-        </AnimatedPressable>
-      </View>
       <FlatList
+        testID="room-list"
         contentInsetAdjustmentBehavior="automatic"
         automaticallyAdjustKeyboardInsets
         data={data}
         keyExtractor={(row) => (row.kind === "header" ? row.title : row.room.roomId)}
         contentContainerStyle={[styles.list, data.length === 0 && styles.listGrow]}
         keyboardShouldPersistTaps="handled"
+        refreshing={refreshing}
+        onRefresh={refresh}
         // A hard failure over a cached list reports itself ABOVE the rows
         // rather than replacing them — the rooms we already have are still the
         // truest thing on screen (same idiom the retired roster used).
         ListHeaderComponent={
-          rooms.roomsError ? (
-            <View style={styles.errorCard}>
-              <Text style={styles.errorText}>
-                Couldn’t load conversations: {rooms.roomsError.message}
+          <>
+            {prefsError && (
+              <Text accessibilityRole="alert" style={styles.prefsError}>
+                {prefsError}
               </Text>
-              <Pressable
-                onPress={() => void rooms.refreshRooms()}
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading conversations"
-              >
-                <Text style={styles.retryText}>Retry</Text>
-              </Pressable>
-            </View>
-          ) : null
+            )}
+            {rooms.roomsError ? (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorText}>
+                  Couldn’t load conversations: {rooms.roomsError.message}
+                </Text>
+                <Pressable
+                  onPress={() => void rooms.refreshRooms()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading conversations"
+                >
+                  <Text style={styles.retryText}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
           rooms.roomsError ? null : rooms.roomsLoading ? (
@@ -220,13 +311,10 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
               <Text style={styles.sectionLabel}>{item.title}</Text>
             </Pressable>
           ) : (
-            <RoomRow
+            <RoomListRow
               room={item.room}
               participants={participants(item.room)}
-              unread={item.room.unreadCount}
-              muted={item.room.muted}
-              onPress={() => router.push(`/(app)/room/${item.room.roomId}`)}
-              onLongPress={() => setActionRoom(item.room)}
+              onAction={onRowAction}
             />
           )
         }
@@ -239,21 +327,6 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
           router.push(`/(app)/room/${roomId}`);
         }}
       />
-      {(() => {
-        // Local const so TS narrows it through the closures below — see the
-        // room screen's identical `sheetMessage` pattern.
-        const sheetRoom = lastActionRoom.current;
-        if (!sheetRoom) return null;
-        return (
-          <RoomActionsSheet
-            room={sheetRoom}
-            visible={actionRoom !== null}
-            onClose={() => setActionRoom(null)}
-            onSetPrefs={(prefs) => rooms.setRoomPrefs(sheetRoom.roomId, prefs)}
-            onMarkUnread={() => rooms.markUnread(sheetRoom.roomId)}
-          />
-        );
-      })()}
     </View>
   );
 }
@@ -264,35 +337,10 @@ export default function Home() {
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  searchPill: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    height: 36,
-    borderRadius: radii.md,
-    backgroundColor: colors.creamDeeper,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily: fonts.sans,
-    fontSize: 15,
-    color: colors.ink,
-    padding: 0,
-  },
-  pencil: {
+  compose: {
     width: 36,
     height: 36,
-    borderRadius: radii.md,
-    backgroundColor: colors.forest,
+    borderRadius: radii.sm,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -321,6 +369,14 @@ const styles = StyleSheet.create({
   skeleton: { gap: spacing.md, padding: spacing.lg },
   skeletonRow: { height: 28, borderRadius: radii.sm, backgroundColor: colors.skeleton },
 
+  prefsError: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.errorText,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
   errorCard: {
     margin: spacing.lg,
     padding: spacing.lg,

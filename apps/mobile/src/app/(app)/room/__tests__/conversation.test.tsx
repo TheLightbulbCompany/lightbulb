@@ -26,6 +26,8 @@ const mockFocus: { blur?: () => void; focus?: () => void } = {};
 // keyed off this), so a getRoom override in one test can't be served from
 // another test's cached "room-1" success. Reset in beforeEach.
 let mockRoomId = "room-1";
+// A long-press peek from the room list renders this same screen (Link.Preview).
+let mockIsPreview = false;
 jest.mock("expo-router", () => {
   // useFocusEffect is an EFFECT upstream. A mock that calls the callback during
   // render turns the screen's setFocused into a render-phase update, which React
@@ -61,6 +63,7 @@ jest.mock("expo-router", () => {
         return () => cleanup?.();
       }, [cb]),
     useLocalSearchParams: () => ({ roomId: mockRoomId }),
+    useIsPreview: () => mockIsPreview,
   };
 });
 // Each case runs in its own workspace scope, because SWR keys its cache on it
@@ -202,6 +205,7 @@ describe("conversation screen", () => {
     mockListResources.mockResolvedValue({ devices: [], sessions: [], pairedNodes: [] });
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
+    mockIsPreview = false;
   });
 
   it("shows the author name once per run and a day divider above the first message", async () => {
@@ -230,6 +234,17 @@ describe("conversation screen", () => {
   it("marks the room read up to the newest sequence once it is on screen", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("room-1", { lastReadSeq: 3 }));
+  });
+
+  // A peek is a look, not a visit: the room list's Mark unread sits right under
+  // it in the same menu, and a peek that marked the room read would undo it.
+  it("shows the conversation in a peek without marking it read or claiming the push target", async () => {
+    mockIsPreview = true;
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await act(async () => { await Promise.resolve(); });
+    expect(mockMarkRead).not.toHaveBeenCalled();
+    expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
   });
 
   // The thread screen deliberately marks nothing read (Slack's rule), so the

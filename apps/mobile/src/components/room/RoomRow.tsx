@@ -1,8 +1,22 @@
 import { roomDisplayName, type RoomMember, type RoomSummary } from "@lightbulb/shared";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Link } from "expo-router";
+import { SymbolView, type SFSymbol } from "expo-symbols";
+import { useRef } from "react";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type PressableProps,
+  type ViewStyle,
+} from "react-native";
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from "react-native-gesture-handler/ReanimatedSwipeable";
 
 import { Avatar } from "./Avatar";
 import { colors, fonts, spacing, type } from "../../config/theme";
+import { hapticSelection } from "../../lib/haptics";
 import { relativeTime } from "../../lib/relativeTime";
 
 /**
@@ -56,15 +70,17 @@ export function RoomRow({
   unread,
   muted,
   onPress,
-  onLongPress,
+  accessibilityActions,
+  onAccessibilityAction,
 }: {
   room: RoomSummary;
   participants: readonly RowParticipant[];
   unread: number;
   muted: boolean;
-  onPress: () => void;
-  /** Long press opens the conversation actions sheet (star/mute/mark unread/copy link). */
-  onLongPress?: () => void;
+  /** Supplied by `RoomListRow`'s `Link.Trigger`, which owns navigation. */
+  onPress?: () => void;
+  accessibilityActions?: PressableProps["accessibilityActions"];
+  onAccessibilityAction?: PressableProps["onAccessibilityAction"];
 }) {
   const label = roomDisplayName(room, participants);
   const count = muted ? 0 : unread;
@@ -76,7 +92,8 @@ export function RoomRow({
     <Pressable
       testID={`room-row-${room.roomId}`}
       onPress={onPress}
-      onLongPress={onLongPress}
+      accessibilityActions={accessibilityActions}
+      onAccessibilityAction={onAccessibilityAction}
       accessibilityRole="button"
       accessibilityLabel={`${count > 0 ? `${label}, ${count} unread` : label}${sharingSuffix}`}
       style={({ pressed }) => [
@@ -123,6 +140,167 @@ export function RoomRow({
   );
 }
 
+/** Everything a list row can do to its conversation besides open it. */
+export type RoomRowAction = "star" | "mute" | "markRead" | "markUnread" | "copyLink";
+
+/**
+ * One full-height swipe button, iOS Mail's anatomy: glyph over a short label.
+ * Hidden from VoiceOver, which cannot swipe — the row carries the same
+ * actions as accessibility actions instead, which is how UIKit exposes
+ * swipe actions.
+ */
+function SwipeAction({
+  icon,
+  label,
+  accessibilityLabel,
+  tone,
+  onPress,
+}: {
+  icon: SFSymbol;
+  label: string;
+  accessibilityLabel: string;
+  tone: ViewStyle;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={({ pressed }) => [styles.swipeAction, tone, pressed && styles.swipePressed]}
+    >
+      <SymbolView accessibilityElementsHidden name={icon} size={20} tintColor={colors.white} />
+      <Text style={styles.swipeLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * A Home/DMs row that behaves like an iOS list row: tap opens the conversation,
+ * a long press lifts a live preview of it with a native context menu (the
+ * retired long-press sheet's four actions, in its wording), a leading swipe
+ * marks it read or unread and a trailing swipe mutes it.
+ *
+ * The row hands itself back through one `onAction` rather than owning any of
+ * it: the list keeps the room machine, and the failure copy has to land on the
+ * list, since a native menu closes on selection and has nowhere to show it.
+ *
+ * ponytail: a tap on the revealed button commits a swipe action. iOS also
+ * commits on a full-width swipe (needs the translation watched on the UI
+ * thread) — add it if the swipes get used.
+ */
+/**
+ * The one row whose actions are showing, anywhere in the app. An iOS list only
+ * ever has one open: opening the next closes it. Module-level because Home and
+ * DMs are separate lists and the rule holds across both.
+ */
+let openRow: SwipeableMethods | null = null;
+
+export function RoomListRow({
+  room,
+  participants,
+  onAction,
+}: {
+  room: RoomSummary;
+  participants: readonly RowParticipant[];
+  onAction: (room: RoomSummary, action: RoomRowAction) => void;
+}) {
+  const self = useRef<SwipeableMethods>(null);
+  const unread = room.unreadCount > 0;
+  const readAction: RoomRowAction = unread ? "markRead" : "markUnread";
+  const readLabel = unread ? "Mark read" : "Mark unread";
+  const starLabel = room.starred ? "Unstar conversation" : "Star conversation";
+  const muteLabel = room.muted ? "Unmute conversation" : "Mute conversation";
+  // Close first, so the row is already springing shut as its state changes.
+  const commit = (swipe: SwipeableMethods, action: RoomRowAction) => {
+    swipe.close();
+    hapticSelection();
+    onAction(room, action);
+  };
+  return (
+    <ReanimatedSwipeable
+      // Stops at the button's width: past it, the row would pull away from
+      // the button and open an uncoloured gap between them.
+      overshootLeft={false}
+      overshootRight={false}
+      ref={self}
+      onSwipeableWillOpen={() => {
+        if (openRow && openRow !== self.current) openRow.close();
+        openRow = self.current;
+      }}
+      onSwipeableWillClose={() => {
+        // Identity-checked: this row's close can land after the next row has
+        // already claimed the slot.
+        if (openRow === self.current) openRow = null;
+      }}
+      childrenContainerStyle={styles.surface}
+      renderLeftActions={(_progress, _translation, swipe) => (
+        <SwipeAction
+          icon={unread ? "envelope.open.fill" : "envelope.badge.fill"}
+          label={unread ? "Read" : "Unread"}
+          accessibilityLabel={readLabel}
+          tone={styles.swipeRead}
+          onPress={() => commit(swipe, readAction)}
+        />
+      )}
+      renderRightActions={(_progress, _translation, swipe) => (
+        <SwipeAction
+          icon={room.muted ? "bell.fill" : "bell.slash.fill"}
+          label={room.muted ? "Unmute" : "Mute"}
+          accessibilityLabel={muteLabel}
+          tone={styles.swipeMute}
+          onPress={() => commit(swipe, "mute")}
+        />
+      )}
+    >
+      <Link href={`/(app)/room/${room.roomId}`} asChild>
+        <Link.Trigger>
+          <RoomRow
+            room={room}
+            participants={participants}
+            unread={room.unreadCount}
+            muted={room.muted}
+            accessibilityActions={[
+              { name: readAction, label: readLabel },
+              { name: "mute", label: muteLabel },
+              { name: "star", label: starLabel },
+              { name: "copyLink", label: "Copy link" },
+            ]}
+            onAccessibilityAction={(event) =>
+              onAction(room, event.nativeEvent.actionName as RoomRowAction)
+            }
+          />
+        </Link.Trigger>
+        {/* The conversation itself, not a snapshot: the room screen renders
+            read-only in a peek (`useIsPreview`), so it marks nothing read. */}
+        <Link.Preview />
+        <Link.Menu>
+          <Link.MenuAction
+            icon={room.starred ? "star.slash" : "star"}
+            onPress={() => onAction(room, "star")}
+          >
+            {starLabel}
+          </Link.MenuAction>
+          <Link.MenuAction
+            icon={room.muted ? "bell" : "bell.slash"}
+            onPress={() => onAction(room, "mute")}
+          >
+            {muteLabel}
+          </Link.MenuAction>
+          <Link.MenuAction icon="envelope.badge" onPress={() => onAction(room, "markUnread")}>
+            Mark unread
+          </Link.MenuAction>
+          <Link.MenuAction icon="link" onPress={() => onAction(room, "copyLink")}>
+            Copy link
+          </Link.MenuAction>
+        </Link.Menu>
+      </Link>
+    </ReanimatedSwipeable>
+  );
+}
+
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
@@ -156,4 +334,17 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.cream,
   },
+  // Opaque, so the row covers the actions behind it until it slides aside.
+  surface: { backgroundColor: colors.cream },
+  swipeAction: {
+    width: 80,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+  },
+  swipePressed: { opacity: 0.8 },
+  // The unread badge's own blue, so the action reads as the badge it toggles.
+  swipeRead: { backgroundColor: colors.info },
+  swipeMute: { backgroundColor: colors.forest },
+  swipeLabel: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 16, color: colors.white },
 });

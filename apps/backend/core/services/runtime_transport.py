@@ -225,4 +225,8 @@ async def _request_agentcore(
 
     # boto3 is synchronous; keep it off the event loop, and off the shared default pool.
     loop = asyncio.get_running_loop()
-    return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, _invoke), timeout=timeout_s + 10.0)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, _invoke), timeout=timeout_s + 10.0)
+    except asyncio.TimeoutError as exc:
+        # Same shape as the ECS transport's httpx timeout, so callers need one except clause.
+        raise httpx.ReadTimeout(f"agentcore invoke exceeded {timeout_s + 10.0:.0f}s") from exc

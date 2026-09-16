@@ -264,3 +264,25 @@ class TestAgentCoreTransport:
         assert sent["body"] == "a=1&b=2"
         assert res.text == "pong"
         assert res.headers == {"content-type": "text/plain"}
+
+    @pytest.mark.asyncio
+    async def test_a_slow_invoke_is_an_httpx_read_timeout_not_a_bare_asyncio_one(self, monkeypatch):
+        # A cold session can outlast a short caller budget; every caller catches httpx, not asyncio.
+        import threading
+
+        import httpx
+
+        release = threading.Event()
+
+        def _slow(self, **kw):
+            release.wait(5)
+            return {"statusCode": 200, "response": b'{"status":200,"body":""}'}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: type("C", (), {"invoke_agent_runtime": _slow})())
+        original_wait_for = rt.asyncio.wait_for
+        monkeypatch.setattr(rt.asyncio, "wait_for", lambda aw, timeout: original_wait_for(aw, 0.05))
+        try:
+            with pytest.raises(httpx.ReadTimeout):
+                await rt.request({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x")
+        finally:
+            release.set()

@@ -1,6 +1,7 @@
 import { roomDisplayName, type RoomMember, type RoomSummary } from "@lightbulb/shared";
 import { Link } from "expo-router";
 import { SymbolView, type SFSymbol } from "expo-symbols";
+import { useRef } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -188,9 +189,15 @@ function SwipeAction({
  *
  * ponytail: a tap on the revealed button commits a swipe action. iOS also
  * commits on a full-width swipe (needs the translation watched on the UI
- * thread) and keeps one row open at a time (needs the list to hold the open
- * row) — add them if the swipes get used.
+ * thread) — add it if the swipes get used.
  */
+/**
+ * The one row whose actions are showing, anywhere in the app. An iOS list only
+ * ever has one open: opening the next closes it. Module-level because Home and
+ * DMs are separate lists and the rule holds across both.
+ */
+let openRow: SwipeableMethods | null = null;
+
 export function RoomListRow({
   room,
   participants,
@@ -200,6 +207,7 @@ export function RoomListRow({
   participants: readonly RowParticipant[];
   onAction: (room: RoomSummary, action: RoomRowAction) => void;
 }) {
+  const self = useRef<SwipeableMethods>(null);
   const unread = room.unreadCount > 0;
   const readAction: RoomRowAction = unread ? "markRead" : "markUnread";
   const readLabel = unread ? "Mark read" : "Mark unread";
@@ -217,6 +225,16 @@ export function RoomListRow({
       // the button and open an uncoloured gap between them.
       overshootLeft={false}
       overshootRight={false}
+      ref={self}
+      onSwipeableWillOpen={() => {
+        if (openRow && openRow !== self.current) openRow.close();
+        openRow = self.current;
+      }}
+      onSwipeableWillClose={() => {
+        // Identity-checked: this row's close can land after the next row has
+        // already claimed the slot.
+        if (openRow === self.current) openRow = null;
+      }}
       childrenContainerStyle={styles.surface}
       renderLeftActions={(_progress, _translation, swipe) => (
         <SwipeAction

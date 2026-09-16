@@ -197,6 +197,16 @@ class RoomSummary(ContractModel):
     shared: bool = False
 
 
+class ActiveRun(ContractModel):
+    """One in-progress run, so a client that opens the room mid-turn can render
+    it: the live ``run_active`` frame is published once, at turn start."""
+
+    run_id: str
+    agent_id: str
+    started_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+
+
 class RoomDetail(RoomSummary):
     # Re-declared as required: the list tolerates their absence for a client
     # holding a response from before they existed, the detail never does.
@@ -205,6 +215,7 @@ class RoomDetail(RoomSummary):
     delivery_key: uuid.UUID
     created_at: datetime
     pinned_message_ids: list[str] = []
+    active_runs: list[ActiveRun] = []
 
 
 class RoomSection(ContractModel):
@@ -1121,11 +1132,15 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     member = member or await messaging_repo.get_member(meta["roomId"], "human", user_id)
     if member is None:
         raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.")
-    members, last_read = await asyncio.gather(
+    members, last_read, open_runs = await asyncio.gather(
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_cursor(meta["roomId"], user_id),
+        # The run ledger is partitioned by the ROOM's owner — the customer org
+        # even on a room shared with the vendor workspace.
+        messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
     )
     emails = await human_emails(members)
+    agent_ids = {row["id"] for row in members if row["kind"] == "agent"}
     return RoomDetail(
         **_room_summary_fields(meta, member, last_read),
         delivery_key=meta["deliveryKey"],
@@ -1133,6 +1148,18 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         last_read_seq=last_read,
         created_at=meta["createdAt"],
         pinned_message_ids=[str(value) for value in meta.get("pinnedMessageIds", [])],
+        # A run whose agent has left the room is as over as one that never
+        # existed — the rule GET /messaging/runs/{id} already applies.
+        active_runs=[
+            ActiveRun(
+                run_id=row["runId"],
+                agent_id=row["agentId"],
+                started_at=row.get("startedAt"),
+                last_heartbeat_at=row.get("lastHeartbeatAt"),
+            )
+            for row in open_runs
+            if row["agentId"] in agent_ids
+        ],
     )
 
 

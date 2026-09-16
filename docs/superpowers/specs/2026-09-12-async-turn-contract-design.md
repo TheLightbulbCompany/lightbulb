@@ -165,6 +165,17 @@ only while not `ended`; `ended` once. Replayed callbacks are no-ops returning 20
 `GET /messaging/runs/{runId}`, the room "Working" state, `messaging.reply.latency`
 and usage analytics read this row. No run state lives in process memory.
 
+`GET /messaging/rooms/{roomId}` also carries the room's open runs as `activeRuns`
+(`runId, agentId, startedAt, lastHeartbeatAt`, camelCase like the rest of the API).
+`run_active` is a live frame published once, at turn start, so a client that opens,
+reloads or re-selects the room mid-run never saw it and rendered no "Working" bubble
+and no Stop/Steer. The room GET — already the reconcile-from-HTTP door — answers from
+the ledger: an owner-partition `RUN#` query filtered to this room, rows still carrying
+`sweep`, and only agents still in the room. Clients seed those runs as `running` with
+empty text and merge later frames on top; a run already in the map (including one the
+client watched end) is left alone, and `reconcileRuns` re-checks seeded runs so a seed
+that raced its run's end cannot show "Working" forever.
+
 Sweeper (backend, one-minute tick, the only clock): `dispatched` older than 120 s
 without `started` → `ended/error(agent_did_not_start)`; `started` with
 `lastHeartbeatAt` older than 90 s → `ended/error(agent_stopped_responding)`. Both

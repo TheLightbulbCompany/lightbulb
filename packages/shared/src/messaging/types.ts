@@ -49,12 +49,26 @@ export interface RoomSummary {
   shared?: boolean;
 }
 
+export interface ActiveRoomRun {
+  runId: string;
+  agentId: string;
+  startedAt?: string | null;
+  lastHeartbeatAt?: string | null;
+}
+
 export interface RoomDetail extends RoomSummary {
   /** The AppSync channel secret. Deliberately absent from RoomSummary — it is
    *  only ever needed for the one room actually being subscribed. */
   deliveryKey: string;
   createdAt: string;
   pinnedMessageIds: string[];
+  /**
+   * Runs in progress right now, from the server's run ledger. The live
+   * `run_active` frame is published ONCE, at turn start, so a client that opens
+   * or reloads the room mid-run would otherwise see no "Working" bubble and no
+   * Stop/Steer. Optional: a response cached before this field existed has none.
+   */
+  activeRuns?: ActiveRoomRun[];
 }
 
 export interface RoomSection {

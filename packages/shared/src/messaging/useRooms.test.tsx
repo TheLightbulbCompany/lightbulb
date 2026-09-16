@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
-import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomSection } from "../index";
+import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomSection, RunStatusResponse } from "../index";
 import { useRooms, type RoomsLiveSource, type RoomsPlatform } from "./useRooms";
 
 const room: RoomDetail = {
@@ -31,7 +31,7 @@ const messaging = {
     async () => ({ roomId: room.roomId, lastReadSeq: 1 }),
   ),
   uploadAttachment: vi.fn(async () => ({ id: "att-1", fileName: "a.png", contentType: "image/png" as const, size: 1 })),
-  getRunStatus: vi.fn(async () => ({ runId: "run-1", state: "terminal" as const })),
+  getRunStatus: vi.fn<(runId: string) => Promise<RunStatusResponse>>(async () => ({ runId: "run-1", state: "terminal" })),
   markUnread: vi.fn(), sendMessage: vi.fn(), setTyping: vi.fn(), createRoom: vi.fn(),
   updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(),
   steerRun: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
@@ -384,5 +384,79 @@ describe("useRooms platform seams", () => {
       expect(result.current.sendState("client-1")).toBe("uncertain");
       expect(result.current.optimisticMessages.some((m) => m.clientMessageId === "client-1")).toBe(false);
     });
+  });
+});
+
+// A run enters the map from the live `room.run.frame` carrying `run_active`,
+// published ONCE at turn start. Open, reload or re-select the room after that
+// and the client has no way to learn the agent is working — the room GET does.
+describe("runs already in progress when the room opens", () => {
+  const AGENT = "agent-1";
+  const RUN = "run-open";
+  const withRun = (over: Partial<RoomDetail> = {}): RoomDetail => ({
+    ...room,
+    activeRuns: [{ runId: RUN, agentId: AGENT, startedAt: "2026-09-16T18:03:00Z", lastHeartbeatAt: "2026-09-16T18:22:00Z" }],
+    ...over,
+  });
+  const frame = (body: Record<string, unknown>): LiveEvent => ({
+    type: "room.run.frame",
+    payload: { roomId: room.roomId, agentId: AGENT, runId: RUN, threadRootMessageId: null, frame: body },
+  } as LiveEvent);
+
+  it("seeds the room's in-progress run from the room detail", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    expect(result.current.runs[0]).toMatchObject({
+      roomId: room.roomId, agentId: AGENT, runId: RUN, state: "running", text: "", thinking: "", frames: [],
+    });
+  });
+
+  it("merges a frame that arrives after the seed instead of dropping it", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "on it" })); });
+
+    expect(result.current.runs).toHaveLength(1);
+    expect(result.current.runs[0]).toMatchObject({ runId: RUN, state: "running", text: "on it" });
+  });
+
+  it("never resurrects a run this client already saw end", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    messaging.getRunStatus.mockResolvedValue({ runId: RUN, state: "running" });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", runId: RUN, outcome: "done" })); });
+    expect(result.current.runs[0]).toMatchObject({ state: "completed" });
+
+    // The ledger read behind this detail raced the run's end, so the refreshed
+    // room still lists it.
+    messaging.getRoom.mockResolvedValue(withRun({ roomRevision: 2 }));
+    await act(async () => { await result.current.refreshRoom(); });
+
+    expect(result.current.runs).toHaveLength(1);
+    expect(result.current.runs[0]).toMatchObject({ state: "completed" });
+  });
+
+  it("re-checks a seeded run against the ledger, so a stale seed cannot say Working forever", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    messaging.getRunStatus.mockResolvedValue({ runId: RUN, state: "terminal" });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    expect(messaging.getRunStatus).not.toHaveBeenCalled();
+
+    messaging.getRoom.mockResolvedValue(withRun({ roomRevision: 2 }));
+    await act(async () => { await result.current.refreshRoom(); });
+
+    await waitFor(() => expect(result.current.runs[0]).toMatchObject({ state: "completed" }));
+    expect(messaging.getRunStatus).toHaveBeenCalledWith(RUN);
   });
 });

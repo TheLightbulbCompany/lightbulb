@@ -136,6 +136,7 @@ export type {
   MemberPrefsRequest,
   MemberRef,
   MessagePage,
+  ActiveRoomRun,
   RoomDetail,
   RoomKind,
   RoomListResponse,

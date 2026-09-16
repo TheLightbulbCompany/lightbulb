@@ -1082,11 +1082,14 @@ struct Mirror {
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
     ended_sent: bool,
-    // The last reason injected for a waiting session. A permission prompt
-    // re-fires (a redelivery, the same command asked again), and the same row
-    // twice in a row is noise; any other transition clears it.
+    // The prompt a waiting row has already been queued for, as a dedupe key:
+    // the tool-use id when the hook carried one, else the REDACTED reason (a
+    // command line can hold a token and this field is persisted), else "" --
+    // so a waiting episode with no identity at all still gets exactly one row.
+    // `None` means "not waiting": every other transition clears it, so the same
+    // prompt asked again after an answer is news rather than a repeat.
     #[serde(default)]
-    waiting_text: Option<String>,
+    waiting_key: Option<String>,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1643,7 +1646,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1720,7 +1723,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1796,7 +1799,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1887,7 +1890,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1943,7 +1946,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         }
     }
 

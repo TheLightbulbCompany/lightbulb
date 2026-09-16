@@ -30,6 +30,14 @@ pub(crate) struct HookEvent {
     pub reason: Option<String>,
     pub last_assistant_message: Option<String>,
     pub tool_name: Option<String>,
+    /// Identity of the pending tool call, when the event carries one. Claude
+    /// 2.1.273 puts `tool_use_id` in a `PreToolUse` hook's stdin but NOT in a
+    /// `PermissionRequest`'s (whose input is `hook_event_name` + `tool_name` +
+    /// `tool_input` + `permission_suggestions` and the common session fields),
+    /// so this is present for a question and absent for a permission prompt --
+    /// callers must have a fallback. Parsed either way, so the day it appears
+    /// on both, dedupe gets sharper with no change here.
+    pub tool_use_id: Option<String>,
     /// A short human summary of the tool's input -- the rendering the mirrored
     /// transcript already uses. Never the input itself.
     pub waiting_text: Option<String>,
@@ -97,6 +105,7 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
         ),
         ("message", s("message").map(|m| take_bytes(&m, 120))),
         ("toolName", s("tool_name").map(|m| take_bytes(&m, 64))),
+        ("toolUseId", s("tool_use_id").map(|m| take_bytes(&m, 128))),
         (
             "waitingText",
             waiting
@@ -163,6 +172,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
         last_assistant_message: s("lastAssistantMessage")
             .map(|m| m.chars().take(LAST_MESSAGE_MAX).collect()),
         tool_name: s("toolName").map(|m| take_bytes(&m, 64)),
+        tool_use_id: s("toolUseId").map(|m| take_bytes(&m, 128)),
         waiting_text: s("waitingText").map(|m| take_bytes(&m, WAITING_TEXT_MAX)),
     })
 }
@@ -283,7 +293,7 @@ mod tests {
     use serde_json::json;
 
     fn ev(event: &str) -> HookEvent {
-        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, waiting_text: None }
+        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, tool_use_id: None, waiting_text: None }
     }
 
     #[test]
@@ -365,12 +375,25 @@ mod tests {
     #[test]
     fn lifecycle_datagram_carries_a_bounded_tool_summary_never_the_input() {
         let stdin = json!({"session_id":"abc","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion",
+            "tool_use_id":"toolu_01aaaa",
             "tool_input":{"questions":[{"question":"Tea or coffee?","options":[{"label":"Tea"},{"label":"Coffee"}]}]}});
         let parsed = parse_datagram(&build_datagram("claude", &stdin)).unwrap();
         assert_eq!(parsed.tool_name.as_deref(), Some("AskUserQuestion"));
         assert_eq!(
             parsed.waiting_text.as_deref(),
             Some("Tea or coffee? (Tea / Coffee)")
+        );
+        // A question carries the pending call's identity; a permission prompt
+        // does not send one (verified against Claude 2.1.273's hook input).
+        assert_eq!(parsed.tool_use_id.as_deref(), Some("toolu_01aaaa"));
+        assert_eq!(
+            parse_datagram(&build_datagram(
+                "claude",
+                &json!({"session_id":"abc","hook_event_name":"PermissionRequest","tool_name":"Bash"})
+            ))
+            .unwrap()
+            .tool_use_id,
+            None
         );
 
         // What a tool is asked to write never rides along -- only the summary.

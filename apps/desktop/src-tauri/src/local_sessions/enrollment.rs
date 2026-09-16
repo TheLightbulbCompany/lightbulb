@@ -1243,8 +1243,27 @@ mod tests {
         assert!(!state.join("skill-paths.json").exists());
     }
 
+    /// Restores the process's real stdout however this test leaves the stack --
+    /// a panic mid-test would otherwise leave fd 1 on a temp file for every
+    /// test that runs after it.
+    struct RealStdout(i32);
+    impl Drop for RealStdout {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.0, 1);
+                libc::close(self.0);
+            }
+        }
+    }
+
     /// The hook subcommand must never emit a permission decision. Every path
     /// through it is silent today; this pins the guard that keeps it that way.
+    ///
+    /// The guard under test operates on fd 1 by definition, so the test has to
+    /// take fd 1 over process-wide -- cargo runs tests as threads, so for the
+    /// few syscalls this holds, a direct fd-1 write from another test would
+    /// land in our file. Nothing in this suite does that: libtest captures the
+    /// print macros per thread, and the only direct writer is this test.
     #[test]
     fn local_sessions_hook_stdout_can_never_answer_a_permission_prompt() {
         use std::io::Write;
@@ -1254,16 +1273,15 @@ mod tests {
         let file = fs::File::create(&captured).unwrap();
         let saved = unsafe { libc::dup(1) };
         assert!(saved >= 0);
-        unsafe { libc::dup2(file.as_raw_fd(), 1) };
-        silence_stdout();
-        // Written through `Stdout`, not `println!`: the harness captures the
-        // macro, so only a direct fd-1 write proves where fd 1 now points.
-        let mut out = std::io::stdout();
-        let _ = out.write_all(br#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#);
-        let _ = out.flush();
-        unsafe {
-            libc::dup2(saved, 1);
-            libc::close(saved);
+        {
+            let _restore = RealStdout(saved);
+            unsafe { libc::dup2(file.as_raw_fd(), 1) };
+            silence_stdout();
+            // Written through `Stdout`, not `println!`: the harness captures
+            // the macro, so only a direct fd-1 write proves where fd 1 points.
+            let mut out = std::io::stdout();
+            let _ = out.write_all(br#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#);
+            let _ = out.flush();
         }
         assert_eq!(
             fs::read(&captured).unwrap(),

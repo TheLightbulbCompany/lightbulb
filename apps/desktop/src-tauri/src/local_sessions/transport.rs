@@ -266,7 +266,7 @@ impl Host {
                         ended_at: None,
                         ended_reason: None,
                         ended_sent: false,
-                        waiting_text: None,
+                        waiting_key: None,
                     },
                 );
             }
@@ -325,7 +325,7 @@ impl Host {
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.native.status = status.into();
-                mirror.waiting_text = None;
+                mirror.waiting_key = None;
                 if event.last_assistant_message.is_some() {
                     mirror
                         .native
@@ -336,13 +336,23 @@ impl Host {
                 Ok(Some(key))
             }
             lifecycle::Transition::Waiting { text } => {
+                // Redacted here, not only in `event()`: this text is also the
+                // dedupe key, and a mirror is persisted to disk. A command line
+                // can carry a token -- redaction is a backstop, not a guarantee.
+                let text = text.map(|t| redact(&t));
+                // Identity first: two prompts can read identically (the same
+                // command denied and asked again), and the wording alone would
+                // swallow the second. Claude sends a tool-use id on a question
+                // but not on a permission prompt, hence the fallbacks.
+                let waiting = text.clone().unwrap_or_default();
+                let waiting = event.tool_use_id.as_deref().unwrap_or(&waiting);
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.native.status = "waiting-approval".into();
                 // Queued, not written through the cursor: this event is the
                 // hook's, not the transcript's, and the file never carries it.
-                if mirror.waiting_text != text {
-                    mirror.waiting_text.clone_from(&text);
+                if mirror.waiting_key.as_deref() != Some(waiting) {
+                    mirror.waiting_key = Some(waiting.to_owned());
                     mirror.queue.push(lifecycle(
                         "approval_pending",
                         text.as_deref().unwrap_or(""),
@@ -1485,7 +1495,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         }
     }
 
@@ -1542,6 +1552,7 @@ mod tests {
             reason: None,
             last_assistant_message: None,
             tool_name: None,
+            tool_use_id: None,
             waiting_text: None,
         };
         assert_eq!(host.apply_hook(&ev).unwrap(), Some(key.clone()));
@@ -1611,12 +1622,81 @@ mod tests {
         host.apply_hook(&hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID))
             .unwrap();
         assert_eq!(host.mirrors[&key].native.status, "busy");
-        assert!(host.mirrors[&key].waiting_text.is_none());
+        assert!(host.mirrors[&key].waiting_key.is_none());
         host.apply_hook(&waiting("rm -rf /tmp/x")).unwrap();
         assert_eq!(host.mirrors[&key].queue.len(), 3);
 
+        // A prompt whose reason the hook could not summarize is still a waiting
+        // episode, and the reader still gets a row ("Waiting for input").
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "Stop", SID))
+            .unwrap();
+        let bare = hook(lifecycle::Provider::Codex, "PermissionRequest", SID);
+        host.apply_hook(&bare).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 4);
+        assert_eq!(host.mirrors[&key].queue[3]["text"], "");
+        host.apply_hook(&bare).unwrap();
+        assert_eq!(
+            host.mirrors[&key].queue.len(),
+            4,
+            "one row per waiting episode, reason or no reason"
+        );
+
+        // Identity over wording: a re-delivered question is one row, and the
+        // same wording under a new tool-use id is a second prompt.
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "Stop", SID))
+            .unwrap();
+        let asked = |id: &str| lifecycle::HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            tool_use_id: Some(id.into()),
+            waiting_text: Some("Tea or coffee? (Tea / Coffee)".into()),
+            ..hook(lifecycle::Provider::Codex, "PreToolUse", SID)
+        };
+        host.apply_hook(&asked("toolu_01aaaa")).unwrap();
+        host.apply_hook(&asked("toolu_01aaaa")).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 5, "a redelivery keeps its id");
+        host.apply_hook(&asked("toolu_01bbbb")).unwrap();
+        assert_eq!(
+            host.mirrors[&key].queue.len(),
+            6,
+            "a new prompt reading identically is still a new prompt"
+        );
+
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
-        assert_eq!(stored.queue.len(), 3, "the injected rows survive a restart");
+        assert_eq!(stored.queue.len(), 6, "the injected rows survive a restart");
+    }
+
+    /// A command line can carry a token, and the mirror is written to disk.
+    #[test]
+    fn local_sessions_waiting_row_and_its_persisted_key_are_redacted() {
+        const TOKEN: &str = "sk-live-0123456789abcdefghij";
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let ev = lifecycle::HookEvent {
+            tool_name: Some("Bash".into()),
+            waiting_text: Some(format!("curl -H \"Authorization: Bearer {TOKEN}\"")),
+            ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
+        };
+        host.apply_hook(&ev).unwrap();
+        let row = host.mirrors[&key].queue[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(row.contains("[redacted]") && !row.contains(TOKEN), "{row}");
+        assert!(
+            row.contains("Wants to run Bash(curl"),
+            "which command is blocked is the point: {row}"
+        );
+        let stored_key = host.mirrors[&key].waiting_key.clone().unwrap();
+        assert!(
+            stored_key.contains("[redacted]") && !stored_key.contains(TOKEN),
+            "{stored_key}"
+        );
+        let stored = fs::read_to_string(dir.path().join(format!("{key}.json"))).unwrap();
+        assert!(
+            !stored.contains(TOKEN),
+            "the dedupe key is persisted; it must not carry the token"
+        );
     }
 
     #[test]
@@ -2278,7 +2358,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -2336,7 +2416,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -2450,7 +2530,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_text: None,
+            waiting_key: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -3036,6 +3116,7 @@ mod tests {
             reason: None,
             last_assistant_message: None,
             tool_name: None,
+            tool_use_id: None,
             waiting_text: None,
         }
     }

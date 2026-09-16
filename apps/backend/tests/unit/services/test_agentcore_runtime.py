@@ -136,6 +136,32 @@ class TestRuntimeEnv:
         assert "AWS_BEARER_TOKEN_BEDROCK" not in self._env()
         assert self._env(gate_bearer="tok")["AWS_BEARER_TOKEN_BEDROCK"] == "tok"
 
+    def test_force_http1_only_set_when_a_gate_bearer_is_present(self):
+        # The bedrock-gate is a Lambda function URL (HTTP/1.1 only); the SDK defaults to
+        # HTTP/2 and the first dev turn failed with a bare "Protocol error" without this.
+        assert "AWS_BEDROCK_FORCE_HTTP1" not in self._env()
+        assert self._env(gate_bearer="tok")["AWS_BEDROCK_FORCE_HTTP1"] == "1"
+
+    def test_supplies_the_per_owner_bedrock_block_ecs_gets_from_ecs_manager(self):
+        env = self._env(gate_bearer="tok", gate_url="https://gate.example/invoke", sonnet_aip_arn="arn:aip:sonnet")
+        assert env["AWS_REGION"] == settings.AWS_REGION
+        assert env["OPENCLAW_SERVICE_REPAIR_POLICY"] == "external"
+        assert env["CHOKIDAR_USEPOLLING"] == "true"
+        assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
+        assert env["ANTHROPIC_MODEL"] == "arn:aip:sonnet"
+        assert env["ANTHROPIC_BEDROCK_BASE_URL"] == "https://gate.example/invoke"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "tok"
+
+    def test_anthropic_bedrock_wiring_is_omitted_without_a_gate_url(self):
+        env = self._env(gate_bearer="tok", sonnet_aip_arn="arn:aip:sonnet")
+        assert "ANTHROPIC_BEDROCK_BASE_URL" not in env
+        assert "CLAUDE_CODE_SKIP_BEDROCK_AUTH" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+        # Unconditional pieces still show up.
+        assert env["ANTHROPIC_MODEL"] == "arn:aip:sonnet"
+        assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+
     def test_request_carries_the_environment(self):
         req = ar.build_runtime_request(
             owner_id="org_abc",
@@ -171,6 +197,9 @@ class TestEnsureRuntime:
         monkeypatch.setattr(settings, "ECS_SECURITY_GROUP_ID", "sg-1")
         monkeypatch.setattr(settings, "LITESTREAM_BUCKET", "lightbulb-dev-openclaw-replicas")
         monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/")
+        # conftest's autouse fixture defaults the resolver to break-glass "" -- override it the
+        # same way test_ecs_manager_aip.py's gate_url_resolves test does.
+        monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://gate.dev.example/invoke")
 
         import core.billing.bedrock_aip as aip
         import core.billing.bedrock_gate_tokens as gate
@@ -247,6 +276,22 @@ class TestEnsureRuntime:
         assert env["OPENCLAW_HOOK_TOKEN"] == "hook-xyz"
         assert env["AWS_BEARER_TOKEN_BEDROCK"] == "gate-bearer-1"
         assert env["ISOL8_API_URL"] == "https://api-dev.flickmeon.ai"
+
+    @pytest.mark.asyncio
+    async def test_supplies_the_per_owner_bedrock_block(self, wired):
+        # Mirrors what ecs_manager gives the ECS task -- this is what the first dev flip was
+        # missing, and it 500'd on the first turn ("Protocol error") without AWS_BEDROCK_FORCE_HTTP1.
+        await ar.ensure_runtime("org_abc")
+        env = wired["created"][0]["environmentVariables"]
+        assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
+        assert env["AWS_REGION"] == settings.AWS_REGION
+        assert env["OPENCLAW_SERVICE_REPAIR_POLICY"] == "external"
+        assert env["CHOKIDAR_USEPOLLING"] == "true"
+        assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
+        assert env["ANTHROPIC_MODEL"] == "arn:aip:sonnet"
+        assert env["ANTHROPIC_BEDROCK_BASE_URL"] == "https://gate.dev.example/invoke"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "gate-bearer-1"
 
     @pytest.mark.asyncio
     async def test_parses_the_comma_separated_subnets(self, wired):

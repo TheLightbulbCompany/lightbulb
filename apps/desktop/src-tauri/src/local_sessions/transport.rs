@@ -266,7 +266,7 @@ impl Host {
                         ended_at: None,
                         ended_reason: None,
                         ended_sent: false,
-                        waiting_key: None,
+                        waiting: None,
                     },
                 );
             }
@@ -325,7 +325,7 @@ impl Host {
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.native.status = status.into();
-                mirror.waiting_key = None;
+                mirror.waiting = None;
                 if event.last_assistant_message.is_some() {
                     mirror
                         .native
@@ -336,23 +336,31 @@ impl Host {
                 Ok(Some(key))
             }
             lifecycle::Transition::Waiting { text } => {
-                // Redacted here, not only in `event()`: this text is also the
-                // dedupe key, and a mirror is persisted to disk. A command line
-                // can carry a token -- redaction is a backstop, not a guarantee.
+                // Redacted here, not only in `event()`: the summary is also part
+                // of the dedupe identity, and a mirror is persisted to disk. A
+                // command line can carry a token -- redaction is a backstop, not
+                // a guarantee.
                 let text = text.map(|t| redact(&t));
-                // Identity first: two prompts can read identically (the same
-                // command denied and asked again), and the wording alone would
-                // swallow the second. Claude sends a tool-use id on a question
-                // but not on a permission prompt, hence the fallbacks.
-                let waiting = text.clone().unwrap_or_default();
-                let waiting = event.tool_use_id.as_deref().unwrap_or(&waiting);
+                // Identity is the event's own tool and reason, not the rendered
+                // row: the two hooks a question fires word it differently and
+                // still name one prompt.
+                let prompt = WaitingPrompt {
+                    id: event.tool_use_id.clone(),
+                    tool: event.tool_name.clone(),
+                    // Trimmed like `waiting_reason` trims it, so two hooks whose
+                    // padding differs still name one prompt.
+                    summary: redact(event.waiting_text.as_deref().unwrap_or("").trim()),
+                };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.native.status = "waiting-approval".into();
                 // Queued, not written through the cursor: this event is the
                 // hook's, not the transcript's, and the file never carries it.
-                if mirror.waiting_key.as_deref() != Some(waiting) {
-                    mirror.waiting_key = Some(waiting.to_owned());
+                // An open episode is not itself a reason to swallow this: a
+                // question answered inside one turn can be followed by a real
+                // permission prompt before any other transition clears it.
+                if !mirror.waiting.as_ref().is_some_and(|open| open.is(&prompt)) {
+                    mirror.waiting = Some(prompt);
                     mirror.queue.push(lifecycle(
                         "approval_pending",
                         text.as_deref().unwrap_or(""),
@@ -1495,7 +1503,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         }
     }
 
@@ -1622,7 +1630,7 @@ mod tests {
         host.apply_hook(&hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID))
             .unwrap();
         assert_eq!(host.mirrors[&key].native.status, "busy");
-        assert!(host.mirrors[&key].waiting_key.is_none());
+        assert!(host.mirrors[&key].waiting.is_none());
         host.apply_hook(&waiting("rm -rf /tmp/x")).unwrap();
         assert_eq!(host.mirrors[&key].queue.len(), 3);
 
@@ -1662,16 +1670,16 @@ mod tests {
         );
 
         // One question, both hooks: `PreToolUse` then the `PermissionRequest` the
-        // same prompt also fires. The reader gets the question once.
-        host.apply_hook(&hook(lifecycle::Provider::Codex, "Stop", SID))
-            .unwrap();
-        host.apply_hook(&asked("toolu_01cccc")).unwrap();
-        host.apply_hook(&lifecycle::HookEvent {
+        // same prompt also fires, carrying no tool-use id. The reader gets it once.
+        let also_asked = lifecycle::HookEvent {
             tool_name: Some("AskUserQuestion".into()),
             waiting_text: Some("Tea or coffee? (Tea / Coffee)".into()),
             ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
-        })
-        .unwrap();
+        };
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "Stop", SID))
+            .unwrap();
+        host.apply_hook(&asked("toolu_01cccc")).unwrap();
+        host.apply_hook(&also_asked).unwrap();
         assert_eq!(
             host.mirrors[&key].queue.len(),
             7,
@@ -1682,8 +1690,23 @@ mod tests {
             "and it reads as the question, not as a tool call"
         );
 
+        // Hook delivery is not guaranteed: the permission event alone still has to
+        // show the prompt, and still reads as the question.
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "Stop", SID))
+            .unwrap();
+        host.apply_hook(&also_asked).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 8, "a lost PreToolUse loses nothing");
+        assert_eq!(host.mirrors[&key].queue[7]["text"], "Tea or coffee? (Tea / Coffee)");
+
+        // An open episode is not a reason to swallow the next prompt: a question
+        // answered mid-turn can be followed by a real permission prompt before any
+        // other transition clears the episode.
+        host.apply_hook(&waiting("git commit")).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 9, "a different prompt is its own row");
+        assert_eq!(host.mirrors[&key].queue[8]["text"], "Wants to run Bash(git commit)");
+
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
-        assert_eq!(stored.queue.len(), 7, "the injected rows survive a restart");
+        assert_eq!(stored.queue.len(), 9, "the injected rows survive a restart");
     }
 
     /// A command line can carry a token, and the mirror is written to disk.
@@ -1708,10 +1731,10 @@ mod tests {
             row.contains("Wants to run Bash(curl"),
             "which command is blocked is the point: {row}"
         );
-        let stored_key = host.mirrors[&key].waiting_key.clone().unwrap();
+        let summary = host.mirrors[&key].waiting.clone().unwrap().summary;
         assert!(
-            stored_key.contains("[redacted]") && !stored_key.contains(TOKEN),
-            "{stored_key}"
+            summary.contains("[redacted]") && !summary.contains(TOKEN),
+            "{summary}"
         );
         let stored = fs::read_to_string(dir.path().join(format!("{key}.json"))).unwrap();
         assert!(
@@ -2379,7 +2402,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -2437,7 +2460,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -2551,7 +2574,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),

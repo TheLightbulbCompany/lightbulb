@@ -48,9 +48,8 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     // A signal, not the gate. The installed binary is the wrong witness for a session
     // launched from the install's app bundle, or for one still running the version the
     // CLI upgraded away from -- so it only answers while the transcript cannot.
-    let installed_version = runtime_version(&execution, program, "claude")
-        .await
-        .unwrap_or_else(|_| "unverified".into());
+    // Kept as a Result: a failure here is a failure, not the version "unverified".
+    let installed_version = runtime_version(&execution, program, "claude").await;
     let socket = open_files(pid).await?.into_iter().find(|path| {
         let text = path.to_string_lossy();
         let in_socket_dir = ["/tmp/cc-socks/", "/private/tmp/cc-socks/"]
@@ -83,13 +82,15 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .as_ref()
         .ok_or_else(|| "runtime-unverified".to_owned())
         .and_then(|path| verify_current_generation(path, conversation, since.trim()))
-        // Nothing written since this process started, so the transcript cannot say what
-        // it runs. The installed binary can, but only where it was verified as the file
-        // this pid is actually running.
         .or_else(|reason| {
-            (reason == UNSTARTED)
-                .then_some(installed_version)
-                .ok_or(reason)
+            if reason != UNSTARTED {
+                return Err(reason);
+            }
+            // Nothing written since this process started, so the transcript cannot say
+            // what it runs. The installed binary can -- but only where it WAS verified
+            // as the file this pid is running. An unverifiable runtime stays
+            // unverified; it is not an unsupported version.
+            installed_version.map_err(|_| "runtime-unverified".to_owned())
         });
     let mut version = "unverified".to_owned();
     let mut restriction = match observed {
@@ -1002,12 +1003,19 @@ mod tests {
             )
             .unwrap()
         };
-        // The per-session inbox socket, so the endpoint is not what is restricted here.
+        // The per-session inbox socket, so the endpoint is not what is restricted
+        // here. `capture` also accepts the `/tmp/cc-socks-*` spelling, so this gets
+        // its own directory under /tmp instead of a `<pid>.sock` in the shared
+        // `/tmp/cc-socks/` that the real app and every other test in this process
+        // would be sharing. `TempDir` removes exactly what it created, on drop.
         let pid = std::process::id();
-        let socket = PathBuf::from(format!("/tmp/cc-socks/{pid}.sock"));
-        fs::create_dir_all("/tmp/cc-socks").unwrap();
-        let _ = fs::remove_file(&socket);
-        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let socks = tempfile::Builder::new()
+            .prefix("cc-socks-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(socks.path().join(format!("{pid}.sock")))
+                .unwrap();
         let listing = json!({"kind":"interactive","pid":pid,"sessionId":conversation,
             "status":"unknown","cwd":"/tmp/work"});
         let missing = Path::new("/nonexistent/claude");
@@ -1023,8 +1031,20 @@ mod tests {
         // Below the send floor is what a version restriction is actually for.
         write("2.1.200");
         let old = capture(home.path(), missing, &listing).await.unwrap();
-        assert_eq!(old.restriction.as_deref(), Some("unsupported-version"));
-        let _ = fs::remove_file(&socket);
+        assert_eq!(
+            (old.version.as_str(), old.restriction.as_deref()),
+            ("2.1.200", Some("unsupported-version"))
+        );
+
+        // Nothing to read and no verifiable installed binary either: unverified is
+        // what that is. Reporting it as an unsupported VERSION would be a claim
+        // about a runtime nothing here has seen.
+        fs::write(&transcript, b"").unwrap();
+        let unknown = capture(home.path(), missing, &listing).await.unwrap();
+        assert_eq!(
+            (unknown.version.as_str(), unknown.restriction.as_deref()),
+            ("unverified", Some("runtime-unverified"))
+        );
     }
 
     #[tokio::test]

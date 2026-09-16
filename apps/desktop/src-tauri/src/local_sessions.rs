@@ -1086,6 +1086,36 @@ fn unsendable(original: &Value) -> Value {
     marker
 }
 
+/// Which prompt a session is waiting on. One prompt can be reported twice --
+/// `AskUserQuestion` fires `PreToolUse` AND `PermissionRequest`, in no
+/// guaranteed order and with no guarantee both arrive -- so identity has to
+/// survive one of the two showing up without a tool-use id.
+///
+/// `summary` is the REDACTED reason: a command line can hold a token, and this
+/// is persisted to disk.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct WaitingPrompt {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    summary: String,
+}
+
+impl WaitingPrompt {
+    /// The same prompt reported twice, or a second prompt that reads alike?
+    /// Tool-use ids settle it when both sides carry one -- the same command
+    /// denied and asked again is two prompts. Otherwise the tool and what it is
+    /// asking about do, which is what pairs a question's two hooks.
+    fn is(&self, other: &Self) -> bool {
+        match (&self.id, &other.id) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => self.tool == other.tool && self.summary == other.summary,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Mirror {
     #[serde(default)]
@@ -1108,14 +1138,11 @@ struct Mirror {
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
     ended_sent: bool,
-    // The prompt a waiting row has already been queued for, as a dedupe key:
-    // the tool-use id when the hook carried one, else the REDACTED reason (a
-    // command line can hold a token and this field is persisted), else "" --
-    // so a waiting episode with no identity at all still gets exactly one row.
-    // `None` means "not waiting": every other transition clears it, so the same
-    // prompt asked again after an answer is news rather than a repeat.
+    // The prompt a waiting row has already been queued for. `None` means "not
+    // waiting": every other transition clears it, so the same prompt asked again
+    // after an answer is news rather than a repeat.
     #[serde(default)]
-    waiting_key: Option<String>,
+    waiting: Option<WaitingPrompt>,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1710,7 +1737,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1787,7 +1814,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1863,7 +1890,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1954,7 +1981,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -2010,7 +2037,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
-            waiting_key: None,
+            waiting: None,
         }
     }
 

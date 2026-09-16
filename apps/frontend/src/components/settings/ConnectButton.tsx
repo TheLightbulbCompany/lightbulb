@@ -12,6 +12,7 @@ import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
 import { useSupport } from "@/components/support/SupportProvider";
 import { capture } from "@/lib/analytics";
+import { openPanel } from "@/components/workspace/workspaceController";
 
 interface ConnectButtonProps {
   connection: Connection;
@@ -19,6 +20,8 @@ interface ConnectButtonProps {
   canManage: boolean;
   connectPaste: (provider: string, token: string) => Promise<void>;
   startOAuth: (provider: string) => Promise<void>;
+  /** container_login providers only (Shopify): start the sign-in inside the container. */
+  startContainerLogin?: (provider: string, store: string) => Promise<void>;
   disconnect: (provider: string) => Promise<void>;
   /**
    * Re-fetch the connections list (the `useConnections` SWR `mutate`). Called
@@ -66,6 +69,7 @@ export function ConnectButton({
   canManage,
   connectPaste,
   startOAuth,
+  startContainerLogin,
   disconnect,
   refreshConnections,
 }: ConnectButtonProps) {
@@ -73,6 +77,7 @@ export function ConnectButton({
   const api = useApi();
   const { openSupport } = useSupport();
   const [token, setToken] = useState("");
+  const [store, setStore] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -409,6 +414,62 @@ export function ConnectButton({
         >
           {busy ? oauthBusyLabel : "Connect"}
         </Button>
+        {err && (
+          <p className="text-xs text-[var(--err)]" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // container_login providers (Shopify): the sign-in happens INSIDE the owner's
+  // container — the CLI's OAuth callback is loopback-bound — so the button asks
+  // the backend to start it there and surfaces the Browser panel for the owner
+  // to finish in. Nothing is pasted; no token ever reaches the backend.
+  if (acquisition === "container_login") {
+    const storeInputId = `connection-store-${provider}`;
+    const submitStore = () => {
+      if (!store.trim() || busy || !canManage || !startContainerLogin) return;
+      openPanel("browser");
+      void run(() => startContainerLogin(provider, store.trim()));
+    };
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-2">
+          <label htmlFor={storeInputId} className="sr-only">
+            {display_name} store domain
+          </label>
+          <Input
+            id={storeInputId}
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={store}
+            disabled={busy || !canManage}
+            placeholder="mystore.myshopify.com"
+            aria-invalid={err ? true : undefined}
+            onChange={(e) => setStore(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                submitStore();
+              }
+            }}
+            className="h-9 w-52 bg-cream"
+          />
+          <Button
+            size="sm"
+            disabled={busy || !canManage || !store.trim()}
+            onClick={submitStore}
+            aria-label={`Connect ${display_name}`}
+          >
+            {busy ? "Waiting for sign-in…" : "Connect"}
+          </Button>
+        </div>
+        <p className="text-xs text-[var(--midnight-muted)]">
+          Sign in to {display_name} in the Browser panel when it opens.
+        </p>
         {err && (
           <p className="text-xs text-[var(--err)]" role="alert">
             {err}

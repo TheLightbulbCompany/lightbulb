@@ -443,7 +443,8 @@ describe("strict package and channel configuration", () => {
         expect(registerTool.mock.calls[0][1]).toEqual({ names: ["lightbulb_local_sessions"] });
         expect(registerTool.mock.calls[0][0]({})).toBeNull();
       }
-      expect(registerHttpRoute.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 1 : 0);
+      // Two gateway-auth doors: the control-plane RPC and the Shopify CLI login.
+      expect(registerHttpRoute.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 2 : 0);
       if (registerHttpRoute.mock.calls.length) {
         const [params] = registerHttpRoute.mock.calls[0];
         expect(params).toMatchObject({
@@ -453,6 +454,14 @@ describe("strict package and channel configuration", () => {
           gatewayRuntimeScopeSurface: "trusted-operator",
         });
         expect(typeof params.handler).toBe("function");
+        const [shopify] = registerHttpRoute.mock.calls[1];
+        expect(shopify).toMatchObject({
+          path: "/plugins/lightbulb-channel/shopify/",
+          auth: "gateway",
+          match: "prefix",
+          gatewayRuntimeScopeSurface: "trusted-operator",
+        });
+        expect(typeof shopify.handler).toBe("function");
       }
       expect(on.mock.calls.length).toBe(["full", "tool-discovery"].includes(mode) ? 1 : 0);
       if (on.mock.calls.length) {

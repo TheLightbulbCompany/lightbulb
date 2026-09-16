@@ -2834,3 +2834,71 @@ class TestProjectsRailNamespaceIsInvisibleHere:
         )
         monkeypatch.setattr(mcp_server.integration_secret_store, "get", AsyncMock(return_value={"token": "leaked"}))
         assert await mcp_server.build_connected_integration_servers("org_a") == {}
+
+
+class TestContainerLogin:
+    """POST /connections/{provider}/login + GET …/login/status — the Shopify row."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
+    async def test_login_normalizes_the_store_and_starts_the_container_flow(self, start, async_client):
+        start.return_value = "https://mystore.myshopify.com/admin/oauth/authorize?x"
+        response = await async_client.post(
+            "/api/v1/connections/shopify/login", json={"store": "https://admin.shopify.com/store/mystore/orders"}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"status": "awaiting_login", "provider": "shopify", "store": "mystore.myshopify.com"}
+        assert start.await_args.args[1] == "mystore.myshopify.com"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
+    async def test_login_422s_anything_but_the_shop_host_before_touching_the_container(self, start, async_client):
+        response = await async_client.post("/api/v1/connections/shopify/login", json={"store": "shop.example.com"})
+        assert response.status_code == 422
+        assert "myshopify.com" in response.json()["detail"]
+        start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_login_400s_a_provider_that_does_not_sign_in_from_the_container(self, async_client):
+        response = await async_client.post("/api/v1/connections/google/login", json={"store": "mystore.myshopify.com"})
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
+    async def test_status_marks_the_row_connected_with_the_store_as_identity(self, status, mock_repo, async_client):
+        status.return_value = {
+            "connected": True,
+            "pending": False,
+            "error": None,
+            "session": {"store": "mystore.myshopify.com"},
+        }
+        mock_repo.put_status = AsyncMock()
+        response = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
+        assert response.status_code == 200
+        assert response.json() == {"status": "connected", "provider": "shopify", "store": "mystore.myshopify.com"}
+        assert mock_repo.put_status.await_args.args[1:] == ("shopify", "connected")
+        assert mock_repo.put_status.await_args.kwargs == {"identity": "mystore.myshopify.com"}
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
+    async def test_status_reports_pending_and_failed_without_writing_the_row(self, status, mock_repo, async_client):
+        mock_repo.put_status = AsyncMock()
+        status.return_value = {"connected": False, "pending": True, "error": None, "session": None}
+        pending = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
+        assert pending.json()["status"] == "pending"
+        status.return_value = {
+            "connected": False,
+            "pending": False,
+            "error": "Timed out waiting for OAuth callback.",
+            "session": None,
+        }
+        failed = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
+        assert failed.json() == {
+            "status": "failed",
+            "provider": "shopify",
+            "store": "mystore.myshopify.com",
+            "error": "Timed out waiting for OAuth callback.",
+        }
+        mock_repo.put_status.assert_not_awaited()

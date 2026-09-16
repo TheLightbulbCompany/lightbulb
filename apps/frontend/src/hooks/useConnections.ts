@@ -22,7 +22,7 @@ import { openAuthUrl, pollUntil } from "@/lib/externalAuth";
 export interface Connection {
   provider: string;
   display_name: string;
-  acquisition: "paste_token" | "direct_oauth" | "aws_sts";
+  acquisition: "paste_token" | "direct_oauth" | "aws_sts" | "container_login";
   status: "connected" | "disconnected" | "unavailable";
   /**
    * BYO ("bring your own") OAuth app affordance:
@@ -154,6 +154,43 @@ export function useConnections() {
     [api, mutate],
   );
 
+  const startContainerLogin = useCallback(
+    async (provider: string, store: string): Promise<void> => {
+      // container_login providers (Shopify): the sign-in runs INSIDE the owner's
+      // container — the CLI's OAuth callback is loopback-bound — so nothing
+      // redirects here. The POST starts the CLI and puts Shopify's page in the
+      // container's Chrome (the caller surfaces the Browser panel); then poll
+      // the CLI's own session list until it holds the store, or the CLI gave
+      // up. A 5-minute window matches the CLI's own callback timeout.
+      const started = (await api.post(`/connections/${encodeURIComponent(provider)}/login`, { store })) as {
+        store: string;
+      };
+      const target = encodeURIComponent(started.store);
+      let failure: string | null = null;
+      pollAbortRef.current?.abort();
+      const ac = new AbortController();
+      pollAbortRef.current = ac;
+      const done = await pollUntil(
+        async () => {
+          const s = (await api.get(`/connections/${encodeURIComponent(provider)}/login/status?store=${target}`)) as {
+            status: string;
+            error?: string;
+          };
+          if (s.status === "failed") {
+            failure = s.error ?? "The sign-in did not complete.";
+            return true;
+          }
+          return s.status === "connected";
+        },
+        { intervalMs: 3000, timeoutMs: 330_000, signal: ac.signal },
+      );
+      if (failure) throw new Error(failure);
+      if (!done) throw new Error("The sign-in did not finish within five minutes. Try again.");
+      await mutate();
+    },
+    [api, mutate],
+  );
+
   const startOAuth = useCallback(
     async (provider: string): Promise<void> => {
       const r = (await api.get(
@@ -203,6 +240,7 @@ export function useConnections() {
     error,
     mutate,
     connectPaste,
+    startContainerLogin,
     startOAuth,
     disconnect,
   };

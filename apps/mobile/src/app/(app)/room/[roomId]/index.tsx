@@ -460,7 +460,7 @@ function Conversation() {
       {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
-        placeholder="Message"
+        placeholder={`Message ${title}`}
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}
         onSend={send}

@@ -190,8 +190,7 @@ impl Host {
                 .map(serde_json::to_value)
                 .transpose()
                 .map_err(|e| e.to_string())?;
-            let generation =
-                fingerprint(&serde_json::to_string(&native.process).map_err(|e| e.to_string())?);
+            let generation = native.process.generation();
             let mut invalidate = before.is_none();
             let mut revived = false;
             if let Some(mirror) = self.mirrors.get_mut(&key) {
@@ -231,7 +230,9 @@ impl Host {
                         .last_assistant_message
                         .clone_from(&mirror.native.last_assistant_message);
                 }
-                if mirror.generation != generation {
+                // The same process keeps its stored generation, whatever formula minted
+                // it: an upgrade that changes the fingerprint must not re-register it.
+                if mirror.generation != generation && mirror.native.process != native.process {
                     invalidate = true;
                     mirror.registration.successor = Some(native);
                     // The predecessor is not running and this Mac has verified nothing
@@ -1545,6 +1546,22 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_unchanged_process_keeps_its_generation_under_another_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = native_key(&test_native(SID));
+        // A generation minted by an older fingerprint formula.
+        let mut host = test_host(dir.path(), vec![(key.as_str(), test_mirror(SID, "legacy"))]);
+        let mut renamed = test_native(SID);
+        renamed.process.executable = "/elsewhere/claude".into();
+        assert!(host.observe(vec![renamed.clone()]).unwrap().is_empty());
+        assert_eq!(host.mirrors[&key].generation, "legacy");
+        assert!(host.mirrors[&key].registration.successor.is_none());
+        let mut restarted = renamed;
+        restarted.process.birth_micros += 1;
+        assert_eq!(host.observe(vec![restarted]).unwrap(), vec![key.clone()]);
+    }
+
+    #[test]
     fn local_sessions_hook_events_drive_status_and_end() {
         let dir = tempfile::tempdir().unwrap();
         let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
@@ -1751,7 +1768,7 @@ mod tests {
         let key = native_key(&native);
         let mut mirror = test_mirror(
             SID,
-            &fingerprint(&serde_json::to_string(&native.process).unwrap()),
+            &native.process.generation(),
         );
         mirror.native = native.clone();
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
@@ -2301,7 +2318,7 @@ mod tests {
         };
         assert_eq!(native.conversation, conversation);
         assert_eq!(native.restriction, None);
-        let generation = fingerprint(&serde_json::to_string(&native.process).unwrap());
+        let generation = native.process.generation();
         let sid = uuid::Uuid::new_v4().to_string();
         let request = uuid::Uuid::new_v4().to_string();
         let marker = format!(
@@ -2623,12 +2640,13 @@ mod tests {
             assert_eq!(second["previousGeneration"], "g1");
             socket.close(None).await.unwrap();
         });
-        let native = test_native("native");
+        let mut native = test_native("native");
+        native.process.birth_micros += 1;
         let key = native_key(&native);
         let mut host = test_host(dir.path(), vec![(key.as_str(), test_mirror("native", "g1"))]);
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        // The same session under a process the mirror's generation does not
-        // name: discovery parks it as a successor while registration is frozen.
+        // The same session under a new process: discovery parks it as a
+        // successor while registration is frozen.
         tx.send(vec![native]).await.unwrap();
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await

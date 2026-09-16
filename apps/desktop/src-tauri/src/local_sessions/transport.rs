@@ -266,6 +266,7 @@ impl Host {
                         ended_at: None,
                         ended_reason: None,
                         ended_sent: false,
+                        waiting_text: None,
                     },
                 );
             }
@@ -324,11 +325,30 @@ impl Host {
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.native.status = status.into();
+                mirror.waiting_text = None;
                 if event.last_assistant_message.is_some() {
                     mirror
                         .native
                         .last_assistant_message
                         .clone_from(&event.last_assistant_message);
+                }
+                persist_changed(&self.dir, &key, mirror, &before)?;
+                Ok(Some(key))
+            }
+            lifecycle::Transition::Waiting { text } => {
+                let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+                let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                mirror.native.status = "waiting-approval".into();
+                // Queued, not written through the cursor: this event is the
+                // hook's, not the transcript's, and the file never carries it.
+                if mirror.waiting_text != text {
+                    mirror.waiting_text.clone_from(&text);
+                    mirror.queue.push(lifecycle(
+                        "approval_pending",
+                        text.as_deref().unwrap_or(""),
+                        None,
+                        None,
+                    ));
                 }
                 persist_changed(&self.dir, &key, mirror, &before)?;
                 Ok(Some(key))
@@ -1465,6 +1485,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         }
     }
 
@@ -1558,6 +1579,44 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.native.status, "ended");
         assert_eq!(stored.ended_reason.as_deref(), Some("exited"));
+    }
+
+    /// A pending question or permission prompt never reaches the transcript
+    /// file, so the hook's own row is the only record a teammate can read.
+    #[test]
+    fn local_sessions_waiting_hook_injects_one_row_per_distinct_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let waiting = |text: &str| lifecycle::HookEvent {
+            tool_name: Some("Bash".into()),
+            waiting_text: Some(text.into()),
+            ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
+        };
+        assert_eq!(host.apply_hook(&waiting("git push")).unwrap(), Some(key.clone()));
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        assert_eq!(
+            host.mirrors[&key].queue,
+            vec![json!({"kind":"lifecycle","role":"system","text":"Wants to run Bash(git push)",
+                "truncated":false,"lifecycle":"approval_pending"})]
+        );
+        // The same prompt re-fires (a redelivery, or the same command asked again).
+        host.apply_hook(&waiting("git push")).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 1, "the same reason twice is noise");
+        assert_eq!(host.mirrors[&key].after_seq, 0, "the file's cursor is not ours to move");
+        host.apply_hook(&waiting("rm -rf /tmp/x")).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 2);
+
+        // Answered, then asked the same thing again: that is news, not a repeat.
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID))
+            .unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "busy");
+        assert!(host.mirrors[&key].waiting_text.is_none());
+        host.apply_hook(&waiting("rm -rf /tmp/x")).unwrap();
+        assert_eq!(host.mirrors[&key].queue.len(), 3);
+
+        let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.queue.len(), 3, "the injected rows survive a restart");
     }
 
     #[test]
@@ -2219,6 +2278,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -2276,6 +2336,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -2389,6 +2450,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         let mut host = Host {
             workspace_at: Instant::now(),

@@ -39,6 +39,13 @@ pub(crate) struct HookEvent {
 pub(crate) enum Transition {
     Start,
     Status(&'static str),
+    /// Waiting on the human at the keyboard, with the reason to show when the
+    /// hook carried one. Same status as `Status("waiting-approval")`, plus a
+    /// transcript row -- Claude writes neither a pending question nor a
+    /// permission prompt to its transcript, so this is the only record of it.
+    Waiting {
+        text: Option<String>,
+    },
     Ended(&'static str),
     Ignore,
 }
@@ -160,6 +167,23 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
     })
 }
 
+/// The one line a reader sees for a waiting session: the question as asked
+/// (`Tea or coffee? (Tea / Coffee)`), or the call a permission prompt is about
+/// (`Wants to run Bash(git push)`) -- a permission prompt needs the frame, a
+/// question is already one.
+fn waiting_reason(event: &HookEvent) -> Option<String> {
+    let summary = event.waiting_text.as_deref().unwrap_or("").trim();
+    if event.event != "PermissionRequest" {
+        return (!summary.is_empty()).then(|| summary.to_owned());
+    }
+    let call = match event.tool_name.as_deref().unwrap_or("").trim() {
+        "" => summary.to_owned(),
+        tool if summary.is_empty() => tool.to_owned(),
+        tool => format!("{tool}({summary})"),
+    };
+    (!call.is_empty()).then(|| take_bytes(&format!("Wants to run {call}"), WAITING_TEXT_MAX))
+}
+
 /// Map one hook event to the status/lifecycle transition the transport
 /// applies (Task 11).
 pub(crate) fn transition(event: &HookEvent) -> Transition {
@@ -168,6 +192,17 @@ pub(crate) fn transition(event: &HookEvent) -> Transition {
         "UserPromptSubmit" => Transition::Status("busy"),
         "Stop" => Transition::Status("idle"),
         "SessionEnd" => Transition::Ended("exited"),
+        // The installed matcher already scopes this to AskUserQuestion; a
+        // settings file left behind by an older build must not flood us with
+        // every tool call.
+        "PreToolUse" if event.tool_name.as_deref() == Some("AskUserQuestion") => {
+            Transition::Waiting {
+                text: waiting_reason(event),
+            }
+        }
+        "PermissionRequest" => Transition::Waiting {
+            text: waiting_reason(event),
+        },
         "Notification" => match event.notification_type.as_deref() {
             Some("permission_prompt") => Transition::Status("waiting-approval"),
             Some("idle_prompt") => Transition::Status("idle"),
@@ -262,7 +297,46 @@ mod tests {
         assert_eq!(transition(&HookEvent { message: Some("Claude needs your permission to run Bash".into()), ..ev("Notification") }), Transition::Status("waiting-approval"));
         assert_eq!(transition(&HookEvent { message: Some("Done".into()), ..ev("Notification") }), Transition::Ignore);
         assert_eq!(transition(&ev("SessionEnd")), Transition::Ended("exited"));
+    }
+
+    #[test]
+    fn lifecycle_waiting_transition_needs_a_question_or_a_permission_prompt() {
+        let waiting = |text: &str| Transition::Waiting { text: Some(text.into()) };
+        let question = HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            waiting_text: Some("Tea or coffee? (Tea / Coffee)".into()),
+            ..ev("PreToolUse")
+        };
+        assert_eq!(transition(&question), waiting("Tea or coffee? (Tea / Coffee)"));
+        // Every other tool call is ordinary work, and the transcript carries it.
+        assert_eq!(
+            transition(&HookEvent { tool_name: Some("Bash".into()), ..question.clone() }),
+            Transition::Ignore,
+            "a stale settings file must not report every tool call as waiting"
+        );
         assert_eq!(transition(&ev("PreToolUse")), Transition::Ignore);
+
+        let permission = HookEvent {
+            tool_name: Some("Bash".into()),
+            waiting_text: Some("git push".into()),
+            ..ev("PermissionRequest")
+        };
+        assert_eq!(transition(&permission), waiting("Wants to run Bash(git push)"));
+        assert_eq!(
+            transition(&HookEvent { waiting_text: None, ..permission.clone() }),
+            waiting("Wants to run Bash")
+        );
+        assert_eq!(
+            transition(&ev("PermissionRequest")),
+            Transition::Waiting { text: None },
+            "still a waiting row: the status is the point, the reason is a bonus"
+        );
+        // The prefix is part of the bound, not on top of it.
+        let long = HookEvent { waiting_text: Some("x".repeat(WAITING_TEXT_MAX)), ..permission };
+        let Transition::Waiting { text: Some(text) } = transition(&long) else {
+            panic!("expected a waiting transition");
+        };
+        assert_eq!(text.len(), WAITING_TEXT_MAX);
     }
 
     #[test]

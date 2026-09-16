@@ -1082,6 +1082,11 @@ struct Mirror {
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
     ended_sent: bool,
+    // The last reason injected for a waiting session. A permission prompt
+    // re-fires (a redelivery, the same command asked again), and the same row
+    // twice in a row is noise; any other transition clears it.
+    #[serde(default)]
+    waiting_text: Option<String>,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1638,6 +1643,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1714,6 +1720,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1789,6 +1796,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1879,6 +1887,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -1934,6 +1943,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             ended_sent: false,
+            waiting_text: None,
         }
     }
 

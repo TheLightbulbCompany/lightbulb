@@ -1447,7 +1447,7 @@ class EcsManager:
                 delete_user_service's not-found handling below.
         """
         if await self._hosted_on_agentcore(user_id):
-            logger.info("stop_user_service(%s): workspace is on AgentCore, which parks itself; no-op", reason)
+            logger.info("stop_user_service(reason=%s): workspace is on AgentCore, which parks itself; no-op", reason)
             return
         service_name = self._service_name(user_id)
         put_metric(

@@ -552,4 +552,8 @@ async def ddb_rows(
 async def agentcore_provision(auth: AuthContext = Depends(get_current_user)):
     from core.services.agentcore_runtime import ensure_runtime
 
+    # One-way for the whole workspace (rotates the gate bearer): admins only, like the
+    # other org-scoped mutations in this file.
+    if auth.is_org_context:
+        require_org_admin(auth)
     return await ensure_runtime(resolve_owner_id(auth))

@@ -39,6 +39,8 @@ _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 20
 _VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
+#: Ingress budget on AgentCore: must outlast a cold microVM start (see _post).
+_AGENTCORE_INGRESS_TIMEOUT_S = 90.0
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
@@ -520,7 +522,11 @@ class OpenClawWorkWorker:
                 method="POST",
                 json_body=body,
                 headers=headers,
-                timeout_s=30.0,
+                # This is the call that wakes a parked workspace: AgentCore holds the invoke
+                # through the microVM start (~35s) and the gateway boot (measured 54-57s end
+                # to end on 2026-09-16), so the budget must outlast a cold start. A warm
+                # session acks in milliseconds; the queue's visibility is 300s.
+                timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
             )
         url = f"http://{ip}:{runtime_transport.GATEWAY_PORT}{path}"
         if self._http is not None:

@@ -275,3 +275,27 @@ async def test_ingress_history_reads_only_the_twenty_messages_openclaw_renders(m
     )
 
     assert seen_limits == [20]
+
+
+@pytest.mark.asyncio
+async def test_agentcore_ingress_budget_outlasts_a_cold_microvm_start(monkeypatch):
+    """The ingress POST is the call that wakes a parked AgentCore workspace: AgentCore holds
+    the invoke through the microVM start and the gateway boot (54-57s measured), so a 30s
+    budget would abandon every cold start and the room turn would never be accepted."""
+    from unittest.mock import AsyncMock
+
+    from core.services import openclaw_work as work
+    from core.services import runtime_transport
+
+    seen = AsyncMock(return_value=runtime_transport.RuntimeResponse(202, '{"status":"accepted"}'))
+    monkeypatch.setattr(work.runtime_transport, "request", seen)
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    container = {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}
+    res = await worker._post(
+        container, runtime_transport.AGENTCORE_ADDRESS, "/plugins/lightbulb-channel/inbound/a", {"x": 1}, "tok"
+    )
+    assert res.status_code == 202
+    kwargs = seen.call_args.kwargs
+    assert kwargs["timeout_s"] >= 60.0
+    assert kwargs["json_body"] == {"x": 1}
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"

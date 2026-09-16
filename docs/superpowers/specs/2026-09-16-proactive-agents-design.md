@@ -41,8 +41,8 @@ follow-up primitive of our own; any backend or infrastructure change.
 
 **A promise made in a conversation becomes a Paperclip task that carries the
 conversation's permalink. The task's own lifecycle wakes the agent. The run that
-finishes or parks the task reports in that thread. Waiting on something external is a
-monitor on the task.**
+finishes the task, or changes its plan, reports in the thread under that message, and
+only then. Waiting on something external is a monitor on the task.**
 
 Every mechanism in that sentence exists. What is missing is the agent knowing it, plus
 one identifier the room turn does not hand over yet.
@@ -66,18 +66,31 @@ identifier and what it will do: "Filed ISOA-320. I'll post the PR link here."
 comment, a reassignment, a resolved blocker, a fired monitor, or a routine tick starts
 another. The run reads the task, sees the permalink, and knows where it came from.
 
-**Report.** The run ends by posting its outcome where the promise was made: the
-`message` tool, `action: send`, target `lightbulb:<roomId>`, thread set to the
-permalink's message id, which the plugin maps onto `threadRootMessageId`
-(`channel.ts:217`). Done, or where it stands. Then the task comment, as today.
+**Report.** The run posts its outcome in the **thread under the message the promise
+answered, never top-level in the room**: the `message` tool, `action: send`, target
+`lightbulb:<roomId>`, thread set to the permalink's message id, which the plugin maps
+onto `threadRootMessageId` (`channel.ts:217`). Then the task comment, as today.
+
+**When to speak, and when not.** The thread hears about outcomes and changed plans,
+nothing else:
+
+- Post when the promised thing exists (the PR link, the answer, the deploy), when the
+  promise cannot be kept as stated (a different approach, a timeout, an escalation), or
+  when a human asked in the thread.
+- Do not post on a wake that changed nothing: a monitor tick that found CI still
+  running, a heartbeat with no progress, a re-armed wait. Say "waiting on CI" once,
+  when the plan changes from now to later, not every hour.
+- Do not post what "Needs you" already shows. An approval, a question, a blocker on a
+  human is an interaction on the task, and the Teams feed and the phone push already
+  carry it. Raising it in the thread too is the same ask twice.
 
 **Wait.** When the outcome depends on something that will happen on its own, a PR
 merging, CI finishing, a deploy landing, the run sets a **monitor** on the task
 (`paperclip-api.sh monitor <id> --at <ISO> --notes … --timeout-at … --recovery …`) and
-reports "waiting on X, I'll check at T" in the thread. The monitor fires, Paperclip wakes
-the agent, the run reports again. An unbounded wait is forbidden by the existing
-monitors reference; a bounded one that times out follows its recovery policy, and that
-too is reported in the thread.
+says so once in the thread. The monitor fires, Paperclip wakes the agent, and the run
+speaks only if something changed. An unbounded wait is forbidden by the existing
+monitors reference; a bounded one that times out follows its recovery policy, and a
+timeout is a changed plan, so that is reported.
 
 **Cancel and see.** The task is on the board with its permalink, its monitor row, and its
 activity. Closing it is cancelling the promise. Nothing is added to the room until the
@@ -85,9 +98,10 @@ agent speaks.
 
 **Forge, end to end.** Leo asks for the PR. Forge files ISOA-320 to itself in `todo` with
 Leo's permalink and replies "Filed ISOA-320, I'll post the PR link here." Paperclip
-starts the run. Forge writes the PR, opens it, and posts the link in Leo's thread. If the
-PR needs CI, Forge sets a monitor for an hour out, posts "PR #2700 is up, waiting on CI,
-I'll confirm here", and the monitor's wake posts the result.
+starts the run. Forge writes the PR, opens it, and posts the link in the thread under Leo's
+message. If the PR needs CI, Forge sets a monitor for an hour out, posts "PR #2700 is
+up, waiting on CI, I'll confirm here" once, and the monitor's wake posts only the
+result. If CI is still running at the tick, Forge re-arms and says nothing.
 
 ## 6. Changes
 
@@ -98,8 +112,10 @@ I'll confirm here", and the monitor's wake posts the result.
   - *A promise is a task.* Never say you will follow up, track, or post later unless
     you have filed the Paperclip task with the permalink in that same turn. If you
     cannot, say what you did instead.
-  - *A run that changes a task with a permalink ends in that thread.* Done, or where it
-    stands and what you are waiting on.
+  - *Outcomes and changed plans go in the thread; nothing else does.* A run that
+    finishes a task with a permalink, or changes how it will be finished, ends with a
+    reply in the thread under that message, never top-level. A wake that changed
+    nothing, and anything "Needs you" already shows, stays off the thread.
 - **`paperclip` skill.** One sentence at the top of `references/monitors.md`: *A
   promise you made in chat that depends on an external thing is a monitor on the task,
   not a sentence.* The `SKILL.md` "Wait on an external thing" row already routes there.
@@ -146,4 +162,5 @@ change.
 - Dev, end to end: in a dev room, ask Forge for something that takes a few minutes.
   Confirm the task exists with the permalink and a run started; confirm the reply lands
   in the thread. Then ask for something that waits on CI; confirm the monitor row on the
-  task, the "waiting" reply, and the post-monitor reply in the thread.
+  task, exactly one "waiting" reply, silence on a no-change tick, and the result in
+  the thread, all under the original message and never top-level.

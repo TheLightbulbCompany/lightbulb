@@ -93,17 +93,22 @@ describe("DreamsPanel", () => {
     expect(screen.queryByRole("option", { name: /Friday/ })).not.toBeInTheDocument();
   });
 
-  it("toggles a phase via config.patch", async () => {
+  it("toggles dreaming.enabled via config.patch — never a per-phase flag", async () => {
+    // On the 9.x image memory-core builds its single sweep job from the DEEP
+    // config, so a per-phase `deep.enabled: false` removed the whole sweep.
+    // The panel exposes one switch and must patch `dreaming.enabled` only.
     patchConfigMock.mockClear();
     render(<DreamsPanel />);
-    const btn = await screen.findByLabelText(/Toggle Light phase/i);
+    const btn = await screen.findByLabelText(/Toggle dreaming/i);
     fireEvent.click(btn);
     await waitFor(() =>
       expect(patchConfigMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          plugins: { entries: { "memory-core": { config: { dreaming: { phases: { light: { enabled: false } } } } } } },
+          plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } },
         }),
       ),
     );
+    expect(screen.queryByLabelText(/Toggle .* phase/i)).not.toBeInTheDocument();
+    expect(JSON.stringify(patchConfigMock.mock.calls)).not.toContain("phases");
   });
 });

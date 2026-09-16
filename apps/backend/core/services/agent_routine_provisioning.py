@@ -84,8 +84,10 @@ NIGHTLY_CEO_ROUTINE_DESCRIPTION = (
     "irreversible, financial, legal, or reputation-bearing action. Advance ONE "
     "actionable constraint; if the board is empty, create ONE task derived from "
     "the company goal; if everything is blocked on the owner, identify what to "
-    "unblock. ALWAYS end by emailing the owner what you did and the single best "
-    "next step — never exit silently."
+    "unblock. File what the day made durable: wiki_search the company wiki's "
+    "newest sources and wiki_apply any company-durable decision or fact with "
+    "provenance. ALWAYS end by emailing the owner what you did and the single "
+    "best next step — never exit silently."
 )
 
 

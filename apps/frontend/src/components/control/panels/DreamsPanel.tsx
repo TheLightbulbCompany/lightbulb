@@ -143,59 +143,59 @@ function PhaseToggles({
   onChanged: () => void;
 }) {
   const { configReady, patchConfig } = useConfigPatch();
-  const [busy, setBusy] = useState<DreamPhaseKey | null>(null);
+  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const on = dreaming?.enabled ?? false;
 
-  const toggle = async (phase: DreamPhaseKey, next: boolean) => {
-    if (
-      phase === "deep" &&
-      next &&
-      !window.confirm(
-        "Enable the DEEP phase? It promotes recurring recalls into MEMORY.md and " +
-          "exercises the embeddings store heavily — only safe on the 6.6 sqlite-nfs " +
-          "image. Do not enable on an older container.",
-      )
-    ) {
-      return;
-    }
-    setBusy(phase);
+  // ONE switch, `dreaming.enabled`. The phases are not independently
+  // schedulable on the 9.x image: memory-core runs a single managed sweep
+  // (light → REM → deep) and builds its cron job from the DEEP config, so the
+  // old per-phase "Deep: Off" button silently removed the whole sweep — no
+  // cron job, no light notes, no diary — for every workspace. Phases render
+  // below as read-only indicators of what the sweep reports.
+  const toggle = async () => {
+    setBusy(true);
     setMsg(null);
     try {
       await patchConfig({
-        plugins: { entries: { "memory-core": { config: { dreaming: { phases: { [phase]: { enabled: next } } } } } } },
+        plugins: { entries: { "memory-core": { config: { dreaming: { enabled: !on } } } } },
       });
       onChanged();
     } catch (e) {
       setMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
   return (
     <div>
-      <p className="label-caps text-[var(--midnight-muted)] mb-2">Sleep phases</p>
-      <div className="space-y-2">
+      <div className="flex items-center justify-between rounded-lg border bg-cream px-3 py-2">
+        <div className="flex items-center gap-2 text-sm">
+          <span className={`h-2 w-2 rounded-full ${on ? "bg-ok" : "bg-[var(--edge)]"}`} />
+          <Moon size={16} className="text-[var(--midnight-muted)]" />
+          <span>Nightly sweep</span>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Toggle dreaming"
+          disabled={!configReady || busy}
+          onClick={toggle}
+        >
+          {busy ? "…" : on ? "On" : "Off"}
+        </Button>
+      </div>
+      <p className="label-caps text-[var(--midnight-muted)] mt-4 mb-2">Sleep phases</p>
+      <div className="flex flex-wrap gap-4 text-sm">
         {PHASE_ORDER.map((key) => {
-          const on = dreaming?.phases?.[key]?.enabled ?? false;
+          const phaseOn = dreaming?.phases?.[key]?.enabled ?? on;
           return (
-            <div key={key} className="flex items-center justify-between rounded-lg border bg-cream px-3 py-2">
-              <div className="flex items-center gap-2 text-sm">
-                <span className={`h-2 w-2 rounded-full ${on ? "bg-ok" : "bg-[var(--edge)]"}`} />
-                {key === "light" ? <Sun size={16} className="text-[var(--midnight-muted)]" /> : <Moon size={16} className="text-[var(--midnight-muted)]" />}
-                <span>{PHASE_LABEL[key]}</span>
-                {key === "deep" && <span className="text-xs text-warn">requires 6.6 image</span>}
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label={`Toggle ${PHASE_LABEL[key]} phase`}
-                disabled={!configReady || busy !== null}
-                onClick={() => toggle(key, !on)}
-              >
-                {busy === key ? "…" : on ? "On" : "Off"}
-              </Button>
-            </div>
+            <span key={key} className="flex items-center gap-1.5">
+              <span className={`h-2 w-2 rounded-full ${phaseOn ? "bg-ok" : "bg-[var(--edge)]"}`} />
+              {key === "light" ? <Sun size={16} className="text-[var(--midnight-muted)]" /> : <Moon size={16} className="text-[var(--midnight-muted)]" />}
+              <span>{PHASE_LABEL[key]}</span>
+            </span>
           );
         })}
       </div>

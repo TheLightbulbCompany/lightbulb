@@ -1320,21 +1320,25 @@ def memory_plugin_entries(owner_id: str | None = None) -> dict:
     """The bundled memory extensions (``memory-core`` + ``memory-wiki``),
     shared by the provision-time builder and the provider hot-swap path.
 
-    Light-phase dreaming reads recent session transcripts off disk and writes
-    consolidated dated ``memory/<day>.md`` notes (flat files, under a lockfile,
-    no embeddings). Today/yesterday's dated notes auto-load into context, so
-    agents carry recent work forward without relying on the agent remembering
-    to call ``memory_search``.
-
-    REM is ON: it writes ``DREAMS.md`` narratives, now surfaced by the Dreams
-    control panel's Diary tab (``doctor.memory.dreamDiary``). DEEP is OFF by
-    default and is an opt-in per-container toggle (Dreams panel → ``config.patch``,
-    never a builder flip): it auto-promotes recurring recalls into root
-    ``MEMORY.md``. The 6.6 image that makes its embeddings store EFS-safe
-    (DELETE journaling on NFS) is already deployed, so the toggle is usable.
-    ``memory_search`` itself stays ENABLED in agents.defaults (live
-    logs show no sqlite contention; recall is what lets agents remember beyond
-    the always-loaded ``MEMORY.md``).
+    Dreaming is ON with upstream's phase defaults and deliberately NO
+    ``phases`` block. On the 9.x image dreaming is ONE managed cron sweep
+    (light → REM → deep; ``docs/reference/memory-config.md``: "internal
+    implementation phases, not user-facing config") and memory-core builds
+    that job from the DEEP config — ``resolveMemoryDeepDreamingConfig``
+    returns ``enabled = dreaming.enabled && phases.deep.enabled`` and
+    ``reconcileShortTermDreamingCronJob`` removes the job when that is false.
+    The old ``phases.deep.enabled: False`` here (a 6.x-era opt-in, from when
+    the phases were scheduled separately) therefore switched the WHOLE sweep
+    off fleet-wide once the image moved: ``openclaw cron list`` showed no
+    dreaming job, ``memory/.dreams/`` never gained ``phase-signals.json`` and
+    every ``DREAMS.md`` froze at the 2026-08-17 backfill. Light consolidates
+    recent transcripts into dated ``memory/<day>.md`` notes that auto-load;
+    REM writes the ``DREAMS.md`` narrative (Dreams panel → Diary); deep
+    promotes recurring recalls into ``MEMORY.md`` behind its own
+    score/recall/uniqueness gates and the ``maxPriorEntryLossFraction``
+    rewrite guard. The Dreams panel exposes ONE switch, ``dreaming.enabled``.
+    ``memory_search`` itself stays ENABLED in agents.defaults (recall is what
+    lets agents remember beyond the always-loaded ``MEMORY.md``).
 
     ``memory-wiki`` is the owner's COMPANY BRAIN: a single vault shared by
     every agent in the container (``vault.scope: "global"`` →
@@ -1385,14 +1389,8 @@ def memory_plugin_entries(owner_id: str | None = None) -> dict:
                     "enabled": True,
                     "frequency": _dreaming_frequency(owner_id),
                     "timezone": "UTC",
-                    "phases": {
-                        "light": {"enabled": True},
-                        "deep": {"enabled": False},
-                        # REM writes daily REM blocks + a DREAMS.md narrative,
-                        # surfaced by the Dreams control panel's Diary tab. Flat
-                        # files (no embeddings), EFS-safe on the deployed image.
-                        "rem": {"enabled": True},
-                    },
+                    # No ``phases`` key — see the docstring: on 9.x a
+                    # ``phases.deep.enabled: false`` removes the whole sweep.
                 },
             },
         },

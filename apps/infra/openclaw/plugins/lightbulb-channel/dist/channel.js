@@ -175,6 +175,12 @@ export function createOutbound(deps) {
         async sendText(ctx) {
             const resolved = resolveEnv(deps.env());
             const body = buildOutboundBody(ctx, deps.runs);
+            // Declaring reconcileUnknownSend makes the host SKIP pre-send promotion and
+            // publish the platform-send attempt identity here instead. Skip these and the
+            // row keeps only its producer claim, which the post-send unknown marker then
+            // clears — leaving it ownerless, so every ack fails "claim was lost".
+            await ctx.onPlatformSendDispatch?.();
+            ctx.assertDirectAdapterHandoff?.();
             const res = await request(resolved, agentMessagesPath(resolved.ownerId), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, ctx.signal);
             if (res.status !== 201)
                 throw new Error(`lightbulb: backend rejected the message (${res.status})`);

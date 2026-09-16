@@ -45,6 +45,9 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         }
     }
     let transcript = (transcripts.len() == 1).then(|| transcripts.remove(0));
+    // A signal, not the gate. The installed binary is the wrong witness for a session
+    // launched from the install's app bundle, or for one still running the version the
+    // CLI upgraded away from -- so it only answers while the transcript cannot.
     let installed_version = runtime_version(&execution, program, "claude")
         .await
         .unwrap_or_else(|_| "unverified".into());
@@ -66,32 +69,37 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .and_then(|path| fs::symlink_metadata(path).ok())
         .filter(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::geteuid() })
         .map(|m| m.ino());
+    let since = native_output(
+        Path::new("/bin/date"),
+        &[
+            "-u",
+            "-r",
+            &(execution.birth_micros / 1_000_000 + 1).to_string(),
+            "+%Y-%m-%dT%H:%M:%S.000Z",
+        ],
+    )
+    .await?;
+    let observed = transcript
+        .as_ref()
+        .ok_or_else(|| "runtime-unverified".to_owned())
+        .and_then(|path| verify_current_generation(path, conversation, since.trim()))
+        // Nothing written since this process started, so the transcript cannot say what
+        // it runs. The installed binary can, but only where it was verified as the file
+        // this pid is actually running.
+        .or_else(|reason| {
+            (reason == UNSTARTED)
+                .then_some(installed_version)
+                .ok_or(reason)
+        });
     let mut version = "unverified".to_owned();
-    let mut restriction = if send_supported_version(&installed_version) {
-        None
-    } else {
-        Some("unsupported-version".into())
-    };
-    if restriction.is_none() {
-        let since = native_output(
-            Path::new("/bin/date"),
-            &[
-                "-u",
-                "-r",
-                &(execution.birth_micros / 1_000_000 + 1).to_string(),
-                "+%Y-%m-%dT%H:%M:%S.000Z",
-            ],
-        )
-        .await?;
-        match transcript
-            .as_ref()
-            .ok_or_else(|| "runtime-unverified".to_owned())
-            .and_then(|path| verify_current_generation(path, conversation, since.trim()))
-        {
-            Ok(runtime) => version = runtime,
-            Err(error) => restriction = Some(error),
+    let mut restriction = match observed {
+        Ok(runtime) => {
+            let sendable = send_supported_version(&runtime);
+            version = runtime;
+            (!sendable).then(|| "unsupported-version".to_owned())
         }
-    }
+        Err(reason) => Some(reason),
+    };
     if socket_inode.is_none() {
         restriction = Some("endpoint-unavailable".into());
     }
@@ -120,6 +128,11 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         last_assistant_message: None,
     })
 }
+
+/// `verify_current_generation` found nothing this process wrote -- distinct from a
+/// transcript that is unreadable or contradicts itself, which is a refusal. Internal:
+/// `capture` resolves it and it never travels as a restriction.
+pub(super) const UNSTARTED: &str = "runtime-unstarted";
 
 /// Bounded current-process evidence, independent of the installed CLI version.
 pub fn verify_current_generation(path: &Path, session: &str, since: &str) -> Result<String> {
@@ -169,7 +182,7 @@ pub fn verify_current_generation(path: &Path, session: &str, since: &str) -> Res
         }
         version = Some(runtime.into());
     }
-    version.ok_or_else(|| "runtime-unverified".into())
+    version.ok_or_else(|| UNSTARTED.into())
 }
 
 pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
@@ -965,6 +978,53 @@ mod tests {
         configure_hooks(&settings, Path::new("/app"), false).unwrap();
         let v: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         assert!(v.get("hooks").is_none());
+    }
+
+    #[tokio::test]
+    async fn local_sessions_claude_version_is_the_transcript_not_the_installed_cli() {
+        // This test's own process stands in for a session. Its binary is not the one the
+        // PATH launcher resolves to, so the installed-binary check cannot answer -- the
+        // shape of a session launched from the install's app bundle, and of one still
+        // running the version the CLI has upgraded away from. The transcript answers.
+        let home = tempfile::tempdir().unwrap();
+        let conversation = "8e0e21f1-4a2c-4b6c-9c1a-2f4d5e6a7b8c";
+        let project = home.path().join(".claude/projects/-tmp-work");
+        fs::create_dir_all(&project).unwrap();
+        let transcript = project.join(format!("{conversation}.jsonl"));
+        let write = |version: &str| {
+            fs::write(
+                &transcript,
+                format!(
+                    "{}\n",
+                    json!({"type":"user","sessionId":conversation,"version":version,
+                    "timestamp":"2099-01-01T00:00:00.000Z","message":{"role":"user","content":"hello"}})
+                ),
+            )
+            .unwrap()
+        };
+        // The per-session inbox socket, so the endpoint is not what is restricted here.
+        let pid = std::process::id();
+        let socket = PathBuf::from(format!("/tmp/cc-socks/{pid}.sock"));
+        fs::create_dir_all("/tmp/cc-socks").unwrap();
+        let _ = fs::remove_file(&socket);
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let listing = json!({"kind":"interactive","pid":pid,"sessionId":conversation,
+            "status":"unknown","cwd":"/tmp/work"});
+        let missing = Path::new("/nonexistent/claude");
+
+        write("2.1.272");
+        let session = capture(home.path(), missing, &listing).await.unwrap();
+        assert_eq!(
+            (session.version.as_str(), session.restriction.as_deref()),
+            ("2.1.272", None),
+            "a session outlives the CLI version it started on and stays sendable"
+        );
+
+        // Below the send floor is what a version restriction is actually for.
+        write("2.1.200");
+        let old = capture(home.path(), missing, &listing).await.unwrap();
+        assert_eq!(old.restriction.as_deref(), Some("unsupported-version"));
+        let _ = fs::remove_file(&socket);
     }
 
     #[tokio::test]

@@ -841,10 +841,35 @@ async fn open_files(pid: u32) -> Result<Vec<PathBuf>> {
     .collect())
 }
 
+/// One install can reach the same binary under two names: Claude's installer
+/// hard-links `<root>/ClaudeCode.app/Contents/MacOS/claude` onto the
+/// `<root>/versions/<v>` file the PATH launcher resolves to, and sessions started
+/// after that run under the bundle path. Accept a second name only when it is
+/// literally the same file -- same device, same inode -- reached without a symlink
+/// from inside the install root. Nothing here is ever executed: `installed`, the
+/// PATH-resolved binary, stays the only path this module runs.
+fn same_installed_file(executable: &Path, installed: &Path) -> Result<()> {
+    if executable == installed {
+        return Ok(());
+    }
+    let root = installed
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("runtime-unverified")?;
+    confined_path(root, executable).map_err(|_| "runtime-unverified")?;
+    let running = fs::symlink_metadata(executable).map_err(|_| "runtime-unverified")?;
+    let known = fs::metadata(installed).map_err(|_| "runtime-unverified")?;
+    if !running.is_file() || running.dev() != known.dev() || running.ino() != known.ino() {
+        return Err("runtime-unverified".into());
+    }
+    Ok(())
+}
+
 async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -> Result<String> {
     // Never execute an arbitrary path obtained from a registration or process row.
-    // The mapped executable must be the resolved installed provider binary.
-    if expected.executable != installed || process(expected.pid)? != *expected {
+    // The mapped executable must be another name for the installed provider binary.
+    same_installed_file(&expected.executable, installed)?;
+    if process(expected.pid)? != *expected {
         return Err("runtime-unverified".into());
     }
     let before = fs::metadata(installed).map_err(|_| "runtime-unverified")?;
@@ -868,7 +893,8 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
             inode = value.parse::<u64>().ok();
         }
         if let Some(value) = line.strip_prefix('n') {
-            if Path::new(value) == installed && inode == Some(before.ino()) {
+            // The inode is the identity; the name may be the install's other one.
+            if Path::new(value) == expected.executable && inode == Some(before.ino()) {
                 matched = true;
             }
         }
@@ -1531,6 +1557,44 @@ mod tests {
         let linked = root.join("linked");
         symlink(&root, &linked).unwrap();
         assert!(confined_path(&root, &linked.join("history.jsonl")).is_err());
+    }
+
+    #[test]
+    fn local_sessions_app_bundle_is_the_installed_binary_but_a_lookalike_is_not() {
+        // Mirrors the real layout: `<root>/versions/<v>` is what PATH resolves to and
+        // `<root>/ClaudeCode.app/Contents/MacOS/claude` is a hard link onto it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let installed = root.join("versions/2.1.273");
+        fs::create_dir_all(root.join("versions")).unwrap();
+        fs::write(&installed, b"binary").unwrap();
+        let bundle = root.join("ClaudeCode.app/Contents/MacOS/claude");
+        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::hard_link(&installed, &bundle).unwrap();
+
+        assert_eq!(same_installed_file(&installed, &installed), Ok(()));
+        assert_eq!(
+            same_installed_file(&bundle, &installed),
+            Ok(()),
+            "the install's other name for the same inode is the same binary"
+        );
+
+        // Same bytes, different file, inside the root: still not the installed binary.
+        let copy = root.join("ClaudeCode.app/Contents/MacOS/claude-copy");
+        fs::write(&copy, b"binary").unwrap();
+        assert!(same_installed_file(&copy, &installed).is_err());
+
+        // A hard link to the same inode from outside the root is refused on the root.
+        let away = tempfile::tempdir().unwrap();
+        let outside = fs::canonicalize(away.path()).unwrap();
+        let elsewhere = outside.join("claude");
+        fs::hard_link(&installed, &elsewhere).unwrap();
+        assert!(same_installed_file(&elsewhere, &installed).is_err());
+
+        // And a symlink that leaves the root cannot smuggle one back in.
+        let escape = root.join("escape");
+        symlink(&outside, &escape).unwrap();
+        assert!(same_installed_file(&escape.join("claude"), &installed).is_err());
     }
 
     #[test]

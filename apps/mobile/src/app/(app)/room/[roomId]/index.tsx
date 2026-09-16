@@ -222,6 +222,11 @@ function Conversation() {
   }, []);
 
   const runningRun = runs.find((run) => run.state === "running");
+  // An agent already working answers whether or not this message addresses it.
+  const runningAgentIds = useMemo(
+    () => runs.filter((run) => run.state === "running").map((run) => run.agentId),
+    [runs],
+  );
   const agentName = useCallback(
     (agentId: string) =>
       members?.find((member) => member.kind === "agent" && member.id === agentId)?.displayName ??
@@ -334,7 +339,13 @@ function Conversation() {
               currentUserId={userId ?? ""}
             />
             {runs.map((run) => (
-              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
+              <RunBlock
+                key={run.runId}
+                run={run}
+                name={agentName(run.agentId)}
+                onAbort={() => rooms.abortRun(run.runId)}
+                onSteer={(text) => rooms.steerRun(run.runId, text)}
+              />
             ))}
           </View>
         }
@@ -457,6 +468,8 @@ function Conversation() {
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
         draftKey={composerDraftKey}
+        roomKind={rooms.activeRoom?.kind}
+        runningAgentIds={runningAgentIds}
       />
     </KeyboardAvoidingView>
   );

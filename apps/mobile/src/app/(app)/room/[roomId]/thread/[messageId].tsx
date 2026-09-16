@@ -192,7 +192,13 @@ export default function ThreadScreen() {
               currentUserId={userId ?? ""}
             />
             {runs.map((run) => (
-              <RunBlock key={run.runId} run={run} name={agentName(run.agentId)} />
+              <RunBlock
+                key={run.runId}
+                run={run}
+                name={agentName(run.agentId)}
+                onAbort={() => rooms.abortRun(run.runId)}
+                onSteer={(text) => rooms.steerRun(run.runId, text)}
+              />
             ))}
           </View>
         }
@@ -296,6 +302,7 @@ export default function ThreadScreen() {
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
         draftKey={composerDraftKey}
+        roomKind={rooms.activeRoom?.kind}
       />
     </KeyboardAvoidingView>
   );

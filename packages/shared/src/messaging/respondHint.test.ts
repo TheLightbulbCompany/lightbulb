@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { respondHint, type RespondTarget } from "../respondHint";
+import { respondHint, type RespondTarget } from "./respondHint";
 
 const friday: RespondTarget = { kind: "agent", id: "agent-friday", displayName: "Friday", listenMode: "active" };
 const gauge: RespondTarget = { kind: "agent", id: "agent-gauge", displayName: "Gauge", listenMode: "mentions" };

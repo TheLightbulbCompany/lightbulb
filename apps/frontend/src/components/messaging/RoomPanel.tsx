@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import NextLink from "next/link";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, Link2 } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { CreateMessageRequest, ListenMode, MemberPrefsRequest, MemberRef, RoomResourceSource, UpdateMessageRequest } from "@lightbulb/shared";
+import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type RoomResourceSource, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -31,7 +31,6 @@ import { RoomIntro } from "./RoomIntro";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
-import { LISTEN_MODE_LABELS, listenModeOptions } from "./respondHint";
 import { buildTimeline, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {

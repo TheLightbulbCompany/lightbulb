@@ -126,7 +126,7 @@ async def deliver_to_agent(
                 response = await runtime_transport.request(
                     container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
                 )
-            if response.status_code >= 400:
+            if not 200 <= response.status_code < 300:
                 logger.warning(
                     "agent_mail_delivery failed owner=%s agent=%s err=agentcore hook returned %s",
                     owner_id,

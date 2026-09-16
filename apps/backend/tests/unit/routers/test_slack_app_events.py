@@ -238,6 +238,7 @@ def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
         captured["ip"] = ip
         captured["content"] = content
         captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
         return runtime_transport.RuntimeResponse(200, '{"ok":true}', {})
 
     with (
@@ -257,6 +258,9 @@ def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
     assert captured["container"] is agentcore_container
     assert captured["path"] == f"/slack/events/{TEAM}"
     assert captured["ip"] == runtime_transport.AGENTCORE_ADDRESS
+    from routers.slack_app import FORWARD_TIMEOUT_S
+
+    assert captured["timeout_s"] == FORWARD_TIMEOUT_S
     assert captured["content"] == body
     assert captured["headers"]["X-Slack-Signature"] == _sig(HOOK_TOKEN, sent["X-Slack-Request-Timestamp"], body)
 

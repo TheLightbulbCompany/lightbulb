@@ -288,6 +288,7 @@ def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_
         captured["ip"] = ip
         captured["content"] = content
         captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
         return runtime_transport.RuntimeResponse(200, '{"ok": true}', {"content-type": "application/json"})
 
     def _boom_client_factory():
@@ -315,6 +316,8 @@ def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_
     assert captured["path"] == "/hooks/wake?challenge=abc"
     assert captured["ip"] == runtime_transport.AGENTCORE_ADDRESS
     assert captured["headers"]["Authorization"] == "Bearer " + fake_container["hook_token"]
+    assert captured["content"] == r.request.content
+    assert captured["timeout_s"] == 30.0
 
 
 def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):

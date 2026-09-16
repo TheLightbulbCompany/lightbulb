@@ -130,6 +130,7 @@ async def test_abort_on_an_agentcore_row_goes_through_the_runtime_transport_seam
         captured["ip"] = ip
         captured["json_body"] = json_body
         captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
         return runtime_transport.RuntimeResponse(202, "{}", {})
 
     with (
@@ -149,6 +150,7 @@ async def test_abort_on_an_agentcore_row_goes_through_the_runtime_transport_seam
     assert captured["ip"] == "agentcore"
     assert captured["json_body"] == {}
     assert captured["headers"] == {"Authorization": "Bearer gw"}
+    assert captured["timeout_s"] == 10.0
 
 
 @pytest.mark.asyncio

@@ -269,6 +269,7 @@ async def test_agentcore_row_delivers_through_the_runtime_transport_seam(monkeyp
         captured["ip"] = ip
         captured["json_body"] = json_body
         captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
         return runtime_transport.RuntimeResponse(200, '{"ok": true, "runId": "run_1"}', {})
 
     monkeypatch.setattr(runtime_transport, "request", fake_request)
@@ -284,6 +285,7 @@ async def test_agentcore_row_delivers_through_the_runtime_transport_seam(monkeyp
     assert captured["headers"] == {"Authorization": "Bearer tok_abc"}
     assert captured["json_body"]["message"] == "hi"
     assert captured["json_body"]["agentId"] == "agent_friday"
+    assert captured["timeout_s"] == 10.0
 
 
 @pytest.mark.asyncio

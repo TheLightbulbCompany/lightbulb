@@ -220,10 +220,16 @@ async def receive_slack_event(request: Request) -> Response:
     if runtime_transport.host_for(container) == "agentcore":
         path = f"/slack/events/{quote(team_id, safe='')}"
         try:
-            upstream = await runtime_transport.request(
-                container, path, ip=ip, content=body, headers=headers, timeout_s=FORWARD_TIMEOUT_S
+            # The seam's own ceiling (timeout_s + margin + 2s) can run well past
+            # FORWARD_TIMEOUT_S -- this module's invariant is that we never eat
+            # into Slack's 3s retry budget, so the wait is bounded here too.
+            upstream = await asyncio.wait_for(
+                runtime_transport.request(
+                    container, path, ip=ip, content=body, headers=headers, timeout_s=FORWARD_TIMEOUT_S
+                ),
+                timeout=FORWARD_TIMEOUT_S,
             )
-        except httpx.RequestError as exc:
+        except (httpx.RequestError, asyncio.TimeoutError) as exc:
             logger.warning("slack events: forward failed owner=%s err=%s", owner_id, exc)
             put_metric("slack.forward_failed", 1, dimensions={"reason": "request_error"})
             return Response(status_code=200)

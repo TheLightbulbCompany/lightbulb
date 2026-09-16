@@ -34,7 +34,12 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
   const [value, setValue] = useState("");
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [height, setHeight] = useState(minHeight);
+  // State holds what the field MEASURED, not the height we draw: the reader can
+  // change their text size while this is on screen, and a height seeded from
+  // the old scale would stay until they next typed. Clamping at render instead
+  // lets the box follow the scale immediately.
+  const [contentHeight, setContentHeight] = useState(0);
+  const height = Math.min(maxHeight, Math.max(minHeight, contentHeight));
 
   const canSend = value.trim().length > 0 && !busy;
 
@@ -45,7 +50,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
     const ok = await onSubmit(trimmed);
     if (ok) {
       setValue("");
-      setHeight(minHeight);
+      setContentHeight(0);
     }
     setBusy(false);
   };
@@ -66,9 +71,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
             editable={!busy}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            onContentSizeChange={(e) =>
-              setHeight(Math.min(maxHeight, Math.max(minHeight, e.nativeEvent.contentSize.height)))
-            }
+            onContentSizeChange={(e) => setContentHeight(e.nativeEvent.contentSize.height)}
           />
         </View>
         <View style={styles.rail}>

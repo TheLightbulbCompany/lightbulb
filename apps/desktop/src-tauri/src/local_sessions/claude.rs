@@ -22,7 +22,7 @@ pub fn send_supported_version(version: &str) -> bool {
 
 pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<NativeSession> {
     use std::os::unix::fs::FileTypeExt;
-    if row["kind"] != "interactive" {
+    if row["kind"] != "interactive" && row["kind"] != "background" {
         return Err("not an ordinary terminal session".into());
     }
     let pid = row["pid"]
@@ -127,6 +127,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         cwd_name,
         active_turn: None,
         last_assistant_message: None,
+        background: row["kind"] == "background",
     })
 }
 
@@ -1027,6 +1028,13 @@ mod tests {
             ("2.1.272", None),
             "a session outlives the CLI version it started on and stays sendable"
         );
+        assert!(!session.background);
+        let job = json!({"kind":"background","pid":pid,"sessionId":conversation,"status":"busy","cwd":"/tmp/work"});
+        let job = capture(home.path(), missing, &job).await.unwrap();
+        assert!(
+            job.background && job.restriction.is_none(),
+            "a background job mirrors like a terminal session"
+        );
 
         // Below the send floor is what a version restriction is actually for.
         write("2.1.200");
@@ -1117,6 +1125,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         };
         let ingress = Ingress {
             workspace_revision: None,

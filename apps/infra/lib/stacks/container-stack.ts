@@ -356,6 +356,34 @@ export class ContainerStack extends cdk.Stack {
           actions: ["appsync:EventPublish"],
           resources: [`arn:aws:appsync:${this.region}:${this.account}:apis/*/channelNamespace/ws`],
         }),
+        // AgentCore Runtime: the per-owner role doubles as the runtime's EXECUTION role, so it
+        // has to pull the gateway-only arm64 image itself. Repo-scoped; GetAuthorizationToken
+        // is account-wide by API design. The CloudWatchLogs statement above is already
+        // resource:* and so covers /aws/bedrock-agentcore/runtimes/* without change.
+        new iam.PolicyStatement({
+          sid: "AgentCoreEcrPull",
+          actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+          resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/openclaw-gateway-arm64`],
+        }),
+        new iam.PolicyStatement({
+          sid: "AgentCoreEcrToken",
+          actions: ["ecr:GetAuthorizationToken"],
+          resources: ["*"],
+        }),
+        // Runtime-managed workload identity. Required by the platform at session start; the
+        // container never calls it directly.
+        new iam.PolicyStatement({
+          sid: "AgentCoreWorkloadToken",
+          actions: [
+            "bedrock-agentcore:GetWorkloadAccessToken",
+            "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+            "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+          ],
+          resources: [
+            `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
+            `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/*`,
+          ],
+        }),
       ],
     });
 

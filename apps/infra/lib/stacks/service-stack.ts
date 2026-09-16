@@ -470,9 +470,37 @@ export class ServiceStack extends cdk.Stack {
         ],
         conditions: {
           StringEquals: {
-            "iam:PassedToService": "ecs-tasks.amazonaws.com",
+            // The same per-owner role is passed to ECS today and to AgentCore Runtime
+            // (as the runtime's execution role) during the migration. Both, not a
+            // wildcard: a role passable to any service is a privilege-escalation lane.
+            "iam:PassedToService": ["ecs-tasks.amazonaws.com", "bedrock-agentcore.amazonaws.com"],
           },
         },
+      }),
+    );
+
+    // AgentCore Runtime lifecycle, per workspace. Control plane creates/updates/deletes the
+    // owner's runtime; data plane invokes it and stops its session for sleep. Scoped to this
+    // account's runtimes; List has no resource-level scoping in the API.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreRuntimeManage",
+        actions: [
+          "bedrock-agentcore-control:CreateAgentRuntime",
+          "bedrock-agentcore-control:GetAgentRuntime",
+          "bedrock-agentcore-control:UpdateAgentRuntime",
+          "bedrock-agentcore-control:DeleteAgentRuntime",
+          "bedrock-agentcore:InvokeAgentRuntime",
+          "bedrock-agentcore:StopRuntimeSession",
+        ],
+        resources: [`arn:aws:bedrock-agentcore:${this.region}:${this.account}:runtime/*`],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreRuntimeList",
+        actions: ["bedrock-agentcore-control:ListAgentRuntimes"],
+        resources: ["*"],
       }),
     );
 
@@ -1349,6 +1377,13 @@ export class ServiceStack extends cdk.Stack {
       // lifecycle deletes) keys off this being set. Name-based (never a
       // bucket ref) per the KMS-cycle posture.
       LITESTREAM_BUCKET: `lightbulb-${env}-openclaw-replicas`,
+      // The gateway-only arm64 image a workspace's AgentCore runtime runs. DEV ONLY for
+      // now: empty in prod makes ensure_runtime refuse, so nothing can move a prod
+      // workspace until the image is promoted deliberately.
+      AGENTCORE_GATEWAY_IMAGE:
+        env === "dev"
+          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v5`
+          : "",
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

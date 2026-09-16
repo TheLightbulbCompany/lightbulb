@@ -37,4 +37,12 @@ describe("MessageMarkdown selection and links", () => {
     fireEvent.press(screen.getByText("https://example.com/run/42"));
     expect(openURL).toHaveBeenCalledWith("https://example.com/run/42");
   });
+
+  it("resolves a relative agent-written Paperclip link against the web origin", async () => {
+    // Linking.openURL can't open a schemeless path on its own — the bundled
+    // paperclip skill writes links like `/ISOA/issues/ISOA-317`.
+    await render(<MessageMarkdown text="See [ISOA-317](/ISOA/issues/ISOA-317)" />);
+    fireEvent.press(screen.getByText("ISOA-317"));
+    expect(openURL).toHaveBeenCalledWith("https://flickmeon.ai/ISOA/issues/ISOA-317");
+  });
 });

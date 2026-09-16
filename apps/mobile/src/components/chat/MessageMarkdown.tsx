@@ -1,6 +1,6 @@
 import { parseMentionHref } from "@lightbulb/shared";
 import { memo } from "react";
-import { Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
 import Markdown, {
   MarkdownIt,
   renderRules,
@@ -8,6 +8,7 @@ import Markdown, {
   type RenderRules,
 } from "react-native-markdown-display";
 
+import { WEB_ORIGIN } from "../../config/domain";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 
 /**
@@ -78,6 +79,19 @@ const rules: RenderRules = {
     const href = (node.attributes as { href?: string }).href;
     const mention = href ? parseMentionHref(href) : null;
     if (!mention) {
+      // A relative href (e.g. an agent-written Paperclip path like
+      // `/ISOA/issues/ISOA-317`, written by the bundled paperclip skill) has
+      // no scheme, so Linking.openURL can't open it — it silently does
+      // nothing. Resolve it against the web workspace, whose middleware
+      // redirects Paperclip-shaped paths onto the in-shell panel
+      // (apps/frontend/src/middleware.ts).
+      if (href?.startsWith("/")) {
+        return (
+          <Text key={node.key} style={styles.link} onPress={() => Linking.openURL(`${WEB_ORIGIN}${href}`)}>
+            {children}
+          </Text>
+        );
+      }
       return renderRules.link?.(node, children, parent, styles, onLinkPress) ?? null;
     }
     // Not `{children}`: AstRenderer computes a leaf `text` node's inherited

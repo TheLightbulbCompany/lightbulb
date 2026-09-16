@@ -39,6 +39,31 @@ export function teamsDetailUrl(
   return `/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(id)}`;
 }
 
+// The bundled paperclip skill ("Company-prefixed URLs (required)") instructs
+// agents to write every internal link as a native Paperclip path —
+// `/ISOA/issues/ISOA-171`, `/ISOA/approvals/<id>`, `/ISOA/agents/<key>/runs/<id>`.
+// Those routes do not exist in this app (the /teams/* tree was retired without a
+// redirect), so a bare anchor left the shell and 404'd. Maps such a path onto its
+// in-shell equivalent, or null when the href isn't one (external URLs, /api/…,
+// already-in-app /chat?… links — the uppercase prefix keeps those out).
+//
+// Issue identifiers need no lookup: upstream Paperclip resolves `ISOA-171` for
+// all /issues/:id routes and the Teams BFF passes issue_id straight through.
+const PAPERCLIP_LINK =
+  /^\/[A-Z][A-Z0-9]{0,9}\/(issues|approvals|projects|agents)\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?(?:\?[^#]*)?(#[^?]*)?$/;
+
+export function shellUrlFromPaperclipPath(href?: string | null): string | null {
+  const m = href ? PAPERCLIP_LINK.exec(href) : null;
+  if (!m) return null;
+  const [, section, id, runId, hash = ""] = m;
+  if (runId) return teamsDetailUrl("run", runId);
+  if (section === "issues") return teamsDetailUrl("issue", id) + hash;
+  // No detail panel takes these ids — agent url-keys and project url-keys are
+  // not the uuids our panels resolve, and approvals only ever render inside the
+  // Inbox. Land on the list panel that owns them; a list beats a dead link.
+  return teamsPanelUrl(section === "approvals" ? "inbox" : section);
+}
+
 // Commit an in-shell URL with no anchor to fall through to — a button, or a
 // notice's action. The App Router integrates with pushState, so this is the
 // whole client-side swap; handleShellLinkClick is this plus the

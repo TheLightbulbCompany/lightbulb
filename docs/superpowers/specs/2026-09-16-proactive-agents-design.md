@@ -1,7 +1,7 @@
-# Proactive agents: follow-up wakes
+# Proactive agents: promises are tasks that know where they came from
 
-Status: proposed, 2026-09-16, third draft (ponytail pass). Owner rulings in §3. One
-implementation plan is written from §6; this file is deleted when it ships.
+Status: proposed, 2026-09-16, fourth draft. Owner rulings in §3. One implementation plan
+is written from §6; this file is deleted when it ships.
 
 ## 1. Goal
 
@@ -11,148 +11,139 @@ An agent that says "I'll post the link here" comes back and posts the link there
 
 On 2026-09-16 Forge answered Leo in #report-bugs, opened GitHub issue #2686, wrote "I'm
 tracking it through to the PR and will post the link here", and never ran again (run
-ledger: one `user_request` run, 14:55:31Z to 14:56:49Z, completed). An agent runs only
-when woken, the wake sources are a room message, a Paperclip run, and a heartbeat with no
-delivery target and no process under AgentCore, and nothing gives an agent a turn to keep
-a promise in. On AgentCore every turn is `InvokeAgentRuntime` from the backend, so the
-question is only who writes the trigger and what the invoke carries.
+ledger: one `user_request` run, 14:55:31Z to 14:56:49Z, completed). Two things went
+wrong, and neither is a platform gap:
+
+- Forge filed the work where nothing wakes it. A GitHub issue is inert. A Paperclip task
+  assigned to itself in `todo` would have started a run immediately, and every later
+  change to that task (a comment, a monitor firing, a blocker clearing) is a wake.
+- Nothing told Forge to report where the promise was made. A Paperclip run's output goes
+  to the task's comments. The `message` tool already reaches any room the agent belongs
+  to, from any session, with only a membership check behind it. Forge did not know to
+  use it, and the task did not know which thread it came from.
 
 ## 3. Rulings and non-goals
 
 Owner rulings, 2026-09-16:
 
-- The OpenClaw agent is the first-class primitive. Paperclip is how work is tracked.
-- Self-directed: agents create their own wakes, no approval gate.
-- Governed: a commitment is visible where it was made and cancellable there.
-- Paperclip never learns where to speak. Rooms differ per workspace.
-- No budgets, no trial rules, no sweeper, and nothing built for a failure not observed.
+- The OpenClaw agent is the first-class primitive. Paperclip is how work is tracked, and
+  a promise about work is work.
+- Self-directed: agents create their own tasks and monitors, no approval gate.
+- Governed: the promise is a task on the board, in the activity log, cancellable there.
+- Paperclip may know where work came from, never where to speak.
+- No timers that are not attached to work. No sweeper, no scheduler, no wake table.
+- No budgets, no trial rules, nothing built for a failure not observed.
 
-Non-goals for this draft: routing anything anywhere but the thread the promise was made
-in; events and loops (Paperclip routines already run them; where their output goes is a
-later spec); a wake table; a new ingress kind in the plugin.
+Non-goals for this draft: routing unsolicited output (a Listening room, a DM); a
+follow-up primitive of our own; any backend or infrastructure change.
 
-## 4. The primitive
+## 4. The rule
 
-A **follow-up wake** is a one-shot timer, set by an agent from inside a room turn, that
-at its due time puts a message in that thread addressed to that agent. The agent then
-runs an ordinary room turn and replies in the thread. Every part of that path except the
-timer exists today.
+**A promise made in a conversation becomes a Paperclip task that carries the
+conversation's permalink. The task's own lifecycle wakes the agent. The run that
+finishes or parks the task reports in that thread. Waiting on something external is a
+monitor on the task.**
+
+Every mechanism in that sentence exists. What is missing is the agent knowing it, plus
+one identifier the room turn does not hand over yet.
 
 ## 5. How it works
 
-**Set.** The channel plugin registers `lightbulb_follow_up`, the same way it registers
-`lightbulb_local_sessions`, so the tool exists only inside a room turn and already knows
-the owner, agent, room and thread root. The agent passes only what it knows:
+**File.** In the room turn, the agent files the work as a Paperclip task assigned to
+itself, `--status todo` if it should start now or `backlog` if not, and puts the message
+permalink in the description:
 
 ```
-lightbulb_follow_up { action: "set",    at: <ISO>, note: <text> }  -> { wakeId, at }
-lightbulb_follow_up { action: "cancel", wakeId }
-lightbulb_follow_up { action: "list" }                               -> pending wakes in this room
+Filed from https://flickmeon.ai/chat?panel=chat&room=<roomId>&message=<messageId>
 ```
 
-`at` is at least one minute out and at most 30 days. The tool calls
-`POST /internal/messaging/wakes/{ownerId}` (hook token). The backend checks the agent is
-a current member of the room and creates one **EventBridge Scheduler** one-shot:
+The plugin's "Lightbulb room" structured context already gives the agent `room.id`; it
+gains `message.id` and `message.threadRootMessageId` so the permalink is thread-precise
+(one line in `channel.ts`, beside `room`). The agent replies in the room with the task
+identifier and what it will do: "Filed ISOA-320. I'll post the PR link here."
 
-```
-group:   lightbulb-{env}-wakes
-name:    wake-<ownerHash8>-<agentId8>-<threadOrRoomId8>-<dueAtEpoch>
-expr:    at(<dueAt>)            ActionAfterCompletion: DELETE
-target:  dynamodb:PutItem on the messaging table
-item:    ROOM#<room> / WORK#WAKE#<dueAtEpoch>#AGENT#<agent>
-         { kind: "wake", ownerId, roomId, agentId, threadRootMessageId?, note,
-           messageGroupId: <room+agent>, dueAt, wakeId }
-```
+**Wake.** Paperclip does what it does today. A `todo` task starts a run at once. A
+comment, a reassignment, a resolved blocker, a fired monitor, or a routine tick starts
+another. The run reads the task, sees the permalink, and knows where it came from.
 
-The schedule is the record. A second `set` with the same name is a no-op that returns
-the existing `wakeId`. `cancel` is `DeleteSchedule`; `list` is `ListSchedules` in the
-group filtered by the owner and room prefix. Nothing new is stored in DynamoDB until the
-wake fires. No sweeper, no polling.
+**Report.** The run ends by posting its outcome where the promise was made: the
+`message` tool, `action: send`, target `lightbulb:<roomId>`, thread set to the
+permalink's message id, which the plugin maps onto `threadRootMessageId`
+(`channel.ts:217`). Done, or where it stands. Then the task comment, as today.
 
-**Fire.** At `dueAt` the schedule writes the `WORK#WAKE` row. That insert rides the path
-every room message rides: the DynamoDB stream, the EventBridge Pipe (`sk` prefix
-`WORK#`), `openclaw-work.fifo`, and `openclaw_work.py`. The consumer's pointer parser
-already dispatches on `kind` (`room_dispatch`, `runtime_operation`); it gains `wake`.
-The `wake` branch re-checks membership and then writes one canonical message into the
-thread through `create_message`:
+**Wait.** When the outcome depends on something that will happen on its own, a PR
+merging, CI finishing, a deploy landing, the run sets a **monitor** on the task
+(`paperclip-api.sh monitor <id> --at <ISO> --notes … --timeout-at … --recovery …`) and
+reports "waiting on X, I'll check at T" in the thread. The monitor fires, Paperclip wakes
+the agent, the run reports again. An unbounded wait is forbidden by the existing
+monitors reference; a bounded one that times out follows its recovery policy, and that
+too is reported in the thread.
 
-```
-author:           { kind: "system", id: "follow-up", displayName: "Follow-up" }
-text:             "Follow-up for @forge: <note>"
-threadRootMessageId: <from the row>
-dispatch_targets: [ { agentId, eventKind: "user_request" } ]
-source_agent_id:  null
-```
+**Cancel and see.** The task is on the board with its permalink, its monitor row, and its
+activity. Closing it is cancelling the promise. Nothing is added to the room until the
+agent speaks.
 
-That message is a normal `MSG` row with a normal `WORK#MESSAGE` row, so from here on
-nothing is new: the FIFO, the consumer, the plugin's private ingress (which already
-accepts a `system` sender on a `user_request`), the agent's room session, the run card,
-live frames, abort and steer, the durable reply into the thread, and the usage callback.
-Members see the follow-up line in the thread, then the agent working, then its reply.
+**Forge, end to end.** Leo asks for the PR. Forge files ISOA-320 to itself in `todo` with
+Leo's permalink and replies "Filed ISOA-320, I'll post the PR link here." Paperclip
+starts the run. Forge writes the PR, opens it, and posts the link in Leo's thread. If the
+PR needs CI, Forge sets a monitor for an hour out, posts "PR #2700 is up, waiting on CI,
+I'll confirm here", and the monitor's wake posts the result.
 
-**Skill.** Two non-negotiables in the `lightbulb` skill plus `references/follow-ups.md`:
+## 6. Changes
 
-- *A promise needs a wake.* Never say you will follow up, check back, track, or post
-  later unless you have called `lightbulb_follow_up` in that same turn. If you cannot,
-  say what you did instead.
-- *A wake ends with a message.* The turn a follow-up wakes ends with a reply in the
-  thread: done, or where it stands plus a new wake.
+- **`lightbulb` skill.** `references/follow-ups.md` with the four steps above and the
+  permalink format; a routing-table row in `SKILL.md`: *You are about to tell a human you
+  will follow up, check back, track, or post later → `references/follow-ups.md`*; two
+  non-negotiables:
+  - *A promise is a task.* Never say you will follow up, track, or post later unless
+    you have filed the Paperclip task with the permalink in that same turn. If you
+    cannot, say what you did instead.
+  - *A run that changes a task with a permalink ends in that thread.* Done, or where it
+    stands and what you are waiting on.
+- **`paperclip` skill.** One sentence at the top of `references/monitors.md`: *A
+  promise you made in chat that depends on an external thing is a monitor on the task,
+  not a sentence.* The `SKILL.md` "Wait on an external thing" row already routes there.
+- **Plugin.** `message: { id, threadRootMessageId }` added to the "Lightbulb room"
+  structured context payload in `channel.ts`.
+- **`MAINTENANCE.md`** anchors for both skills.
 
-**Forge, end to end.** Leo asks for the PR. Forge opens #2686 and calls
-`lightbulb_follow_up {set, at: 15:00Z, note: "post the PR link for #2686; if not merged,
-say where it stands"}`, then replies "Opened #2686, I'll post the link here by 3pm." At
-15:00Z the schedule writes the row, the consumer posts "Follow-up for @forge: post the
-PR link for #2686…" in Leo's thread, Forge runs in that room session, and posts the
-link, or where it stands and a new wake.
-
-## 6. Code
-
-- **Infra** (`api-stack.ts`, beside the Pipe): a schedule group per env and one role
-  Scheduler assumes with `dynamodb:PutItem` on the messaging table, conditioned to
-  `sk` prefix `WORK#WAKE#`. The backend task role gets `scheduler:Create/Delete/Get/
-  ListSchedules` on that group.
-- **Backend**: `routers/messaging.py` three hook-token routes; `core/services/wakes.py`
-  Scheduler CRUD plus the membership check; `openclaw_work.py` the `wake` pointer shape
-  and branch (~25 lines); `create_message` accepts the `system` author it already types.
-- **Plugin**: the `lightbulb_follow_up` tool, modeled on `local-sessions.ts`. Ships with
-  an image rebuild and a pin flip, together with the skill text.
-- **Clients**: render a `system` author as a muted line if they do not already.
+Ships as one image rebuild and pin flip. No backend, no infrastructure, no Paperclip
+change.
 
 ## 7. Trust and failure
 
-- Routes are hook-token scoped to one owner; a container can only set wakes for rooms
-  its agent belongs to. The fired message is authored `system`, never as a human, and the
-  agent's reply goes through `create_agent_message` with its membership check intact.
-- The row carries the agent's note and ids, never the human's text.
-- Delivery is at-least-once, as for messages: the schedule name is the idempotency key
-  at set time, the `WORK#WAKE` sort key at fire time, and the plugin's durable adapter
-  plus `IDEMP` receipt at reply time.
-- A wake whose agent left the room, or whose room is gone, is dropped by the membership
-  check with a log line; nothing is posted.
-- A wake that fires while the agent is mid-run in that room queues behind it on the same
-  FIFO group, as messages do.
+- Nothing new is exposed. The `message` tool goes through `create_agent_message` with
+  its membership check; a permalink is an address in a task description, visible to
+  whoever can read the task, never the human's text.
+- The wake is guaranteed by Paperclip. The report depends on the agent following the
+  skill at two moments: filing with the permalink and speaking at the end. That is the
+  same trust the skill already places in every other non-negotiable.
+- A task with no permalink behaves exactly as today: output stays on the board.
+- A task filed to another agent carries the permalink too, so the courier pattern reports
+  back the same way.
 
 ## 8. Deferred, deliberately
 
-- **Where unsolicited output goes** (a Listening room, a DM to the item's human, the
-  issue): a later spec, once Paperclip routine output needs a home. The ladder and the
-  DM door from the second draft live in git history.
-- **Provenance for filed work** (the message permalink in an issue, linked by Paperclip's
-  external-object detector behind `enableExternalObjects`): add when an agent first files
-  work from a room and needs to report back on a Paperclip wake.
-- **"Forge will follow up at 3pm" on the promise message, cancel from the thread, and
-  pending wakes in the control panel**: add when someone asks to see or cancel one;
-  `ListSchedules` already answers it.
-- **Budgets**; a backend-side "worth saying" gate; fired-but-unhandled monitors in
-  "Needs you" (#2007). Not observed, not built.
+- **Automatic report-back.** The fork already forwards `agent.run.finished` to
+  `routers/paperclip_events.py`. If the skill rule proves flaky, that hook can read the
+  task's permalink and post the run's final comment into the thread itself. Not built
+  until the flakiness is observed.
+- **Typed provenance.** Paperclip's external-object detector (behind
+  `enableExternalObjects`) would link the permalink as an object and Teams could show a
+  "from #report-bugs" chip. Cosmetic.
+- **Routing unsolicited output** (Listening rooms, DMs to the item's human): a later
+  spec, once routine output needs a home. The ladder and DM door from the second draft
+  live in git history.
+- **Timers not tied to work**, budgets, the backend-side "worth saying" gate, and fired
+  monitors nobody handled in "Needs you" (#2007). Not observed, not built.
 
-## 9. Tests
+## 9. Verification
 
-- Backend: wake create validates bounds and membership (403 on non-member and foreign
-  room); duplicate `set` returns the existing id; the consumer's `wake` branch writes
-  the system message with exactly one `user_request` target and drops a wake whose agent
-  left; pointer parser accepts `wake` and rejects a malformed one.
-- Plugin: tool argument validation and the request it sends, beside the existing tests.
-- Dev, end to end: ask Forge for something slow, confirm the schedule exists, wait for it,
-  confirm the follow-up line, the run card and the reply in the thread; cancel a second
-  wake and confirm it never fires.
+- Skill: the existing skill tests read the new reference and rows; `MAINTENANCE.md`
+  lists the anchors.
+- Plugin: one unit test that the structured payload carries `message.id` and
+  `message.threadRootMessageId`, beside the existing context tests.
+- Dev, end to end: in a dev room, ask Forge for something that takes a few minutes.
+  Confirm the task exists with the permalink and a run started; confirm the reply lands
+  in the thread. Then ask for something that waits on CI; confirm the monitor row on the
+  task, the "waiting" reply, and the post-monitor reply in the thread.

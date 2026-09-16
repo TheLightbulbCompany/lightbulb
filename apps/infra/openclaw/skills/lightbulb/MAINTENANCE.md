@@ -123,7 +123,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Hook-token calls ........ SKILL.md (the non-negotiable) + references/money.md (the status tables)
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk; OpenClaw's
                                  transcript redaction masks that header including $VAR refs, so an agent-typed curl poisons its own next turn (401 loop)
-  - Follow-ups ............... references/follow-ups.md + SKILL.md (routing row + two non-negotiables)
+  - Follow-ups ............... references/follow-ups.md (incl. § How to get woken) + SKILL.md (routing row + three non-negotiables)
                               <- apps/infra/openclaw/plugins/lightbulb-channel/src/channel.ts (ChannelStructuredContext
                                  payload.message {id, threadRootMessageId}); the message tool's threadId -> channel.ts
                                  buildOutboundBody threadRootMessageId; paperclip skill references/monitors.md;

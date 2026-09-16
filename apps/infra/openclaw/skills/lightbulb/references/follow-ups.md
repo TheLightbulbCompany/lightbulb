@@ -68,21 +68,41 @@ message  action: "send"
 Then comment on the task as usual. The thread is for humans; the task comment is
 the record.
 
-## 4. Waiting on something external is a monitor, not a sentence
+## 4. How to get woken
 
-If the outcome depends on a thing that will happen on its own (a PR merging, CI
-finishing, a deploy landing, a vendor replying), set a **bounded monitor** on the
-task and say so once in the thread:
+Nothing in your workspace can wake you: not a file, not a note, not a heartbeat.
+Paperclip wakes you, and only for these reasons. Arm the right one in the same turn
+you make the promise:
+
+| You are waiting on | Arm this | Paperclip wakes you with |
+|---|---|---|
+| Nothing, do it now | file the task `--status todo` (it starts a run on you at once) | the run |
+| Another Paperclip task or issue finishing | file your task, then `update <yourId> --blocked-by <thatId>` | `issue_blockers_resolved` when every blocker reaches `done` |
+| An external thing (a PR merging, CI, a deploy, a vendor) | check the task out, then a **bounded monitor** | `issue_monitor_due` at `--at` |
+| A human's decision or information only they hold | an interaction on the task (`confirm`, `ask_user_questions`) | the answer; it shows in "Needs you", so do not also ask in the thread |
 
 ```bash
-/app/skills/paperclip/scripts/paperclip-api.sh monitor "$PAPERCLIP_TASK_ID" \
+# waiting on an external thing: check out first, then the monitor
+/app/skills/paperclip/scripts/paperclip-api.sh checkout "$TASK_ID"
+/app/skills/paperclip/scripts/paperclip-api.sh monitor "$TASK_ID" \
   --at 2026-09-16T16:00:00Z --service GitHub \
   --notes "PR #2700 — post the merge result in the thread" \
   --timeout-at 2026-09-17T16:00:00Z --max-attempts 8 --recovery escalate_to_board
+
+# waiting on another task: block yours on it
+/app/skills/paperclip/scripts/paperclip-api.sh update "$TASK_ID" --blocked-by "$OTHER_ID"
 ```
 
-The monitor wakes you at `--at`. Full rules: the `paperclip` skill,
-`references/monitors.md`.
+Two things that look like blockers and are not:
+
+- **"I have no run id."** Correct, and none is needed. From a room turn every write goes
+  through `paperclip-api.sh`, which omits the run-id header when `PAPERCLIP_RUN_ID` is
+  unset. Never invent one, never skip the write because of it.
+- **"The monitor call failed."** A monitor is rejected (422) unless the task is
+  `in_progress` or `in_review` and assigned to you. Check it out first, then arm it.
+
+Say so once in the thread ("waiting on CI, I'll confirm here"), then let the wake do
+the posting. Full monitor rules: the `paperclip` skill, `references/monitors.md`.
 
 ## When to speak in the thread, and when not
 

@@ -80,10 +80,18 @@ These hold whether or not you open a reference.
 - **Paperclip routines are the only scheduler.** Never `openclaw cron`: the
   container's cron service is for platform internals, and a job added there
   runs where no one can see it, outside the company's governance.
-- **A promise is a task.** Never say you will follow up, track, check back, or
-  post later unless you have filed the Paperclip task with the message permalink
-  in that same turn (`references/follow-ups.md`). If you cannot, say what you did
-  instead.
+- **A promise is a task, and every task you file from chat carries the
+  permalink.** Never say you will follow up, track, check back, or post later
+  unless you have filed the Paperclip task with the thread-root permalink in that
+  same turn (`references/follow-ups.md`). Any task you file during a room turn,
+  promise or not, carries that permalink, so a later run can report back. If you
+  cannot, say what you did instead.
+- **Only Paperclip wakes you.** A file in your workspace, a note to yourself, or
+  "Paperclip will wake me when X is done" wakes nothing. The wakes are: a task
+  assigned to you in `todo`, a comment on your task, a task of yours whose
+  blockers all reach `done`, a monitor firing, a routine tick. Arm one of them in
+  the same turn (`references/follow-ups.md` § How to get woken). You can write to
+  Paperclip from a room turn: there is no run id and none is needed.
 - **Outcomes and changed plans go in the thread; nothing else does.** A run that
   finishes a task carrying a permalink, or changes how it will be finished, ends
   with a reply in the thread under that message, never top-level. A wake that

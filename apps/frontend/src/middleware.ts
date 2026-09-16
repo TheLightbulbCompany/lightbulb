@@ -5,6 +5,7 @@ import {
   DEFAULT_ADMIN_HOSTS,
   PAPERCLIP_HOSTS as PAPERCLIP_HOST_LIST,
 } from "@/lib/domain";
+import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
 
 const isProtectedRoute = createRouteMatcher([
   "/chat(.*)",
@@ -82,6 +83,22 @@ export function decideAdminHostRouting(
   return { kind: "passthrough" };
 }
 
+/**
+ * Pure pathname -> decision function for the agent-Paperclip-link redirect,
+ * exported so it can be unit-tested without a Next.js request object (mirrors
+ * decideAdminHostRouting above). The bundled paperclip skill writes internal
+ * links as native Paperclip paths (e.g. `/ISOA/issues/ISOA-317`), which have
+ * no route in this app — the retired `/teams/*` tree never redirected them,
+ * so a direct hit (typed, pasted, or opened from a notification) 404'd.
+ * Bounces it onto the in-shell Teams panel equivalent instead.
+ */
+export function decidePaperclipLinkRedirect(
+  pathname: string,
+): { kind: "redirect"; to: string } | null {
+  const shellUrl = shellUrlFromPaperclipPath(pathname);
+  return shellUrl ? { kind: "redirect", to: shellUrl } : null;
+}
+
 // Hostnames whose traffic is handled by the paperclip-proxy upstream
 // via a Next-level rewrite (next.config.ts `beforeFiles`). Middleware
 // must passthrough for these or it'll run Clerk auth on a non-Isol8
@@ -106,6 +123,11 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
     const url = req.nextUrl.clone();
     url.pathname = decision.to;
     return NextResponse.redirect(url);
+  }
+
+  const paperclipRedirect = decidePaperclipLinkRedirect(req.nextUrl.pathname);
+  if (paperclipRedirect) {
+    return NextResponse.redirect(new URL(paperclipRedirect.to, req.url), 307);
   }
 
   const authObj = await auth();

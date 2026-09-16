@@ -17,6 +17,7 @@ import { useSessionColumnWidth } from "./sidebarPrefs";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
@@ -125,6 +126,13 @@ const roomMarkdown: Partial<Components> = {
   a: ({ href, children }) => {
     const mention = href ? parseMentionHref(href) : null;
     if (mention) return <span className="room-mention" data-kind={mention.kind}>{children}</span>;
+    // This overrides publicMarkdown's own `a` (for mention/session-permalink
+    // handling), so it needs its own paperclip-link resolution too — see
+    // roomMarkdown.tsx for the shared rationale.
+    const shellUrl = shellUrlFromPaperclipPath(href);
+    if (shellUrl) return <a href={shellUrl} className="text-info underline underline-offset-4" onClick={event => {
+      if (shellUrl.split("?")[0] === window.location.pathname) handleShellLinkClick(event, shellUrl);
+    }}>{children}</a>;
     const safe = safeHref(href);
     const session = safe && typeof window !== "undefined" ? parseSessionPermalink(safe) : null;
     if (session) return <a href={safe!} className="text-info underline underline-offset-4" onClick={event => {

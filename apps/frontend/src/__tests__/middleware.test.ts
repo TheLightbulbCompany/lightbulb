@@ -6,7 +6,7 @@ import {
   ROOT_DOMAIN,
   SITE_URL,
 } from '@/lib/domain';
-import { decideAdminHostRouting } from '@/middleware';
+import { decideAdminHostRouting, decidePaperclipLinkRedirect } from '@/middleware';
 
 const ADMIN_HOSTS = new Set([
   'admin.flickmeon.ai',
@@ -153,5 +153,23 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     expect(
       decideAdminHostRouting('admin.flickmeon.ai', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'redirect', to: '/admin' });
+  });
+});
+
+// The bundled paperclip skill writes agent links as native Paperclip paths
+// (e.g. `/ISOA/issues/ISOA-317`); a direct hit on one 404'd because the
+// retired /teams/* tree never redirected them.
+describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
+  it('redirects a direct hit on an agent-written issue path to the in-shell panel', () => {
+    expect(decidePaperclipLinkRedirect('/ISOA/issues/ISOA-317')).toEqual({
+      kind: 'redirect',
+      to: '/chat?panel=teams-issue-detail&detailId=ISOA-317',
+    });
+  });
+
+  it('leaves ordinary app paths alone', () => {
+    expect(decidePaperclipLinkRedirect('/chat')).toBeNull();
+    expect(decidePaperclipLinkRedirect('/settings')).toBeNull();
+    expect(decidePaperclipLinkRedirect('/admin')).toBeNull();
   });
 });

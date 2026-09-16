@@ -1,5 +1,10 @@
 # Waiting on an External Thing (Issue Monitors)
 
+**A promise you made in chat that depends on an external thing is a monitor on the
+task, not a sentence.** "I'll post the link once CI passes" means: set the monitor,
+say so once in the thread, and let the wake do the posting (`lightbulb` skill,
+`references/follow-ups.md`).
+
 Some work is not blocked on a person or another issue — it is blocked on a **thing that will happen on its own**: a PR gets merged, CI goes green, a deploy finishes, a vendor replies, a domain propagates. For those, schedule a **monitor**. Paperclip re-checks the issue at `nextCheckAt` and wakes you, so nobody has to sit in the loop just to tell you the thing happened.
 
 ```bash

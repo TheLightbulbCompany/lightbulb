@@ -19,6 +19,7 @@ import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
+import { useDraftKey } from "../../../../../lib/composerDraft";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../../lib/rooms";
 import { typingLine } from "../../../../../lib/typingLine";
 
@@ -55,6 +56,8 @@ export default function ThreadScreen() {
   // ponytail: the residual room badge until the conversation is opened is the
   // accepted ceiling; per-thread read state is Phase B and needs a backend field.
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false });
+  // Each thread drafts on its own, separately from the room's timeline.
+  const composerDraftKey = useDraftKey(roomId, messageId ?? null);
 
   // selectRoom's identity changes with every message (it closes over
   // markVisibleRead), and each call bumps the hook's selection-cancellation
@@ -292,6 +295,7 @@ export default function ThreadScreen() {
         onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
+        draftKey={composerDraftKey}
       />
     </KeyboardAvoidingView>
   );

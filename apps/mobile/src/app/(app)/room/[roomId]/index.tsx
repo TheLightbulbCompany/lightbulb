@@ -35,6 +35,7 @@ import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { liveSessionCount } from "../../../../lib/localSessions";
 import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
+import { useDraftKey } from "../../../../lib/composerDraft";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
@@ -86,6 +87,8 @@ function Conversation() {
     }, [roomId, preview]),
   );
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused });
+  // The room's own timeline drafts separately from each of its threads.
+  const composerDraftKey = useDraftKey(roomId, null);
 
   // The header badge: shared sessions working right now. The same 5s cadence
   // the web room tab pays; paused while a pushed screen (thread, devices,
@@ -453,6 +456,7 @@ function Conversation() {
         onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
+        draftKey={composerDraftKey}
       />
     </KeyboardAvoidingView>
   );

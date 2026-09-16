@@ -7,7 +7,7 @@ import {
   type RoomMember,
 } from "@lightbulb/shared";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   ActionSheetIOS,
@@ -32,7 +32,7 @@ import Reanimated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
-import { filterOversized, type PendingAttachment } from "../../lib/attachments";
+import { checkPhoto, useComposerDraft } from "../../lib/composerDraft";
 import type { ComposedMessage } from "../../lib/rooms";
 import { useScaledHeight } from "../../lib/textScale";
 import { AttachmentChips } from "../chat/AttachmentChips";
@@ -62,6 +62,11 @@ const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
 
 type PickedPhoto = ImagePicker.ImagePickerAsset;
 
+// ponytail: HEIC/HEIF are detected but the messaging endpoint does not accept
+// them, so `checkPhoto` turns one into a clear "format we can't send" rather
+// than a server rejection reported as a network error. The picker re-encodes
+// to JPEG on the paths we use, so this should stay unreachable; if it ever
+// fires for real, transcode rather than widening the endpoint.
 function photoMimeType(asset: PickedPhoto): string | null {
   if (asset.mimeType) return asset.mimeType.startsWith("image/") ? asset.mimeType : null;
   const name = asset.fileName ?? asset.uri;
@@ -102,6 +107,7 @@ export function RoomComposer({
   onUploadAttachment,
   onAbort,
   onTypingChange,
+  draftKey,
 }: {
   members: readonly RoomMember[];
   placeholder: string;
@@ -126,17 +132,22 @@ export function RoomComposer({
    * so the caller supplies the reporting itself (same split as `useSendDrafts`).
    */
   onTypingChange?: (typing: boolean) => void;
+  /**
+   * Identifies the conversation this draft belongs to (`lib/composerDraft`'s
+   * `draftKey`). A room's own timeline and each of its threads draft
+   * separately. `null` while the room is not yet known, which just means
+   * nothing is kept.
+   */
+  draftKey: string | null;
 }) {
   const insets = useSafeAreaInsets();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
-  const [text, setText] = useState("");
+  const draft = useComposerDraft({ key: draftKey, uploadAttachment: onUploadAttachment });
+  const { text, setText } = draft;
   // Null until the field reports a collapsed caret: no caret, no typeahead.
   const [caret, setCaret] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
-  const [pending, setPending] = useState<PendingAttachment[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const nextAttachmentId = useRef(0);
 
   // Focus and press live on the UI thread as shared values, not in React state:
   // the bar's hairline used to hard-swap between two StyleSheet entries on a
@@ -191,30 +202,34 @@ export function RoomComposer({
       setText(next.text);
       setCaret(next.caret);
     },
-    [text, trigger],
+    [text, trigger, setText],
   );
 
-  const stagePhoto = useCallback((asset: PickedPhoto) => {
-    setError(null);
-    const mimeType = photoMimeType(asset);
-    if (!mimeType) {
-      setError(
-        "That file isn't a supported photo. Choose a JPEG, PNG, GIF, WebP, HEIC, or HEIF image.",
-      );
-      return;
-    }
-    const candidate: PendingAttachment = {
-      id: `${asset.uri}#${nextAttachmentId.current++}`,
-      name: asset.fileName ?? "photo",
-      size: asset.fileSize ?? 0,
-      uri: asset.uri,
-      mimeType,
-    };
-    const { valid, error: oversized } = filterOversized([candidate]);
-    if (oversized) setError(oversized);
-    if (valid.length === 0) return;
-    setPending((current) => [...current, candidate]);
-  }, []);
+  const stagePhoto = useCallback(
+    (asset: PickedPhoto) => {
+      setError(null);
+      const mimeType = photoMimeType(asset);
+      if (!mimeType) {
+        setError("That file isn't a photo we can send. Choose a JPEG, PNG, GIF or WebP image.");
+        return;
+      }
+      // The messaging endpoint's own cap and formats, not the container-file
+      // rail's: sending a 6MB photo used to pass here and fail on the server,
+      // which reported it as a connection problem.
+      const { contentType, error: rejected } = checkPhoto(mimeType, asset.fileSize ?? 0);
+      if (rejected != null) {
+        setError(rejected);
+        return;
+      }
+      draft.stage({
+        uri: asset.uri,
+        name: asset.fileName ?? "photo",
+        contentType,
+        size: asset.fileSize ?? 0,
+      });
+    },
+    [draft],
+  );
 
   const pickFromLibrary = useCallback(async () => {
     try {
@@ -272,60 +287,39 @@ export function RoomComposer({
     ]);
   }, [pickFromLibrary, takePhoto]);
 
-  const removeAttachment = useCallback(
-    (id: string) => setPending((current) => current.filter((item) => item.id !== id)),
-    [],
-  );
-
   const body = text.trim();
-  const hasContent = !!body || pending.length > 0;
-  const busy = sending || uploading;
+  const mentions = resolveTypedMentions(body, members);
+  // The web composer's three limits, verbatim — the server enforces all of
+  // them, and being told before you send beats a rejection after.
+  const limit =
+    new TextEncoder().encode(text).length > 100_000
+      ? "Keep your message within 100,000 UTF-8 bytes."
+      : mentions.length > 32
+        ? "Mention at most 32 room members."
+        : null;
+  const hasContent = !!body || draft.attachments.length > 0;
+  // Photos upload as they are picked, so sending waits only on the ones still
+  // in flight — and a failed one has to be retried or removed first, rather
+  // than silently dropping out of the message.
+  const busy = sending || draft.uploading;
   const submit = useCallback(async () => {
-    if (!hasContent || busy || disabled) return;
+    if (!hasContent || busy || disabled || limit || draft.failed) return;
     setSending(true);
-    setUploading(pending.length > 0);
     onTypingChange?.(false);
     setError(null);
-    let uploaded: Array<{ id: string }>;
-    try {
-      uploaded = await Promise.all(
-        pending.map((item) =>
-          onUploadAttachment({ uri: item.uri, name: item.name, type: item.mimeType }),
-        ),
-      );
-    } catch {
-      setError("Couldn't upload your photos. Check your connection and try again.");
-      setUploading(false);
-      setSending(false);
-      return;
-    }
-    setUploading(false);
-    const draft: ComposedMessage = {
+    const message: ComposedMessage = {
       text: body,
-      mentions: resolveTypedMentions(body, members),
-      attachmentIds: uploaded.map((item) => item.id),
+      mentions,
+      attachmentIds: draft.attachmentIds,
     };
-    // Clear only after every upload succeeds. Upload failures keep the draft
-    // and previews in place so the person can retry without picking again.
-    setText("");
+    draft.clear();
     setCaret(null);
-    setPending([]);
     try {
-      await onSend(draft);
+      await onSend(message);
     } finally {
       setSending(false);
     }
-  }, [
-    hasContent,
-    busy,
-    disabled,
-    body,
-    members,
-    pending,
-    onSend,
-    onTypingChange,
-    onUploadAttachment,
-  ]);
+  }, [hasContent, busy, disabled, limit, body, mentions, draft, onSend, onTypingChange]);
 
   return (
     <Reanimated.View
@@ -382,8 +376,12 @@ export function RoomComposer({
         </ScrollView>
       )}
       <View style={styles.card}>
-        {error && <Text style={styles.error}>{error}</Text>}
-        <AttachmentChips attachments={pending} onRemove={removeAttachment} />
+        {(error ?? limit) != null && <Text style={styles.error}>{error ?? limit}</Text>}
+        <AttachmentChips
+          attachments={draft.attachments}
+          onRemove={draft.remove}
+          onRetry={draft.retry}
+        />
         <View style={styles.inputZone}>
           <TextInput
             style={[styles.input, { maxHeight: inputMaxHeight }]}
@@ -410,12 +408,12 @@ export function RoomComposer({
           <Pressable
             style={styles.railButton}
             onPress={attach}
-            disabled={disabled || busy || pending.length >= MAX_PHOTOS}
+            disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
             hitSlop={6}
             accessibilityRole="button"
             accessibilityLabel="Attach photo"
           >
-            {uploading ? (
+            {draft.uploading ? (
               <ActivityIndicator size="small" color={colors.mute} />
             ) : (
               <SymbolView accessibilityElementsHidden name="photo" size={18} tintColor={colors.mute} />

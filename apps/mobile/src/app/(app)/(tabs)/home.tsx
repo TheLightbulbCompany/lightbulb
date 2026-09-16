@@ -9,6 +9,7 @@ import {
 import * as Clipboard from "expo-clipboard";
 import {
   router,
+  useFocusEffect,
   useIsFocused,
   useNavigation,
   useRoute,
@@ -30,6 +31,7 @@ import {
 } from "../../../components/room/RoomRow";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
+import { roomIdsWithDrafts } from "../../../lib/composerDraft";
 import { useMobileRooms } from "../../../lib/rooms";
 import { roomUrl } from "../../../lib/webLinks";
 import { useLiveEvents } from "../../../providers/live-events";
@@ -103,12 +105,21 @@ function ComposeButton({ onPress }: { onPress: () => void }) {
  * sectioning — split them if DMs ever grows a surface of its own.
  */
 export function RoomsScreen({ direct = false }: { direct?: boolean }) {
-  const { userId } = useAuth();
+  const { userId, orgId } = useAuth();
   const focused = useIsFocused();
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
   const { messaging } = useLiveEvents();
   const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
   const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);
+  // Re-read on focus, which is exactly when it can have changed: the only way
+  // to leave a draft behind is to come back from the room you left it in.
+  const [roomsWithDrafts, setRoomsWithDrafts] = useState<ReadonlySet<string>>(new Set<string>());
+  const draftScope = userId ? `${userId}:${orgId ?? userId}` : null;
+  useFocusEffect(
+    useCallback(() => {
+      setRoomsWithDrafts(draftScope ? roomIdsWithDrafts(draftScope) : new Set<string>());
+    }, [draftScope]),
+  );
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -314,6 +325,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
             <RoomListRow
               room={item.room}
               participants={participants(item.room)}
+              hasDraft={roomsWithDrafts.has(item.room.roomId)}
               onAction={onRowAction}
             />
           )

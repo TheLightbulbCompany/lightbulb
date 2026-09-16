@@ -486,10 +486,10 @@ export class ServiceStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: "AgentCoreRuntimeManage",
         actions: [
-          "bedrock-agentcore-control:CreateAgentRuntime",
-          "bedrock-agentcore-control:GetAgentRuntime",
-          "bedrock-agentcore-control:UpdateAgentRuntime",
-          "bedrock-agentcore-control:DeleteAgentRuntime",
+          "bedrock-agentcore:CreateAgentRuntime",
+          "bedrock-agentcore:GetAgentRuntime",
+          "bedrock-agentcore:UpdateAgentRuntime",
+          "bedrock-agentcore:DeleteAgentRuntime",
           "bedrock-agentcore:InvokeAgentRuntime",
           "bedrock-agentcore:StopRuntimeSession",
         ],
@@ -499,7 +499,7 @@ export class ServiceStack extends cdk.Stack {
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "AgentCoreRuntimeList",
-        actions: ["bedrock-agentcore-control:ListAgentRuntimes"],
+        actions: ["bedrock-agentcore:ListAgentRuntimes"],
         resources: ["*"],
       }),
     );

@@ -101,6 +101,18 @@ export function normalizeTarget(raw) {
     const target = raw.trim().replace(/^lightbulb:/i, "");
     return UUID_RE.test(target) ? target : undefined;
 }
+/**
+ * Where a reply to this message goes. In channels and group DMs everything about a
+ * request lives in the thread under it (Slack-style): a top-level request opens its
+ * own thread, a threaded request stays in its thread. A DM is already one conversation,
+ * so it stays linear. Used for the durable final's threadId AND the run record, so the
+ * run card and the reply land in the same place.
+ */
+export function replyThreadRootId(room, message) {
+    if (room.kind === "dm")
+        return message.threadRootMessageId;
+    return message.threadRootMessageId ?? message.messageId;
+}
 /** Durable queue id + part index first, then the prepared id; never a minted key. */
 export function resolveOutboundEventId(ctx) {
     const queueId = ctx.deliveryQueueId;
@@ -679,6 +691,9 @@ export async function runRoomTurn(deps, event, admitted, invocation) {
                     type: "lightbulb_room",
                     payload: {
                         room,
+                        // The agent needs the triggering message to write a thread-precise
+                        // permalink into work it files (lightbulb skill, references/follow-ups.md).
+                        message: { id: message.messageId, threadRootMessageId: message.threadRootMessageId },
                         sender,
                         mentions: event.mentions,
                         participants: event.participants,
@@ -718,7 +733,7 @@ export async function runRoomTurn(deps, event, admitted, invocation) {
                 ? {
                     to: target,
                     replyToId: message.replyToMessageId,
-                    threadId: message.threadRootMessageId ?? undefined,
+                    threadId: replyThreadRootId(room, message) ?? undefined,
                     requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
                 }
                 : false,
@@ -829,7 +844,7 @@ export function createInboundHandler(deps) {
             sessionKey: sessionKeyFor(accountId, event.room.id),
             frameChannel: run.frameChannel,
             frameEndpoint: run.frameEndpoint,
-            threadRootMessageId: event.message.threadRootMessageId ?? null,
+            threadRootMessageId: replyThreadRootId(event.room, event.message),
             eventKind: event.eventKind,
         }, () => runRoomTurn(deps, event, admitted, invocation));
         return true;

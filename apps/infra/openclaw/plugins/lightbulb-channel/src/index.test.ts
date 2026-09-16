@@ -1060,6 +1060,46 @@ describe("native inbound context and delivery", () => {
     expect(sdk.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
+  it("hands the agent the triggering message id and thread root in the room context", async () => {
+    const sdk = inboundSdk();
+    const base = ingress();
+    await dispatchTurn(
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV, runs: fakeRuns() },
+      { ...base, message: { ...base.message, threadRootMessageId: HISTORY_MESSAGE } },
+    );
+    const contextInput = vi.mocked(sdk.buildChannelInboundEventContext).mock.calls[0]![0] as any;
+    expect(contextInput.extra.ChannelStructuredContext[0].payload.message).toEqual({
+      id: MESSAGE,
+      threadRootMessageId: HISTORY_MESSAGE,
+    });
+  });
+
+  // These two exercise deps.runs.start's spec, which only createInboundHandler builds
+  // (runRoomTurn, what dispatchTurn calls directly, never calls runs.start) — so, unlike
+  // the test above, they go through the handler + a mocked request/response, same as the
+  // "async turn ack and run controls" tests below.
+  it("opens a thread under a top-level request in a channel: the run record carries it as the thread root", async () => {
+    const runs = fakeRuns();
+    const handler = createInboundHandler({ sdk: withBody(ingress()), cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV, runs });
+    await handler(request(), responseRecorder());
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({ threadRootMessageId: MESSAGE }), expect.any(Function));
+  });
+
+  it("keeps DM replies linear: no thread root on a top-level DM request", async () => {
+    const runs = fakeRuns();
+    const base = ingress();
+    const handler = createInboundHandler({
+      sdk: withBody({ ...base, room: { ...base.room, kind: "dm" } }),
+      cfg: config(),
+      accountId: FRIDAY,
+      channelRuntime: runtime(),
+      env: () => ENV,
+      runs,
+    });
+    await handler(request(), responseRecorder());
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({ threadRootMessageId: null }), expect.any(Function));
+  });
+
   it("marks ambient agent ingress non-command and supplies symmetric native pair-loop facts", async () => {
     const sdk = inboundSdk();
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));
@@ -1123,7 +1163,7 @@ describe("native inbound context and delivery", () => {
       expect(params.delivery.durable).toEqual({
         to: `lightbulb:${ROOM}`,
         replyToId: null,
-        threadId: undefined,
+        threadId: MESSAGE,
         requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
       });
       await expect(params.delivery.deliver(final, { kind: "final" })).rejects.toThrow(
@@ -1148,7 +1188,7 @@ describe("native inbound context and delivery", () => {
       expect(params.delivery.durable).toEqual({
         to: `lightbulb:${ROOM}`,
         replyToId: null,
-        threadId: undefined,
+        threadId: MESSAGE,
         requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
       });
       return { admission: { kind: "dispatch" }, dispatched: true };

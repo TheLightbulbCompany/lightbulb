@@ -406,7 +406,10 @@ fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String 
     }
 }
 
-fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
+/// One short line for a tool call: the Bash command, the file path, the
+/// question with its options. Shared with `lifecycle::build_datagram`, so a
+/// waiting session reads the same way live as it does in the transcript.
+pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
     match name {
         "Bash" => first(&["command"]).lines().next().unwrap_or("").to_owned(),

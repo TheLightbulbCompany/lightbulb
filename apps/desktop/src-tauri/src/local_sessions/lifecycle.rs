@@ -7,6 +7,10 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const DATAGRAM_MAX: usize = 1500;
 pub(crate) const LAST_MESSAGE_MAX: usize = 300;
+/// One short line: the question a session is asking, or the call it wants
+/// permission for. Never the raw `tool_input`, which is unbounded and can hold
+/// file contents or a secret.
+pub(crate) const WAITING_TEXT_MAX: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Provider {
@@ -25,6 +29,10 @@ pub(crate) struct HookEvent {
     pub message: Option<String>, // Notification message (for the "permission" fallback)
     pub reason: Option<String>,
     pub last_assistant_message: Option<String>,
+    pub tool_name: Option<String>,
+    /// A short human summary of the tool's input -- the rendering the mirrored
+    /// transcript already uses. Never the input itself.
+    pub waiting_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,10 +64,20 @@ fn take_bytes(s: &str, max: usize) -> String {
 /// multi-byte-character payload could otherwise blow past its char-count cap
 /// in bytes; `lastAssistantMessage` keeps its char-based cap because it is
 /// droppable. On top of that, drops the largest/least essential fields in
-/// order to stay under `DATAGRAM_MAX`: `lastAssistantMessage` -> `cwd` ->
-/// `transcriptPath`.
+/// order to stay under `DATAGRAM_MAX`: `lastAssistantMessage` -> `waitingText`
+/// -> `cwd` -> `transcriptPath`.
 pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
     let s = |k: &str| stdin_json[k].as_str().map(str::to_owned);
+    // Summarized, never forwarded: `tool_input` is unbounded and holds file
+    // contents, patches and whatever a command line carries.
+    let waiting = stdin_json["tool_name"].as_str().map(|name| {
+        super::claude::summary(
+            name,
+            &stdin_json["tool_input"],
+            stdin_json["cwd"].as_str(),
+            std::env::var("HOME").ok().as_deref(),
+        )
+    });
     let mut fields: Vec<(&str, Option<String>)> = vec![
         ("v", Some("1".into())),
         ("provider", Some(provider.into())),
@@ -71,6 +89,13 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
             s("notification_type").map(|m| take_bytes(&m, 64)),
         ),
         ("message", s("message").map(|m| take_bytes(&m, 120))),
+        ("toolName", s("tool_name").map(|m| take_bytes(&m, 64))),
+        (
+            "waitingText",
+            waiting
+                .filter(|t| !t.is_empty())
+                .map(|t| take_bytes(&t, WAITING_TEXT_MAX)),
+        ),
         ("transcriptPath", s("transcript_path")),
         ("cwd", s("cwd")),
         (
@@ -79,7 +104,13 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
         ),
     ];
     let mut bytes = Vec::new();
-    for drop in ["lastAssistantMessage", "cwd", "transcriptPath", ""] {
+    for drop in [
+        "lastAssistantMessage",
+        "waitingText",
+        "cwd",
+        "transcriptPath",
+        "",
+    ] {
         let mut map = Map::new();
         for (k, v) in &fields {
             if let Some(v) = v {
@@ -124,6 +155,8 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
         // every device heartbeat, which the relay rejects whole.
         last_assistant_message: s("lastAssistantMessage")
             .map(|m| m.chars().take(LAST_MESSAGE_MAX).collect()),
+        tool_name: s("toolName").map(|m| take_bytes(&m, 64)),
+        waiting_text: s("waitingText").map(|m| take_bytes(&m, WAITING_TEXT_MAX)),
     })
 }
 
@@ -215,7 +248,7 @@ mod tests {
     use serde_json::json;
 
     fn ev(event: &str) -> HookEvent {
-        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None }
+        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, waiting_text: None }
     }
 
     #[test]
@@ -253,6 +286,59 @@ mod tests {
         assert!(parse_datagram(b"1").is_none());
         assert!(parse_datagram(b"{not json").is_none());
         assert!(parse_datagram(br#"{"v":1,"provider":"claude","event":"Stop"}"#).is_none(), "missing sessionId is a wake, not an event");
+    }
+
+    #[test]
+    fn lifecycle_datagram_carries_a_bounded_tool_summary_never_the_input() {
+        let stdin = json!({"session_id":"abc","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion",
+            "tool_input":{"questions":[{"question":"Tea or coffee?","options":[{"label":"Tea"},{"label":"Coffee"}]}]}});
+        let parsed = parse_datagram(&build_datagram("claude", &stdin)).unwrap();
+        assert_eq!(parsed.tool_name.as_deref(), Some("AskUserQuestion"));
+        assert_eq!(
+            parsed.waiting_text.as_deref(),
+            Some("Tea or coffee? (Tea / Coffee)")
+        );
+
+        // What a tool is asked to write never rides along -- only the summary.
+        let stdin = json!({"session_id":"abc","hook_event_name":"PermissionRequest","cwd":"/w",
+            "tool_name":"Write","tool_input":{"file_path":"/w/src/main.rs","content":"SECRET".repeat(500)}});
+        let bytes = build_datagram("claude", &stdin);
+        assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
+        let parsed = parse_datagram(&bytes).unwrap();
+        assert_eq!(parsed.waiting_text.as_deref(), Some("src/main.rs"));
+
+        // A long command line is cut to the bound, and a tool with nothing to
+        // summarize sends no empty field at all.
+        let stdin = json!({"session_id":"abc","hook_event_name":"PermissionRequest",
+            "tool_name":"Bash","tool_input":{"command":"echo ".to_owned() + &"a".repeat(4000)}});
+        let bytes = build_datagram("claude", &stdin);
+        assert!(bytes.len() <= DATAGRAM_MAX);
+        let parsed = parse_datagram(&bytes).unwrap();
+        assert_eq!(parsed.waiting_text.map(|t| t.len()), Some(WAITING_TEXT_MAX));
+        let stdin =
+            json!({"session_id":"abc","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{}});
+        assert!(parse_datagram(&build_datagram("claude", &stdin))
+            .unwrap()
+            .waiting_text
+            .is_none());
+
+        // Droppable, ahead of cwd and transcriptPath: an oversized datagram
+        // keeps the fields the transport cannot work without.
+        let stdin = json!({"session_id":"abc","hook_event_name":"PermissionRequest","cwd":"/w",
+            "transcript_path":"/".repeat(1600),"tool_name":"Bash","tool_input":{"command":"git push"}});
+        let bytes = build_datagram("claude", &stdin);
+        assert!(bytes.len() <= DATAGRAM_MAX);
+        let parsed = parse_datagram(&bytes).unwrap();
+        assert_eq!(parsed.tool_name.as_deref(), Some("Bash"));
+        assert!(parsed.waiting_text.is_none());
+
+        // A datagram this process did not build is bounded on the way in too.
+        let hostile = json!({"v":1,"provider":"claude","event":"PermissionRequest","sessionId":"abc",
+            "toolName":"B".repeat(500),"waitingText":"c".repeat(4000)})
+        .to_string();
+        let parsed = parse_datagram(hostile.as_bytes()).unwrap();
+        assert_eq!(parsed.tool_name.map(|t| t.len()), Some(64));
+        assert_eq!(parsed.waiting_text.map(|t| t.len()), Some(WAITING_TEXT_MAX));
     }
 
     #[test]

@@ -1520,6 +1520,8 @@ mod tests {
             message: None,
             reason: None,
             last_assistant_message: None,
+            tool_name: None,
+            waiting_text: None,
         };
         assert_eq!(host.apply_hook(&ev).unwrap(), Some(key.clone()));
         assert_eq!(host.mirrors[&key].native.status, "busy");
@@ -2971,6 +2973,8 @@ mod tests {
             message: None,
             reason: None,
             last_assistant_message: None,
+            tool_name: None,
+            waiting_text: None,
         }
     }
 

@@ -210,9 +210,14 @@ pub(crate) fn transition(event: &HookEvent) -> Transition {
                 text: waiting_reason(event),
             }
         }
-        "PermissionRequest" => Transition::Waiting {
-            text: waiting_reason(event),
-        },
+        // A question fires BOTH hooks. `PreToolUse` already has it, worded as the
+        // question and keyed by `tool_use_id`; a second row saying "Wants to run
+        // AskUserQuestion(...)" is a duplicate, and the worse of the two.
+        "PermissionRequest" if event.tool_name.as_deref() != Some("AskUserQuestion") => {
+            Transition::Waiting {
+                text: waiting_reason(event),
+            }
+        }
         "Notification" => match event.notification_type.as_deref() {
             Some("permission_prompt") => Transition::Status("waiting-approval"),
             Some("idle_prompt") => Transition::Status("idle"),
@@ -340,6 +345,11 @@ mod tests {
             transition(&ev("PermissionRequest")),
             Transition::Waiting { text: None },
             "still a waiting row: the status is the point, the reason is a bonus"
+        );
+        assert_eq!(
+            transition(&HookEvent { tool_name: Some("AskUserQuestion".into()), ..permission.clone() }),
+            Transition::Ignore,
+            "a question is PreToolUse's row; this hook would only duplicate it"
         );
         // The prefix is part of the bound, not on top of it.
         let long = HookEvent { waiting_text: Some("x".repeat(WAITING_TEXT_MAX)), ..permission };

@@ -1661,8 +1661,29 @@ mod tests {
             "a new prompt reading identically is still a new prompt"
         );
 
+        // One question, both hooks: `PreToolUse` then the `PermissionRequest` the
+        // same prompt also fires. The reader gets the question once.
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "Stop", SID))
+            .unwrap();
+        host.apply_hook(&asked("toolu_01cccc")).unwrap();
+        host.apply_hook(&lifecycle::HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            waiting_text: Some("Tea or coffee? (Tea / Coffee)".into()),
+            ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
+        })
+        .unwrap();
+        assert_eq!(
+            host.mirrors[&key].queue.len(),
+            7,
+            "a question asks once, however many hooks report it"
+        );
+        assert_eq!(
+            host.mirrors[&key].queue[6]["text"], "Tea or coffee? (Tea / Coffee)",
+            "and it reads as the question, not as a tool call"
+        );
+
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
-        assert_eq!(stored.queue.len(), 6, "the injected rows survive a restart");
+        assert_eq!(stored.queue.len(), 7, "the injected rows survive a restart");
     }
 
     /// A command line can carry a token, and the mirror is written to disk.

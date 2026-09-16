@@ -166,6 +166,12 @@ describe("joinErrorMessage", () => {
     expect(joinErrorMessage(new ApiError(404, { detail: "gone" })).canRetry).toBe(false);
   });
 
+  it("shows a full workspace's 409 sentence and does not offer retry", () => {
+    const r = joinErrorMessage(new ApiError(409, { detail: "This workspace has reached its member limit." }));
+    expect(r.message).toMatch(/member limit/);
+    expect(r.canRetry).toBe(false);
+  });
+
   it("marks a 5xx as retryable", () => {
     expect(joinErrorMessage(new ApiError(503, {})).canRetry).toBe(true);
   });

@@ -432,6 +432,17 @@ async def create_organization_membership(
     if response.status_code >= 400:
         if _is_already_member(response):
             return {"status": "already_member", "membership_id": None}
+        if _has_error_code(response, _MEMBER_CAP_CODE):
+            # The org's `max_allowed_memberships` is full. A 502 here told a
+            # blocked joiner to "try again", which can never work; say what it
+            # is so the join page renders it as terminal (2026-09-16 incident:
+            # every prod org was capped at 1 or 5 members).
+            logger.warning(
+                "clerk_admin.create_organization_membership member cap reached org=%s user=%s",
+                org_id,
+                user_id,
+            )
+            raise HTTPException(status_code=409, detail=MEMBER_CAP_REACHED)
         logger.warning(
             "clerk_admin.create_organization_membership HTTP %s org=%s user=%s body=%s",
             response.status_code,
@@ -460,8 +471,14 @@ _ALREADY_MEMBER_CODES = frozenset(
 )
 
 
-def _is_already_member(response: httpx.Response) -> bool:
-    """True when a Clerk 4xx means "already a member of this org"."""
+# Clerk's code when the org's `max_allowed_memberships` (members PER ORG — not
+# orgs per user) is full, "including outstanding invitations".
+_MEMBER_CAP_CODE = frozenset({"organization_membership_quota_exceeded"})
+MEMBER_CAP_REACHED = "This workspace has reached its member limit and can't take new members right now."
+
+
+def _has_error_code(response: httpx.Response, codes: frozenset[str]) -> bool:
+    """True when a Clerk error body carries any of ``codes``."""
     try:
         payload = response.json()
     except ValueError:
@@ -469,7 +486,12 @@ def _is_already_member(response: httpx.Response) -> bool:
     errors = payload.get("errors") if isinstance(payload, dict) else None
     if not isinstance(errors, list):
         return False
-    return any(isinstance(e, dict) and e.get("code") in _ALREADY_MEMBER_CODES for e in errors)
+    return any(isinstance(e, dict) and e.get("code") in codes for e in errors)
+
+
+def _is_already_member(response: httpx.Response) -> bool:
+    """True when a Clerk 4xx means "already a member of this org"."""
+    return _has_error_code(response, _ALREADY_MEMBER_CODES)
 
 
 class SlugTakenError(Exception):

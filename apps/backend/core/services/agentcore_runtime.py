@@ -193,3 +193,75 @@ def build_runtime_request(
         "environmentVariables": environment or {},
         "tags": {"owner_id": owner_id, "Environment": _env(), "ManagedBy": "lightbulb-backend"},
     }
+
+
+#: Owner ruling 2026-09-16: 4h idle. Idle memory is ~$0.014/h, so a generous timeout costs a
+#: couple of dollars a month and removes nearly every cold start inside a working day.
+IDLE_TIMEOUT_S = 4 * 60 * 60
+#: AWS's hard ceiling for a microVM session; the backend rolls sessions at a quiet point before it.
+MAX_LIFETIME_S = 8 * 60 * 60
+
+
+async def ensure_runtime(owner_id: str) -> dict:
+    """Give this workspace an AgentCore runtime and point its container row at it.
+
+    Idempotent: a row that already carries ``agentcore_runtime_arn`` is returned as-is. The
+    steps reuse the owner's existing resources rather than minting parallel ones — the EFS
+    access point from the container row, the per-owner Bedrock role (re-trusted for AgentCore),
+    and the owner's application-inference profiles for the gate bearer.
+
+    Note on the gate bearer: ``mint_gate_token`` ROTATES the owner's bearer, so the ECS task
+    that served this workspace stops being able to reach Bedrock the moment this runs. That is
+    the intended one-way cutover shape (spec §5.5); do not call this for a workspace you mean
+    to keep on ECS.
+    """
+    import boto3
+
+    from core.billing.bedrock_aip import _owner_role_name, ensure_owner_aips, ensure_owner_bedrock_role
+    from core.billing.bedrock_gate_tokens import mint_gate_token
+    from core.repositories import container_repo
+
+    if not settings.AGENTCORE_GATEWAY_IMAGE:
+        raise RuntimeError("AGENTCORE_GATEWAY_IMAGE is not configured for this environment")
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if not row:
+        raise RuntimeError(f"no container row for {owner_id}")
+    if row.get("agentcore_runtime_arn"):
+        return {"owner_id": owner_id, "runtime_arn": row["agentcore_runtime_arn"], "created": False}
+    access_point_id = row.get("access_point_id")
+    hook_token = row.get("hook_token")
+    if not access_point_id or not hook_token:
+        raise RuntimeError(f"container row for {owner_id} lacks access_point_id/hook_token; provision on ECS first")
+
+    aip_arns = await ensure_owner_aips(owner_id)
+    role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
+    account_id = role_arn.split(":")[4]
+    await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), account_id)
+    gate_bearer = await mint_gate_token(owner_id, aip_arns)
+
+    env = build_runtime_env(
+        owner_id=owner_id,
+        api_base=settings.PUBLIC_API_BASE,
+        hook_token=hook_token,
+        litestream_bucket=settings.LITESTREAM_BUCKET,
+        gate_bearer=gate_bearer,
+    )
+    request = build_runtime_request(
+        owner_id=owner_id,
+        image_uri=settings.AGENTCORE_GATEWAY_IMAGE,
+        role_arn=role_arn,
+        efs_access_point_arn=(
+            f"arn:aws:elasticfilesystem:{settings.AWS_REGION}:{account_id}:access-point/{access_point_id}"
+        ),
+        subnets=[s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()],
+        security_groups=[settings.ECS_SECURITY_GROUP_ID] if settings.ECS_SECURITY_GROUP_ID else [],
+        idle_timeout_s=IDLE_TIMEOUT_S,
+        max_lifetime_s=MAX_LIFETIME_S,
+        environment=env,
+    )
+    control = boto3.client("bedrock-agentcore-control")
+    created = await run_in_thread(control.create_agent_runtime, **request)
+    arn = created["agentRuntimeArn"]
+    await container_repo.update_fields(owner_id, {"runtime_host": "agentcore", "agentcore_runtime_arn": arn})
+    logger.info("agentcore runtime created owner=%s arn=%s", owner_id, arn)
+    return {"owner_id": owner_id, "runtime_arn": arn, "created": True}

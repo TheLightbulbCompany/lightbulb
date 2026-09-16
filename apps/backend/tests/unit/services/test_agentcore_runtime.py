@@ -2,6 +2,9 @@
 
 import json
 
+import pytest
+
+from core.config import settings
 from core.services import agentcore_runtime as ar
 
 
@@ -146,3 +149,139 @@ class TestRuntimeEnv:
             environment=self._env(),
         )
         assert req["environmentVariables"]["ISOL8_OWNER_ID"] == "org_abc"
+
+
+class TestEnsureRuntime:
+    """The one-way move of a workspace onto a runtime. Every AWS and DynamoDB collaborator is
+    mocked; what is under test is the ORCHESTRATION — reuse of existing owner resources, the
+    idempotency guard, and the row flip."""
+
+    ROW = {
+        "owner_id": "org_abc",
+        "access_point_id": "fsap-123",
+        "hook_token": "hook-xyz",
+        "status": "running",
+    }
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        calls = {"created": [], "trust": [], "fields": []}
+        monkeypatch.setattr(settings, "AGENTCORE_GATEWAY_IMAGE", "1234.dkr.ecr.us-east-1.amazonaws.com/gw:v5")
+        monkeypatch.setattr(settings, "ECS_SUBNETS", "subnet-a, subnet-b")
+        monkeypatch.setattr(settings, "ECS_SECURITY_GROUP_ID", "sg-1")
+        monkeypatch.setattr(settings, "LITESTREAM_BUCKET", "lightbulb-dev-openclaw-replicas")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/")
+
+        import core.billing.bedrock_aip as aip
+        import core.billing.bedrock_gate_tokens as gate
+        import core.repositories.container_repo as repo
+
+        async def _aips(owner_id, *, tiers=None):
+            return {"sonnet": "arn:aip:sonnet"}
+
+        async def _role(owner_id, aip_arns, *, skip_bedrock_grant=False):
+            return "arn:aws:iam::999999999999:role/lightbulb-dev-owner-bedrock-org_abc"
+
+        async def _mint(owner_id, aip_arns):
+            return "gate-bearer-1"
+
+        async def _trust(owner_id, role_name, account_id):
+            calls["trust"].append((owner_id, role_name, account_id))
+            return True
+
+        async def _get(owner_id, consistent=False):
+            return dict(self.ROW)
+
+        async def _update(owner_id, fields):
+            calls["fields"].append((owner_id, fields))
+            return {**self.ROW, **fields}
+
+        monkeypatch.setattr(aip, "ensure_owner_aips", _aips)
+        monkeypatch.setattr(aip, "ensure_owner_bedrock_role", _role)
+        monkeypatch.setattr(gate, "mint_gate_token", _mint)
+        monkeypatch.setattr(ar, "ensure_agentcore_trust", _trust)
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        monkeypatch.setattr(repo, "update_fields", _update)
+
+        class _Control:
+            def create_agent_runtime(self, **kw):
+                calls["created"].append(kw)
+                return {"agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:999999999999:runtime/x-1"}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: _Control())
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_creates_the_runtime_and_flips_the_row(self, wired):
+        out = await ar.ensure_runtime("org_abc")
+        assert out["created"] is True
+        assert out["runtime_arn"].endswith("runtime/x-1")
+        # The row is what makes runtime_transport route to AgentCore from now on.
+        assert wired["fields"] == [
+            ("org_abc", {"runtime_host": "agentcore", "agentcore_runtime_arn": out["runtime_arn"]})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reuses_the_owners_existing_resources(self, wired):
+        await ar.ensure_runtime("org_abc")
+        req = wired["created"][0]
+        # The EXISTING per-owner role, re-trusted -- not a second role.
+        assert req["roleArn"].endswith("owner-bedrock-org_abc")
+        # Trust is added to the SAME per-owner role, in our account -- one call, no new role.
+        ((trust_owner, trust_role, trust_account),) = wired["trust"]
+        assert trust_owner == "org_abc"
+        assert trust_role.endswith("-owner-bedrock-org_abc")
+        assert trust_account == "999999999999"
+        # The EXISTING EFS access point from the container row.
+        ap = req["filesystemConfigurations"][0]["efsAccessPoint"]["accessPointArn"]
+        assert ap.endswith(":999999999999:access-point/fsap-123")
+
+    @pytest.mark.asyncio
+    async def test_supplies_the_gateway_environment(self, wired):
+        await ar.ensure_runtime("org_abc")
+        env = wired["created"][0]["environmentVariables"]
+        assert env["ISOL8_OWNER_ID"] == "org_abc"
+        assert env["OPENCLAW_HOOK_TOKEN"] == "hook-xyz"
+        assert env["AWS_BEARER_TOKEN_BEDROCK"] == "gate-bearer-1"
+        assert env["ISOL8_API_URL"] == "https://api-dev.flickmeon.ai"
+
+    @pytest.mark.asyncio
+    async def test_parses_the_comma_separated_subnets(self, wired):
+        await ar.ensure_runtime("org_abc")
+        net = wired["created"][0]["networkConfiguration"]["networkModeConfig"]
+        assert net["subnets"] == ["subnet-a", "subnet-b"]
+        assert net["securityGroups"] == ["sg-1"]
+
+    @pytest.mark.asyncio
+    async def test_is_idempotent_when_the_row_already_has_a_runtime(self, wired, monkeypatch):
+        import core.repositories.container_repo as repo
+
+        async def _get(owner_id, consistent=False):
+            return {**self.ROW, "agentcore_runtime_arn": "arn:existing"}
+
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        out = await ar.ensure_runtime("org_abc")
+        assert out == {"owner_id": "org_abc", "runtime_arn": "arn:existing", "created": False}
+        assert wired["created"] == []  # no second runtime, no second EFS mount
+        assert wired["fields"] == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_the_platform_is_not_configured(self, wired, monkeypatch):
+        monkeypatch.setattr(settings, "AGENTCORE_GATEWAY_IMAGE", "")
+        with pytest.raises(RuntimeError, match="AGENTCORE_GATEWAY_IMAGE"):
+            await ar.ensure_runtime("org_abc")
+        assert wired["created"] == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_row_that_was_never_provisioned_on_ecs(self, wired, monkeypatch):
+        # The access point and hook token are minted by ECS provisioning; without them the
+        # runtime would have no filesystem and no way to call back.
+        import core.repositories.container_repo as repo
+
+        async def _get(owner_id, consistent=False):
+            return {"owner_id": "org_abc", "status": "provisioning"}
+
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        with pytest.raises(RuntimeError, match="access_point_id/hook_token"):
+            await ar.ensure_runtime("org_abc")
+        assert wired["created"] == []

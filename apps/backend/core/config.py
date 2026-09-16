@@ -370,6 +370,9 @@ class Settings(BaseSettings):
     # the EFS state layout: the backend can reach hot SQLite directly on EFS
     # and every local-sqlite code path (sentinel, S3 replica lifecycle) stays inert.
     LITESTREAM_BUCKET: str = ""
+    # The gateway-only arm64 image a workspace's AgentCore runtime runs. Empty = the platform
+    # is not enabled here; ensure_runtime refuses rather than guessing an image.
+    AGENTCORE_GATEWAY_IMAGE: str = ""
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
     # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,

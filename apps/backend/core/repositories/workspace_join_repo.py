@@ -1,9 +1,9 @@
 """Per-workspace join-link rows — exactly ONE row per Clerk org, keyed on org_id.
 
-The row stores the SHA-256 of the join token and never the token itself, the
-same hash-only posture ``core/billing/bedrock_gate_tokens.py`` uses for the
-per-owner Bedrock bearer tokens: the plaintext exists once, in the mint
-response, and a leaked table row cannot be turned back into a usable link.
+The row stores the SHA-256 of the join token (what redeem compares against)
+and a Fernet ciphertext of it under the platform ``ENCRYPTION_KEY`` (what lets
+an admin copy the SAME link again instead of regenerating). Never the plaintext:
+a leaked table row is not a usable link without the key.
 
 **Why keyed on org_id and not on the token hash.** The obvious shape is a
 token-hash PK (redeem is then a single GetItem) plus a second pointer row so an
@@ -42,7 +42,7 @@ async def get_link(org_id: str) -> dict | None:
     return resp.get("Item")
 
 
-async def put_link(org_id: str, *, token_hash: str, created_by: str) -> dict:
+async def put_link(org_id: str, *, token_hash: str, token_enc: str, created_by: str) -> dict:
     """Install ``token_hash`` as the org's one live join link.
 
     A whole-item put, deliberately: it is what makes "regenerating invalidates
@@ -52,6 +52,7 @@ async def put_link(org_id: str, *, token_hash: str, created_by: str) -> dict:
     item = {
         "org_id": org_id,
         "token_hash": token_hash,
+        "token_enc": token_enc,
         "created_by": created_by,
         "created_at": utc_now_iso(),
     }

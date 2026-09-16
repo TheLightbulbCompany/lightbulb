@@ -31,14 +31,19 @@ import type { CompanyMember } from "@/components/teams/shared/types";
 // component is mounted nowhere else, so the classes always resolve.
 // =============================================================================
 
-/** `GET /orgs/{org_id}/join-link` — metadata only; never the link itself. */
+/**
+ * `GET /orgs/{org_id}/join-link` — the live link, so it can be re-copied any
+ * time. `exists` without `join_url` is a link created before the token was
+ * stored encrypted: it works, but only a regenerate yields a copyable one.
+ */
 export type JoinLinkStatus = {
   exists: boolean;
+  join_url?: string | null;
   created_at?: string | null;
   created_by?: string | null;
 };
 
-/** `POST /orgs/{org_id}/join-link` — the one response that carries the URL. */
+/** `POST /orgs/{org_id}/join-link` — the freshly minted link. */
 type CreatedJoinLink = {
   join_url: string;
   created_at: string;
@@ -97,10 +102,10 @@ export function WorkspaceMembersSection() {
 
   const [link, setLink] = useState<JoinLinkStatus | null>(null);
   const [linkLoading, setLinkLoading] = useState(true);
-  // The plaintext link, held in component state ONLY. It is stored hashed, so
-  // this is the one and only time it can be shown; nothing persists it and a
-  // remount loses it deliberately.
-  const [minted, setMinted] = useState<string | null>(null);
+  // The link on screen: the backend's current one on load, the fresh one after
+  // a mint. Showing it never rotates it — re-sharing used to force a regenerate,
+  // which killed the link for everyone who had not clicked yet.
+  const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -115,7 +120,10 @@ export function WorkspaceMembersSection() {
     api
       .get(`/orgs/${orgId}/join-link`)
       .then((status) => {
-        if (!cancelled) setLink(status as JoinLinkStatus);
+        if (cancelled) return;
+        const current = status as JoinLinkStatus;
+        setLink(current);
+        setLinkUrl(current.join_url ?? null);
       })
       .catch((err) => {
         if (!cancelled) setError(joinLinkErrorMessage(err));
@@ -135,7 +143,7 @@ export function WorkspaceMembersSection() {
     setCopied(false);
     try {
       const created = (await api.post(`/orgs/${orgId}/join-link`, {})) as CreatedJoinLink;
-      setMinted(created.join_url);
+      setLinkUrl(created.join_url);
       setLink({ exists: true, created_at: created.created_at });
     } catch (err) {
       setError(joinLinkErrorMessage(err));
@@ -151,7 +159,7 @@ export function WorkspaceMembersSection() {
     setCopied(false);
     try {
       await api.del(`/orgs/${orgId}/join-link`);
-      setMinted(null);
+      setLinkUrl(null);
       setLink({ exists: false });
     } catch (err) {
       setError(joinLinkErrorMessage(err));
@@ -161,9 +169,9 @@ export function WorkspaceMembersSection() {
   }, [api, orgId]);
 
   const handleCopy = useCallback(async () => {
-    if (!minted) return;
+    if (!linkUrl) return;
     try {
-      await navigator.clipboard.writeText(minted);
+      await navigator.clipboard.writeText(linkUrl);
       setCopied(true);
     } catch {
       // Clipboard access can be denied (insecure context, permission). The
@@ -171,7 +179,7 @@ export function WorkspaceMembersSection() {
       // still select it by hand — say so rather than failing silently.
       setError("Couldn't copy automatically — select the link and copy it.");
     }
-  }, [minted]);
+  }, [linkUrl]);
 
   if (!isLoaded) {
     return (
@@ -298,7 +306,7 @@ export function WorkspaceMembersSection() {
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {minted && (
+            {linkUrl && (
               <div className="flex flex-col gap-1.5">
                 <label htmlFor="join-link-url" className="text-ui font-medium text-midnight">
                   Your join link
@@ -307,7 +315,7 @@ export function WorkspaceMembersSection() {
                   <Input
                     id="join-link-url"
                     readOnly
-                    value={minted}
+                    value={linkUrl}
                     onFocus={(e) => e.currentTarget.select()}
                     className="max-w-[420px] font-mono text-sm"
                   />
@@ -316,30 +324,43 @@ export function WorkspaceMembersSection() {
                   </Button>
                 </div>
                 <p className="text-sm text-midnight-muted">
-                  Copy it now — only a fingerprint of the link is stored, so it can never
-                  be shown again. Regenerating gives you a new one and turns this one off.
+                  Send this to anyone you want in — it stays here to copy again. Regenerating
+                  gives you a new link and turns this one off for everyone who hasn&apos;t used it.
                 </p>
               </div>
             )}
 
-            {!minted && link?.exists && (
+            {!linkUrl && link?.exists && (
               <p className="text-ui text-midnight-muted" data-testid="join-link-active">
-                A join link is active for this workspace. For security it&apos;s only shown
-                once, when it&apos;s created — regenerate to get a link you can copy. The
-                old one stops working immediately.
+                A join link is active, but it was created before links could be shown again.
+                Regenerate once to get one you can copy — the old one stops working
+                immediately.
               </p>
             )}
 
-            {!minted && !link?.exists && (
+            {!linkUrl && !link?.exists && (
               <p className="text-ui text-midnight-muted" data-testid="join-link-none">
                 There&apos;s no join link yet. Create one to let someone in.
               </p>
             )}
 
             <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={handleGenerate} disabled={busy}>
-                {busy ? "Working…" : link?.exists ? "Regenerate link" : "Create join link"}
-              </Button>
+              {linkUrl ? (
+                // Secondary once a link is on screen: Copy is the everyday action,
+                // Regenerate is the one that locks earlier recipients out.
+                <button
+                  type="button"
+                  className="settings-btn-outline"
+                  onClick={handleGenerate}
+                  disabled={busy}
+                >
+                  {busy ? "Working…" : "Regenerate link"}
+                </button>
+              ) : (
+                <Button type="button" onClick={handleGenerate} disabled={busy}>
+                  {busy ? "Working…" : link?.exists ? "Regenerate link" : "Create join link"}
+                </Button>
+              )}
               {link?.exists && (
                 <button
                   type="button"

@@ -112,25 +112,28 @@ def build_runtime_env(
     hook_token: str,
     litestream_bucket: str,
     gate_bearer: str | None = None,
+    gate_url: str | None = None,
+    sonnet_aip_arn: str | None = None,
 ) -> dict[str, str]:
     """The gateway's environment on AgentCore.
 
     On ECS this arrives from two places: a static block in the CDK task definition and a
     per-owner list built in ecs_manager. A runtime has no task definition, so both sets are
-    supplied here or the gateway boots unable to call back, publish, or reach a model.
+    supplied here or the gateway boots unable to call back, publish, or reach a model. The
+    first dev flip answered a turn only after ``AWS_BEARER_TOKEN_BEDROCK`` /
+    ``AWS_BEDROCK_FORCE_HTTP1`` were patched in by hand: the bedrock-gate is a Lambda function
+    URL (HTTP/1.1 only) and the SDK defaults to HTTP/2, producing a bare "Protocol error".
 
     Deliberately NOT carried over: DISPLAY and BROWSER_EGRESS_PROXY_PORT (the browser stack is
-    stripped from this image) and CHOKIDAR_USEPOLLING (an EFS/NFS workaround for the config
-    watcher — openclaw.json is still on EFS, so this one is re-evaluated when the config
-    watcher is verified on a microVM, not assumed).
+    stripped from this image).
 
-    ⚠️ SECRETS. ``gate_bearer`` is a bearer token and AgentCore environment variables are
-    plaintext on a control-plane resource, readable by any principal with
-    ``bedrock-agentcore:GetAgentRuntime`` — a wider audience than an ECS task definition. This
-    matches today's posture (the gate bearer is already plaintext in the task definition's
-    ``environment``, not ``secrets``) so it is not a regression, but the spec's P6 calls for
-    fetching it from Secrets Manager at boot instead. Do that before prod: a rotation also only
-    reaches new sessions, so env is the wrong home for it twice over.
+    ⚠️ SECRETS. ``gate_bearer`` (also carried as ``ANTHROPIC_AUTH_TOKEN``) is a bearer token and
+    AgentCore environment variables are plaintext on a control-plane resource, readable by any
+    principal with ``bedrock-agentcore:GetAgentRuntime`` — a wider audience than an ECS task
+    definition. This matches today's posture (the gate bearer is already plaintext in the task
+    definition's ``environment``, not ``secrets``) so it is not a regression, but the spec's P6
+    calls for fetching it from Secrets Manager at boot instead. Do that before prod: a rotation
+    also only reaches new sessions, so env is the wrong home for it twice over.
     """
     env: dict[str, str] = {
         # Per-owner identity and callback path.
@@ -150,9 +153,24 @@ def build_runtime_env(
         # A routine in-process restart must not end the microVM: the update-restart path
         # spawns a detached child and exits, which would kill litestream -exec with it.
         "OPENCLAW_NO_RESPAWN": "1",
+        # EFS/NFS workaround for the config watcher -- openclaw.json is still on EFS.
+        "CHOKIDAR_USEPOLLING": "true",
+        # Tells boot `doctor --fix` that litestream owns the gateway process, so it skips its
+        # native service-ownership inspection (see ecs_manager / CLAUDE.md "Config Patching
+        # Notes") -- without it every ChatGPT-OAuth connect throws on every turn.
+        "OPENCLAW_SERVICE_REPAIR_POLICY": "external",
+        "AWS_REGION": settings.AWS_REGION,
+        "CLAUDE_CODE_USE_BEDROCK": "1",
     }
+    if sonnet_aip_arn:
+        env["ANTHROPIC_MODEL"] = sonnet_aip_arn
     if gate_bearer:
         env["AWS_BEARER_TOKEN_BEDROCK"] = gate_bearer
+        env["AWS_BEDROCK_FORCE_HTTP1"] = "1"
+    if gate_url and gate_bearer:
+        env["ANTHROPIC_BEDROCK_BASE_URL"] = gate_url
+        env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] = "1"
+        env["ANTHROPIC_AUTH_TOKEN"] = gate_bearer
     return env
 
 
@@ -244,12 +262,19 @@ async def ensure_runtime(owner_id: str) -> dict:
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), account_id)
     gate_bearer = await mint_gate_token(owner_id, aip_arns)
 
+    # Same resolver ecs_manager uses for the ACP harness env -- token and URL travel together.
+    from core.billing.bedrock_gate_url import gate_url as _resolve_gate_url
+
+    resolved_gate_url = _resolve_gate_url()
+
     env = build_runtime_env(
         owner_id=owner_id,
         api_base=settings.PUBLIC_API_BASE,
         hook_token=hook_token,
         litestream_bucket=settings.LITESTREAM_BUCKET,
         gate_bearer=gate_bearer,
+        gate_url=resolved_gate_url,
+        sonnet_aip_arn=aip_arns["sonnet"],
     )
     request = build_runtime_request(
         owner_id=owner_id,

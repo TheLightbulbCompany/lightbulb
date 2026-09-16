@@ -51,6 +51,7 @@ class TestEcsTransport:
         class _Resp:
             status_code = 200
             text = '{"ok": true}'
+            headers = {}
 
         class _Client:
             def __init__(self, *a, **k):
@@ -62,8 +63,8 @@ class TestEcsTransport:
             async def __aexit__(self, *a):
                 return False
 
-            async def request(self, method, url, json=None, headers=None):
-                seen.update(method=method, url=url, json=json, headers=headers)
+            async def request(self, method, url, json=None, headers=None, content=None):
+                seen.update(method=method, url=url, json=json, headers=headers, content=content)
                 return _Resp()
 
         monkeypatch.setattr("httpx.AsyncClient", _Client)
@@ -85,6 +86,36 @@ class TestEcsTransport:
     async def test_refuses_without_an_ip(self):
         with pytest.raises(ValueError, match="requires a container ip"):
             await rt.request({}, "/healthz", ip=None)
+
+    @pytest.mark.asyncio
+    async def test_raw_content_is_forwarded_verbatim_and_wins_over_json(self, monkeypatch):
+        # Webhook proxies forward the sender's bytes untouched (signatures cover them).
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            text = "ok"
+            headers = {"content-type": "text/plain"}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def request(self, method, url, json=None, headers=None, content=None):
+                seen.update(json=json, content=content)
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        res = await rt.request({}, "/hooks/x", ip="10.0.0.5", json_body={"ignored": 1}, content=b"a=1&b=2")
+        assert seen["content"] == b"a=1&b=2"
+        assert seen["json"] is None
+        assert res.headers["content-type"] == "text/plain"
 
 
 class TestAgentCoreTransport:
@@ -158,3 +189,78 @@ class TestAgentCoreTransport:
     async def test_refuses_without_a_runtime_arn(self):
         with pytest.raises(ValueError, match="agentcore_runtime_arn"):
             await rt.request({"runtime_host": "agentcore", "owner_id": "o"}, "/x")
+
+    @pytest.mark.asyncio
+    async def test_never_resends_and_outlasts_a_cold_start(self, monkeypatch):
+        """boto3's defaults would re-send a timed-out POST (a duplicate turn) and cut a long RPC
+        off at 60s — under a cold start that AgentCore holds for ~35s before answering."""
+        seen = {}
+
+        class _Body:
+            def read(self):
+                return b'{"status": 200, "body": ""}'
+
+        def _client(name, config=None, **kw):
+            seen.update(name=name, config=config)
+            return type(
+                "C", (), {"invoke_agent_runtime": lambda self, **kw: {"statusCode": 200, "response": _Body()}}
+            )()
+
+        monkeypatch.setattr("boto3.client", _client)
+        await rt.request(
+            {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=45.0
+        )
+        assert seen["name"] == "bedrock-agentcore"
+        assert seen["config"].retries == {"total_max_attempts": 1}
+        assert seen["config"].read_timeout == 45.0 + 60.0
+        assert seen["config"].connect_timeout == 10
+
+    @pytest.mark.asyncio
+    async def test_a_boto_read_timeout_is_an_httpx_read_timeout(self, monkeypatch):
+        # So the work consumer's ``except httpx.TimeoutException`` retries it, unchanged.
+        import httpx
+        from botocore.exceptions import ReadTimeoutError
+
+        def _boom(self, **kw):
+            raise ReadTimeoutError(endpoint_url="https://bedrock-agentcore")
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: type("C", (), {"invoke_agent_runtime": _boom})())
+        with pytest.raises(httpx.ReadTimeout):
+            await rt.request({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x")
+
+    @pytest.mark.asyncio
+    async def test_any_other_boto_failure_is_an_httpx_connect_error(self, monkeypatch):
+        import httpx
+        from botocore.exceptions import ClientError
+
+        def _boom(self, **kw):
+            raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "InvokeAgentRuntime")
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: type("C", (), {"invoke_agent_runtime": _boom})())
+        with pytest.raises(httpx.ConnectError, match="AccessDenied"):
+            await rt.request({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x")
+
+    @pytest.mark.asyncio
+    async def test_raw_content_rides_the_envelope_as_text_and_reply_headers_come_back(self, monkeypatch):
+        captured = {}
+
+        class _Body:
+            def read(self):
+                return json.dumps({"status": 200, "headers": {"content-type": "text/plain"}, "body": "pong"}).encode()
+
+        class _Client:
+            def invoke_agent_runtime(self, **kw):
+                captured.update(kw)
+                return {"statusCode": 200, "response": _Body()}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: _Client())
+        res = await rt.request(
+            {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"},
+            "/hooks/x",
+            content=b"a=1&b=2",
+            json_body={"ignored": 1},
+        )
+        sent = json.loads(captured["payload"].decode())
+        assert sent["body"] == "a=1&b=2"
+        assert res.text == "pong"
+        assert res.headers == {"content-type": "text/plain"}

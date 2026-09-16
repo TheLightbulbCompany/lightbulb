@@ -359,6 +359,22 @@ RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl
 # smoke test fails the build if the binary didn't materialize for this arch.
 RUN npm i -g --allow-scripts=opencode-ai opencode-ai@1.18.15 && opencode --version >/dev/null
 
+# Shopify CLI: the store-access door for the bundled `shopify` skill
+# (/app/skills/shopify). `shopify store auth` runs a PKCE OAuth grant against
+# the owner's store with Shopify's OWN CLI app (no app of ours, no review), and
+# `shopify store execute` runs Admin GraphQL on the stored session, which the
+# CLI refreshes itself. No native postinstall (esbuild's is a speed-up only),
+# so it joins the --ignore-scripts pattern. npm's bin entry is a SYMLINK to
+# the package's bin/run.js, and a Docker COPY onto a symlink writes THROUGH
+# it — so the link is removed first, or the wrapper would overwrite run.js and
+# then exec itself (that is exactly how the first build of this layer died).
+# The wrapper pins the env the CLI needs to behave headless — see
+# shopify/shopify for why each variable is there. The smoke test loads the
+# `store` command group, so a CLI that ships without it fails the build.
+RUN npm i -g --ignore-scripts @shopify/cli@4.8.0 && rm /usr/local/bin/shopify
+COPY shopify/shopify /usr/local/bin/shopify
+RUN chmod 0755 /usr/local/bin/shopify && shopify version >/dev/null && shopify store execute --help >/dev/null
+
 # Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
 # real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral
 # container FS, wiped on every task restart. Point them at the per-user EFS mount instead,
@@ -832,6 +848,16 @@ COPY skills/paperclip /app/skills/paperclip
 # Authored in-repo (not vendored). Keep in lockstep with the anchors listed
 # in the SKILL.md maintenance header.
 COPY skills/lightbulb /app/skills/lightbulb
+
+# ---- Layer 16b: bundled Shopify skill ----
+# Connect-and-query recipe for the baked Shopify CLI above: the one-time
+# `store auth` login (finished by the owner in the Browser panel, because the
+# CLI's OAuth callback is loopback-bound to this container) and read-only
+# `store execute` queries. Replaces the retired paste-token Connections row —
+# Shopify no longer issues the permanent token that rail validated. Every
+# agent pays for its SKILL.md description on load, so keep the frontmatter
+# short and the detail in the body.
+COPY skills/shopify /app/skills/shopify
 
 # Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
 # Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still

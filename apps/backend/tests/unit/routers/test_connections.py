@@ -124,6 +124,32 @@ class TestValidateToken:
             ),
         )
 
+    def _host_pattern_provider(self):
+        # A two-value paste provider ("<host>|<token>") whose validate URL is a
+        # per-account template. Synthetic on purpose: no registry provider packs
+        # two values any more (Shopify left the rail 2026-09-16), but the
+        # host_pattern fence is still live code and stays covered.
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        return Provider(
+            key="hosted",
+            display_name="Hosted",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "hosted", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="POST",
+                url="https://{host}/admin/api/2026-07/graphql.json",
+                host_pattern=r"[a-z0-9][a-z0-9-]{0,59}\.myshopify\.com",
+                auth_header="X-Shopify-Access-Token",
+                auth_scheme="",
+                token_prefix="shpat_",
+                body={"query": "{ shop { name } }"},
+                success_json_field="data.shop.name",
+            ),
+        )
+
     def _xoxp_provider(self):
         # A provider whose validate spec pins a token_prefix — checked pre-flight
         # (before any HTTP call). Self-contained, independent of the registry.
@@ -239,7 +265,7 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|shpat_abc")
+        ok = await connections._validate_token(self._host_pattern_provider(), "mystore.myshopify.com|shpat_abc")
         assert ok is True
         assert captured["url"] == "https://mystore.myshopify.com/admin/api/2026-07/graphql.json"
         assert captured["headers"]["X-Shopify-Access-Token"] == "shpat_abc"
@@ -254,7 +280,7 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        p = registry.get_provider("shopify")
+        p = self._host_pattern_provider()
         assert await connections._validate_token(p, "169.254.169.254|shpat_abc") is False
         assert await connections._validate_token(p, "evil.com|shpat_abc") is False
         assert await connections._validate_token(p, "shpat_abc") is False
@@ -270,7 +296,7 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|not-a-token")
+        ok = await connections._validate_token(self._host_pattern_provider(), "mystore.myshopify.com|not-a-token")
         assert ok is False
 
 
@@ -553,19 +579,6 @@ class TestByoRequiredGate:
 
 class TestConnectPaste:
     """POST /api/v1/connections/{provider} — paste-key connect."""
-
-    @pytest.mark.asyncio
-    async def test_two_value_provider_names_the_shape_it_wants(self, async_client):
-        # Pasting only the token is right for every other integration, so it is
-        # the mistake a Shopify owner will make. Answering it with the generic
-        # "token failed validation" blames the token; this 422 names the shape.
-        response = await async_client.post("/api/v1/connections/shopify", json={"token": "shpat_abc"})
-        assert response.status_code == 422
-        detail = response.json()["detail"]
-        assert "Shopify needs two values in one box" in detail
-        # The hint is the single source of the format — the copy quotes it rather
-        # than spelling out a second version that can drift.
-        assert registry.get_provider("shopify").token_paste_hint in detail
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

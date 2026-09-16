@@ -170,7 +170,7 @@ export function normalizeTarget(raw: string): string | undefined {
  * run card and the reply land in the same place.
  */
 export function replyThreadRootId(
-  room: { kind: string },
+  room: { kind: "channel" | "dm" | "group-dm" },
   message: { messageId: string; threadRootMessageId: string | null },
 ): string | null {
   if (room.kind === "dm") return message.threadRootMessageId;

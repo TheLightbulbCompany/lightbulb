@@ -1085,6 +1085,21 @@ describe("native inbound context and delivery", () => {
     expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({ threadRootMessageId: MESSAGE }), expect.any(Function));
   });
 
+  it("keeps a threaded request in its thread: the run record carries the existing root", async () => {
+    const runs = fakeRuns();
+    const base = ingress();
+    const handler = createInboundHandler({
+      sdk: withBody({ ...base, message: { ...base.message, threadRootMessageId: HISTORY_MESSAGE } }),
+      cfg: config(),
+      accountId: FRIDAY,
+      channelRuntime: runtime(),
+      env: () => ENV,
+      runs,
+    });
+    await handler(request(), responseRecorder());
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({ threadRootMessageId: HISTORY_MESSAGE }), expect.any(Function));
+  });
+
   it("keeps DM replies linear: no thread root on a top-level DM request", async () => {
     const runs = fakeRuns();
     const base = ingress();

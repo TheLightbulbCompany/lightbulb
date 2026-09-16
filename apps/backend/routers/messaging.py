@@ -23,6 +23,7 @@ from core.services import chat_gate
 from core.services import messaging as service
 from core.services import local_sessions
 from core.services import local_session_grants
+from core.services import runtime_transport
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
     AbortRunResponse,
@@ -491,6 +492,16 @@ async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -
     container, ip = await get_ecs_manager().resolve_running_container(owner_id)
     if not container or not ip:
         return None
+    if runtime_transport.host_for(container) == "agentcore":
+        response = await runtime_transport.request(
+            container,
+            f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
+            ip=ip,
+            json_body=payload,
+            headers={"Authorization": f"Bearer {container['gateway_token']}"},
+            timeout_s=10.0,
+        )
+        return response.status_code
     return await _post_run_control(
         f"http://{ip}:18789/plugins/lightbulb-channel/runs/{run_id}/{action}", container["gateway_token"], payload
     )

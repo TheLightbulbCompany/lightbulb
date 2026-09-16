@@ -50,7 +50,68 @@ export function signAppSyncPublish(params: {
   };
 }
 
-/** ECS task-role credentials (Fargate sets AWS_CONTAINER_CREDENTIALS_RELATIVE_URI); static env keys for local runs. */
+const MMDS_BASE = "http://169.254.169.254";
+
+/**
+ * IMDSv2/MMDSv2 credentials — the AgentCore Runtime source.
+ *
+ * A microVM has no ECS credential endpoint (169.254.170.2) and no static keys; its execution
+ * role arrives via the MicroVM Metadata Service, which is token-gated exactly like EC2's IMDSv2.
+ * Without this branch the plugin throws "no AWS credential source" on AgentCore and an agent's
+ * reply frames never reach AppSync — the turn runs and the UI never sees it.
+ */
+async function mmdsCredentials(fetchImpl: FetchLike): Promise<AwsCredentials | undefined> {
+  try {
+    const tokenRes = await fetchImpl(`${MMDS_BASE}/latest/api/token`, {
+      method: "PUT",
+      headers: { "X-aws-ec2-metadata-token-ttl-seconds": "21600" },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (tokenRes.status !== 200) return undefined;
+    const token = (await tokenRes.text()).trim();
+    if (!token) return undefined;
+    const headers = { "X-aws-ec2-metadata-token": token };
+    const roleRes = await fetchImpl(`${MMDS_BASE}/latest/meta-data/iam/security-credentials/`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (roleRes.status !== 200) return undefined;
+    const role = (await roleRes.text()).trim().split("\n")[0];
+    if (!role) return undefined;
+    const credRes = await fetchImpl(`${MMDS_BASE}/latest/meta-data/iam/security-credentials/${role}`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (credRes.status !== 200) return undefined;
+    const body = (await credRes.json()) as {
+      AccessKeyId: string;
+      SecretAccessKey: string;
+      Token?: string;
+      Expiration?: string;
+    };
+    if (!body.AccessKeyId || !body.SecretAccessKey) return undefined;
+    return {
+      accessKeyId: body.AccessKeyId,
+      secretAccessKey: body.SecretAccessKey,
+      sessionToken: body.Token,
+      expiration: body.Expiration ? Date.parse(body.Expiration) : undefined,
+    };
+  } catch {
+    // Unreachable MMDS is not an error here — it just means we are not on a microVM.
+    return undefined;
+  }
+}
+
+/**
+ * AWS credentials for signing AppSync publishes, in preference order:
+ *   1. ECS task role   (Fargate sets AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+ *   2. static env keys (local runs)
+ *   3. MMDS/IMDSv2     (AgentCore Runtime execution role)
+ *
+ * MMDS is tried last so an ECS task never pays a metadata round trip it does not need.
+ */
 export function ecsCredentialsProvider(env: () => RawEnv, fetchImpl: FetchLike): () => Promise<AwsCredentials> {
   let cached: AwsCredentials | undefined;
   return async () => {
@@ -61,6 +122,11 @@ export function ecsCredentialsProvider(env: () => RawEnv, fetchImpl: FetchLike):
     if (!url) {
       if (e.AWS_ACCESS_KEY_ID && e.AWS_SECRET_ACCESS_KEY) {
         cached = { accessKeyId: e.AWS_ACCESS_KEY_ID, secretAccessKey: e.AWS_SECRET_ACCESS_KEY, sessionToken: e.AWS_SESSION_TOKEN };
+        return cached;
+      }
+      const viaMmds = await mmdsCredentials(fetchImpl);
+      if (viaMmds) {
+        cached = viaMmds;
         return cached;
       }
       throw new Error("lightbulb: no AWS credential source for AppSync publishing");

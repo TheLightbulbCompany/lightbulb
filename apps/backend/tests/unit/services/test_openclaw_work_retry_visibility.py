@@ -37,9 +37,9 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     monkeypatch.setattr(worker, "_post", post)
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
-    body = post.call_args.args[1]
+    body = post.call_args.args[3]
     assert "invocation" not in body
-    caller = local_session_grants.verify(post.call_args.args[3])
+    caller = local_session_grants.verify(post.call_args.args[5])
     assert (caller.owner_id, caller.room_id, caller.agent_id) == ("owner_test", room, "friday")
     membership.return_value = None
     post.reset_mock()
@@ -48,7 +48,7 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     membership.return_value = member
     monkeypatch.delenv("PAPERCLIP_SERVICE_TOKEN_KEY")
     await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
-    assert post.call_args.args[3] is None
+    assert post.call_args.args[5] is None
 
 
 class FakeSqs:
@@ -83,7 +83,12 @@ async def test_invocation_header_keeps_canonical_body_and_gateway_authorization_
     async with httpx.AsyncClient(transport=httpx.MockTransport(receive)) as client:
         worker = OpenClawWorkWorker(sqs_client=FakeSqs(), http_client=client)
         await worker._post(
-            "http://127.0.0.1:18789/plugins/lightbulb-channel/inbound/friday", body, "gateway-dummy", grant
+            {},  # no runtime_host => the ECS transport, which is what this test exercises
+            "127.0.0.1",
+            "/plugins/lightbulb-channel/inbound/friday",
+            body,
+            "gateway-dummy",
+            grant,
         )
 
 
@@ -124,7 +129,7 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
         async def resolve_running_container(self, _owner):
             return {"gateway_token": "gw"}, "10.0.0.9"
 
-    async def fake_post(_url, _body, _token, _invocation):
+    async def fake_post(_container, _ip, _path, _body, _token, _invocation=None):
         raise httpx.ReadTimeout("read timed out")
 
     monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
@@ -183,7 +188,7 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     class RefusedResponse:
         status_code = 409
 
-    async def fake_post(_url, _body, _token, _invocation):
+    async def fake_post(_container, _ip, _path, _body, _token, _invocation=None):
         return RefusedResponse()
 
     async def fake_list_members(_room_id):
@@ -270,3 +275,27 @@ async def test_ingress_history_reads_only_the_twenty_messages_openclaw_renders(m
     )
 
     assert seen_limits == [20]
+
+
+@pytest.mark.asyncio
+async def test_agentcore_ingress_budget_outlasts_a_cold_microvm_start(monkeypatch):
+    """The ingress POST is the call that wakes a parked AgentCore workspace: AgentCore holds
+    the invoke through the microVM start and the gateway boot (54-57s measured), so a 30s
+    budget would abandon every cold start and the room turn would never be accepted."""
+    from unittest.mock import AsyncMock
+
+    from core.services import openclaw_work as work
+    from core.services import runtime_transport
+
+    seen = AsyncMock(return_value=runtime_transport.RuntimeResponse(202, '{"status":"accepted"}'))
+    monkeypatch.setattr(work.runtime_transport, "request", seen)
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    container = {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}
+    res = await worker._post(
+        container, runtime_transport.AGENTCORE_ADDRESS, "/plugins/lightbulb-channel/inbound/a", {"x": 1}, "tok"
+    )
+    assert res.status_code == 202
+    kwargs = seen.call_args.kwargs
+    assert kwargs["timeout_s"] >= 60.0
+    assert kwargs["json_body"] == {"x": 1}
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"

@@ -271,6 +271,55 @@ async def test_path_traversal_rejected_with_400():
     assert exc.value.detail == "invalid_hook_path"
 
 
+def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_container):
+    """An owner on AgentCore never opens the ECS httpx client -- the request
+    goes through ``runtime_transport.request`` instead, addressed by the
+    sentinel ip and the container row (not a dialled task IP)."""
+    from core.services import runtime_transport
+
+    agentcore_container = {**fake_container, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["container"] = container
+        captured["path"] = path
+        captured["ip"] = ip
+        captured["content"] = content
+        captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
+        return runtime_transport.RuntimeResponse(200, '{"ok": true}', {"content-type": "application/json"})
+
+    def _boom_client_factory():
+        raise AssertionError("ECS client must not be built for an agentcore row")
+
+    with (
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
+        _mock_billing("active"),
+        patch(
+            "routers.hooks_proxy.ecs_manager.resolve_running_container",
+            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
+        ),
+        patch("routers.hooks_proxy._client_factory", _boom_client_factory),
+        patch("routers.hooks_proxy.runtime_transport.request", fake_request),
+    ):
+        r = client.post(
+            "/api/v1/hooks/u/u_1/wake?challenge=abc",
+            headers={"Authorization": "Bearer " + fake_container["hook_token"]},
+            json={"text": "hi"},
+        )
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert captured["container"] is agentcore_container
+    assert captured["path"] == "/hooks/wake?challenge=abc"
+    assert captured["ip"] == runtime_transport.AGENTCORE_ADDRESS
+    assert captured["headers"]["Authorization"] == "Bearer " + fake_container["hook_token"]
+    assert captured["content"] == r.request.content
+    assert captured["timeout_s"] == 30.0
+
+
 def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):
     """In-process token bucket caps at 60/min per owner."""
 

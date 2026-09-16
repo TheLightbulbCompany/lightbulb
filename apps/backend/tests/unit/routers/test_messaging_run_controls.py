@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.services import runtime_transport
 from core.services.messaging import AbortRunResponse, ApiProblem, SteerRunRequest, SteerRunResponse
 
 AGENT_ID = "11111111-1111-4111-8111-111111111111"
@@ -108,6 +109,48 @@ async def test_steer_gates_then_posts_text():
         "http://10.0.0.9:18789/plugins/lightbulb-channel/runs/run-1/steer", "gw", {"text": "focus"}
     )
     assert gate_chat_mock.await_args.kwargs["session_key"] == f"agent:{AGENT_ID}:lightbulb:channel:{ROOM_ID}"
+
+
+@pytest.mark.asyncio
+async def test_abort_on_an_agentcore_row_goes_through_the_runtime_transport_seam():
+    """An owner on AgentCore is addressed by runtime, not by a dialled IP --
+    ``_post_run_control`` (the ECS httpx path) must never be touched."""
+    from routers.messaging import abort_run
+
+    agentcore_container = {"gateway_token": "gw", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(agentcore_container, "agentcore"))
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["container"] = container
+        captured["path"] = path
+        captured["ip"] = ip
+        captured["json_body"] = json_body
+        captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
+        return runtime_transport.RuntimeResponse(202, "{}", {})
+
+    with (
+        patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=ROW),
+        patch("routers.messaging.service.require_room_member", new_callable=AsyncMock),
+        patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value={"id": AGENT_ID}),
+        patch("routers.messaging.get_ecs_manager", return_value=manager),
+        patch("routers.messaging.runtime_transport.request", fake_request),
+        patch("routers.messaging._post_run_control", new_callable=AsyncMock) as post,
+    ):
+        result = await abort_run("run-1", auth=_auth())
+
+    assert result == AbortRunResponse(run_id="run-1", state="aborting")
+    post.assert_not_awaited()
+    assert captured["container"] is agentcore_container
+    assert captured["path"] == "/plugins/lightbulb-channel/runs/run-1/abort"
+    assert captured["ip"] == "agentcore"
+    assert captured["json_body"] == {}
+    assert captured["headers"] == {"Authorization": "Bearer gw"}
+    assert captured["timeout_s"] == 10.0
 
 
 @pytest.mark.asyncio

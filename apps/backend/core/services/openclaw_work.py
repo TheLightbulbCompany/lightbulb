@@ -19,6 +19,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from core.config import settings
 from core.containers import get_ecs_manager
 from core.observability.metrics import gauge, put_metric
+from core.services import runtime_transport
 from core.repositories import messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
@@ -38,6 +39,8 @@ _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 20
 _VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
+#: Ingress budget on AgentCore: must outlast a cold microVM start (see _post).
+_AGENTCORE_INGRESS_TIMEOUT_S = 90.0
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
@@ -451,10 +454,10 @@ class OpenClawWorkWorker:
             invocation = local_session_grants.mint(owner_id, meta["roomId"], member["id"], message["messageId"])
         except (RuntimeError, ApiProblem):
             logger.warning("Local session invocation unavailable")
-        url = f"http://{ip}:18789/plugins/lightbulb-channel/inbound/{member['id']}"
+        ingress_path = f"/plugins/lightbulb-channel/inbound/{member['id']}"
         started = time.perf_counter()
         try:
-            response = await self._post(url, body, token, invocation)
+            response = await self._post(container, ip, ingress_path, body, token, invocation)
             put_metric(
                 "messaging.ingress.post",
                 dimensions={"status_class": _ingress_status_class(response.status_code), "event_kind": event_kind},
@@ -491,13 +494,41 @@ class OpenClawWorkWorker:
             # Effect-once on the plugin makes a retry safe; the ledger row is reused.
             raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
 
-    async def _post(self, url: str, body: dict[str, Any], token: str, invocation: str | None = None):
+    async def _post(
+        self,
+        container: dict[str, Any],
+        ip: str | None,
+        path: str,
+        body: dict[str, Any],
+        token: str,
+        invocation: str | None = None,
+    ):
+        """Deliver one ingress to the owner's gateway, whichever platform hosts it.
+
+        The 1 MiB cap is enforced here for BOTH transports: AgentCore's own invoke payload
+        ceiling is far higher, but the plugin's contract is the same either way, and a body
+        that would be refused on ECS must not silently succeed on AgentCore.
+        """
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         if invocation is not None:
             headers["X-Lightbulb-Local-Session-Token"] = invocation
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(content) > _INGRESS_MAX_BYTES:
             raise ValueError("Lightbulb ingress exceeds 1 MiB")
+        if runtime_transport.host_for(container) == "agentcore":
+            return await runtime_transport.request(
+                container,
+                path,
+                method="POST",
+                json_body=body,
+                headers=headers,
+                # This is the call that wakes a parked workspace: AgentCore holds the invoke
+                # through the microVM start (~35s) and the gateway boot (measured 54-57s end
+                # to end on 2026-09-16), so the budget must outlast a cold start. A warm
+                # session acks in milliseconds; the queue's visibility is 300s.
+                timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+            )
+        url = f"http://{ip}:{runtime_transport.GATEWAY_PORT}{path}"
         if self._http is not None:
             return await self._http.post(url, content=content, headers=headers)
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:

@@ -926,3 +926,26 @@ class TestDeleteThenPostReprovision:
         assert kwargs["provider_choice"] == "byo_key"
         assert kwargs["byo_provider"] == "anthropic"
         assert kwargs["aip_arns"] == {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"}
+
+
+class TestAgentCoreProvision:
+    """POST /api/v1/debug/agentcore/provision — one-way for the whole workspace (it rotates
+    the gate bearer), so it carries the same org-admin gate as the other org-scoped
+    mutations here, on top of the non-production fence."""
+
+    @pytest.mark.asyncio
+    async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
+        from httpx import ASGITransport, AsyncClient
+
+        from core.auth import get_current_user
+
+        app.dependency_overrides[get_current_user] = mock_org_member_user
+        try:
+            with patch("core.services.agentcore_runtime.ensure_runtime", new_callable=AsyncMock) as ensure:
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    res = await client.post("/api/v1/debug/agentcore/provision")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 403
+        ensure.assert_not_called()

@@ -1,0 +1,310 @@
+"""Per-workspace AgentCore runtime provisioning."""
+
+import json
+
+import pytest
+
+from core.config import settings
+from core.services import agentcore_runtime as ar
+
+
+class TestRuntimeName:
+    def test_is_stable_for_an_owner(self):
+        assert ar.runtime_name_for("org_abc") == ar.runtime_name_for("org_abc")
+
+    def test_is_aws_legal(self):
+        # Letters, digits and underscores only, starting with a letter.
+        name = ar.runtime_name_for("org_3H3viGAfq2SXc9dIdcatmGXg8Td")
+        assert name[0].isalpha()
+        assert all(c.isalnum() or c == "_" for c in name), name
+        assert len(name) <= 48
+
+    def test_owners_sharing_a_sanitised_prefix_do_not_collide(self):
+        # The hash is what prevents this. A collision would put two workspaces on ONE runtime,
+        # and therefore one EFS mount — the failure this whole design exists to avoid.
+        long_a = "org_" + "x" * 60 + "AAAA"
+        long_b = "org_" + "x" * 60 + "BBBB"
+        assert ar.runtime_name_for(long_a) != ar.runtime_name_for(long_b)
+
+    def test_characters_aws_rejects_are_sanitised(self):
+        name = ar.runtime_name_for("org/with:bad.chars-here")
+        assert all(c.isalnum() or c == "_" for c in name), name
+
+
+class TestTrustPolicy:
+    ECS_STATEMENT = {
+        "Effect": "Allow",
+        "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+        "Action": "sts:AssumeRole",
+    }
+
+    def test_adds_agentcore_without_removing_ecs(self):
+        # Additive is deliberate: a workspace may still be served by its ECS task mid-migration,
+        # and dropping that statement under a live task breaks it mid-turn.
+        doc = ar.trust_policy_with_agentcore({"Version": "2012-10-17", "Statement": [self.ECS_STATEMENT]}, "1234")
+        services = [s["Principal"]["Service"] for s in doc["Statement"]]
+        assert "ecs-tasks.amazonaws.com" in services
+        assert ar.AGENTCORE_SERVICE_PRINCIPAL in services
+
+    def test_is_idempotent(self):
+        first = ar.trust_policy_with_agentcore({"Version": "2012-10-17", "Statement": [self.ECS_STATEMENT]}, "1234")
+        second = ar.trust_policy_with_agentcore(first, "1234")
+        assert first == second
+        assert sum(s["Principal"]["Service"] == ar.AGENTCORE_SERVICE_PRINCIPAL for s in second["Statement"]) == 1
+
+    def test_scopes_the_confused_deputy_fence_like_the_ecs_statement(self):
+        doc = ar.trust_policy_with_agentcore(None, "999999")
+        added = next(s for s in doc["Statement"] if s["Principal"]["Service"] == ar.AGENTCORE_SERVICE_PRINCIPAL)
+        assert added["Condition"]["StringEquals"]["aws:SourceAccount"] == "999999"
+        assert "999999" in added["Condition"]["ArnLike"]["aws:SourceArn"]
+
+    def test_does_not_mutate_the_caller_document(self):
+        original = {"Version": "2012-10-17", "Statement": [self.ECS_STATEMENT]}
+        snapshot = json.dumps(original)
+        ar.trust_policy_with_agentcore(original, "1234")
+        assert json.dumps(original) == snapshot
+
+
+class TestRuntimeRequest:
+    def _req(self):
+        return ar.build_runtime_request(
+            owner_id="org_abc",
+            image_uri="1234.dkr.ecr.us-east-1.amazonaws.com/gw:v1",
+            role_arn="arn:aws:iam::1234:role/lightbulb-dev-owner-bedrock-org_abc",
+            efs_access_point_arn="arn:aws:elasticfilesystem:us-east-1:1234:access-point/fsap-1",
+            subnets=["subnet-a", "subnet-b"],
+            security_groups=["sg-1"],
+            idle_timeout_s=14400,
+            max_lifetime_s=28800,
+        )
+
+    def test_requires_vpc_mode(self):
+        # PUBLIC mode cannot reach Cloud Map (Paperclip) or mount the owner's EFS.
+        assert self._req()["networkConfiguration"]["networkMode"] == "VPC"
+
+    def test_mounts_the_owners_access_point_at_the_expected_path(self):
+        fs = self._req()["filesystemConfigurations"][0]["efsAccessPoint"]
+        assert fs["mountPath"] == "/mnt/oc"
+        assert fs["accessPointArn"].endswith("fsap-1")
+
+    def test_carries_the_sleep_policy(self):
+        life = self._req()["lifecycleConfiguration"]
+        assert life["idleRuntimeSessionTimeout"] == 14400  # 4h, the owner's ruling
+        assert life["maxLifetime"] == 28800  # AWS hard ceiling
+
+    def test_is_tagged_with_its_owner(self):
+        assert self._req()["tags"]["owner_id"] == "org_abc"
+
+
+class TestRuntimeEnv:
+    def _env(self, **kw):
+        base = dict(
+            owner_id="org_abc",
+            api_base="https://api-dev.flickmeon.ai/",
+            hook_token="hook-123",
+            litestream_bucket="lightbulb-dev-openclaw-replicas",
+        )
+        base.update(kw)
+        return ar.build_runtime_env(**base)
+
+    def test_carries_the_callback_identity_the_gateway_needs(self):
+        # Without these the gateway boots but cannot report runs or post agent replies.
+        env = self._env()
+        assert env["ISOL8_OWNER_ID"] == "org_abc"
+        assert env["OPENCLAW_HOOK_TOKEN"] == "hook-123"
+
+    def test_strips_the_trailing_slash_from_the_api_base(self):
+        # The plugin concatenates paths onto this; a double slash breaks the hook routes.
+        assert self._env()["ISOL8_API_URL"] == "https://api-dev.flickmeon.ai"
+
+    def test_supplies_the_static_block_ecs_gets_from_its_task_definition(self):
+        env = self._env()
+        for key in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "AWS_CONFIG_FILE", "CLAWHUB_WORKDIR"):
+            assert key in env, key
+
+    def test_omits_the_browser_variables_since_that_stack_is_stripped(self):
+        env = self._env()
+        assert "DISPLAY" not in env
+        assert "BROWSER_EGRESS_PROXY_PORT" not in env
+
+    def test_disables_respawn_so_a_restart_cannot_kill_the_microvm(self):
+        # The update-restart path spawns a detached child and exits, taking litestream -exec
+        # with it -- which on ECS killed the task outright on 2026-09-14.
+        assert self._env()["OPENCLAW_NO_RESPAWN"] == "1"
+
+    def test_gate_bearer_is_optional_and_omitted_when_absent(self):
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in self._env()
+        assert self._env(gate_bearer="tok")["AWS_BEARER_TOKEN_BEDROCK"] == "tok"
+
+    def test_request_carries_the_environment(self):
+        req = ar.build_runtime_request(
+            owner_id="org_abc",
+            image_uri="img",
+            role_arn="arn:role",
+            efs_access_point_arn="arn:ap",
+            subnets=["s"],
+            security_groups=["sg"],
+            idle_timeout_s=14400,
+            max_lifetime_s=28800,
+            environment=self._env(),
+        )
+        assert req["environmentVariables"]["ISOL8_OWNER_ID"] == "org_abc"
+
+
+class TestEnsureRuntime:
+    """The one-way move of a workspace onto a runtime. Every AWS and DynamoDB collaborator is
+    mocked; what is under test is the ORCHESTRATION — reuse of existing owner resources, the
+    idempotency guard, and the row flip."""
+
+    ROW = {
+        "owner_id": "org_abc",
+        "access_point_id": "fsap-123",
+        "hook_token": "hook-xyz",
+        "status": "stopped",
+    }
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        calls = {"created": [], "trust": [], "fields": []}
+        monkeypatch.setattr(settings, "AGENTCORE_GATEWAY_IMAGE", "1234.dkr.ecr.us-east-1.amazonaws.com/gw:v5")
+        monkeypatch.setattr(settings, "ECS_SUBNETS", "subnet-a, subnet-b")
+        monkeypatch.setattr(settings, "ECS_SECURITY_GROUP_ID", "sg-1")
+        monkeypatch.setattr(settings, "LITESTREAM_BUCKET", "lightbulb-dev-openclaw-replicas")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/")
+
+        import core.billing.bedrock_aip as aip
+        import core.billing.bedrock_gate_tokens as gate
+        import core.repositories.container_repo as repo
+
+        async def _aips(owner_id, *, tiers=None):
+            return {"sonnet": "arn:aip:sonnet"}
+
+        async def _role(owner_id, aip_arns, *, skip_bedrock_grant=False):
+            return "arn:aws:iam::999999999999:role/lightbulb-dev-owner-bedrock-org_abc"
+
+        async def _mint(owner_id, aip_arns):
+            return "gate-bearer-1"
+
+        async def _trust(owner_id, role_name, account_id):
+            calls["trust"].append((owner_id, role_name, account_id))
+            return True
+
+        async def _get(owner_id, consistent=False):
+            return dict(self.ROW)
+
+        async def _update(owner_id, fields):
+            calls["fields"].append((owner_id, fields))
+            return {**self.ROW, **fields}
+
+        monkeypatch.setattr(aip, "ensure_owner_aips", _aips)
+        monkeypatch.setattr(aip, "ensure_owner_bedrock_role", _role)
+        monkeypatch.setattr(gate, "mint_gate_token", _mint)
+        monkeypatch.setattr(ar, "ensure_agentcore_trust", _trust)
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        monkeypatch.setattr(repo, "update_fields", _update)
+
+        class _Control:
+            def create_agent_runtime(self, **kw):
+                calls["created"].append(kw)
+                return {"agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:999999999999:runtime/x-1"}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: _Control())
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_creates_the_runtime_and_flips_the_row(self, wired):
+        out = await ar.ensure_runtime("org_abc")
+        assert out["created"] is True
+        assert out["runtime_arn"].endswith("runtime/x-1")
+        # The row is what makes runtime_transport route to AgentCore from now on.
+        assert wired["fields"] == [
+            (
+                "org_abc",
+                {"runtime_host": "agentcore", "agentcore_runtime_arn": out["runtime_arn"], "status": "running"},
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reuses_the_owners_existing_resources(self, wired):
+        await ar.ensure_runtime("org_abc")
+        req = wired["created"][0]
+        # The EXISTING per-owner role, re-trusted -- not a second role.
+        assert req["roleArn"].endswith("owner-bedrock-org_abc")
+        # Trust is added to the SAME per-owner role, in our account -- one call, no new role.
+        ((trust_owner, trust_role, trust_account),) = wired["trust"]
+        assert trust_owner == "org_abc"
+        assert trust_role.endswith("-owner-bedrock-org_abc")
+        assert trust_account == "999999999999"
+        # The EXISTING EFS access point from the container row.
+        ap = req["filesystemConfigurations"][0]["efsAccessPoint"]["accessPointArn"]
+        assert ap.endswith(":999999999999:access-point/fsap-123")
+
+    @pytest.mark.asyncio
+    async def test_supplies_the_gateway_environment(self, wired):
+        await ar.ensure_runtime("org_abc")
+        env = wired["created"][0]["environmentVariables"]
+        assert env["ISOL8_OWNER_ID"] == "org_abc"
+        assert env["OPENCLAW_HOOK_TOKEN"] == "hook-xyz"
+        assert env["AWS_BEARER_TOKEN_BEDROCK"] == "gate-bearer-1"
+        assert env["ISOL8_API_URL"] == "https://api-dev.flickmeon.ai"
+
+    @pytest.mark.asyncio
+    async def test_parses_the_comma_separated_subnets(self, wired):
+        await ar.ensure_runtime("org_abc")
+        net = wired["created"][0]["networkConfiguration"]["networkModeConfig"]
+        assert net["subnets"] == ["subnet-a", "subnet-b"]
+        assert net["securityGroups"] == ["sg-1"]
+
+    @pytest.mark.asyncio
+    async def test_is_idempotent_when_the_row_already_has_a_runtime(self, wired, monkeypatch):
+        import core.repositories.container_repo as repo
+
+        async def _get(owner_id, consistent=False):
+            return {**self.ROW, "agentcore_runtime_arn": "arn:existing"}
+
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        out = await ar.ensure_runtime("org_abc")
+        assert out == {"owner_id": "org_abc", "runtime_arn": "arn:existing", "created": False}
+        assert wired["created"] == []  # no second runtime, no second EFS mount
+        assert wired["fields"] == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_row_whose_ecs_task_may_still_be_running(self, wired, monkeypatch):
+        # A live task next to the new microVM is two gateways on one access point.
+        import core.repositories.container_repo as repo
+
+        async def _get(owner_id, consistent=False):
+            return {**self.ROW, "status": "running"}
+
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        with pytest.raises(RuntimeError, match="stop it before moving it"):
+            await ar.ensure_runtime("org_abc")
+        assert wired["created"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_flip_marks_the_row_running_so_no_door_wakes_ecs(self, wired):
+        await ar.ensure_runtime("org_abc")
+        ((_, fields),) = wired["fields"]
+        assert fields["status"] == "running"
+        assert fields["runtime_host"] == "agentcore"
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_the_platform_is_not_configured(self, wired, monkeypatch):
+        monkeypatch.setattr(settings, "AGENTCORE_GATEWAY_IMAGE", "")
+        with pytest.raises(RuntimeError, match="AGENTCORE_GATEWAY_IMAGE"):
+            await ar.ensure_runtime("org_abc")
+        assert wired["created"] == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_row_that_was_never_provisioned_on_ecs(self, wired, monkeypatch):
+        # The access point and hook token are minted by ECS provisioning; without them the
+        # runtime would have no filesystem and no way to call back.
+        import core.repositories.container_repo as repo
+
+        async def _get(owner_id, consistent=False):
+            return {"owner_id": "org_abc", "status": "provisioning"}
+
+        monkeypatch.setattr(repo, "get_by_owner_id", _get)
+        with pytest.raises(RuntimeError, match="access_point_id/hook_token"):
+            await ar.ensure_runtime("org_abc")
+        assert wired["created"] == []

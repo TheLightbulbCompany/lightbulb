@@ -356,11 +356,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend role can pass per-owner bedrock roles to ECS", () => {
+  test("backend role can pass per-owner bedrock roles to ECS and to AgentCore Runtime", () => {
     // The owner-bedrock prefix ARN is built from ${this.account}; in this
     // concrete-account synth CDK renders it as a literal string (it becomes an
     // Fn::Join only when the account is an unresolved token). The PassRole
-    // statement is also PassedToService-conditioned to ecs-tasks.
+    // statement is PassedToService-conditioned to exactly the two services the
+    // same per-owner role serves during the migration -- never a wildcard.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -368,7 +369,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Action: "iam:PassRole",
             Condition: Match.objectLike({
               StringEquals: Match.objectLike({
-                "iam:PassedToService": "ecs-tasks.amazonaws.com",
+                "iam:PassedToService": ["ecs-tasks.amazonaws.com", "bedrock-agentcore.amazonaws.com"],
               }),
             }),
             Resource: Match.arrayWith([
@@ -1171,5 +1172,36 @@ describe("ServiceStack — messaging environment and least privilege", () => {
         ]),
       }),
     });
+  });
+
+  test("backend role can manage per-workspace AgentCore runtimes, scoped to this account", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreRuntimeManage",
+            Action: Match.arrayWith(["bedrock-agentcore-control:CreateAgentRuntime", "bedrock-agentcore:InvokeAgentRuntime"]),
+            Resource: "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/*",
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("AGENTCORE_GATEWAY_IMAGE is set for dev and EMPTY for prod (the IaC-layer fence)", () => {
+    // ensure_runtime refuses when this is empty, so an empty prod value is what stops any
+    // prod workspace from being moved before the image is promoted deliberately.
+    const envOf = (t: Template): Record<string, string> => {
+      const defs = t.findResources("AWS::ECS::TaskDefinition");
+      const backend = Object.values(defs).find((d: any) =>
+        JSON.stringify(d).includes("AGENTCORE_GATEWAY_IMAGE"),
+      ) as any;
+      const container = backend.Properties.ContainerDefinitions[0];
+      return Object.fromEntries((container.Environment ?? []).map((e: any) => [e.Name, e.Value]));
+    };
+    expect(envOf(SERVICE_TEMPLATE_DEV).AGENTCORE_GATEWAY_IMAGE).toMatch(
+      /^877352799272\.dkr\.ecr\.us-east-1\.amazonaws\.com\/lightbulb\/openclaw-gateway-arm64:/,
+    );
+    expect(envOf(buildServiceStack("prod")).AGENTCORE_GATEWAY_IMAGE).toBe("");
   });
 });

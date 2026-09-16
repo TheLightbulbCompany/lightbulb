@@ -18,6 +18,7 @@ import httpx
 
 from core.containers import get_ecs_manager
 from core.observability.metrics import put_metric
+from core.services import runtime_transport
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
 
@@ -72,15 +73,22 @@ async def call(
         # margin bounds the HTTP-transport ceiling just above the plugin's own
         # timeoutMs (== timeout_s): the plugin's own 504 must fire first on a
         # slow RPC, not httpx aborting the connection out from under it.
-        margin = min(5.0, timeout_s)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s + margin, connect=margin)) as client:
-                response = await client.post(
-                    f"http://{ip}:{GATEWAY_PORT}{RPC_PATH}",
-                    json={"method": method, "params": params or {}, "timeoutMs": int(timeout_s * 1000)},
-                    headers={"Authorization": f"Bearer {container['gateway_token']}"},
-                )
-        except httpx.HTTPError as exc:
+            # runtime_transport owns HOW to reach the gateway: dial the task IP for an ECS
+            # owner, or an InvokeAgentRuntime envelope for one on AgentCore. The choice is
+            # per-owner (containers.runtime_host) because the migration is a per-workspace
+            # rollout. Timeout margin lives in the transport for the same reason it used to
+            # live here: the plugin's own 504 must fire before the HTTP client gives up.
+            response = await runtime_transport.request(
+                container,
+                RPC_PATH,
+                ip=ip,
+                method="POST",
+                json_body={"method": method, "params": params or {}, "timeoutMs": int(timeout_s * 1000)},
+                headers={"Authorization": f"Bearer {container['gateway_token']}"},
+                timeout_s=timeout_s,
+            )
+        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
             raise _unavailable() from exc
         if response.status_code == 504:
             outcome = "timeout"

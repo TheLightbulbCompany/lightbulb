@@ -54,7 +54,7 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
         return {"runId": run_id}
 
     async def fake_post(*args):
-        posted["body"] = args[1]
+        posted["body"] = args[3]
         if isinstance(answer, Exception):
             raise answer
         return answer

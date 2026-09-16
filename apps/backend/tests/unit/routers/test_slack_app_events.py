@@ -372,3 +372,72 @@ def test_revoke_failure_is_still_200(client):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
     assert any(c.args and c.args[0] == "slack.revoke_failed" for c in metric.call_args_list)
+
+
+def _agentcore_forward(outcome):
+    """A seam fake: ``outcome`` is a RuntimeResponse to return or an exception to raise."""
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    return fake_request
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        pytest.param(httpx.ReadTimeout("cold"), id="no-answer-inside-slacks-budget"),
+        pytest.param(
+            runtime_transport.RuntimeResponse(503, '{"error":"gateway still booting"}', {}),
+            id="contract-server-booting",
+        ),
+    ],
+)
+def test_agentcore_cold_session_defers_to_slack_retry_and_releases_dedup(client, outcome):
+    """On AgentCore a parked workspace is the normal first contact: the abandoned invoke is
+    what wakes it. The event goes back to Slack's retry (503) and the dedup row is released so
+    that retry is delivered instead of swallowed — the ECS path's 503-before-dedup, one step
+    later."""
+    body = _event()
+    agentcore_container = {**CONTAINER, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        _container(agentcore_container),
+        _billing(),
+        patch("routers.slack_app.webhook_dedup.delete_event", new_callable=AsyncMock) as released,
+        patch("routers.slack_app.runtime_transport.request", _agentcore_forward(outcome)),
+    ):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+
+    assert r.status_code == 503
+    assert r.headers["Retry-After"] == "60"
+    released.assert_awaited_once()
+    assert "Ev1" in released.await_args.args[0]
+
+
+def test_agentcore_upstream_4xx_is_still_200_and_keeps_dedup(client):
+    # Only a runtime that has not answered yet is handed back to Slack; a real refusal stays final.
+    body = _event()
+    agentcore_container = {**CONTAINER, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        _container(agentcore_container),
+        _billing(),
+        patch("routers.slack_app.webhook_dedup.delete_event", new_callable=AsyncMock) as released,
+        patch(
+            "routers.slack_app.runtime_transport.request",
+            _agentcore_forward(runtime_transport.RuntimeResponse(401, "", {})),
+        ),
+    ):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+
+    assert r.status_code == 200
+    released.assert_not_awaited()

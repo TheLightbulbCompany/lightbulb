@@ -160,7 +160,7 @@ async def _request_agentcore(
     arn = container.get("agentcore_runtime_arn")
     if not arn:
         raise ValueError("agentcore transport requires containers.agentcore_runtime_arn")
-    owner_id = container.get("owner_id") or container.get("user_id") or ""
+    owner_id = container.get("owner_id") or ""
     envelope: dict[str, Any] = {"path": path, "method": method}
     if headers:
         envelope["headers"] = headers
@@ -200,7 +200,9 @@ async def _request_agentcore(
                 runtimeSessionId=session_id_for(owner_id),
                 contentType="application/json",
                 accept="application/json",
-                payload=json.dumps(envelope).encode(),
+                # Same compact encoding as the ingress size cap measures, so a body that
+                # clears 1 MiB there is not inflated past it here.
+                payload=json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(),
             )
             raw = result.get("response")
             text = raw.read().decode() if hasattr(raw, "read") else (raw if isinstance(raw, str) else "")

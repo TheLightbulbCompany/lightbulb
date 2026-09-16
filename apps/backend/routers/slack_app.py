@@ -15,6 +15,7 @@ Ingress contract (Slack disables an app only at >95 % failed deliveries over
 | own-bot echo (except lifecycle events) | 200 (never enqueue our own posts)|
 | owner not always-on entitled           | 200 + x-slack-no-retry: 1        |
 | no container IP                        | 503 + Retry-After (Slack retries)|
+| AgentCore runtime not answering yet    | 503 + Retry-After, dedup released|
 | forward ok (2xx)                       | upstream status                  |
 | forward timeout / non-2xx              | 200 + metric slack.forward_failed|
 
@@ -106,6 +107,20 @@ def _team_id(data: dict) -> str | None:
     if isinstance(team, dict) and isinstance(team.get("id"), str):
         return team["id"]
     return None
+
+
+async def _defer_to_slack_retry(team_id: str, event_id: str | None, *, reason: str) -> Response:
+    """503 + Retry-After so Slack re-delivers, with the dedup row released so the retry is
+    not swallowed as a duplicate. Only for a runtime that has not answered yet."""
+    if event_id:
+        await webhook_dedup.delete_event(_dedup_key(team_id, event_id))
+    put_metric("slack.forward_deferred", 1, dimensions={"reason": reason})
+    return Response(
+        status_code=503,
+        headers={"Retry-After": "60"},
+        content=b'{"detail":"runtime_waking"}',
+        media_type="application/json",
+    )
 
 
 @router.post("/events")
@@ -230,9 +245,16 @@ async def receive_slack_event(request: Request) -> Response:
                 timeout=FORWARD_TIMEOUT_S,
             )
         except (httpx.RequestError, asyncio.TimeoutError) as exc:
-            logger.warning("slack events: forward failed owner=%s err=%s", owner_id, exc)
-            put_metric("slack.forward_failed", 1, dimensions={"reason": "request_error"})
-            return Response(status_code=200)
+            # A parked microVM answers nothing inside Slack's budget, and a booting one
+            # answers 503 — on AgentCore that is the NORMAL first contact, not a fault. The
+            # invoke we just abandoned is what wakes it, so hand the event back to Slack's
+            # retry (1 min / 5 min) and release the dedup row so that retry is delivered;
+            # the ECS path's "no IP → 503 before dedup" is the same door one step earlier.
+            logger.info("slack events: runtime not answering yet owner=%s err=%s", owner_id, exc)
+            return await _defer_to_slack_retry(team_id, event_id, reason="cold_runtime")
+        if upstream.status_code == 503:
+            logger.info("slack events: runtime still booting owner=%s", owner_id)
+            return await _defer_to_slack_retry(team_id, event_id, reason="cold_runtime")
         if upstream.status_code >= 300:
             logger.warning("slack events: container answered %s owner=%s", upstream.status_code, owner_id)
             put_metric("slack.forward_failed", 1, dimensions={"reason": f"upstream_{upstream.status_code // 100}xx"})

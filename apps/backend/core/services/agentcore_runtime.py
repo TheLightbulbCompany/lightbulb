@@ -68,7 +68,9 @@ def trust_policy_with_agentcore(existing: dict | None, account_id: str) -> dict:
         statements = [statements]
         doc["Statement"] = statements
     for statement in statements:
-        principal = (statement.get("Principal") or {}).get("Service")
+        principal_block = statement.get("Principal")
+        # A bare-string Principal ("*" or an ARN) is valid IAM JSON; it names no service.
+        principal = principal_block.get("Service") if isinstance(principal_block, dict) else None
         services = principal if isinstance(principal, list) else [principal]
         if AGENTCORE_SERVICE_PRINCIPAL in services:
             return doc  # already trusted; do not append a duplicate

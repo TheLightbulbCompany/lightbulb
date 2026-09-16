@@ -106,7 +106,9 @@ who owns it (`humanUserId`, `displayName`), `provider`, `cwdName`, `title`,
 `lightbulb_local_sessions` with `action: "read"`, that `sessionId`, and
 `afterSeq: max(0, latestEventSeq - 40)` to see what the human's terminal is
 doing; do not duplicate its work, and say which session (its title or folder)
-you looked at when you report. `resources` lists the same sessions on demand.
+you looked at when you report. `resources` lists the same sessions on demand,
+each with a `kind`: `background` is a Claude Code background job the member
+started. It is not shown in their sidebar; read it the same way.
 A session missing from the list is not live. The list is omitted in
 conversations that include people from outside the workspace.
 

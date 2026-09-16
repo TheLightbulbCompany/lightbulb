@@ -789,6 +789,10 @@ struct NativeSession {
     active_turn: Option<String>,
     #[serde(default)]
     pub last_assistant_message: Option<String>,
+    /// A Claude Code background job. Mirrored like a terminal session; the relay keeps
+    /// it out of human listings. Mirrors persisted before it existed read as interactive.
+    #[serde(default)]
+    background: bool,
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -1403,6 +1407,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -1673,6 +1678,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -1754,6 +1760,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
+                background: false,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1831,6 +1838,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
+                background: false,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1907,6 +1915,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
+                background: false,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -1998,6 +2007,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
+                background: false,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2054,6 +2064,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
+                background: false,
             },
             generation: "g".into(),
             previous_generation: None,

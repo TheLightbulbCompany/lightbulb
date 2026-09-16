@@ -928,6 +928,30 @@ async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):
         assert await service.live_sessions_for_room(OWNER, ROOM, members) == []
 
 
+async def test_background_jobs_are_left_out_of_human_listings_and_shown_to_agents(db, monkeypatch):
+    from core.services import local_session_grants as grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    agent = "33333333-3333-4333-8333-333333333333"
+    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}", "kind": "agent", "id": agent})
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    terminal = await registered(conversation="conv-terminal")
+    job = await registered(conversation="conv-job")
+    row = await repo.get_session(OWNER, job)
+    await repo.put_session({**row, "kind": "background"}, row, await repo.get_enrollment(OWNER, ALICE.user_id, MAC))
+    # Humans: neither the sidebar nor the room's resources carry the job.
+    assert [s.session_id for s in (await service.list_workspace_sessions(BOB)).sessions] == [terminal]
+    assert [s.session_id for s in (await service.list_resources(BOB, ROOM)).sessions] == [terminal]
+    # The agent's resources tool sees both, labelled; a row written before kind existed reads interactive.
+    caller = grants.verify(grants.mint(OWNER, ROOM, agent, "44444444-4444-4444-8444-444444444444"))
+    listed = (await service.list_resources(caller, ROOM)).sessions
+    assert {s.session_id: s.kind for s in listed} == {terminal: "interactive", job: "background"}
+    members = [{"kind": "human", "id": ALICE.user_id, "displayName": "Alice"}]
+    assert {r["sessionId"] for r in await service.live_sessions_for_room(OWNER, ROOM, members)} == {terminal, job}
+    # Reads stay open: an agent may read the job it discovered.
+    assert (await service.list_events(caller, ROOM, job)).events == []
+
+
 async def test_live_sessions_for_room_does_not_truncate_a_long_human_user_id():
     # human_user_id carries no Field(max_length=...) anywhere in the LocalSession
     # chain, unlike title/cwd_name -- constructed directly rather than through the

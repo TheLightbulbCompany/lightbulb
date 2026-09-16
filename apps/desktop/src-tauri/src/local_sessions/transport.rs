@@ -1101,7 +1101,7 @@ impl Host {
             claude::capture(
                 &self.home,
                 &program,
-                &json!({"kind":"interactive","pid":native.process.pid,
+                &json!({"kind":if native.background {"background"} else {"interactive"},"pid":native.process.pid,
                 "sessionId":native.conversation,"status":"unknown"}),
             )
             .await?
@@ -1339,6 +1339,10 @@ fn registration(mirror: &Mirror) -> Value {
         "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
         "title":mirror.native.title,"cwdName":mirror.native.cwd_name,
         "workspace":mirror.workspace.summary()}});
+    // Omitted for a terminal session, so a backend that predates background jobs keeps accepting it.
+    if mirror.native.background {
+        body["session"]["kind"] = json!("background");
+    }
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
@@ -1485,6 +1489,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         }
     }
 
@@ -1559,6 +1564,34 @@ mod tests {
         let mut restarted = renamed;
         restarted.process.birth_micros += 1;
         assert_eq!(host.observe(vec![restarted]).unwrap(), vec![key.clone()]);
+    }
+
+    #[test]
+    fn local_sessions_background_job_registers_its_kind_and_a_terminal_session_omits_it() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        assert!(
+            registration(&mirror)["session"].get("kind").is_none(),
+            "a backend that predates background jobs rejects an unknown key"
+        );
+        let mut persisted = serde_json::to_value(&mirror.native).unwrap();
+        persisted.as_object_mut().unwrap().remove("background");
+        assert!(
+            !serde_json::from_value::<NativeSession>(persisted)
+                .unwrap()
+                .background
+        );
+        mirror.native.background = true;
+        assert_eq!(registration(&mirror)["session"]["kind"], "background");
+        mirror.session_id = Some(SID.into());
+        let frames = device_heartbeats(
+            &BTreeMap::from([(SID.to_string(), mirror)]),
+            &BTreeSet::from([SID.to_string()]),
+        )
+        .unwrap();
+        assert!(
+            frames[0]["sessions"][0].get("kind").is_none(),
+            "the heartbeat entry never carries it"
+        );
     }
 
     #[test]
@@ -2188,6 +2221,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         }
     }
     #[tokio::test]
@@ -2460,6 +2494,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -2573,6 +2608,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
+            background: false,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),

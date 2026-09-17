@@ -125,6 +125,52 @@ def test_heredoc_delimiter_is_unique_so_body_text_resembling_it_still_round_trip
     assert out_file.read_text() == content + "\n"  # same +1 heredoc-trailer byte as above
 
 
+def _fake_urlopen_raising(exc):
+    def fake_urlopen(request, timeout=None):
+        raise exc
+    return fake_urlopen
+
+
+def _set_node_env(monkeypatch):
+    monkeypatch.setenv("ISOL8_API_URL", "https://api-dev.flickmeon.ai")
+    monkeypatch.setenv("ISOL8_OWNER_ID", "org_1")
+    monkeypatch.setenv("OPENCLAW_HOOK_TOKEN", "tok")
+
+
+def test_an_http_error_from_the_node_route_surfaces_its_json_code_and_message(monkeypatch):
+    """Fix round 1, item 2: the node route answers 404/409/403/504 with a JSON body
+    ({"code": ..., "message": ...}) that urlopen raises as HTTPError, not a return value --
+    _invoke's plain urlopen call let that body get discarded as a bare exception name."""
+    _set_node_env(monkeypatch)
+    body = json.dumps({"code": "NODE_NOT_ATTACHED", "message": "no paired desktop"}).encode()
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen_raising(
+        urllib.error.HTTPError("http://x", 404, "Not Found", None, io.BytesIO(body))))
+    env_obj = lightbulb_node.LightbulbNodeProvider().create_environment(cwd="/x", timeout=30)
+    out = env_obj.execute("ls")
+    assert out["returncode"] == 1
+    assert "NODE_NOT_ATTACHED" in out["output"] and "no paired desktop" in out["output"]
+
+
+def test_a_non_json_http_error_body_falls_back_to_the_http_status(monkeypatch):
+    _set_node_env(monkeypatch)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen_raising(
+        urllib.error.HTTPError("http://x", 502, "Bad Gateway", None, io.BytesIO(b"<html>not json</html>"))))
+    env_obj = lightbulb_node.LightbulbNodeProvider().create_environment(cwd="/x", timeout=30)
+    out = env_obj.execute("ls")
+    assert out["returncode"] == 1
+    assert "502" in out["output"]
+
+
+def test_a_urlerror_still_yields_a_transport_failure_with_returncode_none(monkeypatch):
+    _set_node_env(monkeypatch)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen_raising(
+        urllib.error.URLError("connection refused")))
+    env_obj = lightbulb_node.LightbulbNodeProvider().create_environment(cwd="/x", timeout=30)
+    out = env_obj.execute("ls")
+    assert out["returncode"] is None
+    assert "URLError" in out["output"]
+
+
 def test_is_available_requires_both_the_api_url_and_the_hook_token(monkeypatch):
     monkeypatch.delenv("ISOL8_API_URL", raising=False)
     monkeypatch.delenv("OPENCLAW_HOOK_TOKEN", raising=False)

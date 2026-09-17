@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 import uuid
 
@@ -74,6 +75,18 @@ class NodeEnvironment:
                   "timeoutMs": seconds * 1000}
         try:
             answer = _invoke("system.run", params, seconds * 1000)
+        except urllib.error.HTTPError as exc:
+            # The node route answers a well-formed failure (404 NODE_NOT_ATTACHED, 409
+            # COMMAND_NOT_ALLOWED, 403, 504 NODE_TIMEOUT, ...) with a JSON {code, message}
+            # body, which urlopen raises rather than returns -- read and surface it instead
+            # of collapsing it to a bare "HTTPError". returncode=1 (not None): this is a
+            # definite answer from the backend, not an unreachable/timed-out transport.
+            try:
+                payload = json.loads(exc.read() or b"{}")
+                code, message = payload.get("code", exc.code), payload.get("message", "")
+            except (ValueError, AttributeError):
+                code, message = exc.code, ""  # body wasn't JSON -- fall back to the HTTP status
+            return {"output": f"[node unavailable: {code}: {message}]", "returncode": 1}
         except Exception as exc:  # noqa: BLE001
             return {"output": f"[node unavailable: {type(exc).__name__}]", "returncode": None}
         if not answer.get("ok"):

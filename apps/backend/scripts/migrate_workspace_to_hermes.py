@@ -260,6 +260,15 @@ def _preflight_settings() -> list[str]:
     return missing
 
 
+def _efs_root_present() -> bool:
+    """Ruling M6-R20(a), fleet-wide variant: ``migrate_all`` needs to know the EFS mount itself
+    is present BEFORE it has any owner to build a ``user_path`` from. ``user_path(id)`` is
+    ``mount / id``, so ``.parent`` of any valid (non-empty, slash-free) id's path is the mount
+    root itself — this reaches it through the public ``Workspace`` API rather than a private
+    attribute, and needs no real owner."""
+    return get_workspace().user_path(REFERENCE_ORG_ID).parent.is_dir()
+
+
 def _tail_eligible(row: dict) -> bool:
     """Ruling M6-R19: tail mode requires an ECS-provenance row — ``service_name`` AND an ARN —
     not merely ``runtime_host == "agentcore"``. A natively provisioned Hermes row (the ordinary
@@ -622,7 +631,25 @@ async def migrate_all(*, dry_run: bool) -> int:
     ``_load_company`` is read exactly ONCE per owner here (never again inside ``migrate()`` —
     it is passed through as ``_company``), and its ``reconnect_chatgpt`` status is looked up
     once more per owner purely for the summary table below.
+
+    Ruling M6-R20(b), placement fix (fix round 2, item 2): the settings preflight and the
+    EFS-root presence check run ONCE here, before ``scan_all`` and before any Paperclip read —
+    a misconfigured environment must refuse instantly with exit 2, not scan the whole table,
+    read every owner's company row, and exit 0 having touched nothing (a misleadingly clean
+    summary for a run that migrated no one). Single-owner mode keeps its own per-owner checks in
+    ``_check_preconditions``.
     """
+    missing = _preflight_settings()
+    if missing:
+        logger.error("migrate_all: refusing — missing required settings: %s", ", ".join(missing))
+        return EXIT_PRECONDITION
+    if not _efs_root_present():
+        logger.error(
+            "migrate_all: no EFS mount present — refusing (this job runs inside the backend "
+            "task, never from an operator laptop with no /mnt/efs mount)"
+        )
+        return EXIT_PRECONDITION
+
     rows = await container_repo.scan_all()
     results: list[tuple[str, int, bool]] = []
     for row in rows:

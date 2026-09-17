@@ -630,7 +630,41 @@ async def test_rollback_tolerates_a_missing_runtime_and_secret(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_agentcore(monkeypatch):
+@pytest.mark.parametrize("image,bucket", [("", "test-hermes-bucket"), ("hermes:test", ""), ("", "")])
+async def test_all_flag_preflight_settings_refuses_before_any_scan_or_company_read(monkeypatch, image, bucket):
+    """Fix round 2, item 2: the settings preflight runs ONCE at the top of migrate_all, before
+    scan_all and before any Paperclip read -- a misconfigured environment must exit 2 instantly,
+    not scan the whole table, read every owner's company, and exit 0 having touched no one."""
+    monkeypatch.setattr(mod.settings, "AGENTCORE_HERMES_IMAGE", image)
+    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", bucket)
+    scan_all = AsyncMock(side_effect=AssertionError("must not scan"))
+    load_company = AsyncMock(side_effect=AssertionError("must not read a company"))
+    monkeypatch.setattr(mod.container_repo, "scan_all", scan_all)
+    monkeypatch.setattr(mod, "_load_company", load_company)
+
+    assert await mod.migrate_all(dry_run=False) == mod.EXIT_PRECONDITION
+    scan_all.assert_not_called()
+    load_company.assert_not_called()
+
+
+async def test_all_flag_efs_root_missing_refuses_before_any_scan_or_company_read(settings_ok, tmp_path, monkeypatch):
+    """Fix round 2, item 2: same placement fix, for the EFS-root presence half."""
+    # tmp_path exists, but get_workspace() is left pointing somewhere that does not (an
+    # operator-laptop stand-in), same shape as test_missing_efs_workspace_directory_exits_precondition.
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path / "does-not-exist"))
+    scan_all = AsyncMock(side_effect=AssertionError("must not scan"))
+    load_company = AsyncMock(side_effect=AssertionError("must not read a company"))
+    monkeypatch.setattr(mod.container_repo, "scan_all", scan_all)
+    monkeypatch.setattr(mod, "_load_company", load_company)
+
+    assert await mod.migrate_all(dry_run=False) == mod.EXIT_PRECONDITION
+    scan_all.assert_not_called()
+    load_company.assert_not_called()
+
+
+async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_agentcore(
+    efs_ready, settings_ok, monkeypatch
+):
     """Ruling M6-R16: an unstamped, TAIL-ELIGIBLE agentcore row (a crashed prior attempt's tail)
     is INCLUDED -- migrate() on it just runs the tail. A STAMPED row and a natively provisioned
     Hermes row (Ruling M6-R19 -- agentcore with no service_name/ARN) are both skipped."""
@@ -657,7 +691,7 @@ async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_
     assert migrated == ["a", "b"]
 
 
-async def test_all_flag_skips_pass_admission_rows(monkeypatch):
+async def test_all_flag_skips_pass_admission_rows(efs_ready, settings_ok, monkeypatch):
     rows = [{"owner_id": f"{mod.PASS_KEY_PREFIX}nightly-sweep"}, {"owner_id": "a", "runtime_host": "ecs"}]
     migrated: list[str] = []
 
@@ -674,7 +708,7 @@ async def test_all_flag_skips_pass_admission_rows(monkeypatch):
     assert migrated == ["a"]
 
 
-async def test_all_flag_skips_rows_with_no_active_paperclip_company(monkeypatch):
+async def test_all_flag_skips_rows_with_no_active_paperclip_company(efs_ready, settings_ok, monkeypatch):
     rows = [{"owner_id": "no-company", "runtime_host": "ecs"}, {"owner_id": "a", "runtime_host": "ecs"}]
     migrated: list[str] = []
 
@@ -694,7 +728,7 @@ async def test_all_flag_skips_rows_with_no_active_paperclip_company(monkeypatch)
     assert migrated == ["a"]
 
 
-async def test_all_flag_retries_a_transient_exit_exactly_once(monkeypatch):
+async def test_all_flag_retries_a_transient_exit_exactly_once(efs_ready, settings_ok, monkeypatch):
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     attempts: list[str] = []
 
@@ -711,7 +745,7 @@ async def test_all_flag_retries_a_transient_exit_exactly_once(monkeypatch):
     assert attempts == ["a", "a"]
 
 
-async def test_all_flag_reports_a_persistent_transient_failure(monkeypatch):
+async def test_all_flag_reports_a_persistent_transient_failure(efs_ready, settings_ok, monkeypatch):
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     attempts: list[str] = []
 
@@ -747,7 +781,7 @@ async def test_rollback_dry_run_performs_no_rollback(monkeypatch, capsys):
     assert "DRY RUN" in capsys.readouterr().out
 
 
-async def test_all_flag_summary_includes_reconnect_chatgpt(monkeypatch, capsys):
+async def test_all_flag_summary_includes_reconnect_chatgpt(efs_ready, settings_ok, monkeypatch, capsys):
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
@@ -766,7 +800,9 @@ async def test_all_flag_summary_includes_reconnect_chatgpt(monkeypatch, capsys):
         (["EXIT_OK", "EXIT_PRECONDITION", "EXIT_LOST_CLAIM"], "EXIT_OK"),  # neither 1 nor 11 -> 0, never max()
     ],
 )
-async def test_all_flag_exit_code_prefers_1_then_11_never_max(monkeypatch, codes, expected_attr):
+async def test_all_flag_exit_code_prefers_1_then_11_never_max(
+    efs_ready, settings_ok, monkeypatch, codes, expected_attr
+):
     rows = [{"owner_id": f"o{i}", "runtime_host": "ecs"} for i in range(len(codes))]
     code_by_owner = {f"o{i}": getattr(mod, name) for i, name in enumerate(codes)}
 
@@ -796,7 +832,7 @@ async def test_check_preconditions_uses_the_passed_in_company_without_a_second_r
     load_company.assert_not_called()
 
 
-async def test_all_flag_passes_the_loaded_company_into_migrate(monkeypatch):
+async def test_all_flag_passes_the_loaded_company_into_migrate(efs_ready, settings_ok, monkeypatch):
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     company = SimpleNamespace(status="active")
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))

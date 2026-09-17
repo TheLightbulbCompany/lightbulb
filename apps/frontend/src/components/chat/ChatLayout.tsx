@@ -15,7 +15,8 @@ import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
 import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
-import { useModelCatalog } from "@/hooks/useConfigPatch";
+import { useRuntimeHost } from "@lightbulb/shared";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -90,12 +91,16 @@ export function ChatLayout({
   const { user } = useUser();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { account, isSubscribed } = useBilling();
-  // Model list for the sidebar agent rows: resolves Bedrock
-  // application-inference-profile ARNs to display names ("Claude Sonnet")
-  // — the raw ARN's last segment is an opaque random suffix. Source depends on
-  // the runtime (M6 task 10-C, scan row 27): `models.list` on AgentCore, the
-  // gateway config's providers catalog on ECS.
-  const { source: modelCatalogSource } = useModelCatalog();
+  // Model names for the sidebar agent rows: Bedrock ids are
+  // application-inference-profile ARNs whose last segment is an opaque random suffix.
+  // ECS resolves them through the gateway config's providers catalog. AgentCore does NOT
+  // dial anything here (ruling M6-R53): `agents.list` rows already carry `modelName`, and
+  // `models.list` on a BYO/OAuth workspace goes to the bridge — a ~55s microVM cold start,
+  // on every cold `/chat` load, for a label nobody asked for. The picker surfaces dial it;
+  // the shell does not.
+  const { data: configSnapshot } = useRuntimeRpc<{ config?: unknown }>(
+    useRuntimeHost() === "ecs" ? "config.get" : null,
+  );
   // Per-agent runtime state for the roster (Teams roster status ∪ live gateway
   // runs). Shares the `/teams/agents` SWR key the pause/resume control below
   // already reads, so this adds no request on this shell.
@@ -327,7 +332,7 @@ export function ChatLayout({
                 defaultAgentId={defaultId}
                 publishedAgentIds={publishedAgentIds}
                 freshlyInstalledAgentId={drawerState.freshlyInstalledAgentId}
-                configSnapshot={modelCatalogSource}
+                configSnapshot={configSnapshot?.config}
                 onSelect={handleSelectAgent}
                 onOpenWork={(id) => openAgentIssues?.(id)}
                 onInspect={(id) => openAgentInspector?.(id)}

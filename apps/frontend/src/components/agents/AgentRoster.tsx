@@ -357,7 +357,11 @@ export function AgentRoster({
         const name = agentDisplayName(agent);
         const isActive = activeAgentId === agent.id;
         const displayAgent = fromInstalledAgent(agent);
-        const model = displayModelName(getAgentModelString(agent), modelNames);
+        // `modelName` is the runtime's own label, carried on the roster row when it is free
+        // (AgentCore — see `Agent.modelName`); the catalog map is the ECS source. Never a
+        // `models.list` dial from here: on BYO/OAuth that is a microVM cold start for a label
+        // (M6-R53).
+        const model = agent.modelName || displayModelName(getAgentModelString(agent), modelNames);
         const stateLabel =
           state === "idle"
             ? null

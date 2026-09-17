@@ -230,14 +230,24 @@ async def test_config_set_still_requires_an_agent_id(monkeypatch):
         await runtime_rpc.execute_sync(owner_id="org_a", user_id="u1", request_id="r1", method="config.set", params={})
 
 
-def _fake_profile_models(monkeypatch, models: dict):
+def _fake_profile_models(monkeypatch, models: dict, *, names: dict | None = None):
     """``read_profile_config`` for each roster row -- what ``agents.list`` reads each agent's
-    pinned ``model.default`` out of (M6 task 10-C, row 29)."""
-    monkeypatch.setattr(
-        runtime_rpc.hermes_profiles,
-        "read_profile_config",
-        lambda owner_id, agent_id: {"model": {"default": models[agent_id]}} if models.get(agent_id) else {},
-    )
+    pinned ``model.default`` out of (M6 task 10-C, row 29) -- plus the id->name map it labels
+    them with (M6-R53), which comes from the SAME backend-served listing ``models.list`` uses.
+    A value that is an Exception is raised, standing in for an S3 blip."""
+
+    def read(owner_id, agent_id):
+        value = models.get(agent_id)
+        if isinstance(value, Exception):
+            raise value
+        return {"model": {"default": value}} if value else {}
+
+    monkeypatch.setattr(runtime_rpc.hermes_profiles, "read_profile_config", read)
+
+    async def listing(owner_id):
+        return {"models": [{"id": mid, "name": name} for mid, name in (names or {}).items()], "defaultId": ""}
+
+    monkeypatch.setattr(runtime_rpc, "_agentcore_models_list", listing)
 
 
 async def test_agents_list_returns_the_defaultId_and_agents_shape_useagents_reads(monkeypatch):
@@ -250,20 +260,43 @@ async def test_agents_list_returns_the_defaultId_and_agents_shape_useagents_read
         return [{"id": "a2", "role": "engineering"}, {"id": "a1", "role": "ceo"}]
 
     monkeypatch.setattr(runtime_rpc, "load_agent_roster", fake_roster)
-    _fake_profile_models(monkeypatch, {"a2": "arn:son", "a1": "arn:opu"})
+    _fake_profile_models(
+        monkeypatch,
+        {"a2": "arn:son", "a1": "arn:opu"},
+        names={"arn:son": "Claude Sonnet", "arn:opu": "Claude Opus"},
+    )
     monkeypatch.setattr(runtime_rpc.container_rpc, "call", lambda *a, **k: called.setdefault("forwarded", True))
     out = await runtime_rpc.execute_sync(
         owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
     )
     # M6 task 10-C (row 29): every row also carries the REAL model id its own profile pins --
     # Paperclip roster rows carry no model field at all, so without this the model label is blank
-    # on every agent surface, and a tier word would name no model the owner could look up.
+    # on every agent surface, and a tier word would name no model the owner could look up. The
+    # NAME rides along too (M6-R53), so the chat sidebar never dials models.list for a label.
     assert out["agents"] == [
-        {"id": "a2", "role": "engineering", "model": "arn:son"},
-        {"id": "a1", "role": "ceo", "model": "arn:opu"},
+        {"id": "a2", "role": "engineering", "model": "arn:son", "modelName": "Claude Sonnet"},
+        {"id": "a1", "role": "ceo", "model": "arn:opu", "modelName": "Claude Opus"},
     ]
     assert out["defaultId"] == "a1"
     assert "forwarded" not in called
+
+
+async def test_agents_list_survives_a_transient_profile_read_failure(monkeypatch):
+    """Fix round 1, I3: `_s3_get` re-raises anything that is not a 404, and this is the hottest
+    control RPC on the platform. One 503 on one of six profiles must blank one model LABEL, not
+    empty the whole agent sidebar."""
+    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
+    _fake_roster(monkeypatch, [{"id": "a1"}, {"id": "a2"}])
+    _fake_profile_models(
+        monkeypatch, {"a1": RuntimeError("SlowDown"), "a2": "arn:son"}, names={"arn:son": "Claude Sonnet"}
+    )
+
+    out = await runtime_rpc.execute_sync(
+        owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
+    )
+
+    assert [row["id"] for row in out["agents"]] == ["a1", "a2"]
+    assert out["agents"][0]["model"] == "" and out["agents"][1]["model"] == "arn:son"
 
 
 async def test_agents_list_model_is_the_id_models_list_offers_not_a_tier_word(monkeypatch):

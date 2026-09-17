@@ -516,11 +516,14 @@ async def execute_sync(
         if method == "agents.list":
             roster = await load_agent_roster(owner_id)
             # M6 task 10-C (row 29): each row carries its REAL model id -- a Paperclip roster row
-            # has no model field at all, and `models.list` is what turns the id into a name.
+            # has no model field at all -- plus the display name for it (M6-R53), so the sidebar
+            # never dials models.list just to render a label.
             models = await _agentcore_roster_models(owner_id, roster)
             return {
                 "defaultId": _default_agent_id(roster),
-                "agents": [{**row, "model": model} for row, model in zip(roster, models)],
+                "agents": [
+                    {**row, "model": model, "modelName": model_name} for row, (model, model_name) in zip(roster, models)
+                ],
             }
         agent_id = params.get("agentId")
         has_agent_id = isinstance(agent_id, str) and bool(agent_id)
@@ -750,6 +753,12 @@ async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:
         # No AIPs on the row yet (mid-provision). An empty list is the honest answer: the picker
         # then shows the agent's current model alone, and the next read fills it in.
         return {"models": [], "defaultId": ""}
+    if not aip_arns.get("sonnet"):
+        # `model_block` requires sonnet (it is the standard tier and every fresh profile's
+        # default, so provisioning raises loudly without it -- see core.containers.config). A
+        # READ must not 500 on the same fact: report the first model the owner does hold as the
+        # default instead (fix round 1, M3).
+        return {"models": models, "defaultId": models[0]["id"]}
     default, _aux_model, _aux_provider = hermes_profiles.model_block(
         provider_choice=provider_choice, byo_provider=byo_provider, aip_arns=aip_arns, is_ceo=False
     )
@@ -783,33 +792,84 @@ async def _validated_model_id(owner_id: str, model: str, *, method: str) -> str:
     )
 
 
-def _profile_model_id(config: dict[str, Any]) -> str:
+def _profile_model_id(config: Any) -> str:
     """An ``agents.list`` row's model: the profile's own ``config.yaml`` ``model.default``
     (M6 task 10-C, scan row 29) -- the real id ``models.list`` names and the picker sends back,
-    not a tier word. ``""`` when the profile pins none."""
+    not a tier word. ``""`` when the profile pins none, or when reading it failed."""
     block = config.get("model") if isinstance(config, dict) else None
     default = block.get("default") if isinstance(block, dict) else None
     return default if isinstance(default, str) else ""
 
 
-async def _agentcore_roster_models(owner_id: str, roster: list[dict[str, Any]]) -> list[str]:
-    """Each roster row's pinned model, in roster order. One S3 read per profile, concurrently --
-    the same per-profile read ``_config_get_roster_map`` already does for ``config.get``."""
+async def _agentcore_roster_models(owner_id: str, roster: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Each roster row's ``(model id, display name)``, in roster order.
+
+    ``return_exceptions`` is load-bearing (fix round 1, I3): ``_s3_get`` re-raises everything
+    that is not a 404 -- a SlowDown, a throttle, a KMS blip -- and ``agents.list`` is the hottest
+    control RPC on the platform (the chat roster plus every panel's ``useAgents``). One 503 on
+    one of six profiles must blank one model LABEL, not empty the whole agent sidebar; a failed
+    read falls through ``_profile_model_id``'s own "no model pinned" answer, the degraded state
+    this shape already has.
+
+    # ponytail: one default-executor thread per roster row per call, bounded only by roster
+    # size (an 11-agent prod owner already exists). Batch or cache if a roster ever grows past
+    # the low tens.
+    """
     configs = await asyncio.gather(
-        *(run_in_thread(hermes_profiles.read_profile_config, owner_id, row["id"]) for row in roster)
+        *(run_in_thread(hermes_profiles.read_profile_config, owner_id, row["id"]) for row in roster),
+        return_exceptions=True,
     )
-    return [_profile_model_id(config) for config in configs]
+    for config in configs:
+        if isinstance(config, BaseException):
+            logger.warning("agents.list profile read failed owner=%s error=%s", owner_id, type(config).__name__)
+    names = await _agentcore_model_names(owner_id)
+    ids = [_profile_model_id(config) for config in configs]
+    return [(model_id, names.get(model_id, "")) for model_id in ids]
+
+
+async def _agentcore_model_names(owner_id: str) -> dict[str, str]:
+    """``{model id: display name}`` for this owner, WITHOUT ever reaching the runtime.
+
+    Ruling M6-R53 (fix round 1, I2): the chat sidebar must not dial ``models.list``, because on a
+    BYO-key / ChatGPT-OAuth workspace that call goes to the bridge and cold-starts a microVM
+    (~55 s) for a label nobody asked for. So ``agents.list`` -- which already reads every profile
+    and already holds the tier names -- carries the name itself, and only the picker surfaces
+    dial ``models.list``. A non-Bedrock owner gets ``{}`` here rather than a bridge call: the
+    client then renders the raw id, and the real names arrive when the picker is opened."""
+    listing = await _agentcore_models_list(owner_id)
+    if listing is None:
+        return {}
+    return {row["id"]: row["name"] for row in listing["models"] if isinstance(row.get("name"), str)}
 
 
 async def _expand_agentcore_config_patch(owner_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite the overhead-model pseudo-key into the real ``auxiliary`` block (rows 4/23).
+    """Rewrite the overhead-model pseudo-key into the real ``auxiliary`` block (rows 4/23), and
+    refuse a raw ``model`` block.
 
     ``{"auxiliary": {"model": "<id>"}}`` is what the Model Routing card sends. ``auxiliary.model``
     is not a Hermes key and is never stored: the id is validated against the owner's own
     ``models.list`` and expanded here, so the task names and the provider come from
     ``hermes_profiles`` -- the browser knows neither, and a hand-built block would drift from the
     one ``build_profile_config`` writes at provision.
+
+    The ``model`` refusal (fix round 1, I4) closes the sibling door ``agents.update``'s fence left
+    open: ``config.patch`` deep-merges whatever it is handed, so a raw
+    ``{"model": {"default": "<an ARN outside this owner's grant>"}}`` -- fanned out to EVERY
+    profile when no ``agentId`` is sent -- would make the bedrock-gate refuse every turn for the
+    workspace until someone reprovisions. With this, ``model_block`` really is the one writer.
     """
+    if "model" in patch:
+        put_metric("rpc.refused", dimensions={"method": "config.patch", "reason": "raw_model_block"})
+        raise ApiProblem(
+            "INVALID_REQUEST",
+            "The model is set per agent — use the agent's Model card.",
+            details={
+                "method": "config.patch",
+                "upstreamCode": "UNSUPPORTED_ON_AGENTCORE",
+                "fields": ["model"],
+                "use": "agents.update",
+            },
+        )
     aux = patch.get("auxiliary")
     model = aux.get(_AUX_MODEL_KEY) if isinstance(aux, dict) else None
     if not isinstance(model, str) or not model:
@@ -824,15 +884,17 @@ async def _expand_agentcore_config_patch(owner_id: str, patch: dict[str, Any]) -
     return {**patch, "auxiliary": expanded}
 
 
-async def _apply_agentcore_model_patch(
-    owner_id: str, agent_id: str, *, is_ceo: bool, default_id: str | None = None
-) -> None:
-    """Row #2 (Q9a fix round 1, M6-R28/M6-R29): re-derive ``config.yaml``'s ``model`` key
-    through the writer's own ``model_block`` -- never hand-merge a partial dict (a bare-string
-    patch would let ``patch_profile_config``'s deep merge stomp the whole ``model`` dict,
-    including ``provider``). ``default_id`` is an ALREADY-VALIDATED pick from the owner's own
-    ``models.list``; without it the block falls back to the role's tier default, which is what a
-    role change (and a fresh profile) wants."""
+async def _apply_agentcore_model_patch(owner_id: str, agent_id: str, *, default_id: str) -> None:
+    """Row #2 (Q9a fix round 1, M6-R28/M6-R29): write ``config.yaml``'s ``model`` key through the
+    writer's own ``model_block`` -- never hand-merge a partial dict (a bare-string patch would
+    let ``patch_profile_config``'s deep merge stomp the whole ``model`` dict, including
+    ``provider``).
+
+    ``default_id`` is required, and is an ALREADY-VALIDATED pick from the owner's own
+    ``models.list`` (fix round 1, C1): an explicit choice is now the ONLY thing that rewrites
+    this block, so there is no caller left that wants the role's tier default. ``is_ceo`` is
+    therefore moot here -- it only ever chose ``default``, which ``default_id`` replaces -- and
+    passing it would imply a policy this door no longer has."""
     from core.services.hermes_profiles import model_block
     from core.services.hermes_provisioning import resolve_profile_inputs
 
@@ -842,7 +904,7 @@ async def _apply_agentcore_model_patch(
         provider_choice=inputs.provider_choice,
         byo_provider=inputs.byo_provider,
         aip_arns=inputs.aip_arns,
-        is_ceo=is_ceo,
+        is_ceo=False,
         default_id=default_id,
     )
     await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, {"model": model})
@@ -883,11 +945,20 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
     paperclip = inner.get("paperclip") if isinstance(inner, dict) else None
     name = params.get("name")
     model = params.get("model")
-    # M6-R29 / M6-R50: validated up front against the owner's own models.list, even when a role
-    # change is also present (below) and wins the actual re-derivation -- a model the workspace
-    # cannot invoke must never be silently ignored, nor silently stored.
+    # M6-R29 / M6-R50: validated up front against the owner's own models.list -- a model the
+    # workspace cannot invoke must never be silently ignored, nor silently stored.
     chosen_model: str | None = None
-    if agentcore and isinstance(model, str) and model:
+    if agentcore and "model" in params:
+        if not isinstance(model, str) or not model:
+            # `{"model": null}` is "clear the override, inherit the gateway default" on ECS.
+            # There is no workspace-level default on Hermes -- each agent's own profile IS the
+            # setting -- so this used to write nothing and still answer {"ok": True}: the same
+            # silent-lie class row 12 was fixed for (fix round 1, M2).
+            raise ApiProblem(
+                "INVALID_REQUEST",
+                "There is no workspace default to inherit on this runtime — pick a model instead.",
+                details={"method": "agents.update", "upstreamCode": "UNSUPPORTED_ON_AGENTCORE", "fields": ["model"]},
+            )
         chosen_model = await _validated_model_id(owner_id, model, method="agents.update")
     if not isinstance(name, str) and not isinstance(paperclip, dict):
         # A model-only update never touches Paperclip (it has no such field) -- but on an
@@ -895,7 +966,7 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
         if agentcore and chosen_model is not None:
             agent_id = params.get("agentId")
             if isinstance(agent_id, str) and agent_id:
-                await _apply_agentcore_model_patch(owner_id, agent_id, is_ceo=False, default_id=chosen_model)
+                await _apply_agentcore_model_patch(owner_id, agent_id, default_id=chosen_model)
         return
     agent_id = params.get("agentId")
     if not isinstance(agent_id, str) or not agent_id:
@@ -934,14 +1005,19 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
     if agentcore:
         # Row #2 (Q9a fix round 1): an AgentCore row has no openclaw.json for
         # apply_paperclip_meta to write. name/role/title/capabilities/icon already landed on
-        # the Paperclip row above; a role change re-derives config.yaml's model block
-        # (M6-R28) and any identity-shaped change refreshes SOUL.md (I2) -- never a full
-        # write_profile_for_agent, which would clobber the owner's own config.yaml/.env edits.
+        # the Paperclip row above; any identity-shaped change refreshes SOUL.md (I2) -- never a
+        # full write_profile_for_agent, which would clobber the owner's own config.yaml/.env
+        # edits.
+        #
+        # ONLY an explicit `model` rewrites the model block (fix round 1, C1). A role change
+        # used to re-derive it from the role's tier (M6-R28), which was self-consistent while
+        # the role WAS the only model choice. Now that the picker offers role-independent ids,
+        # that made the Role & description card's Save -- which carries no `model` at all, and
+        # sits directly below the picker in the same panel -- silently revert the owner's pick
+        # (and re-promote a deliberately demoted CEO to opus, a billing-relevant field). A
+        # fresh profile write still derives the tier default; nothing else does.
         if chosen_model is not None:
-            # An explicit pick wins over the role's tier default -- the owner just chose it.
-            await _apply_agentcore_model_patch(owner_id, agent_id, is_ceo=False, default_id=chosen_model)
-        elif meta is not None:
-            await _apply_agentcore_model_patch(owner_id, agent_id, is_ceo=(meta.role == "ceo"))
+            await _apply_agentcore_model_patch(owner_id, agent_id, default_id=chosen_model)
         if body:
             await _refresh_agentcore_soul(owner_id, agent_id)
         return

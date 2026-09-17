@@ -111,6 +111,21 @@ vi.mock("@/lib/marketplace/api", () => ({
 }));
 vi.mock("./ChatLayout.css", () => ({}));
 
+// Ruling M6-R53: which runtime RPC the shell itself dials, per runtime host.
+let runtimeHost: "ecs" | "agentcore" | undefined = "ecs";
+const rpcMethods: (string | null)[] = [];
+vi.mock("@lightbulb/shared", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useRuntimeHost: () => runtimeHost,
+}));
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string | null) => {
+    rpcMethods.push(method);
+    return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
+  },
+  useRuntimeRpcMutation: () => vi.fn(),
+}));
+
 import { ChatLayout } from "../ChatLayout";
 
 function renderLayout() {
@@ -151,5 +166,40 @@ describe("ChatLayout — per-load fetch hygiene", () => {
     await act(async () => { renderLayout(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
     expect(syncUserMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Ruling M6-R53. `models.list` on a BYO-key / ChatGPT-OAuth workspace is served by the bridge,
+ * so dialling it from the shell cold-starts a microVM (~55 s) on every `/chat` load — for a
+ * sidebar label. The roster row carries `modelName` on AgentCore instead; only the picker
+ * surfaces dial the list.
+ */
+describe("ChatLayout — the shell never dials models.list", () => {
+  beforeEach(() => {
+    rpcMethods.length = 0;
+    myListingsMock.mockReset().mockResolvedValue({ items: [] });
+    syncUserMock.mockReset().mockResolvedValue(undefined);
+    sessionStorage.clear();
+  });
+
+  it("dials nothing for model labels on AgentCore", async () => {
+    runtimeHost = "agentcore";
+    await act(async () => { renderLayout(); });
+    expect(rpcMethods).not.toContain("models.list");
+    expect(rpcMethods).not.toContain("config.get");
+  });
+
+  it("still reads the gateway catalog on ECS, where it is free", async () => {
+    runtimeHost = "ecs";
+    await act(async () => { renderLayout(); });
+    expect(rpcMethods).toContain("config.get");
+    expect(rpcMethods).not.toContain("models.list");
+  });
+
+  it("holds while the runtime host is unknown", async () => {
+    runtimeHost = undefined;
+    await act(async () => { renderLayout(); });
+    expect(rpcMethods.every((method) => method === null)).toBe(true);
   });
 });

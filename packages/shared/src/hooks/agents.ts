@@ -24,6 +24,11 @@ export interface Agent {
   name?: string;
   identity?: { name?: string; emoji?: string; avatar?: string };
   model?: AgentModelRef;
+  /** The display name for `model`, when the runtime can give it away for free. AgentCore fills
+   *  it in (`agents.list` already reads every profile), so a roster surface never has to dial
+   *  `models.list` — which on a BYO/OAuth workspace is a ~55s microVM cold start — for a label
+   *  (M6-R53). Absent on ECS, where the gateway config's catalog is already in hand. */
+  modelName?: string;
   /** Paperclip roster fields an AgentCore `agents.list` row carries (the roster IS the row
    *  there — there is no `agent.identity.get` on this runtime). */
   role?: string;
@@ -37,24 +42,9 @@ export interface AgentsListResponse {
   agents?: Agent[];
 }
 
-/**
- * One entry of `models.list` — the models this workspace can actually invoke (M6 task 10-C).
- * On a Bedrock-managed workspace the backend builds it from the owner's own application
- * inference profiles (the only ones the bedrock-gate admits); on BYO-key / ChatGPT-OAuth it is
- * Hermes's own provider catalog, via the bridge. `id` is what the picker sends back.
- */
-export interface RuntimeModel {
-  id: string;
-  name?: string;
-  provider?: string;
-  tier?: string;
-}
-
-export interface ModelsListResponse {
-  models?: RuntimeModel[];
-  /** The model a fresh agent is provisioned with — the roster-wide default. */
-  defaultId?: string;
-}
+// No `models.list` response type lives here: every client walks that payload with the local
+// shape-detection in `modelDisplay.ts`/`agentCatalog.ts`, so a shared interface would be a
+// public API with zero importers.
 
 /**
  * Normalize an `Agent.model` field to a plain string (or undefined).

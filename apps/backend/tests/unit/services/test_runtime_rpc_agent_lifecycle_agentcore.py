@@ -195,10 +195,13 @@ async def test_agents_create_hermes_profile_error_is_a_clean_rpc_error_not_a_500
 
 
 @pytest.mark.asyncio
-async def test_mirror_agent_update_promotes_to_ceo_re_derives_the_premium_model_block(monkeypatch):
-    """M6-R28 + I5: the real _mirror_agent_update, on an AgentCore row, for a role change --
-    apply_paperclip_meta must never run, and the patched model block must equal exactly what
-    write_agent_profile would produce for a ceo."""
+async def test_a_role_change_never_rewrites_the_owners_model_pick(monkeypatch):
+    """Fix round 1, C1. A role change used to re-derive the model block from the role's tier
+    (M6-R28) -- self-consistent while the role WAS the only model choice. Now that the picker
+    offers role-independent ids, the Role & description card's Save (no `model` in the payload,
+    and it sits directly below the picker in the same panel) would silently revert the owner's
+    choice, and promote a deliberately demoted CEO back onto opus. Only an explicit `model`
+    writes that block now."""
     admin = MagicMock()
     admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
     admin.patch_agent = AsyncMock(return_value={})
@@ -215,43 +218,69 @@ async def test_mirror_agent_update_promotes_to_ceo_re_derives_the_premium_model_
     monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
     # A role change also carries a "role" key in `body`, so _refresh_agentcore_soul runs too.
     monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "ceo"}]))
-    monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
+    upload_soul = MagicMock()
+    monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", upload_soul)
 
     await rpc._mirror_agent_update("org_1", {"agentId": "a1", "params": {"paperclip": {"role": "ceo"}}}, agentcore=True)
 
     apply_meta.assert_not_awaited()
     write_profile.assert_not_awaited()  # never re-runs the full writer -- would clobber edits
     admin.patch_agent.assert_awaited_once()  # Paperclip still gets the role change
-    expected_model, _aux_model, _aux_provider = model_block(
-        provider_choice="bedrock_claude", byo_provider=None, aip_arns=_BEDROCK_INPUTS.aip_arns, is_ceo=True
-    )
-    patch_config.assert_called_once_with("org_1", "a1", {"model": expected_model})
+    upload_soul.assert_called_once()  # and SOUL.md still reflects it
+    patch_config.assert_not_called()  # ...but config.yaml's model block is untouched
 
 
 @pytest.mark.asyncio
-async def test_mirror_agent_update_demotes_from_ceo_uses_the_standard_model_block(monkeypatch):
+async def test_a_title_edit_beside_a_picked_model_leaves_that_model_alone(monkeypatch):
+    """The exact C1 scenario: pick Opus in the Model card, then fix a typo in the Title field
+    directly below it. No `model` in that payload, so nothing may touch the model block."""
     admin = MagicMock()
-    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "ceo", "reportsTo": "root"})
+    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
     admin.patch_agent = AsyncMock(return_value={})
     _wire_paperclip_mirror(monkeypatch, admin)
-    monkeypatch.setattr(rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
+    patch_config = MagicMock()
+    monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
+    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "general"}]))
+    monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
+
+    await rpc._mirror_agent_update(
+        "org_1",
+        {"agentId": "a1", "params": {"paperclip": {"role": "general", "title": "Backend engineer"}}},
+        agentcore=True,
+    )
+
+    patch_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_model_change_alongside_a_role_change_still_writes_the_picked_model(monkeypatch):
+    """The other direction: an explicit pick IS written, through model_block, even when the same
+    payload changes the role."""
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
+    admin.patch_agent = AsyncMock(return_value={})
+    _wire_paperclip_mirror(monkeypatch, admin)
+    _wire_owner_models(monkeypatch)
     monkeypatch.setattr(
         "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
-    apply_meta = AsyncMock()
-    monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", apply_meta)
-    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "general"}]))
+    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "ceo"}]))
     monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
 
     await rpc._mirror_agent_update(
-        "org_1", {"agentId": "a1", "params": {"paperclip": {"role": "general"}}}, agentcore=True
+        "org_1",
+        {"agentId": "a1", "model": "arn:aip:sonnet", "params": {"paperclip": {"role": "ceo"}}},
+        agentcore=True,
     )
 
-    apply_meta.assert_not_awaited()
-    expected_model, _aux_model, _aux_provider = model_block(
-        provider_choice="bedrock_claude", byo_provider=None, aip_arns=_BEDROCK_INPUTS.aip_arns, is_ceo=False
+    expected_model, _aux, _prov = model_block(
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        aip_arns=_BEDROCK_INPUTS.aip_arns,
+        is_ceo=False,
+        default_id="arn:aip:sonnet",
     )
     patch_config.assert_called_once_with("org_1", "a1", {"model": expected_model})
 
@@ -353,6 +382,21 @@ def _wire_owner_models(monkeypatch, *, provider_choice="bedrock_claude", aip_arn
         "get_by_owner_id",
         AsyncMock(return_value={"bedrock_aip_arns": _BEDROCK_INPUTS.aip_arns if aip_arns is None else aip_arns}),
     )
+
+
+@pytest.mark.asyncio
+async def test_mirror_agent_update_refuses_a_null_model_instead_of_writing_nothing(monkeypatch):
+    """Fix round 1, M2. `{"model": null}` is "clear the override, inherit the gateway default" on
+    ECS; Hermes has no workspace-level default, so it used to write nothing and still answer
+    {"ok": True} -- the row-12 silent-lie class, in the one field this task made writable."""
+    patch_config = MagicMock()
+    monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
+
+    with pytest.raises(ApiProblem) as exc_info:
+        await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": None}, agentcore=True)
+
+    assert exc_info.value.error.details["upstreamCode"] == "UNSUPPORTED_ON_AGENTCORE"
+    patch_config.assert_not_called()
 
 
 @pytest.mark.asyncio

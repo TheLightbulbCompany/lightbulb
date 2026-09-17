@@ -150,3 +150,15 @@ async def test_a_patch_without_the_pseudo_key_is_passed_through_untouched(monkey
     )
     patch = {"memory": {"memory_enabled": False}, "auxiliary": {"free_only": False}}
     assert await rpc._expand_agentcore_config_patch("org_a", patch) == patch
+
+
+@pytest.mark.asyncio
+async def test_config_patch_refuses_a_raw_model_block(monkeypatch):
+    """Fix round 1, I4: the sibling door. `config.patch` deep-merges whatever it is handed, so a
+    raw model block -- fanned out to EVERY profile when no agentId is sent -- could write an ARN
+    outside the owner's grant and make the gate refuse every turn until someone reprovisions.
+    `agents.update` is the only door that may set a model, and it validates."""
+    with pytest.raises(ApiProblem) as exc_info:
+        await rpc._expand_agentcore_config_patch("org_a", {"model": {"default": "arn:aws:bedrock:us-east-1::not-mine"}})
+    assert exc_info.value.error.details["upstreamCode"] == "UNSUPPORTED_ON_AGENTCORE"
+    assert exc_info.value.error.details["fields"] == ["model"]

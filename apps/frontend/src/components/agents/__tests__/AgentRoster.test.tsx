@@ -231,6 +231,16 @@ describe("AgentRoster rendering", () => {
     expect(document.querySelector(".agent-state")).toBeNull();
   });
 
+  it("prefers the roster row's own model name, so the sidebar needs no catalog", () => {
+    // Ruling M6-R53: on AgentCore `agents.list` carries `modelName`, so the shell never dials
+    // `models.list` (a ~55s microVM cold start on BYO/OAuth) to label a row. `configSnapshot`
+    // is deliberately absent here — the label must still render.
+    const row = entry("i", "Quiet", "idle", false, "arn:aws:bedrock:us-east-1:1:x/opq");
+    row.agent = { ...row.agent, modelName: "Claude Opus" };
+    renderRoster([row]);
+    expect(screen.getByText("Claude Opus")).toBeInTheDocument();
+  });
+
   it("names the paused and needs-you states in words, not colour alone", () => {
     renderRoster([entry("p", "Sleeper", "paused"), entry("e", "Broken", "attention")]);
     expect(screen.getByText("Paused")).toBeInTheDocument();

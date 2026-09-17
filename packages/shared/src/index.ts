@@ -24,8 +24,6 @@ export type {
   Agent,
   AgentModelRef,
   AgentsListResponse,
-  ModelsListResponse,
-  RuntimeModel,
 } from "./hooks/agents";
 export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
 export type { ChatGPTOAuthOptions, OAuthState } from "./hooks/useChatGPTOAuth";

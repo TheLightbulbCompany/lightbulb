@@ -165,9 +165,13 @@ async def _agentcore_refresh(owner_id: str) -> dict:
     then return that merge for the response body -- the manual write itself
     already landed on the reserved integrations_repo.MANUAL_MCP_KEY row before
     this is called. Best-effort like the ECS reconcile call: the manual write
-    already committed, so a profile-refresh hiccup must not 500 it."""
+    already committed, so a profile-refresh hiccup must not 500 it.
+
+    Every call site already resolved runtime_transport.is_agentcore_owner to
+    decide to call this at all -- agentcore=True skips reconcile_integrations'
+    own second read (M6-R26 fix round 1, Important 4)."""
     try:
-        await reconcile_integrations(owner_id)
+        await reconcile_integrations(owner_id, agentcore=True)
     except Exception:
         logger.exception("hermes profile refresh after manual MCP write failed for %s", owner_id)
     return await build_connected_integration_servers(owner_id)

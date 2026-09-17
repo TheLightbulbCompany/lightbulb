@@ -12,7 +12,7 @@ def _setup(monkeypatch, *, stored_config, connected, dotenv_by_agent=None, exist
     deletes: list[str] = []
     existing_tokens = existing_tokens or set()  # {"a1:stripe", ...} -- already-seeded token files
 
-    async def fake_connected(owner_id):
+    async def fake_connected(owner_id, *, pending=None):
         return connected
 
     async def fake_cred(owner_id, provider):

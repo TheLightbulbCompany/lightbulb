@@ -2,6 +2,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core.services import runtime_transport as _runtime_transport_module
+
+# Captured at collection time, before any test's monkeypatch runs, so this
+# stays the REAL implementation regardless of what the autouse fixture below
+# (or any test) later does to the module attribute of the same name.
+_REAL_IS_AGENTCORE_OWNER = _runtime_transport_module.is_agentcore_owner
+
 
 @pytest.fixture(autouse=True)
 def _ecs_owner_by_default(monkeypatch):
@@ -201,7 +208,7 @@ async def test_apply_agentcore_mcp_shaped_provider_calls_reconcile_once(monkeypa
 
     calls = []
 
-    async def fake_reconcile(owner_id):
+    async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
         calls.append(owner_id)
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
@@ -240,7 +247,7 @@ async def test_apply_agentcore_openclaw_paths_provider_calls_reconcile_once(monk
 
     calls = []
 
-    async def fake_reconcile(owner_id):
+    async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
         calls.append(owner_id)
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
@@ -296,7 +303,7 @@ async def test_apply_agentcore_never_raises_when_refresh_fails(monkeypatch):
     monkeypatch.setattr(ac.registry, "get_provider", lambda key: provider)
     monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
 
-    async def fake_reconcile(owner_id):
+    async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
         raise FileNotFoundError("no config.yaml yet")
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
@@ -333,3 +340,92 @@ async def test_apply_backend_only_never_checks_runtime(monkeypatch):
 
     assert result is None
     assert checked == []
+
+
+@pytest.mark.asyncio
+async def test_apply_agentcore_first_connect_projects_pending_provider(monkeypatch):
+    """M6-R26 fix round 1, Critical 1: apply_connection runs BEFORE the
+    router's put_status(..., "connected") write -- the projection must pass
+    the connecting provider through as `pending` so the very first connect's
+    profile rewrite doesn't rewrite every profile WITHOUT it."""
+    from core.services.credentials import apply_connection as ac
+    from core.services.credentials import mcp_server as mcp_server_mod
+
+    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    calls = []
+
+    async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
+        calls.append((owner_id, agentcore, pending))
+
+    monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
+
+    await ac.apply_connection("org_1", "stripe", {"access_token": "at"})
+
+    assert calls == [("org_1", True, "stripe")]
+
+
+@pytest.mark.asyncio
+async def test_apply_agentcore_reads_is_agentcore_owner_exactly_once(monkeypatch):
+    """M6-R26 fix round 1, Important 4: apply_connection resolves the runtime
+    once and must not pay for a second read inside reconcile_integrations."""
+    from core.services.credentials import apply_connection as ac
+    from core.services.credentials import mcp_server as mcp_server_mod
+    from core.services.credentials.registry import McpServer, Provider, Wiring
+
+    provider = Provider(
+        key="acme",
+        display_name="Acme",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(mcp_server=McpServer(key="acme", command="npx", env={})),
+    )
+    monkeypatch.setattr(ac.registry, "get_provider", lambda key: provider)
+    reads = []
+
+    async def fake_is_agentcore(owner_id):
+        reads.append(owner_id)
+        return True
+
+    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr(mcp_server_mod.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr(mcp_server_mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mcp_server_mod.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", AsyncMock())
+
+    await ac.apply_connection("org_1", "acme", {"token": "x"})
+
+    assert reads == ["org_1"]  # exactly one read for the whole connect
+
+
+@pytest.mark.asyncio
+async def test_apply_ecs_owner_unaffected_by_a_raising_agentcore_check(monkeypatch):
+    """M6-R26 fix round 1, Important 3: a DynamoDB throttle inside the
+    real is_agentcore_owner (not mocked here) must not turn an ECS owner's
+    connect into apply_failed/502 -- it degrades to the ECS path, exactly one
+    read attempted."""
+    from core.services.credentials import apply_connection as ac
+
+    # Restore the REAL is_agentcore_owner (the autouse fixture above mocked it
+    # to a canned False) so its own try/except is what's under test here.
+    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", _REAL_IS_AGENTCORE_OWNER)
+    reads = []
+
+    async def _raise(owner_id):
+        reads.append(owner_id)
+        raise Exception("dynamodb throttled")
+
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _raise)
+    set_calls = []
+
+    async def fake_set(owner, path, value):
+        set_calls.append((owner, path, value))
+
+    monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", fake_set)
+
+    result = await ac.apply_connection("org_1", "parallel", {"token": "par-x"})
+
+    assert result is None
+    assert reads == ["org_1"]  # exactly one read attempted
+    assert set_calls  # the ECS write proceeded

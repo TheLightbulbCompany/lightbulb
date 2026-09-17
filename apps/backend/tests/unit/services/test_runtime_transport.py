@@ -40,6 +40,42 @@ class TestHostSelection:
         assert rt.host_for({"runtime_host": "agentcore"}) == "agentcore"
 
 
+class TestIsAgentcoreOwner:
+    """M6-R26 fix round 1, Important 3: a read failure must default to ECS
+    (False) with a warning, never propagate -- every new caller added during
+    the M6 rollout treats this as a routine per-request check, and before
+    that rollout nothing on these doors read this table at all."""
+
+    @pytest.mark.asyncio
+    async def test_read_failure_defaults_to_ecs(self, monkeypatch, caplog):
+        async def _raise(owner_id):
+            raise Exception("dynamodb throttled")
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _raise)
+
+        with caplog.at_level("WARNING"):
+            result = await rt.is_agentcore_owner("org_1")
+
+        assert result is False
+        assert "org_1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_agentcore_row_reads_true(self, monkeypatch):
+        async def _get(owner_id):
+            return {"runtime_host": "agentcore"}
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _get)
+        assert await rt.is_agentcore_owner("org_1") is True
+
+    @pytest.mark.asyncio
+    async def test_no_row_reads_false(self, monkeypatch):
+        async def _get(owner_id):
+            return None
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _get)
+        assert await rt.is_agentcore_owner("org_1") is False
+
+
 class TestEcsTransport:
     """respx 0.20.2 is incompatible with this repo's httpx (see test_owner_posthog.py), so the
     client surface is patched directly — the codebase's established convention."""

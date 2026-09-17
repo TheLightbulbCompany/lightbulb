@@ -1209,7 +1209,7 @@ class TestDisconnect:
         mock_patcher.delete_openclaw_config_path = AsyncMock()
         refreshed = []
 
-        async def fake_reconcile(owner_id):
+        async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
             refreshed.append(owner_id)
 
         monkeypatch.setattr(connections, "reconcile_integrations", fake_reconcile)

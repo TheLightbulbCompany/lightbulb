@@ -63,7 +63,13 @@ async def _apply_connection_agentcore(owner_id: str, provider_key: str, p: regis
     from core.services.credentials.mcp_server import reconcile_integrations
 
     try:
-        await reconcile_integrations(owner_id)
+        # agentcore=True: the caller (apply_connection) already resolved this
+        # for this same request -- no second DynamoDB read (M6-R26 fix round
+        # 1, Important 4). pending=provider_key: this provider's `connected`
+        # status row is written by the caller AFTER apply_connection returns
+        # (Critical 1) -- without it, the FIRST connect's profile rewrite
+        # would never see its own new provider.
+        await reconcile_integrations(owner_id, agentcore=True, pending=provider_key)
     except Exception:  # noqa: BLE001 — a connect must never fail because the profile refresh did
         logger.exception("agentcore: profile refresh failed for owner=%s provider=%s", owner_id, provider_key)
     return None

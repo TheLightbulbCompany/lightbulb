@@ -326,7 +326,7 @@ async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instea
     )
     called = {}
 
-    async def fake_refresh(owner_id, agent_ids):
+    async def fake_refresh(owner_id, agent_ids, *, pending=None):
         called.update(owner_id=owner_id, agent_ids=agent_ids)
 
     monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
@@ -425,3 +425,125 @@ async def test_manual_server_secret_scrubbed_to_env_ref_not_config(monkeypatch):
     assert config["acme"]["headers"]["Authorization"] == "${MCP_ACME_AUTHORIZATION}"
     assert secrets["MCP_ACME_AUTHORIZATION"] == secret
     assert secret not in repr(config)
+
+
+# ---------------------------------------------------------------------------
+# M6-R26 fix round 1, Critical 1: a provider mid-connect (no `connected` row
+# yet -- routers/connections.py's three connect doors all call
+# apply_connection BEFORE put_status) must still be projected.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_includes_pending_provider_not_yet_recorded(monkeypatch):
+    """A first connect: `list_for_owner` returns [] (the status row isn't
+    written yet) -- `pending` must still make the provider show up, using the
+    real stripe (mcp_remote) registry entry as the brief's own test case."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    servers = await m.build_connected_integration_servers("org_1", pending="stripe")
+
+    assert servers == {
+        "stripe": {
+            "transport": "streamable-http",
+            "url": "https://mcp.stripe.com",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_pending_is_a_noop_when_row_already_exists(monkeypatch):
+    """A reconnect (or any caller passing pending redundantly) must not
+    double-count or otherwise change the outcome for an already-recorded row."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+
+    servers = await m.build_connected_integration_servers("org_1", pending="stripe")
+
+    assert list(servers.keys()) == ["stripe"]
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_no_pending_is_unaffected(monkeypatch):
+    """Every existing caller (manual-MCP writes, marketplace deploy) passes no
+    `pending` at all -- must behave exactly as before this parameter existed."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    assert await m.build_connected_integration_servers("org_1") == {}
+
+
+@pytest.mark.asyncio
+async def test_reconcile_forwards_pending_to_refresh_integrations(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1"}]))
+    calls = []
+
+    async def fake_refresh(owner_id, agent_ids, *, pending=None):
+        calls.append((owner_id, agent_ids, pending))
+
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
+
+    await m.reconcile_integrations("org_1", agentcore=True, pending="stripe")
+
+    assert calls == [("org_1", ["a1"], "stripe")]
+
+
+# ---------------------------------------------------------------------------
+# M6-R26 fix round 1, Important 3+4: the runtime flag is resolved once per
+# door and threaded down, never re-read inside reconcile_integrations.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_agentcore_flag_skips_second_read(monkeypatch):
+    """The caller already resolved is_agentcore_owner for this request --
+    reconcile_integrations must not read it again."""
+    from core.services.credentials import mcp_server as m
+
+    checked = []
+
+    async def fake_is_agentcore(owner_id):
+        checked.append(owner_id)
+        return True
+
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", AsyncMock())
+
+    await m.reconcile_integrations("org_1", agentcore=True)
+
+    assert checked == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ecs_flag_skips_second_read_too(monkeypatch):
+    """Same guarantee in the other direction: agentcore=False must not
+    trigger a read either, and must take the ECS branch."""
+    from core.services.credentials import mcp_server as m
+
+    checked = []
+
+    async def fake_is_agentcore(owner_id):
+        checked.append(owner_id)
+        return True  # if this fires, the ECS branch below would wrongly be skipped
+
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    await m.reconcile_integrations("org_1", agentcore=False)
+
+    assert checked == []

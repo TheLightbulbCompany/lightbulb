@@ -942,7 +942,8 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
         # materializer never touched a profile, so there's nothing to refresh.
         if apply_connection.is_mcp_shaped(p) or p.wiring.openclaw_paths:
             try:
-                await reconcile_integrations(owner_id)
+                # agentcore=True: already resolved above -- no second read.
+                await reconcile_integrations(owner_id, agentcore=True)
             except Exception:  # noqa: BLE001 — a disconnect must never fail because the refresh did
                 logger.exception(
                     "agentcore: profile refresh after disconnect failed for owner=%s provider=%s",

@@ -50,9 +50,24 @@ describe("AgentToolsTab on an AgentCore workspace", () => {
     expect(rpcMethods).toContain("tools.catalog");
   });
 
-  it("treats an unknown host as ECS, so nothing regresses before the status lands", () => {
+  it("holds both RPCs while the host is unknown, rather than guessing ECS", () => {
+    // Review fix round 1 (I1). `undefined` is "not known for THIS workspace" — no status has
+    // landed, or one was just switched into. Guessing ECS and firing is the mistake with a
+    // ~55s microVM cold start attached, and it is the same policy gap as the store leak (C1).
     runtimeHost = undefined;
     render(<AgentToolsTab agentId="a1" />);
+    expect(rpcMethods.every((method) => method === null)).toBe(true);
+    expect(screen.queryByText("Tool Access")).toBeNull();
+    expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
+  });
+
+  it("draws the editor as soon as the host is known to be ECS", () => {
+    runtimeHost = undefined;
+    const { rerender } = render(<AgentToolsTab agentId="a1" />);
+    expect(screen.queryByText("Tool Access")).toBeNull();
+    runtimeHost = "ecs";
+    rerender(<AgentToolsTab agentId="a1" />);
     expect(screen.getByText("Tool Access")).toBeInTheDocument();
+    expect(rpcMethods).toContain("tools.catalog");
   });
 });

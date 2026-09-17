@@ -95,11 +95,18 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
   // it never performs (M6 task 10, row 12; the toolset remap is a later lane). The RPCs are
   // nulled too, not just the editor: `tools.catalog` is stubbed on the bridge, so firing it
   // would start a microVM and spin ~55s only to render an error.
-  const onAgentCore = useRuntimeHost() === "agentcore";
+  //
+  // Fix round 1 (review I1): the RPCs wait for a DEFINITE "ecs", never merely "not agentcore".
+  // `undefined` is "not known for this workspace" -- no status has landed, or one just switched
+  // -- and firing on a guess is the one mistake with a ~55s bill attached. Same shape as
+  // `useSystemHealth`'s `container && ...` hold.
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
+  const rpcReady = runtimeHost === "ecs";
   const { data: catalogData, error: catalogError, isLoading: catalogLoading, mutate: mutateCatalog } =
-    useRuntimeRpc<ToolsCatalogResponse>(onAgentCore ? null : "tools.catalog", { agentId, includePlugins: true });
+    useRuntimeRpc<ToolsCatalogResponse>(rpcReady ? "tools.catalog" : null, { agentId, includePlugins: true });
   const { data: configSnapshot, mutate: mutateConfig } =
-    useRuntimeRpc<ConfigSnapshot>(onAgentCore ? null : "config.get");
+    useRuntimeRpc<ConfigSnapshot>(rpcReady ? "config.get" : null);
   const callRpc = useRuntimeRpcMutation();
 
   const [localProfile, setLocalProfile] = useState<string | null>(null);
@@ -262,7 +269,9 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
     );
   }
 
-  if (catalogLoading) {
+  // Unknown runtime: the same spinner a loading catalog shows. The editor cannot be drawn
+  // honestly yet, and its RPCs are held above.
+  if (catalogLoading || !rpcReady) {
     return <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)] mt-4" />;
   }
 

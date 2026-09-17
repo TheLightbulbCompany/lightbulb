@@ -175,24 +175,56 @@ export function classifyContainerStatus(res: {
  * parameterless subscriber. Module state + a listener set + `useSyncExternalStore`
  * is the pattern `workspaceController.ts` and `lampStore.ts` already use.
  *
- * `undefined` means NOT KNOWN YET (no status has landed, or a backend older than
- * this change). Every caller must treat it as "behave exactly as before", never
- * as "this is AgentCore". A caller that ALREADY holds the status body should read
- * `body.runtime_host` directly instead of subscribing here: it gets the answer in
- * the same render with no unknown-on-first-render window — which matters when the
- * consequence of guessing wrong is an RPC that wakes and bills a microVM
- * (`useSystemHealth` does exactly that).
+ * **The value is SCOPED, and that is the whole safety property.** A workspace
+ * switch is client-side (`setActive` + `router.replace`, never a reload), so this
+ * module — and anything cached in it — survives it. An unscoped singleton would
+ * keep serving the PREVIOUS workspace's runtime until the new one's status fetch
+ * resolved, and a panel reading it would open ECS-only surfaces on an AgentCore
+ * workspace (or fire an RPC that wakes and bills a microVM). So the reader
+ * declares which workspace it is polling (`setRuntimeHostScope`, during render,
+ * in the same pass that clears its own sticky body), the publish carries that
+ * same scope, and a host from any other scope reads as unknown.
+ *
+ * `undefined` therefore means NOT KNOWN *FOR THIS WORKSPACE* — no status has
+ * landed yet, a switch is in flight, the poll is disabled, or the backend is
+ * older than this change. Every caller must treat it as "hold", never as "this is
+ * ECS": the two states differ precisely when guessing wrong is expensive. A
+ * caller that ALREADY holds the status body should read `body.runtime_host`
+ * directly instead of subscribing here — it gets the answer in the same render
+ * with no unknown window at all (`useSystemHealth` does exactly that).
  * ------------------------------------------------------------------------- */
 
-let currentRuntimeHost: RuntimeHost | undefined;
+/** The status key the one reader is currently polling — see `setRuntimeHostScope`. */
+let activeStatusScope: string | null = null;
+let publishedHost: { scope: string; host: RuntimeHost } | null = null;
 const runtimeHostListeners = new Set<() => void>();
 
-/** Called by `useOnboardingStatus` whenever a status body names a host. Deliberately never
- * publishes `undefined`: a disabled or failing poll must not blank a host we already know. */
-export function publishRuntimeHost(host: RuntimeHost): void {
-  if (host === currentRuntimeHost) return;
-  currentRuntimeHost = host;
+function notifyRuntimeHost(): void {
   for (const listener of runtimeHostListeners) listener();
+}
+
+/**
+ * Declare which workspace the status poll is currently for. Called by
+ * `useOnboardingStatus` DURING RENDER, alongside the branch that drops its own sticky
+ * last-good body on a key change, so the host goes unknown in the same pass the body does —
+ * an effect would leave one commit in which a panel still sees the old workspace's runtime.
+ *
+ * Deliberately does NOT notify: React forbids updating another component from a render phase,
+ * and `useSyncExternalStore` re-reads the snapshot every render and re-checks it after commit,
+ * so a plain mutation is picked up without one. `null` (the poll is disabled — signed out)
+ * matches no published scope, so it reads as unknown.
+ */
+export function setRuntimeHostScope(scope: string | null): void {
+  activeStatusScope = scope;
+}
+
+/** Called by `useOnboardingStatus` when a status body for `scope` names a host. Never
+ * publishes `undefined`: within one workspace, a failing or disabled poll must not blank a
+ * host we already know — going unknown is `setRuntimeHostScope`'s job, and only on a switch. */
+export function publishRuntimeHost(scope: string, host: RuntimeHost): void {
+  if (publishedHost?.scope === scope && publishedHost.host === host) return;
+  publishedHost = { scope, host };
+  notifyRuntimeHost();
 }
 
 function subscribeRuntimeHost(listener: () => void): () => void {
@@ -203,16 +235,17 @@ function subscribeRuntimeHost(listener: () => void): () => void {
 }
 
 function readRuntimeHost(): RuntimeHost | undefined {
-  return currentRuntimeHost;
+  return publishedHost && publishedHost.scope === activeStatusScope ? publishedHost.host : undefined;
 }
 
 /** Test-only reset — this module's state outlives any one test's renders. */
 export function __resetRuntimeHost(): void {
-  currentRuntimeHost = undefined;
+  activeStatusScope = null;
+  publishedHost = null;
   runtimeHostListeners.clear();
 }
 
-/** The workspace's runtime, or `undefined` while unknown (see the block comment above). */
+/** This workspace's runtime, or `undefined` while unknown (see the block comment above). */
 export function useRuntimeHost(): RuntimeHost | undefined {
   return useSyncExternalStore(subscribeRuntimeHost, readRuntimeHost, readRuntimeHost);
 }

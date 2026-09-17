@@ -595,6 +595,16 @@ async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Re
     return await service.handle_usage_report(owner_id, body)
 
 
+@router.get("/internal/messaging/attachments/{owner_id}/{room_id}/{attachment_id}")
+async def get_internal_attachment(owner_id: str, room_id: str, attachment_id: str, request: Request):
+    """Hook-token twin of ``get_room_attachment`` (Clerk-authed, above) for the bridge's
+    ``sync.materialize_attachments`` -- a Hermes microVM has no EFS to read attachments from
+    directly, so it fetches them over this door instead (Task 25, spec §5 "Ingress")."""
+    await _require_hook_token(owner_id, request)
+    attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
+    return Response(content=data, media_type=attachment.content_type)
+
+
 @router.post("/internal/paperclip/runs/{owner_id}")
 async def post_paperclip_run(owner_id: str, request: Request):
     """Paperclip's ``http`` adapter (``paperclip_adapter_config.HTTP_ADAPTER_TYPE``) posts a

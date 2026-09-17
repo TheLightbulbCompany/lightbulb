@@ -82,6 +82,62 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
     assert "GATEWAY_TOKEN" not in env
 
 
+# --- I5: _wait_for_runtime_ready ------------------------------------------------------------
+
+
+class _FakeAgentCoreClient:
+    def __init__(self, statuses):
+        self._statuses = iter(statuses)
+
+    def get_agent_runtime(self, agentRuntimeId):  # noqa: N803 -- matches boto3's own param casing
+        return {"status": next(self._statuses)}
+
+
+def test_wait_for_runtime_ready_returns_once_status_is_ready(monkeypatch):
+    import boto3
+
+    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
+    client = _FakeAgentCoreClient(["CREATING", "CREATING", "READY"])
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
+
+    hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
+    # Exhausted exactly the three statuses above -- a fourth call would raise StopIteration.
+    with pytest.raises(StopIteration):
+        client.get_agent_runtime(agentRuntimeId="r1")
+
+
+def test_wait_for_runtime_ready_raises_on_create_failed_with_the_status_in_the_message(monkeypatch):
+    import boto3
+
+    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeAgentCoreClient(["CREATE_FAILED"]))
+
+    with pytest.raises(RuntimeError, match="CREATE_FAILED"):
+        hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
+
+
+def test_wait_for_runtime_ready_raises_on_update_failed_with_the_status_in_the_message(monkeypatch):
+    import boto3
+
+    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeAgentCoreClient(["UPDATE_FAILED"]))
+
+    with pytest.raises(RuntimeError, match="UPDATE_FAILED"):
+        hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
+
+
+def test_wait_for_runtime_ready_raises_on_window_timeout(monkeypatch):
+    import boto3
+
+    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
+    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_ATTEMPTS", 3)  # bound the loop for test speed
+    # Never READY, never terminal -- the window itself must be what raises.
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeAgentCoreClient(["CREATING"] * 3))
+
+    with pytest.raises(RuntimeError, match="did not reach READY"):
+        hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
+
+
 # --- prepare_hermes_workspace (M4-R33): tokens + boot secret BEFORE step 0 -----------------
 
 

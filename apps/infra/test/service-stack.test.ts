@@ -1220,3 +1220,16 @@ describe("ServiceStack — messaging environment and least privilege", () => {
     expect(envOf(buildServiceStack("prod")).AGENTCORE_GATEWAY_IMAGE).toBe("");
   });
 });
+
+describe("ServiceStack — peer task forwarding (node invoke, M2 task 27)", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  it("lets backend tasks reach each other on 8000 so a node invoke can be forwarded", () => {
+    // The socket is pinned to the task that accepted it; the bridge's call lands anywhere.
+    template.hasResourceProperties("AWS::EC2::SecurityGroupIngress", {
+      FromPort: 8000,
+      ToPort: 8000,
+      Description: "Peer backend task forwarding (node invoke)",
+    });
+  });
+});

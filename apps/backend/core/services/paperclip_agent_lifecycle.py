@@ -426,6 +426,12 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     # also the marketplace's install record. Remove it strictly before the
     # Paperclip handle disappears so a failed unlink leaves a visible, retryable
     # agent instead of a stale installed marker with no owner-facing handle.
+    #
+    # Both of these run unconditionally for AgentCore too (Q9a fix round 1, item 7): the
+    # sidecar path is `Path.unlink(missing_ok=True)` (ENOENT from a missing PARENT directory
+    # is the same OSError as a missing leaf file, so a never-provisioned EFS tree is a silent
+    # no-op, not a raise), and cleanup_deleted_agent wraps its own EFS walk in a try/except
+    # that only logs -- neither can 500 an AgentCore delete the way the EFS writers above did.
     await asyncio.to_thread(get_workspace().remove_template_sidecar, owner_id, agent_id)
     await cleanup_deleted_agent(owner_id, agent_id)
     await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)

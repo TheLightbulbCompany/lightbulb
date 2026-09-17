@@ -427,11 +427,9 @@ async def execute_sync(
     if method == "agents.create":
         from core.services.hermes_provisioning import HermesProfileError
 
-        container, ip = await container_rpc.running_container(owner_id)
+        container, _ip = await container_rpc.running_container(owner_id)
         try:
-            return await _create_agent(
-                owner_id, user_id, _sanitize_agent_create(params), container, ip, container["gateway_token"]
-            )
+            return await _create_agent(owner_id, user_id, _sanitize_agent_create(params), container)
         except HermesProfileError as exc:
             # Row #1 (Q9a): a missing BYO key / failed Paperclip key mint on an AgentCore
             # create must be a clean RPC error, not a 500.
@@ -449,7 +447,11 @@ async def execute_sync(
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
         if is_agentcore_owner:
-            return await _patch_agentcore_agent_update(owner_id, params)
+            # Q9a fix round 1: _mirror_agent_update above already applied every AgentCore-side
+            # patch (model-block re-derivation, SOUL.md refresh) -- there is no AgentCore
+            # bridge RPC for agents.update, so this never falls through to container_rpc.call.
+            await _invalidate(owner_id, "agents.update")
+            return {"ok": True}
     if method in _HERMES_PROFILE_METHODS and await _is_agentcore(owner_id):
         # M4-R1/M4-R43 (fix round 1 continuation): an AgentCore row's Hermes profile lives in
         # S3, not behind a live gateway socket — the backend is the ONLY writer of a profile
@@ -561,9 +563,7 @@ def _normalize_gateway_error(method: str, exc: RuntimeError) -> ApiProblem:
     )
 
 
-async def _create_agent(
-    owner_id: str, user_id: str, params: dict[str, Any], container: dict, ip: str, token: str
-) -> dict:
+async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], container: dict) -> dict:
     name = params["name"]
     role = params.get("role")
     model = params.get("model")
@@ -577,33 +577,37 @@ async def _create_agent(
         model=model,
         meta=meta,
     )
-    await pair_with_openclaw(owner_id=owner_id, paperclip_agent=paperclip_agent)
-    # pair_with_openclaw above also registers the agent's Lightbulb channel
-    # account + binding — see its docstring.
-    await ensure_operator_device_paired(
-        owner_id=owner_id,
-        paperclip_agent=paperclip_agent,
-        gateway_token=token,
-    )
     if runtime_transport.host_for(container) == "agentcore":
-        # Row #1 (Q9a, task-9-scan.md): an AgentCore agent has no openclaw.json to stage
-        # Paperclip meta into -- apply_paperclip_meta is an EFS write and would raise
-        # ConfigPatchError, unwrapped, for this owner. write_profile_for_agent is what gives
-        # the new agent its config, its Paperclip key, and its SOUL (the identity-staging gap
-        # scan row #16 flagged).
+        # Row #1 (Q9a fix round 1, M6-R27): no OpenClaw gateway exists on this transport for
+        # pair_with_openclaw to reach -- its agents.create/agents.update RPCs have no bridge
+        # handler (bridge/server.py has no such method) and would 500 loudly before
+        # write_profile_for_agent ever ran. Skip it AND ensure_operator_device_paired (a
+        # device-pairing concept this transport has no equivalent of) entirely --
+        # write_profile_for_agent below IS this transport's pairing: it gives the agent its
+        # config, its Paperclip key, and its SOUL (the identity-staging gap scan row #16
+        # flagged), and there is no openclaw.json for apply_paperclip_meta to write into.
         from core.services.hermes_provisioning import write_profile_for_agent
 
         await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
         await _invalidate(owner_id, "agents.create")
-    elif meta is not None:
-        from core.services.config_patcher import apply_paperclip_meta
+    else:
+        await pair_with_openclaw(owner_id=owner_id, paperclip_agent=paperclip_agent)
+        # pair_with_openclaw above also registers the agent's Lightbulb channel
+        # account + binding — see its docstring.
+        await ensure_operator_device_paired(
+            owner_id=owner_id,
+            paperclip_agent=paperclip_agent,
+            gateway_token=container["gateway_token"],
+        )
+        if meta is not None:
+            from core.services.config_patcher import apply_paperclip_meta
 
-        block = {"role": meta.role}
-        for key in ("title", "capabilities", "icon"):
-            value = getattr(meta, key)
-            if value:
-                block[key] = value
-        await apply_paperclip_meta(owner_id, agent_id=paperclip_agent["id"], meta=block)
+            block = {"role": meta.role}
+            for key in ("title", "capabilities", "icon"):
+                value = getattr(meta, key)
+                if value:
+                    block[key] = value
+            await apply_paperclip_meta(owner_id, agent_id=paperclip_agent["id"], meta=block)
     from routers.teams.agents import _redact_agent
 
     return {"agentId": paperclip_agent["id"], "agent": _redact_agent(paperclip_agent)}
@@ -642,29 +646,76 @@ async def _mirror_paperclip_update_with_retry(
             await asyncio.sleep(0.2 * 2**attempt)
 
 
-async def _patch_agentcore_agent_update(owner_id: str, params: dict[str, Any]) -> dict[str, Any]:
-    """``agents.update``'s AgentCore leg (Q9a row #2). The update was already mirrored to
-    Paperclip by ``_mirror_agent_update`` above -- name/role/title/capabilities/icon land there
-    and drive SOUL.md alone (``hermes_profiles.build_soul_md``), which is NOT rewritten here:
-    re-running ``write_profile_for_agent`` for this agent would clobber the owner's own
-    ``config.yaml`` edits. ``model`` is the one update field that is also a real ``config.yaml``
-    key (``write_agent_profile``'s ``model`` block), so it is the only field patched -- as a
-    nested ``{"model": {"default": ...}}`` merge so the stored ``provider`` survives, "leaving
-    everything else" per the ruling.
-    """
-    agent_id = params.get("agentId")
-    model = params.get("model")
-    if isinstance(agent_id, str) and agent_id and isinstance(model, str) and model:
-        await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, {"model": {"default": model}})
-    await _invalidate(owner_id, "agents.update")
-    return {"ok": True}
+#: The only two model tiers hermes_profiles.model_block understands (the same is_ceo switch
+#: premium_model_ref/cheap_model_ref key off) -- Q9a fix round 1, M6-R29. An AgentCore
+#: agents.update never stores a client-supplied model ref verbatim: a raw ref could point
+#: outside the owner's own AIP grant (the gate then refuses every turn) or off the writer's
+#: BYO/OAuth vocabulary entirely, and the bridge answers models.list with UNAVAILABLE so there
+#: is no picker to validate a free-form choice against in the first place.
+_AGENTCORE_MODEL_TIERS: dict[str, bool] = {"standard": False, "premium": True}
+
+
+def _agentcore_model_tier_is_ceo(model: str) -> bool:
+    """The ``is_ceo`` bool ``hermes_profiles.model_block`` wants, from the closed tier
+    vocabulary -- raises ``INVALID_REQUEST`` naming the accepted values for anything else."""
+    if model not in _AGENTCORE_MODEL_TIERS:
+        raise ApiProblem(
+            "INVALID_REQUEST",
+            f"model must be one of: {', '.join(sorted(_AGENTCORE_MODEL_TIERS))}.",
+            details={"method": "agents.update", "accepted": sorted(_AGENTCORE_MODEL_TIERS)},
+        )
+    return _AGENTCORE_MODEL_TIERS[model]
+
+
+async def _apply_agentcore_model_patch(owner_id: str, agent_id: str, *, is_ceo: bool) -> None:
+    """Row #2 (Q9a fix round 1, M6-R28/M6-R29): re-derive ``config.yaml``'s ``model`` key
+    through the writer's own ``model_block`` -- never trust a client-supplied ref, and never
+    hand-merge a partial dict (a bare-string patch would let ``patch_profile_config``'s deep
+    merge stomp the whole ``model`` dict, including ``provider``)."""
+    from core.services.hermes_profiles import model_block
+    from core.services.hermes_provisioning import resolve_profile_inputs
+
+    container_row = await container_repo.get_by_owner_id(owner_id) or {}
+    inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
+    model, _aux_model, _aux_provider = model_block(
+        provider_choice=inputs.provider_choice,
+        byo_provider=inputs.byo_provider,
+        aip_arns=inputs.aip_arns,
+        is_ceo=is_ceo,
+    )
+    await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, {"model": model})
+
+
+async def _refresh_agentcore_soul(owner_id: str, agent_id: str) -> None:
+    """Row #2 (Q9a fix round 1, I2): name/title/role/capabilities reach the agent ONLY through
+    ``SOUL.md`` (``hermes_profiles.build_soul_md``) -- rebuild it from the live (post-mirror)
+    Paperclip roster row and upload ONLY that file. Never ``write_profile_for_agent``/
+    ``upload_profile``, which would also overwrite the owner's own ``config.yaml``/``.env``."""
+    roster = await load_agent_roster(owner_id)
+    agent_row = next((row for row in roster if isinstance(row, dict) and row.get("id") == agent_id), None)
+    if agent_row is None:
+        return
+    soul_md = hermes_profiles.build_soul_md(agent_row)
+    await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
 
 
 async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentcore: bool = False) -> None:
     inner = params.get("params") or {}
     paperclip = inner.get("paperclip") if isinstance(inner, dict) else None
     name = params.get("name")
+    model = params.get("model")
+    # M6-R29: validated up front, even when a role change is also present (below) and wins the
+    # actual re-derivation -- a garbage `model` value must never be silently ignored.
+    is_ceo_from_model: bool | None = None
+    if agentcore and isinstance(model, str) and model:
+        is_ceo_from_model = _agentcore_model_tier_is_ceo(model)
     if not isinstance(name, str) and not isinstance(paperclip, dict):
+        # A model-only update never touches Paperclip (it has no such field) -- but on an
+        # AgentCore row it still needs the config.yaml re-derivation below.
+        if agentcore and is_ceo_from_model is not None:
+            agent_id = params.get("agentId")
+            if isinstance(agent_id, str) and agent_id:
+                await _apply_agentcore_model_patch(owner_id, agent_id, is_ceo=is_ceo_from_model)
         return
     agent_id = params.get("agentId")
     if not isinstance(agent_id, str) or not agent_id:
@@ -672,6 +723,7 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
     body: dict[str, str] = {}
     if isinstance(name, str):
         body["name"] = name
+    meta = None
     if isinstance(paperclip, dict):
         meta = read_from_agent_entry({"params": inner})
         body["role"] = meta.role
@@ -699,14 +751,20 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
         raise
     except (PaperclipApiError, httpx.HTTPError, RuntimeError):
         logger.warning("Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
-    if not isinstance(paperclip, dict):
-        return
     if agentcore:
-        # Row #2 (Q9a, task-9-scan.md): an AgentCore row has no openclaw.json for
-        # apply_paperclip_meta to write -- role/title/capabilities/icon already landed on the
-        # Paperclip row above. SOUL.md (which derives them) is deliberately NOT rewritten here;
-        # see _patch_agentcore_agent_update's docstring for why.
-        params.pop("params", None)
+        # Row #2 (Q9a fix round 1): an AgentCore row has no openclaw.json for
+        # apply_paperclip_meta to write. name/role/title/capabilities/icon already landed on
+        # the Paperclip row above; a role change re-derives config.yaml's model block
+        # (M6-R28) and any identity-shaped change refreshes SOUL.md (I2) -- never a full
+        # write_profile_for_agent, which would clobber the owner's own config.yaml/.env edits.
+        if meta is not None:
+            await _apply_agentcore_model_patch(owner_id, agent_id, is_ceo=(meta.role == "ceo"))
+        elif is_ceo_from_model is not None:
+            await _apply_agentcore_model_patch(owner_id, agent_id, is_ceo=is_ceo_from_model)
+        if body:
+            await _refresh_agentcore_soul(owner_id, agent_id)
+        return
+    if not isinstance(paperclip, dict):
         return
     try:
         from core.services.config_patcher import apply_paperclip_meta

@@ -1,4 +1,5 @@
 import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -889,6 +890,135 @@ async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypa
     # Real write_agent_profile runs (not mocked) -- proves the non-BYO path produces a normal
     # profile with byo_api_key=None, with no read ever attempted.
     await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+
+# --- write_profile_for_agent (M6-R23) -----------------------------------------------------------
+# Moved, unchanged in behaviour, from catalog_service._build_and_upload_agent_profile -- the
+# shared per-agent "write this agent's profile" seam _write_profiles (above) now delegates to,
+# and runtime_rpc's agents.create door for an AgentCore owner calls directly (Q9a row #1).
+
+
+@pytest.mark.asyncio
+async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
+    from core.services.hermes_provisioning import ProfileInputs
+
+    inputs = ProfileInputs(
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        byo_api_key=None,
+        aip_arns={"sonnet": "arn:aip:sonnet"},
+        integrations={},
+        env_vars={},
+    )
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    written = {}
+
+    def fake_write_agent_profile(owner_id, agent, **kwargs):
+        written["owner_id"] = owner_id
+        written["agent"] = agent
+        written["kwargs"] = kwargs
+        return SimpleNamespace(soul_md="ORIGINAL")
+
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", fake_write_agent_profile)
+    upload_mock = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
+    agent_row = {"id": "agent_new", "name": "Demo", "role": "general"}
+
+    await hermes_provisioning.write_profile_for_agent(
+        "owner_1", agent_row, container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
+    )
+
+    assert written["owner_id"] == "owner_1"
+    assert written["agent"] is agent_row
+    assert written["kwargs"]["provider_choice"] == "bedrock_claude"
+    assert written["kwargs"]["aip_arns"] == {"sonnet": "arn:aip:sonnet"}
+    assert written["kwargs"]["paperclip_api_key"] == "pk-123"
+    upload_mock.assert_awaited_once()
+    assert upload_mock.await_args.args[0] == "owner_1"
+    assert upload_mock.await_args.args[1] == "agent_new"
+    assert upload_mock.await_args.args[2].soul_md == "ORIGINAL"
+
+
+@pytest.mark.asyncio
+async def test_write_profile_for_agent_propagates_a_hermes_profile_error_from_resolve_profile_inputs(monkeypatch):
+    """A missing BYO key (or any other resolve_profile_inputs hard-fail, raised as
+    HermesProfileError -- M6-R10/M6-R11/M6-R13) must never ship a profile with no LLM
+    credential at all."""
+
+    async def _raise(*_args, **_kwargs):
+        raise hermes_provisioning.HermesProfileError("hermes profile for owner=owner_1: byo api key read failed")
+
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", _raise)
+    write_mock = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", write_mock)
+    upload_mock = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
+
+    with pytest.raises(hermes_provisioning.HermesProfileError, match="byo"):
+        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"}, container_row={})
+
+    write_mock.assert_not_called()
+    upload_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_write_profile_for_agent_raises_when_paperclip_key_mint_fails(monkeypatch):
+    """A failed/empty Paperclip key mint must never ship a profile whose paperclip skill
+    silently 401s on every call."""
+    from core.services.hermes_provisioning import ProfileInputs
+
+    inputs = ProfileInputs(
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        byo_api_key=None,
+        aip_arns={},
+        integrations={},
+        env_vars={},
+    )
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    write_mock = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", write_mock)
+    upload_mock = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
+
+    with pytest.raises(RuntimeError, match="paperclip"):
+        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"}, container_row={})
+
+    write_mock.assert_not_called()
+    upload_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_soul(monkeypatch):
+    from core.services.hermes_provisioning import ProfileInputs
+
+    inputs = ProfileInputs(
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        byo_api_key=None,
+        aip_arns={"sonnet": "arn:aip:sonnet"},
+        integrations={},
+        env_vars={},
+    )
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "core.services.hermes_profiles.write_agent_profile",
+        lambda owner_id, agent, **kwargs: SimpleNamespace(soul_md="DERIVED"),
+    )
+    upload_mock = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
+
+    await hermes_provisioning.write_profile_for_agent(
+        "owner_1", {"id": "agent_new"}, container_row={}, soul_md_override="CUSTOM SOUL"
+    )
+
+    assert upload_mock.await_args.args[2].soul_md == "CUSTOM SOUL"
 
 
 # --- resolve_profile_inputs (fix round 3, M6-R10/M6-R11/M6-R13) ----------------------------------

@@ -146,100 +146,28 @@ async def test_deploy_tarball_to_profile_handles_empty_tar_bytes(s3_hermes_bucke
 
 
 # ---------------------------------------------------------------------------
-# _build_and_upload_agent_profile -- combines resolve_profile_inputs with the
-# agent row + Paperclip key (fix round 3, M6-R10: the six owner-level inputs
-# now come from hermes_provisioning.resolve_profile_inputs, the same seam
-# _write_profiles uses -- their sourcing correctness is exercised by
-# test_hermes_provisioning.py; this file only proves catalog_service plumbs
-# them through and does not swallow a hard failure).
+# _build_and_upload_agent_profile -- a thin resolve-then-delegate wrapper
+# (M6-R23): resolves this agent's own Paperclip roster row by id, then hands
+# off to hermes_provisioning.write_profile_for_agent, the shared per-agent
+# seam whose own sourcing/error-handling coverage now lives in
+# test_hermes_provisioning.py.
 # ---------------------------------------------------------------------------
 
 
-def _patch_profile_inputs(
-    stack: contextlib.ExitStack,
-    *,
-    provider_choice="bedrock_claude",
-    byo_provider=None,
-    byo_api_key=None,
-    aip_arns=None,
-    integrations=None,
-    env_vars=None,
-    roster=None,
-    patch_paperclip_key=True,
-    resolve_profile_inputs_side_effect=None,
-):
-    """Enter (on ``stack``) a patch for every collaborator
-    _build_and_upload_agent_profile reads, at the module paths it imports
-    them from (all local imports inside the function).
-
-    ``resolve_profile_inputs_side_effect`` lets a test make the shared
-    resolver itself fail (e.g. a HermesProfileError) instead of returning a
-    ProfileInputs. ``patch_paperclip_key`` lets a test drop the default stub
-    and patch a layer underneath instead (``ensure_paperclip_api_key``) to
-    exercise the real raise.
-    """
-    from core.services.hermes_provisioning import ProfileInputs
-
-    if resolve_profile_inputs_side_effect is not None:
-        stack.enter_context(
-            patch(
-                "core.services.hermes_provisioning.resolve_profile_inputs",
-                new=AsyncMock(side_effect=resolve_profile_inputs_side_effect),
-            )
-        )
-    else:
-        inputs = ProfileInputs(
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-            byo_api_key=byo_api_key,
-            aip_arns=aip_arns or {},
-            integrations=integrations or {},
-            env_vars=env_vars or {},
-        )
-        stack.enter_context(
-            patch("core.services.hermes_provisioning.resolve_profile_inputs", new=AsyncMock(return_value=inputs))
-        )
-    stack.enter_context(patch("core.services.messaging.load_agent_roster", new=AsyncMock(return_value=roster or [])))
-    if patch_paperclip_key:
-        stack.enter_context(
-            patch("core.services.catalog_service._resolve_paperclip_api_key", new=AsyncMock(return_value="pk-123"))
-        )
-
-
 @pytest.mark.asyncio
-async def test_build_and_upload_agent_profile_writes_and_uploads():
-    written = {}
-
-    def fake_write_agent_profile(owner_id, agent, **kwargs):
-        written["owner_id"] = owner_id
-        written["agent"] = agent
-        written["kwargs"] = kwargs
-        return "PROFILE_FILES_SENTINEL"
-
-    upload_mock = AsyncMock(return_value=None)
-    with contextlib.ExitStack() as stack:
-        _patch_profile_inputs(
-            stack,
-            roster=[{"id": "agent_new", "name": "Demo", "role": "general"}],
-            aip_arns={"sonnet": "arn:aip:sonnet"},
-        )
-        stack.enter_context(
-            patch("core.services.hermes_profiles.write_agent_profile", side_effect=fake_write_agent_profile)
-        )
-        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
-
+async def test_build_and_upload_agent_profile_resolves_the_row_and_delegates():
+    write_profile = AsyncMock()
+    roster = [{"id": "agent_new", "name": "Demo", "role": "general"}]
+    container = {"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
+    with (
+        patch("core.services.messaging.load_agent_roster", new=AsyncMock(return_value=roster)),
+        patch("core.services.hermes_provisioning.write_profile_for_agent", new=write_profile),
+    ):
         await catalog_service._build_and_upload_agent_profile(
-            owner_id="owner_1",
-            agent_id="agent_new",
-            container={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}},
+            owner_id="owner_1", agent_id="agent_new", container=container
         )
 
-    assert written["owner_id"] == "owner_1"
-    assert written["agent"]["id"] == "agent_new"
-    assert written["kwargs"]["provider_choice"] == "bedrock_claude"
-    assert written["kwargs"]["aip_arns"] == {"sonnet": "arn:aip:sonnet"}
-    assert written["kwargs"]["paperclip_api_key"] == "pk-123"
-    upload_mock.assert_awaited_once_with("owner_1", "agent_new", "PROFILE_FILES_SENTINEL")
+    write_profile.assert_awaited_once_with("owner_1", roster[0], container_row=container)
 
 
 @pytest.mark.asyncio
@@ -247,80 +175,17 @@ async def test_build_and_upload_agent_profile_raises_when_roster_read_fails():
     """M6-R10: catalog hard-fails on a roster read failure exactly like
     hermes_provisioning._write_profiles does -- the old manifest-derived
     fallback agent row is gone."""
-    upload_mock = AsyncMock(return_value=None)
-    write_mock = MagicMock(return_value="FILES")
-    with contextlib.ExitStack() as stack:
-        _patch_profile_inputs(stack)
-        stack.enter_context(
-            patch(
-                "core.services.messaging.load_agent_roster", new=AsyncMock(side_effect=RuntimeError("paperclip down"))
-            )
-        )
-        stack.enter_context(patch("core.services.hermes_profiles.write_agent_profile", new=write_mock))
-        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
-
+    write_profile = AsyncMock()
+    with (
+        patch("core.services.messaging.load_agent_roster", new=AsyncMock(side_effect=RuntimeError("paperclip down"))),
+        patch("core.services.hermes_provisioning.write_profile_for_agent", new=write_profile),
+    ):
         with pytest.raises(RuntimeError, match="paperclip down"):
             await catalog_service._build_and_upload_agent_profile(
                 owner_id="owner_1", agent_id="agent_new", container={}
             )
 
-    write_mock.assert_not_called()
-    upload_mock.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Fix round 2, gap 1 (M6-R11): a profile that boots but cannot authenticate
-# is a failure, not a degrade.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_build_and_upload_agent_profile_propagates_a_hermes_profile_error_from_resolve_profile_inputs():
-    """A missing BYO key (or any other resolve_profile_inputs hard-fail, now
-    raised as HermesProfileError -- M6-R10/M6-R11/M6-R13) must never ship a
-    profile with no LLM credential at all; catalog_service must not swallow
-    it. The sourcing itself (byo_key/byo_provider defaulting) is covered by
-    test_hermes_provisioning.py's resolve_profile_inputs tests."""
-    from core.services.hermes_provisioning import HermesProfileError
-
-    async def _raise(*_args, **_kwargs):
-        raise HermesProfileError("hermes profile for owner=owner_1: byo api key read failed")
-
-    upload_mock = AsyncMock(return_value=None)
-    write_mock = MagicMock(return_value="FILES")
-    with contextlib.ExitStack() as stack:
-        _patch_profile_inputs(stack, resolve_profile_inputs_side_effect=_raise)
-        stack.enter_context(patch("core.services.hermes_profiles.write_agent_profile", new=write_mock))
-        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
-        with pytest.raises(HermesProfileError, match="byo"):
-            await catalog_service._build_and_upload_agent_profile(
-                owner_id="owner_1", agent_id="agent_new", container={}
-            )
-    write_mock.assert_not_called()
-    upload_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_build_and_upload_agent_profile_raises_when_paperclip_key_mint_fails():
-    """A failed/empty Paperclip key mint must never ship a profile whose
-    paperclip skill silently 401s on every call."""
-    upload_mock = AsyncMock(return_value=None)
-    write_mock = MagicMock(return_value="FILES")
-    with contextlib.ExitStack() as stack:
-        _patch_profile_inputs(
-            stack, patch_paperclip_key=False, roster=[{"id": "agent_new", "name": "Demo", "role": "general"}]
-        )
-        stack.enter_context(
-            patch("core.services.paperclip_api_key.ensure_paperclip_api_key", new=AsyncMock(return_value=None))
-        )
-        stack.enter_context(patch("core.services.hermes_profiles.write_agent_profile", new=write_mock))
-        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
-        with pytest.raises(RuntimeError, match="paperclip"):
-            await catalog_service._build_and_upload_agent_profile(
-                owner_id="owner_1", agent_id="agent_new", container={}
-            )
-    write_mock.assert_not_called()
-    upload_mock.assert_not_awaited()
+    write_profile.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

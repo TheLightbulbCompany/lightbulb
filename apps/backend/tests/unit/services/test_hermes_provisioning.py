@@ -70,6 +70,9 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
     assert env["HERMES_HEADLESS"] == "1"
     assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
     assert env["AWS_ENDPOINT_URL_BEDROCK_RUNTIME"] == "https://gate.example/invoke"
+    # I1: both must point at the gate -- Hermes's Claude route may resolve either.
+    assert env["ANTHROPIC_BEDROCK_BASE_URL"] == "https://gate.example/invoke"
+    assert env["PYTHONUNBUFFERED"] == "1"
     assert env["ANTHROPIC_MODEL"].endswith("/abc")
     assert env["LIGHTBULB_SECRET_ID"] == "lightbulb/dev/hermes/org_a/boot"
     for key, value in env.items():

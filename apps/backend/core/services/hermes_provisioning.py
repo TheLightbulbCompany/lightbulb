@@ -103,11 +103,20 @@ def build_hermes_runtime_env(
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
     or a gateway token. Mirrors the working dev-spike set minus the three plaintext values it
     hand-patched in before this boot secret existed.
+
+    I1: carries BOTH ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` (the boto3-side var; operative for the
+    ``converse_stream`` provider) AND ``ANTHROPIC_BEDROCK_BASE_URL`` (the evaluation spec's own
+    documented ``AnthropicBedrock(region).base_url`` default for Hermes's Claude route) — the
+    spike set both and the two docs disagree about which path Hermes actually takes, so this
+    does not silently pick a side. Same value as the endpoint var: both must point at the gate,
+    never the real bedrock-runtime endpoint, or that route AccessDenies fleet-wide (the owner
+    role carries no ``bedrock:Invoke``).
     """
     return {
         "ISOL8_OWNER_ID": owner_id,
         "ISOL8_API_URL": api_base.rstrip("/"),
         "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": gate_endpoint,
+        "ANTHROPIC_BEDROCK_BASE_URL": gate_endpoint,
         "AWS_REGION": settings.AWS_REGION,
         "AWS_BEDROCK_FORCE_HTTP1": "1",
         "ANTHROPIC_MODEL": sonnet_aip_arn,
@@ -118,6 +127,10 @@ def build_hermes_runtime_env(
         "S3_PREFIX": f"{owner_id}/hermes",
         "HERMES_HOME": "/opt/data",
         "HERMES_HEADLESS": "1",
+        # I1: harmless and explicit -- already baked into the image (Dockerfile.spike:22)
+        # alongside HERMES_HOME/HERMES_HEADLESS/AGENTCORE_PORT; setting it here too means the
+        # runtime request itself documents the full working set rather than half of it.
+        "PYTHONUNBUFFERED": "1",
         BOOT_SECRET_ENV_VAR: boot_secret_id,
     }
 

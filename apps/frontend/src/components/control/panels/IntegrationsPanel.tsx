@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { ChevronDown } from "lucide-react";
 
@@ -44,6 +45,11 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
   const canManage = useIsWorkspaceAdmin();
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // M6 task 10-D, row 13: `config.plugins.entries` has no reader on Hermes
+  // (`hermes claw migrate` archives OpenClaw `plugins.*` for manual review) —
+  // the Advanced disclosure is dropped outright rather than opening onto a
+  // permanently-empty "No plugins configured." panel.
+  const pluginsHidden = useHiddenOnAgentCore() === "hidden";
 
   // The Google multi-account surface only makes sense once Google is
   // connected. We read the same shared /connections cache ConnectionsList
@@ -84,24 +90,26 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
             </div>
           </div>
 
-          <div className="rounded-md border border-[var(--edge)] bg-cream">
-            <button
-              type="button"
-              aria-expanded={advancedOpen}
-              onClick={() => setAdvancedOpen((v) => !v)}
-              className="flex w-full items-center justify-between p-4 text-left"
-            >
-              <span className="text-sm font-medium text-[var(--midnight)]">
-                Advanced — plugins
-              </span>
-              <ChevronDown size={16} className={cn("text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
-            </button>
-            {advancedOpen && (
-              <div className="border-t border-[var(--edge)]">
-                <PluginsTab />
-              </div>
-            )}
-          </div>
+          {!pluginsHidden && (
+            <div className="rounded-md border border-[var(--edge)] bg-cream">
+              <button
+                type="button"
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((v) => !v)}
+                className="flex w-full items-center justify-between p-4 text-left"
+              >
+                <span className="text-sm font-medium text-[var(--midnight)]">
+                  Advanced — plugins
+                </span>
+                <ChevronDown size={16} className={cn("text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
+              </button>
+              {advancedOpen && (
+                <div className="border-t border-[var(--edge)]">
+                  <PluginsTab />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -153,25 +161,29 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
 
         {/* Advanced: plugin enable/disable switches. Plugins run in-process with
             the agent, which is why this — unlike MCP — keeps a wall. Channel and
-            provider plugins get real homes elsewhere (Channels / Model & Credits). */}
-        <div className="rounded-md border border-[var(--edge)] bg-cream">
-          <button
-            type="button"
-            aria-expanded={advancedOpen}
-            onClick={() => setAdvancedOpen((v) => !v)}
-            className="flex w-full items-center justify-between p-4 text-left"
-          >
-            <span className="text-sm font-medium text-[var(--midnight)]">
-              Advanced — plugins
-            </span>
-            <ChevronDown size={16} className={cn("text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
-          </button>
-          {advancedOpen && (
-            <div className="border-t border-[var(--edge)]">
-              <PluginsTab />
-            </div>
-          )}
-        </div>
+            provider plugins get real homes elsewhere (Channels / Model & Credits).
+            Dropped outright on a confirmed AgentCore workspace — M6 task 10-D,
+            row 13 (no reader for `config.plugins.entries` on Hermes). */}
+        {!pluginsHidden && (
+          <div className="rounded-md border border-[var(--edge)] bg-cream">
+            <button
+              type="button"
+              aria-expanded={advancedOpen}
+              onClick={() => setAdvancedOpen((v) => !v)}
+              className="flex w-full items-center justify-between p-4 text-left"
+            >
+              <span className="text-sm font-medium text-[var(--midnight)]">
+                Advanced — plugins
+              </span>
+              <ChevronDown size={16} className={cn("text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
+            </button>
+            {advancedOpen && (
+              <div className="border-t border-[var(--edge)]">
+                <PluginsTab />
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

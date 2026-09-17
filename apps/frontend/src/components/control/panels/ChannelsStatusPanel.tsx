@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2, RefreshCw, Radio, AlertTriangle } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -51,14 +52,30 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
 }
 
 export function ChannelsStatusPanel() {
+  // M6 task 10-D, row 24: channel wiring is M5/LATER on Hermes — there is
+  // nothing this probe can report yet, so the panel is dropped outright
+  // rather than always showing an empty "No channels configured" list.
+  const visibility = useHiddenOnAgentCore();
+  const rpcReady = visibility === "shown";
+
   // probe:true forces a live connectivity probe on the container rather than
   // returning the cached snapshot — the panel exists to show fresh health.
   const { data, error, isLoading, mutate } = useRuntimeRpc<ChannelsStatusSnapshot>(
-    "channels.status",
+    rpcReady ? "channels.status" : null,
     { probe: true },
   );
 
   const channelOrder = data?.channelOrder ?? [];
+
+  if (visibility === "hidden") {
+    return (
+      <div className="p-6">
+        <p className="text-sm text-[var(--midnight-muted)]">
+          Channel status isn&apos;t available on this runtime.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -80,7 +97,7 @@ export function ChannelsStatusPanel() {
         </Button>
       </div>
 
-      {isLoading && !data ? (
+      {!rpcReady || (isLoading && !data) ? (
         <div className="flex items-center gap-2 text-sm text-[var(--midnight-muted)]">
           <Loader2 size={16} className="animate-spin" /> Probing channels…
         </div>

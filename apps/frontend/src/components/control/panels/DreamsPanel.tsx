@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, RefreshCw, Moon, Sun, Sparkles } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useConfigPatch } from "@/hooks/useConfigPatch";
 import { type Agent, agentDisplayName, useAgents } from "@/hooks/useAgents";
@@ -22,6 +23,14 @@ export function DreamsPanel() {
   const [tab, setTab] = useState<SubTab>("scene");
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
 
+  // M6 task 10-D, row 18: Dreams (memory-core's nightly sweep/diary/phases) has no
+  // Hermes equivalent — `hermes claw migrate` archives OpenClaw `memory.*` for
+  // manual review rather than translating it. The panel renders a notice instead
+  // of the editor on a confirmed AgentCore workspace, and its RPCs (including the
+  // toggle that used to fan a dead key out to every roster profile) never fire.
+  const visibility = useHiddenOnAgentCore();
+  const rpcReady = visibility === "shown";
+
   // Agent selector. `{}` → default agent server-side; an explicit pick scopes
   // every doctor.memory.* call to that agent's workspace. `agents.list`
   // returns `{ defaultId?, agents? }`, not a bare array.
@@ -30,11 +39,21 @@ export function DreamsPanel() {
   const params = agentId ? { agentId } : {};
 
   const { data, error, isLoading, mutate } = useRuntimeRpc<MemoryStatusResponse>(
-    "doctor.memory.status",
+    rpcReady ? "doctor.memory.status" : null,
     params,
   );
 
-  if (isLoading && !data) {
+  if (visibility === "hidden") {
+    return (
+      <div className="p-6">
+        <p className="text-sm text-[var(--midnight-muted)]">
+          Dreams isn&apos;t available on this runtime.
+        </p>
+      </div>
+    );
+  }
+
+  if (!rpcReady || (isLoading && !data)) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />

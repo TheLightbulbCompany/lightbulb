@@ -28,6 +28,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chrome, RotateCcw } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 
 import { BACKEND_URL } from "@/lib/api";
 import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
@@ -46,6 +47,11 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   // and a background retry loop would wake-spam the relay for a panel the
   // owner may not even be looking at.
   const [attempt, setAttempt] = useState(0);
+  // M6 task 10-D, row 21: the rail no longer offers this panel on AgentCore,
+  // but a persisted layout / direct panel id can still reach it — never fire
+  // the start-probe (there is no container Chrome to start) or open a VNC
+  // socket the relay has nothing to reach.
+  const browserHidden = useHiddenOnAgentCore() === "hidden";
 
   // Ensure the container's Chrome is running whenever the panel opens (and on
   // each Retry). Fire-and-forget: browser.request/POST /start ensures-then-
@@ -55,12 +61,13 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   // while the launch continues container-side) is swallowed; the VNC path owns
   // the visible state.
   useEffect(() => {
+    if (browserHidden) return;
     void callRpc("browser.request", { method: "POST", path: "/start" }).catch(() => {});
-  }, [attempt, callRpc]);
+  }, [attempt, callRpc, browserHidden]);
 
   useEffect(() => {
     const mount = mountRef.current;
-    if (!mount) return;
+    if (!mount || browserHidden) return;
 
     let rfb: import("@novnc/novnc").default | null = null;
     let cancelled = false;
@@ -118,9 +125,20 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
     };
     // getToken is identity-stable from Clerk; listed for lint-completeness,
     // not as a real retrigger.
-  }, [attempt, getToken]);
+  }, [attempt, getToken, browserHidden]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
+
+  if (browserHidden) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--panel)] text-center">
+        <Chrome size={28} className="text-[var(--midnight-muted)]" />
+        <p className="max-w-xs text-sm text-[var(--midnight-muted)]">
+          Browser view isn&rsquo;t available on this runtime.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex h-full w-full flex-col bg-[var(--panel)]">

@@ -11,6 +11,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { AgentCreateForm } from "./AgentCreateForm";
@@ -44,9 +45,11 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
     useAgents();
   const callRpc = useRuntimeRpcMutation();
   // Channels require an active subscription (or trial). Pre-signup users
-  // shouldn't see the Channels tab.
+  // shouldn't see the Channels tab. M6 task 10-D, row 25: also gone outright
+  // on a confirmed AgentCore workspace (channel wiring is M5/LATER there).
   const { isSubscribed } = useBilling();
-  const channelsEnabled = isSubscribed;
+  const agentCoreHidden = useHiddenOnAgentCore() === "hidden";
+  const channelsEnabled = isSubscribed && !agentCoreHidden;
   const [selectedAgent, setSelectedAgent] = useState<string | null>(
     () => initialAgentId,
   );

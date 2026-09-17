@@ -3033,6 +3033,18 @@ class TestContainerLogin:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
+    async def test_login_422s_on_agentcore_before_touching_the_container(self, start, async_client, monkeypatch):
+        """M6 task 10-D, row 26: no exec shell and no container browser to finish the
+        CLI's OAuth grant in, so AgentCore refuses outright rather than starting a login
+        the owner could never complete."""
+        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+        response = await async_client.post("/api/v1/connections/shopify/login", json={"store": "mystore.myshopify.com"})
+        assert response.status_code == 422
+        assert response.json()["detail"] == "unsupported_on_agentcore"
+        start.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
     async def test_status_marks_the_row_connected_with_the_store_as_identity(self, status, mock_repo, async_client):

@@ -249,3 +249,28 @@ export function __resetRuntimeHost(): void {
 export function useRuntimeHost(): RuntimeHost | undefined {
   return useSyncExternalStore(subscribeRuntimeHost, readRuntimeHost, readRuntimeHost);
 }
+
+/* ---------------------------------------------------------------------------
+ * M6 task 10-D (owner ruling M6-R50): surfaces with no Hermes/AgentCore
+ * equivalent at all -- heartbeat, plugins, dreams, the container browser,
+ * channel status/wiring, Shopify's container-side login, Brain. Each of those
+ * call sites needs the exact same three-way answer `useRuntimeHost()` gives,
+ * so this is the one place that spells it out instead of ten call sites each
+ * re-deriving "agentcore" vs. "not yet known" by hand.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * "loading" -- the host for THIS workspace isn't known yet; render whatever the
+ *   surface renders today for a loading state, and hold its RPC exactly as
+ *   `useRuntimeHost()`'s own contract requires (never fire on a guess).
+ * "hidden" -- confirmed AgentCore; the surface has no equivalent and must not render.
+ * "shown" -- ECS (or, transitionally, any host other than "agentcore"); unchanged.
+ */
+export type AgentCoreGate = "loading" | "hidden" | "shown";
+
+/** Tri-state gate for a control-panel surface that is deleted outright on AgentCore. */
+export function useHiddenOnAgentCore(): AgentCoreGate {
+  const host = useRuntimeHost();
+  if (host === undefined) return "loading";
+  return host === "agentcore" ? "hidden" : "shown";
+}

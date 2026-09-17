@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useRuntimeRpc } from "@lightbulb/shared";
+import { useHiddenOnAgentCore, useRuntimeRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
@@ -136,9 +136,14 @@ function AccountCard({ account }: { account: AccountSnapshot }) {
 
 export default function ChannelsPanel() {
   const live = useLiveEvents();
+  // M6 task 10-D, row 34: channel wiring is M5/LATER on Hermes. The tab
+  // itself is dropped from the control index once AgentCore is confirmed;
+  // this is the defense-in-depth for a bookmarked/deep-linked visit — hold
+  // the RPC and show a short notice instead of an eternal "no channels".
+  const gate = useHiddenOnAgentCore();
   const { data, error, isLoading, mutate } = useRuntimeRpc<ChannelsStatus>(
     live,
-    "channels.status",
+    gate === "shown" ? "channels.status" : null,
     { probe: true },
   );
 
@@ -155,7 +160,17 @@ export default function ChannelsPanel() {
   const order = useMemo(() => data?.channelOrder ?? [], [data]);
 
   let inner: ReactElement;
-  if (error) {
+  if (gate === "hidden") {
+    inner = (
+      <View style={styles.centerGrow}>
+        <Text style={styles.dim}>Channels isn’t available on this runtime.</Text>
+      </View>
+    );
+  } else if (gate === "loading") {
+    // Host not known for this workspace yet — same loading chrome as an
+    // in-flight fetch, but the RPC above is held rather than fired on a guess.
+    inner = <SkeletonCards />;
+  } else if (error) {
     inner = (
       <View style={styles.errorCard}>
         <Text style={styles.errorText}>

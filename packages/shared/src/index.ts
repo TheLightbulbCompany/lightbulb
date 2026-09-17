@@ -27,8 +27,9 @@ export type {
 } from "./hooks/agents";
 export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
 export type { ChatGPTOAuthOptions, OAuthState } from "./hooks/useChatGPTOAuth";
-export { useRuntimeHost } from "./hooks/containerStatus";
+export { useHiddenOnAgentCore, useRuntimeHost } from "./hooks/containerStatus";
 export type {
+  AgentCoreGate,
   ClassifiedStatus,
   ContainerStatusBody,
   RuntimeHost,

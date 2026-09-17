@@ -1,5 +1,6 @@
 "use client";
 
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useConnections, type Connection } from "@/hooks/useConnections";
 import { ConnectButton } from "@/components/settings/ConnectButton";
@@ -59,6 +60,11 @@ const KIND_LABELS: Record<string, string> = {
 export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startContainerLogin, startOAuth, disconnect } =
     useConnections();
+  // M6 task 10-D, row 26: `container_login` (Shopify) runs the CLI's OAuth grant
+  // inside the owner's container and finishes it in the Browser panel — neither
+  // exists on AgentCore. "loading" (host not known yet for this workspace) keeps
+  // today's behaviour, same as every other AgentCore hide in this migration.
+  const runtimeGate = useHiddenOnAgentCore();
   // The second facet. Its providers are NOT the OAuth registry's: this rail
   // provisions neon/supabase/resend, which have no Connections row at all, so
   // they get a card of their own rather than disappearing.
@@ -121,6 +127,8 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
         // they can click to change it, so the row must not read as one step away
         // — and must not promise capabilities we cannot deliver to them yet.
         const unavailable = connection.status === "unavailable";
+        const unavailableOnRuntime =
+          connection.acquisition === "container_login" && runtimeGate === "hidden";
         const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div
@@ -147,6 +155,8 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
               <p className="text-xs text-[var(--midnight-muted)]">
                 {railOnly ? (
                   "Set up by your agents on your own provider account"
+                ) : unavailableOnRuntime ? (
+                  "Not available on this runtime"
                 ) : (
                   <>
                     {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
@@ -206,17 +216,18 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
                 onChanged={rail.refresh}
               />
             </div>
-            {!railOnly && (
-              <ConnectButton
-                connection={connection}
-                canManage={canManage}
-                connectPaste={connectPaste}
-                startOAuth={startOAuth}
-                startContainerLogin={startContainerLogin}
-                disconnect={disconnect}
-                refreshConnections={mutate}
-              />
-            )}
+            {!railOnly &&
+              (unavailableOnRuntime ? null : (
+                <ConnectButton
+                  connection={connection}
+                  canManage={canManage}
+                  connectPaste={connectPaste}
+                  startOAuth={startOAuth}
+                  startContainerLogin={startContainerLogin}
+                  disconnect={disconnect}
+                  refreshConnections={mutate}
+                />
+              ))}
           </div>
         );
       })}

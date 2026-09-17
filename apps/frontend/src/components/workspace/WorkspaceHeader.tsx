@@ -4,6 +4,7 @@ import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
 import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
 import Link from "next/link";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -28,12 +29,19 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { setOpen } = useCommandPalette();
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
+  // M6 task 10-D, row 21: the container browser (one Xvfb display per
+  // container) has no AgentCore equivalent yet — drop the rail entry outright
+  // rather than offering a panel whose start-probe can only spin and fail.
+  const browserHidden = useHiddenOnAgentCore() === "hidden";
+  const destinations = browserHidden
+    ? DESTINATIONS.filter((d) => d.panel !== "browser")
+    : DESTINATIONS;
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => setOpen(true)}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {DESTINATIONS.map(({ panel, label, Icon }) => {
+      {destinations.map(({ panel, label, Icon }) => {
         // The panel KEY is not always the panel ID — a control-key destination
         // (Connections) opens as `control:connections`. Resolve through the
         // registry so the active marker follows the id the dock actually uses.

@@ -572,6 +572,12 @@ async def container_login(provider: str, body: ContainerLoginBody, auth: AuthCon
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "container_login":
         raise HTTPException(status_code=400, detail=f"{provider} does not sign in from the container")
+    # M6 task 10-D, row 26: the CLI login runs `shopify store auth` inside the owner's
+    # container and the owner finishes it in the Browser panel — neither exists on
+    # AgentCore (no exec shell, no container browser), so there is nothing this could
+    # even start.
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        raise HTTPException(status_code=422, detail="unsupported_on_agentcore")
     try:
         store = shopify_login.normalize_store(body.store)
     except ValueError as exc:

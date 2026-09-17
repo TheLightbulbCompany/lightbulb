@@ -17,6 +17,7 @@ import {
   __resetRuntimeHost,
   publishRuntimeHost,
   setRuntimeHostScope,
+  useHiddenOnAgentCore,
   useRuntimeHost,
 } from "./containerStatus";
 import { useOnboardingStatus } from "./useOnboardingStatus";
@@ -165,5 +166,37 @@ describe("useRuntimeHost", () => {
 
     rerender({ enabled: false });
     expect(result.current).toBeUndefined();
+  });
+});
+
+describe("useHiddenOnAgentCore", () => {
+  it("is 'loading' before the host is known", () => {
+    const { result } = renderHook(() => useHiddenOnAgentCore());
+    expect(result.current).toBe("loading");
+  });
+
+  it("is 'hidden' once the workspace is confirmed AgentCore", () => {
+    const { result } = renderHook(() => useHiddenOnAgentCore());
+    act(() => setRuntimeHostScope("org-a"));
+    act(() => publishRuntimeHost("org-a", "agentcore"));
+    expect(result.current).toBe("hidden");
+  });
+
+  it("is 'shown' on ECS", () => {
+    const { result } = renderHook(() => useHiddenOnAgentCore());
+    act(() => setRuntimeHostScope("org-a"));
+    act(() => publishRuntimeHost("org-a", "ecs"));
+    expect(result.current).toBe("shown");
+  });
+
+  it("goes back to 'loading', never a stale 'shown', across a workspace switch", () => {
+    const { result, rerender } = renderHook(() => useHiddenOnAgentCore());
+    act(() => setRuntimeHostScope("org-a"));
+    act(() => publishRuntimeHost("org-a", "ecs"));
+    expect(result.current).toBe("shown");
+
+    act(() => setRuntimeHostScope("org-b"));
+    rerender();
+    expect(result.current).toBe("loading");
   });
 });

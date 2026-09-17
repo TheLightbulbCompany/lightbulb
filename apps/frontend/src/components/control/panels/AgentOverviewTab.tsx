@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useHiddenOnAgentCore, useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useModelCatalog } from "@/hooks/useConfigPatch";
 import { ModelSelector } from "@/components/chat/ModelSelector";
@@ -42,6 +42,11 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   const runtimeHost = useRuntimeHost();
   const onAgentCore = runtimeHost === "agentcore";
   const rpcReady = runtimeHost === "ecs";
+  // M6 task 10-D, rows 3/10: heartbeats have no Hermes equivalent (Hermes's
+  // scheduler is `cron` jobs and we pin `cron.allow_agent_scheduling: false`) —
+  // the card is dropped outright rather than shown inert, and its writes
+  // (`config.patch` fanning out to every roster profile) never fire.
+  const heartbeatVisibility = useHiddenOnAgentCore();
   const { data } = useRuntimeRpc<Record<string, unknown>>(
     rpcReady ? "agent.identity.get" : null,
     { agentId },
@@ -290,7 +295,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         )}
       </div>
 
-      <AgentHeartbeatCard agentId={agentId} />
+      {heartbeatVisibility !== "hidden" && <AgentHeartbeatCard agentId={agentId} />}
 
       <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
         <h3 className="text-sm font-medium text-[var(--midnight)]">Role &amp; description</h3>

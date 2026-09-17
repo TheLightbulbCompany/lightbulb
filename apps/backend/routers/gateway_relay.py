@@ -467,16 +467,20 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
     legs = {asyncio.create_task(leg()) for leg in (reader, writer, ticker)}
     waitable = legs | ({refresher} if refresher is not None else set())
     done, pending = await asyncio.wait(waitable, return_when=asyncio.FIRST_COMPLETED)
-    if refresher is not None and refresher in done:
-        close_code = 1008  # presence revoked wins over any other signal in the same batch
-    else:
-        close_code = 1000
-        for task in done:
-            if task.cancelled():
-                continue
-            exc = task.exception()
-            if isinstance(exc, _FrameTooLarge):
-                close_code = 1009
+    # Reuses the ECS relay's own `_pick_close_code` (revoke wins over any same-batch leg
+    # failure) and its "relay leg failed" logging pattern; a `_FrameTooLarge` refines the
+    # generic 1011 down to the more specific 1009, but never overrides a 1008 revoke.
+    close_code = _pick_close_code(done, refresher) or 1000
+    for task in done:
+        if task is refresher or task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is None:
+            continue
+        if isinstance(exc, _FrameTooLarge) and close_code != 1008:
+            close_code = 1009
+        elif close_code == 1011:
+            logger.warning("relay leg failed kind=node", exc_info=exc)
     for task in pending:
         task.cancel()
     await asyncio.gather(*waitable, return_exceptions=True)

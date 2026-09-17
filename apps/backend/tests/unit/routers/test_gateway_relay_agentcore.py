@@ -9,6 +9,7 @@ AgentCore guard; that guard is covered separately in test_relay_hooks_agentcore.
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -400,3 +401,24 @@ async def test_an_in_flight_invoke_is_failed_immediately_when_the_socket_closes(
 
         with pytest.raises(node_broker.NodeDetached):
             await asyncio.wait_for(invoke_task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_leg_exception_closes_1011_and_logs_it(caplog):
+    """Fix round 1, item 5 (important): _pump used to only ever return 1000 or 1008 --
+    a leg raising (anything other than the frame-too-large / disconnect cases) must still
+    close 1011 and log it, the same pattern the ECS branch's own asyncio.wait loop uses."""
+    socket = _FeedableSocket()
+    socket.feed(_connect_frame("c-7", ["system.run"]))
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(node_broker, "TICK_INTERVAL_MS", 5),
+        patch.object(node_broker, "tick_frame", side_effect=RuntimeError("boom")),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+        caplog.at_level(logging.WARNING, logger="routers.gateway_relay"),
+    ):
+        code = await asyncio.wait_for(
+            gateway_relay._serve_node_protocol(socket, _identity(), {"runtime_host": "agentcore"}), timeout=1.0
+        )
+    assert code == 1011
+    assert any("relay leg failed" in r.message for r in caplog.records)

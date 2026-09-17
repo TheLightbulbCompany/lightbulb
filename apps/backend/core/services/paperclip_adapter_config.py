@@ -100,11 +100,19 @@ def build_http_adapter_config(owner_id: str, agent_id: str, *, hook_token: str) 
     with the bridge's own response -- the "agent calls back to the Paperclip
     API" leg from the fork's docs is unchanged, it just starts here instead of
     inside a container.
+
+    Both timeout spellings are written on purpose: the adapter's own
+    documentation names ``timeoutSec``, but its code reads ``config.timeoutMs``
+    (fork ``server/src/adapters/http/execute.ts``), so the documented key alone
+    leaves the fetch with no AbortController at all and a stalled backend would
+    hang the run forever. Unknown adapterConfig keys are ignored by the fork, so
+    carrying both costs nothing and survives whichever one it settles on.
     """
     return {
         "url": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/internal/paperclip/runs/{owner_id}",
         "headers": {"Authorization": f"Bearer {hook_token}", "X-Lightbulb-Agent": agent_id},
         "timeoutSec": PAPERCLIP_RUN_TIMEOUT_SEC,
+        "timeoutMs": PAPERCLIP_RUN_TIMEOUT_SEC * 1000,
     }
 
 

@@ -560,22 +560,27 @@ class NodeInvokeResponse(ContractModel):
     error: dict[str, Any] | None = None
 
 
-class PaperclipRunContext(ContractModel):
-    task_id: str | None = None
-    wake_reason: str | None = None
-    comment_id: str | None = None
-
-
 class PaperclipRunRequest(ContractModel):
-    """Body Paperclip's own ``http`` adapter POSTs (fork docs/adapters/http.md):
-    ``{runId, agentId, companyId, context:{taskId, wakeReason, commentId}}``. This is an
-    EXTERNAL shape we don't control, kept as a typed model (rather than a hand-parsed dict)
-    so a malformed body 422s instead of reaching a KeyError/500."""
+    """Body Paperclip's own ``http`` adapter POSTs: ``{...payloadTemplate, agentId, runId,
+    context}`` (fork ``server/src/adapters/http/execute.ts``). Only the two ids are ours to
+    rely on; ``context`` is ``parseObject(run.contextSnapshot)``, a free-form record the fork
+    grows at will (``projectId``, ``paperclipWorkspace``, ``paperclipEnvironment``,
+    ``paperclipSessionHandoffMarkdown``, …), of which we read two optional keys.
+
+    This is an EXTERNAL shape we do NOT control, so it is deliberately the one contract model
+    here that does not forbid extras: the first live Paperclip run on a migrated workspace was
+    rejected 422 three times because ``context`` was typed as our three documented keys with
+    ``ContractModel``'s ``extra="forbid"``. Strictness on a payload someone else owns turns
+    every field THEY add into an outage on OUR side. The ids stay strict — a body missing
+    those is genuinely unusable and 422s rather than reaching a KeyError.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
     run_id: str = Field(min_length=1, max_length=128)
     agent_id: str = Field(min_length=1, max_length=128)
     company_id: str | None = None
-    context: PaperclipRunContext | None = None
+    context: dict[str, Any] | None = None
 
 
 class SteerRunRequest(ContractModel):

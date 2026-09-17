@@ -224,6 +224,30 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     assert not any("sessions" in k or "transcript" in k for _, k in uploaded_keys)
 
 
+async def test_session_stop_failure_does_not_abort_the_tail(tmp_path, precondition_ok, monkeypatch):
+    """Fix round 2, item 1: StopRuntimeSession is best-effort, exactly like rollback's own use of
+    it -- a fresh full-mode runtime usually has NO warm session yet, so an unknown-session raise
+    here must not abort before the ECS stop and the stamp (which would leave the row flipped with
+    ECS still billing, and --all retrying this owner forever)."""
+    _fake_workspace(tmp_path)
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "test-hermes-bucket")
+
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
+    monkeypatch.setattr(mod, "_apply_efs_overrides", AsyncMock())
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock(side_effect=RuntimeError("unknown session")))
+    ecs = SimpleNamespace(stop_user_service=AsyncMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
+    stamp = AsyncMock()
+    monkeypatch.setattr(mod, "_stamp_migrated", stamp)
+
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
+    ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
+    stamp.assert_awaited_once_with(OWNER)
+
+
 async def test_reference_org_is_refused_outright(monkeypatch):
     monkeypatch.setattr(
         mod.container_repo, "get_by_owner_id", AsyncMock(side_effect=AssertionError("must not even read the row"))

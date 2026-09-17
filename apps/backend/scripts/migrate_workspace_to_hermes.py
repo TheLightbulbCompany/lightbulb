@@ -508,9 +508,18 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
         # Stopping the runtime session forces the next invoke to cold-restore the whole profile
         # from S3, which is the only way the override actually survives. Must run AFTER the last
         # override upload (so there is something correct to cold-restore) and BEFORE the ECS
-        # stop (matches Ruling M6-R1's ordering).
+        # stop (matches Ruling M6-R1's ordering). Best-effort, exactly like rollback's own use of
+        # this helper (fix round 2, item 1): a fresh _MODE_FULL runtime usually has NO warm
+        # session yet, so StopRuntimeSession raising "unknown session" here must not abort before
+        # the ECS stop and the stamp below -- that would leave the row flipped to agentcore with
+        # the old ECS service still running and billing, and --all retrying this owner forever.
         if runtime_arn:
-            await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
+            try:
+                await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
+            except Exception:  # noqa: BLE001 — best-effort: no session to stop is not fatal
+                logger.warning(
+                    "migrate: StopRuntimeSession failed for owner=%s arn=%s", owner_id, runtime_arn, exc_info=True
+                )
         # Order matters (Ruling M6-R1): the ECS service is stopped only now that the AgentCore
         # runtime is confirmed READY, so two runtimes never serve one owner at once. force=True
         # (Ruling M6-R15) bypasses the AgentCore no-op guard -- by now the row already reads

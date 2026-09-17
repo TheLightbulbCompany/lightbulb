@@ -5,6 +5,7 @@ crashed boxes, killswitch stops, converting rows, paid owners, and billing
 outages can never lose their poll-driven self-heal to the wake gate.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,11 +23,25 @@ def _trial_account():
     return {"subscription_status": "trial_local"}
 
 
+def _iso(minutes_ago: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+
+
 @pytest.fixture(autouse=True)
 def _gate_on(monkeypatch):
     monkeypatch.setattr(wake_policy.settings, "TRIAL_WAKE_GATE_ENABLED", True)
     monkeypatch.setattr(wake_policy.settings, "TRIAL_WAKE_DAILY_BUDGET", 6)
     wake_policy._suppressed_emitted.clear()
+
+
+@pytest.fixture
+def trial_account():
+    return {"subscription_status": "trial_local"}
+
+
+@pytest.fixture
+def paid_account():
+    return {"subscription_status": "active"}
 
 
 class TestIsParkedTrial:
@@ -144,3 +159,37 @@ class TestSuppressedEmissionDedup:
         # Different door tracks independently.
         wake_policy.note_wake_suppressed("u1", row2, door="status_legacy", reason="budget")
         assert len(calls) == 3
+
+
+class TestIsParkedTrialAgentCore:
+    """AgentCore has no stopped/stop_reason to read (stop_user_service no-ops for this host —
+    report 04 risk 2). The park signal is elapsed time since last_interactive_at instead."""
+
+    @pytest.mark.asyncio
+    async def test_an_idle_agentcore_trial_row_reads_as_parked(self, trial_account):
+        row = {"runtime_host": "agentcore", "status": "running", "last_interactive_at": _iso(60 * 5)}
+        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is True
+
+    @pytest.mark.asyncio
+    async def test_a_recently_used_agentcore_trial_row_is_not_parked(self, trial_account):
+        row = {"runtime_host": "agentcore", "status": "running", "last_interactive_at": _iso(5)}
+        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is False
+
+    @pytest.mark.asyncio
+    async def test_an_agentcore_row_with_no_last_interactive_at_is_not_parked(self, trial_account):
+        row = {"runtime_host": "agentcore", "status": "running"}
+        # Fails OPEN, like every other uncertainty in this predicate: a fresh row must not show
+        # "Agents asleep" before the owner has ever sent anything.
+        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is False
+
+    @pytest.mark.asyncio
+    async def test_a_paid_agentcore_row_is_never_parked(self, paid_account):
+        row = {"runtime_host": "agentcore", "status": "running", "last_interactive_at": _iso(60 * 9)}
+        assert await wake_policy.is_parked_trial("org_a", row, account=paid_account) is False
+
+    @pytest.mark.asyncio
+    async def test_the_ecs_predicate_is_untouched(self, trial_account):
+        row = {"runtime_host": "ecs", "status": "stopped", "stop_reason": "trial_idle"}
+        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is True
+        row = {"runtime_host": "ecs", "status": "running", "last_interactive_at": _iso(60 * 9)}
+        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is False

@@ -15,7 +15,7 @@ def test_write_agent_profile_returns_the_four_files():
         provider_choice="bedrock_claude",
         aip_arns=AIPS,
         paperclip_api_key="pcp_live_x",
-        integrations=[{"key": "stripe", "url": "https://mcp.stripe.com", "auth": "oauth"}],
+        integrations={"stripe": {"url": "https://mcp.stripe.com", "auth": "oauth"}},
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
     assert isinstance(files, ProfileFiles)
@@ -35,7 +35,7 @@ def test_config_yaml_carries_no_secret_even_though_dotenv_does():
         provider_choice="bedrock_claude",
         aip_arns=AIPS,
         paperclip_api_key="pcp_live_x",
-        integrations=[],
+        integrations={},
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
     assert "sk_live_x" not in files.config_yaml
@@ -55,7 +55,7 @@ def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_ro
         provider_choice="byo_key",
         aip_arns=None,
         paperclip_api_key="pcp_live_x",
-        integrations=[],
+        integrations={},
         env_vars={},
         byo_provider="openai",
         byo_api_key="sk-oai-x",

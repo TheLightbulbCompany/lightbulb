@@ -378,16 +378,18 @@ def write_agent_profile(
     provider_choice: str,
     aip_arns: dict[str, str],
     paperclip_api_key: str,
-    integrations: list[dict],
+    integrations: dict[str, dict],
     env_vars: dict[str, str],
     byo_provider: str | None = None,
     byo_api_key: str | None = None,
 ) -> ProfileFiles:
     """The four files that ARE one agent's Hermes profile.
 
-    ``integrations`` is the owner's connected-integration list (each row carries the MCP block
-    ``build_connected_integration_servers`` emits under ``key``); ``env_vars`` is
-    ``provisioning_landing.build_provisioned_env(owner_id)``.
+    ``integrations`` is ``credentials.mcp_server.build_connected_integration_servers(owner_id)``'s
+    own return shape (fix round 1, I2) — ``{server_key: mcp block}`` — taken as-is, not a
+    ``list[dict]`` with a ``"key"`` field: that shape belonged to no real producer and raised
+    ``TypeError: string indices must be integers`` the first time anything called this with the
+    producer's actual output. ``env_vars`` is ``provisioning_landing.build_provisioned_env(owner_id)``.
 
     ``byo_provider``/``byo_api_key`` are OWNER-level keywords (fix round 1, C2) — never read off
     the Paperclip roster row (``agent``), whose documented shape is
@@ -396,8 +398,7 @@ def write_agent_profile(
     (``ecs_manager.py``); reading it from the roster row silently pinned every BYO owner to
     Anthropic with no key delivered anywhere.
     """
-    servers = {row["key"]: {k: v for k, v in row.items() if k != "key"} for row in integrations or []}
-    mcp_config, mcp_secrets = translate_mcp_servers(servers)
+    mcp_config, mcp_secrets = translate_mcp_servers(integrations)
     config = build_profile_config(
         agent_id=agent["id"],
         agent_role=agent.get("role") or "general",

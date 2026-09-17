@@ -474,7 +474,14 @@ async def provision_hermes_runtime(
         )
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
-    await _write_profiles(owner_id, aip_arns)
+    if not arn:
+        # N4/M4-R42: _write_profiles runs BEFORE CreateAgentRuntime, so a row that already
+        # carries an ARN has its profiles in S3 already. Idempotence now keys on
+        # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
+        # release-to-error path now produces routinely -- must skip straight to recovering the
+        # runtime (poll READY / update on image drift / fenced terminal write) instead of
+        # re-running the fan-out and overwriting owner-edited profiles + bumping .revision.
+        await _write_profiles(owner_id, aip_arns)
 
     if not arn:
         # M4-R35: the row has no ARN yet -- but AgentCore itself might, if a prior attempt got

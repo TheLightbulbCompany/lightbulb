@@ -495,6 +495,42 @@ async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_a
 
 
 @pytest.mark.asyncio
+async def test_provision_skips_write_profiles_for_an_arn_row_in_error(monkeypatch):
+    """N4/M4-R42: _write_profiles runs BEFORE CreateAgentRuntime, so an ARN row already has its
+    profiles in S3. Idempotence keys on status == "running" (M4-R35/C1), so an ARN row sitting in
+    error (which C2's release-to-error path now produces routinely) must NOT re-run the profile
+    fan-out and overwrite owner-edited profiles / bump .revision -- it only recovers the runtime."""
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"agentcore_runtime_arn": "arn:existing-error-row", "status": "error"}),
+    )
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _explode)  # must NOT be called
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
+    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged
+    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+
+    terminal = {}
+
+    async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
+        terminal.update(fields)
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
+
+    arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+    assert arn == "arn:existing-error-row"
+    assert terminal["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatch):
     """M4-R35/C1: no ARN on the row at all, but AgentCore already has a runtime under this
     owner's derived name -- a prior attempt's row write was lost. Reuse it instead of hitting

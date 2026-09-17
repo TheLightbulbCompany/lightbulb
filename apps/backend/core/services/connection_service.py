@@ -397,22 +397,29 @@ class ConnectionService:
         hosts), used to edge-trigger the node tool-deny-list patch."""
         return sum(1 for _connection_id, _user_id, kind in await self.query_by_owner(owner_id) if kind == "node")
 
-    async def find_node_presence(self, owner_id: str) -> Optional[dict]:
-        """The owner's live desktop-node presence row, or None.
+    async def find_node_presences(self, owner_id: str) -> list[dict]:
+        """Every one of the owner's live desktop-node presence rows (M2-R23).
 
-        Task 28's bridge calls this directly to learn which backend task
-        accepted the owner's node socket, so it knows where to forward a
-        node-invoke HTTP call (M2-R3). The `by-owner-id` GSI doesn't project
-        `taskAddress`, so the first `node`-typed candidate is fetched in full
-        via `get_connection` -- same shape as `delete_relay_rows_for_device`.
+        A paired Mac opens TWO node sockets with disjoint command sets (the
+        `openclaw-macos` device client and the CLI `node-host`), and with no
+        backend-task stickiness they routinely land on different tasks --
+        `find_node_presence` (singular, below) only ever returns the first one
+        found, which is a blind spot for Task 28's node-invoke route when that
+        first task doesn't hold the device that declares the requested
+        command. This returns all of them so the caller can fan out.
+
+        The `by-owner-id` GSI doesn't project `taskAddress`, so every
+        `node`-typed candidate is fetched in full via `get_connection` -- same
+        shape as `delete_relay_rows_for_device`.
 
         Freshness-checked with the same rule as `has_live_operator_connection`:
         DynamoDB's TTL sweep can lag up to 48h, so a candidate whose `ttl` has
-        already expired is skipped rather than handed to Task 28's bridge as a
-        forwarding target -- a dead task's row must not be forwarded to. A row
-        with no `ttl` at all is treated as live (same over-preserve bias).
+        already expired is skipped rather than handed back as a forwarding
+        target -- a dead task's row must not be forwarded to. A row with no
+        `ttl` at all is treated as live (same over-preserve bias).
         """
         now = int(time.time())
+        presences: list[dict] = []
         for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
             if kind != "node":
                 continue
@@ -430,12 +437,24 @@ class ConnectionService:
             full = await asyncio.to_thread(self.get_connection, connection_id)
             if full is None:
                 continue
-            return {
-                "connectionId": connection_id,
-                "taskAddress": full.get("task_address"),
-                "deviceId": full.get("device_id"),
-            }
-        return None
+            presences.append(
+                {
+                    "connectionId": connection_id,
+                    "taskAddress": full.get("task_address"),
+                    "deviceId": full.get("device_id"),
+                }
+            )
+        return presences
+
+    async def find_node_presence(self, owner_id: str) -> Optional[dict]:
+        """The owner's first live desktop-node presence row, or None.
+
+        Thin wrapper over `find_node_presences` (M2-R23) kept for callers that
+        only need one row -- see that method for the freshness rule and why a
+        single answer is a blind spot for Task 28's node-invoke route.
+        """
+        presences = await self.find_node_presences(owner_id)
+        return presences[0] if presences else None
 
     async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
         """Force-close a revoked device's live relay presence row(s).

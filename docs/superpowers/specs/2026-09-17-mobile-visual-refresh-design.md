@@ -1,4 +1,4 @@
-# Mobile visual refresh: depth, size, and the dark-mode question
+# Mobile visual refresh: depth, size, dark mode and gradients
 
 **Status:** DECISION TAKEN 2026-09-17 (§3: depth + dark mode + gradients +
 type scale, all four). No implementation until the plan is approved.
@@ -149,7 +149,9 @@ conceptually aligned; do not design a third pattern.
 1. sidebar IA (separate spec) — unblocks 4.3
 2. type scale + depth (4.1, 4.2) — one PR, the bulk of the perceived win
 3. row density + chat surface (4.3, 4.4)
-4. dark mode — only if the owner picks B; its own spec
+4. dark mode — ruled in; its own spec
+5. gradients — ruled in, LAST, and paired with the Brand Identity Manual
+   amendment (§3). Not before A lands, so we can see what depth alone fixed.
 
 ## 6. Risks
 

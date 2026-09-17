@@ -688,6 +688,48 @@ async def test_missing_gateway_token_creates_nothing(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# M6-R25: transport-aware readiness gate (row #9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_with_runtime_arn_deploys_agents(monkeypatch):
+    """An AgentCore row is reachable once it holds a minted runtime ARN -- no
+    ECS task IP or gateway_token gate applies (any invoke wakes the microVM,
+    M4 Task 22). resolve_running_container already returns this row
+    unconditionally; the gate must not additionally demand a gateway_token."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = {
+        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/abc",
+    }
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls  # the gate did not bail early -- agents were created
+    assert h.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_without_runtime_arn_creates_nothing(monkeypatch):
+    """An AgentCore row that hasn't minted its runtime ARN yet is not
+    reachable -- no gateway_token fallback applies to it."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = {"runtime_host": "agentcore"}  # no agentcore_runtime_arn yet
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls == []
+    assert h.deleted == []
+
+
+# ---------------------------------------------------------------------------
 # _find_friday_id — the true apex, not just "first ceo"
 # ---------------------------------------------------------------------------
 

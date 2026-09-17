@@ -48,6 +48,7 @@ import httpx
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
+from core.services import runtime_transport
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import get_catalog_service
@@ -256,15 +257,27 @@ async def _run_company_deploy(
 
     # Container reachability — an unreachable container means we create NOTHING,
     # so we never orphan Paperclip agents against a container that can't pair
-    # them.
+    # them. Transport-aware (M6-R25): resolve_running_container already
+    # returns an AgentCore row unconditionally (no task IP to discover), but
+    # this door's OWN gate below required a truthy gateway_token, which is an
+    # ECS pairing concept an AgentCore row has no reason to carry yet.
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
     except Exception:  # noqa: BLE001 — treat any ECS/DDB error as unreachable
         container, ip = None, None
-    gateway_token = container.get("gateway_token") if isinstance(container, dict) else None
-    if not container or not ip or not gateway_token:
-        logger.warning("company_deploy: owner=%s container unreachable — creating nothing", owner_id)
-        return
+    if container and runtime_transport.host_for(container) == "agentcore":
+        # Any InvokeAgentRuntime call wakes the microVM (M4 Task 22) — there is
+        # no task IP to discover and no gateway_token gate to clear; the row
+        # existing with a minted runtime ARN IS "reachable".
+        if not container.get("agentcore_runtime_arn"):
+            logger.warning("company_deploy: owner=%s agentcore row has no runtime ARN yet — creating nothing", owner_id)
+            return
+        gateway_token = container.get("gateway_token")
+    else:
+        gateway_token = container.get("gateway_token") if isinstance(container, dict) else None
+        if not container or not ip or not gateway_token:
+            logger.warning("company_deploy: owner=%s container unreachable — creating nothing", owner_id)
+            return
 
     http, admin, cookie = await _open_admin_session()
     try:

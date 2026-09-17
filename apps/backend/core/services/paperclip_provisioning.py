@@ -644,18 +644,16 @@ class PaperclipProvisioning:
             # adapter instead (see paperclip_adapter_config.HTTP_ADAPTER_TYPE). Absent/unknown
             # `runtime_host` (the pre-migration default, and the common case: a FRESH provision
             # seeds Paperclip in step 0, before the container row exists at all -- step 1 --
-            # so there is usually nothing to find yet) is ECS. Best-effort: a lookup failure
-            # must never block seeding, so it falls back to the same "assume ECS" default as a
-            # genuinely missing row.
-            try:
+            # so there is usually nothing to find yet) is ECS. A read that RAISES (a genuine
+            # DynamoDB blip) PROPAGATES rather than being swallowed -- see
+            # paperclip_adapter_config.adapter_type_for's docstring. Only the http-adapter
+            # branch below needs a second, separate read (for the hook token); the far more
+            # common ECS branch reads nothing beyond what adapter_type_for already did.
+            seed_adapter_type = await adapter_type_for(owner_id)
+            seed_hook_token = ""
+            if seed_adapter_type == HTTP_ADAPTER_TYPE:
                 owner_container = await container_repo.get_by_owner_id(owner_id)
-            except Exception:
-                logger.warning(
-                    "paperclip_provisioning.provision_org: container lookup failed for owner=%s; assuming ECS",
-                    owner_id,
-                )
-                owner_container = None
-            seed_adapter_type = adapter_type_for(owner_container)
+                seed_hook_token = (owner_container or {}).get("hook_token") or ""
 
             starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
             for starter_key, name, role, title, parent_key in STARTER_ROSTER:
@@ -671,9 +669,7 @@ class PaperclipProvisioning:
                         # Paperclip-assigned agent id (unknown before create returns); the
                         # run's own webhook body carries Paperclip's real agentId, so this
                         # header is a label for our logs, not a routing key.
-                        adapter_config = build_http_adapter_config(
-                            owner_id, starter_key, hook_token=(owner_container or {}).get("hook_token") or ""
-                        )
+                        adapter_config = build_http_adapter_config(owner_id, starter_key, hook_token=seed_hook_token)
                     else:
                         # Synthesis mints a device key when none is supplied.
                         # Each starter needs a distinct paired.json identity.

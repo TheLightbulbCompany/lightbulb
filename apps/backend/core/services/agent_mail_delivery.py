@@ -36,6 +36,7 @@ from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.repositories import container_repo
 from core.services import runtime_transport
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.trial_cap import trial_block_reason
 
 logger = logging.getLogger(__name__)
@@ -92,11 +93,19 @@ async def deliver_to_agent(
                     "eventId": idempotency_key,
                     "eventKind": "agent_mail",
                     "targetAgentId": agent_id,
-                    "sessionKey": session_key,
+                    # Omitted entirely (never sent as a literal `null`) when there's no
+                    # usable Message-ID to derive one from -- same idiom as the ECS branch
+                    # below, and what a well-behaved JSON producer does for "no value" rather
+                    # than asserting a null.
+                    **({"sessionKey": session_key} if session_key else {}),
                     "message": {"text": message},
                 },
                 headers=headers,
-                timeout_s=10.0,
+                # AgentCore holds the invoke through a cold microVM start (~90s budget,
+                # same as the canonical ingress caller in openclaw_work._post) -- a mail
+                # delivery to a parked workspace must outlast that, not the old 10s ECS-era
+                # budget.
+                timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
             )
             # 202 accepted and 200 replayed (idempotent replay of the same eventId) both mean
             # the message reached the agent.

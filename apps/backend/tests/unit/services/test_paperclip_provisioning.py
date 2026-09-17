@@ -69,6 +69,14 @@ def _build_provision_org_doubles(monkeypatch):
     if hasattr(mod, "get_admin_session_cookie"):
         monkeypatch.setattr(mod, "get_admin_session_cookie", _fake_admin_cookie, raising=False)
 
+    # provision_org's starter-seed loop now picks its adapter type via
+    # paperclip_adapter_config.adapter_type_for, which reads the owner's container row.
+    # A MISSING row (as here -- these doubles never provision one) is the pre-migration ECS
+    # default; a real DynamoDB call is not the point of these tests.
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
     return admin, repo
 
 

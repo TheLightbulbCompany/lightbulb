@@ -44,8 +44,15 @@ logger = logging.getLogger(__name__)
 _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
 
 
-async def _adapter_for_owner(owner_id: str, *, agent_label: str, gateway_user_id: str) -> tuple[str, dict]:
+async def resolve_agent_adapter(
+    owner_id: str, *, agent_label: str, gateway_user_id: str, runtime_host: str | None = None
+) -> tuple[str, dict]:
     """Which Paperclip adapter type + config carries an agent this door creates.
+
+    Shared by every Paperclip agent-creation call site in the backend (chat-create and
+    marketplace-deploy below; also ``core/services/company_deploy_service.py`` and
+    ``routers/teams/agents.py``'s ``/agents`` endpoint) so the ECS-vs-AgentCore pick lives in
+    exactly one place.
 
     Hermes/AgentCore has no gateway for an operator socket to connect to, so those
     owners get the fork's own `http` webhook adapter (paperclip_adapter_config.
@@ -59,17 +66,18 @@ async def _adapter_for_owner(owner_id: str, *, agent_label: str, gateway_user_id
     `http`-adapter analogue of ``desired_agent_adapter_fields``'s post-create
     patch for openclaw_gateway) is provisioning-writer work, out of scope here.
 
-    Best-effort lookup: a transient container-row read failure must not block
-    an agent create, so it falls back to the same "assume ECS" default as a
-    genuinely missing row.
+    ``runtime_host``: an optional hint forwarded to ``adapter_type_for`` -- a caller that
+    already read the owner's container row (for any other reason) can pass its
+    ``runtime_host`` straight through and skip a redundant read. Every caller today passes
+    nothing (``None``), which keeps today's behaviour: ``adapter_type_for`` does its own read,
+    and a read failure PROPAGATES rather than being swallowed into a silent ECS fallback (a
+    seed-time DynamoDB blip should surface as a failure, not a mis-wired agent).
     """
-    try:
-        container = await container_repo.get_by_owner_id(owner_id)
-    except Exception:
-        logger.warning("paperclip_agent_lifecycle: container lookup failed for owner=%s; assuming ECS", owner_id)
-        container = None
-    adapter_type = adapter_type_for(container)
+    adapter_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
     if adapter_type == HTTP_ADAPTER_TYPE:
+        # Only the http-adapter branch needs the container row (for its hook token) -- the
+        # far more common ECS branch reads nothing beyond what adapter_type_for already did.
+        container = await container_repo.get_by_owner_id(owner_id)
         return adapter_type, build_http_adapter_config(
             owner_id, agent_label, hook_token=(container or {}).get("hook_token") or ""
         )
@@ -465,7 +473,7 @@ async def create_paperclip_for_chat(
         # ``user_id=creator_user_id`` is still correct: that field is the
         # adapterConfig.sessionKey fallback (per-creator manual-wake
         # session key), not the auth principal.
-        adapter_type, adapter_config = await _adapter_for_owner(
+        adapter_type, adapter_config = await resolve_agent_adapter(
             owner_id, agent_label=name, gateway_user_id=creator_user_id
         )
         fields = resolve_create_agent_fields(role=role, meta=meta)
@@ -591,7 +599,7 @@ async def create_paperclip_for_marketplace(
     try:
         admin_client = PaperclipAdminClient(http_client=http)
         admin_cookie = await get_admin_session_cookie(http)
-        adapter_type, adapter_config = await _adapter_for_owner(
+        adapter_type, adapter_config = await resolve_agent_adapter(
             owner_id, agent_label=name, gateway_user_id=buyer_user_id
         )
         fields = resolve_create_agent_fields(role=role, meta=meta)

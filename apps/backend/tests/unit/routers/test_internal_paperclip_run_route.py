@@ -3,7 +3,10 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 from core.services import runtime_transport
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 
 OWNER, TOKEN, AGENT, RUN = "org_1", "hook-token-for-a", "agent_ceo", "run_123"
 H = {"Authorization": f"Bearer {TOKEN}"}
@@ -66,7 +69,9 @@ def test_valid_token_forwards_a_paperclip_run_event_to_the_bridge(client):
         "message": {"text": "New comment on your task"},
     }
     assert captured["headers"] == {"Authorization": f"Bearer {TOKEN}"}
-    assert captured["timeout_s"] == 10.0
+    # AgentCore holds the invoke through a cold microVM start -- same ~90s budget as the
+    # canonical ingress caller (openclaw_work._post), not a short ECS-era timeout.
+    assert captured["timeout_s"] == _AGENTCORE_INGRESS_TIMEOUT_S == 90.0
 
 
 def test_falls_back_to_a_generic_text_when_no_wake_reason_or_task_is_given(client):
@@ -86,7 +91,29 @@ def test_falls_back_to_a_generic_text_when_no_wake_reason_or_task_is_given(clien
     assert captured["json_body"]["message"] == {"text": "Paperclip triggered a run."}
 
 
-def test_missing_run_id_or_agent_id_is_400(client):
-    with _container():
+def test_malformed_body_missing_run_id_or_agent_id_is_422(client):
+    """The body is now a typed ContractModel (PaperclipRunRequest), not a hand-parsed dict --
+    a malformed request must 422 (FastAPI's native validation response), never reach the
+    transport call, and never 500."""
+    with _container(), patch("routers.messaging.runtime_transport.request") as req:
         r = client.post(f"/api/v1/internal/paperclip/runs/{OWNER}", json={"companyId": "c"}, headers=H)
-    assert r.status_code == 400
+    assert r.status_code == 422
+    req.assert_not_called()
+
+
+def test_cold_start_timeout_maps_to_a_retryable_503(client):
+    """AgentCore can hold the invoke through a full cold microVM start; if it still times out
+    (or the transport otherwise fails), the caller sees a retryable RUNTIME_UNAVAILABLE, the
+    same shape abort_run/steer_run already use for a runtime that can't be reached -- never a
+    bare 500."""
+
+    async def fake_request(*a, **k):
+        raise httpx.ReadTimeout("timed out waiting for the runtime")
+
+    with _container(), patch("routers.messaging.runtime_transport.request", fake_request):
+        r = client.post(f"/api/v1/internal/paperclip/runs/{OWNER}", json=BODY, headers=H)
+
+    assert r.status_code == 503
+    payload = r.json()
+    assert payload["code"] == "RUNTIME_UNAVAILABLE"
+    assert payload["retryable"] is True

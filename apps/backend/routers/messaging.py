@@ -25,6 +25,7 @@ from core.services import local_sessions
 from core.services import local_session_grants
 from core.services import runtime_transport
 from core.services.live_events import get_live_event_publisher
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.messaging import (
     AbortRunResponse,
     AgentMessageReceiptResponse,
@@ -45,6 +46,7 @@ from core.services.messaging import (
     RoomDetail,
     RoomListResponse,
     MessageAttachment,
+    PaperclipRunRequest,
     RunEventRequest,
     RunEventResponse,
     RunStatusResponse,
@@ -606,7 +608,7 @@ async def get_internal_attachment(owner_id: str, room_id: str, attachment_id: st
 
 
 @router.post("/internal/paperclip/runs/{owner_id}")
-async def post_paperclip_run(owner_id: str, request: Request):
+async def post_paperclip_run(owner_id: str, body: PaperclipRunRequest, request: Request):
     """Paperclip's ``http`` adapter (``paperclip_adapter_config.HTTP_ADAPTER_TYPE``) posts a
     run trigger here instead of dialing an operator gateway socket -- Hermes has none for it to
     connect to. This door re-shapes the fork's own webhook body (fork docs/adapters/http.md:
@@ -614,32 +616,34 @@ async def post_paperclip_run(owner_id: str, request: Request):
     inbound ingress envelope, tags it ``eventKind: "paperclip_run"``, and returns whatever the
     bridge answered (its ``202 accepted`` is what Paperclip's adapter captures as the run
     result; the agent's actual output still comes back over Paperclip's own callback API,
-    unchanged from every other adapter).
+    unchanged from every other adapter). ``body`` is a typed model (not a hand-parsed dict) so
+    a malformed request 422s instead of 500ing.
     """
     container = await _require_hook_token(owner_id, request)
-    body = await request.json()
-    run_id = body.get("runId")
-    agent_id = body.get("agentId")
-    if not run_id or not agent_id:
-        raise HTTPException(status_code=400, detail="runId and agentId are required")
-    context = body.get("context") or {}
-    wake_reason = context.get("wakeReason") or ""
-    task_id = context.get("taskId") or ""
+    context = body.context
+    wake_reason = (context.wake_reason if context else "") or ""
+    task_id = (context.task_id if context else "") or ""
     text = wake_reason or (f"Paperclip task {task_id}" if task_id else "Paperclip triggered a run.")
-    response = await runtime_transport.request(
-        container,
-        f"/plugins/lightbulb-channel/inbound/{agent_id}",
-        json_body={
-            "version": 1,
-            "eventId": run_id,
-            "eventKind": "paperclip_run",
-            "targetAgentId": agent_id,
-            "sessionKey": f"agent:{agent_id}:paperclip:{run_id}",
-            "message": {"text": text},
-        },
-        headers={"Authorization": f"Bearer {(container or {}).get('hook_token') or ''}"},
-        timeout_s=10.0,
-    )
+    try:
+        response = await runtime_transport.request(
+            container,
+            f"/plugins/lightbulb-channel/inbound/{body.agent_id}",
+            json_body={
+                "version": 1,
+                "eventId": body.run_id,
+                "eventKind": "paperclip_run",
+                "targetAgentId": body.agent_id,
+                "sessionKey": f"agent:{body.agent_id}:paperclip:{body.run_id}",
+                "message": {"text": text},
+            },
+            headers={"Authorization": f"Bearer {(container or {}).get('hook_token') or ''}"},
+            # AgentCore holds the invoke through a cold microVM start -- same ~90s budget as
+            # the canonical ingress caller (openclaw_work._post); a Paperclip wake can hit a
+            # parked workspace exactly like a room message can.
+            timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+        )
+    except httpx.HTTPError as exc:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not reach the runtime.", retryable=True, retry_after=3) from exc
     return Response(
         content=response.text,
         status_code=response.status_code,

@@ -508,6 +508,24 @@ class UsageReportResponse(ContractModel):
     status: Literal["applied", "replayed", "ignored"]
 
 
+class PaperclipRunContext(ContractModel):
+    task_id: str | None = None
+    wake_reason: str | None = None
+    comment_id: str | None = None
+
+
+class PaperclipRunRequest(ContractModel):
+    """Body Paperclip's own ``http`` adapter POSTs (fork docs/adapters/http.md):
+    ``{runId, agentId, companyId, context:{taskId, wakeReason, commentId}}``. This is an
+    EXTERNAL shape we don't control, kept as a typed model (rather than a hand-parsed dict)
+    so a malformed body 422s instead of reaching a KeyError/500."""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    company_id: str | None = None
+    context: PaperclipRunContext | None = None
+
+
 class SteerRunRequest(ContractModel):
     text: str
 

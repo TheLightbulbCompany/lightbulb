@@ -11,6 +11,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import agent_mail_delivery as delivery  # noqa: E402
 from core.services import runtime_transport  # noqa: E402
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S  # noqa: E402
 
 
 def _fake_ecs(container, ip):
@@ -286,15 +287,19 @@ async def test_agentcore_row_delivers_through_the_inbound_door_as_agent_mail(mon
     assert captured["path"] == "/plugins/lightbulb-channel/inbound/agent_friday"
     assert captured["ip"] == "agentcore"
     assert captured["headers"] == {"Authorization": "Bearer tok_abc"}
+    # No session_key argument -> OMITTED entirely (never sent as a literal null), same
+    # idiom as the ECS branch's own "no session_key -> key absent" test above.
     assert captured["json_body"] == {
         "version": 1,
         "eventId": "eml_1",
         "eventKind": "agent_mail",
         "targetAgentId": "agent_friday",
-        "sessionKey": None,
         "message": {"text": "hi"},
     }
-    assert captured["timeout_s"] == 10.0
+    assert "sessionKey" not in captured["json_body"]
+    # AgentCore holds the invoke through a cold microVM start -- the same 90s budget the
+    # canonical ingress caller (openclaw_work._post) uses, not the old ECS-era 10s.
+    assert captured["timeout_s"] == _AGENTCORE_INGRESS_TIMEOUT_S == 90.0
     assert "deliver" not in captured["json_body"]
 
 

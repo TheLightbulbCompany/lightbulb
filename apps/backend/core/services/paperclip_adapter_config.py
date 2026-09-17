@@ -47,6 +47,7 @@ from typing import Final
 
 from core.config import apex_domain, settings, url_host
 from core.crypto.operator_device import generate_operator_device, private_key_pem
+from core.repositories import container_repo
 
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
 
@@ -71,14 +72,22 @@ HTTP_ADAPTER_TYPE: Final[str] = "http"
 PAPERCLIP_RUN_TIMEOUT_SEC: Final[int] = 900
 
 
-def adapter_type_for(container: dict | None) -> str:
+async def adapter_type_for(owner_id: str, *, runtime_host: str | None = None) -> str:
     """Which Paperclip adapter type carries this owner's agent runs.
 
-    Same absent/unknown-is-ECS convention as ``runtime_transport.host_for``:
-    a container row with no ``runtime_host`` (or one that isn't
-    ``"agentcore"``) is the pre-migration default.
+    ``runtime_host``: an explicit hint from a caller that already has it (e.g. from a
+    container row it fetched for another reason, such as the hook token) -- wins outright,
+    no DB read. Otherwise this reads the owner's container row itself: a MISSING row is the
+    pre-migration ECS default (same absent/unknown-is-ECS convention as
+    ``runtime_transport.host_for``), but a read that RAISES PROPAGATES. A seed-time exception
+    on a DynamoDB blip is the right failure to surface -- silently mis-assigning the wrong
+    adapter (and thus wiring an agent nobody can reach) is not.
     """
-    return HTTP_ADAPTER_TYPE if (container or {}).get("runtime_host") == "agentcore" else OPENCLAW_GATEWAY_TYPE
+    host = runtime_host
+    if host is None:
+        container = await container_repo.get_by_owner_id(owner_id)
+        host = (container or {}).get("runtime_host")
+    return HTTP_ADAPTER_TYPE if host == "agentcore" else OPENCLAW_GATEWAY_TYPE
 
 
 def build_http_adapter_config(owner_id: str, agent_id: str, *, hook_token: str) -> dict:

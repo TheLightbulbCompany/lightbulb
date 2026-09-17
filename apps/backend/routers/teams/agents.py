@@ -1,15 +1,15 @@
 """Teams BFF — Agents and Runs.
 
-Spec §5: every mutating call synthesizes the openclaw_gateway adapter
-config server-side. The body schemas (``CreateAgentBody`` /
+Spec §5: every mutating call synthesizes the adapter config server-side, picked by the
+owner's runtime_host via ``paperclip_agent_lifecycle.resolve_agent_adapter`` (openclaw_gateway
+on ECS, the fork's http adapter on AgentCore/Hermes). The body schemas (``CreateAgentBody`` /
 ``PatchAgentBody``) forbid extra keys, so client-supplied
 ``adapterType`` / ``adapterConfig`` / ``url`` / ``headers`` return 422
 at the FastAPI boundary.
 
 This module also defines the shared ``_ctx`` Depends helper (and the
-indirection helpers it leans on — ``_admin``, ``_repo``,
-``_gateway_url_for_env``) that the rest of the Teams BFF (Tasks 7-12)
-imports.
+indirection helpers it leans on — ``_admin``, ``_repo``) that the rest
+of the Teams BFF (Tasks 7-12) imports.
 """
 
 from __future__ import annotations
@@ -20,14 +20,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import service_token
-from core.services.paperclip_adapter_config import (
-    OPENCLAW_GATEWAY_TYPE,
-    synthesize_openclaw_adapter,
-)
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     shared_admin_client,
@@ -48,6 +42,7 @@ from core.services.paperclip_agent_lifecycle import (
     AgentLifecycleConflict,
     delete_agent_everywhere,
     ensure_root_ceo_survives,
+    resolve_agent_adapter,
 )
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
@@ -151,14 +146,6 @@ def _repo() -> PaperclipRepo:
     ``isol8-{env}-`` prefix.
     """
     return PaperclipRepo(table_name="paperclip-companies")
-
-
-def _gateway_url_for_env() -> str:
-    """Resolve the WS gateway URL for the running environment.
-
-    Pure function — reads ``settings.ENVIRONMENT`` only. Mocked in tests.
-    """
-    return _ws_gateway_url(settings.ENVIRONMENT or "")
 
 
 def _creator_user_id(ctx) -> str:
@@ -536,12 +523,11 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     # owner instead of the org's shared owner, missing the container the
     # agent was just paired into. We mint fresh here rather than reading
     # the persisted ``service_token_encrypted`` row so legacy rows with a
-    # member-keyed sub can't poison new agents.
-    minted_token = service_token.mint(owner_id)
-    adapter_config = synthesize_openclaw_adapter(
-        gateway_url=_gateway_url_for_env(),
-        service_token=minted_token,
-        user_id=creator_user_id,
+    # member-keyed sub can't poison new agents. Adapter TYPE is picked by the
+    # owner's runtime_host (ECS -> openclaw_gateway, AgentCore -> the fork's http
+    # adapter) via the one shared resolver every Paperclip agent-creation door uses.
+    adapter_type, adapter_config = await resolve_agent_adapter(
+        owner_id, agent_label=body.name, gateway_user_id=creator_user_id
     )
     idempotency_key = build_agent_create_idempotency_key(
         operation="teams",
@@ -549,7 +535,7 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
         intent=paperclip_agent_intent(
             name=body.name,
             role=body.role,
-            adapter_type=OPENCLAW_GATEWAY_TYPE,
+            adapter_type=adapter_type,
             title=body.title,
             capabilities=body.capabilities,
             reports_to=body.reports_to,
@@ -561,7 +547,7 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
         company_id=ctx.company_id,
         name=body.name,
         role=body.role,
-        adapter_type=OPENCLAW_GATEWAY_TYPE,
+        adapter_type=adapter_type,
         adapter_config=adapter_config,
         title=body.title,
         capabilities=body.capabilities,

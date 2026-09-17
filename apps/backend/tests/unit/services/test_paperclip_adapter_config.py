@@ -288,16 +288,56 @@ def test_fallback_session_key_cannot_collide_with_a_human_general_session():
     assert parsed["agent_id"] == agent_id
 
 
-def test_an_agentcore_owner_gets_the_http_adapter_not_the_openclaw_gateway():
+@pytest.mark.asyncio
+async def test_adapter_type_for_an_explicit_hint_wins_with_no_db_read(monkeypatch):
     """Hermes has no gateway for an operator socket to connect to -- an
     AgentCore-hosted owner's Paperclip agents get the fork's own first-party
     `http` webhook adapter instead (fork docs/adapters/http.md,
     confirmed against cli/src/adapters/registry.ts at v2026.813-isol8.6).
-    Absent/unknown `runtime_host` stays the pre-migration ECS default."""
-    assert cfg_module.adapter_type_for({"runtime_host": "agentcore"}) == HTTP_ADAPTER_TYPE
-    assert cfg_module.adapter_type_for({"runtime_host": "ecs"}) == OPENCLAW_GATEWAY_TYPE
-    assert cfg_module.adapter_type_for({}) == OPENCLAW_GATEWAY_TYPE
-    assert cfg_module.adapter_type_for(None) == OPENCLAW_GATEWAY_TYPE
+
+    A caller-supplied ``runtime_host`` hint (e.g. from a container row it
+    already fetched for another reason) wins outright -- no DB read at all."""
+
+    async def boom(owner_id, **kwargs):
+        raise AssertionError("must not read the container row when a hint is given")
+
+    monkeypatch.setattr(cfg_module.container_repo, "get_by_owner_id", boom)
+    assert await cfg_module.adapter_type_for("org_1", runtime_host="agentcore") == HTTP_ADAPTER_TYPE
+    assert await cfg_module.adapter_type_for("org_1", runtime_host="ecs") == OPENCLAW_GATEWAY_TYPE
+
+
+@pytest.mark.asyncio
+async def test_adapter_type_for_reads_the_row_when_no_hint_is_given(monkeypatch):
+    async def agentcore_row(owner_id, **kwargs):
+        return {"runtime_host": "agentcore"}
+
+    monkeypatch.setattr(cfg_module.container_repo, "get_by_owner_id", agentcore_row)
+    assert await cfg_module.adapter_type_for("org_1") == HTTP_ADAPTER_TYPE
+
+
+@pytest.mark.asyncio
+async def test_adapter_type_for_a_missing_row_is_the_ecs_default(monkeypatch):
+    """Absent/unknown `runtime_host` (and a genuinely missing row) stays the
+    pre-migration ECS default -- same convention as `runtime_transport.host_for`."""
+
+    async def no_row(owner_id, **kwargs):
+        return None
+
+    monkeypatch.setattr(cfg_module.container_repo, "get_by_owner_id", no_row)
+    assert await cfg_module.adapter_type_for("org_1") == OPENCLAW_GATEWAY_TYPE
+
+
+@pytest.mark.asyncio
+async def test_adapter_type_for_propagates_a_read_failure(monkeypatch):
+    """A read that RAISES (a DynamoDB blip during seeding) must propagate as a loud
+    failure, never be silently swallowed into a mis-assigned adapter."""
+
+    async def raising(owner_id, **kwargs):
+        raise RuntimeError("dynamodb blip")
+
+    monkeypatch.setattr(cfg_module.container_repo, "get_by_owner_id", raising)
+    with pytest.raises(RuntimeError, match="dynamodb blip"):
+        await cfg_module.adapter_type_for("org_1")
 
 
 def test_the_http_adapter_config_points_at_the_backend_door_with_the_hook_token(monkeypatch):

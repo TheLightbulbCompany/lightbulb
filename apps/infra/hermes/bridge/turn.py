@@ -180,6 +180,14 @@ MAX_PARTICIPANTS = 128
 MAX_SESSIONS = 24
 MAX_ATTACHMENTS = 4
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+# A PDF is a document, not a photo (fix round I3, mirroring the backend's own table --
+# core/services/messaging.py:51-63): a real scanned contract or slide deck runs well past
+# 5 MiB. A flat 5 MiB cap on every content type meant a legal PDF the product itself accepted
+# (up to 20 MiB) 400'd every dispatch of a message that carried it, and every later message
+# with it in recentHistory too -- the same failure class Task 3's PDF-widening was meant to
+# remove, just one field over.
+PDF_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
+ATTACHMENT_MAX_BYTES_BY_TYPE = {"application/pdf": PDF_ATTACHMENT_MAX_BYTES}
 # The backend's own model allows application/pdf (messaging.py:348) while the OpenClaw
 # plugin's parser accepted four image types, so a PDF anywhere in history 400'd every
 # dispatch that message was part of (report 03 §1). Widened deliberately.
@@ -213,7 +221,8 @@ def _check_message(msg: dict, room_id: str, label: str) -> None:
     for i, att in enumerate(attachments):
         _check(att.get("contentType") in ATTACHMENT_TYPES,
                f"{label}.attachments[{i}].contentType: expected one of {'|'.join(ATTACHMENT_TYPES)}")
-        _check(int(att.get("size") or 0) <= MAX_ATTACHMENT_BYTES, f"{label}.attachments[{i}].size exceeds 5 MiB")
+        cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(att.get("contentType"), MAX_ATTACHMENT_BYTES)
+        _check(int(att.get("size") or 0) <= cap, f"{label}.attachments[{i}].size exceeds {cap} bytes")
 
 
 def parse_ingress(body: dict) -> dict:

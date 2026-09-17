@@ -36,3 +36,25 @@ def test_an_unsupported_attachment_type_is_still_refused():
                                   "contentType": "application/octet-stream", "size": 10}])
     with pytest.raises(turn.IngressError, match="contentType"):
         turn.parse_ingress(f.ingress(message=msg))
+
+
+# ---- fix round (Important 3): attachment cap is per content type, mirroring the backend's
+# own table (core/services/messaging.py:51-63) -- a flat 5 MiB cap 400'd a legal 6-20 MiB PDF.
+def test_a_6mib_pdf_is_accepted():
+    msg = f.message(attachments=[{"id": f.ROOM, "fileName": "deck.pdf",
+                                  "contentType": "application/pdf", "size": 6 * 1024 * 1024}])
+    assert turn.parse_ingress(f.ingress(message=msg))["message"]["attachments"][0]["size"] == 6 * 1024 * 1024
+
+
+def test_a_6mib_png_is_still_refused():
+    msg = f.message(attachments=[{"id": f.ROOM, "fileName": "photo.png",
+                                  "contentType": "image/png", "size": 6 * 1024 * 1024}])
+    with pytest.raises(turn.IngressError, match="size exceeds"):
+        turn.parse_ingress(f.ingress(message=msg))
+
+
+def test_a_21mib_pdf_is_refused():
+    msg = f.message(attachments=[{"id": f.ROOM, "fileName": "huge.pdf",
+                                  "contentType": "application/pdf", "size": 21 * 1024 * 1024}])
+    with pytest.raises(turn.IngressError, match="size exceeds"):
+        turn.parse_ingress(f.ingress(message=msg))

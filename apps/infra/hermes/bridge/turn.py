@@ -800,6 +800,10 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                     _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
                 frames.started()
                 threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
+            # Task 15b: a profile with no providers.openai-codex block of its own reads and
+            # rotates the ROOT home's ChatGPT grant (hermes_cli/auth_codex.py) -- same
+            # restore-before-the-turn treatment as a profile dir, once per process.
+            sync.restore_root_auth()
             restore_profile(agent_id)
             # Fix round (Critical 1): must equal the session_id _construct_agent hands the
             # AIAgent (both derived from the same `session_key` this function already
@@ -872,6 +876,13 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
             save_profile(agent_id)
         except Exception as exc:  # noqa: BLE001
             log.warning("save_profile failed: %s", exc)
+        try:
+            # Task 15b: a Codex refresh under this profile rotated ROOT's chain, not a local
+            # copy (hermes_cli/auth_codex.py's write-through) -- push it back so the next
+            # microVM starts from the rotated grant, not a replayed one.
+            sync.save_root_auth()
+        except Exception as exc:  # noqa: BLE001 -- best-effort, same as save_profile above
+            log.warning("save_root_auth failed: %s", exc)
         _last_turn[agent_id] = took
         # Fix round (minor 11): log the reply LENGTH, never the reply text -- room content has
         # no business in CloudWatch, and this line used to truncate-and-print it.

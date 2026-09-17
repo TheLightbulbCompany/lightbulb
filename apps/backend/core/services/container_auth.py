@@ -22,7 +22,7 @@ import asyncio
 import logging
 
 from core.containers import get_ecs_manager
-from core.services import container_rpc
+from core.services import container_rpc, runtime_transport
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,16 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
         return False
     if not tokens:
         return False
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # No EFS stage, no clear-auth sentinel, no forced bounce: Hermes re-reads auth.json at
+        # credential resolution time (hermes_cli/auth.py), so the next turn picks the new grant
+        # up on its own.
+        from core.dynamodb import run_in_thread
+        from core.services.hermes_profiles import stage_codex_auth
+
+        await run_in_thread(stage_codex_auth, owner_id, tokens)
+        logger.info("push_oauth_credential: staged fresh ChatGPT token (agentcore)", extra={"owner_id": owner_id})
+        return True
     try:
         await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
         cleared = await clear_default_agent_auth_profile_row(user_id=owner_id)

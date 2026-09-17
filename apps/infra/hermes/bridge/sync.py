@@ -231,6 +231,48 @@ def ensure_profile(agent_id: str) -> None:
         _REVISIONS[agent_id] = revision
 
 
+# ---- Task 15b: ChatGPT OAuth — the root auth.json's own save/restore leg -----------------------
+# Report 06 §2.2 / hermes_cli/auth_codex.py: a profile with no providers.openai-codex block reads
+# the ROOT home's grant via the fallback, and a refresh under that profile write-throughs to
+# ROOT's chain. So the root auth.json needs the SAME restore-once / save-after-turn treatment as
+# a profile dir, keyed at S3_PREFIX directly (no per-agent segment) to match
+# hermes_profiles.root_home_prefix on the backend side.
+def _download_object(key: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _s3().download_file(S3_BUCKET, f"{S3_PREFIX}/{key}", str(dest))
+
+
+def _upload_object(src: Path, key: str) -> None:
+    _s3().upload_file(str(src), S3_BUCKET, f"{S3_PREFIX}/{key}")
+
+
+_ROOT_AUTH_RESTORED: set[str] = set()
+
+
+def restore_root_auth() -> None:
+    """Pull ``<owner>/hermes/auth.json`` into the root home, once per process."""
+    if not S3_BUCKET or "done" in _ROOT_AUTH_RESTORED:
+        return
+    try:
+        _download_object("auth.json", HOME / "auth.json")
+    except Exception as exc:  # noqa: BLE001 -- no root auth.json yet (never connected) is not an error
+        log.debug("restore_root_auth: no root auth.json to restore: %s", exc)
+    _ROOT_AUTH_RESTORED.add("done")
+
+
+def save_root_auth() -> None:
+    """Push the root ``auth.json`` back after a turn — Hermes rotates the refresh token in
+    place, and the next microVM must start from the rotated chain, not a replayed one.
+
+    No existence guard here: an owner who has never connected ChatGPT OAuth has no local
+    ``auth.json`` at all, and this raises in that case (``upload_file`` needs a real source
+    file) — the caller (``turn.py``, same pattern as ``save_profile``) treats it as best-effort.
+    """
+    if not S3_BUCKET:
+        return
+    _upload_object(HOME / "auth.json", "auth.json")
+
+
 def delete_profile_objects(agent_id: str) -> int:
     """Drop the profile's S3 prefix. Without this a deleted agent comes back on the next
     cold start, because restore reads the prefix, not the local dir."""

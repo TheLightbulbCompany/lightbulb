@@ -53,12 +53,20 @@ _BEDROCK = "bedrock"
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
 #: -> ... (auxiliary_client.py:3-6); an unpinned task on a platform-billed path is egress to a
 #: vendor we have no account with, and the Nous lane needs no credential of ours (``nous.guest:
-#: true`` in the defaults). ``fallback_chain: []`` is the actual fence (an empty configured chain
-#: skips straight to no-fallback rather than the auto-chain); ``free_only`` is a cost knob ON that
-#: auto-chain, not a second fence — it still lets a ":free" OpenRouter SKU through, and Hermes
-#: falls through to auto-detection even for an explicit ``provider`` the account can't invoke
-#: (auxiliary_client.py's unavailable-provider fallback), which is why ``bedrock.discovery.enabled:
-#: false`` and a present ``AWS_BEARER_TOKEN_BEDROCK`` both have to hold too.
+#: true`` in the defaults). ``fallback_chain: []`` is the actual fence: verified in the image
+#: (``auxiliary_client.py:6820-6837``) — an explicit, PINNED provider (ours) that fails to build a
+#: client tries ONLY its own ``fallback_chain`` and, finding it empty, RAISES
+#: (``RuntimeError("Provider '<x>' is set in config.yaml but no API key was found...")``); the
+#: OpenRouter/Nous auto-chain is walked ONLY when the resolved provider is already "auto" (or
+#: "openrouter"/"custom") — a pinned provider never reaches it. ``free_only`` is a cost knob ON
+#: that auto-chain, not a fence of its own — it still lets a ":free" OpenRouter SKU through, which
+#: only matters for the "auto" case this pin deliberately avoids. One residual: ``vision``
+#: specifically has ITS OWN unconditional "fall back to auto vision backends" branch a few lines
+#: above the general one (``resolve_vision_provider_client(provider="auto", ...)`` whenever the
+#: pinned vision client fails to build), so a failed Bedrock vision call can still reach the auto
+#: chain even with ``fallback_chain: []`` — the other 17 tasks cannot. ``bedrock.discovery.enabled:
+#: false`` and a present ``AWS_BEARER_TOKEN_BEDROCK`` are what keep the pinned client from failing
+#: to build in the first place, which is what actually closes that residual in practice.
 #:
 #: Fix round 1, C1: this is the literal, complete 18-name list of every provider-bearing key in
 #: Hermes 0.21.3's ``hermes_cli.config_defaults.DEFAULT_CONFIG["auxiliary"]`` (every value built
@@ -140,9 +148,16 @@ def _model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict,
         cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
         default = premium if is_ceo else standard
         return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
-    # chatgpt_oauth — flat rate, one tier; aux inherits the main model ("auto"), because the Codex
-    # backend rejects an aux-side summariser override (config.py cheap_model_ref docstring).
-    return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "", "auto"
+    # chatgpt_oauth — flat rate, one tier. Task 15's re-review ruling: aux tasks are pinned to
+    # the "openai-codex" provider (never "auto") — a real, explicit Hermes aux provider (verified
+    # in the image: hermes_cli/auth.py's ProviderConfig, auxiliary_client.py's dedicated
+    # resolution branch for it, and its own "openai-codex has no safe default model; callers set
+    # auxiliary.<task>.model" comment, confirming an explicit model is the intended usage). "auto"
+    # would re-open the OpenRouter/Nous auto-chain (auxiliary_client.py exempts "auto" from the
+    # raise a pinned-but-unavailable provider would otherwise hit). Aux inherits the SAME model
+    # the primary uses (gpt-5.6-sol): there is no cheaper tier to route aux work to on a flat-rate
+    # plan, the same reasoning the model block above already applies.
+    return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "gpt-5.6-sol", "openai-codex"
 
 
 def build_profile_config(
@@ -327,6 +342,10 @@ def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
     """
     config: dict = {}
     secrets: dict[str, str] = {}
+    # Minor (re-review): _mcp_env_key sanitizes to a valid identifier, so two DIFFERENT server
+    # names (e.g. "acme-crm" and "acme_crm") can produce the SAME env key. A silent merge would
+    # let one server's secret value overwrite the other's with no signal; reject instead.
+    env_key_origin: dict[str, tuple[str, str]] = {}
     for name, block in (servers or {}).items():
         entry: dict = {key: block[key] for key in _MCP_DIRECT if key in block}
         for field in _MCP_SECRET_FIELDS:
@@ -335,6 +354,12 @@ def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
                 moved = {}
                 for var_name, value in values.items():
                     env_key = _mcp_env_key(name, var_name)
+                    origin = env_key_origin.setdefault(env_key, (name, var_name))
+                    if origin != (name, var_name):
+                        raise ValueError(
+                            f"MCP server names {origin[0]!r} and {name!r} collide on the same "
+                            f"sanitized secret name {env_key!r} — rename one of the servers."
+                        )
                     secrets[env_key] = value
                     moved[var_name] = f"${{{env_key}}}"
                 entry[field] = moved
@@ -433,7 +458,9 @@ def write_agent_profile(
     byo_provider: str | None = None,
     byo_api_key: str | None = None,
 ) -> ProfileFiles:
-    """The four files that ARE one agent's Hermes profile.
+    """The three files that ARE one agent's Hermes profile (fix round 1, I5 dropped the fourth,
+    ``managed_overlay`` — the baked ``/etc/hermes/config.yaml`` is the sole enforcement point and
+    nothing ever reads a per-profile copy).
 
     ``integrations`` is ``credentials.mcp_server.build_connected_integration_servers(owner_id)``'s
     own return shape (fix round 1, I2) — ``{server_key: mcp block}`` — taken as-is, not a
@@ -499,7 +526,9 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
-    client = _new_s3_client()
+    # Minor (re-review): the client itself, not just each put_object — constructing a boto3
+    # client does file I/O (credentials/config resolution) on first use.
+    client = await run_in_thread(_new_s3_client)
     prefix = profile_prefix(owner_id, agent_id)
     # No per-profile managed/config.yaml (I5, fix round 1): the baked /etc/hermes/config.yaml is
     # the sole enforcement point and get_managed_dir() never reads S3, so this upload was a
@@ -683,3 +712,42 @@ def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
             _rewrite_mcp_env_lines(_read_dotenv(owner_id, agent_id), secrets),
         )
         _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
+
+
+# ---- Task 15: ChatGPT OAuth staged into the ROOT auth.json --------------------------------------
+def root_home_prefix(owner_id: str) -> str:
+    """``<owner>/hermes/`` — the workspace's Hermes ROOT home; profiles live under it."""
+    return f"{owner_id}/hermes/"
+
+
+def stage_codex_auth(owner_id: str, tokens: dict) -> None:
+    """Write the owner's ChatGPT grant into the ROOT ``auth.json``, once per connect — not into
+    any per-profile ``config.yaml``/``.env``.
+
+    Report 06 §2.2: Hermes's ``openai-codex`` provider implements natively the shape this
+    platform used to hand-roll on OpenClaw — a profile with no ``providers.openai-codex`` block
+    reads the ROOT home's grant through the fallback (``hermes_cli/auth.py``), and a refresh
+    under that profile write-throughs to the ROOT chain (``hermes_cli/auth_codex.py``, "own
+    providers.openai-codex block reads root's grant via the fallback, so a refresh under that
+    profile rotates ROOT's chain"). Six per-profile copies would each independently consume the
+    single-use refresh token and OpenAI would revoke the whole family. This replaces the EFS
+    ``credentials/oauth.json`` + clear-auth-sentinel + boot ``doctor --fix`` choreography
+    entirely for an AgentCore row.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    if not settings.OWNER_STATE_BUCKET:
+        return
+    payload = {k: v for k, v in tokens.items() if k in ("access_token", "refresh_token", "id_token") and v}
+    blob = {
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "tokens": payload,
+                "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "auth_mode": "chatgpt",
+            }
+        },
+    }
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{root_home_prefix(owner_id)}auth.json", _json.dumps(blob))

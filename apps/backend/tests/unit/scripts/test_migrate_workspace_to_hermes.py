@@ -219,6 +219,24 @@ async def test_precondition_failures_exit_2_and_claim_nothing(monkeypatch, row, 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
 
 
+async def test_a_natively_provisioned_hermes_row_is_refused_not_tailed(monkeypatch):
+    """Ruling M6-R19: a row on agentcore with NO service_name never went through ECS at all --
+    the fresh-provision path (settings.HERMES_RUNTIME) never touches the ECS manager. Running
+    the tail on it would regenerate its live profiles over themselves for nothing, so it is
+    refused (exit 2), same as any other precondition failure, and never claimed."""
+    monkeypatch.setattr(
+        mod.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": OWNER, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:native"}),
+    )
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    monkeypatch.setattr(
+        mod.container_repo, "takeover_provision", AsyncMock(side_effect=AssertionError("must not claim"))
+    )
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
+
+
 async def test_an_unstamped_agentcore_row_runs_only_the_tail(tmp_path, monkeypatch):
     """Ruling M6-R16: a row already on agentcore but with no hermes_migrated_at stamp is a prior
     attempt that crashed after READY but before its tail finished. Re-running must NOT call
@@ -229,7 +247,16 @@ async def test_an_unstamped_agentcore_row_runs_only_the_tail(tmp_path, monkeypat
     monkeypatch.setattr(
         mod.container_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": OWNER, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}),
+        AsyncMock(
+            return_value={
+                "owner_id": OWNER,
+                "runtime_host": "agentcore",
+                "agentcore_runtime_arn": "arn:x",
+                # Ruling M6-R19: tail mode requires ECS provenance -- service_name proves this
+                # row went through the ECS-migration path, not a native fresh Hermes provision.
+                "service_name": "openclaw-org_test1-abc123",
+            }
+        ),
     )
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
@@ -411,12 +438,15 @@ async def test_rollback_tolerates_a_missing_runtime_and_secret(monkeypatch):
 
 
 async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_agentcore(monkeypatch):
-    """Ruling M6-R16: an unstamped agentcore row (a crashed prior attempt's tail) is INCLUDED --
-    migrate() on it just runs the tail. Only a STAMPED row is skipped."""
+    """Ruling M6-R16: an unstamped, TAIL-ELIGIBLE agentcore row (a crashed prior attempt's tail)
+    is INCLUDED -- migrate() on it just runs the tail. A STAMPED row and a natively provisioned
+    Hermes row (Ruling M6-R19 -- agentcore with no service_name/ARN) are both skipped."""
     rows = [
         {"owner_id": "a", "runtime_host": "ecs"},
-        {"owner_id": "b", "runtime_host": "agentcore"},  # unstamped -- tail-only, INCLUDED
+        # unstamped but tail-eligible (service_name + ARN) -- tail-only, INCLUDED
+        {"owner_id": "b", "runtime_host": "agentcore", "service_name": "svc-b", "agentcore_runtime_arn": "arn:b"},
         {"owner_id": "c", "runtime_host": "agentcore", "hermes_migrated_at": "2026-09-17T00:00:00Z"},  # skipped
+        {"owner_id": "d", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:d"},  # native -- skipped
         {"owner_id": mod.REFERENCE_ORG_ID, "runtime_host": "ecs"},  # reference org -- skipped
     ]
     migrated: list[str] = []

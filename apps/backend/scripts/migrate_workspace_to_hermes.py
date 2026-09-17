@@ -239,11 +239,22 @@ def _print_plan(owner_id: str, plan, *, dry_run: bool, reconnect_chatgpt: bool) 
         print(f"{tag}{owner_id} reconnect_chatgpt")
 
 
+def _tail_eligible(row: dict) -> bool:
+    """Ruling M6-R19: tail mode requires an ECS-provenance row — ``service_name`` AND an ARN —
+    not merely ``runtime_host == "agentcore"``. A natively provisioned Hermes row (the ordinary
+    fresh-provision path, ``settings.HERMES_RUNTIME``) never touches the ECS manager and so has
+    no ``service_name``; running the tail on it would regenerate its live profiles over
+    themselves for nothing. Shared by ``_check_preconditions`` and ``migrate_all`` so the two
+    predicates can never drift apart."""
+    return bool(row.get("service_name") and row.get("agentcore_runtime_arn"))
+
+
 async def _check_preconditions(owner_id: str) -> tuple[int | None, str | None, list[dict] | None]:
-    """Ruling M6-R1 step 1 / Ruling M6-R16. Returns ``(exit_code, None, None)`` on failure, or
-    ``(None, mode, roster)`` where ``mode`` is ``_MODE_FULL`` (provision from scratch) or
-    ``_MODE_TAIL`` (a prior attempt already reached READY — the row is on agentcore but carries
-    no ``hermes_migrated_at`` stamp yet, so only the tail remains)."""
+    """Ruling M6-R1 step 1 / Ruling M6-R16 / Ruling M6-R19. Returns ``(exit_code, None, None)``
+    on failure, or ``(None, mode, roster)`` where ``mode`` is ``_MODE_FULL`` (provision from
+    scratch) or ``_MODE_TAIL`` (a prior attempt already reached READY — the row is an ECS
+    workspace now on agentcore but carries no ``hermes_migrated_at`` stamp yet, so only the tail
+    remains)."""
     if owner_id == REFERENCE_ORG_ID:
         logger.error("migrate: %s is the reference org (M6-R2) — refusing", owner_id)
         return EXIT_REFERENCE_ORG, None, None
@@ -254,7 +265,16 @@ async def _check_preconditions(owner_id: str) -> tuple[int | None, str | None, l
     if row.get("hermes_migrated_at"):
         logger.info("migrate: owner=%s is already migrated (hermes_migrated_at stamped)", owner_id)
         return EXIT_PRECONDITION, None, None
-    mode = _MODE_TAIL if runtime_transport.host_for(row) == "agentcore" else _MODE_FULL
+    if runtime_transport.host_for(row) == "agentcore":
+        if not _tail_eligible(row):
+            logger.error(
+                "migrate: owner=%s is on agentcore but not an ECS workspace (no service_name/ARN) — refusing",
+                owner_id,
+            )
+            return EXIT_PRECONDITION, None, None
+        mode = _MODE_TAIL
+    else:
+        mode = _MODE_FULL
     company = await _load_company(owner_id)
     if not company or company.status != "active":
         logger.error("migrate: owner=%s has no active Paperclip company row", owner_id)
@@ -497,6 +517,11 @@ async def migrate_all(*, dry_run: bool) -> int:
     Ruling M6-R16: skips only STAMPED rows (``hermes_migrated_at``) — an unstamped agentcore row
     (a prior attempt that crashed after READY but before its tail finished) is INCLUDED, since
     ``migrate()`` on that row runs only the remaining tail rather than re-provisioning.
+
+    Ruling M6-R19: a row on agentcore that is NOT tail-eligible (``_tail_eligible`` — no
+    ``service_name``/ARN, i.e. a natively provisioned Hermes workspace) is also skipped — mirrors
+    ``_check_preconditions``'s own refusal so ``--all`` never regenerates a native Hermes owner's
+    live profiles over themselves.
     """
     rows = await container_repo.scan_all()
     results: list[tuple[str, int]] = []
@@ -505,6 +530,8 @@ async def migrate_all(*, dry_run: bool) -> int:
         if not owner_id or owner_id.startswith(PASS_KEY_PREFIX) or owner_id == REFERENCE_ORG_ID:
             continue
         if row.get("hermes_migrated_at"):
+            continue
+        if runtime_transport.host_for(row) == "agentcore" and not _tail_eligible(row):
             continue
         company = await _load_company(owner_id)
         if not company or company.status != "active":

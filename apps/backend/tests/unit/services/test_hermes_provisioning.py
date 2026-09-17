@@ -30,6 +30,12 @@ async def _explode(*args, **kwargs):
     raise AssertionError(f"should not have been called: args={args!r} kwargs={kwargs!r}")
 
 
+def _no_runtime_found_by_name(monkeypatch):
+    """Every fresh-create test needs the C1 name-lookup mocked -- it runs unconditionally
+    whenever the row has no ARN yet, and the real function makes a live AWS call."""
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: None)
+
+
 def test_the_request_has_no_efs_leg_and_points_at_the_hermes_image():
     req = hermes_provisioning.build_hermes_runtime_request(
         owner_id="org_a",
@@ -174,6 +180,7 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    _no_runtime_found_by_name(monkeypatch)
 
     async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
         updated.update(fields)
@@ -202,7 +209,7 @@ async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monke
     monkeypatch.setattr(
         hermes_provisioning.container_repo,
         "get_by_owner_id",
-        _row({"agentcore_runtime_arn": "arn:existing"}),
+        _row({"agentcore_runtime_arn": "arn:existing", "status": "running"}),
     )
     created = {}
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.setdefault("x", 1))
@@ -210,7 +217,144 @@ async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monke
     assert created == {}
 
 
+@pytest.mark.asyncio
+async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_arn(monkeypatch):
+    """M4-R35/C1: a retry after a create-but-not-yet-ready runtime must reuse the recorded ARN,
+    not hit CreateAgentRuntime again (which would 409 on the unique runtime name)."""
+    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"agentcore_runtime_arn": "arn:not-ready-yet"}),  # no status="running" yet
+    )
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
+    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged -- no update
+    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
+
+    polled = {}
+
+    def _fake_wait(arn):
+        polled["arn"] = arn
+
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", _fake_wait)
+
+    terminal = {}
+
+    async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
+        terminal.update(fields)
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
+
+    arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+    assert arn == "arn:not-ready-yet"
+    assert polled["arn"] == "arn:not-ready-yet"
+    assert terminal["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatch):
+    """M4-R35/C1: no ARN on the row at all, but AgentCore already has a runtime under this
+    owner's derived name -- a prior attempt's row write was lost. Reuse it instead of hitting
+    CreateAgentRuntime (which would 409 on the name)."""
+    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
+    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)
+    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+
+    calls = []
+
+    async def _spy_update(owner_id, claim_id, fields, **kwargs):
+        calls.append((fields, kwargs))
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _spy_update)
+
+    arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+    assert arn == "arn:found-by-name"
+    # The row never had the ARN, so it must be recorded (non-terminal) before the terminal write.
+    assert len(calls) == 2
+    assert calls[0][0] == {"agentcore_runtime_arn": "arn:found-by-name"}
+    assert calls[0][1]["release_lease"] is False
+    assert calls[1][1]["release_lease"] is True
+
+
+@pytest.mark.asyncio
+async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monkeypatch):
+    """A reused runtime (found by name, not on the row) whose configured image no longer matches
+    settings.AGENTCORE_HERMES_IMAGE gets UpdateAgentRuntime before the READY poll."""
+    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
+    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: "old-broken-image:tag")
+
+    updated = {}
+
+    def _fake_update_image(arn, image_uri):
+        updated["arn"] = arn
+        updated["image_uri"] = image_uri
+
+    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _fake_update_image)
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
+
+    await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+    assert updated == {"arn": "arn:found-by-name", "image_uri": HERMES_IMAGE}
+
+
 # --- M4-R28: fenced terminal write, mirroring ecs_manager.wait_for_running -----------------
+
+
+@pytest.mark.asyncio
+async def test_create_record_poll_happen_in_that_order(monkeypatch):
+    """M4-R35/C1: the ARN must be recorded (non-terminal, fenced) BEFORE the READY poll runs --
+    a CREATE_FAILED or a poll-window timeout must not lose it."""
+    order = []
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: order.append("create") or "arn:r1")
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: order.append("poll"))
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    _no_runtime_found_by_name(monkeypatch)
+
+    async def _spy_update(owner_id, claim_id, fields, **kwargs):
+        order.append(("record", fields, kwargs.get("release_lease")))
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _spy_update)
+
+    await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", attempt_token="tok-1")
+    assert order == [
+        "create",
+        ("record", {"agentcore_runtime_arn": "arn:r1"}, False),
+        "poll",
+        ("record", {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:r1", "status": "running"}, True),
+    ]
 
 
 @pytest.mark.asyncio
@@ -228,6 +372,7 @@ async def test_provision_writes_through_the_fenced_lease_helper_not_a_bare_updat
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    _no_runtime_found_by_name(monkeypatch)
 
     async def _spy_update(owner_id, claim_id, fields, **kwargs):
         calls.append((owner_id, claim_id, fields, kwargs))
@@ -239,8 +384,9 @@ async def test_provision_writes_through_the_fenced_lease_helper_not_a_bare_updat
     monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _must_not_be_called)
 
     await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", attempt_token="tok-1")
-    assert len(calls) == 1
-    owner_id, claim_id, fields, kwargs = calls[0]
+    # Two fenced writes now (C1): the non-terminal ARN record, then the terminal transition.
+    assert len(calls) == 2
+    owner_id, claim_id, fields, kwargs = calls[-1]
     assert owner_id == "org_a"
     assert claim_id == "claim-1"
     assert kwargs.get("attempt_token") == "tok-1"
@@ -265,6 +411,7 @@ async def test_a_lost_fence_propagates_and_leaves_the_row_untouched(monkeypatch)
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    _no_runtime_found_by_name(monkeypatch)
 
     async def _refuse(owner_id, claim_id, fields, **kwargs):
         raise ProvisionSuperseded("stale attempt")

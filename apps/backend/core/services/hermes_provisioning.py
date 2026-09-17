@@ -17,8 +17,13 @@ already holds (M4-R28/M4-R33):
    fixes. A NON-terminal, lease-REFRESHING write (``release_lease=False``): the provision is not
    done yet.
 2. ``provision_hermes_runtime`` — writes the Hermes profiles to S3, creates the AgentCore runtime,
-   waits for it to reach READY, and writes the TERMINAL row fields. Idempotent-return on an existing
-   ``agentcore_runtime_arn`` (also short-circuits step 1 above, via the same check).
+   waits for it to reach READY, and writes the TERMINAL row fields. Fully idempotent-return only
+   once ``status="running"``. The ARN is recorded on the row NON-terminally IMMEDIATELY after
+   ``CreateAgentRuntime`` returns, before the READY poll (M4-R35/C1) — runtime names are unique
+   per account, so a create that succeeds but is never recorded (a crash, a lost fence, a
+   CREATE_FAILED on the poll) would otherwise hit a name conflict on every retry, forever. A retry
+   that finds the ARN on the row (or, failing that, by listing AgentCore runtimes for the derived
+   name — covers a row write that itself never landed) skips creation and reuses it.
 
 What is reused verbatim: the IAM/naming scaffolding (``runtime_name_for``, ``ensure_agentcore_trust``),
 the owner's AIPs and Bedrock role, ``mint_gate_token``, the boot-secret writer, and the lifecycle
@@ -150,7 +155,47 @@ def build_hermes_runtime_request(
 def _create_runtime(request: dict) -> str:
     import boto3
 
-    return boto3.client("bedrock-agentcore-control").create_agent_runtime(**request)["agentRuntimeArn"]
+    return boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION).create_agent_runtime(**request)[
+        "agentRuntimeArn"
+    ]
+
+
+def _find_existing_runtime_arn(name: str) -> str | None:
+    """M4-R35: an owner's runtime name is unique per account, so a retry whose row lost the
+    ARN (a crash, or a lost fence, between ``CreateAgentRuntime`` and the row write) would
+    otherwise hit a name conflict on every future attempt, forever. Sync — call via
+    ``run_in_thread``."""
+    import boto3
+
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    for runtime in client.list_agent_runtimes().get("agentRuntimes", []):
+        if runtime.get("agentRuntimeName") == name:
+            return runtime.get("agentRuntimeArn")
+    return None
+
+
+def _runtime_image_uri(runtime_arn: str) -> str | None:
+    """The image URI an existing runtime is currently configured with. Sync — call via
+    ``run_in_thread``."""
+    import boto3
+
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    runtime_id = runtime_arn.rsplit("/", 1)[-1]
+    desc = client.get_agent_runtime(agentRuntimeId=runtime_id)
+    return (desc.get("agentRuntimeArtifact") or {}).get("containerConfiguration", {}).get("containerUri")
+
+
+def _update_runtime_image(runtime_arn: str, image_uri: str) -> None:
+    """Bring a reused (not freshly created) runtime onto the currently configured image --
+    e.g. a broken tag fixed between retries. Sync — call via ``run_in_thread``."""
+    import boto3
+
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    runtime_id = runtime_arn.rsplit("/", 1)[-1]
+    client.update_agent_runtime(
+        agentRuntimeId=runtime_id,
+        agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
+    )
 
 
 def _wait_for_runtime_ready(runtime_arn: str) -> None:
@@ -299,40 +344,73 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     never re-writes. ``provision_runner.run`` always calls it first when ``settings.HERMES_RUNTIME``
     is on.
 
-    Idempotent: a row that already carries ``agentcore_runtime_arn`` is returned as-is, with no
-    AWS call and no row write.
+    Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` returns as-is,
+    with no AWS call and no row write. A row with the ARN but NOT yet ``running`` (a retry that
+    reached the create but not the terminal write) skips straight to the READY poll instead of
+    creating again (M4-R35/C1) — see the ARN-recording comment below for why that field exists.
 
-    ``claim_id``/``attempt_token`` fence the terminal write (see module docstring, M4-R28) — the
+    ``claim_id``/``attempt_token`` fence every write here (see module docstring, M4-R28) — the
     caller (``provision_runner.run``) always holds a claim; both are threaded straight from there.
     """
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    existing = row.get("agentcore_runtime_arn")
-    if existing:
-        return existing
+    arn = row.get("agentcore_runtime_arn")
+    if arn and row.get("status") == "running":
+        return arn
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
     await _write_profiles(owner_id, aip_arns)
 
-    from core.billing.bedrock_gate_url import gate_url
+    if not arn:
+        # M4-R35: the row has no ARN yet -- but AgentCore itself might, if a prior attempt got
+        # as far as CreateAgentRuntime and then died (or lost its fence) before recording it.
+        # Runtime names are unique per account, so skipping this check would hit a name
+        # conflict on every future attempt, forever.
+        arn = await run_in_thread(_find_existing_runtime_arn, runtime_name_for(owner_id))
 
-    request = build_hermes_runtime_request(
-        owner_id=owner_id,
-        image_uri=settings.AGENTCORE_HERMES_IMAGE,
-        role_arn=role_arn,
-        subnets=[s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()],
-        security_groups=[settings.ECS_SECURITY_GROUP_ID] if settings.ECS_SECURITY_GROUP_ID else [],
-        environment=build_hermes_runtime_env(
+    if arn:
+        # Reusing an already-created runtime (recorded on the row, or found by name). Bring it
+        # onto the currently configured image if it drifted (e.g. a broken tag fixed between
+        # retries); otherwise just poll it below.
+        current_image = await run_in_thread(_runtime_image_uri, arn)
+        if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
+            await run_in_thread(_update_runtime_image, arn, settings.AGENTCORE_HERMES_IMAGE)
+        if not row.get("agentcore_runtime_arn"):
+            # Found by name lookup only -- the row never got it. Record now, before polling,
+            # for the same reason the freshly-created branch below does.
+            await container_repo.update_container_leased(
+                owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
+            )
+    else:
+        from core.billing.bedrock_gate_url import gate_url
+
+        request = build_hermes_runtime_request(
             owner_id=owner_id,
-            api_base=settings.PUBLIC_API_BASE,
-            bucket=settings.OWNER_STATE_BUCKET,
-            boot_secret_id=boot_secret_name(owner_id),
-            gate_endpoint=gate_url(),
-            sonnet_aip_arn=aip_arns["sonnet"],
-        ),
-    )
-    arn = await run_in_thread(_create_runtime, request)
+            image_uri=settings.AGENTCORE_HERMES_IMAGE,
+            role_arn=role_arn,
+            subnets=[s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()],
+            security_groups=[settings.ECS_SECURITY_GROUP_ID] if settings.ECS_SECURITY_GROUP_ID else [],
+            environment=build_hermes_runtime_env(
+                owner_id=owner_id,
+                api_base=settings.PUBLIC_API_BASE,
+                bucket=settings.OWNER_STATE_BUCKET,
+                boot_secret_id=boot_secret_name(owner_id),
+                gate_endpoint=gate_url(),
+                sonnet_aip_arn=aip_arns["sonnet"],
+            ),
+        )
+        arn = await run_in_thread(_create_runtime, request)
+        # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal, fenced -- BEFORE the READY
+        # poll. Without this, a CREATE_FAILED, a poll-window timeout, or a lost fence on the
+        # terminal write below all lose the ARN with nothing to reconcile it: AgentCore runtime
+        # names are unique per account, so every future retry then hits a name conflict on
+        # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
+        # branch above instead of creating again.
+        await container_repo.update_container_leased(
+            owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
+        )
+
     await run_in_thread(_wait_for_runtime_ready, arn)
 
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a

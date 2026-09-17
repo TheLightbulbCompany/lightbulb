@@ -260,10 +260,43 @@ _MCP_SAMPLING = {
 }
 
 
-def translate_mcp_servers(servers: dict | None) -> dict:
-    out: dict = {}
+#: Fix round 1, I1: ``env``/``headers`` values are real, already-resolved credentials — the
+#: registry's ``mcp_server`` wiring rail "resolves each env var from the retained Secrets Manager
+#: secret" (registry.py:107) — never a reference. Copying them verbatim would put a live API key
+#: into an S3-resident ``config.yaml`` that M4-R1 also serves to the settings UI. Every value under
+#: these two fields is moved to the returned secrets map and replaced with a ``${VAR}`` reference.
+_MCP_SECRET_FIELDS = ("env", "headers")
+_NON_IDENT_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _mcp_env_key(server_name: str, var_name: str) -> str:
+    """``MCP_<SERVER>_<VAR>``, both segments sanitized to a valid dotenv/shell identifier."""
+    server = _NON_IDENT_RE.sub("_", server_name).strip("_").upper() or "SERVER"
+    var = _NON_IDENT_RE.sub("_", var_name).strip("_").upper() or "VALUE"
+    return f"MCP_{server}_{var}"
+
+
+def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
+    """Hermes ``mcp_servers`` config plus the secret values it references.
+
+    Returns ``(config, secrets)``: ``config`` is what goes into ``config.yaml``'s ``mcp_servers``
+    key (every ``env``/``headers`` value replaced by a ``${MCP_<SERVER>_<VAR>}`` reference);
+    ``secrets`` is ``{that same name: the real value}``, meant to be merged into the profile
+    ``.env`` by the caller (``write_agent_profile``).
+    """
+    config: dict = {}
+    secrets: dict[str, str] = {}
     for name, block in (servers or {}).items():
         entry: dict = {key: block[key] for key in _MCP_DIRECT if key in block}
+        for field in _MCP_SECRET_FIELDS:
+            values = entry.get(field)
+            if isinstance(values, dict):
+                moved = {}
+                for var_name, value in values.items():
+                    env_key = _mcp_env_key(name, var_name)
+                    secrets[env_key] = value
+                    moved[var_name] = f"${{{env_key}}}"
+                entry[field] = moved
         for ms_key, s_key in _MCP_MS_TO_S.items():
             if isinstance(block.get(ms_key), int):
                 entry[s_key] = block[ms_key] // 1000
@@ -273,8 +306,8 @@ def translate_mcp_servers(servers: dict | None) -> dict:
         sampling = block.get("sampling")
         if isinstance(sampling, dict):
             entry["sampling"] = {v: sampling[k] for k, v in _MCP_SAMPLING.items() if k in sampling}
-        out[name] = entry
-    return out
+        config[name] = entry
+    return config, secrets
 
 
 _CEO_LINE = (
@@ -364,18 +397,21 @@ def write_agent_profile(
     Anthropic with no key delivered anywhere.
     """
     servers = {row["key"]: {k: v for k, v in row.items() if k != "key"} for row in integrations or []}
+    mcp_config, mcp_secrets = translate_mcp_servers(servers)
     config = build_profile_config(
         agent_id=agent["id"],
         agent_role=agent.get("role") or "general",
         provider_choice=provider_choice,
         byo_provider=byo_provider,
         aip_arns=aip_arns,
-        mcp_servers=translate_mcp_servers(servers),
+        mcp_servers=mcp_config,
         is_ceo=(agent.get("role") == "ceo"),
     )
+    # mcp_secrets first, env_vars second: an owner-provisioned value should win a name collision
+    # over a generated MCP_<SERVER>_<VAR> one (unlikely given the prefix, but never the reverse).
     env = build_profile_env(
         paperclip_api_key=paperclip_api_key,
-        env_vars=env_vars,
+        env_vars={**mcp_secrets, **(env_vars or {})},
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
     )

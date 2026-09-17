@@ -901,26 +901,28 @@ def export_agent_from_efs(
         config = None
     kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container, config=config)
     tmp_dir: tempfile.TemporaryDirectory | None = None
-    if kind == "s3":
-        # AgentCore seller: no EFS workspace-{id}/ dir exists. Download the
-        # Hermes S3 profile into a scratch dir and treat it exactly like a
-        # resolved EFS agent_dir for the rest of this function -- tarball
-        # build, safety scan, requirements scan are all unchanged below.
-        # agent_id IS the canonical id here; there is no legacy-slug layer
-        # for S3 profiles.
-        tmp_dir = tempfile.TemporaryDirectory()
-        agent_dir = Path(tmp_dir.name)
-        _download_s3_profile(location, agent_dir)
-        resolved_agent_id = agent_id
-    else:
-        agent_dir = location
-        # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
-        # the live workspace UUID. For legacy slug-keyed listings this differs
-        # from the requested agent_id — key the slice, MCP-arg rewrite, cron
-        # filter, and manifest off the resolved UUID so the snapshot self-heals
-        # (replace_artifact then persists the UUID onto the row).
-        resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
     try:
+        if kind == "s3":
+            # AgentCore seller: no EFS workspace-{id}/ dir exists. Download the
+            # Hermes S3 profile into a scratch dir and treat it exactly like a
+            # resolved EFS agent_dir for the rest of this function -- tarball
+            # build, safety scan, requirements scan are all unchanged below.
+            # agent_id IS the canonical id here; there is no legacy-slug layer
+            # for S3 profiles. Fix round 1, item 3: the download itself is
+            # inside this try/finally so a raising downloader still cleans up
+            # the scratch dir instead of leaking it.
+            tmp_dir = tempfile.TemporaryDirectory()
+            agent_dir = Path(tmp_dir.name)
+            _download_s3_profile(location, agent_dir)
+            resolved_agent_id = agent_id
+        else:
+            agent_dir = location
+            # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
+            # the live workspace UUID. For legacy slug-keyed listings this differs
+            # from the requested agent_id — key the slice, MCP-arg rewrite, cron
+            # filter, and manifest off the resolved UUID so the snapshot self-heals
+            # (replace_artifact then persists the UUID onto the row).
+            resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
         tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths)
 
         if not config:
@@ -1095,13 +1097,15 @@ def export_built_agent_from_staging(
         seller_id=owner_id, agent_id=staging_agent_id, container=container, config=None
     )
     tmp_dir: tempfile.TemporaryDirectory | None = None
-    if kind == "s3":
-        tmp_dir = tempfile.TemporaryDirectory()
-        staging_dir = Path(tmp_dir.name)
-        _download_s3_profile(location, staging_dir)
-    else:
-        staging_dir = location
     try:
+        # Fix round 1, item 3: the download itself is inside this try/finally
+        # so a raising downloader still cleans up the scratch dir.
+        if kind == "s3":
+            tmp_dir = tempfile.TemporaryDirectory()
+            staging_dir = Path(tmp_dir.name)
+            _download_s3_profile(location, staging_dir)
+        else:
+            staging_dir = location
         # The shippable files live under workspace/ (see atlas-skeleton-generator.js
         # draftToFastIo). Tar that subdir so files land at the tarball root; this
         # also leaves build-manifest.json (staging root) out of the tarball. Fall
@@ -1287,21 +1291,23 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
         config = {}
     kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container, config=config)
     tmp_dir: tempfile.TemporaryDirectory | None = None
-    if kind == "s3":
-        # AgentCore seller: download the Hermes S3 profile into a scratch dir
-        # and treat it exactly like a resolved EFS agent_dir for the rest of
-        # this function. agent_id IS the canonical id -- no legacy-slug layer
-        # for S3 profiles.
-        tmp_dir = tempfile.TemporaryDirectory()
-        agent_dir = Path(tmp_dir.name)
-        _download_s3_profile(location, agent_dir)
-        resolved_agent_id = agent_id
-    else:
-        agent_dir = location
-        # Resolved workspace UUID (dir name minus the ``workspace-`` layout
-        # prefix) — differs from agent_id only for legacy slug listings.
-        resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
     try:
+        # Fix round 1, item 3: the download itself is inside this try/finally
+        # so a raising downloader still cleans up the scratch dir.
+        if kind == "s3":
+            # AgentCore seller: download the Hermes S3 profile into a scratch dir
+            # and treat it exactly like a resolved EFS agent_dir for the rest of
+            # this function. agent_id IS the canonical id -- no legacy-slug layer
+            # for S3 profiles.
+            tmp_dir = tempfile.TemporaryDirectory()
+            agent_dir = Path(tmp_dir.name)
+            _download_s3_profile(location, agent_dir)
+            resolved_agent_id = agent_id
+        else:
+            agent_dir = location
+            # Resolved workspace UUID (dir name minus the ``workspace-`` layout
+            # prefix) — differs from agent_id only for legacy slug listings.
+            resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
         # Validate the agent is registered in the seller's config; the entry
         # itself is NOT used as a skills source (no per-agent skill scoping
         # exists at runtime — see the addable-skills note below).

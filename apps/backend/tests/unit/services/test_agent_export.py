@@ -2092,3 +2092,63 @@ def test_enumerate_for_preview_reads_s3_profile_for_agentcore_owner(fake_efs, s3
 
     assert preview["agent_id"] == agent_id
     assert "SOUL.md" in preview["persona_files"]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, item 3: a raising S3 downloader must not leak the scratch dir.
+# ---------------------------------------------------------------------------
+
+
+def test_export_agent_from_efs_cleans_up_scratch_dir_when_download_raises(fake_efs, monkeypatch):
+    seller_id, agent_id, _agent_dir = fake_efs
+    captured: list[Path] = []
+
+    def _raising_download(prefix, dest):
+        captured.append(dest)
+        assert dest.exists()  # the scratch dir was created before the raise
+        raise RuntimeError("s3 unavailable")
+
+    monkeypatch.setattr(agent_export, "_download_s3_profile", _raising_download)
+
+    with pytest.raises(RuntimeError, match="s3 unavailable"):
+        agent_export.export_agent_from_efs(
+            seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
+        )
+
+    assert captured, "the downloader was never called"
+    assert not captured[0].exists(), "the scratch dir leaked after a raising download"
+
+
+def test_enumerate_for_preview_cleans_up_scratch_dir_when_download_raises(fake_efs, monkeypatch):
+    seller_id, agent_id, _agent_dir = fake_efs
+    captured: list[Path] = []
+
+    def _raising_download(prefix, dest):
+        captured.append(dest)
+        raise RuntimeError("s3 unavailable")
+
+    monkeypatch.setattr(agent_export, "_download_s3_profile", _raising_download)
+
+    with pytest.raises(RuntimeError, match="s3 unavailable"):
+        agent_export.enumerate_for_preview(
+            seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
+        )
+
+    assert captured and not captured[0].exists()
+
+
+def test_export_built_agent_from_staging_cleans_up_scratch_dir_when_download_raises(monkeypatch):
+    captured: list[Path] = []
+
+    def _raising_download(prefix, dest):
+        captured.append(dest)
+        raise RuntimeError("s3 unavailable")
+
+    monkeypatch.setattr(agent_export, "_download_s3_profile", _raising_download)
+
+    with pytest.raises(RuntimeError, match="s3 unavailable"):
+        agent_export.export_built_agent_from_staging(
+            owner_id="owner_1", staging_agent_id="atlas-staging-build_1", container={"runtime_host": "agentcore"}
+        )
+
+    assert captured and not captured[0].exists()

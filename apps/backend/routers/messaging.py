@@ -46,6 +46,8 @@ from core.services.messaging import (
     RoomDetail,
     RoomListResponse,
     MessageAttachment,
+    NodeInvokeRequest,
+    NodeInvokeResponse,
     PaperclipRunRequest,
     RunEventRequest,
     RunEventResponse,
@@ -595,6 +597,21 @@ async def post_run_event(owner_id: str, body: RunEventRequest, request: Request)
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
+
+
+@router.post("/internal/node/invoke/{owner_id}", response_model=NodeInvokeResponse)
+async def invoke_node(owner_id: str, body: NodeInvokeRequest, request: Request):
+    """The Hermes bridge's ``lightbulb_node`` plugin calls this once per command (spec §4.4,
+    Task 28) -- the bridge never opens a WebSocket; the backend holds the desktop's socket and
+    speaks the node protocol on its behalf. ``X-Lightbulb-Node-Forwarded`` marks a call this
+    task already forwarded from a peer that didn't hold the session either, so
+    ``service.invoke_node`` never tries a second hop for it (M2-R20)."""
+    await _require_hook_token(owner_id, request)
+    return await service.invoke_node(
+        owner_id,
+        body.model_dump(by_alias=True),
+        forwarded=request.headers.get(service.NODE_FORWARD_HEADER) == "1",
+    )
 
 
 @router.get("/internal/messaging/attachments/{owner_id}/{room_id}/{attachment_id}")

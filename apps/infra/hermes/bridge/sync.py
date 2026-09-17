@@ -1,6 +1,8 @@
 """S3 profile sync (the AWS reference's workspace_sync, cut down)."""
 from __future__ import annotations
 
+import fnmatch
+import json
 import logging
 import sqlite3
 import time
@@ -11,6 +13,36 @@ from bridge import HOME, S3_BUCKET, S3_PREFIX
 log = logging.getLogger("bridge")
 
 _restored: set[str] = set()
+
+# Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch
+# (report 01 §1). The body is redacted but the file must never reach S3; logs/ likewise;
+# .lightbulb-turn/ holds the per-turn local-session JWT (Task 11). WAL/SHM are skipped
+# because save_profile snapshots SQLite through the backup API instead.
+EXCLUDE_GLOBS = (
+    "sessions/request_dump_*.json",
+    "logs/*",
+    "logs/**/*",
+    ".lightbulb-turn/*",
+    "*.db-wal",
+    "*.db-shm",
+    "*.sqlite-wal",
+    "*.sqlite-shm",
+)
+
+
+def is_excluded(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in EXCLUDE_GLOBS)
+
+
+def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
+    """The runtime's environmentVariables are plaintext to anyone with GetAgentRuntime
+    (spec §4.9), so they carry identifiers only and the real secrets are fetched here with
+    the execution role."""
+    if client is None:
+        import boto3
+
+        client = boto3.client("secretsmanager")
+    return json.loads(client.get_secret_value(SecretId=secret_id)["SecretString"])
 
 
 def _s3():
@@ -51,7 +83,8 @@ def restore_profile(agent_id: str) -> float:
 
 
 def save_profile(agent_id: str) -> float:
-    """Upload the agent's profile dir. SQLite files go through the backup API; WAL/SHM are skipped."""
+    """Upload the agent's profile dir. SQLite files go through the backup API; excluded
+    paths (request dumps, logs, per-turn context, WAL/SHM) never leave the microVM."""
     if not S3_BUCKET:
         return 0.0
     t0 = time.time()
@@ -60,9 +93,9 @@ def save_profile(agent_id: str) -> float:
     s3 = _s3()
     n = 0
     for path in src.rglob("*"):
-        if not path.is_file() or path.suffix in (".db-wal", ".db-shm") or path.name.endswith((".sqlite-wal", ".sqlite-shm")):
-            continue
         rel = path.relative_to(src).as_posix()
+        if not path.is_file() or is_excluded(rel):
+            continue
         upload = path
         if path.suffix in (".db", ".sqlite"):
             snap = path.with_name(path.name + ".s3snap")

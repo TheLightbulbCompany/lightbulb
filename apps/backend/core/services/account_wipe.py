@@ -907,7 +907,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     if ids.container is not None:
 
         async def _s3() -> str:
-            row_at_death = await get_ecs_manager().delete_user_service(owner_id)
+            # M6-R42: this is the one full-account-wipe caller, so it also deletes an AgentCore
+            # owner's S3 profiles here -- the exact same "content" step account_wipe's own step 4
+            # (EFS) does for an ECS owner unconditionally, below. Every other delete_user_service
+            # caller (entitlement_teardown, debug's routine reprovision) leaves this False and
+            # keeps the owner's memory/skills/SOUL.md/auth.json intact, same as they do on ECS.
+            row_at_death = await get_ecs_manager().delete_user_service(owner_id, delete_hermes_profiles=True)
             detail = "ECS service + task-def + EFS access point + containers row + channel-links removed"
             # FINAL SWEEP — the last moment any gate-token hash is reachable.
             # ``delete_user_service`` returns the row's own ALL_OLD image, so

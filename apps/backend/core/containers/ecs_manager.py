@@ -2362,18 +2362,30 @@ class EcsManager:
         }
 
     @serialize_owner_lifecycle
-    async def delete_user_service(self, user_id: str) -> dict | None:
+    async def delete_user_service(self, user_id: str, *, delete_hermes_profiles: bool = False) -> dict | None:
         """Remove a user's ECS service and per-user resources entirely -- or, for an
-        AgentCore-hosted owner (F5, predeploy review, M6-R38), the runtime/secret/S3 profiles
-        an account wipe would otherwise orphan (that row never had an ECS service at all).
+        AgentCore-hosted owner (F5, predeploy review, M6-R38), the runtime/session/bearer/boot
+        secret an account wipe would otherwise orphan (that row never had an ECS service at all).
 
-        1. AgentCore row: ``hermes_provisioning.teardown_hermes_runtime(delete_profiles=True)``
-           -- stop session, delete the runtime, revoke the gate-token hash, delete the boot
-           secret, delete every S3 object under ``<owner>/hermes/``. ECS is never touched.
+        1. AgentCore row: ``hermes_provisioning.teardown_hermes_runtime(delete_profiles=
+           delete_hermes_profiles)`` -- stop session, delete the runtime, revoke the gate-token
+           hash, delete the boot secret ALWAYS; delete every S3 object under
+           ``<owner>/hermes/`` only when ``delete_hermes_profiles=True``. ECS is never touched.
            Otherwise: scale to 0 and delete the ECS service.
         2. Deregister per-user task definition (if present)
         3. Delete per-user EFS access point (if present)
         4. Delete Container DB record
+
+        ``delete_hermes_profiles`` (M6-R42, predeploy re-review): defaults to False because this
+        function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed/past-due
+        subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a routine
+        reprovision) -- and on ECS neither of those deletes EFS content (only
+        ``account_wipe.py``'s own dedicated step does, right after its own
+        ``delete_user_service`` call). Passing ``delete_hermes_profiles=True`` from every caller
+        (this function's original M6-R38 shape) meant a lapsed card or a debug reprovision
+        destroyed a migrated owner's memory/skills/SOUL.md/auth.json -- content ECS preserves in
+        the exact same situations. Only ``account_wipe`` passes ``True``, beside its own EFS
+        content delete.
 
         Args:
             user_id: Clerk user ID.
@@ -2399,11 +2411,11 @@ class EcsManager:
         if container and runtime_transport.host_for(container) == "agentcore":
             # THE SEAM's AgentCore twin: this row never had an ECS service, so calling
             # delete_service would just be a guaranteed ServiceNotFoundException. Tear down the
-            # runtime/secret/S3 profiles instead, BEFORE the containers row (the only handle
-            # naming them) is deleted a few lines down.
+            # runtime/secret (+ S3 profiles, only when asked) instead, BEFORE the containers row
+            # (the only handle naming them) is deleted a few lines down.
             from core.services.hermes_provisioning import teardown_hermes_runtime
 
-            await teardown_hermes_runtime(user_id, container_row=container, delete_profiles=True)
+            await teardown_hermes_runtime(user_id, container_row=container, delete_profiles=delete_hermes_profiles)
         else:
             try:
                 # Scale to 0 before deleting

@@ -34,13 +34,16 @@ import copy
 import io
 import logging
 import tarfile
+import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
-from core.services import agent_export
+from core.services import agent_export, runtime_transport
 from core.services.agent_roster import roster_entries
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
@@ -367,6 +370,70 @@ def _remap_cron_jobs_for_deploy(
     return out
 
 
+# ---------------------------------------------------------------------------
+# AgentCore (Hermes) buyers: deploy writes into the S3 profile prefix, not EFS.
+# ---------------------------------------------------------------------------
+
+
+def _s3_client():
+    import boto3
+
+    return boto3.client("s3")
+
+
+# Names deploy_tarball_to_profile must never write into a buyer's Hermes
+# profile. Task 17's profile/config writer owns creating these for a FRESH
+# agent; overwriting them with whatever rode along in the seller's tarball
+# would clobber the buyer's own provider wiring. ``.env`` should never be in a
+# marketplace tarball in the first place (agent_export's dotfile filter
+# already drops it) — named here defensively so a future export bug can't
+# turn into an overwrite here too.
+_DEPLOY_PROFILE_SKIP_NAMES = frozenset({".env", "config.yaml"})
+
+
+async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: bytes, container: dict) -> None:
+    """Extract ``tar_bytes`` into the buyer's Hermes profile prefix (S3,
+    ``<owner>/hermes/<agent_id>/``) instead of their EFS
+    ``workspace-{agent_id}/`` dir.
+
+    Skips ``.env``/``config.yaml`` — the profile writer (Task 17) owns
+    creating those for a freshly deployed agent. Writes a fresh ``.revision``
+    marker LAST so the bridge re-pulls the new content on its next turn
+    (M4-R20) — writing it before the content above would let a concurrent
+    restore see a bumped revision with only some files present.
+
+    Agent registration (the Hermes equivalent of the ``pair_with_openclaw``
+    RPC in ``deploy_from_artifact`` below) is NOT done here — the bridge has
+    no ``agents.create`` RPC yet (report 04 §18). This only places the files.
+
+    ``container`` is unused today (every write targets the S3 profile
+    unconditionally) but is accepted so the caller doesn't need a second
+    branch on ``runtime_transport.host_for`` — it names the contract this
+    function is only ever called under.
+    """
+
+    def _write() -> None:
+        bucket = settings.LITESTREAM_BUCKET
+        s3 = _s3_client()
+        prefix = f"{owner_id}/hermes/{agent_id}"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            if tar_bytes:
+                with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tf:
+                    tf.extractall(tmp_path, filter="data")
+                for f in sorted(tmp_path.rglob("*")):
+                    if not f.is_file() or f.name in _DEPLOY_PROFILE_SKIP_NAMES:
+                        continue
+                    rel = f.relative_to(tmp_path).as_posix()
+                    s3.upload_file(str(f), bucket, f"{prefix}/{rel}")
+            revision = uuid.uuid4().hex
+            marker = tmp_path / ".revision"
+            marker.write_text(revision, encoding="utf-8")
+            s3.upload_file(str(marker), bucket, f"{prefix}/.revision")
+
+    await asyncio.to_thread(_write)
+
+
 class CatalogService:
     def __init__(
         self,
@@ -390,9 +457,17 @@ class CatalogService:
         new_agent_id: str | None = None,
         listing_id: str | None = None,
         seller_id: str | None = None,
+        container: dict | None = None,
     ) -> dict[str, Any]:
         """Deploy a pre-fetched artifact (tarball + slice + manifest) into the
         owner's container.
+
+        ``container`` (the buyer's container row) decides EFS vs S3 via
+        ``runtime_transport.host_for``: an AgentCore buyer's files land in
+        their Hermes S3 profile prefix via ``deploy_tarball_to_profile`` and
+        this method returns immediately after — agent registration is out of
+        scope (see that function's docstring). ``None`` (every existing
+        caller, today) means ECS, and everything below runs unchanged.
 
         Steps:
           1. Extract ``tar_bytes`` into EFS at ``workspace-{new_agent_id}/``.
@@ -430,6 +505,25 @@ class CatalogService:
         """
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
+
+        # AgentCore buyer: no EFS workspace to extract into. Place the files
+        # in their Hermes S3 profile and stop — the rest of this method
+        # (credential gate, gateway pairing, sidecar, cron jobs) is EFS/ECS
+        # gateway-RPC machinery a Hermes agent has no equivalent for yet (see
+        # deploy_tarball_to_profile's docstring). ECS/unknown buyers
+        # (container absent, every existing caller today) fall through to the
+        # unchanged path below.
+        if runtime_transport.host_for(container or {}) == "agentcore":
+            await deploy_tarball_to_profile(
+                owner_id=owner_id, agent_id=new_agent_id, tar_bytes=tar_bytes, container=container or {}
+            )
+            return {
+                "slug": slug,
+                "version": manifest.get("version", 1),
+                "agent_id": new_agent_id,
+                "name": manifest.get("name", slug),
+                "origin": "Marketplace" if listing_id and seller_id else "Custom",
+            }
 
         # Credential gate — runs before any EFS / gateway side effect so a
         # blocked deploy leaves no partial state. The buyer must have

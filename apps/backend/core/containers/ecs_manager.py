@@ -1420,8 +1420,15 @@ class EcsManager:
         invoke and parks it on idle. Both chokepoints answer "nothing to do", so no door — the
         status poll, chat wake, agent mail, the trial-idle sweep, an admin click — can start a
         second gateway on the workspace's access point or flip its row back to ``stopped``.
-        Rollout scaffolding: deleted with the ECS path once the last workspace has moved."""
-        row = await container_repo.get_by_owner_id(user_id)
+        Rollout scaffolding: deleted with the ECS path once the last workspace has moved.
+
+        Ruling M6-R21: reads with ``consistent=True``. ``scripts/migrate_workspace_to_hermes.py``'s
+        ``rollback`` flips ``runtime_host`` back to "ecs" and then immediately calls
+        ``start_user_service`` — an eventually-consistent read landing in that gap could still
+        return the pre-flip "agentcore" and no-op the restart, silently and forever (nothing else
+        ever calls ``start_user_service`` for a rolled-back owner again).
+        """
+        row = await container_repo.get_by_owner_id(user_id, consistent=True)
         return bool(row) and runtime_transport.host_for(row) == "agentcore"
 
     @serialize_owner_lifecycle

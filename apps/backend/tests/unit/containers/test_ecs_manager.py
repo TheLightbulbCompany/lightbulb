@@ -1037,6 +1037,26 @@ class TestStartUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
     @pytest.mark.asyncio
+    async def test_start_after_a_flip_reads_the_agentcore_guard_consistently(self, manager, mock_ecs_client):
+        """Ruling M6-R21: _hosted_on_agentcore (the guard both start_user_service and
+        stop_user_service check first) must read the row with consistent=True. rollback's row
+        flip back to runtime_host="ecs" and this restart happen back to back, and an
+        eventually-consistent read could still return the pre-flip runtime_host="agentcore" --
+        silently no-opping the restart forever."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.start_user_service("user_test_123", force=True)
+
+            first_call = mock_repo.get_by_owner_id.call_args_list[0]
+            assert first_call == call("user_test_123", consistent=True)
+        mock_ecs_client.update_service.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_start_fires_running_transition_poller(self, manager, mock_ecs_client):
         """Cold-start restart MUST fire _await_running_transition, or the cold-
         started container will get stuck at status=provisioning forever when
@@ -3416,7 +3436,9 @@ class TestProvisionUserContainer:
 
         row_state = {"gen": "gen-OLD"}
 
-        async def _get(owner_id):
+        async def _get(owner_id, *, consistent=False):
+            # consistent=True is Ruling M6-R21's _hosted_on_agentcore read, reached via this
+            # provision's own trailing start_user_service call -- same row either way here.
             row = _make_container_dict(status="stopped")
             row["provision_generation"] = row_state["gen"]
             return row

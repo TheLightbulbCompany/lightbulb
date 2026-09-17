@@ -302,6 +302,19 @@ def clear_turn_context(root, session_id: str) -> None:
 # ---- the turn --------------------------------------------------------------------------------
 ZERO_USAGE = {"model": MODEL, "inputTokens": 0, "outputTokens": 0,
               "cacheReadTokens": 0, "cacheWriteTokens": 0, "estimatedCostUsd": None}
+GATE_OUTCOMES = ("ignored", "gate_error")
+
+
+def run_ended_body(run_id, session_key, outcome, error_kind, usage) -> dict:
+    """usage is REQUIRED unless the outcome is a gate outcome; the backend's own
+    RunEventRequest validator enforces the same rule, so a mismatch is a 422."""
+    body = {"runId": run_id, "type": "run.ended", "at": now(),
+            "sessionKey": session_key, "outcome": outcome}
+    if outcome == "error" and error_kind:
+        body["errorKind"] = error_kind
+    if outcome not in GATE_OUTCOMES:
+        body["usage"] = usage
+    return body
 
 
 def _history(body: dict, agent_id: str) -> list[dict]:
@@ -321,7 +334,18 @@ def _history(body: dict, agent_id: str) -> list[dict]:
     return out
 
 
+def lightbulb_session_key(agent_id: str, room_id: str) -> str:
+    """Bridge-side port of the backend's own `openclaw_work.lightbulb_session_key` — kept
+    byte-identical so `session_keys.parse_lightbulb_session_key` still parses it."""
+    return f"agent:{agent_id}:lightbulb:channel:{room_id}"
+
+
 def _construct_agent(agent_id: str, body: dict, frames):
+    """The one place that builds a real Hermes AIAgent. Home-scoping wraps ONLY construction:
+    spec §4.5 says config is read once per AIAgent construction and cached on file mtime, so
+    the override does not need to stay active for the rest of the turn — and every other test
+    in this suite replaces this function instead of importing hermes_constants."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from run_agent import AIAgent
 
     room = body.get("room") or {}
@@ -329,45 +353,44 @@ def _construct_agent(agent_id: str, body: dict, frames):
     if frames is not None:
         callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
                      "tool_progress_callback": frames.activity}
-    return AIAgent(
-        model=MODEL,
-        provider="bedrock",
-        quiet_mode=True,
-        session_id=f"{room.get('id')}:{agent_id}",
-        platform="lightbulb",
-        user_id=str((body.get("sender") or {}).get("id", "")),
-        chat_id=str(room.get("id", "")),
-        chat_type="dm" if room.get("kind") == "dm" else "group",
-        **callbacks,
-    )
+    token = set_hermes_home_override(_profile_dir(agent_id))
+    try:
+        return AIAgent(
+            model=MODEL,
+            provider="bedrock",
+            quiet_mode=True,
+            session_id=f"{room.get('id')}:{agent_id}",
+            platform="lightbulb",
+            user_id=str((body.get("sender") or {}).get("id", "")),
+            chat_id=str(room.get("id", "")),
+            chat_type="dm" if room.get("kind") == "dm" else "group",
+            gateway_session_key=lightbulb_session_key(agent_id, room.get("id")),
+            **callbacks,
+        )
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
     """The one seam every other test replaces instead of constructing a real AIAgent."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
     msg = body.get("message") or {}
-    token = set_hermes_home_override(_profile_dir(agent_id))
-    try:
-        agent = _construct_agent(agent_id, body, frames)
-        result = agent.run_conversation(
-            user_message=f"{(body.get('sender') or {}).get('id', '?')}: {msg.get('text', '')}",
-            system_message=system_prompt(body, agent_id),
-            conversation_history=_history(body, agent_id) or None,
-        ) or {}
-        usage = {**ZERO_USAGE,
-                 "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
-                 "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
-                 "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
-                 "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
-        reply = result.get("final_response") or ""
-        if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
-            return "error", "model_unavailable", "", usage
-        if not reply:
-            return "error", "empty_response", "", usage
-        return "completed", None, reply, usage
-    finally:
-        reset_hermes_home_override(token)
+    agent = _construct_agent(agent_id, body, frames)
+    result = agent.run_conversation(
+        user_message=f"{(body.get('sender') or {}).get('id', '?')}: {msg.get('text', '')}",
+        system_message=system_prompt(body, agent_id),
+        conversation_history=_history(body, agent_id) or None,
+    ) or {}
+    usage = {**ZERO_USAGE,
+             "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
+             "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
+             "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+             "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
+    reply = result.get("final_response") or ""
+    if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
+        return "error", "model_unavailable", "", usage
+    if not reply:
+        return "error", "empty_response", "", usage
+    return "completed", None, reply, usage
 
 
 def run_turn(agent_id: str, body: dict) -> None:
@@ -423,10 +446,7 @@ def run_turn(agent_id: str, body: dict) -> None:
                 "runId": run_id,
             },
         )
-    _post_backend(
-        f"runs/{OWNER}/events",
-        {"runId": run_id, "type": "run.ended", "at": now(), "sessionKey": session_key, "outcome": outcome, "errorKind": error_kind, "usage": usage},
-    )
+    _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
     try:
         save_profile(agent_id)
     except Exception as exc:  # noqa: BLE001

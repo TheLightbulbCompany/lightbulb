@@ -73,9 +73,21 @@ def test_a_real_ed25519_signature_verifies_and_a_tampered_one_does_not():
 
 
 def test_a_clock_skewed_signed_at_is_not_a_rejection():
-    # Our Rust client signs with its LOCAL clock and never reads the challenge ts.
-    assert node_broker.hello_ok("r", "c")  # sentinel: nothing in the broker compares signedAt to ts
-    assert "signedAt" not in str(node_broker.challenge_frame())
+    # Our Rust client signs with its LOCAL clock and never reads the challenge ts — a signature
+    # built with a signedAt an hour off the broker's own clock must still verify.
+    key = Ed25519PrivateKey.generate()
+    raw = key.public_key().public_bytes_raw()
+    now_ms = int(time.time() * 1000)
+    for signed_at in (now_ms - 3_600_000, now_ms + 3_600_000):  # one hour in the past / future
+        params = {
+            "client": {"id": "node-host", "mode": "node", "platform": "macos"},
+            "role": "node",
+            "scopes": [],
+            "auth": {"token": "t"},
+            "device": {"id": "d", "signedAt": signed_at, "nonce": "n", "publicKey": _b64u(raw)},
+        }
+        params["device"]["signature"] = _b64u(key.sign(node_broker.device_payload_v3(params, "n").encode()))
+        assert node_broker.signature_matches(params, "n") is True
 
 
 def test_params_json_is_a_string_not_an_object():

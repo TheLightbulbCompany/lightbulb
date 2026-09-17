@@ -58,20 +58,9 @@ import sys
 
 from core.config import settings
 
-try:
-    # Task 17 lands core.services.hermes_provisioning. Imported eagerly (unlike this
-    # module's other core.* imports, which are lazy inside functions) so tests can
-    # monkeypatch `provision_runner.hermes_provisioning` directly, and so the flag
-    # branch below has something to call even before Task 17 exists.
-    from core.services import hermes_provisioning
-except ImportError:  # pragma: no cover — stand-in until Task 17 lands the real module
-
-    class _HermesProvisioningNotReady:
-        @staticmethod
-        def provision_hermes_runtime(owner_id: str) -> str:
-            raise NotImplementedError("core.services.hermes_provisioning is not implemented yet (Task 17)")
-
-    hermes_provisioning = _HermesProvisioningNotReady()
+# Imported eagerly (unlike this module's other core.* imports, which are lazy inside
+# functions) so tests can monkeypatch `provision_runner.hermes_provisioning` directly.
+from core.services import hermes_provisioning
 
 EXIT_OK = 0
 EXIT_DETERMINISTIC = 10
@@ -273,6 +262,24 @@ async def run(owner_id: str, claim_id: str) -> int:
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
 
+        if settings.HERMES_RUNTIME:
+            # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0
+            # seeds the roster. Step 0's starter-agent loop bakes hook_token into the http
+            # adapter's Authorization header at seed time — seeding first shipped every starter
+            # agent with an EMPTY bearer, since nothing had minted one yet. Fenced, NON-terminal
+            # (the provision isn't done): a lost fence here raises ProvisionSuperseded, caught by
+            # the same handler as every other checkpoint in this function.
+            # C2/M4-R36: any OTHER exception is released to error here — prepare_hermes_workspace
+            # has no internal release of its own (unlike provision_user_container on the ECS leg).
+            try:
+                await hermes_provisioning.prepare_hermes_workspace(
+                    owner_id, claim_id=claim_id, attempt_token=attempt_token
+                )
+            except ProvisionSuperseded:
+                raise
+            except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
+                return await _release_hermes_failure_to_error(owner_id, claim_id, attempt_token, exc, "prepare")
+
         # Step 0: the OWNER Paperclip seed runs HERE, under the executor's
         # single-flight (this is the ONLY runner for this owner's claim),
         # BEFORE the container work — killing the duplicate-company race
@@ -311,9 +318,23 @@ async def run(owner_id: str, claim_id: str) -> int:
         if settings.HERMES_RUNTIME:
             # CreateAgentRuntime is one synchronous call, so there is no service to poll and
             # no generation to re-read: provision_hermes_runtime writes the terminal row
-            # itself. Everything below this branch (manager, pre_row/generation fencing,
-            # wait_for_running) is an ECS concept and is skipped wholesale.
-            hermes_provisioning.provision_hermes_runtime(owner_id)
+            # itself, FENCED on the same claim_id/attempt_token this run already holds
+            # (M4-R28 — mirrors manager.wait_for_running's own fenced terminal write below).
+            # Everything else below this branch (manager, pre_row/generation fencing,
+            # wait_for_running) is an ECS concept and is skipped wholesale. A lost fence
+            # raises ProvisionSuperseded, caught by the same handler as the ECS leg's.
+            # C2/M4-R36: any OTHER exception is released to error here, same as prepare's own
+            # branch above — provision_hermes_runtime has no internal release of its own.
+            try:
+                await hermes_provisioning.provision_hermes_runtime(
+                    owner_id, claim_id=claim_id, attempt_token=attempt_token
+                )
+            except ProvisionSuperseded:
+                raise
+            except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
+                return await _release_hermes_failure_to_error(
+                    owner_id, claim_id, attempt_token, exc, "runtime provision"
+                )
             return EXIT_OK
 
         # Read the container-incarnation fence off the row (see module
@@ -395,6 +416,35 @@ async def run(owner_id: str, claim_id: str) -> int:
     # external actor owns the row now — succeed quietly, write nothing.
     logger.info("owner %s left provisioning externally (status=%s)", owner_id, status)
     return EXIT_OK
+
+
+async def _release_hermes_failure_to_error(
+    owner_id: str, claim_id: str, attempt_token: str | None, exc: Exception, stage: str
+) -> int:
+    """C2/M4-R36: the Hermes leg's own error-release call — same shape as step 0's (classify,
+    release_provision_to_error, map to the exit-code ABI), and the same job
+    ``provision_user_container`` does INTERNALLY for the ECS leg (see the comment on the bare
+    ``except Exception`` below). Without this, a raise out of ``prepare_hermes_workspace`` or
+    ``provision_hermes_runtime`` left ``status="provisioning"`` with a LIVE claim and no
+    ``last_error``/``retryable`` — an open-ended spinner for the owner and nothing for the SFN
+    watch loop's error branch or the frontend's error auto-retry to act on.
+    """
+    from core.repositories import container_repo
+    from core.repositories.container_repo import classify_provision_error
+
+    logger.exception("hermes %s failed for owner %s", stage, owner_id)
+    _, retryable = classify_provision_error(exc)
+    try:
+        await container_repo.release_provision_to_error(
+            owner_id,
+            claim_id,
+            last_error=f"hermes {stage} failed: {exc}",
+            retryable=retryable,
+            attempt_token=attempt_token,
+        )
+    except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
+        logger.exception("hermes %s: error release failed for owner %s", stage, owner_id)
+    return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
 
 
 async def _stand_down_superseded(owner_id: str) -> int:

@@ -177,6 +177,14 @@ async def test_provision_org_with_agentcore_runtime_host_seeds_the_http_adapter(
     # Exactly one read (the hook-token lookup), not a second one to decide the
     # adapter type — the explicit hint is what skips that second read.
     row_spy.assert_awaited_once_with("org_hermes")
+    # m6: prove the REAL hook_token value (not just that a lookup happened) reaches every
+    # starter agent's adapter config -- this is the exact bug M4-R33 fixes: without
+    # prepare_hermes_workspace minting hook_token onto the row BEFORE this seed runs, the row
+    # read above returns {} and every agent bakes an empty bearer instead.
+    auth_headers = {
+        call.kwargs["adapter_config"]["headers"]["Authorization"] for call in admin.create_agent.call_args_list
+    }
+    assert auth_headers == {"Bearer hook-1"}
 
 
 @pytest.mark.asyncio

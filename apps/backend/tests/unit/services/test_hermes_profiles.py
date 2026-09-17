@@ -88,3 +88,41 @@ def test_chatgpt_oauth_selects_the_codex_provider_with_no_tier_split():
 def test_plugins_enabled_is_a_flat_list_never_entries():
     c = cfg()
     assert c["plugins"] == {"enabled": ["lightbulb", "lightbulb_node"]}
+
+
+def test_dotenv_carries_the_per_profile_refs_and_the_provisioned_env():
+    env = hermes_profiles.build_profile_env(
+        gate_bearer_ref="lightbulb/dev/gate-bearer/org_a",
+        gate_url="https://gate.lambda-url.us-east-1.on.aws",
+        region="us-east-1",
+        paperclip_key_ref="lightbulb/dev/paperclip/org_a/a1",
+        env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
+    )
+    assert env["AWS_ENDPOINT_URL_BEDROCK_RUNTIME"] == "https://gate.lambda-url.us-east-1.on.aws"
+    assert env["AWS_REGION"] == "us-east-1"
+    assert env["LIGHTBULB_GATE_BEARER_SECRET"] == "lightbulb/dev/gate-bearer/org_a"
+    assert env["LIGHTBULB_PAPERCLIP_KEY_SECRET"] == "lightbulb/dev/paperclip/org_a/a1"
+    assert env["STRIPE_SECRET_KEY"] == "sk_live_x"
+
+
+def test_dotenv_never_carries_a_plaintext_gate_bearer():
+    env = hermes_profiles.build_profile_env(
+        gate_bearer_ref="lightbulb/dev/gate-bearer/org_a",
+        gate_url="https://gate",
+        region="us-east-1",
+        paperclip_key_ref="lightbulb/dev/paperclip/org_a/a1",
+        env_vars={},
+    )
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env  # resolved at boot from Secrets Manager (Task 20)
+
+
+def test_render_dotenv_quotes_and_escapes():
+    out = hermes_profiles.render_dotenv({"A": "one two", "B": 'say "hi"', "C": "plain"})
+    assert out.splitlines() == ['A="one two"', 'B="say \\"hi\\""', "C=plain"]
+
+
+def test_render_dotenv_refuses_an_illegal_key():
+    import pytest
+
+    with pytest.raises(ValueError):
+        hermes_profiles.render_dotenv({"not a key": "x"})

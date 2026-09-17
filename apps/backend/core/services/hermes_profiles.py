@@ -14,6 +14,8 @@ config live in the managed overlay (Task 11), which wins at the leaf after env e
 
 from __future__ import annotations
 
+import re
+
 from core.containers.config import cheap_model_ref, premium_model_ref
 
 _BEDROCK = "bedrock"
@@ -130,3 +132,49 @@ def build_profile_config(
     if model["provider"] == _BEDROCK:
         config["bedrock"] = {"region": "us-east-1", "discovery": {"enabled": False}}
     return config
+
+
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PLAIN_RE = re.compile(r"^[A-Za-z0-9_./:@+=-]*$")
+
+
+def build_profile_env(
+    *,
+    gate_bearer_ref: str,
+    gate_url: str,
+    region: str,
+    paperclip_key_ref: str,
+    env_vars: dict[str, str],
+    byo_key_ref: str | None = None,
+) -> dict[str, str]:
+    """The profile's ``.env``.
+
+    Credentials the PLATFORM owns arrive as a Secrets Manager NAME, not a value: AgentCore
+    ``environmentVariables`` are plaintext to anyone with ``GetAgentRuntime`` (spec §4.9) and this
+    file rides S3. ``sync.load_secrets`` (Task 20) resolves every ``*_SECRET`` name at boot with the
+    execution role. Owner-provisioned values (``env_vars``, from ``build_provisioned_env``) are
+    carried as-is — the same rail ``openclaw.json``'s ``env.vars`` used.
+    """
+    env = {
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": gate_url,
+        "AWS_REGION": region,
+        "LIGHTBULB_GATE_BEARER_SECRET": gate_bearer_ref,
+        "LIGHTBULB_PAPERCLIP_KEY_SECRET": paperclip_key_ref,
+    }
+    if byo_key_ref:
+        env["LIGHTBULB_BYO_KEY_SECRET"] = byo_key_ref
+    env.update(env_vars or {})
+    return env
+
+
+def render_dotenv(env: dict[str, str]) -> str:
+    lines = []
+    for key, value in env.items():
+        if not _KEY_RE.match(key):
+            raise ValueError(f"illegal dotenv key: {key!r}")
+        text = str(value)
+        if _PLAIN_RE.match(text):
+            lines.append(f"{key}={text}")
+        else:
+            lines.append(f'{key}="' + text.replace('"', '\\"') + '"')
+    return "\n".join(lines)

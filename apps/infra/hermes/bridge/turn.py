@@ -185,9 +185,11 @@ MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 # dispatch that message was part of (report 03 §1). Widened deliberately.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
 ROOM_EVENT_KINDS = ("user_request", "room_event")
-# agent_mail (Task 20) carries no room: no participants, no frame channel, no thread — only
-# a sessionKey (threading the mail conversation) and a target agent.
-EVENT_KINDS = ROOM_EVENT_KINDS + ("agent_mail",)
+# agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no
+# participants, no frame channel, no thread, no run block — only a target agent and
+# (optionally, see I1) a sessionKey. Both get the same non-room short-circuit below.
+NON_ROOM_KINDS = ("agent_mail", "paperclip_run")
+EVENT_KINDS = ROOM_EVENT_KINDS + NON_ROOM_KINDS
 
 
 class IngressError(Exception):
@@ -219,7 +221,7 @@ def parse_ingress(body: dict) -> dict:
     _check(isinstance(body, dict) and body.get("version") == 1, "body.version must be 1")
     _check(len(str(body.get("eventId") or "").encode()) <= MAX_EVENT_ID_BYTES, "eventId exceeds 256 bytes")
     _check(body.get("eventKind") in EVENT_KINDS, f"eventKind must be one of {'|'.join(EVENT_KINDS)}")
-    if body.get("eventKind") == "agent_mail":
+    if body.get("eventKind") in NON_ROOM_KINDS:
         _check(bool(body.get("sessionKey")), "sessionKey is required for an agent_mail event")
         _check(bool(body.get("targetAgentId")), "targetAgentId is required")
         return body
@@ -428,10 +430,15 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
     ctx = room_context(body, agent_id, media=media)
     me = next((p for p in ctx["participants"] if p.get("id") == agent_id), {})
     name = me.get("displayName") or me.get("name") or "an agent"
-    if body.get("eventKind") == "agent_mail":
+    event_kind = body.get("eventKind")
+    if event_kind == "agent_mail":
         # Mail (Task 20) carries no room at all -- the old unconditional "room #{room.get
         # ('id')}" line rendered literally as "room #None" for every mail turn.
         identity = f"You are {name}, replying to an email. Reply as yourself."
+    elif event_kind == "paperclip_run":
+        # paperclip_run (Task 21, fix round C3) carries no room either -- same "room #None"
+        # bug the agent_mail branch already fixed, now generalised.
+        identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself."
     else:
         room = ctx["room"]
         identity = (
@@ -545,11 +552,16 @@ def _display_name(entity: dict) -> str:
 def _turn_user_message(body: dict) -> str:
     """Matches _history's per-message formatting ('<display name>: <text>'). A mail event
     (Task 20) carries no `sender` block at all — its envelope identifies the author by
-    `message.fromAddress` instead."""
+    `message.fromAddress` instead. paperclip_run (Task 21, fix round C3) has no sender at
+    all -- there is no "who said this" to prefix, so the trigger text is passed through as-is
+    (the old fallback rendered a literal "?: <text>")."""
     msg = body.get("message") or {}
     text = msg.get("text", "")
-    if body.get("eventKind") == "agent_mail":
+    event_kind = body.get("eventKind")
+    if event_kind == "agent_mail":
         return f"{msg.get('fromAddress') or 'unknown sender'}: {text}"
+    if event_kind == "paperclip_run":
+        return text
     return f"{_display_name(body.get('sender') or {})}: {text}"
 
 

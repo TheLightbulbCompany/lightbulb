@@ -243,3 +243,28 @@ def test_mark_started_sets_the_flag_on_a_registered_run():
 
 def test_mark_started_on_an_unknown_run_does_not_raise():
     turn.mark_started(RUN)  # no entry at all -- must be a no-op, not a KeyError
+
+
+# ---- Final-review fix round: C3 -----------------------------------------------------------------
+# routers/messaging.py:631-638 (post_paperclip_run) builds exactly this body -- copied literally
+# here, not paraphrased -- and posts it to this same inbound door. Before the fix,
+# "paperclip_run" was not in turn.EVENT_KINDS at all, so parse_ingress raised and this door
+# answered 400 invalid_ingress for every Paperclip-triggered run.
+PAPERCLIP_RUN_BODY = {
+    "version": 1,
+    "eventId": "run_123",
+    "eventKind": "paperclip_run",
+    "targetAgentId": "agent_ceo",
+    "sessionKey": "agent:agent_ceo:paperclip:run_123",
+    "message": {"text": "New comment on your task"},
+}
+
+
+def test_a_paperclip_run_ingress_with_no_room_or_run_block_is_accepted(home, posted, monkeypatch):
+    mod, created = _capturing_threading()
+    monkeypatch.setattr(server, "threading", mod)
+    code, obj = server.handle_plugin(_inbound_path("agent_ceo"), "POST", AUTH, dict(PAPERCLIP_RUN_BODY))
+    assert code == 202
+    assert obj["status"] == "accepted"
+    assert posted == []  # no run block -- nothing to register, nothing to post run.started for
+    assert len(created) == 1

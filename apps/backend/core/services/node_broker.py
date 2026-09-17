@@ -114,6 +114,13 @@ class NodeInvokeTimeout(Exception):
     pass
 
 
+class NodeDetached(Exception):
+    """Raised for every invoke still in flight when the node's socket closes -- the relay
+    calls ``NodeSession.fail_pending`` with this so a caller learns immediately that no
+    answer is coming, instead of waiting out the full ``timeout_ms`` for one that never
+    arrives. Task 28 maps this to ``NODE_NOT_ATTACHED``."""
+
+
 def invoke_request(invoke_id: str, node_id: str, command: str, params: dict, timeout_ms: int) -> dict:
     return {
         "type": "event",
@@ -158,6 +165,15 @@ class NodeSession:
             raise NodeInvokeTimeout(command) from exc
         finally:
             self.pending.pop(invoke_id, None)
+
+    def fail_pending(self, exc: Exception) -> None:
+        """The socket is gone -- nothing will ever answer an in-flight invoke. Fail every
+        unfinished future with `exc` right now and clear the map, rather than letting each
+        one sit until its own `timeout_ms` elapses."""
+        for future in self.pending.values():
+            if not future.done():
+                future.set_exception(exc)
+        self.pending.clear()
 
     def resolve(self, frame: dict) -> dict | None:
         """Answer a node->gateway req. Returns the ack to send, or None for a non-req frame."""

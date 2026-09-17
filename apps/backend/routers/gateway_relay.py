@@ -406,6 +406,10 @@ async def _serve_node_protocol(
     finally:
         if refresher is not None and not refresher.done():
             refresher.cancel()
+        # The socket is gone -- nothing will ever answer an invoke still in flight. Fail it
+        # NOW rather than letting a caller (Task 28) wait out its own timeout_ms for an
+        # answer that can never arrive (fix round 1, item 4).
+        session.fail_pending(node_broker.NodeDetached(f"node socket closed for owner={identity.owner_id}"))
         # Only pop THIS socket's own entry -- a second device for the same owner may have
         # registered its own (owner_id, device_id) key since, and must not be evicted here.
         if node_sessions.get(key) is session:

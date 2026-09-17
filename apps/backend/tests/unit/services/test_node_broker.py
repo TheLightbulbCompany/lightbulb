@@ -177,6 +177,28 @@ async def test_a_command_the_device_never_declared_is_refused_before_it_reaches_
         await session.invoke("camera.capture", {}, 1_000)
 
 
+async def test_fail_pending_raises_node_detached_immediately_not_after_timeout_ms():
+    """Fix round 1, item 4: closing the socket must not leave an in-flight invoke waiting
+    out its full timeout_ms for a reply that can never arrive."""
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    task = asyncio.create_task(session.invoke("system.run", {"command": ["sleep", "9"]}, 60_000))
+    await asyncio.sleep(0)
+    assert session.pending  # the invoke is genuinely in flight
+
+    start = time.monotonic()
+    session.fail_pending(node_broker.NodeDetached("socket closed"))
+    with pytest.raises(node_broker.NodeDetached):
+        await task
+    assert time.monotonic() - start < 1.0  # nowhere near the 60s timeout_ms
+    assert session.pending == {}
+
+
+async def test_fail_pending_is_a_no_op_with_nothing_in_flight():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    session.fail_pending(node_broker.NodeDetached("socket closed"))  # must not raise
+    assert session.pending == {}
+
+
 async def test_progress_and_node_event_are_acked_and_need_no_implementation():
     session = node_broker.NodeSession("dev-1", {"system.run"})
     for method in ("node.invoke.progress", "node.event"):

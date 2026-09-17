@@ -370,3 +370,33 @@ async def test_a_frame_over_max_payload_closes_1009():
         socket.feed(json.dumps({"type": "req", "id": "r-3", "method": "node.event", "params": {"x": "y" * 2_000}}))
         code = await asyncio.wait_for(serve_task, timeout=1.0)
     assert code == 1009
+
+
+@pytest.mark.asyncio
+async def test_an_in_flight_invoke_is_failed_immediately_when_the_socket_closes():
+    """Fix round 1, item 4 (important): a pending invoke used to just sit there until its own
+    timeout_ms elapsed when the node's socket closed underneath it -- a caller (Task 28)
+    would wait out the full budget for an answer that could never arrive. Closing the socket
+    must fail every in-flight invoke immediately with NodeDetached."""
+    socket = _FeedableSocket()
+    socket.feed(_connect_frame("c-6", ["system.run"]))
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(node_broker, "TICK_INTERVAL_MS", 60_000),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+    ):
+        serve_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(socket, _identity(), {"runtime_host": "agentcore"})
+        )
+        await _poll_until(lambda: ("org_1", "dev-1") in gateway_relay.node_sessions)
+        session = gateway_relay.node_sessions[("org_1", "dev-1")]
+        # A long timeout_ms -- if fail_pending did not fire, this assertion would need the
+        # full 60s to resolve; asyncio.wait_for's 1s bound is what actually proves "immediately".
+        invoke_task = asyncio.create_task(session.invoke("system.run", {}, 60_000))
+        await _poll_until(lambda: any(json.loads(f).get("event") == "node.invoke.request" for f in socket.sent))
+
+        socket.feed(None)  # the client hangs up while the invoke is still in flight
+        await asyncio.wait_for(serve_task, timeout=1.0)
+
+        with pytest.raises(node_broker.NodeDetached):
+            await asyncio.wait_for(invoke_task, timeout=1.0)

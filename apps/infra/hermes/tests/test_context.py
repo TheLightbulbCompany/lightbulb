@@ -28,3 +28,31 @@ def test_the_system_prompt_embeds_the_context_as_parseable_json():
     block = prompt.split("```json", 1)[1].split("```", 1)[0]
     assert json.loads(block)["room"]["name"] == "general"
     assert "CEO" in prompt
+
+
+# ---- review fix (cheap f): the user_message prefix uses the sender's displayName, like
+# _history does for every other participant, instead of their bare id.
+def test_the_turn_user_message_prefixes_with_the_senders_display_name():
+    body = f.ingress()  # sender is {"kind": "human", "id": "user_1", "displayName": "Prez"}
+    assert turn._turn_user_message(body) == "Prez: ship it"
+
+
+def test_the_turn_user_message_falls_back_to_id_with_no_display_name():
+    body = f.ingress(message=f.message(author={"kind": "human", "id": "user_9"}))
+    assert turn._turn_user_message(body) == "user_9: ship it"
+
+
+def test__run_hermes_passes_the_display_name_prefixed_user_message(home, monkeypatch):
+    seen = {}
+
+    class _FakeAgent:
+        session_input_tokens = session_output_tokens = 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **kw):
+            seen["user_message"] = kw["user_message"]
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _FakeAgent())
+    turn._run_hermes("ceo", f.ingress(), None)
+    assert seen["user_message"] == "Prez: ship it"

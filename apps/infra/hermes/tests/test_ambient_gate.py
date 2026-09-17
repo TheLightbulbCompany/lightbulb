@@ -72,13 +72,22 @@ def test_an_ignored_room_event_never_reaches__run_hermes_and_emits_no_usage_or_e
     ended = next(b for _p, b in posted if b.get("type") == "run.ended")
     assert ended["outcome"] == "ignored" and "usage" not in ended
     assert not any(p.startswith("agent-messages/") for p, _b in posted)
-    assert [f["type"] for f in sent] == ["run_active", "run_active"]  # started() + the gate's own finished()
+    # Controller ruling: spec §5 has no gate exception on the frame side -- ignored/gate_error
+    # flow through the SAME error/run_ended/run_active:false sequence as any other
+    # non-"completed" outcome (an earlier pass on this branch suppressed run_ended here,
+    # reading Task 24's "no frames beyond run_active true/false" too literally).
+    assert [f["type"] for f in sent] == ["run_active", "error", "run_ended", "run_active"]
+    assert sent[-2]["outcome"] == "ignored"
     assert sent[-1]["active"] is False
 
 
 def test_a_gate_error_room_event_ends_gate_error_with_no_usage(home, posted, monkeypatch):
     monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: "gate_error")
     monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")))
+    sent = []
+    monkeypatch.setattr(turn, "publish_frame", lambda endpoint, channel, event: sent.append(event["payload"]["frame"]) or 200)
     turn.run_turn("ceo", f.ingress(eventKind="room_event"))
     ended = next(b for _p, b in posted if b.get("type") == "run.ended")
     assert ended["outcome"] == "gate_error" and "usage" not in ended
+    assert [f["type"] for f in sent] == ["run_active", "error", "run_ended", "run_active"]
+    assert sent[-2]["outcome"] == "gate_error"

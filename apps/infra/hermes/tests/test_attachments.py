@@ -54,3 +54,23 @@ def test__run_hermes_materializes_attachments_before_building_the_system_prompt(
     turn._run_hermes("ceo", f.ingress(), None)
     block = seen["system_message"].split("```json", 1)[1].split("```", 1)[0]
     assert json.loads(block)["media"] == ["/mnt/a1.png"]
+
+
+# ---- review fix (IMPORTANT 4): one bad attachment must not fail the whole turn ---------------
+def test_a_failed_attachment_fetch_is_skipped_not_fatal(home, monkeypatch):
+    def flaky_get(path):
+        if "a1" in path:
+            raise RuntimeError("network blip")
+        return b"bytes"
+
+    monkeypatch.setattr(sync, "_get_backend_bytes", flaky_get)
+    body = {
+        "room": {"id": "room-1"},
+        "message": {"id": "m9", "attachments": [
+            {"id": "a1", "fileName": "bad.png", "contentType": "image/png", "size": 5},
+            {"id": "a2", "fileName": "ok.pdf", "contentType": "application/pdf", "size": 5},
+        ]},
+        "recentHistory": [],
+    }
+    paths = sync.materialize_attachments(body)
+    assert [Path(p).name for p in paths] == ["a2.pdf"]  # a1 skipped, a2 still yielded

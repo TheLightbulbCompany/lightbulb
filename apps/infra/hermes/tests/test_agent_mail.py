@@ -31,3 +31,46 @@ def test_a_mail_turn_posts_usage_and_no_run_callbacks_or_frames(home, posted, mo
     paths = [path for path, _b in posted]
     assert any(p == "usage/org_test" for p in paths)
     assert not any(p.startswith("runs/") for p in paths)
+
+
+# ---- review fix (IMPORTANT 3): mail turns get their own Hermes session -----------------------
+def test_mail_turns_get_their_own_hermes_session_keyed_by_the_mail_thread(home, monkeypatch):
+    """Drives the REAL run_turn -> _run_hermes and mocks only _construct_agent (the seam), so
+    the session_key resolution and the mail-branch system_prompt/user_message are exercised
+    for real. Before this fix, session_id/gateway_session_key were both derived from
+    room.get('id'), which does not exist for mail -- every mail thread collided into one
+    Hermes session keyed "None:<agent>"."""
+    seen = {}
+
+    class _FakeAgent:
+        session_input_tokens = session_output_tokens = 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **kw):
+            seen["user_message"] = kw["user_message"]
+            seen["system_message"] = kw["system_message"]
+            return {"api_calls": 1, "final_response": "ack"}
+
+    def fake_construct_agent(agent_id, body, frames, session_key):
+        seen["session_key"] = session_key
+        return _FakeAgent()
+
+    monkeypatch.setattr(turn, "_construct_agent", fake_construct_agent)
+    turn.run_turn("ceo", dict(MAIL))
+
+    assert seen["session_key"] == "lightbulb-email:thread-42"
+    assert "room #None" not in seen["system_message"]
+    assert "replying to an email" in seen["system_message"]
+    assert seen["user_message"].startswith("a@b.com:")
+
+
+def test_two_different_mail_threads_get_two_different_session_keys(home, monkeypatch):
+    seen = []
+    monkeypatch.setattr(turn, "_construct_agent",
+                        lambda agent_id, body, frames, session_key: (seen.append(session_key), type(
+                            "A", (), {"session_input_tokens": 0, "session_output_tokens": 0,
+                                     "session_cache_read_tokens": 0, "session_cache_write_tokens": 0,
+                                     "run_conversation": lambda self, **kw: {"api_calls": 1, "final_response": "x"}})())[1])
+    turn.run_turn("ceo", dict(MAIL))
+    turn.run_turn("ceo", {**MAIL, "sessionKey": "lightbulb-email:thread-99"})
+    assert seen == ["lightbulb-email:thread-42", "lightbulb-email:thread-99"]

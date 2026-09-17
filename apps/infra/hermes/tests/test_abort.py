@@ -47,3 +47,54 @@ def test_a_normal_turn_still_registers_and_finishes_in_the_registry(home, posted
     turn.run_turn("ceo", body)
     assert turn.RUNS[body["run"]["runId"]]["state"] == "ended"
     assert turn.RUNS[body["run"]["runId"]]["outcome"] == "completed"
+
+
+# ---- review fix (IMPORTANT 2): mid-flight abort ----------------------------------------------
+# The pre-launch check (test above) only catches an abort that lands before _run_hermes is
+# ever called. A run already IN _run_hermes when abort_run fires must also end up "aborted",
+# and the tokens it already spent must not be thrown away.
+def test_a_mid_flight_abort_after_the_agent_is_attached_overrides_the_outcome_but_keeps_usage(home, posted, monkeypatch):
+    turn.RUNS.clear()
+    body = f.ingress()
+    run_id = body["run"]["runId"]
+    spent_usage = {**turn.ZERO_USAGE, "inputTokens": 42}
+    interrupted = []
+
+    class FakeAgent:
+        def interrupt(self, **kw):
+            interrupted.append(kw)
+            return True
+
+    def fake_run_hermes(agent_id, body, frames):
+        turn.attach_agent(run_id, FakeAgent())
+        turn.abort_run(run_id)  # a concurrent caller stops the run while it is "running"
+        return "completed", None, "partial reply that should be discarded", spent_usage
+
+    monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)
+    turn.run_turn("ceo", body)
+
+    assert interrupted == [{"hard_cancel": True, "tool_reason": "explicit stop requested"}]
+    ended = next(b for _p, b in posted if b.get("type") == "run.ended")
+    assert ended["outcome"] == "aborted" and ended["usage"] == spent_usage  # tokens were spent
+    assert not any(p.startswith("agent-messages/") for p, _b in posted)  # the reply is discarded
+
+
+def test_an_abort_landing_before_attach_agent_is_still_caught_by_the_post_check(home, posted, monkeypatch):
+    """TOCTOU: abort_run can land in the queued window between run_turn's pre-launch check
+    and _construct_agent/attach_agent ever running, with no live agent to interrupt. The
+    post-check after _run_hermes returns must still catch it via RUNS[run_id]['aborted'],
+    which abort_run sets regardless of whether an agent was attached."""
+    turn.RUNS.clear()
+    body = f.ingress()
+    run_id = body["run"]["runId"]
+
+    def fake_run_hermes(agent_id, body, frames):
+        assert turn.RUNS[run_id]["agent"] is None  # never attached in this simulated race
+        assert turn.abort_run(run_id) is True  # still succeeds with no agent to interrupt
+        return "completed", None, "reply that should be discarded", turn.ZERO_USAGE
+
+    monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)
+    turn.run_turn("ceo", body)
+    ended = next(b for _p, b in posted if b.get("type") == "run.ended")
+    assert ended["outcome"] == "aborted"
+    assert not any(p.startswith("agent-messages/") for p, _b in posted)

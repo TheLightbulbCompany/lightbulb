@@ -38,3 +38,35 @@ def test_the_publish_body_double_encodes_the_event(monkeypatch):
     assert seen["body"]["channel"] == f"/ws/{ROOM}/rooms/{ROOM}/k"
     assert json.loads(seen["body"]["events"][0])["payload"]["frame"]["type"] == "run_active"
     assert seen["auth"].startswith("AWS4-HMAC-SHA256 Credential=AK/")
+
+
+# ---- review fix (cheap b): one boto3 Session cached across frame publishes, not one per frame
+def test_frame_credentials_reuses_one_cached_boto_session_across_calls(monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setattr(turn, "_frame_boto_session", None)
+    created = []
+
+    class FakeCreds:
+        def get_frozen_credentials(self):
+            return turn.Credentials("AK", "SK", None)
+
+    class FakeSession:
+        def __init__(self):
+            created.append(1)
+
+        def get_credentials(self):
+            return FakeCreds()
+
+    # A fake module injected into sys.modules -- not a real `import boto3` -- so this test
+    # runs the same whether or not the real boto3 package happens to be installed (it isn't
+    # in the lane-common canonical `--with pytest --with botocore` invocation).
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.session = types.SimpleNamespace(Session=FakeSession)
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+
+    turn._frame_credentials()
+    turn._frame_credentials()
+    turn._frame_credentials()
+    assert len(created) == 1

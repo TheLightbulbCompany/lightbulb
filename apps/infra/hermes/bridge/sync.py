@@ -207,7 +207,9 @@ def _get_backend_bytes(path: str) -> bytes:
 
 def materialize_attachments(body: dict) -> list[str]:
     """Download the attachments a turn can see into the plugin-era layout; skip files
-    already present (a turn revisiting the same history does not re-fetch them)."""
+    already present (a turn revisiting the same history does not re-fetch them). One
+    attachment's fetch failing (network blip, deleted object, ...) must not fail the whole
+    turn -- it is skipped and logged, not raised."""
     import bridge
 
     room_id = (body.get("room") or {}).get("id")
@@ -217,6 +219,10 @@ def materialize_attachments(body: dict) -> list[str]:
             target = HOME / "media" / "messaging" / "attachments" / room_id / f"{att['id']}{_EXT.get(att.get('contentType'), '')}"
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(_get_backend_bytes(f"attachments/{bridge.OWNER}/{room_id}/{att['id']}"))
+                try:
+                    target.write_bytes(_get_backend_bytes(f"attachments/{bridge.OWNER}/{room_id}/{att['id']}"))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("attachment fetch failed room=%s attachment=%s: %s", room_id, att.get("id"), exc)
+                    continue
             out.append(str(target))
     return out

@@ -47,6 +47,22 @@ def test_run_turn_writes_the_context_file_for_the_duration_of_the_turn_only(home
     assert not final_path.exists()  # cleared after the turn, whether it succeeded or not
 
 
+def test_run_turn_writes_the_caller_supplied_local_session_token(home, posted, monkeypatch):
+    """Review fix (cheap e): server.py will pass the X-Lightbulb-Local-Session-Token header
+    value through at merge; the default None keeps every other test (which never passes it)
+    working unchanged."""
+    seen = {}
+
+    def fake_run_hermes(agent_id, body, frames):
+        path = turn._turn_context_path(turn._profile_dir(agent_id), f"{body['room']['id']}:{agent_id}")
+        seen["ctx"] = json.loads(path.read_text())
+        return "completed", None, "ack", turn.ZERO_USAGE
+
+    monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)
+    turn.run_turn("ceo", f.ingress(), local_session_token="jwt-abc-123")
+    assert seen["ctx"]["localSessionToken"] == "jwt-abc-123"
+
+
 def test_the_context_file_is_cleared_even_when_the_turn_raises(home, posted, monkeypatch):
     def boom(agent_id, body, frames):
         raise RuntimeError("model exploded")

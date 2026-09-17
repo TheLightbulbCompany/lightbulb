@@ -309,6 +309,15 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     named ``RuntimeError`` — the original message already names the offending key — so one bad
     integration/env value fails this provision attempt with a diagnosable error instead of leaving
     a six-agent roster half profiled with no indication which agent or variable broke it.
+
+    I2: ``ensure_paperclip_api_key`` returns ``None`` on ANY failure — its documented contract is
+    "skip staging this agent's identity file this provision; try again next time" (a poll-thread
+    ECS caller gets exactly that next time, on its next ~3s poll). This path has no next time
+    once ``provision_hermes_runtime`` idempotent-returns on the ARN, so a bare ``or ""`` used to
+    bake ``PAPERCLIP_API_KEY=`` into the agent's ``.env`` permanently. A ``None`` here now raises
+    a named ``RuntimeError`` instead — caught by C2's release-to-error wrapper in
+    ``provision_runner.run``, so the provision fails retryably rather than shipping a silently
+    unauthenticated agent.
     """
     from core.services.container_provision import resolve_provider_choice
     from core.services.credentials.mcp_server import build_connected_integration_servers
@@ -326,10 +335,15 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     admin_client = shared_admin_client()
     for agent in await load_agent_roster(owner_id):
         agent_id = agent["id"]
-        paperclip_api_key = (
-            await ensure_paperclip_api_key(owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=admin_client)
-            or ""
+        paperclip_api_key = await ensure_paperclip_api_key(
+            owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=admin_client
         )
+        if paperclip_api_key is None:
+            # I2: never bake an empty credential. See the module docstring's note above --
+            # there is no "next provision" here to retry into, unlike the ECS poll-thread caller.
+            raise RuntimeError(
+                f"hermes profile for owner={owner_id} agent={agent_id}: paperclip API key mint/read failed"
+            )
         try:
             files = write_agent_profile(
                 owner_id,

@@ -435,6 +435,7 @@ def _patch_write_profiles_collaborators(
     env_vars=None,
     read_byo_key=None,
     write_agent_profile=None,
+    paperclip_api_key="pcp_key",
 ):
     async def _fake_roster(owner_id):
         return [{"id": "11111111-1111-1111-1111-111111111111", "name": "Ada", "role": "ceo"}]
@@ -449,7 +450,7 @@ def _patch_write_profiles_collaborators(
         return env_vars or {}
 
     async def _fake_ensure_paperclip_api_key(*, owner_id, paperclip_agent_id, admin_client):
-        return "pcp_key"
+        return paperclip_api_key
 
     monkeypatch.setattr("core.services.container_provision.resolve_provider_choice", _fake_resolve_provider_choice)
     monkeypatch.setattr(
@@ -476,6 +477,27 @@ async def test_a_bad_profile_value_surfaces_a_named_provisioning_error(monkeypat
     )
 
     with pytest.raises(RuntimeError, match="BAD_VAR"):
+        await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+
+@pytest.mark.asyncio
+async def test_a_none_paperclip_api_key_raises_named_instead_of_baking_an_empty_credential(monkeypatch):
+    """I2: ensure_paperclip_api_key returns None on ANY failure (its documented contract is
+    "skip, try again next time") -- there is no next time once provision_hermes_runtime
+    idempotent-returns on the ARN, so this must fail the provision, not ship an empty
+    PAPERCLIP_API_KEY."""
+
+    def _write_agent_profile_must_not_be_called(*args, **kwargs):
+        raise AssertionError("write_agent_profile must not be reached -- the raise happens first")
+
+    _patch_write_profiles_collaborators(
+        monkeypatch,
+        paperclip_api_key=None,
+        read_byo_key=_explode,
+        write_agent_profile=_write_agent_profile_must_not_be_called,
+    )
+
+    with pytest.raises(RuntimeError, match="org_a.*11111111-1111-1111-1111-111111111111"):
         await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
 

@@ -1511,6 +1511,39 @@ class TestDeleteUserService:
             mock_repo.delete.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
+    async def test_delete_on_an_agentcore_row_tears_down_the_runtime_and_never_touches_ecs(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """F5 (predeploy review, M6-R38): an AgentCore owner never had an ECS service, so
+        wiping one must never call update_service/delete_service (a guaranteed
+        ServiceNotFoundException) -- it must tear down the runtime/secret/S3 profiles instead,
+        BEFORE the containers row (the only handle naming them) is deleted."""
+        row = {
+            "owner_id": "user_test_123",
+            "runtime_host": "agentcore",
+            "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1",
+            "bedrock_gate_token_hash": "hash-1",
+        }
+        teardown = AsyncMock()
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.services.hermes_provisioning.teardown_hermes_runtime", teardown),
+            # Unrelated to this test's own concern (THE SEAM's Bedrock-AIP reap, unconditional
+            # for every row) -- mocked the same way test_the_bedrock_footprint_is_reaped_here...
+            # does, so this row's bedrock_gate_token_hash doesn't hit a real DynamoDB call.
+            patch("core.billing.bedrock_aip.reap_owner_bedrock_resources", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            mock_repo.delete = AsyncMock(return_value=row)
+
+            assert await manager.delete_user_service("user_test_123") is row
+
+        teardown.assert_awaited_once_with("user_test_123", container_row=row, delete_profiles=True)
+        mock_ecs_client.update_service.assert_not_called()
+        mock_ecs_client.delete_service.assert_not_called()
+        mock_repo.delete.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
     async def test_delete_without_per_user_resources(self, manager, mock_ecs_client, mock_efs_client):
         """delete_user_service skips cleanup when container has no per-user resources."""
         container_dict = _make_container_dict(status="running", access_point_id=None)

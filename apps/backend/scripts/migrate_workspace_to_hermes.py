@@ -44,7 +44,7 @@ Profile-write ordering (Ruling M6-R14 — ACCEPTED): ``provision_hermes_runtime`
 fenced row flip) runs BEFORE the per-agent EFS-content pass (SOUL.md/AGENTS.md/MEMORY.md/
 memory/**/skills/** + a ``.revision`` bump the bridge's ``ensure_profile`` re-pull picks up on
 the workspace's next turn), which in turn runs before the ECS stop — because
-``provision_hermes_runtime``'s own internal ``_write_profiles`` fan-out runs unconditionally on a
+``provision_hermes_runtime``'s own internal ``write_profiles`` fan-out runs unconditionally on a
 no-ARN row and would otherwise clobber an earlier override. The resulting window — vanilla
 ``build_soul_md`` identity for the seconds between READY and this job's own override upload — is
 accepted.
@@ -118,7 +118,11 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.services import runtime_transport
 from core.services.container_provision import resolve_provider_choice
 from core.services.hermes_profiles import profile_prefix, upload_profile, write_agent_profile
-from core.services.hermes_provisioning import prepare_hermes_workspace, provision_hermes_runtime
+from core.services.hermes_provisioning import (
+    prepare_hermes_workspace,
+    provision_hermes_runtime,
+    teardown_hermes_runtime,
+)
 from core.services.messaging import load_agent_roster
 
 logger = logging.getLogger(__name__)
@@ -156,47 +160,21 @@ def _s3_client():
     return boto3.client("s3")
 
 
-def _agentcore_control_client():
-    import boto3
-
-    return boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
-
-
 def _agentcore_data_client():
     import boto3
 
     return boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION)
 
 
-def _delete_runtime(runtime_arn: str) -> None:
-    """``DeleteAgentRuntime``. Sync — call via ``run_in_thread``."""
-    client = _agentcore_control_client()
-    client.delete_agent_runtime(agentRuntimeId=runtime_arn.rsplit("/", 1)[-1])
-
-
 def _stop_runtime_session(runtime_arn: str, session_id: str) -> None:
-    """``StopRuntimeSession`` (Ruling M4-R16) — must run BEFORE the old bearer generation is
-    revoked: a warm AgentCore session caches the bearer it read from the boot secret at
-    cold-start, so denying/deleting the token row alone leaves an already-warm session
-    presenting a now-dead credential until AWS reaps it on its own. Sync — call via
-    ``run_in_thread``."""
+    """``StopRuntimeSession`` (Ruling M4-R16) -- forces the next invoke to cold-restore the
+    whole profile from S3 (see ``migrate()``'s own use of this, below). This is a DIFFERENT
+    call from ``hermes_provisioning.teardown_hermes_runtime``'s own stop-before-delete step
+    (F5, predeploy review): that one tears the runtime down; this one just resets a warm
+    session mid-migration, so it stays here rather than moving with the teardown. Sync — call
+    via ``run_in_thread``."""
     client = _agentcore_data_client()
     client.stop_runtime_session(agentRuntimeArn=runtime_arn, runtimeSessionId=session_id)
-
-
-def _delete_boot_secret(owner_id: str) -> None:
-    """Force-delete the owner's Hermes boot secret (no recovery window — a rolled-back attempt's
-    credentials are dead the moment the runtime they were minted for is deleted). Sync — call via
-    ``run_in_thread``."""
-    import boto3
-
-    from core.services.agentcore_runtime import boot_secret_name
-
-    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    try:
-        sm.delete_secret(SecretId=boot_secret_name(owner_id), ForceDeleteWithoutRecovery=True)
-    except sm.exceptions.ResourceNotFoundException:
-        pass
 
 
 async def _load_company(owner_id: str):
@@ -376,10 +354,10 @@ async def _apply_efs_overrides(owner_id: str, plan: list[tuple[dict, str | None,
     ``provision_hermes_runtime`` just wrote for every roster agent (see the module docstring's
     ordering note). Owner-level inputs via ``hermes_provisioning.resolve_profile_inputs`` (Ruling
     M6-R10, adopted here per Ruling M6-R18 — the formerly-deferred concern 4) — the SAME shared
-    resolver ``hermes_provisioning._write_profiles`` uses internally, so this and the internal
+    resolver ``hermes_provisioning.write_profiles`` uses internally, so this and the internal
     fan-out can never diverge again. ``aip_arns`` is re-derived via ``ensure_owner_aips``
     (idempotent create-or-reuse) rather than trusted off a row read earlier in this job, mirroring
-    ``_write_profiles``'s own reasoning: a row read before ``provision_hermes_runtime`` ran would
+    ``write_profiles``'s own reasoning: a row read before ``provision_hermes_runtime`` ran would
     be stale.
     """
     from core.billing.bedrock_aip import ensure_owner_aips
@@ -554,42 +532,62 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
     return EXIT_OK
 
 
-async def _teardown_agentcore(owner_id: str, row: dict) -> None:
-    """The AWS-side half of ``rollback`` — everything that undoes what ``migrate`` created.
-    Best-effort per step: a runtime or secret that is already gone must not stop the row from
-    flipping back to ECS."""
-    from core.billing.bedrock_gate_tokens import delete_gate_token_rows
+async def _restore_ecs_gate_token(owner_id: str, row: dict) -> None:
+    """Minor (predeploy review, M6-R39 housekeeping): reverse what ``prepare_hermes_workspace``'s
+    migrate-time ``mint_gate_token`` call did to the row's pointer -- it moved the ECS task's OWN
+    live bearer into ``bedrock_gate_superseded_hashes`` (appended last -- see that function's
+    docstring) when it minted the Hermes-only bearer. A rollback that never restores it leaves
+    ``bedrock_gate_token_hash`` pointing at the hash ``teardown_hermes_runtime`` just revoked,
+    with the ECS task's real, still-being-presented bearer sitting only in the superseded list --
+    reachable by the same retention drain (``expire_superseded_gate_tokens``) that expires a
+    genuinely dead hash.
 
-    arn = row.get("agentcore_runtime_arn")
-    if arn:
-        try:
-            await run_in_thread(_stop_runtime_session, arn, runtime_transport.session_id_for(owner_id))
-        except Exception:  # noqa: BLE001 — best-effort: an already-cold/gone session is not fatal
-            logger.warning("rollback: StopRuntimeSession failed for owner=%s arn=%s", owner_id, arn, exc_info=True)
-        try:
-            await run_in_thread(_delete_runtime, arn)
-        except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
-            logger.warning("rollback: DeleteAgentRuntime failed for owner=%s arn=%s", owner_id, arn, exc_info=True)
+    ``bedrock_gate_token_hash``/``bedrock_gate_superseded_hashes`` may ONLY be written by
+    ``container_repo.swap_gate_token_hash`` (``_reject_gate_owned_fields``) -- never through
+    ``update_container_leased``, which is why this is a separate call, not another field in
+    ``rollback``'s own row flip below.
 
-    current_hash = row.get("bedrock_gate_token_hash")
-    if current_hash:
-        try:
-            await delete_gate_token_rows([current_hash])
-        except Exception:  # noqa: BLE001 — best-effort: a stranded row is a known, accepted risk elsewhere too
-            logger.warning("rollback: could not revoke gate token for owner=%s", owner_id, exc_info=True)
+    Best-effort: this is a manual, operator-run recovery path, and a lost race against a
+    concurrent mint is logged rather than failing the whole rollback -- the row still flips
+    back onto ECS regardless, and a fresh mint on the next provision/reconcile is always safe.
+    A row with no superseded hashes at all (e.g. rolled back right after ``prepare``, before a
+    runtime was ever created) has no ECS generation to restore -- a no-op.
+    """
+    from core.repositories import container_repo as _container_repo
 
+    superseded = list(row.get("bedrock_gate_superseded_hashes") or [])
+    if not superseded:
+        return
+    ecs_hash = superseded[-1]  # LIFO -- mint_gate_token's own append order
     try:
-        await run_in_thread(_delete_boot_secret, owner_id)
-    except Exception:  # noqa: BLE001 — best-effort cleanup
-        logger.warning("rollback: could not delete boot secret for owner=%s", owner_id, exc_info=True)
+        outcome, _conflicting = await _container_repo.swap_gate_token_hash(
+            owner_id,
+            new_hash=ecs_hash,
+            superseded=superseded[:-1],
+            expected_prior_hash=row.get("bedrock_gate_token_hash"),
+        )
+        if outcome != "written":
+            logger.warning(
+                "rollback: could not restore the ECS gate-token pointer for owner=%s (outcome=%s)",
+                owner_id,
+                outcome,
+            )
+    except Exception:  # noqa: BLE001 — best-effort: the row still flips back onto ECS regardless
+        logger.warning("rollback: could not restore the ECS gate-token pointer for owner=%s", owner_id, exc_info=True)
 
 
 async def rollback(owner_id: str, *, dry_run: bool = False) -> int:
     """Ruling M6-R3 — undo a migration in progress or already landed: tear down the AgentCore
-    side (session stop THEN delete, per Ruling M4-R16 — see ``_stop_runtime_session``), revoke
-    the Hermes-minted bearer generation, delete the boot secret, flip the row back onto ECS
-    (fenced, same lease mechanic as ``migrate``), and restart the ECS service. S3 profiles are
-    left in place — cheap, and the next ``migrate()`` attempt overwrites them anyway.
+    side (``hermes_provisioning.teardown_hermes_runtime``, ``delete_profiles=False`` -- session
+    stop THEN delete per Ruling M4-R16, revoke the Hermes-minted bearer generation, delete the
+    boot secret), restore the CONTAINERS row's gate-token pointer to the surviving ECS
+    generation (``_restore_ecs_gate_token`` -- minor, predeploy review housekeeping), flip the
+    row back onto ECS (fenced, same lease mechanic as ``migrate``), and restart the ECS service.
+    S3 profiles are left in place — cheap, and the next ``migrate()`` attempt overwrites them
+    anyway (F5, predeploy review: this is the SAME extracted teardown an account wipe on an
+    agentcore row now uses with ``delete_profiles=True``, which DOES delete them -- there is
+    nothing left to overwrite once nothing will ever provision that owner's Hermes workspace
+    again).
 
     ``dry_run`` performs none of the above — it exists so an operator can run ``--rollback
     --dry-run`` to confirm which owner they are about to target before actually doing it.
@@ -601,7 +599,8 @@ async def rollback(owner_id: str, *, dry_run: bool = False) -> int:
         )
         return EXIT_OK
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    await _teardown_agentcore(owner_id, row)
+    await teardown_hermes_runtime(owner_id, container_row=row, delete_profiles=False)
+    await _restore_ecs_gate_token(owner_id, row)
 
     claim_id = await container_repo.takeover_provision(owner_id)
     await container_repo.update_container_leased(

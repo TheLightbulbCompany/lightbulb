@@ -2363,9 +2363,14 @@ class EcsManager:
 
     @serialize_owner_lifecycle
     async def delete_user_service(self, user_id: str) -> dict | None:
-        """Remove a user's ECS service and per-user resources entirely.
+        """Remove a user's ECS service and per-user resources entirely -- or, for an
+        AgentCore-hosted owner (F5, predeploy review, M6-R38), the runtime/secret/S3 profiles
+        an account wipe would otherwise orphan (that row never had an ECS service at all).
 
-        1. Scale to 0 and delete ECS service
+        1. AgentCore row: ``hermes_provisioning.teardown_hermes_runtime(delete_profiles=True)``
+           -- stop session, delete the runtime, revoke the gate-token hash, delete the boot
+           secret, delete every S3 object under ``<owner>/hermes/``. ECS is never touched.
+           Otherwise: scale to 0 and delete the ECS service.
         2. Deregister per-user task definition (if present)
         3. Delete per-user EFS access point (if present)
         4. Delete Container DB record
@@ -2386,38 +2391,59 @@ class EcsManager:
             EcsManagerError: If the ECS API calls fail.
         """
         service_name = self._service_name(user_id)
+        # Read once, up front: an AgentCore row's teardown needs it (the runtime ARN, the gate
+        # token hash) BEFORE the containers row is deleted below, and the branch on it decides
+        # whether ECS is touched at all. Eventually consistent, same as the read this replaces.
+        container = await container_repo.get_by_owner_id(user_id)
 
-        try:
-            # Scale to 0 before deleting
-            self._ecs.update_service(
-                cluster=self._cluster,
-                service=service_name,
-                desiredCount=0,
-            )
-            self._ecs.delete_service(
-                cluster=self._cluster,
-                service=service_name,
-                force=True,
-            )
-        except ClientError as e:
-            # Service-not-found is idempotent success — the e2e teardown can
-            # legitimately retry against a state where the service was already
-            # deleted (e.g. previous partial run). Treating "doesn't exist" as
-            # an error breaks retry semantics. All other ClientErrors propagate.
-            #
-            # NB: we do NOT early-return here — the per-user resources below
-            # (task-def revision, EFS access point, DDB container row) may
-            # still exist even after the service is gone, and a partial
-            # cleanup that left the access point orphaned can only be
-            # recovered if subsequent retries fall through to this block.
-            code = e.response.get("Error", {}).get("Code", "")
-            if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
-                logger.info(
-                    "delete_user_service: service %s for user %s already gone — continuing per-user cleanup",
-                    service_name,
-                    user_id,
+        if container and runtime_transport.host_for(container) == "agentcore":
+            # THE SEAM's AgentCore twin: this row never had an ECS service, so calling
+            # delete_service would just be a guaranteed ServiceNotFoundException. Tear down the
+            # runtime/secret/S3 profiles instead, BEFORE the containers row (the only handle
+            # naming them) is deleted a few lines down.
+            from core.services.hermes_provisioning import teardown_hermes_runtime
+
+            await teardown_hermes_runtime(user_id, container_row=container, delete_profiles=True)
+        else:
+            try:
+                # Scale to 0 before deleting
+                self._ecs.update_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    desiredCount=0,
                 )
-            else:
+                self._ecs.delete_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    force=True,
+                )
+            except ClientError as e:
+                # Service-not-found is idempotent success — the e2e teardown can
+                # legitimately retry against a state where the service was already
+                # deleted (e.g. previous partial run). Treating "doesn't exist" as
+                # an error breaks retry semantics. All other ClientErrors propagate.
+                #
+                # NB: we do NOT early-return here — the per-user resources below
+                # (task-def revision, EFS access point, DDB container row) may
+                # still exist even after the service is gone, and a partial
+                # cleanup that left the access point orphaned can only be
+                # recovered if subsequent retries fall through to this block.
+                code = e.response.get("Error", {}).get("Code", "")
+                if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
+                    logger.info(
+                        "delete_user_service: service %s for user %s already gone — continuing per-user cleanup",
+                        service_name,
+                        user_id,
+                    )
+                else:
+                    logger.error(
+                        "Failed to delete ECS service %s for user %s: %s",
+                        service_name,
+                        user_id,
+                        e,
+                    )
+                    raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
+            except Exception as e:
                 logger.error(
                     "Failed to delete ECS service %s for user %s: %s",
                     service_name,
@@ -2425,17 +2451,8 @@ class EcsManager:
                     e,
                 )
                 raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
-        except Exception as e:
-            logger.error(
-                "Failed to delete ECS service %s for user %s: %s",
-                service_name,
-                user_id,
-                e,
-            )
-            raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
         # Clean up per-user resources and delete container record from DB
-        container = await container_repo.get_by_owner_id(user_id)
         if container:
             # Deregister per-user task definition
             if container.get("task_definition_arn"):

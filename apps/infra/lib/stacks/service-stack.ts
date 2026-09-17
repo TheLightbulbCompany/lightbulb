@@ -1411,10 +1411,14 @@ export class ServiceStack extends cdk.Stack {
       OPENCLAW_GATEWAY_BUILD_ID: OPENCLAW_VERSION.gatewayBuildId,
       OPENCLAW_EXTENDED_ARTIFACT_DIGEST: currentOpenClawVersion.artifactDigest,
       OPENCLAW_RUNTIME_MANIFEST_DIGEST: currentOpenClawVersion.runtimeManifestDigest,
-      // The Litestream replica bucket for this env. Every backend code path
-      // that touches the local-sqlite layout (sentinel writes, replica
-      // lifecycle deletes) keys off this being set. Name-based (never a
-      // bucket ref) per the KMS-cycle posture.
+      // The per-owner state bucket. Named for what it holds, not for the tool
+      // that first used it: OpenClaw's litestream replicas AND (under
+      // <owner>/hermes/) the Hermes profile set both live here, inside the
+      // same per-owner <owner>/* IAM grant. No second bucket. LITESTREAM_BUCKET
+      // rides alongside it during the transition (M4-R6) so a CDK deploy and a
+      // backend roll can land in either order — drop the old name once the
+      // backend only reads OWNER_STATE_BUCKET.
+      OWNER_STATE_BUCKET: `lightbulb-${env}-openclaw-replicas`,
       LITESTREAM_BUCKET: `lightbulb-${env}-openclaw-replicas`,
       // The gateway-only arm64 image a workspace's AgentCore runtime runs. DEV ONLY for
       // now: empty in prod makes ensure_runtime refuse, so nothing can move a prod
@@ -1423,6 +1427,15 @@ export class ServiceStack extends cdk.Stack {
         env === "dev"
           ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v5`
           : "",
+      // The Hermes bridge image a workspace's AgentCore runtime runs. DEV ONLY: empty in
+      // prod makes provision_hermes_runtime refuse, so nothing moves a prod workspace
+      // until it is promoted.
+      AGENTCORE_HERMES_IMAGE:
+        env === "dev"
+          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:h-v1`
+          : "",
+      // Flipped to "true" per environment only when the milestone's dev proof has landed.
+      HERMES_RUNTIME: "false",
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

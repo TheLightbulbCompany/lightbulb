@@ -363,7 +363,13 @@ export class ContainerStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "AgentCoreEcrPull",
           actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
-          resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/openclaw-gateway-arm64`],
+          resources: [
+            `arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/openclaw-gateway-arm64`,
+            // The Hermes bridge image. Mirrors the grants already made by CLI in dev
+            // (owner base policy v6, boundary v5) — a boundary that omits it caps the role out of
+            // pulling its own image, and the runtime fails to start with no useful error.
+            `arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/hermes-agent-arm64`,
+          ],
         }),
         new iam.PolicyStatement({
           sid: "AgentCoreEcrToken",
@@ -383,6 +389,14 @@ export class ContainerStack extends cdk.Stack {
             `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
             `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/*`,
           ],
+        }),
+        // The Hermes runtime env carries secret NAMES only; the bridge resolves them at
+        // boot. Scoped to the owner's own hermes/ prefix, not the whole env — narrower
+        // than the general per-owner secrets a future lane may add.
+        new iam.PolicyStatement({
+          sid: "HermesSecretsRead",
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/*`],
         }),
       ],
     });
@@ -471,6 +485,28 @@ export class ContainerStack extends cdk.Stack {
           effect: iam.Effect.DENY,
           actions: ["sts:AssumeRole"],
           resources: [`arn:aws:iam::${this.account}:role/*`],
+        }),
+        // AgentCore Runtime for Hermes: the boundary previously had NO ecr:* at all, which
+        // silently caps the base policy's (pre-existing, still-live) openclaw-gateway-arm64
+        // pull down to nothing — that dead path is not fixed here. This grant is scoped to
+        // ONLY the Hermes repo, so the boundary ∩ base intersection actually admits the
+        // Hermes pull the base policy grants above.
+        new iam.PolicyStatement({
+          sid: "BoundaryHermesEcrPull",
+          actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+          resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/hermes-agent-arm64`],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryHermesEcrToken",
+          actions: ["ecr:GetAuthorizationToken"],
+          resources: ["*"],
+        }),
+        // Mirrors HermesSecretsRead on the base policy — the boundary must admit it too, or
+        // the intersection silently nullifies the base grant.
+        new iam.PolicyStatement({
+          sid: "BoundaryHermesSecretsRead",
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/*`],
         }),
       ],
     });

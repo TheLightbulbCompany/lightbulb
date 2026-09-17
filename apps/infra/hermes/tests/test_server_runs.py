@@ -60,7 +60,7 @@ def test_a_target_agent_id_not_matching_the_path_is_400(home):
     assert obj["error"] == "invalid_ingress"
 
 
-def test_a_valid_ingress_body_is_accepted(home, monkeypatch):
+def test_a_valid_ingress_body_is_accepted(home, posted, monkeypatch):
     mod, _created = _capturing_threading()
     monkeypatch.setattr(server, "threading", mod)
     body = f.ingress()
@@ -68,6 +68,10 @@ def test_a_valid_ingress_body_is_accepted(home, monkeypatch):
     assert code == 202
     assert obj["status"] == "accepted"
     assert obj["runId"] == body["run"]["runId"]
+    # Finding 3 (minor): without the `posted` fixture this reaches the real (unmocked)
+    # turn._post_backend for the accept-time run.started post -- real urllib against the
+    # configured (fake) API host, up to 3 retries. Assert against the captured call instead.
+    assert posted[0][1]["type"] == "run.started"
 
 
 # ---- Step 2: replay check on the registry + run.started at accept (Task 9's server half) ------

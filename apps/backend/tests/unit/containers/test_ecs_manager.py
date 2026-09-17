@@ -981,6 +981,9 @@ class TestStopUserService:
             )
             mock_repo.update_status.assert_not_called()
             mock_repo.stamp_stop_reason.assert_not_called()
+            # Fix round 2, item 4 nit: force=True never reads the row either -- the result was
+            # only ever used by the (skipped) write above.
+            mock_repo.get_by_owner_id.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

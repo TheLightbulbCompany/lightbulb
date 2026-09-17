@@ -1505,14 +1505,15 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_owner_id(user_id)
         # Ruling M6-R17: force=True (the migration job's bypass, above) never writes
         # status="stopped" -- the row is ALREADY on agentcore at that point (this is the ECS
         # service the migration is retiring, not the workspace's live host), and stamping
         # "stopped" onto a workspace that is actually running there is a lie the row would tell
         # every other reader until something else corrects it. The migration job's own
-        # _stamp_migrated is the sole writer of that row's terminal state in this case.
-        if container and not force:
+        # _stamp_migrated is the sole writer of that row's terminal state in this case. The row
+        # read below is skipped entirely under force -- its result would only ever feed the
+        # write this same condition also skips.
+        if not force and await container_repo.get_by_owner_id(user_id):
             await container_repo.update_status(user_id, "stopped")
             # Separate call because stamp_stop_reason needs a conditional REMOVE
             # of parked_at that a plain field merge cannot express. Order no

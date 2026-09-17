@@ -73,13 +73,20 @@ def _workspace_at(tmp_path) -> Workspace:
 
 
 class _FakeS3Client:
-    """Records every ``put_object`` call, in order, as ``(bucket, key)``."""
+    """Records every ``put_object`` call, in order, as ``(bucket, key)`` -- and, when given an
+    ``order_sink`` (fix round 2, item 4), also appends a compact ``"upload:<key>"`` marker there
+    so a test can interleave upload order with other lifecycle calls recorded in that SAME sink
+    (locking "session stop after the LAST override upload", not merely "session stop happened
+    somewhere after prepare/provision")."""
 
-    def __init__(self, sink: list[tuple[str, str]]):
+    def __init__(self, sink: list[tuple[str, str]], order_sink: list[str] | None = None):
         self._sink = sink
+        self._order_sink = order_sink
 
     def put_object(self, *, Bucket, Key, Body):
         self._sink.append((Bucket, Key))
+        if self._order_sink is not None:
+            self._order_sink.append(f"upload:{Key}")
 
 
 @pytest.fixture
@@ -163,8 +170,10 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     monkeypatch.setattr(mod, "prepare_hermes_workspace", prepare)
     monkeypatch.setattr(mod, "provision_hermes_runtime", provision)
 
-    monkeypatch.setattr(mod, "_s3_client", lambda: _FakeS3Client(uploaded_keys))
-    monkeypatch.setattr("core.services.hermes_profiles._new_s3_client", lambda: _FakeS3Client(uploaded_keys))
+    monkeypatch.setattr(mod, "_s3_client", lambda: _FakeS3Client(uploaded_keys, order_sink=calls))
+    monkeypatch.setattr(
+        "core.services.hermes_profiles._new_s3_client", lambda: _FakeS3Client(uploaded_keys, order_sink=calls)
+    )
 
     monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
     monkeypatch.setattr(
@@ -187,10 +196,17 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
 
-    # Ordering (Ruling M6-R1/M6-R16/M6-R18): provision only after prepare, the session cold-stop
-    # only after the last override upload (already done by the time "provision" -> the tail
-    # starts), ECS stop only after the session stop, the hermes_migrated_at stamp only after that.
-    assert calls == ["prepare", "provision", "session_stop", "stop", "stamp"]
+    # Ordering (Ruling M6-R1/M6-R16/M6-R18, fix round 2 item 4): provision only after prepare;
+    # every override upload happens after provision and before the session cold-stop; the
+    # session cold-stop happens strictly after the LAST override upload (not merely "after
+    # prepare/provision somewhere") and before the ECS stop; the hermes_migrated_at stamp is
+    # last of all. Uploads and lifecycle calls share ONE sink so this ordering can't be
+    # satisfied by coincidence.
+    assert calls[0] == "prepare"
+    assert calls[1] == "provision"
+    upload_indices = [i for i, c in enumerate(calls) if c.startswith("upload:")]
+    assert upload_indices, "expected at least one profile upload"
+    assert max(upload_indices) < calls.index("session_stop") < calls.index("stop") < calls.index("stamp")
     prepare.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
     provision.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
     session_stop.assert_called_once_with("arn:hermes-1", mod.runtime_transport.session_id_for(OWNER))

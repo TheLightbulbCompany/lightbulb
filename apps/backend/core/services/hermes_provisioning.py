@@ -177,13 +177,21 @@ def _find_existing_runtime_arn(name: str) -> str | None:
     """M4-R35: an owner's runtime name is unique per account, so a retry whose row lost the
     ARN (a crash, or a lost fence, between ``CreateAgentRuntime`` and the row write) would
     otherwise hit a name conflict on every future attempt, forever. Sync — call via
-    ``run_in_thread``."""
+    ``run_in_thread``.
+
+    N3/M4-R41: paginates. A single unpaginated call only ever saw page 1 of
+    ``list_agent_runtimes`` (``maxResults`` <= 100) -- one runtime per owner means the fleet
+    outgrows page 1 eventually, and this recovery lookup would then silently miss every runtime
+    past it, forever hitting a name conflict on create instead of finding the existing one.
+    """
     import boto3
 
     client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
-    for runtime in client.list_agent_runtimes().get("agentRuntimes", []):
-        if runtime.get("agentRuntimeName") == name:
-            return runtime.get("agentRuntimeArn")
+    paginator = client.get_paginator("list_agent_runtimes")
+    for page in paginator.paginate():
+        for runtime in page.get("agentRuntimes", []):
+            if runtime.get("agentRuntimeName") == name:
+                return runtime.get("agentRuntimeArn")
     return None
 
 

@@ -1,3 +1,4 @@
+import datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -170,8 +171,6 @@ def test_update_runtime_image_sends_the_full_create_spec_not_just_the_image(monk
     stubber = Stubber(client)
     expected_params = {k: v for k, v in request.items() if k not in ("agentRuntimeName", "tags")}
     expected_params["agentRuntimeId"] = "r1"
-    import datetime
-
     stubber.add_response(
         "update_agent_runtime",
         {
@@ -198,6 +197,51 @@ def test_update_runtime_image_sends_the_full_create_spec_not_just_the_image(monk
     assert expected_params["environmentVariables"] == request["environmentVariables"]
     assert expected_params["protocolConfiguration"] == request["protocolConfiguration"]
     assert expected_params["lifecycleConfiguration"] == request["lifecycleConfiguration"]
+
+
+# --- N3/M4-R41: _find_existing_runtime_arn paginates ----------------------------------------
+
+
+def _list_runtimes_item(name, arn):
+    return {
+        "agentRuntimeArn": arn,
+        "agentRuntimeId": arn.rsplit("/", 1)[-1],
+        "agentRuntimeVersion": "1",
+        "agentRuntimeName": name,
+        "description": "hermes runtime",
+        "lastUpdatedAt": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+        "status": "READY",
+    }
+
+
+def test_find_existing_runtime_arn_matches_on_page_two(monkeypatch):
+    """One runtime per owner means the fleet outgrows page 1 of list_agent_runtimes eventually --
+    a match sitting on page 2 must still be found, not silently missed."""
+    import boto3
+    from botocore.stub import Stubber
+
+    client = boto3.client("bedrock-agentcore-control", region_name="us-east-1")
+    stubber = Stubber(client)
+    stubber.add_response(
+        "list_agent_runtimes",
+        {
+            "agentRuntimes": [
+                _list_runtimes_item("hermes-org-other", "arn:aws:bedrock-agentcore:us-east-1:1:runtime/other")
+            ],
+            "nextToken": "page-2-token",
+        },
+    )
+    stubber.add_response(
+        "list_agent_runtimes",
+        {"agentRuntimes": [_list_runtimes_item("hermes-org_a", "arn:aws:bedrock-agentcore:us-east-1:1:runtime/org_a")]},
+    )
+    stubber.activate()
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
+
+    arn = hermes_provisioning._find_existing_runtime_arn("hermes-org_a")
+
+    assert arn == "arn:aws:bedrock-agentcore:us-east-1:1:runtime/org_a"
+    stubber.assert_no_pending_responses()
 
 
 # --- prepare_hermes_workspace (M4-R33): tokens + boot secret BEFORE step 0 -----------------

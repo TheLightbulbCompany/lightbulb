@@ -14,7 +14,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOOK_TOKEN, MODEL, OWNER, now
-from bridge.sync import restore_profile, save_profile, _profile_dir
+from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
 
@@ -432,10 +432,15 @@ def _construct_agent(agent_id: str, body: dict, frames):
     """The one place that builds a real Hermes AIAgent. Home-scoping wraps ONLY construction:
     spec §4.5 says config is read once per AIAgent construction and cached on file mtime, so
     the override does not need to stay active for the rest of the turn — and every other test
-    in this suite replaces this function instead of importing hermes_constants."""
+    in this suite replaces this function instead of importing hermes_constants.
+
+    pin_profile_defaults (Task 19) runs here, right before construction: it derives its task
+    list from hermes_cli.config_defaults, another real-Hermes-only import, so it belongs
+    behind the same seam _run_hermes's own tests already replace wholesale."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from run_agent import AIAgent
 
+    pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or MODEL)
     room = body.get("room") or {}
     callbacks = {}
     if frames is not None:

@@ -109,3 +109,70 @@ def save_profile(agent_id: str) -> float:
     took = time.time() - t0
     log.info("saved profile %s: %d objects in %.1fs", agent_id, n, took)
     return took
+
+
+# --- lane A -------------------------------------------------------------------------------
+# Task 19 needs `deep_merge`/`read_profile_config`/`write_profile_config`, which Task 17
+# (lane B) also defines over bridge/server.py's config.get/patch/set RPC methods. lane B runs
+# in its own isolated worktree in parallel, so this is a bridge-side copy of the same
+# contract (identical signatures/semantics, per task-17-brief.md) rather than a cross-lane
+# import; the controller reconciles the (near-identical) duplicate at merge time.
+CONFIG_NAME = "config.yaml"
+
+
+def deep_merge(base: dict, patch: dict) -> dict:
+    """Dict-into-dict recursion; a list or scalar replaces wholesale. Same semantics as the
+    EFS config patcher, so relay/provisioning patches behave identically on Hermes."""
+    out = dict(base)
+    for key, value in (patch or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def read_profile_config(agent_id: str) -> dict:
+    import yaml
+
+    path = _profile_dir(agent_id) / CONFIG_NAME
+    if not path.is_file():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def write_profile_config(agent_id: str, config: dict) -> None:
+    import yaml
+
+    directory = _profile_dir(agent_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    tmp = directory / f"{CONFIG_NAME}.tmp"
+    tmp.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    tmp.replace(directory / CONFIG_NAME)  # atomic: a torn config.yaml bricks the agent's next turn
+
+
+def _aux_defaults() -> dict:
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    return DEFAULT_CONFIG["auxiliary"]
+
+
+def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
+    """Every auxiliary task on bedrock, with the auto-chain disarmed.
+
+    Hermes's auto-chain probes OpenRouter/Nous for any aux task, which means our prompt text
+    leaving for a third party from inside the owner's microVM. The task list is derived from
+    Hermes's OWN defaults, so a Hermes upgrade that adds a task cannot silently reopen that
+    lane. bedrock.discovery.enabled defaults true and AccessDenies on the owner role.
+    Until M4's config writer exists, the bridge writes this before every turn.
+    """
+    tasks = {name: {"provider": "bedrock", "model": model, "fallback_chain": []}
+             for name, block in aux_defaults.items() if isinstance(block, dict) and "provider" in block}
+    return {"auxiliary": {**tasks, "free_only": True},
+            "bedrock": {"discovery": {"enabled": False}}}
+
+
+def pin_profile_defaults(agent_id: str, model: str) -> dict:
+    config = deep_merge(read_profile_config(agent_id), auxiliary_pin(_aux_defaults(), model))
+    write_profile_config(agent_id, config)
+    return config

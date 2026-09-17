@@ -573,6 +573,11 @@ async def upload_profile_files(owner_id: str, agent_id: str, files: dict[str, by
     every ``put_object`` off the event loop via ``run_in_thread``, ``.revision`` written only
     after every named file has landed so the bridge never re-pulls a half-written profile.
     """
+    # The writer-owned files are never content: a colliding name here would silently overwrite
+    # the provider config / secrets `write_profile_for_agent` just uploaded.
+    reserved = files.keys() & _WRITER_OWNED_FILES
+    if reserved:
+        raise ValueError(f"upload_profile_files: writer-owned names not allowed: {sorted(reserved)}")
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
@@ -581,6 +586,9 @@ async def upload_profile_files(owner_id: str, agent_id: str, files: dict[str, by
     for name, data in files.items():
         await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}{name}", Body=data)
     await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
+
+
+_WRITER_OWNED_FILES = frozenset({"config.yaml", ".env", "SOUL.md", ".revision"})
 
 
 def delete_profile(owner_id: str, agent_id: str) -> None:

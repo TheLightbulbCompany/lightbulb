@@ -1,5 +1,6 @@
 import re
 
+import pytest
 import yaml
 
 from core.services import hermes_profiles
@@ -227,3 +228,16 @@ async def test_upload_profile_files_is_a_no_op_without_a_bucket(monkeypatch):
     monkeypatch.setattr(hermes_profiles, "_new_s3_client", _fail)
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "")
     await upload_profile_files("org_a", "a1", {"AGENTS.md": b"x"})
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env", "SOUL.md", ".revision"])
+async def test_upload_profile_files_refuses_writer_owned_names(monkeypatch, name):
+    """A content upload must never overwrite what write_agent_profile just wrote (Q9d review)."""
+    puts = []
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: _FakeS3Client(puts))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
+
+    with pytest.raises(ValueError, match=name.replace(".", r"\.")):
+        await upload_profile_files("org_a", "a1", {"AGENTS.md": b"x", name: b"clobber"})
+
+    assert puts == []

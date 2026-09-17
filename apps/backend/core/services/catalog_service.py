@@ -374,15 +374,6 @@ def _remap_cron_jobs_for_deploy(
 # AgentCore (Hermes) buyers: deploy writes into the S3 profile prefix, not EFS.
 # ---------------------------------------------------------------------------
 
-# Fix round 2, gap 1 (M6-R11): shared prefix for the profile's own hard
-# failures (a missing BYO key, a failed Paperclip API key mint). The deploy
-# router's exception handler discriminates on this instead of a blanket
-# ``isinstance(exc, RuntimeError)`` -- other RuntimeErrors legitimately
-# surface from that same try block (create_paperclip_for_marketplace,
-# deploy_tarball_to_profile, ensure_operator_device_paired, ...) and must
-# keep mapping to the existing 500, not this one's 503.
-HERMES_PROFILE_ERROR_PREFIX = "hermes profile for owner="
-
 
 def _s3_client():
     import boto3
@@ -447,67 +438,38 @@ async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: 
     await asyncio.to_thread(_write)
 
 
-async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str, manifest: dict) -> dict:
+async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str) -> dict:
     """The Paperclip roster entry shape ``write_agent_profile`` wants
-    (``{"id","name","role","title","capabilities","icon"}``). Best-effort:
-    a roster read failure (Paperclip outage, or a fresh mint that hasn't
-    propagated to a list read yet) falls back to a minimal row built from
-    the manifest rather than failing the whole install over a cosmetic field.
+    (``{"id","name","role","title","capabilities","icon"}``).
+
+    Fix round 3 (M6-R10): hard-fails like ``hermes_provisioning._write_profiles``
+    does on its own roster read (no try/except there either, and it never
+    looks for one specific id — it just iterates whatever the roster returns)
+    — the agent was just minted, so a roster read failure, or a roster that
+    doesn't (yet) carry the just-minted id, is a real failure to surface, not
+    a cosmetic one to paper over with a manifest-derived stand-in row.
     """
     from core.services.messaging import load_agent_roster
 
-    try:
-        roster = await load_agent_roster(owner_id)
-    except Exception:
-        roster = []
+    roster = await load_agent_roster(owner_id)
     entry = next((a for a in roster if isinstance(a, dict) and a.get("id") == agent_id), None)
-    return entry or {"id": agent_id, "name": manifest.get("name") or agent_id, "role": "general"}
-
-
-async def _resolve_byo_api_key(owner_id: str, byo_provider: str | None) -> str | None:
-    """The owner's BYO LLM key plaintext (Secrets Manager,
-    ``lightbulb/<env>/user-keys/<owner>/<provider>`` -- same deterministic
-    name ``key_service._secret_name`` derives). Best-effort: any read failure
-    degrades to ``None`` (profile ships without the key rather than blocking
-    the whole install on a Secrets Manager blip), matching
-    ``paperclip_api_key._read_existing``'s own posture.
-    """
-    if not byo_provider:
-        return None
-    from core.services.key_service import _secret_name
-
-    def _get() -> str | None:
-        import boto3
-
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        try:
-            return sm.get_secret_value(SecretId=_secret_name(owner_id, byo_provider))["SecretString"]
-        except sm.exceptions.ResourceNotFoundException:
-            return None
-
-    try:
-        return await asyncio.to_thread(_get)
-    except Exception:
-        logger.exception(
-            "agentcore deploy: BYO key read failed owner=%s provider=%s -- profile ships without it",
-            owner_id,
-            byo_provider,
-        )
-        return None
+    if entry is None:
+        raise RuntimeError(f"hermes profile for owner={owner_id} agent={agent_id}: not found in the Paperclip roster")
+    return entry
 
 
 async def _resolve_paperclip_api_key(owner_id: str, agent_id: str) -> str:
     """The agent's own Paperclip API key plaintext, minting it on first
     request (``ensure_paperclip_api_key``).
 
-    Fix round 2, gap 1 (M6-R11): raises when the mint/read fails, mirroring
-    ``hermes_provisioning._write_profiles``'s I2 handling of the identical
-    ``ensure_paperclip_api_key`` None-on-any-failure contract (same
-    exception type and message shape) -- a profile that can't authenticate
-    to Paperclip is a failed install, not a degrade: every Paperclip call
-    would silently 401 while the seeded playbook tells the agent its key is
-    already set.
+    Raises ``HermesProfileError`` when the mint/read fails (M6-R11/M6-R13),
+    mirroring ``hermes_provisioning._write_profiles``'s identical
+    ``ensure_paperclip_api_key`` None-on-any-failure handling -- a profile
+    that can't authenticate to Paperclip is a failed install, not a degrade:
+    every Paperclip call would silently 401 while the seeded playbook tells
+    the agent its key is already set.
     """
+    from core.services.hermes_provisioning import HermesProfileError
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_api_key import ensure_paperclip_api_key
 
@@ -515,58 +477,47 @@ async def _resolve_paperclip_api_key(owner_id: str, agent_id: str) -> str:
         owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=shared_admin_client()
     )
     if not key:
-        raise RuntimeError(
-            f"{HERMES_PROFILE_ERROR_PREFIX}{owner_id} agent={agent_id}: paperclip API key mint/read failed"
+        raise HermesProfileError(
+            f"hermes profile for owner={owner_id} agent={agent_id}: paperclip API key mint/read failed"
         )
     return key
 
 
-async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, container: dict, manifest: dict) -> None:
+async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, container: dict) -> None:
     """The Hermes-profile half of an AgentCore install: config.yaml/.env/SOUL.md
-    for the freshly-registered agent, sourced the way ``hermes_provisioning``
-    (Task 13/14, not yet on this branch) will -- the owner's billing row for
-    ``provider_choice``/``byo_*``, the containers row for ``aip_arns``, the
-    live Paperclip roster for the agent's role/title/capabilities, and the
-    existing integrations/env-var builders every other provisioning path
-    already uses. Uploaded (and its own ``.revision`` written) BEFORE
+    for the freshly-registered agent.
+
+    Fix round 3 (M6-R10): the six owner-level inputs come from
+    ``hermes_provisioning.resolve_profile_inputs`` -- the SAME function
+    ``hermes_provisioning._write_profiles`` (provision time, whole starter
+    roster) calls, so this caller can never source them differently again
+    (see that function's docstring for the three ways this file used to
+    diverge before the consolidation). Only the per-agent inputs — the
+    agent's own roster row and its Paperclip API key — are resolved here.
+
+    Uploaded (and its own ``.revision`` written) BEFORE
     ``deploy_tarball_to_profile`` runs, so the newly-minted agent has a
     complete, bootable profile even before its marketplace content lands.
     """
-    from core.repositories import billing_repo
     from core.services import hermes_profiles
-    from core.services.credentials.mcp_server import build_connected_integration_servers
-    from core.services.provisioning_landing import build_provisioned_env
+    from core.services.hermes_provisioning import resolve_profile_inputs
 
-    billing = await billing_repo.get_by_owner_id(owner_id) or {}
-    provider_choice = billing.get("provider_choice") or "bedrock_claude"
-    byo_provider = billing.get("byo_provider")
-    byo_api_key = await _resolve_byo_api_key(owner_id, byo_provider) if provider_choice == "byo_key" else None
-    if provider_choice == "byo_key" and not byo_api_key:
-        # Fix round 2, gap 1 (M6-R11): _resolve_byo_api_key itself stays a
-        # legitimate best-effort helper (its own docstring's degrade is still
-        # correct in isolation) -- REQUIREDNESS is this caller's business, the
-        # same separation hermes_provisioning._write_profiles draws for
-        # read_byo_key. A byo_key owner with no readable key must never ship
-        # a profile with no LLM credential at all.
-        raise RuntimeError(f"{HERMES_PROFILE_ERROR_PREFIX}{owner_id} agent={agent_id}: byo api key read failed")
-    aip_arns = container.get("bedrock_aip_arns") or {}
-    agent_row, integrations, env_vars, paperclip_api_key = (
-        await _resolve_agent_row_for_profile(owner_id, agent_id, manifest),
-        await build_connected_integration_servers(owner_id),
-        await build_provisioned_env(owner_id),
+    inputs = await resolve_profile_inputs(owner_id, container_row=container)
+    agent_row, paperclip_api_key = (
+        await _resolve_agent_row_for_profile(owner_id, agent_id),
         await _resolve_paperclip_api_key(owner_id, agent_id),
     )
 
     files = hermes_profiles.write_agent_profile(
         owner_id,
         agent_row,
-        provider_choice=provider_choice,
-        aip_arns=aip_arns,
+        provider_choice=inputs.provider_choice,
+        aip_arns=inputs.aip_arns,
         paperclip_api_key=paperclip_api_key,
-        integrations=integrations,
-        env_vars=env_vars,
-        byo_provider=byo_provider,
-        byo_api_key=byo_api_key,
+        integrations=inputs.integrations,
+        env_vars=inputs.env_vars,
+        byo_provider=inputs.byo_provider,
+        byo_api_key=inputs.byo_api_key,
     )
     await hermes_profiles.upload_profile(owner_id, agent_id, files)
 
@@ -630,9 +581,7 @@ async def _install_agentcore_deploy(
         new_agent_id = paperclip_agent["id"]
 
     try:
-        await _build_and_upload_agent_profile(
-            owner_id=owner_id, agent_id=new_agent_id, container=container, manifest=manifest
-        )
+        await _build_and_upload_agent_profile(owner_id=owner_id, agent_id=new_agent_id, container=container)
         await deploy_tarball_to_profile(
             owner_id=owner_id, agent_id=new_agent_id, tar_bytes=tar_bytes, container=container
         )

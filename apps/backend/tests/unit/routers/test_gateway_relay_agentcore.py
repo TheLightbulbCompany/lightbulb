@@ -304,3 +304,69 @@ async def test_a_bad_signature_closes_1008_without_registering_a_session():
         )
     assert code == 1008
     assert gateway_relay.node_sessions == {}
+
+
+def _invoke_request_id(sent: list[str]) -> str:
+    frame = next(json.loads(f) for f in sent if json.loads(f).get("event") == "node.invoke.request")
+    return frame["payload"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_result_frame_over_the_old_64kib_parse_limit_still_resolves_the_invoke():
+    """Fix round 1, item 3 (critical): the reader used to decode with the same 64 KiB
+    _PARSE_LIMIT the ECS inspection peek uses -- a node.invoke.result over that size was
+    silently dropped (no ack, the future never resolves, and an unanswered req suppresses
+    the CLI's own tick watchdog). The node reader must decode up to node_broker.MAX_PAYLOAD
+    (25 MiB)."""
+    socket = _FeedableSocket()
+    socket.feed(_connect_frame("c-4", ["system.run"]))
+    big_stdout = "x" * 100_000  # 100 KB: over the old 64 KiB limit, nowhere near MAX_PAYLOAD
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(node_broker, "TICK_INTERVAL_MS", 60_000),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+    ):
+        serve_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(socket, _identity(), {"runtime_host": "agentcore"})
+        )
+        await _poll_until(lambda: ("org_1", "dev-1") in gateway_relay.node_sessions)
+        session = gateway_relay.node_sessions[("org_1", "dev-1")]
+        invoke_task = asyncio.create_task(session.invoke("system.run", {}, 5_000))
+
+        await _poll_until(lambda: any(json.loads(f).get("event") == "node.invoke.request" for f in socket.sent))
+        invoke_id = _invoke_request_id(socket.sent)
+
+        socket.feed(
+            json.dumps(
+                {
+                    "type": "req",
+                    "id": "r-2",
+                    "method": "node.invoke.result",
+                    "params": {"id": invoke_id, "ok": True, "payload": {"stdout": big_stdout}},
+                }
+            )
+        )
+        result = await asyncio.wait_for(invoke_task, timeout=1.0)
+        assert result == {"ok": True, "payload": {"stdout": big_stdout}}
+
+        socket.feed(None)
+        await asyncio.wait_for(serve_task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_frame_over_max_payload_closes_1009():
+    socket = _FeedableSocket()
+    socket.feed(_connect_frame("c-5", ["system.run"]))
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(node_broker, "MAX_PAYLOAD", 1_000),  # small ceiling so the test frame is trivially "too big"
+        patch.object(node_broker, "TICK_INTERVAL_MS", 60_000),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+    ):
+        serve_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(socket, _identity(), {"runtime_host": "agentcore"})
+        )
+        await _poll_until(lambda: ("org_1", "dev-1") in gateway_relay.node_sessions)
+        socket.feed(json.dumps({"type": "req", "id": "r-3", "method": "node.event", "params": {"x": "y" * 2_000}}))
+        code = await asyncio.wait_for(serve_task, timeout=1.0)
+    assert code == 1009

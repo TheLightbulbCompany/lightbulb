@@ -99,12 +99,18 @@ async def _refresh_presence_loop(connections: ConnectionService, connection_id: 
             return  # ends the wait below → both legs cancelled → close 1008
 
 
-def _parse(frame: str) -> dict | None:
+def _parse(frame: str, *, limit: int = _PARSE_LIMIT) -> dict | None:
     # Cheap char-count pre-check before the (allocating) UTF-8 encode: a
     # frame already over the limit in characters is over it in bytes too
     # (encode() only ever grows byte count relative to char count), so this
     # short-circuits the copy for the common case of a wildly oversized frame.
-    if len(frame) > _PARSE_LIMIT or len(frame.encode()) > _PARSE_LIMIT:
+    #
+    # `limit` defaults to the 64 KiB ECS inspection-peek cap -- the node reader below passes
+    # node_broker.MAX_PAYLOAD instead (fix round 1, item 3): a node.invoke.result can legally
+    # carry a large tool result, and the 64 KiB cap silently dropped anything bigger (no ack,
+    # the caller's future never resolves, and an unanswered req suppresses the CLI's own tick
+    # watchdog).
+    if len(frame) > limit or len(frame.encode()) > limit:
         return None
     try:
         body = json.loads(frame)
@@ -410,6 +416,11 @@ async def _serve_node_protocol(
             logger.warning("relay node-closed hook failed owner=%s", identity.owner_id, exc_info=True)
 
 
+class _FrameTooLarge(Exception):
+    """Raised by the node reader leg when a client frame exceeds node_broker.MAX_PAYLOAD --
+    `_pump` maps this to close code 1009 (message too big) rather than the generic 1011."""
+
+
 async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refresher: asyncio.Task | None) -> int:
     """Three legs plus the presence refresher when one is wired: read+ack, drain outbound
     invokes, and tick. The tick is not optional — the CLI closes 4000 at twice the interval
@@ -419,7 +430,16 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
     async def reader() -> None:
         try:
             while True:
-                answer = session.resolve(_parse(await websocket.receive_text()) or {})
+                frame = await websocket.receive_text()
+                # The node protocol's own ceiling (25 MiB -- the real gateway's value;
+                # screen snapshots and large tool results need it), NOT the 64 KiB ECS
+                # inspection-peek cap: a node.invoke.result over 64 KiB used to be silently
+                # dropped by `_parse`'s default limit (no ack, the caller's future never
+                # resolved, and an unanswered req suppresses the CLI's own tick watchdog --
+                # fix round 1, item 3).
+                if len(frame) > node_broker.MAX_PAYLOAD or len(frame.encode()) > node_broker.MAX_PAYLOAD:
+                    raise _FrameTooLarge(len(frame))
+                answer = session.resolve(_parse(frame, limit=node_broker.MAX_PAYLOAD) or {})
                 if answer is not None:
                     await websocket.send_text(json.dumps(answer))
         except (WebSocketDisconnect, ConnectionClosed):
@@ -443,7 +463,16 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
     legs = {asyncio.create_task(leg()) for leg in (reader, writer, ticker)}
     waitable = legs | ({refresher} if refresher is not None else set())
     done, pending = await asyncio.wait(waitable, return_when=asyncio.FIRST_COMPLETED)
-    close_code = 1008 if refresher is not None and refresher in done else 1000
+    if refresher is not None and refresher in done:
+        close_code = 1008  # presence revoked wins over any other signal in the same batch
+    else:
+        close_code = 1000
+        for task in done:
+            if task.cancelled():
+                continue
+            exc = task.exception()
+            if isinstance(exc, _FrameTooLarge):
+                close_code = 1009
     for task in pending:
         task.cancel()
     await asyncio.gather(*waitable, return_exceptions=True)

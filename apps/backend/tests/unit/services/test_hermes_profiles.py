@@ -31,10 +31,44 @@ def test_bedrock_discovery_is_pinned_off():
     assert cfg()["bedrock"]["region"] == "us-east-1"
 
 
-def test_every_auxiliary_task_is_pinned_to_bedrock_with_an_empty_fallback_chain():
+# Fix round 1, C1: the real 18 provider-bearing keys of Hermes 0.21.3's
+# ``hermes_cli.config_defaults.DEFAULT_CONFIG["auxiliary"]``, verified directly against the image —
+#   docker run --rm --entrypoint sed lightbulb/hermes-spike:m1-rc4 -n '679,750p' \
+#     /opt/hermes/hermes_cli/config_defaults.py
+# Hardcoded here (independent of ``hermes_profiles.AUXILIARY_TASKS``) so this test cannot pass
+# tautologically — the previous version iterated the module constant itself, so it passed for
+# any list, including the wrong 4-task one it was written to guard against.
+_REAL_AUXILIARY_TASKS = (
+    "approval",
+    "background_review",
+    "compression",
+    "curator",
+    "goal_judge",
+    "kanban_decomposer",
+    "mcp",
+    "memory_query_rewrite",
+    "moa_aggregator",
+    "moa_reference",
+    "monitor",
+    "profile_describer",
+    "review",
+    "skills_hub",
+    "title_generation",
+    "triage_specifier",
+    "tts_audio_tags",
+    "vision",
+)
+
+
+def test_auxiliary_tasks_is_the_real_18_task_hermes_default_config_list():
+    assert len(_REAL_AUXILIARY_TASKS) == 18
+    assert hermes_profiles.AUXILIARY_TASKS == _REAL_AUXILIARY_TASKS
+
+
+def test_every_one_of_the_18_auxiliary_tasks_is_pinned_to_bedrock_with_an_empty_fallback_chain():
     aux = cfg()["auxiliary"]
     assert aux["free_only"] is True
-    for task in hermes_profiles.AUXILIARY_TASKS:
+    for task in _REAL_AUXILIARY_TASKS:
         assert aux[task]["provider"] == "bedrock", task
         assert aux[task]["fallback_chain"] == [], task
         assert aux[task]["model"] == AIPS["haiku"], task

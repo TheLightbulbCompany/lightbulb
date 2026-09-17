@@ -27,15 +27,45 @@ _BEDROCK = "bedrock"
 
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
 #: -> ... (auxiliary_client.py:3-6); an unpinned task on a platform-billed path is egress to a
-#: vendor we have no account with. ``fallback_chain: []`` plus ``free_only`` is belt and braces.
+#: vendor we have no account with, and the Nous lane needs no credential of ours (``nous.guest:
+#: true`` in the defaults). ``fallback_chain: []`` is the actual fence (an empty configured chain
+#: skips straight to no-fallback rather than the auto-chain); ``free_only`` is a cost knob ON that
+#: auto-chain, not a second fence — it still lets a ":free" OpenRouter SKU through, and Hermes
+#: falls through to auto-detection even for an explicit ``provider`` the account can't invoke
+#: (auxiliary_client.py's unavailable-provider fallback), which is why ``bedrock.discovery.enabled:
+#: false`` and a present ``AWS_BEARER_TOKEN_BEDROCK`` both have to hold too.
 #:
-#: M4-R2: mirrors the task names M1's bridge (``apps/infra/hermes/bridge/sync.py::auxiliary_pin``)
-#: derives dynamically from Hermes's OWN ``hermes_cli.config_defaults.DEFAULT_CONFIG["auxiliary"]``
-#: (any dict-valued key carrying a ``provider`` field). This backend module can't read that
-#: package at request time, so it is pinned to the same set the bridge's own tests
-#: (``apps/infra/hermes/tests/test_auxiliary_pin.py::AUX_DEFAULTS``) exercise against the real
-#: bridge code — the only in-repo ground truth for the task-block shape.
-AUXILIARY_TASKS = ("vision", "compression", "title_generation", "review")
+#: Fix round 1, C1: this is the literal, complete 18-name list of every provider-bearing key in
+#: Hermes 0.21.3's ``hermes_cli.config_defaults.DEFAULT_CONFIG["auxiliary"]`` (every value built
+#: via the module's own ``_aux()`` helper, plus ``review``/``background_review``/``moa_reference``/
+#: ``moa_aggregator`` which inline the same shape) — verified directly against the image, not
+#: against the bridge's test fixture (that fixture only modeled 4 of the 18 and was mistaken for
+#: the full set in the first pass). Re-verify after any Hermes version bump with:
+#:   docker run --rm --entrypoint sed lightbulb/hermes-spike:m1-rc4 -n '679,750p' \
+#:     /opt/hermes/hermes_cli/config_defaults.py
+#: The bridge (``apps/infra/hermes/bridge/sync.py::auxiliary_pin``) reads the real package at
+#: runtime and so stays correct across a Hermes bump on its own; this backend-side constant does
+#: not, and needs a human to re-run the command above and update the tuple when Hermes moves.
+AUXILIARY_TASKS = (
+    "approval",
+    "background_review",
+    "compression",
+    "curator",
+    "goal_judge",
+    "kanban_decomposer",
+    "mcp",
+    "memory_query_rewrite",
+    "moa_aggregator",
+    "moa_reference",
+    "monitor",
+    "profile_describer",
+    "review",
+    "skills_hub",
+    "title_generation",
+    "triage_specifier",
+    "tts_audio_tags",
+    "vision",
+)
 
 #: Hard backstop: a match blocks even under ``--yolo``/mode=off (config_defaults.py:1582-1583).
 APPROVALS_DENY = ("rm -rf /", "mkfs*", "dd if=* of=/dev/*", ":(){:|:&};:")

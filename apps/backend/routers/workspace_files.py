@@ -327,7 +327,7 @@ async def _agentcore_write(owner_id: str, agent_id: str, path: str, content: str
             raise HTTPException(status_code=400, detail=f"File not in allowlist: {path}")
         if path == "SOUL.md":
             # Saving here makes the file the OWNER's: strip the generated marker so the rename
-            # branch (runtime_rpc._refresh_agentcore_soul) never overwrites their text again.
+            # branch (hermes_provisioning.refresh_agent_soul) never overwrites their text again.
             soul = hermes_profiles.strip_generated_marker(content)
             await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul)
             return path

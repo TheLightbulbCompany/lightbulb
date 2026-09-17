@@ -34,7 +34,7 @@ from core.services.messaging import ApiProblem
 
 @pytest.fixture(autouse=True)
 def _no_stored_soul_md_by_default(monkeypatch):
-    """``_refresh_agentcore_soul`` now reads the stored ``SOUL.md`` first (M6-R48, the
+    """``hermes_provisioning.refresh_agent_soul`` now reads the stored ``SOUL.md`` first (M6-R48, the
     generated-marker check) -- a real S3 GET when unmocked. Default every test in this module to
     "the profile has none yet", which is the regenerate branch they were all written against; the
     marker tests below override it."""
@@ -216,8 +216,10 @@ async def test_a_role_change_never_rewrites_the_owners_model_pick(monkeypatch):
     monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", apply_meta)
     write_profile = AsyncMock()
     monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
-    # A role change also carries a "role" key in `body`, so _refresh_agentcore_soul runs too.
-    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "ceo"}]))
+    # A role change also carries a "role" key in `body`, so refresh_agent_soul runs too.
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "ceo"}])
+    )
     upload_soul = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", upload_soul)
 
@@ -240,7 +242,9 @@ async def test_a_title_edit_beside_a_picked_model_leaves_that_model_alone(monkey
     _wire_paperclip_mirror(monkeypatch, admin)
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
-    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "general"}]))
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "general"}])
+    )
     monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
 
     await rpc._mirror_agent_update(
@@ -266,7 +270,9 @@ async def test_a_model_change_alongside_a_role_change_still_writes_the_picked_mo
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
-    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "ceo"}]))
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1", "role": "ceo"}])
+    )
     monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
 
     await rpc._mirror_agent_update(
@@ -294,8 +300,7 @@ async def test_mirror_agent_update_rename_on_agentcore_row_refreshes_soul_md_onl
     admin.patch_agent = AsyncMock(return_value={})
     _wire_paperclip_mirror(monkeypatch, admin)
     monkeypatch.setattr(
-        rpc,
-        "load_agent_roster",
+        "core.services.messaging.load_agent_roster",
         AsyncMock(return_value=[{"id": "a1", "name": "Renamed Ada", "role": "general", "title": "Old Title"}]),
     )
     upload_soul = MagicMock()
@@ -325,7 +330,8 @@ def _wire_rename(monkeypatch, *, stored_soul: str | None):
     admin.patch_agent = AsyncMock(return_value={})
     _wire_paperclip_mirror(monkeypatch, admin)
     monkeypatch.setattr(
-        rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Renamed Ada", "role": "general"}])
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": "a1", "name": "Renamed Ada", "role": "general"}]),
     )
     monkeypatch.setattr(rpc.hermes_profiles, "read_soul_md", MagicMock(return_value=stored_soul))
     upload_soul = MagicMock()
@@ -465,7 +471,9 @@ async def test_agents_update_on_agentcore_row_returns_ok_and_never_reaches_conta
     admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
     admin.patch_agent = AsyncMock(return_value={})
     _wire_paperclip_mirror(monkeypatch, admin)
-    monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Renamed"}]))
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Renamed"}])
+    )
     monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
     publish = AsyncMock()
     monkeypatch.setattr(rpc, "publish_owner_users", publish)

@@ -220,6 +220,10 @@ def test_create_agent_on_agentcore_owner_gets_the_http_adapter(client, monkeypat
     monkeypatch.setattr(
         "core.services.paperclip_adapter_config.settings.PUBLIC_API_BASE", "https://api-dev.flickmeon.ai"
     )
+    # M6-R59: an agentcore create now also writes the agent's Hermes profile (and 502s if it
+    # can't). Its own behaviour is pinned in test_teams_agents_pairing.py; stub it out here.
+    write_profile = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
     count_agents = AsyncMock(return_value=11)
     monkeypatch.setattr(
         "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
@@ -240,6 +244,7 @@ def test_create_agent_on_agentcore_owner_gets_the_http_adapter(client, monkeypat
     assert call.kwargs["adapter_type"] == "http"
     assert call.kwargs["adapter_config"]["headers"]["Authorization"] == "Bearer hook_abc"
     assert call.kwargs["adapter_config"]["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/o1"
+    write_profile.assert_awaited_once()
 
 
 def test_create_agent_response_redacts_device_private_key(client, monkeypatch):

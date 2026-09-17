@@ -910,36 +910,6 @@ async def _apply_agentcore_model_patch(owner_id: str, agent_id: str, *, default_
     await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, {"model": model})
 
 
-async def _refresh_agentcore_soul(owner_id: str, agent_id: str) -> None:
-    """Row #2 (Q9a fix round 1, I2): name/title/role/capabilities reach the agent ONLY through
-    ``SOUL.md`` (``hermes_profiles.build_soul_md``) -- rebuild it from the live (post-mirror)
-    Paperclip roster row and upload ONLY that file. Never ``write_profile_for_agent``/
-    ``upload_profile``, which would also overwrite the owner's own ``config.yaml``/``.env``.
-
-    M6-R48: regenerate ONLY while the stored file is still the backend-generated one -- its first
-    line is ``hermes_profiles.SOUL_GENERATED_MARKER``. The Instructions tab strips that marker when
-    an owner saves ``SOUL.md``, and a migrated/marketplace profile carries text that was never
-    generated here at all, so in both cases the file is the owner's and a rename must leave it
-    alone. An absent or EMPTY ``SOUL.md`` is still written: there is nothing to preserve (fix
-    round 1, m5 -- ``is_generated_soul("")`` is False, so treating "" as owner content would
-    permanently freeze regeneration for an agent whose write was half-finished).
-
-    The marker is read as late as possible -- AFTER the roster fetch, immediately before the
-    upload (fix round 1, m1) -- so the window in which a concurrent Instructions-tab save can be
-    overwritten is one S3 round trip rather than the seconds ``load_agent_roster``'s HTTP call
-    takes. It is a narrower race, not a closed one: closing it needs a conditional PUT
-    (``IfMatch`` on the ETag this read saw), which ``upload_soul_md`` does not carry today."""
-    roster = await load_agent_roster(owner_id)
-    agent_row = next((row for row in roster if isinstance(row, dict) and row.get("id") == agent_id), None)
-    if agent_row is None:
-        return
-    current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
-    if current and not hermes_profiles.is_generated_soul(current):
-        return
-    soul_md = hermes_profiles.build_soul_md(agent_row)
-    await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
-
-
 async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentcore: bool = False) -> None:
     inner = params.get("params") or {}
     paperclip = inner.get("paperclip") if isinstance(inner, dict) else None
@@ -1019,7 +989,11 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
         if chosen_model is not None:
             await _apply_agentcore_model_patch(owner_id, agent_id, default_id=chosen_model)
         if body:
-            await _refresh_agentcore_soul(owner_id, agent_id)
+            # Shared with the Teams BFF's own PATCH door (M6-R59) -- one owner for the
+            # generated-marker rule. See its docstring.
+            from core.services.hermes_provisioning import refresh_agent_soul
+
+            await refresh_agent_soul(owner_id, agent_id)
         return
     if not isinstance(paperclip, dict):
         return

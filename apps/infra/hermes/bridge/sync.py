@@ -73,10 +73,19 @@ def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
     return json.loads(client.get_secret_value(SecretId=secret_id)["SecretString"])
 
 
-def _s3():
-    import boto3
+#: Minor 2 (fix round 2 continuation): one lazily-built boto3 client per process, not one per
+#: call -- restore_root_auth/save_root_auth alone now cost 2-3 of these per turn
+#: (_root_auth_revision on both restore and save, plus the actual get/put).
+_S3_CLIENT = None
 
-    return boto3.client("s3")
+
+def _s3():
+    global _S3_CLIENT
+    if _S3_CLIENT is None:
+        import boto3
+
+        _S3_CLIENT = boto3.client("s3")
+    return _S3_CLIENT
 
 
 def _profile_dir(agent_id: str) -> Path:

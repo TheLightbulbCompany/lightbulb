@@ -1,3 +1,5 @@
+import re
+
 import yaml
 
 from core.services import hermes_profiles
@@ -78,6 +80,21 @@ def test_upload_writes_owner_first_under_hermes(monkeypatch):
     ]
     assert keys[4] == "org_a/hermes/a1/.revision"  # written LAST — the bridge polls it
     assert {bucket for bucket, _ in puts} == {"lightbulb-dev-openclaw-replicas"}
+
+
+def test_upload_revision_is_a_uuid4_hex_written_after_every_other_file(monkeypatch):
+    """C4: the backend and the container's own ``sync.save_profile`` are two uncoordinated writers
+    on the same S3 objects. ``.revision`` is the ONLY signal the bridge (Task 13, this lane's
+    continuation) can poll to notice a backend-authored hot patch, so it must be unconditionally
+    last and must change on every write (a uuid4 hex, not a timestamp that a clock skew or two
+    writes within the same millisecond could collide on)."""
+    puts = []
+    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.append((key, body)))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
+    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n", "updates: {}\n"))
+    last_key, last_body = puts[-1]
+    assert last_key == "org_a/hermes/a1/.revision"
+    assert re.fullmatch(r"[0-9a-f]{32}", last_body), last_body
 
 
 def test_upload_is_a_no_op_without_a_bucket(monkeypatch):

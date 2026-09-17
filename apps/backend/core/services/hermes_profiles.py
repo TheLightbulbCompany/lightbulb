@@ -39,7 +39,7 @@ earlier version of this file put them here.
 from __future__ import annotations
 
 import re
-import time
+import uuid
 from dataclasses import dataclass
 
 import yaml
@@ -412,6 +412,9 @@ def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> None:
     _s3_put(bucket, f"{prefix}.env", files.dotenv)
     _s3_put(bucket, f"{prefix}SOUL.md", files.soul_md)
     _s3_put(bucket, f"{prefix}managed/config.yaml", files.managed_overlay)
-    # LAST, always: the bridge re-pulls a profile when this object's value changes (Task 13).
-    # Writing it before the files it describes would advertise a config that is not there yet.
-    _s3_put(bucket, f"{prefix}.revision", str(int(time.time() * 1000)))
+    # LAST, always: the bridge re-pulls a profile when this object's value changes (Task 13, this
+    # lane's continuation). Writing it before the files it describes would advertise a config that
+    # is not there yet. A uuid4 hex, not a timestamp (C4, fix round 1) — two uploads racing within
+    # the same millisecond would otherwise write an identical ".revision" value and the bridge's
+    # diff-and-repull could miss the second one.
+    _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)

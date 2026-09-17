@@ -270,56 +270,60 @@ def _tail_eligible(row: dict) -> bool:
     return bool(row.get("service_name") and row.get("agentcore_runtime_arn"))
 
 
-async def _check_preconditions(owner_id: str) -> tuple[int | None, str | None, list[dict] | None]:
+async def _check_preconditions(
+    owner_id: str,
+) -> tuple[int | None, str | None, list[dict] | None, dict | None]:
     """Ruling M6-R1 step 1 / Ruling M6-R16 / Ruling M6-R19 / Ruling M6-R20. Returns
-    ``(exit_code, None, None)`` on failure, or ``(None, mode, roster)`` where ``mode`` is
-    ``_MODE_FULL`` (provision from scratch) or ``_MODE_TAIL`` (a prior attempt already reached
-    READY — the row is an ECS workspace now on agentcore but carries no ``hermes_migrated_at``
-    stamp yet, so only the tail remains)."""
+    ``(exit_code, None, None, None)`` on failure, or ``(None, mode, roster, row)`` where ``mode``
+    is ``_MODE_FULL`` (provision from scratch) or ``_MODE_TAIL`` (a prior attempt already
+    reached READY — the row is an ECS workspace now on agentcore but carries no
+    ``hermes_migrated_at`` stamp yet, so only the tail remains). ``row`` is returned so the tail
+    can read ``agentcore_runtime_arn`` off it directly in ``_MODE_TAIL`` (Ruling M6-R18) without
+    a second read."""
     if owner_id == REFERENCE_ORG_ID:
         logger.error("migrate: %s is the reference org (M6-R2) — refusing", owner_id)
-        return EXIT_REFERENCE_ORG, None, None
+        return EXIT_REFERENCE_ORG, None, None, None
     missing = _preflight_settings()
     if missing:
         logger.error("migrate: refusing owner=%s — missing required settings: %s", owner_id, ", ".join(missing))
-        return EXIT_PRECONDITION, None, None
+        return EXIT_PRECONDITION, None, None, None
     if not get_workspace().user_path(owner_id).is_dir():
         logger.error(
             "migrate: no EFS workspace directory for owner=%s — refusing (M6-R20a: this job runs "
             "inside the backend task, never from an operator laptop with no /mnt/efs mount)",
             owner_id,
         )
-        return EXIT_PRECONDITION, None, None
+        return EXIT_PRECONDITION, None, None, None
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     if not row:
         logger.error("migrate: no container row for owner=%s", owner_id)
-        return EXIT_PRECONDITION, None, None
+        return EXIT_PRECONDITION, None, None, None
     if row.get("hermes_migrated_at"):
         logger.info("migrate: owner=%s is already migrated (hermes_migrated_at stamped)", owner_id)
-        return EXIT_PRECONDITION, None, None
+        return EXIT_PRECONDITION, None, None, None
     if runtime_transport.host_for(row) == "agentcore":
         if not _tail_eligible(row):
             logger.error(
                 "migrate: owner=%s is on agentcore but not an ECS workspace (no service_name/ARN) — refusing",
                 owner_id,
             )
-            return EXIT_PRECONDITION, None, None
+            return EXIT_PRECONDITION, None, None, None
         mode = _MODE_TAIL
     else:
         mode = _MODE_FULL
     company = await _load_company(owner_id)
     if not company or company.status != "active":
         logger.error("migrate: owner=%s has no active Paperclip company row", owner_id)
-        return EXIT_PRECONDITION, None, None
+        return EXIT_PRECONDITION, None, None, None
     try:
         roster = await load_agent_roster(owner_id)
     except Exception:  # noqa: BLE001 — a roster fetch failure is Paperclip being unreachable, not ineligibility
         logger.exception("migrate: roster fetch failed for owner=%s — treating as transient", owner_id)
-        return EXIT_TRANSIENT, None, None
+        return EXIT_TRANSIENT, None, None, None
     if not roster:
         logger.error("migrate: owner=%s has an empty agent roster", owner_id)
-        return EXIT_PRECONDITION, None, None
-    return None, mode, roster
+        return EXIT_PRECONDITION, None, None, None
+    return None, mode, roster, row
 
 
 async def _release_pre_flip_failure(owner_id: str, claim_id: str, attempt_token: str | None, exc: Exception) -> int:
@@ -353,30 +357,24 @@ async def _release_pre_flip_failure(owner_id: str, claim_id: str, attempt_token:
     return exit_code
 
 
-async def _apply_efs_overrides(
-    owner_id: str,
-    plan: list[tuple[dict, str | None, dict[str, Path]]],
-    *,
-    provider_choice: str,
-    byo_provider: str | None,
-) -> None:
+async def _apply_efs_overrides(owner_id: str, plan: list[tuple[dict, str | None, dict[str, Path]]]) -> None:
     """Layer the EFS-sourced identity/content on top of the vanilla profiles
     ``provision_hermes_runtime`` just wrote for every roster agent (see the module docstring's
-    ordering note). Resolves the SAME provider context ``hermes_provisioning._write_profiles``
-    resolves internally, via the same underlying primitives — that private function has no hook
-    for a per-agent EFS override and this lane may not edit ``hermes_provisioning.py`` to add one.
+    ordering note). Owner-level inputs via ``hermes_provisioning.resolve_profile_inputs`` (Ruling
+    M6-R10, adopted here per Ruling M6-R18 — the formerly-deferred concern 4) — the SAME shared
+    resolver ``hermes_provisioning._write_profiles`` uses internally, so this and the internal
+    fan-out can never diverge again. ``aip_arns`` is re-derived via ``ensure_owner_aips``
+    (idempotent create-or-reuse) rather than trusted off a row read earlier in this job, mirroring
+    ``_write_profiles``'s own reasoning: a row read before ``provision_hermes_runtime`` ran would
+    be stale.
     """
     from core.billing.bedrock_aip import ensure_owner_aips
-    from core.services.credentials.mcp_server import build_connected_integration_servers
-    from core.services.key_service import read_byo_key
+    from core.services.hermes_provisioning import resolve_profile_inputs
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_api_key import ensure_paperclip_api_key
-    from core.services.provisioning_landing import build_provisioned_env
 
-    byo_api_key = await read_byo_key(owner_id, byo_provider or "anthropic") if provider_choice == "byo_key" else None
     aip_arns = await ensure_owner_aips(owner_id)
-    integrations = await build_connected_integration_servers(owner_id)
-    env_vars = await build_provisioned_env(owner_id)
+    inputs = await resolve_profile_inputs(owner_id, container_row={"bedrock_aip_arns": aip_arns})
     admin_client = shared_admin_client()
     bucket = settings.OWNER_STATE_BUCKET
     s3 = _s3_client() if bucket else None
@@ -391,13 +389,13 @@ async def _apply_efs_overrides(
         profile = write_agent_profile(
             owner_id,
             agent,
-            provider_choice=provider_choice,
-            aip_arns=aip_arns,
+            provider_choice=inputs.provider_choice,
+            aip_arns=inputs.aip_arns,
             paperclip_api_key=paperclip_api_key,
-            integrations=integrations,
-            env_vars=env_vars,
-            byo_provider=byo_provider,
-            byo_api_key=byo_api_key,
+            integrations=inputs.integrations,
+            env_vars=inputs.env_vars,
+            byo_provider=inputs.byo_provider,
+            byo_api_key=inputs.byo_api_key,
             soul_md_override=soul,
         )
         if s3 is not None:
@@ -440,16 +438,21 @@ async def _stamp_migrated(owner_id: str) -> None:
 
 
 async def migrate(owner_id: str, *, dry_run: bool) -> int:
-    exit_code, mode, roster = await _check_preconditions(owner_id)
+    exit_code, mode, roster, row = await _check_preconditions(owner_id)
     if exit_code is not None:
         return exit_code
 
-    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+    provider_choice, _ = await resolve_provider_choice(owner_id)
     reconnect_chatgpt = provider_choice == "chatgpt_oauth"
     plan = await _build_plan(owner_id, roster)
     _print_plan(owner_id, plan, dry_run=dry_run, reconnect_chatgpt=reconnect_chatgpt)
     if dry_run:
         return EXIT_OK
+
+    # The runtime ARN this tail needs to force-cold-restart (Ruling M6-R18, below): in
+    # _MODE_TAIL it already exists on the row _check_preconditions read (_tail_eligible already
+    # confirmed it); in _MODE_FULL it comes back from provision_hermes_runtime itself.
+    runtime_arn = row.get("agentcore_runtime_arn") if mode == _MODE_TAIL else None
 
     if mode == _MODE_FULL:
         try:
@@ -471,7 +474,9 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
             return await _release_pre_flip_failure(owner_id, claim_id, claim_id, exc)
 
         try:
-            await provision_hermes_runtime(owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True)
+            runtime_arn = await provision_hermes_runtime(
+                owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True
+            )
         except ProvisionSuperseded:
             logger.warning("migrate: lost the provision claim for owner=%s during runtime provision", owner_id)
             return EXIT_LOST_CLAIM
@@ -484,9 +489,20 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
     # released on its own terminal write. A failure from here on is a live-workspace cleanup
     # step, not a lost migration, so it is classified rather than treated as a lost claim.
     try:
-        await _apply_efs_overrides(owner_id, plan, provider_choice=provider_choice, byo_provider=byo_provider)
+        await _apply_efs_overrides(owner_id, plan)
         if reconnect_chatgpt:
             await _reconcile_chatgpt_oauth(owner_id)
+        # Ruling M6-R18: the bridge's ensure_profile only re-pulls the four backend-owned files
+        # (config.yaml/.env/SOUL.md/.revision) on a revision change, and save_profile syncs the
+        # AGENT-owned files (memory/**, skills/**, AGENTS.md, MEMORY.md) back FROM the local
+        # dir -- so a warm process that took a turn during the brief vanilla window (Ruling
+        # M6-R14) would sync vanilla agent-owned content OVER what was just uploaded above.
+        # Stopping the runtime session forces the next invoke to cold-restore the whole profile
+        # from S3, which is the only way the override actually survives. Must run AFTER the last
+        # override upload (so there is something correct to cold-restore) and BEFORE the ECS
+        # stop (matches Ruling M6-R1's ordering).
+        if runtime_arn:
+            await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
         # Order matters (Ruling M6-R1): the ECS service is stopped only now that the AgentCore
         # runtime is confirmed READY, so two runtimes never serve one owner at once. force=True
         # (Ruling M6-R15) bypasses the AgentCore no-op guard -- by now the row already reads

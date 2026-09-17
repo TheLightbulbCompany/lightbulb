@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.containers.workspace import Workspace
 from core.repositories.container_repo import ProvisionSuperseded
+from core.services.hermes_provisioning import ProfileInputs
 from scripts import migrate_workspace_to_hermes as mod
 
 OWNER = "org_test1"
@@ -25,6 +26,18 @@ ROSTER = [
     {"id": CEO_ID, "role": "ceo", "name": "Ada"},
     {"id": ENG_ID, "role": "engineering", "name": "Bea"},
 ]
+
+#: A canned ``resolve_profile_inputs`` result -- Ruling M6-R18 adopted that shared resolver in
+#: _apply_efs_overrides, so any test exercising it needs a stand-in rather than the real
+#: (network-touching) resolution chain.
+_PROFILE_INPUTS = ProfileInputs(
+    provider_choice="bedrock_claude",
+    byo_provider=None,
+    byo_api_key=None,
+    aip_arns={"sonnet": "arn:son"},
+    integrations={},
+    env_vars={},
+)
 
 
 def _fake_workspace(tmp_path):
@@ -155,9 +168,9 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
 
     monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
     monkeypatch.setattr(
-        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+        "core.services.hermes_provisioning.resolve_profile_inputs",
+        AsyncMock(return_value=_PROFILE_INPUTS),
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr(
         "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
@@ -169,13 +182,18 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     leased = AsyncMock(side_effect=lambda *a, **kw: calls.append("stamp"))
     monkeypatch.setattr(mod.container_repo, "update_container_leased", leased)
 
+    session_stop = MagicMock(side_effect=lambda *a: calls.append("session_stop"))
+    monkeypatch.setattr(mod, "_stop_runtime_session", session_stop)
+
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
 
-    # Ordering (Ruling M6-R1/M6-R16): provision only after prepare, stop only after provision,
-    # the hermes_migrated_at stamp only after the stop.
-    assert calls == ["prepare", "provision", "stop", "stamp"]
+    # Ordering (Ruling M6-R1/M6-R16/M6-R18): provision only after prepare, the session cold-stop
+    # only after the last override upload (already done by the time "provision" -> the tail
+    # starts), ECS stop only after the session stop, the hermes_migrated_at stamp only after that.
+    assert calls == ["prepare", "provision", "session_stop", "stop", "stamp"]
     prepare.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
     provision.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
+    session_stop.assert_called_once_with("arn:hermes-1", mod.runtime_transport.session_id_for(OWNER))
     # force=True (Ruling M6-R15): bypasses the AgentCore no-op guard -- the row already reads
     # runtime_host=agentcore by the time this call happens.
     ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
@@ -346,9 +364,8 @@ async def test_an_unstamped_agentcore_row_runs_only_the_tail(settings_ok, tmp_pa
 
     monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
     monkeypatch.setattr(
-        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_PROFILE_INPUTS)
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr(
         "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
@@ -358,12 +375,19 @@ async def test_an_unstamped_agentcore_row_runs_only_the_tail(settings_ok, tmp_pa
     ecs = SimpleNamespace(stop_user_service=AsyncMock())
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
 
+    session_stop = MagicMock()
+    monkeypatch.setattr(mod, "_stop_runtime_session", session_stop)
+
     stamp = AsyncMock()
     monkeypatch.setattr(mod, "_stamp_migrated", stamp)
 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
     prepare.assert_not_called()
     provision.assert_not_called()
+    # Ruling M6-R18: the tail-mode ARN comes straight off the row _check_preconditions already
+    # read (no second lookup) -- "arn:x" here, not provision_hermes_runtime's return (unreachable
+    # in this test, since provision is never called).
+    session_stop.assert_called_once_with("arn:x", mod.runtime_transport.session_id_for(OWNER))
     ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
     stamp.assert_awaited_once_with(OWNER)
 
@@ -443,6 +467,7 @@ async def test_a_transient_provision_failure_releases_running_and_retries_withou
     # total across both attempts), never twice within the same attempt.
     monkeypatch.setattr(mod, "_apply_efs_overrides", AsyncMock())
     monkeypatch.setattr(mod, "_stamp_migrated", AsyncMock())
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock())
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(stop_user_service=AsyncMock()))
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
     assert len(attempts) == 2
@@ -499,13 +524,13 @@ async def test_chatgpt_oauth_owner_migrates_without_staging_and_removes_the_stal
     monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
     monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
     monkeypatch.setattr(
-        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_PROFILE_INPUTS)
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr(
         "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
     )
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock())
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(stop_user_service=AsyncMock()))
 
     resolve_token_owner = AsyncMock(return_value="user_the_connector")

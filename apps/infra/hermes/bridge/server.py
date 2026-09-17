@@ -81,7 +81,7 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         if run_id:
             if not turn.register_run(run_id):
                 return 200, {"eventId": body.get("eventId"), "runId": run_id, "status": "replayed"}
-            turn.RUNS[run_id]["started"] = True
+            turn.mark_started(run_id)
             turn._post_backend(f"runs/{OWNER}/events", {
                 "runId": run_id, "type": "run.started", "at": now(),
                 "sessionKey": turn._resolve_session_key(agent_id, body),

@@ -225,3 +225,16 @@ def test_a_room_ingress_with_a_run_block_still_posts_run_started_first(home, pos
     assert len(posted) == 1
     assert posted[0][1]["type"] == "run.started"
     assert posted[0][1]["runId"] == body["run"]["runId"]
+
+
+# Finding 2 (Important): server.py mutated turn.RUNS[run_id]["started"] = True directly,
+# bypassing _RUNS_LOCK -- the lock every other registry mutator (register_run, attach_agent,
+# finish_run, abort_run) takes.
+def test_mark_started_sets_the_flag_on_a_registered_run():
+    turn.register_run(RUN)
+    turn.mark_started(RUN)
+    assert turn.RUNS[RUN]["started"] is True
+
+
+def test_mark_started_on_an_unknown_run_does_not_raise():
+    turn.mark_started(RUN)  # no entry at all -- must be a no-op, not a KeyError

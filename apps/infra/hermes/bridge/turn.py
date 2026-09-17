@@ -49,6 +49,15 @@ def register_run(run_id: str) -> bool:
         return True
 
 
+def mark_started(run_id: str) -> None:
+    """Set by server.py at accept time, before it posts run.started itself -- a no-op if the
+    entry is gone (there is nothing to mark)."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is not None:
+            entry["started"] = True
+
+
 def attach_agent(run_id: str, agent) -> None:
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)

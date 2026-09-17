@@ -513,10 +513,13 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
         if runtime_arn:
             try:
                 await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
-            except Exception:  # noqa: BLE001 — best-effort: no session to stop is not fatal
-                logger.warning(
-                    "migrate: StopRuntimeSession failed for owner=%s arn=%s", owner_id, runtime_arn, exc_info=True
-                )
+            except Exception as exc:  # noqa: BLE001 — best-effort: no session to stop is not fatal
+                if type(exc).__name__ == "ResourceNotFoundException":
+                    logger.info("migrate: no live runtime session to stop for owner=%s (fresh runtime)", owner_id)
+                else:
+                    logger.warning(
+                        "migrate: StopRuntimeSession failed for owner=%s arn=%s", owner_id, runtime_arn, exc_info=True
+                    )
         # Order matters (Ruling M6-R1): the ECS service is stopped only now that the AgentCore
         # runtime is confirmed READY, so two runtimes never serve one owner at once. force=True
         # (Ruling M6-R15) bypasses the AgentCore no-op guard -- by now the row already reads

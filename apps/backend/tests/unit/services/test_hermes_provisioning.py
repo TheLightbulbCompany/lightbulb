@@ -1397,3 +1397,74 @@ def test_classify_provision_error_treats_hermes_profile_error_like_runtime_error
     _, hermes_retryable = classify_provision_error(hermes_provisioning.HermesProfileError("boom"))
     _, plain_retryable = classify_provision_error(RuntimeError("boom"))
     assert hermes_retryable == plain_retryable
+
+
+# --- M6-R43: a rolled-back (deleted / DELETING) runtime is never reused ------------------------
+
+
+@pytest.mark.asyncio
+async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(monkeypatch):
+    """M6-R43 (dev re-migration after --rollback): the row still carries the deleted runtime's
+    ARN (stamped by the attempt that found it DELETING by name). Describe says it is gone, so
+    the provisioner waits out the delete and CREATES -- the row write replaces the stale ARN."""
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"agentcore_runtime_arn": "arn:rolled-back", "status": "provisioning"}),
+    )
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)  # ARN row: profiles already in S3
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
+
+    def _gone(arn):
+        raise hermes_provisioning._RuntimeGone(arn)
+
+    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
+    waited = {}
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_gone", lambda arn: waited.setdefault("arn", arn))
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+
+    writes = []
+
+    async def _spy_update(owner_id, claim_id, fields, **kwargs):
+        writes.append(dict(fields))
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _spy_update)
+
+    arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+    assert arn == "arn:fresh"
+    assert waited["arn"] == "arn:rolled-back"
+    assert writes[0] == {"agentcore_runtime_arn": "arn:fresh"}  # stale ARN replaced before the READY poll
+    assert writes[-1]["status"] == "running" and writes[-1]["agentcore_runtime_arn"] == "arn:fresh"
+
+
+def test_runtime_image_uri_raises_gone_on_not_found_and_on_deleting(monkeypatch):
+    import boto3
+
+    class _NotFound(Exception):
+        pass
+
+    class _Client:
+        exceptions = SimpleNamespace(ResourceNotFoundException=_NotFound)
+
+        def __init__(self, status):
+            self._status = status
+
+        def get_agent_runtime(self, agentRuntimeId):
+            if self._status is None:
+                raise _NotFound()
+            return {"status": self._status, "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": "img"}}}
+
+    for status in (None, "DELETING"):
+        monkeypatch.setattr(boto3, "client", lambda *a, _s=status, **k: _Client(_s))
+        with pytest.raises(hermes_provisioning._RuntimeGone):
+            hermes_provisioning._runtime_image_uri("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: _Client("READY"))
+    assert hermes_provisioning._runtime_image_uri("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1") == "img"

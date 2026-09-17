@@ -206,15 +206,50 @@ def _find_existing_runtime_arn(name: str) -> str | None:
     return None
 
 
+class _RuntimeGone(Exception):
+    """The runtime an ARN names no longer exists, or is being deleted (M6-R43)."""
+
+
 def _runtime_image_uri(runtime_arn: str) -> str | None:
     """The image URI an existing runtime is currently configured with. Sync — call via
-    ``run_in_thread``."""
+    ``run_in_thread``.
+
+    M6-R43: raises ``_RuntimeGone`` when the runtime is DELETING or already gone. A rollback
+    (``teardown_hermes_runtime``) deletes the runtime, but a re-migration can still meet its
+    ARN -- stamped on the row by an earlier attempt, or returned by the name lookup while the
+    delete is in flight (``list_agent_runtimes`` lists DELETING runtimes). Neither is a runtime
+    to reuse: reusing it 404s on the READY poll the moment the delete completes.
+    """
     import boto3
 
     client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
-    desc = client.get_agent_runtime(agentRuntimeId=runtime_id)
+    try:
+        desc = client.get_agent_runtime(agentRuntimeId=runtime_id)
+    except client.exceptions.ResourceNotFoundException:
+        raise _RuntimeGone(runtime_arn) from None
+    if desc.get("status") == "DELETING":
+        raise _RuntimeGone(runtime_arn)
     return (desc.get("agentRuntimeArtifact") or {}).get("containerConfiguration", {}).get("containerUri")
+
+
+def _wait_for_runtime_gone(runtime_arn: str) -> None:
+    """Poll ``GetAgentRuntime`` until it 404s. Sync — call via ``run_in_thread``. Runtime names
+    are unique per account, so ``CreateAgentRuntime`` under the same name conflicts until a
+    DELETING predecessor is fully gone (M6-R43). Same bound as the READY poll."""
+    import time
+
+    import boto3
+
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    runtime_id = runtime_arn.rsplit("/", 1)[-1]
+    for _ in range(_READY_POLL_ATTEMPTS):
+        try:
+            client.get_agent_runtime(agentRuntimeId=runtime_id)
+        except client.exceptions.ResourceNotFoundException:
+            return
+        time.sleep(_READY_POLL_INTERVAL_S)
+    raise RuntimeError(f"AgentCore runtime {runtime_arn} was still deleting at the end of the poll window")
 
 
 def _update_runtime_image(runtime_arn: str, request: dict) -> None:
@@ -832,16 +867,25 @@ async def provision_hermes_runtime(
         # Reusing an already-created runtime (recorded on the row, or found by name). Bring it
         # onto the currently configured image if it drifted (e.g. a broken tag fixed between
         # retries); otherwise just poll it below.
-        current_image = await run_in_thread(_runtime_image_uri, arn)
-        if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
-            await run_in_thread(_update_runtime_image, arn, _build_request())
-        if not row.get("agentcore_runtime_arn"):
-            # Found by name lookup only -- the row never got it. Record now, before polling,
-            # for the same reason the freshly-created branch below does.
-            await container_repo.update_container_leased(
-                owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
-            )
-    else:
+        try:
+            current_image = await run_in_thread(_runtime_image_uri, arn)
+        except _RuntimeGone:
+            # M6-R43: a rolled-back (deleted / DELETING) runtime is not one to reuse. Wait out
+            # the delete -- the name is unique, so a create would conflict until it finishes --
+            # then take the create path, whose row write replaces the stale ARN.
+            logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
+            await run_in_thread(_wait_for_runtime_gone, arn)
+            arn = None
+        else:
+            if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
+                await run_in_thread(_update_runtime_image, arn, _build_request())
+            if not row.get("agentcore_runtime_arn"):
+                # Found by name lookup only -- the row never got it. Record now, before polling,
+                # for the same reason the freshly-created branch below does.
+                await container_repo.update_container_leased(
+                    owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
+                )
+    if not arn:
         arn = await run_in_thread(_create_runtime, _build_request())
         # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal, fenced -- BEFORE the READY
         # poll. Without this, a CREATE_FAILED, a poll-window timeout, or a lost fence on the

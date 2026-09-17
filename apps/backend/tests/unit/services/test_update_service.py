@@ -573,10 +573,10 @@ async def test_apply_claimed_update_refuses_image_roll_for_agentcore_owner():
 
 
 @pytest.mark.asyncio
-async def test_apply_claimed_update_config_patch_only_is_unaffected_for_agentcore_owner():
+async def test_apply_claimed_update_config_patch_only_is_not_refused_for_agentcore_owner():
     """A config_patch-only change (not this row's ECS-shaped set) must not be
-    refused just because the owner happens to be AgentCore -- that's row
-    #12/#13's door, not this one."""
+    refused just because the owner happens to be AgentCore -- it applies via the
+    S3-profile fan-out instead (fix round 1, item 3), not the ECS-shaped refusal."""
     owner_id, update_id = "owner_agentcore", "upd_cfg"
     update_item = {
         "owner_id": owner_id,
@@ -585,14 +585,44 @@ async def test_apply_claimed_update_config_patch_only_is_unaffected_for_agentcor
         "changes": {"config_patch": {"tools": {"profile": "full"}}},
     }
     repo = _claimed_repo(update_item)
-    patcher = AsyncMock()
+    ecs_patcher = AsyncMock()
+    roster_patcher = AsyncMock(return_value={"config": {}, "hash": "h1"})
 
     with (
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service.runtime_transport, "is_agentcore_owner", new=AsyncMock(return_value=True)),
-        patch.object(update_service, "patch_openclaw_config", patcher),
+        patch.object(update_service, "patch_openclaw_config", ecs_patcher),
+        patch.object(update_service, "_config_patch_roster", roster_patcher),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
-    patcher.assert_awaited_once_with(owner_id, {"tools": {"profile": "full"}})
+    roster_patcher.assert_awaited_once_with(owner_id, {"tools": {"profile": "full"}}, None)
+    ecs_patcher.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_claimed_update_config_patch_only_ecs_owner_unchanged():
+    """The ECS branch stays byte-identical: patch_openclaw_config, not the roster fan-out."""
+    owner_id, update_id = "owner_ecs", "upd_cfg_ecs"
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": "config_patch",
+        "changes": {"config_patch": {"tools": {"profile": "full"}}},
+    }
+    repo = _claimed_repo(update_item)
+    ecs_patcher = AsyncMock()
+    roster_patcher = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service.runtime_transport, "is_agentcore_owner", new=AsyncMock(return_value=False)),
+        patch.object(update_service, "patch_openclaw_config", ecs_patcher),
+        patch.object(update_service, "_config_patch_roster", roster_patcher),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is True
+    ecs_patcher.assert_awaited_once_with(owner_id, {"tools": {"profile": "full"}})
+    roster_patcher.assert_not_awaited()

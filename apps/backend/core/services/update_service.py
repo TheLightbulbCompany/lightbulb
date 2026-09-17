@@ -32,6 +32,7 @@ from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services import config_schema, runtime_transport
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
+from core.services.runtime_rpc import _config_patch_roster
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +512,12 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
             or changes.get("new_memory")
             or changes.get(TASK_DEFINITION_REFRESH_CHANGE)
         )
-        if ecs_shaped and await runtime_transport.is_agentcore_owner(owner_id):
+        config_patch = changes.get("config_patch")
+        # One read serves both the ECS-shaped guard below AND the config-patch branch --
+        # fix round 1, item 3 added the second consumer, so this is no longer paid only
+        # when ecs_shaped is already true.
+        is_agentcore = (ecs_shaped or config_patch) and await runtime_transport.is_agentcore_owner(owner_id)
+        if ecs_shaped and is_agentcore:
             # Row #14 defensive backstop: the primary control is the enqueue-time
             # filter (queue_fleet_image_update/queue_task_definition_refresh_for_owner
             # skip AgentCore owners outright), but this refuses ANY other path that
@@ -534,9 +540,15 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
             return False
 
         # Step 2: apply config patch if present
-        config_patch = changes.get("config_patch")
         if config_patch:
-            await patch_openclaw_config(owner_id, config_patch)
+            # Fix round 1, item 3: a queued config_patch row for an AgentCore owner used to
+            # fall straight through to patch_openclaw_config, which raises ConfigPatchError
+            # (no openclaw.json to find) -- same S3-profile fan-out row #12/#13's config-patch
+            # doors already use.
+            if is_agentcore:
+                await _config_patch_roster(owner_id, config_patch, None)
+            else:
+                await patch_openclaw_config(owner_id, config_patch)
             logger.info("Applied config patch for update %s (owner=%s)", update_id, owner_id)
 
         # Step 3: apply ECS changes if present

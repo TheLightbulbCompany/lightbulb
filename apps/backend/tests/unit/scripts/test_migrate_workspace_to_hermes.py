@@ -9,6 +9,7 @@ monkeypatched stand-in.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -118,6 +119,30 @@ def precondition_ok(efs_ready, settings_ok, monkeypatch):
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
     monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
+
+
+# ---------------------------------------------------------------------------
+# Ruling M6-R47 — carry plan no longer copies MEMORY.md/memory/** verbatim
+# ---------------------------------------------------------------------------
+
+
+def test_collect_carry_files_drops_raw_memory_and_carries_built_memories(tmp_path):
+    root = _fake_workspace(tmp_path)
+    files = mod._collect_carry_files(root / f"workspace-{CEO_ID}")
+
+    assert "MEMORY.md" not in files
+    assert not any(k == "memory" or k.startswith("memory/") for k in files)
+
+    assert files["AGENTS.md"] == root / f"workspace-{CEO_ID}" / "AGENTS.md"
+    assert isinstance(files["AGENTS.md"], Path)
+    assert any(k.startswith("skills/") for k in files)
+
+    # build_memory_files' output (bytes, built in-process -- no single EFS source file) is
+    # merged straight into the same carry-file mapping the upload loop reads.
+    assert isinstance(files["memories/MEMORY.md"], bytes)
+    memory_text = files["memories/MEMORY.md"].decode("utf-8")
+    assert "remembered things" in memory_text
+    assert "daily note" in memory_text
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +262,11 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
         assert keys[-1].endswith(".revision")
         assert any(k.endswith("SOUL.md") for k in keys)
         assert any(k.endswith("AGENTS.md") for k in keys)
-        assert any(k.endswith("MEMORY.md") for k in keys)
-        assert any("memory/" in k for k in keys)
+        # Ruling M6-R47: MEMORY.md + memory/*.md daily notes are merged into memories/MEMORY.md
+        # (not a verbatim raw-dir copy) by the vendored Hermes translator -- see
+        # test_hermes_memory_migration.py for the wrapper that drives it (the merge algorithm
+        # itself is upstream code and is deliberately not re-tested in this repo).
+        assert any(k.endswith("memories/MEMORY.md") for k in keys)
         assert any("skills/" in k for k in keys)
     # NEVER carried: OpenClaw runtime state (sessions/transcripts/agent auth).
     assert not any("sessions" in k or "transcript" in k for _, k in uploaded_keys)

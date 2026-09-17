@@ -106,17 +106,18 @@ export function useAgents(runtime: AgentsRuntimeSource, opts?: UseAgentsOptions)
     void reconcileOperation(operationId);
   }), [reconcileOperation]);
 
-  const createAgent = useCallback(async (params: { name: string; workspace?: string; emoji?: string }) => {
+  const createAgent = useCallback(async (params: { name: string; emoji?: string }) => {
     const normalizedId = params.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/-+/g, "-")
       .replace(/^-|-$/g, "");
-    const workspace = params.workspace ?? `.openclaw/workspace-${normalizedId}`;
+    // No `workspace`: the backend fills the layout for the owner's runtime (an EFS
+    // path on ECS, nothing on Hermes/AgentCore) — see _sanitize_agent_create.
     try {
-      const outcome = await runtime.rpc("agents.create", { ...params, workspace });
+      const outcome = await runtime.rpc("agents.create", params);
       if (outcome.kind === "operation") await waitForOperation(outcome.operationId);
-      track("agent_created", { agent_id: normalizedId, agent_name: params.name, workspace });
+      track("agent_created", { agent_id: normalizedId, agent_name: params.name });
     } finally {
       await mutate();
     }

@@ -104,7 +104,7 @@ describe("useAgents", () => {
     await waitFor(() => expect(getOperation).toHaveBeenCalledWith("op-1"));
     act(() => emitOperation("succeeded"));
     await act(async () => created);
-    expect(rpc).toHaveBeenCalledWith("agents.create", { name: "Gauge", workspace: ".openclaw/workspace-gauge" });
+    expect(rpc).toHaveBeenCalledWith("agents.create", { name: "Gauge" });
     expect(capture).toHaveBeenCalledWith("agent_created", expect.objectContaining({ agent_id: "gauge" }));
     expect(mutate).toHaveBeenCalled();
   });

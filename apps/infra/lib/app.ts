@@ -539,6 +539,19 @@ for (const job of assetJobNames()) {
       run: `aws s3 cp ${CDKOUT_TARBALL} cdk.out.tgz --only-show-errors && rm -rf cdk.out && tar -xzf cdk.out.tgz`,
     }),
   );
+  // The `Install` step is `npm install --no-save cdk-assets` and the publish
+  // script runs through npx. The self-hosted pool's BURST instances carry no
+  // node/npm, so every asset job that lands on one dies with exit 127 and the
+  // whole deploy fails (three dev deploys on 2026-09-17 alone; whole-run
+  // re-runs were the only recovery). setup-node fetches a toolcache node on
+  // any runner that lacks one, and is a no-op on the standing runners.
+  cdkoutPatches.push(
+    JsonPatch.add(`/jobs/${job}/steps/0`, {
+      name: "Setup Node",
+      uses: "actions/setup-node@v4",
+      with: { "node-version": "20" },
+    }),
+  );
 }
 pipeline.workflowFile.patch(...cdkoutPatches);
 

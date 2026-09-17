@@ -13,7 +13,7 @@ under that profile's HERMES_HOME, post run.started/run.ended and the reply to th
 hook token, save the profile dir back to S3. Nothing session-bound happens before the first
 /invocations: AgentCore's warm pool runs this CMD on ~10 pooled instances per runtime version.
 
-Spike scope. Not here: steer/abort, heartbeats, usage, attachments, the local-session relay.
+Spike scope. Not here: the local-session relay.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,9 +47,26 @@ def _header(headers: dict, name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == name), None)
 
 
+_RUN_CONTROL_RE = re.compile(r"^/plugins/lightbulb-channel/runs/([0-9a-f-]{36})/(abort|steer)$")
+
+
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    control = _RUN_CONTROL_RE.match(path)
+    if control and method == "POST" and control.group(2) == "abort":
+        run_id = control.group(1)
+        if turn.abort_run(run_id):
+            return 202, {"runId": run_id, "state": "aborting"}
+        return 404, {"runId": run_id, "state": "not_found"}
+    if control and method == "POST" and control.group(2) == "steer":
+        run_id = control.group(1)
+        text = (body or {}).get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip() or len(text.encode()) > turn.MAX_TEXT_BYTES:
+            return 400, {"error": "invalid_steer", "message": "text is required"}
+        if turn.steer_run(run_id, text.strip()):
+            return 202, {"runId": run_id, "state": "accepted"}
+        return 404, {"runId": run_id, "state": "not_found"}
     if path.startswith("/plugins/lightbulb-channel/inbound/") and method == "POST":
         agent_id = path.rsplit("/", 1)[-1]
         try:

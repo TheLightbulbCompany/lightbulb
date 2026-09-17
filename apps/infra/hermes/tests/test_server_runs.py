@@ -128,3 +128,66 @@ def test_the_local_session_token_header_is_read_case_insensitively_and_passed_to
     assert code == 202
     created[0].run_now()
     assert seen["ctx"]["localSessionToken"] == "jwt-xyz-999"
+
+
+# ---- Step 4: abort and steer routes (Tasks 9/10's server halves) ------------------------------
+def _abort_path(run_id: str) -> str:
+    return f"/plugins/lightbulb-channel/runs/{run_id}/abort"
+
+
+def _steer_path(run_id: str) -> str:
+    return f"/plugins/lightbulb-channel/runs/{run_id}/steer"
+
+
+def test_abort_of_a_registered_unattached_run_is_202_and_marks_it_aborted():
+    turn.register_run(RUN)
+    code, obj = server.handle_plugin(_abort_path(RUN), "POST", AUTH, {})
+    assert code == 202
+    assert obj == {"runId": RUN, "state": "aborting"}
+    assert turn.RUNS[RUN]["aborted"] is True
+
+
+def test_abort_of_an_unknown_run_is_404():
+    code, obj = server.handle_plugin(_abort_path(RUN), "POST", AUTH, {})
+    assert code == 404
+    assert obj == {"runId": RUN, "state": "not_found"}
+
+
+def test_steer_with_empty_text_is_400_invalid_steer():
+    turn.register_run(RUN)
+    code, obj = server.handle_plugin(_steer_path(RUN), "POST", AUTH, {"text": "   "})
+    assert code == 400
+    assert obj["error"] == "invalid_steer"
+
+
+def test_steer_over_max_text_bytes_is_400_invalid_steer():
+    turn.register_run(RUN)
+    body = {"text": "x" * (turn.MAX_TEXT_BYTES + 1)}
+    code, obj = server.handle_plugin(_steer_path(RUN), "POST", AUTH, body)
+    assert code == 400
+    assert obj["error"] == "invalid_steer"
+
+
+def test_steer_of_a_running_run_delivers_the_text_to_the_attached_agent():
+    turn.register_run(RUN)
+
+    class FakeAgent:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def steer(self, text: str) -> bool:
+            self.seen.append(text)
+            return True
+
+    agent = FakeAgent()
+    turn.attach_agent(RUN, agent)
+    code, obj = server.handle_plugin(_steer_path(RUN), "POST", AUTH, {"text": "  use staging  "})
+    assert code == 202
+    assert obj == {"runId": RUN, "state": "accepted"}
+    assert agent.seen == ["use staging"]
+
+
+def test_steer_of_an_unknown_run_is_404():
+    code, obj = server.handle_plugin(_steer_path(RUN), "POST", AUTH, {"text": "hi"})
+    assert code == 404
+    assert obj == {"runId": RUN, "state": "not_found"}

@@ -103,7 +103,8 @@ it("renders the leading node above the oldest message, and alone when there are 
 });
 
 it("follows streaming growth while near the bottom", () => {
-  const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}>
+  const messages = [msg(1, 0)];
+  const { rerender } = render(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={1} renderMessage={renderMessage} empty={null}>
     <p>First chunk</p>
   </RoomTimeline>);
   const region = screen.getByRole("region", { name: "Messages" });
@@ -111,7 +112,7 @@ it("follows streaming growth while near the bottom", () => {
   fireEvent.scroll(region);
   Object.defineProperty(region, "scrollHeight", { configurable: true, value: 1200 });
 
-  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}>
+  rerender(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={2} renderMessage={renderMessage} empty={null}>
     <p>First chunk and another streaming chunk</p>
   </RoomTimeline>);
 
@@ -120,7 +121,8 @@ it("follows streaming growth while near the bottom", () => {
 });
 
 it("preserves an intentional scroll-away during streaming and offers a jump", () => {
-  const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}>
+  const messages = [msg(1, 0)];
+  const { rerender } = render(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={1} renderMessage={renderMessage} empty={null}>
     <p>First chunk</p>
   </RoomTimeline>);
   const region = screen.getByRole("region", { name: "Messages" });
@@ -128,7 +130,7 @@ it("preserves an intentional scroll-away during streaming and offers a jump", ()
   fireEvent.scroll(region);
   Object.defineProperty(region, "scrollHeight", { configurable: true, value: 1200 });
 
-  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}>
+  rerender(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={2} renderMessage={renderMessage} empty={null}>
     <p>First chunk and another streaming chunk</p>
   </RoomTimeline>);
 
@@ -192,6 +194,29 @@ it("follows asynchronous image and layout growth without a message update", () =
   act(() => { resized?.([], {} as ResizeObserver); });
 
   expect(region.scrollTop).toBe(1300);
+});
+
+it("does not detach follow mode during intermediate smooth-scroll events", () => {
+  const messages = [msg(1, 0)];
+  const { rerender } = render(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={1} renderMessage={renderMessage} empty={null} />);
+  const region = screen.getByRole("region", { name: "Messages" });
+  scrollable(region, { top: 0 });
+  const scrollTo = vi.fn();
+  Object.defineProperty(region, "scrollTo", { configurable: true, value: scrollTo });
+  fireEvent.scroll(region);
+  Object.defineProperty(region, "scrollHeight", { configurable: true, value: 1200 });
+  rerender(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={2} renderMessage={renderMessage} empty={null} />);
+  fireEvent.click(screen.getByRole("button", { name: "Jump to latest" }));
+
+  // A browser smooth scroll reports intermediate positions before it reaches
+  // the bottom; streamed growth during that window must keep following.
+  region.scrollTop = 200;
+  fireEvent.scroll(region);
+  Object.defineProperty(region, "scrollHeight", { configurable: true, value: 1300 });
+  rerender(<RoomTimeline roomId="r" messages={messages} readSeq={null} ownLastSentSeq={null} contentVersion={3} renderMessage={renderMessage} empty={null} />);
+
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 1300, behavior: "auto" });
+  expect(screen.queryByRole("button", { name: /jump to latest/i })).not.toBeInTheDocument();
 });
 
 it("uses instant motion for Jump to latest when reduced motion is requested", () => {

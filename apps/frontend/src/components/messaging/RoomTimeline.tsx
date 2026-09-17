@@ -14,6 +14,8 @@ interface RoomTimelineProps {
   ownLastSentSeq: number | null;
   /** Changes after a successful send, including while the optimistic row is still pending. */
   followToken?: number;
+  /** Primitive revision for live-run and optimistic content rendered as children. */
+  contentVersion?: string | number;
   targetMessageId?: string | null;
   /** Bump this (e.g. a monotonically increasing counter) to force a re-scroll/
    *  re-highlight of the same targetMessageId — otherwise re-selecting the same
@@ -40,10 +42,11 @@ interface LayoutSnapshot {
   followToken: number | undefined;
 }
 
-export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, followToken, targetMessageId, targetToken, renderMessage, children, empty, leading }: RoomTimelineProps): ReactElement {
+export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, followToken, contentVersion, targetMessageId, targetToken, renderMessage, children, empty, leading }: RoomTimelineProps): ReactElement {
   const region = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const smoothScrollInProgress = useRef(false);
   const layout = useRef<LayoutSnapshot | null>(null);
   const [unseen, setUnseen] = useState(0);
   const [hasNewContent, setHasNewContent] = useState(false);
@@ -58,6 +61,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
     if (!node) return;
     const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const behavior: ScrollBehavior = smooth && !reduceMotion ? "smooth" : "auto";
+    smoothScrollInProgress.current = behavior === "smooth";
     if (typeof node.scrollTo === "function") node.scrollTo({ top: node.scrollHeight, behavior });
     else node.scrollTop = node.scrollHeight;
     // Do not wait for the browser's asynchronous scroll event: streaming can
@@ -117,7 +121,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
       clientHeight: node.clientHeight,
       followToken,
     };
-  }, [children, followToken, markNewContent, messages, newest, oldest, ownLastSentSeq, pinToBottom, roomId]);
+  }, [contentVersion, followToken, markNewContent, messages, newest, oldest, ownLastSentSeq, pinToBottom, roomId]);
 
   // Images, attachments, expanded tool output, and composer/viewport resizing
   // can change geometry without a React render. Observe both the scrollport
@@ -160,14 +164,23 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
     return () => clearTimeout(timer);
   }, [targetMessageId, targetToken, messages.length]);
 
+  function cancelSmoothFollow() {
+    smoothScrollInProgress.current = false;
+  }
+
   function onScroll() {
     const node = region.current;
     if (!node) return;
-    atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD_PX;
+    const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD_PX;
     if (layout.current) {
       layout.current = { ...layout.current, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight };
     }
-    if (atBottom.current) {
+    // Intermediate events from a smooth "Jump to latest" animation are not an
+    // intentional scroll-away. Wheel/touch/keyboard input cancels this guard.
+    if (smoothScrollInProgress.current && !nearBottom) return;
+    smoothScrollInProgress.current = false;
+    atBottom.current = nearBottom;
+    if (nearBottom) {
       setUnseen(0);
       setHasNewContent(false);
     }
@@ -179,7 +192,9 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
     : "Jump to latest";
 
   return <div className="room-timeline">
-    <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
+    <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}
+      onWheel={cancelSmoothFollow} onTouchStart={cancelSmoothFollow}
+      onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) cancelSmoothFollow(); }}>
       <div ref={content} className="room-history-content">
         {leading}
         {items.length === 0 ? empty : items.map((item) => {

@@ -329,7 +329,16 @@ function RoomContent({
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
-  const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
+  // Keep timeline inputs referentially stable across unrelated panel renders.
+  // A primitive content revision drives pre-paint geometry checks for live-run
+  // and optimistic rows without depending on freshly-created React children.
+  const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
+  const mainPendingMessages = useMemo(() => pendingMessages.filter((message) => message.threadRootMessageId === null), [pendingMessages]);
+  const mainRuns = useMemo(() => runs.filter((run) => !run.threadRootMessageId), [runs]);
+  const mainContentVersion = useMemo(() => [
+    mainPendingMessages.map((message) => `${message.clientMessageId}:${message.text.length}`).join(","),
+    mainRuns.map((run) => `${run.runId}:${run.state}:${run.text.length}:${run.thinking.length}:${run.tools.map((tool) => `${tool.id}:${tool.status}:${tool.progressText?.length ?? 0}`).join(",")}`).join(";"),
+  ].join("|"), [mainPendingMessages, mainRuns]);
   const newLineSeq = readSeqAtOpen ?? null;
   const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
@@ -583,16 +592,16 @@ function RoomContent({
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
-          followToken={sendFollowToken}
+          followToken={sendFollowToken} contentVersion={mainContentVersion}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
           leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
           empty={null}>
-          {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
+          {mainPendingMessages.map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
-          {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
+          {mainRuns.map(renderRun)}
         </RoomTimeline>
       </div>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>

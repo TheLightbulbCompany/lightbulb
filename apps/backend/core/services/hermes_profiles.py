@@ -197,29 +197,38 @@ _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PLAIN_RE = re.compile(r"^[A-Za-z0-9_./:@+=-]*$")
 
 
+#: Fix round 1, C2: the profile-scope env var each BYO provider's own credential resolver reads
+#: (``agent/anthropic_credentials.py``'s ``_first_env("ANTHROPIC_API_KEY")``; the OpenAI-compatible
+#: path falls back to ``OPENAI_API_KEY`` the same way, per ``config_defaults.py``'s own
+#: ``api_key falls back to OPENAI_API_KEY`` comments on the aux/delegation blocks).
+_BYO_ENV_KEY = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
 def build_profile_env(
     *,
-    gate_bearer_ref: str,
-    paperclip_key_ref: str,
+    paperclip_api_key: str,
     env_vars: dict[str, str],
-    byo_key_ref: str | None = None,
+    byo_provider: str | None = None,
+    byo_api_key: str | None = None,
 ) -> dict[str, str]:
-    """The profile's ``.env`` — per-profile secret VALUES/refs only (see the module docstring's
-    scope table). Never the gate endpoint or region: those are process-wide runtime environment,
-    set once per container by Task 17, not per agent profile here.
+    """The profile's ``.env`` — per-profile secret VALUES only (see the module docstring's scope
+    table). Never the gate endpoint, region, or a Secrets Manager REFERENCE name: the gate bearer
+    arrives via the boot secret and the bridge exports ``AWS_BEARER_TOKEN_BEDROCK`` process-wide;
+    ruling M4-R4/R5 cancelled the per-credential ``*_SECRET``-name resolver this function used to
+    write, and nothing in ``bridge/`` ever read those names, so every value here is now the real,
+    already-resolved secret — not a name for a later lookup.
 
-    Credentials the PLATFORM owns arrive as a Secrets Manager NAME, not a value: AgentCore
-    ``environmentVariables`` are plaintext to anyone with ``GetAgentRuntime`` (spec §4.9) and this
-    file rides S3. ``sync.load_secrets`` (Task 20) resolves every ``*_SECRET`` name at boot with the
-    execution role. Owner-provisioned values (``env_vars``, from ``build_provisioned_env``) are
-    carried as-is — the same rail ``openclaw.json``'s ``env.vars`` used.
+    ``paperclip_api_key`` is the resolved Paperclip API key value for this owner+agent.
+    ``byo_provider``/``byo_api_key`` are OWNER-level (never read from the Paperclip roster row,
+    which carries no such field — see ``write_agent_profile``'s C2 fix) and only emitted when both
+    are given, so a non-BYO profile's ``.env`` carries neither key.
+
+    Owner-provisioned values (``env_vars``, from ``build_provisioned_env``) are carried as-is — the
+    same rail ``openclaw.json``'s ``env.vars`` used.
     """
-    env = {
-        "LIGHTBULB_GATE_BEARER_SECRET": gate_bearer_ref,
-        "LIGHTBULB_PAPERCLIP_KEY_SECRET": paperclip_key_ref,
-    }
-    if byo_key_ref:
-        env["LIGHTBULB_BYO_KEY_SECRET"] = byo_key_ref
+    env = {"PAPERCLIP_API_KEY": paperclip_api_key}
+    if byo_api_key:
+        env[_BYO_ENV_KEY[byo_provider or "anthropic"]] = byo_api_key
     env.update(env_vars or {})
     return env
 
@@ -329,43 +338,46 @@ class ProfileFiles:
     managed_overlay: str
 
 
-def _gate_bearer_ref(owner_id: str) -> str:
-    return f"lightbulb/{settings.ENVIRONMENT}/gate-bearer/{owner_id}"
-
-
-def _paperclip_key_ref(owner_id: str, agent_id: str) -> str:
-    return f"lightbulb/{settings.ENVIRONMENT}/paperclip/{owner_id}/{agent_id}"
-
-
 def write_agent_profile(
     owner_id: str,
     agent: dict,
     *,
     provider_choice: str,
     aip_arns: dict[str, str],
+    paperclip_api_key: str,
     integrations: list[dict],
     env_vars: dict[str, str],
+    byo_provider: str | None = None,
+    byo_api_key: str | None = None,
 ) -> ProfileFiles:
     """The four files that ARE one agent's Hermes profile.
 
     ``integrations`` is the owner's connected-integration list (each row carries the MCP block
     ``build_connected_integration_servers`` emits under ``key``); ``env_vars`` is
     ``provisioning_landing.build_provisioned_env(owner_id)``.
+
+    ``byo_provider``/``byo_api_key`` are OWNER-level keywords (fix round 1, C2) — never read off
+    the Paperclip roster row (``agent``), whose documented shape is
+    ``{"id","name","role","title","capabilities","icon"}`` and carries no such field. The provider
+    choice is threaded next to ``provider_choice`` everywhere else in the codebase
+    (``ecs_manager.py``); reading it from the roster row silently pinned every BYO owner to
+    Anthropic with no key delivered anywhere.
     """
     servers = {row["key"]: {k: v for k, v in row.items() if k != "key"} for row in integrations or []}
     config = build_profile_config(
         agent_id=agent["id"],
         agent_role=agent.get("role") or "general",
         provider_choice=provider_choice,
-        byo_provider=agent.get("byo_provider"),
+        byo_provider=byo_provider,
         aip_arns=aip_arns,
         mcp_servers=translate_mcp_servers(servers),
         is_ceo=(agent.get("role") == "ceo"),
     )
     env = build_profile_env(
-        gate_bearer_ref=_gate_bearer_ref(owner_id),
-        paperclip_key_ref=_paperclip_key_ref(owner_id, agent["id"]),
+        paperclip_api_key=paperclip_api_key,
         env_vars=env_vars,
+        byo_provider=byo_provider,
+        byo_api_key=byo_api_key,
     )
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),

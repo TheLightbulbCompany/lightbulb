@@ -124,33 +124,53 @@ def test_plugins_enabled_is_a_flat_list_never_entries():
     assert c["plugins"] == {"enabled": ["lightbulb", "lightbulb_node"]}
 
 
-def test_dotenv_carries_the_per_profile_secret_refs_and_the_provisioned_env():
+def test_dotenv_carries_the_resolved_paperclip_key_value_and_the_provisioned_env():
+    """C2: PAPERCLIP_API_KEY carries the real resolved VALUE — not a Secrets Manager reference
+    name (M4-R4/R5 cancelled that resolver; nothing in bridge/ ever read the old *_SECRET names)."""
     env = hermes_profiles.build_profile_env(
-        gate_bearer_ref="lightbulb/dev/gate-bearer/org_a",
-        paperclip_key_ref="lightbulb/dev/paperclip/org_a/a1",
+        paperclip_api_key="pcp_live_abc123",
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
-    assert env["LIGHTBULB_GATE_BEARER_SECRET"] == "lightbulb/dev/gate-bearer/org_a"
-    assert env["LIGHTBULB_PAPERCLIP_KEY_SECRET"] == "lightbulb/dev/paperclip/org_a/a1"
+    assert env["PAPERCLIP_API_KEY"] == "pcp_live_abc123"
     assert env["STRIPE_SECRET_KEY"] == "sk_live_x"
 
 
-def test_dotenv_never_carries_the_process_wide_gate_endpoint_region_or_bearer():
+def test_dotenv_carries_the_byo_key_under_the_right_provider_env_name():
+    anthropic_env = hermes_profiles.build_profile_env(
+        paperclip_api_key="pcp_x", env_vars={}, byo_provider="anthropic", byo_api_key="sk-ant-x"
+    )
+    assert anthropic_env["ANTHROPIC_API_KEY"] == "sk-ant-x"
+    assert "OPENAI_API_KEY" not in anthropic_env
+
+    openai_env = hermes_profiles.build_profile_env(
+        paperclip_api_key="pcp_x", env_vars={}, byo_provider="openai", byo_api_key="sk-oai-x"
+    )
+    assert openai_env["OPENAI_API_KEY"] == "sk-oai-x"
+    assert "ANTHROPIC_API_KEY" not in openai_env
+
+
+def test_dotenv_omits_a_byo_key_slot_when_no_byo_key_is_given():
+    env = hermes_profiles.build_profile_env(paperclip_api_key="pcp_x", env_vars={})
+    assert "ANTHROPIC_API_KEY" not in env and "OPENAI_API_KEY" not in env
+
+
+def test_dotenv_never_carries_the_process_wide_gate_endpoint_region_bearer_or_a_secret_name_ref():
     """C3: AWS_ENDPOINT_URL_BEDROCK_RUNTIME/AWS_REGION never reach ``os.environ`` from a profile's
     ``.env`` — ``agent/secret_scope.py`` builds a dict-only mapping that is never installed as
     process env by the bridge's direct ``AIAgent`` construction, so botocore/``bedrock_adapter.py``
     would read the REAL AWS endpoint instead of the gate. Both belong in Task 17's runtime
     ``environmentVariables``, set once per container, not per agent profile. The bearer arrives the
-    same way, via the boot secret — never through this function at all."""
-    env = hermes_profiles.build_profile_env(
-        gate_bearer_ref="lightbulb/dev/gate-bearer/org_a",
-        paperclip_key_ref="lightbulb/dev/paperclip/org_a/a1",
-        env_vars={},
-    )
+    same way, via the boot secret — never through this function at all.
+    C2: no ``LIGHTBULB_*_SECRET`` reference name either — that resolver was cancelled (M4-R4/R5)
+    and nothing in ``bridge/`` ever read those names; every profile secret is now a resolved value."""
+    env = hermes_profiles.build_profile_env(paperclip_api_key="pcp_x", env_vars={})
     assert "AWS_ENDPOINT_URL_BEDROCK_RUNTIME" not in env
     assert "AWS_REGION" not in env
     assert "AWS_BEDROCK_FORCE_HTTP1" not in env
     assert "AWS_BEARER_TOKEN_BEDROCK" not in env
+    assert "LIGHTBULB_GATE_BEARER_SECRET" not in env
+    assert "LIGHTBULB_PAPERCLIP_KEY_SECRET" not in env
+    assert "LIGHTBULB_BYO_KEY_SECRET" not in env
 
 
 def test_render_dotenv_quotes_and_escapes():

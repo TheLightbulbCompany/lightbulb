@@ -34,33 +34,37 @@ to import into, room history replays from DynamoDB's canonical ``messaging`` tab
 ``GET /company/.../profile`` can echo back to the settings UI (M4-R1) would leak it. This mirrors
 ``core/services/agent_export.py``'s own workspace-vs-agents-dir split for the same reason.
 
-Profile-write ordering (a deliberate deviation from a literal read of the lane brief's prose,
-documented here for review): the per-agent EFS-content pass runs AFTER ``provision_hermes_runtime``
-returns, not before it. ``provision_hermes_runtime`` unconditionally re-runs its OWN internal
-``_write_profiles`` fan-out (vanilla ``build_soul_md`` identity, no EFS content) whenever the row
-has no ARN yet — true on every first attempt — so an EFS-content upload placed BEFORE that call
-would have its ``SOUL.md`` override silently reverted the instant ``provision_hermes_runtime``
-runs. Placing this job's own upload AFTER guarantees it is the last write and therefore the one
-actually served; M4-R42 (the internal fan-out is skipped once the row already carries an ARN)
-is what makes a RETRY of this function idempotent rather than what makes ordering irrelevant on
-attempt 0.
+Profile-write ordering (Ruling M6-R14 — ACCEPTED): ``provision_hermes_runtime`` (READY + the
+fenced row flip) runs BEFORE the per-agent EFS-content pass (SOUL.md/AGENTS.md/MEMORY.md/
+memory/**/skills/** + a ``.revision`` bump the bridge's ``ensure_profile`` re-pull picks up on
+the workspace's next turn), which in turn runs before the ECS stop — because
+``provision_hermes_runtime``'s own internal ``_write_profiles`` fan-out runs unconditionally on a
+no-ARN row and would otherwise clobber an earlier override. The resulting window — vanilla
+``build_soul_md`` identity for the seconds between READY and this job's own override upload — is
+accepted.
 
-Known gap, surfaced for review rather than silently worked around: ``ecs_manager.stop_user_service``
-no-ops once the row's ``runtime_host`` reads "agentcore" (``_hosted_on_agentcore``), which
-``provision_hermes_runtime``'s own terminal write sets BEFORE this job calls it. Live traffic is
-already routed off ECS by that row flip (``runtime_transport.host_for``), so this is a cost/cleanup
-gap (an idle ECS task keeps running) rather than a correctness one, but the call this module makes
-per Ruling M6-R1 does not itself scale the old service to zero in production. Flagged, not
-worked around, since fixing it means touching ``ecs_manager.py``, which this lane's brief does not
-authorize.
+Ruling M6-R15: the ECS stop passes ``force=True`` to ``ecs_manager.stop_user_service`` — the ONE
+sanctioned bypass of its ``_hosted_on_agentcore`` no-op guard, since by the time this job calls it
+the row's ``runtime_host`` already reads "agentcore" (this job's own terminal write two steps
+earlier), which would otherwise make the call a no-op forever and leave the retired ECS task
+running and billing.
+
+Ruling M6-R16: the tail (EFS overrides + the forced ECS stop) is RE-ENTERABLE, and its own
+completion is stamped. The job's LAST fenced row write sets ``hermes_migrated_at`` (ISO-8601
+UTC) — see ``_stamp_migrated``. A row already carrying that stamp is precondition-failed (exit 2,
+"already migrated"); a row with no stamp but ``runtime_host == "agentcore"`` (a prior attempt
+that crashed after READY but before the tail finished) runs ONLY the tail, skipping
+``prepare_hermes_workspace``/``provision_hermes_runtime`` entirely; every other row runs the full
+path. ``migrate_all`` follows the same rule, so a fleet-wide re-run picks up exactly the
+unfinished tails without re-provisioning anything.
 
 Exit codes (Ruling M6-R6) — the ``--all`` loop (``migrate_all``, Task 3) retries an 11 once:
     0   ok — migrated (or, under --dry-run, the plan printed cleanly)
     1   anything else — an unclassified or non-retryable failure during migration; the row has
         already been released to status="error" (see ``_release_and_map``) wherever the failure
         happened inside the prepare/provision steps
-    2   precondition failed — no container row, already on agentcore, no active Paperclip
-        company, or an empty agent roster
+    2   precondition failed — no container row, already migrated (``hermes_migrated_at`` stamped),
+        no active Paperclip company, or an empty agent roster
     3   reference org (``REFERENCE_ORG_ID`` / Ruling M6-R2) — refused outright, never migrated
         until every other workspace is confirmed
     10  lost claim — ``ProvisionSuperseded``: another actor (a deliberate reprovision, an admin

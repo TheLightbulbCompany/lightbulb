@@ -1,6 +1,24 @@
-"""S3 profile sync (the AWS reference's workspace_sync, cut down)."""
+"""S3 profile sync (the AWS reference's workspace_sync, cut down).
+
+Ruling M6-R51: **the profile in S3 is the source of truth for every file the turn did not
+touch.** The backend writes more than its five ``BACKEND_OWNED_FILES`` into a profile prefix --
+``memories/USER.md`` and ``AGENTS.md`` from the Instructions tab, any Files-panel edit,
+``memories/`` seeded by the migration job -- so a ``.revision`` bump re-pulls by RECENCY (every
+object S3 has touched since we last pulled or pushed our own copy of it) and ``save_profile``
+uploads only what the turn actually changed. Before that rule a warm microVM saw none of those
+writes and then silently reverted them by uploading its whole stale local tree (task-10b
+review, finding C1).
+
+Neither direction propagates a DELETE (unchanged from before this ruling): a file the agent
+removes locally stays in S3 and comes back on the next cold restore.
+
+Concurrency is last-writer-wins -- when the backend and the agent change the SAME file inside
+one turn, whichever write reaches S3 last is the one that survives. Per-agent saves stay
+serialized (``_save_lock``) so two concurrent turns cannot interleave their uploads.
+"""
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -16,6 +34,20 @@ from bridge import HOME, S3_BUCKET, S3_PREFIX
 log = logging.getLogger("bridge")
 
 _restored: set[str] = set()
+
+#: Ruling M6-R51, per agent beside _REVISIONS.
+#: _SYNCED: the S3 ``LastModified`` (epoch seconds) of the copy we hold, per relative path --
+#: the per-file "as of" instant the recency re-pull compares against. An upload records the
+#: local wall clock instead (S3 hands back an ETag, not a LastModified), which makes this the
+#: one place a local clock is compared with S3's; the microVM is NTP-synced and the cost of a
+#: skew is a redundant re-download of bytes we just uploaded, not a lost write. Per FILE rather
+#: than one instant per agent so that a save advances it ONLY for what the save uploaded: a
+#: single agent-wide instant would either re-pull the turn's own uploads on the next bump or
+#: swallow a backend write that landed mid-turn.
+#: _MTIMES: the local mtime of each file as of the last restore/pull/save, so save_profile can
+#: tell what this turn changed.
+_SYNCED: dict[str, dict[str, float]] = {}
+_MTIMES: dict[str, dict[str, int]] = {}
 
 # Fix round (minor 12): two turns for the SAME agent in different rooms run concurrently in
 # one process (the FIFO group is room+agent), and both call save_profile on the one profile
@@ -96,6 +128,34 @@ def _profile_dir(agent_id: str) -> Path:
     return HOME / "profiles" / agent_id
 
 
+def _modified_at(obj: dict) -> float | None:
+    """Epoch seconds for a ``list_objects_v2`` entry, or None when the listing carried no
+    LastModified. Real S3 always carries it; "unknown" has to fail OPEN (download) because
+    skipping is how a backend write goes missing, and a redundant download only costs bytes."""
+    when = obj.get("LastModified")
+    return when.timestamp() if when is not None else None
+
+
+def _change_stamp(path: Path) -> int:
+    """``path``'s mtime -- but for a SQLite db, the newest of the db and its ``-wal``/``-shm``
+    sidecars. In WAL mode a write lands in the sidecar and the main file's mtime does not move
+    until a checkpoint, so mtime alone would let save_profile drop a whole turn's session rows.
+
+    Every stat is suppressed: SQLite deletes ``-wal``/``-shm`` on the last connection's close, so
+    a checkpoint landing between the walk and the stat would otherwise raise and abort the whole
+    save -- every remaining file in the turn included. A vanished file reads as 0, which differs
+    from any recorded stamp, so the caller re-uploads rather than skipping.
+    """
+    candidates = [path]
+    if path.suffix in (".db", ".sqlite"):
+        candidates += [path.with_name(path.name + suffix) for suffix in ("-wal", "-shm")]
+    stamps = []
+    for candidate in candidates:
+        with contextlib.suppress(OSError):
+            stamps.append(candidate.stat().st_mtime_ns)
+    return max(stamps, default=0)
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     if agent_id in _restored or not S3_BUCKET:
@@ -108,14 +168,23 @@ def restore_profile(agent_id: str) -> float:
     prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
     n = 0
+    synced = _SYNCED.setdefault(agent_id, {})
+    # M6-R51: the baseline save_profile diffs against -- without it the first save of the process
+    # would upload the entire tree it just downloaded. Recorded per object as the loop writes it,
+    # not by a second rglob afterwards: cold-restore latency sits in front of the first reply.
+    mtimes = _MTIMES.setdefault(agent_id, {})
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             rel = obj["Key"][len(prefix):]
-            if not rel:
-                continue
+            if not rel or rel.endswith("/"):
+                continue  # directory marker: downloading it onto the directory raises
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(S3_BUCKET, obj["Key"], str(target))
+            modified = _modified_at(obj)
+            if modified is not None:
+                synced[rel] = modified
+            mtimes[rel] = _change_stamp(target)
             n += 1
     _restored.add(agent_id)
     took = time.time() - t0
@@ -131,8 +200,14 @@ def restore_profile(agent_id: str) -> float:
 
 
 def save_profile(agent_id: str) -> float:
-    """Upload the agent's profile dir. SQLite files go through the backup API; excluded
+    """Upload what THIS turn changed. SQLite files go through the backup API; excluded
     paths (request dumps, logs, per-turn context, WAL/SHM) never leave the microVM.
+
+    Ruling M6-R51: only files that are new or whose change stamp moved since the last
+    restore/pull/save go up. Uploading the whole tree (what this did before) silently reverted
+    every backend write the turn had not touched -- an Instructions-tab edit, a Files-panel
+    save, migration-seeded ``memories/``. A file the agent DELETED locally is still not deleted
+    in S3; that has never been propagated and is not now.
 
     Serialized per agent (see _save_lock) -- two turns for the same agent in different rooms
     can finish concurrently, and an interleaved pair of uploads would let the later-finishing
@@ -145,23 +220,38 @@ def save_profile(agent_id: str) -> float:
         src = _profile_dir(agent_id)
         prefix = f"{S3_PREFIX}/{agent_id}/"
         s3 = _s3()
+        mtimes = _MTIMES.setdefault(agent_id, {})
+        synced = _SYNCED.setdefault(agent_id, {})
         n = 0
-        for path in src.rglob("*"):
+        # Materialized, not lazy: the .s3snap temp below is created inside src and a live
+        # rglob can yield it back as a file of its own.
+        for path in sorted(src.rglob("*")):
             rel = path.relative_to(src).as_posix()
             if not path.is_file() or is_excluded(rel):
                 continue
+            stamp = _change_stamp(path)
+            if mtimes.get(rel) == stamp:
+                continue  # untouched by this turn: S3's copy is the source of truth
             upload = path
             if path.suffix in (".db", ".sqlite"):
                 snap = path.with_name(path.name + ".s3snap")
                 with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
                     conn.backup(out)
                 upload = snap
+            # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
+            # past the object's real LastModified by the PUT's own latency plus any clock skew,
+            # and a backend write landing inside that gap would then be <= synced[rel] FOREVER --
+            # skipped on every later bump, C1 re-opened for that one file. Under-recording is the
+            # safe rounding: it costs at most a redundant re-download of our own identical bytes.
+            now = time.time()
             s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
             if upload is not path:
                 upload.unlink(missing_ok=True)
+            mtimes[rel] = stamp
+            synced[rel] = now
             n += 1
         took = time.time() - t0
-        log.info("saved profile %s: %d objects in %.1fs", agent_id, n, took)
+        log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
         return took
 
 
@@ -221,19 +311,118 @@ def _read_revision(agent_id: str) -> str | None:
         return None
 
 
-def _download_profile(agent_id: str) -> None:
-    """Re-pull exactly the backend-owned files -- NOT a full restore_profile-style tree walk.
-    One object missing (a profile mid-provision, or one that predates Task 7) must not abort
-    the rest."""
+def _is_absent(exc: Exception) -> bool:
+    """A 404/NoSuchKey, as opposed to a throttle, a timeout or a permission error. A profile
+    mid-provision (or one that predates Task 7) is legitimately missing some backend-owned
+    object, and that must not be reported as a failed pull forever."""
+    response = getattr(exc, "response", None)
+    code = (response or {}).get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+    return code in ("404", "NoSuchKey", "NotFound")
+
+
+def _download_profile(agent_id: str) -> bool:
+    """Re-pull the backend-owned files by name, then everything else the backend has touched
+    since we last pulled or pushed it (Ruling M6-R51) -- still NOT a full restore_profile-style
+    tree walk. One object missing (a profile mid-provision, or one that predates Task 7) must
+    not abort the rest.
+
+    Returns False when anything we meant to pull did not land, so ``ensure_profile`` can leave
+    ``_REVISIONS`` alone and retry on the next turn (I2): a bump announces content, and there is
+    no second bump until the next backend write, so swallowing one throttled listing would leave
+    the agent on stale instructions until the microVM recycles. A legitimately ABSENT object is
+    not a failure -- it would pin the revision forever on a profile that simply has no SOUL.md.
+
+    The named loop stays even though recency would also catch these five: they are in
+    EXCLUDE_GLOBS, which the recency walk honours, and an unconditional GetObject also heals a
+    local copy that was truncated or never written in the first place."""
     dest = _profile_dir(agent_id)
     dest.mkdir(parents=True, exist_ok=True)
     s3 = _s3()
+    complete = True
     for name in BACKEND_OWNED_FILES:
         try:
             s3.download_file(S3_BUCKET, f"{S3_PREFIX}/{agent_id}/{name}", str(dest / name))
-        except Exception:  # noqa: BLE001 -- one missing object must not abort the other three
-            log.warning("ensure_profile: failed to re-pull %s for %s", name, agent_id)
+        except Exception as exc:  # noqa: BLE001 -- one missing object must not abort the other four
+            log.warning("ensure_profile: failed to re-pull %s for %s: %s", name, agent_id, exc)
+            complete = complete and _is_absent(exc)
+    # `and complete` LAST so the walk always runs, whatever the named loop reported.
+    complete = _pull_changed_objects(agent_id) and complete
+    # Deliberately not part of the verdict: the mcp-tokens seed is best-effort by design
+    # (seeded-only, F2 / M6-R35) and its failure mode is a dead tool, not stale instructions.
     _pull_new_mcp_token_files(agent_id)
+    return complete
+
+
+def _pull_changed_objects(agent_id: str) -> bool:
+    """Ruling M6-R51: download every object in the profile prefix that S3 has touched since we
+    last pulled or pushed our own copy of it. Returns False when the listing or any object's
+    download failed, so the caller can decline to advance ``_REVISIONS`` and retry next turn.
+
+    This is the half of the ruling that makes a ``.revision`` bump mean what the backend's own
+    comments already claimed it meant ("so the bridge re-pulls the file on the next turn"). Only
+    five names used to be re-pulled, so an Instructions-tab edit, a Files-panel save or a
+    migration-seeded ``memories/`` was invisible to a warm microVM -- and then reverted by its
+    next save.
+
+    EXCLUDE_GLOBS is skipped on the way down for the same reasons it is skipped on the way up;
+    that also covers the five names the caller has just pulled unconditionally. ``mcp-tokens/``
+    is left to _pull_new_mcp_token_files: its seeded-only rule (F2 / M6-R35) is NOT redundant
+    under recency, because Hermes rotates a token file IN PLACE and a newer backend object would
+    otherwise replace a rotated local copy the container is the sole owner of.
+
+    Two things this walk will NOT overwrite (I3 -- it can reach every key in the prefix, where
+    the old five-name re-pull could only touch files no turn holds open):
+
+    * a live SQLite file. The backend has no business writing one, but the Files-panel write
+      route takes any relative path, and renaming a foreign file over the inode a concurrent
+      turn has open is textbook corruption.
+    * a file whose local copy has moved since we last recorded it -- i.e. the agent has unsaved
+      changes to it. Last-writer-wins stays honest that way: the turn's own save is the later
+      write, so it wins, instead of the pull destroying in-flight work mid-run. The next bump
+      after that save picks the backend's object up normally.
+
+    Best-effort, like the mcp-tokens pull below: a blip must not abort ensure_profile and tear
+    down a warm profile mid-turn. Each object is wrapped on its own, so one unreadable key
+    cannot mask every key after it -- which, with the verdict this returns, would otherwise be
+    permanent and silent."""
+    dest = _profile_dir(agent_id)
+    synced = _SYNCED.setdefault(agent_id, {})
+    mtimes = _MTIMES.setdefault(agent_id, {})
+    prefix = f"{S3_PREFIX}/{agent_id}/"
+    complete = True
+    try:
+        s3 = _s3()
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefix):]
+                # a trailing "/" is a directory marker, not a file: renaming onto an existing
+                # directory raises, and it is the realistic "one poison key" instance.
+                if not rel or rel.endswith("/") or rel.startswith("mcp-tokens/") or is_excluded(rel):
+                    continue
+                if rel.endswith((".db", ".sqlite")):
+                    continue
+                modified = _modified_at(obj)
+                if modified is not None and modified <= synced.get(rel, 0.0):
+                    continue
+                target = dest / rel
+                if target.exists() and _change_stamp(target) != mtimes.get(rel):
+                    continue  # unsaved local changes: this turn's own save is the later write
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    s3.download_file(S3_BUCKET, obj["Key"], str(target))
+                except Exception as exc:  # noqa: BLE001 -- one bad key must not mask the rest
+                    log.warning("ensure_profile: failed to pull %s for %s: %s",
+                                obj["Key"], agent_id, exc)
+                    complete = False
+                    continue
+                if modified is not None:
+                    synced[rel] = modified
+                # the pull is not a local change to push back up on this turn's save
+                mtimes[rel] = _change_stamp(target)
+    except Exception:  # noqa: BLE001 -- a listing blip must not abort ensure_profile
+        log.warning("ensure_profile: recency re-pull failed for %s", agent_id)
+        return False
+    return complete
 
 
 def _pull_new_mcp_token_files(agent_id: str) -> None:
@@ -273,6 +462,14 @@ def ensure_profile(agent_id: str) -> None:
     One GetObject-sized read per turn buys hot config patches (Task 13a) with no watcher, no
     lock, no restart. An unreadable revision leaves a WARM profile alone: a transient S3 error
     must not re-download (and momentarily blank) a profile that is already working mid-turn.
+
+    The revision only advances when the re-pull actually completed (I2). A bump announces
+    content and there is no second bump until the next backend write, so recording a revision
+    whose content never landed strands the agent on stale instructions for the life of the
+    microVM -- the very symptom this rule exists to remove. The cost of the other direction is
+    that a persistently failing pull re-lists the prefix every turn, loudly, which is the right
+    way round. (A legacy profile with no ``.revision`` in S3 at all pays the same per-turn list
+    for the same reason: nothing can ever be recorded for it.)
     """
     if not S3_BUCKET:
         return
@@ -280,8 +477,8 @@ def ensure_profile(agent_id: str) -> None:
     known = _REVISIONS.get(agent_id)
     if known is not None and (revision is None or revision == known):
         return
-    _download_profile(agent_id)
-    if revision is not None:
+    complete = _download_profile(agent_id)
+    if revision is not None and complete:
         _REVISIONS[agent_id] = revision
 
 

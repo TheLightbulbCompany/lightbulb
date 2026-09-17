@@ -17,6 +17,20 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _clear_sync_state():
+    """M6-R51's per-agent maps are keyed by agent id, not by HOME, so a previous test's
+    tmp_path stamps would otherwise poison the same agent id here. Autouse for the same reason
+    _clear_run_registry is: a future sync test that does not take `home` is exactly the one
+    that would inherit the state and fail somewhere else."""
+    from bridge import sync
+    sync._SYNCED.clear()
+    sync._MTIMES.clear()
+    yield
+    sync._SYNCED.clear()
+    sync._MTIMES.clear()
+
+
 @pytest.fixture
 def posted(monkeypatch):
     """Capture every hook-token callback instead of doing HTTP."""

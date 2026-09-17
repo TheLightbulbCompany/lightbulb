@@ -8,7 +8,8 @@ def test_a_changed_revision_triggers_a_re_pull(monkeypatch):
     revisions = iter(["1", "1", "2"])
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     monkeypatch.setattr(sync, "_read_revision", lambda agent_id: next(revisions))
-    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: pulls.append(agent_id))
+    # returns True: ensure_profile only records a revision whose re-pull COMPLETED (fix round 1, I2)
+    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: (pulls.append(agent_id), True)[1])
     sync._REVISIONS.clear()
     sync.ensure_profile("a1")  # cold: pull
     sync.ensure_profile("a1")  # same revision: no pull
@@ -20,7 +21,8 @@ def test_an_unreadable_revision_does_not_re_pull_a_warm_profile(monkeypatch):
     pulls = []
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     monkeypatch.setattr(sync, "_read_revision", lambda agent_id: None)
-    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: pulls.append(agent_id))
+    # returns True: ensure_profile only records a revision whose re-pull COMPLETED (fix round 1, I2)
+    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: (pulls.append(agent_id), True)[1])
     sync._REVISIONS.clear()
     sync._REVISIONS["a1"] = "7"
     sync.ensure_profile("a1")
@@ -86,7 +88,8 @@ def test_restore_profile_seeds_revisions_from_the_freshly_downloaded_revision_fi
     # And ensure_profile's very next call, still seeing revision "r5", must not re-pull.
     pulls = []
     monkeypatch.setattr(sync, "_read_revision", lambda agent_id: "r5")
-    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: pulls.append(agent_id))
+    # returns True: ensure_profile only records a revision whose re-pull COMPLETED (fix round 1, I2)
+    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: (pulls.append(agent_id), True)[1])
     sync.ensure_profile("a1")
     assert pulls == []
 

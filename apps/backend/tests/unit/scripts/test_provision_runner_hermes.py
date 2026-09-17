@@ -50,24 +50,24 @@ def runner_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_with_the_flag_on_step_1_provisions_a_hermes_runtime(monkeypatch, runner_env):
-    calls = []
+    provision = AsyncMock(return_value="arn:r1")
     monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", True)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(
-        provision_runner.hermes_provisioning,
-        "provision_hermes_runtime",
-        lambda owner_id: calls.append(owner_id) or "arn:r1",
-    )
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
     monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
     assert await provision_runner.run("org_a", "claim-1") == provision_runner.EXIT_OK
-    assert calls == ["org_a"]
+    # claim_id/attempt_token are threaded through for the fenced terminal write (M4-R28) --
+    # no PROVISION_ATTEMPT_TOKEN env var here, so attempt_token falls back to claim_id.
+    provision.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
 
 
 @pytest.mark.asyncio
 async def test_with_the_flag_on_there_is_no_wait_for_running_poll(monkeypatch, runner_env):
     monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", True)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", lambda o: "arn:r1")
+    monkeypatch.setattr(
+        provision_runner.hermes_provisioning, "provision_hermes_runtime", AsyncMock(return_value="arn:r1")
+    )
     monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
     await provision_runner.run("org_a", "claim-1")  # _get_manager would raise if the ECS leg ran
 
@@ -107,7 +107,9 @@ async def test_with_the_flag_on_step_0_is_seeded_with_the_agentcore_runtime_host
 
     monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", True)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _spy_seed)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", lambda o: "arn:r1")
+    monkeypatch.setattr(
+        provision_runner.hermes_provisioning, "provision_hermes_runtime", AsyncMock(return_value="arn:r1")
+    )
     monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
 
     await provision_runner.run("org_a", "claim-1")

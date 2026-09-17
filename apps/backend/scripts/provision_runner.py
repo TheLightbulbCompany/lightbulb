@@ -58,20 +58,9 @@ import sys
 
 from core.config import settings
 
-try:
-    # Task 17 lands core.services.hermes_provisioning. Imported eagerly (unlike this
-    # module's other core.* imports, which are lazy inside functions) so tests can
-    # monkeypatch `provision_runner.hermes_provisioning` directly, and so the flag
-    # branch below has something to call even before Task 17 exists.
-    from core.services import hermes_provisioning
-except ImportError:  # pragma: no cover — stand-in until Task 17 lands the real module
-
-    class _HermesProvisioningNotReady:
-        @staticmethod
-        def provision_hermes_runtime(owner_id: str) -> str:
-            raise NotImplementedError("core.services.hermes_provisioning is not implemented yet (Task 17)")
-
-    hermes_provisioning = _HermesProvisioningNotReady()
+# Imported eagerly (unlike this module's other core.* imports, which are lazy inside
+# functions) so tests can monkeypatch `provision_runner.hermes_provisioning` directly.
+from core.services import hermes_provisioning
 
 EXIT_OK = 0
 EXIT_DETERMINISTIC = 10
@@ -311,9 +300,12 @@ async def run(owner_id: str, claim_id: str) -> int:
         if settings.HERMES_RUNTIME:
             # CreateAgentRuntime is one synchronous call, so there is no service to poll and
             # no generation to re-read: provision_hermes_runtime writes the terminal row
-            # itself. Everything below this branch (manager, pre_row/generation fencing,
-            # wait_for_running) is an ECS concept and is skipped wholesale.
-            hermes_provisioning.provision_hermes_runtime(owner_id)
+            # itself, FENCED on the same claim_id/attempt_token this run already holds
+            # (M4-R28 — mirrors manager.wait_for_running's own fenced terminal write below).
+            # Everything else below this branch (manager, pre_row/generation fencing,
+            # wait_for_running) is an ECS concept and is skipped wholesale. A lost fence
+            # raises ProvisionSuperseded, caught by the same handler as the ECS leg's.
+            await hermes_provisioning.provision_hermes_runtime(owner_id, claim_id=claim_id, attempt_token=attempt_token)
             return EXIT_OK
 
         # Read the container-incarnation fence off the row (see module

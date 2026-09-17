@@ -74,18 +74,33 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
                 raise turn.IngressError("targetAgentId does not match the path")
         except turn.IngressError as exc:
             return 400, {"error": "invalid_ingress", "message": exc.message}
-        # agent_mail (Task 20) carries no `run` block at all -- lane D's agent_mail_delivery.py
-        # posts that shape to this same door, so the registry/replay/run.started steps below
-        # are skipped entirely for it; run_turn's own has_run=False path handles the rest.
+        # agent_mail (Task 20) and paperclip_run (Task 21) carry no `run` block at all -- the
+        # registry/replay/run.started steps below are for a room turn's run lifecycle, which
+        # run-less ingresses have none of; run_turn's own has_run=False path handles the rest.
         run_id = (body.get("run") or {}).get("runId")
+        event_id = body.get("eventId")
         if run_id:
             if not turn.register_run(run_id):
-                return 200, {"eventId": body.get("eventId"), "runId": run_id, "status": "replayed"}
+                return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
             turn.mark_started(run_id)
             turn._post_backend(f"runs/{OWNER}/events", {
                 "runId": run_id, "type": "run.started", "at": now(),
                 "sessionKey": turn._resolve_session_key(agent_id, body),
             })
+        elif event_id:
+            # Fix round (Important 4): a run-less ingress has no `run.runId` to dedupe on, so
+            # it never touched the RUNS registry at all -- a redelivered mail/paperclip event
+            # (SES retries on "error"/"woken") ran a second full turn: tokens spent twice, a
+            # second reply, real side effects. Register it in the SAME registry keyed by its
+            # own eventId (namespaced so it can never collide with a real runId's UUID) and
+            # answer the identical 200 replayed a real run's replay gets. There is no
+            # run.started/mark_started for it -- there is no run lifecycle to start.
+            event_key = f"event:{event_id}"
+            if not turn.register_run(event_key):
+                return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
+            # Nothing further to track once "seen" is recorded -- finish immediately so
+            # prune_runs can reclaim it once the registry grows past its cap.
+            turn.finish_run(event_key, "dispatched")
         local_session_token = _header(headers, "X-Lightbulb-Local-Session-Token")
         threading.Thread(target=turn.run_turn, args=(agent_id, body, local_session_token),
                          daemon=True, name=f"turn-{run_id or body.get('eventId')}").start()

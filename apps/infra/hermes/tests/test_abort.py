@@ -29,6 +29,27 @@ def test_an_unregistered_or_already_ended_run_cannot_be_aborted():
     assert turn.abort_run(RUN) is False
 
 
+# ---- Fix round (Important 4): bound the registry -----------------------------------------------
+def test_the_registry_never_exceeds_its_cap_once_entries_finish():
+    turn.RUNS.clear()
+    for i in range(turn.MAX_RUNS_ENTRIES + 50):
+        run_id = f"r{i}"
+        turn.register_run(run_id)
+        turn.finish_run(run_id, "completed")  # each call prunes if now over the cap
+    assert len(turn.RUNS) <= turn.MAX_RUNS_ENTRIES
+
+
+def test_pruning_never_drops_a_queued_or_running_entry():
+    turn.RUNS.clear()
+    turn.register_run("still-queued")
+    for i in range(turn.MAX_RUNS_ENTRIES + 50):
+        run_id = f"r{i}"
+        turn.register_run(run_id)
+        turn.finish_run(run_id, "completed")
+    assert "still-queued" in turn.RUNS
+    assert turn.RUNS["still-queued"]["state"] == "queued"
+
+
 def test_a_turn_aborted_before_it_launched_reports_zero_usage(home, posted, monkeypatch):
     turn.RUNS.clear()
     body = f.ingress()

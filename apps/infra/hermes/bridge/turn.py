@@ -70,6 +70,26 @@ def finish_run(run_id: str, outcome: str) -> None:
         entry = RUNS.get(run_id)
         if entry is not None:
             entry.update(state="ended", outcome=outcome, agent=None)
+    prune_runs()
+
+
+MAX_RUNS_ENTRIES = 512
+
+
+def prune_runs(max_entries: int = MAX_RUNS_ENTRIES) -> None:
+    """Bound the registry (fix round I4): once over max_entries, drop the OLDEST finished
+    entries first (dict insertion order) until back under the cap. A queued/running turn is
+    never dropped -- it doesn't know its own outcome yet. Called after every finish_run, and
+    from server.py's run-less-ingress dedup branch (agent_mail/paperclip_run have no run
+    block, so their "seen this eventId" marker is finished immediately on registration -- see
+    that branch's comment)."""
+    with _RUNS_LOCK:
+        if len(RUNS) <= max_entries:
+            return
+        for run_id in [rid for rid, entry in RUNS.items() if entry["state"] == "ended"]:
+            if len(RUNS) <= max_entries:
+                break
+            del RUNS[run_id]
 
 
 def abort_run(run_id: str) -> bool:

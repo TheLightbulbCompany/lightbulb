@@ -220,6 +220,19 @@ def test_an_agent_mail_ingress_with_no_run_block_is_accepted_with_no_run_started
     assert len(created) == 1
 
 
+# ---- Fix round (Important 4): run-less ingress is deduped on eventId --------------------------
+def test_a_redelivered_agent_mail_ingress_answers_replayed_and_spawns_no_second_thread(home, posted, monkeypatch):
+    mod, created = _capturing_threading()
+    monkeypatch.setattr(server, "threading", mod)
+    code1, obj1 = server.handle_plugin(_inbound_path("ceo"), "POST", AUTH, dict(MAIL))
+    assert code1 == 202
+    code2, obj2 = server.handle_plugin(_inbound_path("ceo"), "POST", AUTH, dict(MAIL))
+    assert code2 == 200
+    assert obj2 == {"eventId": MAIL["eventId"], "runId": None, "status": "replayed"}
+    assert len(created) == 1  # the replay never even constructs a second Thread
+    assert posted == []  # still no run.started -- a run-less ingress never had one
+
+
 def test_a_room_ingress_with_a_run_block_still_posts_run_started_first(home, posted, monkeypatch):
     mod, created = _capturing_threading()
     monkeypatch.setattr(server, "threading", mod)

@@ -19,9 +19,23 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
+import uuid
 
 DEFAULT_TIMEOUT_S = 180
 _TIMEOUT_RETURNCODE = 124   # Hermes's own sentinel (tools/environments/base.py:401-405, 575)
+
+
+def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
+    """Append stdin_data as a shell heredoc. The node host hardcodes an empty stdin buffer
+    (`input: Buffer.alloc(0)`), so this is the only way content reaches a command that reads
+    stdin (e.g. `file_operations._atomic_write`'s `cat > "$tmp"`, which write_file uses on
+    every backend). Byte-for-byte the same construction Hermes's own SDK backends use
+    (`tools/environments/base.py::BaseEnvironment._embed_stdin_heredoc`, Daytona/Modal/Vercel
+    all set `_stdin_mode = "heredoc"`): a single-quoted delimiter so nothing in the body
+    expands, made unique per call with a uuid suffix so body text that happens to look like
+    the delimiter can't terminate it early."""
+    delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
+    return f"{command} << '{delimiter}'\n{stdin_data}\n{delimiter}"
 
 
 def _invoke(command: str, params: dict, timeout_ms: int) -> dict:
@@ -42,13 +56,20 @@ class NodeEnvironment:
     """Duck-typed: Hermes only needs execute() and cleanup(). There is no local process to
     manage, so nothing from BaseEnvironment applies."""
 
+    # Read by tools/tool_result_storage.py, which allows a +1-byte spill size only in heredoc
+    # mode (the heredoc's own trailing newline before the delimiter).
+    _stdin_mode = "heredoc"
+
     def __init__(self, cwd: str, timeout: int) -> None:
         self._cwd, self._timeout = cwd, timeout or DEFAULT_TIMEOUT_S
 
-    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None, **_kw) -> dict:
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+               stdin_data: str | None = None, **_kw) -> dict:
         seconds = int(timeout or self._timeout)
-        # No stdin: the node host hardcodes an empty input buffer, which is exactly what
-        # Hermes's heredoc stdin mode exists for.
+        # The node host hardcodes an empty input buffer, so stdin can't be piped over the
+        # wire -- it has to be embedded in the command text itself instead.
+        if stdin_data:
+            command = _embed_stdin_heredoc(command, stdin_data)
         params = {"command": ["bash", "-lc", command], "cwd": cwd or self._cwd,
                   "timeoutMs": seconds * 1000}
         try:

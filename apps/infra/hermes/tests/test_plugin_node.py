@@ -7,9 +7,12 @@ factory" -- does that import, lazily, so those two tests stub `sys.modules["agen
 with a minimal base class the way test_home_scope.py stubs `hermes_constants`; the real class was
 read from the image (see the lane report for the exact `docker run` commands and names).
 """
+import io
 import json
 import pathlib
+import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins"))
@@ -64,6 +67,62 @@ def test_a_spawn_failure_and_a_transport_failure_both_return_returncode_none(mon
 
 def test_cleanup_never_touches_the_users_mac(monkeypatch):
     assert env(monkeypatch, {"ok": True, "payload": {}}).cleanup() is None
+
+
+def test_stdin_mode_is_heredoc_for_tool_result_storages_plus_one_byte_tolerance(monkeypatch):
+    assert env(monkeypatch, {"ok": True, "payload": {}})._stdin_mode == "heredoc"
+
+
+def test_a_write_file_shaped_call_embeds_stdin_instead_of_silently_dropping_it(monkeypatch):
+    """Fix round 1, item 1 (critical): the node host hardcodes an empty stdin buffer, so a
+    caller like file_operations._atomic_write (`cat > "$tmp"`, stdin_data=content) got NOTHING
+    when stdin_data was swallowed by execute()'s old **_kw -- silent data loss, not an error.
+    The produced command must actually carry the content, not just the bare original command."""
+    seen = {}
+    monkeypatch.setattr(lightbulb_node, "_invoke",
+                        lambda command, params, timeout_ms: seen.update(params=params) or
+                        {"ok": True, "payload": {"stdout": "", "stderr": "", "exitCode": 0,
+                                                 "timedOut": False, "success": True}})
+    lightbulb_node.LightbulbNodeProvider().create_environment(cwd="/x", timeout=180).execute(
+        'cat > "$tmp"', stdin_data="the file content\n")
+    cmd = seen["params"]["command"]
+    assert cmd[:2] == ["bash", "-lc"]
+    assert cmd[2] != 'cat > "$tmp"', "stdin_data was dropped -- the bare command carries no content"
+    assert "the file content" in cmd[2]
+
+
+def _run_heredoc_locally(command, params, timeout_ms):
+    """Test double for _invoke: actually runs the constructed ['bash','-lc', cmd] through real
+    bash, standing in for the paired Mac's node host, so heredoc-quoting bugs (expansion,
+    delimiter collisions) show up as real behavior instead of string-shape assertions."""
+    result = subprocess.run(params["command"], cwd=params.get("cwd") or None,
+                            capture_output=True, text=True)
+    return {"ok": True, "payload": {"stdout": result.stdout, "stderr": result.stderr,
+                                    "exitCode": result.returncode, "timedOut": False}}
+
+
+def test_heredoc_embedded_stdin_is_quoted_so_the_shell_never_expands_it(monkeypatch, tmp_path):
+    out_file = tmp_path / "out.txt"
+    monkeypatch.setattr(lightbulb_node, "_invoke", _run_heredoc_locally)
+    env_obj = lightbulb_node.LightbulbNodeProvider().create_environment(cwd=str(tmp_path), timeout=30)
+    out = env_obj.execute(f"cat > {out_file}", stdin_data="hello\n$HOME\n")
+    assert out["returncode"] == 0
+    # If the heredoc delimiter weren't quoted, $HOME would expand to the real home directory.
+    # A heredoc's body always ends at its own line break before the delimiter, so content that
+    # already ends in "\n" round-trips with one extra trailing byte -- the exact +1 that
+    # tool_result_storage.py's own heredoc-mode tolerance exists for.
+    assert out_file.read_text() == "hello\n$HOME\n\n"
+
+
+def test_heredoc_delimiter_is_unique_so_body_text_resembling_it_still_round_trips(monkeypatch, tmp_path):
+    out_file = tmp_path / "out.txt"
+    decoy_delimiter_line = "HERMES_STDIN_deadbeefcafe"  # looks like our delimiter, isn't the real one
+    content = f"line one\n{decoy_delimiter_line}\nline three\n"
+    monkeypatch.setattr(lightbulb_node, "_invoke", _run_heredoc_locally)
+    env_obj = lightbulb_node.LightbulbNodeProvider().create_environment(cwd=str(tmp_path), timeout=30)
+    out = env_obj.execute(f"cat > {out_file}", stdin_data=content)
+    assert out["returncode"] == 0
+    assert out_file.read_text() == content + "\n"  # same +1 heredoc-trailer byte as above
 
 
 def test_is_available_requires_both_the_api_url_and_the_hook_token(monkeypatch):

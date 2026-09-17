@@ -820,21 +820,33 @@ def stage_codex_auth(owner_id: str, tokens: dict) -> None:
     single-use refresh token and OpenAI would revoke the whole family. This replaces the EFS
     ``credentials/oauth.json`` + clear-auth-sentinel + boot ``doctor --fix`` choreography
     entirely for an AgentCore row.
+
+    C3 (fix round 1 continuation, M4-R44) + minor 6: read-modify-write, not an unconditional
+    overwrite — an existing ``auth.json`` can hold OTHER providers' state, and clobbering the
+    whole document would silently drop it. ``<owner>/hermes/auth.revision`` is written LAST,
+    always, for the same reason a profile's own ``.revision`` is: the bridge's
+    ``restore_root_auth`` (per-turn revision compare, same shape as ``ensure_profile``) must
+    never see a revision bump before ``auth.json`` itself has landed.
     """
     import json as _json
     from datetime import datetime, timezone
 
     if not settings.OWNER_STATE_BUCKET:
         return
+    prefix = root_home_prefix(owner_id)
+    existing = _s3_get(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json")
+    blob = _json.loads(existing) if existing else {}
+    if not isinstance(blob, dict):
+        blob = {}
+    providers = blob.get("providers")
+    providers = dict(providers) if isinstance(providers, dict) else {}
     payload = {k: v for k, v in tokens.items() if k in ("access_token", "refresh_token", "id_token") and v}
-    blob = {
-        "active_provider": "openai-codex",
-        "providers": {
-            "openai-codex": {
-                "tokens": payload,
-                "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "auth_mode": "chatgpt",
-            }
-        },
+    providers["openai-codex"] = {
+        "tokens": payload,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "auth_mode": "chatgpt",
     }
-    _s3_put(settings.OWNER_STATE_BUCKET, f"{root_home_prefix(owner_id)}auth.json", _json.dumps(blob))
+    blob["providers"] = providers
+    blob["active_provider"] = "openai-codex"
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json", _json.dumps(blob))
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.revision", uuid.uuid4().hex)

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import logging
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from bridge import HOME, S3_BUCKET, S3_PREFIX
@@ -246,31 +248,83 @@ def _upload_object(src: Path, key: str) -> None:
     _s3().upload_file(str(src), S3_BUCKET, f"{S3_PREFIX}/{key}")
 
 
-_ROOT_AUTH_RESTORED: set[str] = set()
+def _root_auth_revision() -> str | None:
+    """The owner's ``<owner>/hermes/auth.revision`` marker in S3, or ``None`` when it cannot be
+    read (no root auth.json ever staged is not an error — same convention as a profile's own
+    ``_read_revision``)."""
+    try:
+        key = f"{S3_PREFIX}/auth.revision"
+        return _s3().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read().decode().strip()
+    except Exception:  # noqa: BLE001 -- a transient S3 blip must not tear down a warm profile
+        return None
+
+
+def _local_auth_hash() -> str | None:
+    path = HOME / "auth.json"
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+#: C3 (fix round 1 continuation, M4-R44): the root auth.json gets the SAME per-turn revision
+#: treatment a profile's config.yaml already has (Task 13a/13b) instead of a restore-ONCE-per-
+#: process flag, which could never see a grant hermes_profiles.stage_codex_auth staged after
+#: this microVM's first turn.
+_ROOT_AUTH_REVISION: str | None = None
+#: The sha256 of the local auth.json as of the last restore/save -- lets save_root_auth tell
+#: "Hermes rotated the token this turn" apart from "nothing touched it".
+_ROOT_AUTH_HASH: str | None = None
 
 
 def restore_root_auth() -> None:
-    """Pull ``<owner>/hermes/auth.json`` into the root home, once per process."""
-    if not S3_BUCKET or "done" in _ROOT_AUTH_RESTORED:
+    """Pull ``<owner>/hermes/auth.json`` into the root home when the backend's
+    ``auth.revision`` marker has moved since our last restore — per-turn, the same shape as
+    ``ensure_profile``'s hot-patch re-pull (Task 13a)."""
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
+    if not S3_BUCKET:
+        return
+    revision = _root_auth_revision()
+    if _ROOT_AUTH_REVISION is not None and (revision is None or revision == _ROOT_AUTH_REVISION):
         return
     try:
         _download_object("auth.json", HOME / "auth.json")
     except Exception as exc:  # noqa: BLE001 -- no root auth.json yet (never connected) is not an error
         log.debug("restore_root_auth: no root auth.json to restore: %s", exc)
-    _ROOT_AUTH_RESTORED.add("done")
+    _ROOT_AUTH_REVISION = revision
+    _ROOT_AUTH_HASH = _local_auth_hash()
 
 
 def save_root_auth() -> None:
-    """Push the root ``auth.json`` back after a turn — Hermes rotates the refresh token in
-    place, and the next microVM must start from the rotated chain, not a replayed one.
+    """Push the root ``auth.json`` back only when THIS turn actually changed it locally
+    (Hermes rotates the refresh token in place via ``hermes_cli/auth_codex.py``'s write-through)
+    AND the backend hasn't staged a newer grant since our last restore — uploading over a
+    fresher staged grant would silently discard it (C3).
 
-    No existence guard here: an owner who has never connected ChatGPT OAuth has no local
-    ``auth.json`` at all, and this raises in that case (``upload_file`` needs a real source
-    file) — the caller (``turn.py``, same pattern as ``save_profile``) treats it as best-effort.
+    Silently a no-op (minor 4) when there is no local ``auth.json`` at all (an owner who has
+    never connected ChatGPT OAuth) or when this turn never touched it — neither is worth a
+    warning-level log; only the caller's own best-effort try/except (``turn.py``, same pattern
+    as ``save_profile``) is left for a genuine S3 failure.
+
+    # ponytail: read-then-write race — a stage_codex_auth landing between the revision check
+    # below and the upload can still be clobbered by this upload. S3 PutObject ``IfMatch``
+    # (conditional write, keyed on the object's ETag) is the real fix; skipped because the
+    # lost write here is a ChatGPT refresh token and the next login/refresh re-stages it.
     """
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
     if not S3_BUCKET:
         return
+    local_hash = _local_auth_hash()
+    if local_hash is None or local_hash == _ROOT_AUTH_HASH:
+        return  # no local auth.json, or this turn never touched it
+    current_revision = _root_auth_revision()
+    if _ROOT_AUTH_REVISION is not None and current_revision != _ROOT_AUTH_REVISION:
+        log.info("save_root_auth: a newer grant was staged mid-turn — skipping upload")
+        return
     _upload_object(HOME / "auth.json", "auth.json")
+    new_revision = uuid.uuid4().hex
+    _s3().put_object(Bucket=S3_BUCKET, Key=f"{S3_PREFIX}/auth.revision", Body=new_revision.encode())
+    _ROOT_AUTH_REVISION = new_revision
+    _ROOT_AUTH_HASH = local_hash
 
 
 def delete_profile_objects(agent_id: str) -> int:

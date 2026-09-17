@@ -109,9 +109,11 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
     if not tokens:
         return False
     if await runtime_transport.is_agentcore_owner(owner_id):
-        # No EFS stage, no clear-auth sentinel, no forced bounce: Hermes re-reads auth.json at
-        # credential resolution time (hermes_cli/auth.py), so the next turn picks the new grant
-        # up on its own.
+        # No EFS stage, no clear-auth sentinel, no forced bounce: stage_codex_auth bumps
+        # auth.revision, and the bridge's restore_root_auth compares it per turn (C3, fix round
+        # 1 continuation) -- a warm microVM re-pulls the staged grant before its NEXT turn
+        # rather than picking it up implicitly (Hermes itself only re-reads auth.json at process
+        # start, not per credential resolution).
         from core.dynamodb import run_in_thread
         from core.services.hermes_profiles import stage_codex_auth
 

@@ -528,7 +528,11 @@ def _download_s3_profile(prefix: str, dest: Path) -> None:
     import boto3
 
     s3 = boto3.client("s3")
-    bucket = settings.LITESTREAM_BUCKET
+    # Fix round 1, item 4: OWNER_STATE_BUCKET is the profile writer's single
+    # source of truth for this bucket (hermes_profiles.upload_profile) -- it
+    # falls back to LITESTREAM_BUCKET when unset, so reading it here can never
+    # disagree with what the writer used.
+    bucket = settings.OWNER_STATE_BUCKET
     key_prefix = f"{prefix}/"
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):
         for obj in page.get("Contents", []):

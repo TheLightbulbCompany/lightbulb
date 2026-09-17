@@ -38,12 +38,13 @@ def _make_tar_gz(files: dict[str, bytes]) -> bytes:
 
 @pytest.fixture
 def s3_hermes_bucket():
-    """Moto-backed S3 bucket wired in as settings.LITESTREAM_BUCKET -- the
-    same bucket the Hermes bridge's sync.py uploads owner profiles into."""
+    """Moto-backed S3 bucket wired in as settings.OWNER_STATE_BUCKET -- the
+    profile writer's (hermes_profiles.upload_profile) single source of truth
+    for this bucket."""
     with mock_aws():
         client = boto3.client("s3", region_name="us-east-1")
         client.create_bucket(Bucket="test-replicas")
-        with patch.object(settings, "LITESTREAM_BUCKET", "test-replicas"):
+        with patch.object(settings, "OWNER_STATE_BUCKET", "test-replicas"):
             yield client
 
 
@@ -85,7 +86,7 @@ async def test_deploy_tarball_to_profile_uploads_to_s3_with_fake_client():
             "core.services.catalog_service._s3_client",
             return_value=type("S3", (), {"upload_file": staticmethod(fake_upload)})(),
         ),
-        patch.object(catalog_service.settings, "LITESTREAM_BUCKET", "test-replicas"),
+        patch.object(catalog_service.settings, "OWNER_STATE_BUCKET", "test-replicas"),
     ):
         await catalog_service.deploy_tarball_to_profile(
             owner_id="owner_1", agent_id="agent_new", tar_bytes=b"", container={"runtime_host": "agentcore"}
@@ -106,7 +107,7 @@ async def test_deploy_tarball_to_profile_writes_revision_marker_last():
             "core.services.catalog_service._s3_client",
             return_value=type("S3", (), {"upload_file": staticmethod(fake_upload)})(),
         ),
-        patch.object(catalog_service.settings, "LITESTREAM_BUCKET", "test-replicas"),
+        patch.object(catalog_service.settings, "OWNER_STATE_BUCKET", "test-replicas"),
     ):
         await catalog_service.deploy_tarball_to_profile(
             owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}

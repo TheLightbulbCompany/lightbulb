@@ -2021,13 +2021,14 @@ def test_resolve_agent_location_defaults_to_efs_when_container_omitted():
 
 @pytest.fixture
 def s3_hermes_bucket():
-    """Moto-backed S3 bucket wired in as settings.LITESTREAM_BUCKET -- the
-    same bucket the Hermes bridge's sync.py uploads owner profiles into
-    (<owner>/hermes/<agent_id>/...)."""
+    """Moto-backed S3 bucket wired in as settings.OWNER_STATE_BUCKET -- the
+    profile writer's (hermes_profiles.upload_profile) single source of truth
+    for this bucket, the same one the Hermes bridge's sync.py uploads owner
+    profiles into (<owner>/hermes/<agent_id>/...)."""
     with mock_aws():
         client = boto3.client("s3", region_name="us-east-1")
         client.create_bucket(Bucket="test-replicas")
-        with patch.object(settings, "LITESTREAM_BUCKET", "test-replicas"):
+        with patch.object(settings, "OWNER_STATE_BUCKET", "test-replicas"):
             yield client
 
 

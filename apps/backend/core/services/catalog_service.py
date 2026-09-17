@@ -414,7 +414,10 @@ async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: 
     """
 
     def _write() -> None:
-        bucket = settings.LITESTREAM_BUCKET
+        # Fix round 1, item 4: OWNER_STATE_BUCKET is the profile writer's
+        # (hermes_profiles.upload_profile) single source of truth for this
+        # bucket -- it falls back to LITESTREAM_BUCKET when unset.
+        bucket = settings.OWNER_STATE_BUCKET
         s3 = _s3_client()
         prefix = f"{owner_id}/hermes/{agent_id}"
         with tempfile.TemporaryDirectory() as tmp:

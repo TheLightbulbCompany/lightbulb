@@ -309,6 +309,16 @@ export class ServiceStack extends cdk.Stack {
       "HTTP from ALB",
     );
 
+    // A desktop node's WebSocket is pinned to the task that accepted it, but the owner's Hermes
+    // runtime calls the node-invoke route through the ALB and lands on any task. That task
+    // forwards to the socket's owner using the address on the presence row -- which needs the
+    // service to be able to reach itself.
+    serviceSg.addIngressRule(
+      serviceSg,
+      ec2.Port.tcp(8000),
+      "Peer backend task forwarding (node invoke)",
+    );
+
     // Cross-stack security group ingress rules.
     // We use CfnSecurityGroupIngress to avoid circular dependencies between stacks.
 

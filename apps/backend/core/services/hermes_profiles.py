@@ -808,8 +808,11 @@ def read_soul_md(owner_id: str, agent_id: str) -> str | None:
 # /mnt/efs/users/<owner>/), so routers/workspace_files.py has to read and write the S3 profile on a
 # migrated workspace or the Files panel and the Instructions tab edit a stale copy nobody reads --
 # a green save with no effect. These helpers are the S3 side of that branch; the writes go through
-# upload_profile_files/upload_soul_md, which already bump .revision LAST so the bridge re-pulls the
-# file on the agent's next turn.
+# upload_profile_files/upload_soul_md, which bump .revision LAST -- that bump is the SIGNAL the
+# bridge watches. Acting on it for a non-backend-owned file (re-pull by recency, and save back only
+# what the turn changed) is Ruling M6-R51, landing in lane 10-F: until that ships, only SOUL.md is
+# on the bridge's re-pull list, so a USER.md/AGENTS.md/Files-panel write reaches a warm microVM on
+# its next COLD start rather than its next turn.
 
 #: Never listed, read or written through an owner-facing file route.
 _HIDDEN_PROFILE_DIRS = frozenset({"mcp-tokens"})

@@ -38,6 +38,7 @@ earlier version of this file put them here.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -551,6 +552,25 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
 # for an AgentCore row (the ECS path is untouched and keeps using them).
 
 
+#: Minors 1+2 (fix round 1 continuation): one boto3 client per module, not one per call —
+#: ``_s3_put``/``_s3_get`` are each called up to several times per agent per reconcile
+#: (``refresh_integrations``), and building a client does file I/O (credentials/config
+#: resolution) on every construction. ``upload_profile`` keeps its own separate one-client-
+#: per-*call* design (via ``_new_s3_client``, reused for that one profile's five PUTs) —
+#: unrelated: that one already amortizes correctly within a single upload and has its own tests
+#: pinning that exact shape.
+_SHARED_S3_CLIENT = None
+
+
+def _shared_s3_client():
+    global _SHARED_S3_CLIENT
+    if _SHARED_S3_CLIENT is None:
+        import boto3
+
+        _SHARED_S3_CLIENT = boto3.client("s3")
+    return _SHARED_S3_CLIENT
+
+
 def _s3_put(bucket: str, key: str, body: str) -> None:
     """Sync single-object PUT for the small, infrequent settings-mutation paths below
     (``config.patch``/``config.set``, and Task 14's token-file writes) — each stays a pure sync
@@ -558,26 +578,54 @@ def _s3_put(bucket: str, key: str, body: str) -> None:
     wraps the call in ``core.dynamodb.run_in_thread`` so the blocking I/O here never touches the
     event loop directly. ``upload_profile`` above is the higher-fanout path (up to five objects
     per agent) and owns its own one-client-reused async design instead."""
-    import boto3
+    _shared_s3_client().put_object(Bucket=bucket, Key=key, Body=body.encode())
 
-    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=body.encode())
+
+def _s3_delete(bucket: str, key: str) -> None:
+    _shared_s3_client().delete_object(Bucket=bucket, Key=key)
 
 
 def _s3_get(bucket: str, key: str) -> str | None:
-    import boto3
+    """``None`` means ABSENT (``NoSuchKey``/``404`` only) — every other ``ClientError`` (a
+    503/SlowDown, a permissions blip, ...) is re-raised (C4, fix round 1 continuation). Before
+    this fix every S3 failure looked identical to "the object was never written", so a patch or
+    reconcile hitting a transient S3 error silently treated a live profile as freshly
+    unprovisioned and merged onto ``{}``."""
     import botocore.exceptions
 
     try:
-        return boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read().decode()
-    except botocore.exceptions.ClientError:
-        return None
+        return _shared_s3_client().get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+    except botocore.exceptions.ClientError as exc:
+        code = (exc.response or {}).get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            return None
+        raise
 
 
-def read_profile_config(owner_id: str, agent_id: str) -> dict:
+def read_profile_config(owner_id: str, agent_id: str, *, required: bool = False) -> dict:
     """``config.get`` — reads ``config.yaml`` alone. NEVER ``.env``: that file holds secret
-    values (M4-R1), and this is the one path a settings-read RPC can reach."""
+    values (M4-R1), and this is the one path a settings-read RPC can reach.
+
+    ``required=True`` (C4, fix round 1 continuation) raises ``FileNotFoundError`` instead of
+    silently treating an absent profile as ``{}`` — for a WRITER (patch/refresh) a missing
+    config.yaml is a provisioning defect, never a legitimate empty state. Left ``False`` by
+    default for GET, where "nothing provisioned yet" is a real, non-error answer."""
     body = _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}config.yaml")
-    return yaml.safe_load(body) if body else {}
+    if body is None:
+        if required:
+            raise FileNotFoundError(f"no config.yaml for {profile_prefix(owner_id, agent_id)}")
+        return {}
+    return yaml.safe_load(body) or {}
+
+
+def config_snapshot(owner_id: str, agent_id: str) -> tuple[dict, str]:
+    """``(config, hash)`` for ``config.get`` — ``hash`` is the sha256 hex of the STORED
+    ``config.yaml`` TEXT (M4-R43), not a re-serialization of the parsed dict, so it changes
+    exactly when the persisted bytes actually change and nothing else. This is what
+    ``useConfigPatch.ts`` gates ``configReady`` on and sends back as ``baseHash``."""
+    text = _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}config.yaml") or ""
+    config = (yaml.safe_load(text) or {}) if text else {}
+    return config, hashlib.sha256(text.encode()).hexdigest()
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -597,8 +645,12 @@ def _upload_config_yaml(owner_id: str, agent_id: str, config: dict) -> None:
 
 
 def patch_profile_config(owner_id: str, agent_id: str, patch: dict) -> dict:
-    """``config.patch`` — deep merge onto the stored config, then re-upload."""
-    config = _deep_merge(read_profile_config(owner_id, agent_id), patch or {})
+    """``config.patch`` — deep merge onto the stored config, then re-upload.
+
+    C4 (fix round 1 continuation): ``required=True`` — a patch onto a profile that has no
+    ``config.yaml`` yet is a provisioning defect, not something to paper over by merging the
+    patch onto ``{}`` and uploading that as if it were the whole profile."""
+    config = _deep_merge(read_profile_config(owner_id, agent_id, required=True), patch or {})
     _upload_config_yaml(owner_id, agent_id, config)
     return config
 

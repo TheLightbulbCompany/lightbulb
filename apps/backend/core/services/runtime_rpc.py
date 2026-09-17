@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -145,6 +146,45 @@ _INVALIDATES = {
     "skills.proposals.apply": "skills",
     "skills.proposals.reject": "skills",
 }
+
+
+def _default_agent_id(roster: list[dict[str, Any]]) -> str | None:
+    """The CEO row, or the first roster row when nobody is CEO — packages/shared's
+    ``useAgents.ts`` reads this as ``data.defaultId`` (M4-R43, fix round 1 continuation)."""
+    for row in roster:
+        if row.get("role") == "ceo":
+            return row.get("id")
+    return roster[0].get("id") if roster else None
+
+
+async def _config_get_roster_map(owner_id: str) -> dict[str, Any]:
+    """``config.get`` with no ``agentId`` — the shape the real browser client actually sends
+    (``useConfigPatch.ts``/``PluginsTab.tsx`` never pass one). ``hash`` is the sha256 of the
+    per-profile hashes concatenated in roster order (M4-R43): stable for an unchanged roster,
+    and changes if any one profile's config.yaml does."""
+    roster = await load_agent_roster(owner_id)
+    config_map: dict[str, Any] = {}
+    hashes: list[str] = []
+    for row in roster:
+        config, config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, row["id"])
+        config_map[row["id"]] = config
+        hashes.append(config_hash)
+    return {"config": config_map, "hash": hashlib.sha256("".join(hashes).encode()).hexdigest()}
+
+
+def _config_patch_dict(params: dict[str, Any]) -> dict[str, Any]:
+    """Accepts the RFC7386 JSON-merge-patch ``raw`` STRING the only real web caller sends
+    (``useConfigPatch.ts:41-43``, ``PluginsTab.tsx:90-96``) or a plain ``patch`` dict (other/
+    internal callers, e.g. the pre-existing test suite)."""
+    raw = params.get("raw")
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ApiProblem("INVALID_REQUEST", "config.patch raw must be valid JSON.") from exc
+        return decoded if isinstance(decoded, dict) else {}
+    patch = params.get("patch")
+    return patch if isinstance(patch, dict) else {}
 
 
 async def _is_agentcore(owner_id: str) -> bool:
@@ -347,31 +387,57 @@ async def execute_sync(
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
     if method in _HERMES_PROFILE_METHODS and await _is_agentcore(owner_id):
-        # M4-R1: an AgentCore row's Hermes profile lives in S3, not behind a live gateway
-        # socket — the backend is the ONLY writer of a profile (spec §4.5), so these are
-        # served/rewritten here with no microVM wake for a settings read. config.get NEVER
-        # returns .env content (it reads config.yaml alone). config.set/config.patch bump
-        # .revision on write, and the bridge re-pulls before the agent's next turn (Task 13b).
-        # ECS rows fall straight through to the container_rpc.call below, unchanged.
+        # M4-R1/M4-R43 (fix round 1 continuation): an AgentCore row's Hermes profile lives in
+        # S3, not behind a live gateway socket — the backend is the ONLY writer of a profile
+        # (spec §4.5), so these are served/rewritten here with no microVM wake for a settings
+        # read. config.get NEVER returns .env content (it reads config.yaml alone).
+        # config.set/config.patch bump .revision on write, and the bridge re-pulls before the
+        # agent's next turn (Task 13b). ECS rows fall straight through to container_rpc.call.
+        #
+        # The wire shape below is NOT bridge/server.py's own config.get/config.patch/agents.list
+        # (that spike stand-in requires an agentId and returns no hash at all) — it is what the
+        # REAL browser clients already call and read: useConfigPatch.ts/PluginsTab.tsx never
+        # send an agentId and read snapshot.config/snapshot.hash, and packages/shared's
+        # useAgents.ts reads data.agents/data.defaultId.
         if method == "agents.list":
-            return await load_agent_roster(owner_id)
+            roster = await load_agent_roster(owner_id)
+            return {"defaultId": _default_agent_id(roster), "agents": roster}
         agent_id = params.get("agentId")
-        if not isinstance(agent_id, str) or not agent_id:
-            raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
-        # hermes_profiles.{read,patch,set}_profile_config are plain sync functions that do
-        # blocking S3 I/O directly (see their own module docstring) — run_in_thread here is what
-        # keeps that off the event loop; this repo already took a prod backend freeze from
-        # blocking I/O on the loop (EFS tree walk, 2026-09-12).
+        has_agent_id = isinstance(agent_id, str) and bool(agent_id)
+        # hermes_profiles.{config_snapshot,patch,set}_profile_config are plain sync functions
+        # that do blocking S3 I/O directly (see their own module docstring) — run_in_thread here
+        # is what keeps that off the event loop; this repo already took a prod backend freeze
+        # from blocking I/O on the loop (EFS tree walk, 2026-09-12).
         if method == "config.get":
-            return await run_in_thread(hermes_profiles.read_profile_config, owner_id, agent_id)
+            if not has_agent_id:  # C1: never 400 — the real client never sends one.
+                return await _config_get_roster_map(owner_id)
+            config, config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
+            return {"config": config, "hash": config_hash}
+        if not has_agent_id:
+            # Unlike config.get, a WRITE inherently targets one profile — there is no roster-map
+            # equivalent for config.set/config.patch, and no real caller omits agentId here.
+            raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
         if method == "config.set":
             result = await run_in_thread(
                 hermes_profiles.set_profile_config, owner_id, agent_id, params.get("config") or {}
             )
         else:
-            result = await run_in_thread(
-                hermes_profiles.patch_profile_config, owner_id, agent_id, params.get("patch") or {}
-            )
+            patch = _config_patch_dict(params)
+            base_hash = params.get("baseHash")
+            if base_hash is not None:
+                _current, current_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
+                if base_hash != current_hash:
+                    # C2: same stale-config shape the ECS path answers via
+                    # _normalize_gateway_error — an upstreamCode plus a message, INVALID_REQUEST.
+                    raise ApiProblem(
+                        "INVALID_REQUEST",
+                        "The config changed since you last loaded it. Refresh and try again.",
+                        details={"method": method, "upstreamCode": "CONFIG_STALE"},
+                    )
+            if not patch:
+                # Nothing to write — no upload, no .revision bump (M4-R43).
+                return {"ok": True}
+            result = await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, patch)
         await _invalidate(owner_id, method)
         return result
     try:

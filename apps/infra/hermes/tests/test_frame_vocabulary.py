@@ -5,8 +5,10 @@ ROOM, RUN = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222
 
 def publisher():
     sent = []
-    p = turn.FramePublisher("https://e.invalid", "/ws/c", ROOM, "ceo", RUN, None,
-                            publish=lambda endpoint, channel, event: sent.append(event["payload"]["frame"]) or 200)
+    p = turn.FramePublisher(
+        "https://e.invalid", "/ws/c", ROOM, "ceo", RUN, None,
+        # varargs: a publish carries 1..FRAME_BATCH events since streaming deltas batch
+        publish=lambda endpoint, channel, *events: sent.extend(e["payload"]["frame"] for e in events) or 200)
     return p, sent
 
 

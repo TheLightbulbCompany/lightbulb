@@ -62,7 +62,8 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     if not text:
         return "text is required."
     thread = str(args.get("threadRootMessageId") or "").strip() or None
-    if room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, ctx.get("threadRootMessageId")):
+    own_thread = str(ctx.get("threadRootMessageId") or "").strip() or None  # same normalization both sides
+    if room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, own_thread):
         return OWN_THREAD_REFUSAL
     body = {
         "eventId": f"{ctx['runId']}:{ctx['agentId']}:tool:{next(_counter)}",

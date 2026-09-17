@@ -954,7 +954,7 @@ class TestAgentCoreProvision:
 class TestAgentCoreDebugRoutes:
     """Row #18: /debug/provision on an existing AgentCore row.
 
-    PATCH gets the S3-profile twin of the ECS wholesale-rewrite (_write_profiles
+    PATCH gets the S3-profile twin of the ECS wholesale-rewrite (write_profiles
     + best-effort session stop); POST/DELETE 409 with a pointer at the real
     AgentCore doors (POST /debug/agentcore/provision, the migration script's
     --rollback) instead of writing ECS-shaped config or tearing down an ECS
@@ -1023,7 +1023,7 @@ class TestAgentCoreDebugRoutes:
         stop_session = MagicMock()
         with (
             patch("routers.debug.container_repo", repo),
-            patch("core.services.hermes_provisioning._write_profiles", write_profiles),
+            patch("core.services.hermes_provisioning.write_profiles", write_profiles),
             patch("scripts.migrate_workspace_to_hermes._stop_runtime_session", stop_session),
         ):
             res = await async_client.patch("/api/v1/debug/provision")
@@ -1045,7 +1045,7 @@ class TestAgentCoreDebugRoutes:
         with (
             patch("routers.debug.container_repo", repo),
             patch("routers.debug.get_ecs_manager", return_value=ecs),
-            patch("core.services.hermes_provisioning._write_profiles", AsyncMock()),
+            patch("core.services.hermes_provisioning.write_profiles", AsyncMock()),
             patch("scripts.migrate_workspace_to_hermes._stop_runtime_session", MagicMock()),
         ):
             await async_client.patch("/api/v1/debug/provision")
@@ -1059,7 +1059,7 @@ class TestAgentCoreDebugRoutes:
         repo.get_by_owner_id = AsyncMock(return_value=row)
         with (
             patch("routers.debug.container_repo", repo),
-            patch("core.services.hermes_provisioning._write_profiles", AsyncMock()),
+            patch("core.services.hermes_provisioning.write_profiles", AsyncMock()),
             patch(
                 "scripts.migrate_workspace_to_hermes._stop_runtime_session",
                 MagicMock(side_effect=RuntimeError("unknown session")),

@@ -326,7 +326,7 @@ def test_get_config_returns_null_when_missing(client):
 
 # ---------------------------------------------------------------------------
 # M6 row #12 — AgentCore rows are served from the S3 profile roster map,
-# never EFS, via the SAME _config_get_roster_map/_config_patch_roster the
+# never EFS, via the SAME _config_get_roster_map/config_patch_roster the
 # config.get/config.patch RPC intercept uses.
 # ---------------------------------------------------------------------------
 
@@ -360,7 +360,7 @@ def test_patch_config_agentcore_owner_fans_out_via_config_patcher_roster(client)
         with (
             patch("routers.config.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch(
-                "routers.config._config_patch_roster",
+                "routers.config.config_patch_roster",
                 AsyncMock(return_value={"config": {}, "hash": "h2"}),
             ) as mock_patch_roster,
             patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_ecs_patch,
@@ -383,7 +383,7 @@ def test_patch_config_agentcore_owner_channels_patch_rejected_before_entitlement
     try:
         with (
             patch("routers.config.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
-            patch("routers.config._config_patch_roster", AsyncMock()) as mock_patch_roster,
+            patch("routers.config.config_patch_roster", AsyncMock()) as mock_patch_roster,
             patch("routers.config.billing_repo.get_by_owner_id", AsyncMock()) as mock_billing,
         ):
             resp = client.patch(

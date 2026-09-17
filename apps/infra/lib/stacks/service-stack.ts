@@ -1404,7 +1404,9 @@ export class ServiceStack extends cdk.Stack {
     const currentOpenClawVersion = env.startsWith("prod")
       ? OPENCLAW_VERSION.prod
       : OPENCLAW_VERSION.dev;
-    const currentHermesTag = env === "prod" ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
+    // Minor (predeploy review housekeeping): matches the OpenClaw line above -- env.startsWith,
+    // not ===, so this stays correct if a prod-prefixed variant is ever introduced.
+    const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can

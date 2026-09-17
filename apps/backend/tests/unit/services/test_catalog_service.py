@@ -1367,7 +1367,7 @@ async def test_sidecar_survives_a_pair_timeout_so_the_retry_can_see_the_install(
 # ---------------------------------------------------------------------------
 # AgentCore Hermes profile sourcing convergence (fix round 3, M6-R10):
 # catalog_service._build_and_upload_agent_profile and
-# hermes_provisioning._write_profiles must source the same six owner-level
+# hermes_provisioning.write_profiles must source the same six owner-level
 # profile writer inputs identically -- both now delegate to the single
 # hermes_provisioning.resolve_profile_inputs helper. These tests exercise the
 # REAL resolver (only its DB/network-shaped collaborators are mocked) rather
@@ -1445,10 +1445,10 @@ async def test_build_and_upload_agent_profile_gets_the_bedrock_trial_choice_for_
 async def test_write_profiles_and_build_and_upload_agent_profile_source_identical_inputs(
     monkeypatch, billing_row, byo_key
 ):
-    """M6-R10: hermes_provisioning._write_profiles and
+    """M6-R10: hermes_provisioning.write_profiles and
     catalog_service._build_and_upload_agent_profile must source the exact
     same six owner-level inputs for the same owner. Proved by calling the
-    shared resolver directly (the same call _write_profiles makes) and
+    shared resolver directly (the same call write_profiles makes) and
     comparing it against what catalog_service's caller actually threads into
     write_agent_profile, with only the resolver's own DB/network
     collaborators mocked -- not the resolver itself."""

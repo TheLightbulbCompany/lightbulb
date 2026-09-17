@@ -449,7 +449,7 @@ async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str) -> dict:
     """The Paperclip roster entry shape ``write_agent_profile`` wants
     (``{"id","name","role","title","capabilities","icon"}``).
 
-    Fix round 3 (M6-R10): hard-fails like ``hermes_provisioning._write_profiles``
+    Fix round 3 (M6-R10): hard-fails like ``hermes_provisioning.write_profiles``
     does on its own roster read (no try/except there either, and it never
     looks for one specific id — it just iterates whatever the roster returns)
     — the agent was just minted, so a roster read failure, or a roster that
@@ -473,12 +473,12 @@ async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, conta
     inputs via ``resolve_profile_inputs``, this agent's Paperclip API key mint,
     ``write_agent_profile``, ``upload_profile``) moved to
     ``hermes_provisioning.write_profile_for_agent`` -- the SAME per-agent seam
-    ``hermes_provisioning._write_profiles`` (provision time, whole starter
+    ``hermes_provisioning.write_profiles`` (provision time, whole starter
     roster) and ``runtime_rpc``'s ``agents.create`` door now share, so there is
     exactly one place that sources those inputs (see that function's docstring
     for the three ways this file used to diverge before the consolidation).
     Only the per-agent roster-row resolution — this agent's own entry, by id —
-    stays here: the caller only has ``agent_id``, unlike ``_write_profiles``
+    stays here: the caller only has ``agent_id``, unlike ``write_profiles``
     (which already holds each row from its own roster iteration).
 
     Uploaded (and its own ``.revision`` written) BEFORE

@@ -244,13 +244,23 @@ async def run(owner_id: str, claim_id: str) -> int:
     from core.observability.logging import bind_log_context
     from core.repositories import container_repo
     from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
+    from core.services import runtime_transport
 
     bind_log_context(user_id=owner_id)
+
+    # Minor (predeploy review, M6-R39): an existing row already on agentcore takes the Hermes
+    # leg regardless of settings.HERMES_RUNTIME -- the flag is ONE per-environment switch, and a
+    # dispatch that reached here for an already-migrated owner while it happens to read False
+    # would otherwise start an ECS task beside a LIVE microVM on the same access point and
+    # rotate the bearer the microVM is still presenting. The worst failure this design wants to
+    # avoid, for one extra eventually-consistent read.
+    existing_row = await container_repo.get_by_owner_id(owner_id)
+    hermes = settings.HERMES_RUNTIME or runtime_transport.host_for(existing_row or {}) == "agentcore"
     # Hermes/AgentCore has no ECS service to manage — the manager is purely an ECS
     # concept, so it is never constructed on that leg (tests rely on this: a manager
     # double that explodes on any call proves the Hermes leg never touches it).
-    runtime_host = "agentcore" if settings.HERMES_RUNTIME else None
-    manager = None if settings.HERMES_RUNTIME else _get_manager()
+    runtime_host = "agentcore" if hermes else None
+    manager = None if hermes else _get_manager()
     # Attempt-token fencing (hazard 1, spec §7): every attempt -- including
     # attempt 0, where this is a same-value no-op re-assertion -- re-stamps
     # the row's provision_attempt_token BEFORE any other checkpoint. See
@@ -262,7 +272,7 @@ async def run(owner_id: str, claim_id: str) -> int:
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
 
-        if settings.HERMES_RUNTIME:
+        if hermes:
             # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0
             # seeds the roster. Step 0's starter-agent loop bakes hook_token into the http
             # adapter's Authorization header at seed time — seeding first shipped every starter
@@ -315,7 +325,7 @@ async def run(owner_id: str, claim_id: str) -> int:
                 logger.exception("seed step 0: error release failed for owner %s", owner_id)
             return seed_exit
 
-        if settings.HERMES_RUNTIME:
+        if hermes:
             # CreateAgentRuntime is one synchronous call, so there is no service to poll and
             # no generation to re-read: provision_hermes_runtime writes the terminal row
             # itself, FENCED on the same claim_id/attempt_token this run already holds

@@ -418,7 +418,7 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
             ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
         ),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
@@ -488,7 +488,7 @@ async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_a
         "_load_role_and_aips",
         _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged -- no update
@@ -609,7 +609,7 @@ async def test_provision_skips_write_profiles_for_an_arn_row_in_error(monkeypatc
         "_load_role_and_aips",
         _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _explode)  # must NOT be called
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)  # must NOT be called
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged
@@ -640,7 +640,7 @@ async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatc
         "_load_role_and_aips",
         _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)
@@ -674,7 +674,7 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
         "_load_role_and_aips",
         _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: "old-broken-image:tag")
@@ -716,7 +716,7 @@ async def test_provision_hermes_runtime_refuses_a_live_ecs_owner_without_migrate
         _row({"service_name": "openclaw-org_a-abc123"}),
     )
     monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _explode)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
     monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _explode)
 
@@ -744,7 +744,7 @@ async def test_provision_hermes_runtime_migrate_true_proceeds_for_a_live_ecs_own
             ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
         ),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _no_runtime_found_by_name(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
 
@@ -767,7 +767,7 @@ async def test_create_record_poll_happen_in_that_order(monkeypatch):
         "_load_role_and_aips",
         _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
@@ -798,7 +798,7 @@ async def test_provision_writes_through_the_fenced_lease_helper_not_a_bare_updat
             ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
         ),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
@@ -837,7 +837,7 @@ async def test_a_lost_fence_propagates_and_leaves_the_row_untouched(monkeypatch)
             ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
         ),
     )
-    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
@@ -862,7 +862,14 @@ def _patch_write_profiles_collaborators(
     read_byo_key=None,
     write_agent_profile=None,
     paperclip_api_key="pcp_key",
+    mock_facts_staging=True,
 ):
+    """``mock_facts_staging=True`` (the default) no-ops ``_stage_owner_facts`` -- since
+    ``write_profile_for_agent`` now stages facts per agent (minor, predeploy review), every
+    caller here that doesn't care about that would otherwise make a real, unmocked
+    billing_repo/owner_facts read. The three facts-focused tests below pass ``False`` to let
+    the real function run against their own mocked collaborators."""
+
     async def _fake_roster(owner_id):
         return [{"id": "11111111-1111-1111-1111-111111111111", "name": "Ada", "role": "ceo"}]
 
@@ -888,6 +895,8 @@ def _patch_write_profiles_collaborators(
     monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", _fake_ensure_paperclip_api_key)
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", _noop_async)
+    if mock_facts_staging:
+        monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", _noop_async)
     if read_byo_key is not None:
         monkeypatch.setattr("core.services.key_service.read_byo_key", read_byo_key)
     if write_agent_profile is not None:
@@ -903,7 +912,7 @@ async def test_a_bad_profile_value_surfaces_a_named_provisioning_error(monkeypat
     )
 
     with pytest.raises(RuntimeError, match="BAD_VAR"):
-        await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+        await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
 
 @pytest.mark.asyncio
@@ -924,7 +933,7 @@ async def test_a_none_paperclip_api_key_raises_named_instead_of_baking_an_empty_
     )
 
     with pytest.raises(RuntimeError, match="org_a.*11111111-1111-1111-1111-111111111111"):
-        await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+        await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
 
 # --- BYO key delivery (M4-R32) --------------------------------------------------------------
@@ -951,7 +960,7 @@ async def test_write_profiles_bakes_the_byo_key_into_the_env_for_a_byo_owner(mon
         write_agent_profile=_fake_write_agent_profile,
     )
 
-    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
     assert captured["byo_provider"] == "anthropic"
     assert captured["byo_api_key"] == "sk-real-byo-key"
 
@@ -967,12 +976,12 @@ async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypa
 
     # Real write_agent_profile runs (not mocked) -- proves the non-BYO path produces a normal
     # profile with byo_api_key=None, with no read ever attempted.
-    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
 
 @pytest.mark.asyncio
 async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six_agent_roster(monkeypatch):
-    """Q9a fix round 1, I3: write_profile_for_agent's own inputs= param lets _write_profiles
+    """Q9a fix round 1, I3: write_profile_for_agent's own inputs= param lets write_profiles
     resolve owner-level inputs (billing/Secrets/integrations/env) ONCE and reuse them across the
     whole starter roster, instead of paying that cost -- and risking it diverging mid-fan-out --
     once per agent."""
@@ -990,7 +999,7 @@ async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six
 
     monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", _counting_resolve)
 
-    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
     assert calls == ["org_a"]
 
@@ -998,15 +1007,18 @@ async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six
 # --- owner facts staged at provision (fix round 1, Important 2) --------------------------------
 # A freshly provisioned AgentCore workspace never runs ecs_manager.write_user_configs (the only
 # caller of owner_facts.write_owner_facts), so it had no lightbulb-facts.json at all while the
-# bundled skill tells every agent to read it. _write_profiles now stages it directly.
+# bundled skill tells every agent to read it. write_profiles now stages it directly.
 
 
 @pytest.mark.asyncio
 async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent_roster(monkeypatch):
+    """Minor (predeploy review, M6-R39 housekeeping): facts staging moved INTO
+    write_profile_for_agent (per agent) -- the six-agent roster fan-out now produces SIX
+    separate one-agent write_facts_to_profiles calls, not one batched six-agent call."""
     roster = [
         {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
     ]
-    _patch_write_profiles_collaborators(monkeypatch, provider_choice="bedrock_claude")
+    _patch_write_profiles_collaborators(monkeypatch, provider_choice="bedrock_claude", mock_facts_staging=False)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
@@ -1015,21 +1027,22 @@ async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent
     monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
 
-    uploaded = {}
+    uploaded: list[tuple[str, list[str], str]] = []
 
     def _fake_write_facts(owner_id, agent_ids, facts_json):
-        uploaded["owner_id"] = owner_id
-        uploaded["agent_ids"] = agent_ids
-        uploaded["facts_json"] = facts_json
+        uploaded.append((owner_id, agent_ids, facts_json))
 
     monkeypatch.setattr("core.services.hermes_profiles.write_facts_to_profiles", _fake_write_facts)
 
-    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
-    assert uploaded["owner_id"] == "org_a"
-    assert uploaded["agent_ids"] == [row["id"] for row in roster]
-    assert len(uploaded["agent_ids"]) == 6
-    assert '"provider_choice": "bedrock_claude"' in uploaded["facts_json"]
+    assert len(uploaded) == 6
+    seen_ids = [agent_ids[0] for _owner, agent_ids, _facts in uploaded]
+    assert seen_ids == [row["id"] for row in roster]
+    for owner_id, agent_ids, facts_json in uploaded:
+        assert owner_id == "org_a"
+        assert len(agent_ids) == 1
+        assert '"provider_choice": "bedrock_claude"' in facts_json
 
 
 @pytest.mark.asyncio
@@ -1042,6 +1055,7 @@ async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_ch
         provider_choice="byo_key",
         byo_provider="anthropic",
         read_byo_key=AsyncMock(return_value="sk-real-byo-key"),
+        mock_facts_staging=False,
     )
     monkeypatch.setattr(
         # The billing row itself still says bedrock_claude (an eventually-consistent read racing
@@ -1058,7 +1072,7 @@ async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_ch
         lambda owner_id, agent_ids, facts_json: captured.update(facts_json=facts_json),
     )
 
-    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
     assert '"provider_choice": "byo_key"' in captured["facts_json"]
     assert "BYO Anthropic key" in captured["facts_json"]
@@ -1068,17 +1082,17 @@ async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_ch
 async def test_write_profiles_facts_staging_is_best_effort(monkeypatch):
     """A facts-file hiccup must never fail provisioning -- write_profile_for_agent's own
     per-agent writes already succeeded by the time this runs."""
-    _patch_write_profiles_collaborators(monkeypatch)
+    _patch_write_profiles_collaborators(monkeypatch, mock_facts_staging=False)
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb down"))
     )
 
-    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})  # must not raise
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})  # must not raise
 
 
 # --- write_profile_for_agent (M6-R23) -----------------------------------------------------------
 # Moved, unchanged in behaviour, from catalog_service._build_and_upload_agent_profile -- the
-# shared per-agent "write this agent's profile" seam _write_profiles (above) now delegates to,
+# shared per-agent "write this agent's profile" seam write_profiles (above) now delegates to,
 # and runtime_rpc's agents.create door for an AgentCore owner calls directly (Q9a row #1).
 
 
@@ -1108,6 +1122,10 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
     monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", fake_write_agent_profile)
     upload_mock = AsyncMock()
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
+    # Facts staging (minor, predeploy review) isn't this test's concern -- see
+    # test_write_profile_for_agent_stages_facts_for_the_new_agent below.
+    stage_facts = AsyncMock()
+    monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", stage_facts)
     agent_row = {"id": "agent_new", "name": "Demo", "role": "general"}
 
     await hermes_provisioning.write_profile_for_agent(
@@ -1123,6 +1141,50 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
     assert upload_mock.await_args.args[0] == "owner_1"
     assert upload_mock.await_args.args[1] == "agent_new"
     assert upload_mock.await_args.args[2].soul_md == "ORIGINAL"
+    stage_facts.assert_awaited_once_with("owner_1", ["agent_new"], inputs)
+
+
+@pytest.mark.asyncio
+async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatch):
+    """Minor (predeploy review, M6-R39 housekeeping): before this fix, only the six-agent
+    provision fan-out staged lightbulb-facts.json -- a hired/created agent installed through
+    catalog_service's single-agent path or runtime_rpc's agents.create door had no facts file
+    at all until the next billing event re-wrote it."""
+    from core.services.hermes_provisioning import ProfileInputs
+
+    inputs = ProfileInputs(
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        byo_api_key=None,
+        aip_arns={"sonnet": "arn:aip:sonnet"},
+        integrations={},
+        env_vars={},
+    )
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "core.services.hermes_profiles.write_agent_profile",
+        lambda owner_id, agent, **kwargs: SimpleNamespace(soul_md="S"),
+    )
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock())
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
+    monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
+    monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
+    staged = {}
+    monkeypatch.setattr(
+        "core.services.hermes_profiles.write_facts_to_profiles",
+        lambda owner_id, agent_ids, facts_json: staged.update(owner_id=owner_id, agent_ids=agent_ids),
+    )
+
+    await hermes_provisioning.write_profile_for_agent(
+        "owner_1", {"id": "agent_new"}, container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
+    )
+
+    assert staged == {"owner_id": "owner_1", "agent_ids": ["agent_new"]}
 
 
 @pytest.mark.asyncio
@@ -1197,6 +1259,7 @@ async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_sou
     )
     upload_mock = AsyncMock()
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
+    monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", AsyncMock())
 
     await hermes_provisioning.write_profile_for_agent(
         "owner_1", {"id": "agent_new"}, container_row={}, soul_md_override="CUSTOM SOUL"

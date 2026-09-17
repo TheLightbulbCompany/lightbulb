@@ -147,7 +147,7 @@ async def read_byo_key(owner_id: str, provider: str) -> Optional[str]:
 
     M4-R32. Unlike ``get_secret_arn`` (the ECS path's own need — a task-definition ``secrets:``
     reference AWS resolves by ARN, so the backend never reads the plaintext back), the Hermes
-    fresh-provision path (``hermes_provisioning._write_profiles``) has no task-definition
+    fresh-provision path (``hermes_provisioning.write_profiles``) has no task-definition
     mechanism: it bakes the value directly into a per-agent profile ``.env`` uploaded to S3, so it
     must read the plaintext here.
 

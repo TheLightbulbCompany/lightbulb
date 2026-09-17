@@ -1,0 +1,4 @@
+{
+  "tag": "h-v1",
+  "notes": "Initial production Hermes-on-AgentCore image pin (Task 20, M4). Built by .github/workflows/build-hermes-image.yml from apps/infra/hermes/Dockerfile; base nousresearch/hermes-agent:0.21.3. dev.tag equivalent: this file has no per-env split yet (single `tag` field) because AGENTCORE_HERMES_IMAGE is dev-only until M6 — service-stack.ts reads `tag` for dev and leaves prod empty. Bump `tag` here in a PR (+ a CDK deploy) to promote a new build; the workflow itself never writes this file."
+}

@@ -54,6 +54,20 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   ),
 );
 
+// hermes-version.json is the promotion tag for the Hermes bridge image, same
+// pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml
+// pushes a candidate but never writes this file — a human bumps `tag` in a PR
+// to promote it. No per-env split yet because AGENTCORE_HERMES_IMAGE below is
+// dev-only until M6 (prod stays empty on purpose).
+interface HermesVersionConfig {
+  tag: string;
+  [key: string]: unknown;
+}
+
+const HERMES_VERSION: HermesVersionConfig = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "hermes-version.json"), "utf8"),
+);
+
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
  * cycles. ServiceStack imports them locally via fromSecretNameV2, which
@@ -1432,7 +1446,7 @@ export class ServiceStack extends cdk.Stack {
       // until it is promoted.
       AGENTCORE_HERMES_IMAGE:
         env === "dev"
-          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:h-v1`
+          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${HERMES_VERSION.tag}`
           : "",
       // Flipped to "true" per environment only when the milestone's dev proof has landed.
       HERMES_RUNTIME: "false",

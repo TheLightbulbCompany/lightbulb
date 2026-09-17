@@ -1,0 +1,87 @@
+name: build-hermes-image
+
+# Hermes bridge image (M4 Task 20). Mirrors build-openclaw-image.yml / build-paperclip-image.yml:
+# OIDC role, ECR login, path-filtered, and it NEVER writes the version pin — a human lands the
+# hermes-version.json tag bump (which service-stack.ts reads for the dev container env), same
+# manual promotion gate the OpenClaw and Paperclip images have.
+concurrency:
+  group: build-hermes-image
+  cancel-in-progress: false
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/infra/hermes/**"
+      - ".github/workflows/build-hermes-image.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build and push Hermes image
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read version metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          PIN_TAG=$(node -p "require('./hermes-version.json').tag")
+          echo "sha_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "pin_tag=${PIN_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # arm64 emulation — AgentCore runtimes are arm64 only, and this job runs on an
+      # amd64 GitHub-hosted (or Blacksmith) runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/infra/hermes
+          file: apps/infra/hermes/Dockerfile
+          platforms: linux/arm64
+          push: true
+          # Two tags per build (M4-R30): the short sha for traceability, and the
+          # hermes-version.json#tag candidate a human promotes by editing that file
+          # (never this workflow) in a PR + CDK deploy.
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.sha_tag }}
+            ${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.pin_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "## Built Hermes image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.pin_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.sha_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bump \`hermes-version.json#tag\` in a PR to change what the next dev CDK deploy pins." >> "$GITHUB_STEP_SUMMARY"

@@ -685,6 +685,7 @@ export class ContainerStack extends cdk.Stack {
             "token.actions.githubusercontent.com:workflow": [
               "build-openclaw-image",
               "build-paperclip-image",
+              "build-hermes-image",
             ],
           },
         }),
@@ -716,6 +717,16 @@ export class ContainerStack extends cdk.Stack {
         "lightbulb/paperclip-extended",
       );
       paperclipExtendedRepo.grantPullPush(builderRole);
+
+      // The build-hermes-image workflow (Task 20) uses this same OIDC role to push the
+      // Hermes bridge image. The repo itself already exists (the spike pushed to it
+      // manually) — referenced by name here only for this grant, same as the two above.
+      const hermesAgentRepoForBuilder = ecr.Repository.fromRepositoryName(
+        this,
+        "HermesAgentRepoForBuilder",
+        "lightbulb/hermes-agent-arm64",
+      );
+      hermesAgentRepoForBuilder.grantPullPush(builderRole);
     }
 
     // Base OpenClaw task definition — the backend clones this per user,

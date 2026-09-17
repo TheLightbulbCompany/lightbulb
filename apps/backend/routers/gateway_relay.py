@@ -8,6 +8,7 @@ the container's business - frames are forwarded verbatim except the two hooks be
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -350,6 +351,14 @@ async def _self_heal(kind: str, owner_id: str, device_id: str, request_id: str |
         logger.warning("relay NOT_PAIRED self-heal failed kind=%s", kind, exc_info=True)
 
 
+def _reject_node_connect(owner_id: str, reason: str) -> int:
+    """Every early-exit 1008 in the node handshake goes through here so the reason is
+    visible in CloudWatch (fix round 1, item 7) instead of only in a warning log line."""
+    put_metric("relay.node_protocol", dimensions={"outcome": "rejected", "reason": reason})
+    logger.info("relay node connect rejected owner=%s reason=%s", owner_id, reason)
+    return 1008
+
+
 async def _serve_node_protocol(
     websocket: WebSocket,
     identity: machine_auth.MachineIdentity,
@@ -372,16 +381,23 @@ async def _serve_node_protocol(
     try:
         frame = await asyncio.wait_for(websocket.receive_text(), timeout=node_broker.CHALLENGE_DEADLINE_S)
     except (asyncio.TimeoutError, WebSocketDisconnect):
-        return 1008
+        return _reject_node_connect(identity.owner_id, "challenge_timeout")
     body = _parse(frame) or {}
     if body.get("method") != "connect" or body.get("type") != "req":
-        return 1008
+        return _reject_node_connect(identity.owner_id, "bad_connect")
     params = body.get("params") or {}
+    min_protocol, max_protocol = params.get("minProtocol"), params.get("maxProtocol")
+    if not (
+        isinstance(min_protocol, int)
+        and isinstance(max_protocol, int)
+        and min_protocol <= node_broker.PROTOCOL_VERSION <= max_protocol
+    ):
+        return _reject_node_connect(identity.owner_id, "protocol_mismatch")
     if not node_broker.signature_matches(params, challenge["payload"]["nonce"]):
         # The GATE is machine_auth at the upgrade; this only catches a client that does not
         # hold the key it claims, which is otherwise a silent mismatch.
         logger.warning("relay node connect signature mismatch owner=%s", identity.owner_id)
-        return 1008
+        return _reject_node_connect(identity.owner_id, "bad_signature")
     declared = set(params.get("commands") or [])
     # The declared set is intersected with the owner's backend-written paired record: a
     # client that declares more than the owner approved gets the intersection, never the
@@ -390,8 +406,10 @@ async def _serve_node_protocol(
     allowed = declared & await desktop_pair.declared_commands_for(identity.owner_id, device_id)
     session = node_broker.NodeSession(device_id, allowed)
     key = (identity.owner_id, device_id)
-    node_sessions[key] = session
+    # Registered only once hello-ok has actually gone out -- a send failure right here must
+    # not leave a session live that the client was never told is ready (fix round 1, item 7).
     await websocket.send_text(json.dumps(node_broker.hello_ok(str(body.get("id")), str(uuid.uuid4()))))
+    node_sessions[key] = session
     try:
         await relay_hooks.on_node_ready(identity.owner_id, identity.user_id, device_id)
     except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
@@ -404,8 +422,15 @@ async def _serve_node_protocol(
     try:
         return await _pump(websocket, session, refresher)
     finally:
+        # Defensive belt-and-suspenders: `_pump`'s own finally already cancels-and-awaits
+        # the refresher as part of `waitable` on every path (normal return or a cancellation
+        # of `_pump` itself), so this should always find it already done. Awaiting after
+        # cancel here too (fix round 1, item 7) means that stays true even if a future change
+        # to `_pump` ever returns without draining it.
         if refresher is not None and not refresher.done():
             refresher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresher
         # The socket is gone -- nothing will ever answer an invoke still in flight. Fail it
         # NOW rather than letting a caller (Task 28) wait out its own timeout_ms for an
         # answer that can never arrive (fix round 1, item 4).

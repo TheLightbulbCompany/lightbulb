@@ -162,6 +162,10 @@ def _hooks_are_noise_here():
         patch("routers.gateway_relay.relay_hooks.on_node_closed", new_callable=AsyncMock),
     ):
         yield
+    # node_sessions is process-global module state; a test that hits an early-exit path
+    # this file doesn't expect to leak (e.g. an exception before the handshake's own
+    # cleanup runs) must not bleed a stale entry into every test after it.
+    gateway_relay.node_sessions.clear()
 
 
 @pytest.mark.asyncio
@@ -452,3 +456,69 @@ async def test_cancelling_the_serve_task_cancels_and_awaits_every_leg():
         await asyncio.sleep(0)  # give any leaked task one more turn to (fail to) wind down
         leaked = asyncio.all_tasks() - before - {asyncio.current_task()}
         assert all(task.done() for task in leaked), [t.get_coro() for t in leaked if not t.done()]
+
+
+# --- Fix round 1, item 7 (minors) ---
+
+
+class _SocketThatFailsOnHelloOk(_FakeSocket):
+    """Raises on the SECOND send_text call (the hello-ok) -- used to prove the session is
+    registered only after that send lands, never before it."""
+
+    async def send_text(self, text: str) -> None:
+        await super().send_text(text)
+        if len(self.sent) == 2:
+            raise RuntimeError("socket died right as hello-ok went out")
+
+
+@pytest.mark.asyncio
+async def test_the_session_is_registered_only_after_hello_ok_actually_sends():
+    received = [_connect_frame("c-9", ["system.run"])]
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+    ):
+        with pytest.raises(RuntimeError):
+            await gateway_relay._serve_node_protocol(
+                _SocketThatFailsOnHelloOk(received, []), _identity(), {"runtime_host": "agentcore"}
+            )
+    # The hello-ok send raised before the registration line ever ran.
+    assert gateway_relay.node_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_a_connect_declaring_an_incompatible_protocol_range_closes_1008():
+    frame = json.dumps(
+        {
+            "type": "req",
+            "id": "c-10",
+            "method": "connect",
+            "params": {
+                "minProtocol": 5,
+                "maxProtocol": 6,  # does not straddle node_broker.PROTOCOL_VERSION (4)
+                "role": "node",
+                "client": {"id": "node-host", "mode": "node", "platform": "macos"},
+                "scopes": [],
+                "commands": ["system.run"],
+                "auth": {},
+                "device": {"id": "dev-1"},
+            },
+        }
+    )
+    code = await gateway_relay._serve_node_protocol(
+        _FakeSocket([frame], []), _identity(), {"runtime_host": "agentcore"}
+    )
+    assert code == 1008
+    assert gateway_relay.node_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_1008_rejections_emit_the_relay_metric():
+    with patch("routers.gateway_relay.put_metric") as metric:
+        await gateway_relay._serve_node_protocol(_FakeSocket([], []), _identity(), {"runtime_host": "agentcore"})
+    reasons = [
+        call.kwargs["dimensions"]["reason"]
+        for call in metric.call_args_list
+        if call.args and call.args[0] == "relay.node_protocol"
+    ]
+    assert "challenge_timeout" in reasons

@@ -270,6 +270,7 @@ describe("ContainerStack — dev", () => {
                 "token.actions.githubusercontent.com:workflow": [
                   "build-openclaw-image",
                   "build-paperclip-image",
+                  "build-hermes-image",
                 ],
               },
             }),

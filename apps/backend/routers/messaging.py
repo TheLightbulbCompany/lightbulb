@@ -593,3 +593,45 @@ async def post_run_event(owner_id: str, body: RunEventRequest, request: Request)
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
+
+
+@router.post("/internal/paperclip/runs/{owner_id}")
+async def post_paperclip_run(owner_id: str, request: Request):
+    """Paperclip's ``http`` adapter (``paperclip_adapter_config.HTTP_ADAPTER_TYPE``) posts a
+    run trigger here instead of dialing an operator gateway socket -- Hermes has none for it to
+    connect to. This door re-shapes the fork's own webhook body (fork docs/adapters/http.md:
+    ``{runId, agentId, companyId, context:{taskId, wakeReason, commentId}}``) into the bridge's
+    inbound ingress envelope, tags it ``eventKind: "paperclip_run"``, and returns whatever the
+    bridge answered (its ``202 accepted`` is what Paperclip's adapter captures as the run
+    result; the agent's actual output still comes back over Paperclip's own callback API,
+    unchanged from every other adapter).
+    """
+    container = await _require_hook_token(owner_id, request)
+    body = await request.json()
+    run_id = body.get("runId")
+    agent_id = body.get("agentId")
+    if not run_id or not agent_id:
+        raise HTTPException(status_code=400, detail="runId and agentId are required")
+    context = body.get("context") or {}
+    wake_reason = context.get("wakeReason") or ""
+    task_id = context.get("taskId") or ""
+    text = wake_reason or (f"Paperclip task {task_id}" if task_id else "Paperclip triggered a run.")
+    response = await runtime_transport.request(
+        container,
+        f"/plugins/lightbulb-channel/inbound/{agent_id}",
+        json_body={
+            "version": 1,
+            "eventId": run_id,
+            "eventKind": "paperclip_run",
+            "targetAgentId": agent_id,
+            "sessionKey": f"agent:{agent_id}:paperclip:{run_id}",
+            "message": {"text": text},
+        },
+        headers={"Authorization": f"Bearer {(container or {}).get('hook_token') or ''}"},
+        timeout_s=10.0,
+    )
+    return Response(
+        content=response.text,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+    )

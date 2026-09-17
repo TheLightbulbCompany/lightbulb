@@ -61,10 +61,16 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
 from core.services.company_identity import generate_company_name
-from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
+from core.services.paperclip_adapter_config import (
+    HTTP_ADAPTER_TYPE,
+    adapter_type_for,
+    build_http_adapter_config,
+    synthesize_openclaw_adapter,
+)
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
 logger = logging.getLogger(__name__)
@@ -633,6 +639,24 @@ class PaperclipProvisioning:
             #    for org members.
             svc_token = service_token.mint(owner_id)
 
+            # Which adapter carries these seeded runs. Hermes/AgentCore has no gateway for an
+            # operator socket to connect to, so those owners get the fork's `http` webhook
+            # adapter instead (see paperclip_adapter_config.HTTP_ADAPTER_TYPE). Absent/unknown
+            # `runtime_host` (the pre-migration default, and the common case: a FRESH provision
+            # seeds Paperclip in step 0, before the container row exists at all -- step 1 --
+            # so there is usually nothing to find yet) is ECS. Best-effort: a lookup failure
+            # must never block seeding, so it falls back to the same "assume ECS" default as a
+            # genuinely missing row.
+            try:
+                owner_container = await container_repo.get_by_owner_id(owner_id)
+            except Exception:
+                logger.warning(
+                    "paperclip_provisioning.provision_org: container lookup failed for owner=%s; assuming ECS",
+                    owner_id,
+                )
+                owner_container = None
+            seed_adapter_type = adapter_type_for(owner_container)
+
             starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
             for starter_key, name, role, title, parent_key in STARTER_ROSTER:
                 if starter_agent_ids.get(starter_key):
@@ -641,20 +665,30 @@ class PaperclipProvisioning:
                 if parent_key and not reports_to:
                     continue
                 try:
-                    # Synthesis mints a device key when none is supplied.
-                    # Each starter needs a distinct paired.json identity.
-                    adapter_config = synthesize_openclaw_adapter(
-                        gateway_url=_ws_gateway_url(self._env_name),
-                        service_token=svc_token,
-                        user_id=owner_user_id,
-                    )
+                    if seed_adapter_type == HTTP_ADAPTER_TYPE:
+                        # No device pairing, no gateway URL -- the fork's http adapter just
+                        # posts the run to our own door. `starter_key` stands in for the
+                        # Paperclip-assigned agent id (unknown before create returns); the
+                        # run's own webhook body carries Paperclip's real agentId, so this
+                        # header is a label for our logs, not a routing key.
+                        adapter_config = build_http_adapter_config(
+                            owner_id, starter_key, hook_token=(owner_container or {}).get("hook_token") or ""
+                        )
+                    else:
+                        # Synthesis mints a device key when none is supplied.
+                        # Each starter needs a distinct paired.json identity.
+                        adapter_config = synthesize_openclaw_adapter(
+                            gateway_url=_ws_gateway_url(self._env_name),
+                            service_token=svc_token,
+                            user_id=owner_user_id,
+                        )
                     agent = await self._admin.create_agent(
                         company_id=company_id,
                         name=name,
                         role=role,
                         title=title,
                         reports_to=reports_to,
-                        adapter_type=OPENCLAW_GATEWAY_TYPE,
+                        adapter_type=seed_adapter_type,
                         adapter_config=adapter_config,
                         session_cookie=new_user_session_cookie,
                         idempotency_key=f"seed:starter:{starter_key}:v1",

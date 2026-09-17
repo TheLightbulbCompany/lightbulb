@@ -4,11 +4,13 @@ import pytest
 
 from core.config import apex_domain, settings, url_host
 from core.crypto.operator_device import device_identity_from_pem
+from core.services import paperclip_adapter_config as cfg_module
 from core.services.paperclip_adapter_config import (
     build_gateway_url_re,
     synthesize_openclaw_adapter,
     validate_gateway_url,
     AdapterConfigError,
+    HTTP_ADAPTER_TYPE,
     OPENCLAW_GATEWAY_TYPE,
     PAPERCLIP_OPERATOR_CLIENT_ID,
     claimed_api_key_path,
@@ -284,3 +286,34 @@ def test_fallback_session_key_cannot_collide_with_a_human_general_session():
     parsed = _parse_session_key(resolved)
     assert parsed["source"] == "paperclip"
     assert parsed["agent_id"] == agent_id
+
+
+def test_an_agentcore_owner_gets_the_http_adapter_not_the_openclaw_gateway():
+    """Hermes has no gateway for an operator socket to connect to -- an
+    AgentCore-hosted owner's Paperclip agents get the fork's own first-party
+    `http` webhook adapter instead (fork docs/adapters/http.md,
+    confirmed against cli/src/adapters/registry.ts at v2026.813-isol8.6).
+    Absent/unknown `runtime_host` stays the pre-migration ECS default."""
+    assert cfg_module.adapter_type_for({"runtime_host": "agentcore"}) == HTTP_ADAPTER_TYPE
+    assert cfg_module.adapter_type_for({"runtime_host": "ecs"}) == OPENCLAW_GATEWAY_TYPE
+    assert cfg_module.adapter_type_for({}) == OPENCLAW_GATEWAY_TYPE
+    assert cfg_module.adapter_type_for(None) == OPENCLAW_GATEWAY_TYPE
+
+
+def test_the_http_adapter_config_points_at_the_backend_door_with_the_hook_token(monkeypatch):
+    # NOTE: the brief for this task named the setting `settings.API_URL`; the
+    # actual field (core/config.py) is `PUBLIC_API_BASE` -- the same "public
+    # origin of this API" setting every other absolute-URL builder in this repo
+    # uses (routers/hooks_credentials.py, routers/connections.py, ...).
+    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
+    built = cfg_module.build_http_adapter_config("org_1", "ceo", hook_token="hook-abc")
+    assert built["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/org_1"
+    assert built["headers"]["Authorization"] == "Bearer hook-abc"
+    assert built["headers"]["X-Lightbulb-Agent"] == "ceo"
+    assert built["timeoutSec"] == 900
+
+
+def test_the_http_adapter_config_strips_a_trailing_slash_on_the_base_url(monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/")
+    built = cfg_module.build_http_adapter_config("org_1", "ceo", hook_token="hook-abc")
+    assert built["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/org_1"

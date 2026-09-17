@@ -389,26 +389,94 @@ async def test_a_lost_claim_during_prepare_also_exits_10(precondition_ok, monkey
     provision.assert_not_called()
 
 
-async def test_a_deterministic_prepare_failure_releases_to_error_and_exits_1(precondition_ok, monkeypatch, tmp_path):
+async def test_a_deterministic_prepare_failure_releases_running_not_error(precondition_ok, monkeypatch, tmp_path):
+    """Ruling M6-R22: a prepare/provision failure happens BEFORE the row flips to agentcore --
+    the ECS container is still up and serving. The row must come back status="running" (never
+    "error"), with the failure recorded on hermes_migrate_error/hermes_migrate_exit_code, and
+    _release_hermes_failure_to_error (which sets status="error") must never be called for this."""
     monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
     monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
     monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock(side_effect=ValueError("bad state")))
-    released = AsyncMock(return_value=10)  # scripts.provision_runner.EXIT_DETERMINISTIC
-    monkeypatch.setattr(mod, "_release_hermes_failure_to_error", released)
+    leased = AsyncMock()
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", leased)
+    released_to_error = AsyncMock(side_effect=AssertionError("must not release to status=error pre-flip"))
+    monkeypatch.setattr("scripts.provision_runner._release_hermes_failure_to_error", released_to_error)
 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OTHER
-    released.assert_awaited_once()
+    released_to_error.assert_not_called()
+    leased.assert_awaited_once()
+    fields = leased.await_args.args[2]
+    assert fields["status"] == "running"
+    assert "bad state" in fields["hermes_migrate_error"]
+    assert fields["hermes_migrate_exit_code"] == mod.EXIT_OTHER
 
 
-async def test_a_transient_provision_failure_releases_to_error_and_exits_11(precondition_ok, monkeypatch, tmp_path):
+async def test_a_transient_provision_failure_releases_running_and_retries_without_double_create(
+    precondition_ok, monkeypatch, tmp_path
+):
+    """Ruling M6-R22, both halves: (1) the pre-flip release restores status="running"; (2) a
+    retried migrate() call for the same owner does not re-run anything already released -- it
+    just re-claims and calls provision_hermes_runtime exactly once more (no double runtime)."""
     monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
     monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
     monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
-    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(side_effect=RuntimeError("throttled")))
-    released = AsyncMock(return_value=11)  # scripts.provision_runner.EXIT_TRANSIENT
-    monkeypatch.setattr(mod, "_release_hermes_failure_to_error", released)
+    leased = AsyncMock()
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", leased)
+
+    attempts: list[str] = []
+
+    async def flaky_then_ok(owner_id, *, claim_id, attempt_token, migrate):
+        attempts.append(owner_id)
+        if len(attempts) == 1:
+            raise RuntimeError("throttled")
+        return "arn:hermes-1"
+
+    monkeypatch.setattr(mod, "provision_hermes_runtime", flaky_then_ok)
+
+    # Attempt 1: transient failure, pre-flip.
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_TRANSIENT
+    fields = leased.await_args.args[2]
+    assert fields["status"] == "running"
+    assert fields["hermes_migrate_exit_code"] == mod.EXIT_TRANSIENT
+
+    # Attempt 2 (retry): provision_hermes_runtime succeeds -- called exactly once more (twice
+    # total across both attempts), never twice within the same attempt.
+    monkeypatch.setattr(mod, "_apply_efs_overrides", AsyncMock())
+    monkeypatch.setattr(mod, "_stamp_migrated", AsyncMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(stop_user_service=AsyncMock()))
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
+    assert len(attempts) == 2
+
+
+async def test_pre_flip_release_tolerates_a_concurrent_takeover(precondition_ok, monkeypatch, tmp_path):
+    """A successor (a deliberate reprovision, an admin action) can take the row's lease between
+    this run's own claim and its failure -- the release attempt then raises ProvisionSuperseded,
+    which must be swallowed (the successor owns the row now), not propagated."""
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(
+        mod.container_repo, "update_container_leased", AsyncMock(side_effect=ProvisionSuperseded("taken"))
+    )
+
+    # Must not raise.
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_TRANSIENT
+
+
+async def test_post_flip_failure_leaves_the_row_untouched_for_tail_reentry(precondition_ok, monkeypatch, tmp_path):
+    """Ruling M6-R22: a failure AFTER the flip (inside the tail) must not release/flip the row at
+    all -- status is exactly whatever provision_hermes_runtime's terminal write left it as, and
+    the NEXT migrate() call for this owner re-enters via _MODE_TAIL (Ruling M6-R16)."""
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
+    leased = AsyncMock(side_effect=AssertionError("must not touch the row on a post-flip failure"))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", leased)
+    monkeypatch.setattr(mod, "_apply_efs_overrides", AsyncMock(side_effect=RuntimeError("efs upload failed")))
 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_TRANSIENT
+    leased.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

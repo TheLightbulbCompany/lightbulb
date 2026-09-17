@@ -66,9 +66,12 @@ unfinished tails without re-provisioning anything.
 
 Exit codes (Ruling M6-R6) — the ``--all`` loop (``migrate_all``, Task 3) retries an 11 once:
     0   ok — migrated (or, under --dry-run, the plan printed cleanly)
-    1   anything else — an unclassified or non-retryable failure during migration; the row has
-        already been released to status="error" (see ``_release_and_map``) wherever the failure
-        happened inside the prepare/provision steps
+    1   anything else — an unclassified or non-retryable failure during migration. A PRE-FLIP
+        failure (claim/prepare/provision, before the row's runtime_host flips to agentcore —
+        Ruling M6-R22) releases the row with status="running" restored (the ECS container is
+        still serving) and the failure recorded on hermes_migrate_error/hermes_migrate_exit_code
+        — see ``_release_pre_flip_failure``. A POST-flip (tail) failure touches the row not at
+        all and relies on Ruling M6-R16's re-entry.
     2   precondition failed — no container row, already migrated (``hermes_migrated_at`` stamped),
         no active Paperclip company, or an empty agent roster
     3   reference org (``REFERENCE_ORG_ID`` / Ruling M6-R2) — refused outright, never migrated
@@ -117,8 +120,6 @@ from core.services.container_provision import resolve_provider_choice
 from core.services.hermes_profiles import profile_prefix, upload_profile, write_agent_profile
 from core.services.hermes_provisioning import prepare_hermes_workspace, provision_hermes_runtime
 from core.services.messaging import load_agent_roster
-from scripts.provision_runner import EXIT_TRANSIENT as _RUNNER_EXIT_TRANSIENT
-from scripts.provision_runner import _release_hermes_failure_to_error
 
 logger = logging.getLogger(__name__)
 
@@ -321,15 +322,35 @@ async def _check_preconditions(owner_id: str) -> tuple[int | None, str | None, l
     return None, mode, roster
 
 
-def _map_release_exit(runner_exit_code: int) -> int:
-    """Translate ``_release_hermes_failure_to_error``'s ABI (``scripts.provision_runner``'s own:
-    0/10/11) onto THIS job's ABI (Ruling M6-R6). Its ``EXIT_TRANSIENT`` (11) means the identical
-    thing here and passes through unchanged. Its ``EXIT_DETERMINISTIC`` (10) would collide with
-    this job's OWN meaning for 10 ("lost claim" / ``ProvisionSuperseded`` — see the module
-    docstring), so a genuine non-retryable prepare/provision failure is reported as
-    ``EXIT_OTHER`` (1) instead, never as 10.
+async def _release_pre_flip_failure(owner_id: str, claim_id: str, attempt_token: str | None, exc: Exception) -> int:
+    """Ruling M6-R22 — a claim/prepare/provision failure happens BEFORE the row's
+    ``runtime_host`` flips to agentcore, while the owner's ECS container is still up and
+    serving. Unlike a fresh Hermes provision's own failure path
+    (``provision_runner._release_hermes_failure_to_error``, which sets ``status="error"`` —
+    correct THERE, since nothing is running yet), releasing this lease to ``status="error"``
+    would flip a row describing a perfectly healthy, still-serving workspace, misleading every
+    other reader (the status poll, the frontend's blocked-state banner, an operator glancing at
+    the row) into thinking it is broken. So this job never calls
+    ``_release_hermes_failure_to_error`` for a pre-flip failure: it releases the lease with
+    ``status="running"`` restored and the failure recorded on ``hermes_migrate_error``/
+    ``hermes_migrate_exit_code`` (``str(exc)`` only — no secrets) so an operator can see why
+    without the row lying about the workspace. A concurrent takeover racing this release is not
+    an error — the successor now owns the row and this run has nothing left to correct.
     """
-    return EXIT_TRANSIENT if runner_exit_code == _RUNNER_EXIT_TRANSIENT else EXIT_OTHER
+    logger.exception("migrate: pre-flip failure for owner=%s (ECS container still serving)", owner_id)
+    _, retryable = classify_provision_error(exc)
+    exit_code = EXIT_TRANSIENT if retryable else EXIT_OTHER
+    try:
+        await container_repo.update_container_leased(
+            owner_id,
+            claim_id,
+            {"status": "running", "hermes_migrate_error": str(exc)[:500], "hermes_migrate_exit_code": exit_code},
+            attempt_token=attempt_token,
+            release_lease=True,
+        )
+    except ProvisionSuperseded:
+        pass
+    return exit_code
 
 
 async def _apply_efs_overrides(
@@ -446,20 +467,16 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
         except ProvisionSuperseded:
             logger.warning("migrate: lost the provision claim for owner=%s during prepare", owner_id)
             return EXIT_LOST_CLAIM
-        except Exception as exc:  # noqa: BLE001 — classified + released, mirrors provision_runner.run
-            released = await _release_hermes_failure_to_error(owner_id, claim_id, claim_id, exc, "migrate prepare")
-            return _map_release_exit(released)
+        except Exception as exc:  # noqa: BLE001 — pre-flip: the ECS container is still serving (M6-R22)
+            return await _release_pre_flip_failure(owner_id, claim_id, claim_id, exc)
 
         try:
             await provision_hermes_runtime(owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True)
         except ProvisionSuperseded:
             logger.warning("migrate: lost the provision claim for owner=%s during runtime provision", owner_id)
             return EXIT_LOST_CLAIM
-        except Exception as exc:  # noqa: BLE001
-            released = await _release_hermes_failure_to_error(
-                owner_id, claim_id, claim_id, exc, "migrate runtime provision"
-            )
-            return _map_release_exit(released)
+        except Exception as exc:  # noqa: BLE001 — pre-flip: the ECS container is still serving (M6-R22)
+            return await _release_pre_flip_failure(owner_id, claim_id, claim_id, exc)
 
     # mode == _MODE_TAIL (a prior attempt already reached here) or mode == _MODE_FULL (just
     # reached it above): run the tail. Ruling M6-R16 — this is RE-ENTERABLE: nothing here

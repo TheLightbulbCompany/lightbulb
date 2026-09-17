@@ -26,7 +26,11 @@ from core.services.config_patcher import (
     delete_openclaw_config_path,
     set_openclaw_config_path,
 )
-from core.services.credentials.mcp_server import build_connected_integration_servers, reconcile_integrations
+from core.services.credentials.mcp_server import (
+    build_connected_integration_servers,
+    integration_owned_server_keys,
+    reconcile_integrations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +197,26 @@ def _validate_servers(servers: dict) -> dict:
     return normalized
 
 
+async def _reject_integration_owned_key_collisions(owner_id: str, names: set[str]) -> None:
+    """Ruling M6-R32: a manual server whose key equals a CONNECTED integration's owned key is
+    rejected here, at write time, with a 409 naming the integration -- instead of being
+    silently overwritten by the very next reconcile/refresh (ECS's own re-assert-after-write,
+    or AgentCore's build_connected_integration_servers seeding manual first) and vanishing from
+    the response with no signal to the caller. Checked before either runtime branch, since both
+    exhibit the same silent-overwrite shape today."""
+    owned = await integration_owned_server_keys(owner_id)
+    collisions = sorted(names & owned.keys())
+    if collisions:
+        name = collisions[0]
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{name}' is owned by the connected {owned[name]!r} integration -- "
+                f"rename this server or disconnect {owned[name]!r} first."
+            ),
+        )
+
+
 async def _agentcore_refresh(owner_id: str) -> dict:
     """AgentCore twin of the ECS write-then-reconcile-then-reread sequence: fan
     the (manual ∪ connected-integration) merge out to every Hermes profile,
@@ -274,6 +298,7 @@ async def replace_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     servers = _validate_servers(body.servers)
+    await _reject_integration_owned_key_collisions(owner_id, set(servers))
     if await runtime_transport.is_agentcore_owner(owner_id):
         # No openclaw.json to write into -- the manual bucket IS the whole
         # replace target, mirroring PUT's "keys not present are deleted"
@@ -317,6 +342,7 @@ async def upsert_mcp_server(
     if auth.is_org_context:
         require_org_admin(auth)
     entry = _normalize_entry(body)
+    await _reject_integration_owned_key_collisions(owner_id, {name})
     if await runtime_transport.is_agentcore_owner(owner_id):
         manual = await integrations_repo.get_manual_mcp_servers(owner_id)
         manual[name] = entry

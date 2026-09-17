@@ -547,3 +547,81 @@ async def test_reconcile_ecs_flag_skips_second_read_too(monkeypatch):
     await m.reconcile_integrations("org_1", agentcore=False)
 
     assert checked == []
+
+
+# ---------------------------------------------------------------------------
+# Ruling M6-R32 — integration_owned_server_keys: the set of mcp.servers keys a
+# manual write must not collide with, without touching Secrets Manager.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_integration_owned_server_keys_covers_all_three_shapes(monkeypatch):
+    """mcp_remote (stripe), mcp_stdio (quickbooks), and wiring.mcp_server all count as
+    'owned' -- and no Secrets Manager read happens for any of them (unlike
+    build_connected_integration_servers, which fetches the mcp_server credential)."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(
+            return_value=[
+                {"provider": "stripe", "status": "connected"},  # mcp_remote
+                {"provider": "quickbooks", "status": "connected"},  # mcp_stdio
+            ]
+        ),
+    )
+    secret_get = AsyncMock(side_effect=AssertionError("must not read Secrets Manager"))
+    monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
+
+    owned = await m.integration_owned_server_keys("org_1")
+
+    assert owned == {"stripe": "stripe", "quickbooks": "quickbooks"}
+
+
+@pytest.mark.asyncio
+async def test_integration_owned_server_keys_covers_mcp_server_wiring(monkeypatch):
+    """No live registry provider uses the mcp_server wiring rail today (MCP providers moved to
+    mcp_remote/mcp_stdio) -- exercise it via a synthetic provider, same convention as
+    test_apply_openclaw_paths_injects_literal."""
+    from core.services.credentials import mcp_server as m
+    from core.services.credentials.registry import McpServer, Provider, Wiring
+
+    synthetic = Provider(
+        key="fakemcp",
+        display_name="Fake MCP",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(mcp_server=McpServer(key="fakemcp", command="npx", args=[], env={})),
+    )
+    monkeypatch.setattr(m.registry, "get_provider", lambda key: synthetic)
+    monkeypatch.setattr(
+        m.integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "fakemcp", "status": "connected"}])
+    )
+
+    owned = await m.integration_owned_server_keys("org_1")
+
+    assert owned == {"fakemcp": "fakemcp"}
+
+
+@pytest.mark.asyncio
+async def test_integration_owned_server_keys_skips_disconnected_and_unknown(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(
+            return_value=[
+                {"provider": "stripe", "status": "revoked"},
+                {"provider": "no-such-provider", "status": "connected"},
+                {"provider": "", "status": "connected"},
+            ]
+        ),
+    )
+
+    owned = await m.integration_owned_server_keys("org_1")
+
+    assert owned == {}

@@ -20,6 +20,14 @@ class TestIntegrationsRouter:
         with patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False)):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _no_connected_integrations_by_default(self):
+        """PUT/PATCH now check integration_owned_server_keys (M6-R32), a real DynamoDB read
+        (integrations_repo.list_for_owner) when unmocked. Default every test in this class to
+        "nothing connected"; the collision tests below override it."""
+        with patch("core.services.credentials.mcp_server.integrations_repo.list_for_owner", AsyncMock(return_value=[])):
+            yield
+
     @pytest.fixture
     def fake_config(self):
         """In-memory openclaw.json that the patched helpers operate on."""
@@ -814,3 +822,84 @@ class TestIntegrationsRouter:
         servers = get_resp.json()["servers"]
         assert "github" in servers, "the FIRST write must survive a later GET"
         assert "linear" in servers
+
+    # -----------------------------------------------------------------------
+    # Ruling M6-R32 — a manual server sharing a key with a CONNECTED integration
+    # is rejected at write time (409 naming the integration), instead of being
+    # silently overwritten by the next reconcile/refresh and vanishing from the
+    # response with no signal to the caller. Checked before either runtime branch.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_a_manual_server_name_colliding_with_a_connected_integration(self, app, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        with patch(
+            "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+            AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"stripe": {"command": "npx", "args": [], "env": {}}}},
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 409
+        assert "stripe" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_patch_rejects_a_manual_server_name_colliding_with_a_connected_integration(self, app, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        with patch(
+            "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+            AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.patch(
+                    "/api/v1/integrations/mcp/servers/stripe",
+                    json={"command": "npx", "args": [], "env": {}},
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 409
+        assert "stripe" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_allows_a_manual_server_name_not_owned_by_any_connected_integration(
+        self, app, auth_override, patched_router
+    ):
+        """A collision check against a DIFFERENT connected provider must not block an
+        unrelated manual server name."""
+        app.dependency_overrides[get_current_user] = auth_override
+        with (
+            patch(
+                "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+                AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+            ),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"my-custom-server": {"command": "npx", "args": [], "env": {}}}},
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_put_agentcore_owner_also_rejects_the_collision(self, app, auth_override):
+        """The check runs before the runtime branch, so it applies on AgentCore too."""
+        app.dependency_overrides[get_current_user] = auth_override
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch(
+                "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+                AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+            ),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"stripe": {"command": "npx", "args": [], "env": {}}}},
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 409
+        assert "stripe" in resp.json()["detail"]

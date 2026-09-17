@@ -46,8 +46,12 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         return 401, {"error": "unauthorized"}
     if path.startswith("/plugins/lightbulb-channel/inbound/") and method == "POST":
         agent_id = path.rsplit("/", 1)[-1]
-        if not isinstance(body, dict) or body.get("targetAgentId") != agent_id:
-            return 400, {"error": "invalid_ingress", "message": "targetAgentId does not match the path"}
+        try:
+            turn.parse_ingress(body if isinstance(body, dict) else {})
+            if body.get("targetAgentId") != agent_id:
+                raise turn.IngressError("targetAgentId does not match the path")
+        except turn.IngressError as exc:
+            return 400, {"error": "invalid_ingress", "message": exc.message}
         run_id = (body.get("run") or {}).get("runId")
         if run_id in turn._runs:
             return 200, {"eventId": body.get("eventId"), "runId": run_id, "status": "replayed"}

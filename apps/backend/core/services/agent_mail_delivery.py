@@ -77,6 +77,39 @@ async def deliver_to_agent(
             return "woken"
 
         hook_token = (container or {}).get("hook_token") or ""
+        headers = {"Authorization": f"Bearer {hook_token}"}
+
+        if runtime_transport.host_for(container or {}) == "agentcore":
+            # Hermes has no OpenClaw hooks ingress; mail enters on the one inbound door the
+            # bridge serves, tagged with its own eventKind. `deliver:false` goes away with the
+            # channel-outbound layer that made it necessary -- the bridge has none.
+            response = await runtime_transport.request(
+                container,
+                f"/plugins/lightbulb-channel/inbound/{agent_id}",
+                ip=ip,
+                json_body={
+                    "version": 1,
+                    "eventId": idempotency_key,
+                    "eventKind": "agent_mail",
+                    "targetAgentId": agent_id,
+                    "sessionKey": session_key,
+                    "message": {"text": message},
+                },
+                headers=headers,
+                timeout_s=10.0,
+            )
+            # 202 accepted and 200 replayed (idempotent replay of the same eventId) both mean
+            # the message reached the agent.
+            if not 200 <= response.status_code < 300:
+                logger.warning(
+                    "agent_mail_delivery failed owner=%s agent=%s err=agentcore inbound returned %s",
+                    owner_id,
+                    agent_id,
+                    response.status_code,
+                )
+                return "error"
+            return "delivered"
+
         target = f"http://{ip}:{GATEWAY_PORT}/hooks/agent"
         body = {
             "message": message,
@@ -108,33 +141,6 @@ async def deliver_to_agent(
             # working one. Opting out is what this field exists for.
             "deliver": False,
         }
-        headers = {"Authorization": f"Bearer {hook_token}"}
-
-        if runtime_transport.host_for(container or {}) == "agentcore":
-            response = await runtime_transport.request(
-                container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
-            )
-            # Same pre-flag backward compatibility as the ECS branch below.
-            if response.status_code == 400 and session_key:
-                logger.info(
-                    "agent_mail_delivery: container rejected sessionKey (pre-flag config), "
-                    "retrying unthreaded owner=%s agent=%s",
-                    owner_id,
-                    agent_id,
-                )
-                body.pop("sessionKey", None)
-                response = await runtime_transport.request(
-                    container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
-                )
-            if not 200 <= response.status_code < 300:
-                logger.warning(
-                    "agent_mail_delivery failed owner=%s agent=%s err=agentcore hook returned %s",
-                    owner_id,
-                    agent_id,
-                    response.status_code,
-                )
-                return "error"
-            return "delivered"
 
         async with _client_factory() as client:
             response = await client.post(target, json=body, headers=headers)

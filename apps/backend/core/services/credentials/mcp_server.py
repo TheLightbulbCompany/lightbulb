@@ -37,7 +37,7 @@ def build_mcp_server_block(provider_key: str, credential: dict[str, Any]) -> dic
     }
 
 
-async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
+async def build_connected_integration_servers(owner_id: str, *, pending: str | None = None) -> dict[str, dict]:
     """{server_key: live mcp.servers block} for every connected provider that owns
     a server entry. The single source of truth used by both the provision-time
     merge and the live reconcile. Two server-owning shapes are emitted:
@@ -50,9 +50,35 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
         the block is emitted from the registry + connected status alone — without
         it a full-config overwrite (reprovision) drops the live server entry even
         though the OAuth token file survives on EFS.
+
+    A THIRD, non-provider shape is folded in too: manually-defined servers an
+    owner adds via the Integrations panel's raw MCP editor
+    (routers/integrations.py). On ECS those go straight into openclaw.json's
+    mcp.servers and this function never sees them. An AgentCore owner has no
+    openclaw.json to write into, so the manual editor stores them on the
+    reserved integrations_repo.MANUAL_MCP_KEY row instead, and this is where
+    they surface — seeded FIRST so a same-key connected integration below
+    always wins the collision, matching the ECS reconcile's own "integration
+    ownership wins" rule (routers/integrations.py's own re-assert-after-write
+    comments).
+
+    ``pending`` (M6-R26 fix round 1, Critical 1): a provider mid-connect whose
+    ``integrations`` status row has not been written yet. All three connect
+    doors (connect_paste/aws_complete/oauth_callback in routers/connections.py)
+    call ``apply_connection`` — and therefore, on an AgentCore owner,
+    ``reconcile_integrations`` and this function — BEFORE
+    ``integrations_repo.put_status(..., "connected")``. Without this, the
+    FIRST connect's profile rewrite runs one beat too early: it never sees
+    its own new row, so every profile gets rewritten WITHOUT the provider
+    actually being connected. Treated as an extra connected row for THIS
+    build only — never persisted, and a no-op if the row already exists
+    (e.g. a reconnect, or the ECS/manual-MCP callers that never pass it).
     """
-    servers: dict[str, dict] = {}
-    for row in await integrations_repo.list_for_owner(owner_id):
+    servers: dict[str, dict] = dict(await integrations_repo.get_manual_mcp_servers(owner_id))
+    rows = await integrations_repo.list_for_owner(owner_id)
+    if pending and not any(row.get("provider") == pending for row in rows):
+        rows = [*rows, {"provider": pending, "status": "connected"}]
+    for row in rows:
         provider = row.get("provider")
         if not provider or row.get("status", "connected") != "connected":
             continue
@@ -90,7 +116,7 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
     return servers
 
 
-async def reconcile_integrations(owner_id: str) -> None:
+async def reconcile_integrations(owner_id: str, *, agentcore: bool | None = None, pending: str | None = None) -> None:
     """Re-assert every connected integration's config into the LIVE openclaw.json
     from the durable sources (registry spec x Secrets-Manager secret). Both
     openclaw.json-resident rails are re-applied, because a full config overwrite
@@ -110,8 +136,21 @@ async def reconcile_integrations(owner_id: str) -> None:
     equivalent rewrite goes through hermes_profiles.refresh_integrations, which touches EVERY
     profile's config.yaml mcp_servers + .env + mcp-tokens/, then bumps each .revision so the
     bridge's own ensure_profile() re-pull picks it up before the agent's next turn.
+
+    ``agentcore`` (M6-R26 fix round 1, Important 3+4): a caller that already
+    resolved ``runtime_transport.is_agentcore_owner`` for this same request
+    (apply_connection, _disconnect_teardown) passes its answer straight
+    through instead of paying for a second DynamoDB read here. ``None``
+    (every other caller — routers/integrations.py's manual-MCP writes,
+    catalog_service's marketplace deploy) resolves it itself, unchanged from
+    before this parameter existed.
+
+    ``pending`` is forwarded to ``build_connected_integration_servers`` /
+    ``hermes_profiles.refresh_integrations`` — see the former's docstring.
     """
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if agentcore is None:
+        agentcore = await runtime_transport.is_agentcore_owner(owner_id)
+    if agentcore:
         from core.services.hermes_profiles import refresh_integrations
         from core.services.messaging import load_agent_roster
 
@@ -119,9 +158,9 @@ async def reconcile_integrations(owner_id: str) -> None:
         # no more run_in_thread hop. It was never blocking anything but its own small S3 PUTs,
         # and the old asyncio.run()-based sync wrapper it called into is gone.
         agents = await load_agent_roster(owner_id)
-        await refresh_integrations(owner_id, [agent["id"] for agent in agents])
+        await refresh_integrations(owner_id, [agent["id"] for agent in agents], pending=pending)
         return
-    for key, block in (await build_connected_integration_servers(owner_id)).items():
+    for key, block in (await build_connected_integration_servers(owner_id, pending=pending)).items():
         try:
             await config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", key], block)
         except config_patcher.ConfigPatchError:

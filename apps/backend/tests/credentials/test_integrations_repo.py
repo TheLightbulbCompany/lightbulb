@@ -115,3 +115,16 @@ async def test_delete_removes_row(fake_table):
     await integrations_repo.delete("org_1", "linear")
     assert await integrations_repo.get("org_1", "linear") is None
     assert ("org_1", "linear") not in fake_table
+
+
+def test_manual_mcp_key_claims_no_registry_provider():
+    """M6-R26 fix round 1, minor: MANUAL_MCP_KEY is a reserved sort key that
+    must never collide with a real registry provider key -- if it ever did,
+    mcp_server.build_connected_integration_servers's `list_for_owner` loop
+    would try to registry.get_provider("manual_mcp") and either silently skip
+    the manual bucket (KeyError -> continue) or, worse, treat it as a real
+    provider row."""
+    from core.services.credentials import registry
+
+    with pytest.raises(KeyError):
+        registry.get_provider(integrations_repo.MANUAL_MCP_KEY)

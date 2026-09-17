@@ -12,6 +12,14 @@ from core.auth import get_current_user, AuthContext
 class TestIntegrationsRouter:
     """Test /integrations/mcp/servers CRUD endpoints."""
 
+    @pytest.fixture(autouse=True)
+    def _ecs_owner_by_default(self):
+        """The write endpoints now check runtime_transport.is_agentcore_owner (a
+        real DynamoDB read when unmocked). Default every test in this class to
+        the ECS runtime; the AgentCore-specific tests below override it."""
+        with patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False)):
+            yield
+
     @pytest.fixture
     def fake_config(self):
         """In-memory openclaw.json that the patched helpers operate on."""
@@ -296,6 +304,28 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_sanitized_name_collision(self, app, patched_router, auth_override):
+        """M6-R26 fix round 1, minor: 'acme-crm' and 'acme_crm' both sanitize
+        to MCP_ACME_CRM_* -- today that only raises much later, deep inside
+        hermes_profiles.translate_mcp_servers, swallowed by an AgentCore
+        write's best-effort profile refresh (a silent no-op behind a 200 OK).
+        Reject it here instead, at submission time."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "acme-crm": {"command": "npx", "args": [], "env": {"TOKEN": "a"}},
+                        "acme_crm": {"command": "npx", "args": [], "env": {"TOKEN": "b"}},
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+        assert "acme-crm" in resp.json()["detail"] or "acme_crm" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_unauthenticated_request_rejected(self, app, patched_router):
@@ -612,3 +642,175 @@ class TestIntegrationsRouter:
         assert resp.status_code == 200
         stored = patched_router["store"]["config"]["mcp"]["servers"]["big-remote"]
         assert stored["toolFilter"] == {"include": ["query-*"]}
+
+    # -------------------------------------------------------------------
+    # Row #6: manual MCP servers on an AgentCore owner
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_put_agentcore_owner_stores_manual_and_refreshes_hermes(self, app, auth_override):
+        """PUT on an AgentCore owner stores the manual bucket and refreshes
+        Hermes profiles instead of touching openclaw.json."""
+        app.dependency_overrides[get_current_user] = auth_override
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
+            patch(
+                "routers.integrations.build_connected_integration_servers",
+                AsyncMock(return_value={"github": {"command": "npx"}}),
+            ),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
+            patch("routers.integrations.set_openclaw_config_path") as set_path,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"github": {"command": "npx", "args": [], "env": {"GITHUB_TOKEN": "ghp_x"}}}},
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        set_manual.assert_awaited_once()
+        stored_servers = set_manual.await_args.args[1]
+        assert "github" in stored_servers
+        reconcile.assert_awaited_once()
+        set_path.assert_not_called()
+        assert resp.json()["servers"] == {"github": {"command": "npx"}}
+
+    @pytest.mark.asyncio
+    async def test_patch_agentcore_owner_stores_manual_and_refreshes_hermes(self, app, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch("routers.integrations.integrations_repo.get_manual_mcp_servers", AsyncMock(return_value={})),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
+            patch(
+                "routers.integrations.build_connected_integration_servers",
+                AsyncMock(return_value={"linear": {"command": "npx"}}),
+            ),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
+            patch("routers.integrations.set_openclaw_config_path") as set_path,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.patch(
+                    "/api/v1/integrations/mcp/servers/linear",
+                    json={"command": "npx", "args": ["-y", "@linear/mcp"], "env": {}},
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        set_manual.assert_awaited_once()
+        stored_servers = set_manual.await_args.args[1]
+        assert "linear" in stored_servers
+        reconcile.assert_awaited_once()
+        set_path.assert_not_called()
+        assert resp.json()["servers"] == {"linear": {"command": "npx"}}
+
+    @pytest.mark.asyncio
+    async def test_delete_agentcore_owner_pops_manual_and_refreshes_hermes(self, app, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch(
+                "routers.integrations.integrations_repo.get_manual_mcp_servers",
+                AsyncMock(return_value={"stale": {"command": "old"}}),
+            ),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
+            patch("routers.integrations.build_connected_integration_servers", AsyncMock(return_value={})),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
+            patch("routers.integrations.delete_openclaw_config_path") as delete_path,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.delete("/api/v1/integrations/mcp/servers/stale")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        set_manual.assert_awaited_once_with("user_integ_test", {})
+        reconcile.assert_awaited_once()
+        delete_path.assert_not_called()
+        assert resp.json()["servers"] == {}
+
+    @pytest.mark.asyncio
+    async def test_put_agentcore_secret_lands_in_env_not_config(self, app, auth_override):
+        """A header/env secret in a manually-added server never lands literally
+        in the response's config shape -- it's stored raw here (the scrub to a
+        ${VAR} ref happens downstream in translate_mcp_servers/
+        build_connected_integration_servers, exercised in test_mcp_server.py),
+        but the write path itself must go through the manual bucket, not
+        openclaw.json."""
+        app.dependency_overrides[get_current_user] = auth_override
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
+            patch("routers.integrations.build_connected_integration_servers", AsyncMock(return_value={})),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()),
+            patch("routers.integrations.set_openclaw_config_path") as set_path,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={
+                        "servers": {
+                            "acme": {
+                                "transport": "streamable-http",
+                                "url": "https://acme.example/mcp",
+                                "headers": {"Authorization": "Bearer sk_live_x"},
+                            }
+                        }
+                    },
+                )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        set_path.assert_not_called()
+        stored_servers = set_manual.await_args.args[1]
+        assert stored_servers["acme"]["headers"]["Authorization"] == "Bearer sk_live_x"
+
+    @pytest.mark.asyncio
+    async def test_get_agentcore_owner_reflects_state_across_two_puts(self, app, auth_override):
+        """M6-R26 fix round 1, Critical 2: list_mcp_servers used to read EFS
+        (always {} for AgentCore) and the frontend's McpServersTab merges
+        {...previousServers, ...newlyWritten} on every write -- so a GET that
+        always answered empty wiped every server that came before it. GET must
+        reflect real, cumulative state across writes."""
+        app.dependency_overrides[get_current_user] = auth_override
+        store: dict = {}
+
+        async def fake_get_manual(owner_id):
+            return dict(store)
+
+        async def fake_set_manual(owner_id, servers):
+            store.clear()
+            store.update(servers)
+
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch("routers.integrations.integrations_repo.get_manual_mcp_servers", fake_get_manual),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", fake_set_manual),
+            patch(
+                "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+                AsyncMock(return_value=[]),
+            ),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp1 = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"github": {"command": "npx", "args": [], "env": {}}}},
+                )
+                assert resp1.status_code == 200
+                assert "github" in resp1.json()["servers"]
+
+                resp2 = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={
+                        "servers": {
+                            "github": {"command": "npx", "args": [], "env": {}},
+                            "linear": {"command": "npx", "args": ["-y", "@linear/mcp"], "env": {}},
+                        }
+                    },
+                )
+                assert resp2.status_code == 200
+
+                get_resp = await client.get("/api/v1/integrations/mcp/servers")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert get_resp.status_code == 200
+        servers = get_resp.json()["servers"]
+        assert "github" in servers, "the FIRST write must survive a later GET"
+        assert "linear" in servers

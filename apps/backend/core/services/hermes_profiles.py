@@ -780,10 +780,14 @@ def _rewrite_mcp_env_lines(dotenv_text: str, new_secrets: dict[str, str]) -> str
     return out + "\n" if out and trailing_newline else out
 
 
-async def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
+async def refresh_integrations(owner_id: str, agent_ids: list[str], *, pending: str | None = None) -> None:
     """Re-assert every connected integration into each profile's ``config.yaml``
     (``mcp_servers``) and ``.env`` (the secret values I1's ``${MCP_<SERVER>_<VAR>}`` refs point
     at), then bump the revision.
+
+    ``pending`` (M6-R26 fix round 1, Critical 1): forwarded verbatim to
+    ``build_connected_integration_servers`` — see its docstring. Lets a
+    same-beat first connect see its own not-yet-``put_status``'d provider.
 
     The ``mcp_servers`` block is REPLACED, not merged: a disconnected provider has to disappear,
     and a merge would leave its server wired forever (the same reason ``reconcile_integrations``
@@ -809,7 +813,7 @@ async def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
     from core.services.credentials import integration_secret_store
     from core.services.credentials.mcp_server import build_connected_integration_servers
 
-    connected = await build_connected_integration_servers(owner_id)
+    connected = await build_connected_integration_servers(owner_id, pending=pending)
     servers, secrets = translate_mcp_servers(connected)
     # Minor 8: one Secrets Manager read per OAuth server per reconcile, not per (agent, server)
     # pair — hoisted out of the per-agent loop below.

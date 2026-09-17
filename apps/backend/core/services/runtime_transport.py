@@ -29,10 +29,13 @@ import asyncio
 import concurrent.futures
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 GATEWAY_PORT = 18789
 
@@ -89,10 +92,23 @@ async def is_agentcore_owner(owner_id: str) -> bool:
     """``host_for`` for a call site that only has an owner id (the relay hooks, which fire
     from ``owner_id``/``user_id``/``device_id`` alone). A caller that already has the
     container row in hand — the relay's own transport branch — should call
-    ``host_for(container)`` directly instead of paying for this extra read."""
+    ``host_for(container)`` directly instead of paying for this extra read.
+
+    M6-R26 fix round 1, Important 3: a DynamoDB read failure here defaults to
+    ``False`` (ECS — the overwhelmingly common case and the pre-migration
+    default) with a WARNING, rather than propagating. Every caller added
+    during the M6 AgentCore rollout treats this as a routine per-request
+    check; before that rollout NOTHING on the connect/disconnect/manual-MCP
+    doors read this table at all, so a transient throttle must not turn into
+    a hard failure (``apply_failed``/502) for an ECS owner who paid no read
+    here previously."""
     from core.repositories import container_repo
 
-    container = await container_repo.get_by_owner_id(owner_id)
+    try:
+        container = await container_repo.get_by_owner_id(owner_id)
+    except Exception:  # noqa: BLE001 — see docstring: default False, never propagate
+        logger.warning("is_agentcore_owner: read failed for owner=%s; defaulting to ecs", owner_id, exc_info=True)
+        return False
     return bool(container) and host_for(container) == "agentcore"
 
 

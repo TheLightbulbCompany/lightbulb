@@ -688,6 +688,54 @@ async def test_missing_gateway_token_creates_nothing(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# M6-R25: transport-aware readiness gate (row #9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_with_runtime_arn_is_refused_not_half_run(monkeypatch, caplog):
+    """Ruling M6-R26 (fix round 1, Important 5): an AgentCore row IS reachable
+    once it holds a minted runtime ARN (any invoke wakes the microVM, M4 Task
+    22) -- but the per-agent loop below (pair_with_openclaw's container_rpc
+    call into the microVM, materialize_agent's EFS-only writes) has no
+    AgentCore equivalent yet. Proceeding would create N Paperclip agents,
+    retry pairing, then raise and roll back. Refuse cleanly instead: zero
+    Paperclip creates, a clear reason logged, no rollback needed."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = {
+        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/abc",
+    }
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+
+    with caplog.at_level("WARNING"):
+        await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls == []  # zero Paperclip creates
+    assert h.deleted == []
+    assert "runtime_unsupported" in caplog.text
+    assert "company deploy on AgentCore lands in the next lane" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_without_runtime_arn_creates_nothing(monkeypatch):
+    """An AgentCore row that hasn't minted its runtime ARN yet is not
+    reachable -- no gateway_token fallback applies to it."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = {"runtime_host": "agentcore"}  # no agentcore_runtime_arn yet
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls == []
+    assert h.deleted == []
+
+
+# ---------------------------------------------------------------------------
 # _find_friday_id — the true apex, not just "first ceo"
 # ---------------------------------------------------------------------------
 

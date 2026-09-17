@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import traceback
 import urllib.request
+import uuid as _uuid
+from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOOK_TOKEN, MODEL, OWNER, now
@@ -107,6 +110,54 @@ def _post_backend(path: str, body: dict) -> int:
         return exc.code
     except Exception as exc:  # noqa: BLE001
         log.warning("backend %s failed: %s", path, exc)
+        return 0
+
+
+# ---- AppSync run frames (spec §4.2, §5 "Run lifecycle") --------------------------------------
+Credentials = namedtuple("Credentials", "access_key secret_key token")
+FRAME_TIMEOUT_S = 5.0
+_REGION = os.environ.get("AWS_REGION") or "us-east-1"
+
+
+def _frame_credentials() -> Credentials:
+    """The execution role. boto3's default chain reaches it over IMDS inside the microVM —
+    the same chain sync.py already uses for S3, so there is no MMDS client to hand-roll."""
+    import boto3
+
+    frozen = boto3.session.Session().get_credentials().get_frozen_credentials()
+    return Credentials(frozen.access_key, frozen.secret_key, frozen.token)
+
+
+def frame_event(room_id: str, agent_id: str, run_id: str, thread_root: str | None, frame: dict) -> dict:
+    payload = {"roomId": room_id, "agentId": agent_id, "runId": run_id,
+               "frame": {**frame, "runId": run_id, "agentId": agent_id}}
+    if thread_root:
+        payload["threadRootMessageId"] = thread_root
+    return {"schemaVersion": 1, "eventId": str(_uuid.uuid4()), "type": "room.run.frame",
+            "occurredAt": now(), "roomId": room_id, "payload": payload}
+
+
+def publish_frame(endpoint: str, channel: str, event: dict) -> int:
+    """One POST per frame. The events array is double-encoded (each event is itself a JSON
+    STRING) — AppSync's own wire shape; the backend's live_events._publish does the same."""
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials as BotoCredentials
+
+    body = json.dumps(
+        {"channel": channel, "events": [json.dumps(event, separators=(",", ":"))]},
+        separators=(",", ":"),
+    ).encode()
+    creds = _frame_credentials()
+    signable = AWSRequest(method="POST", url=endpoint, data=body,
+                          headers={"content-type": "application/json"})
+    SigV4Auth(BotoCredentials(*creds), "appsync", _REGION).add_auth(signable)
+    request = urllib.request.Request(endpoint, data=body, headers=dict(signable.headers), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=FRAME_TIMEOUT_S) as res:
+            return res.status
+    except Exception as exc:  # noqa: BLE001 — a run never fails because of a frame
+        log.warning("frame publish failed: %s", exc)
         return 0
 
 

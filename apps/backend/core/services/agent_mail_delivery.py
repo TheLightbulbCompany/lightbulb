@@ -77,13 +77,14 @@ async def deliver_to_agent(
             # queued or held in memory, so a backend restart loses nothing.
             return "woken"
 
-        hook_token = (container or {}).get("hook_token") or ""
-        headers = {"Authorization": f"Bearer {hook_token}"}
-
         if runtime_transport.host_for(container or {}) == "agentcore":
             # Hermes has no OpenClaw hooks ingress; mail enters on the one inbound door the
             # bridge serves, tagged with its own eventKind. `deliver:false` goes away with the
-            # channel-outbound layer that made it necessary -- the bridge has none.
+            # channel-outbound layer that made it necessary -- the bridge has none. The bridge
+            # gates this door on the GATEWAY token (server.py's _authorized), not the hook
+            # token used below for the ECS `/hooks/agent` branch -- the two are independently
+            # minted and never coincide (final-review C2).
+            gateway_token = (container or {}).get("gateway_token") or ""
             response = await runtime_transport.request(
                 container,
                 f"/plugins/lightbulb-channel/inbound/{agent_id}",
@@ -100,7 +101,7 @@ async def deliver_to_agent(
                     **({"sessionKey": session_key} if session_key else {}),
                     "message": {"text": message},
                 },
-                headers=headers,
+                headers={"Authorization": f"Bearer {gateway_token}"},
                 # AgentCore holds the invoke through a cold microVM start (~90s budget,
                 # same as the canonical ingress caller in openclaw_work._post) -- a mail
                 # delivery to a parked workspace must outlast that, not the old 10s ECS-era
@@ -119,6 +120,8 @@ async def deliver_to_agent(
                 return "error"
             return "delivered"
 
+        hook_token = (container or {}).get("hook_token") or ""
+        headers = {"Authorization": f"Bearer {hook_token}"}
         target = f"http://{ip}:{GATEWAY_PORT}/hooks/agent"
         body = {
             "message": message,

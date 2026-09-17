@@ -253,6 +253,7 @@ async def test_agentcore_row_delivers_through_the_inbound_door_as_agent_mail(mon
     channel-outbound layer, which the bridge doesn't have."""
     agentcore_container = {
         "hook_token": "tok_abc",
+        "gateway_token": "gw_abc",
         "runtime_host": "agentcore",
         "agentcore_runtime_arn": "arn:x",
     }
@@ -286,7 +287,9 @@ async def test_agentcore_row_delivers_through_the_inbound_door_as_agent_mail(mon
     assert captured["container"] is agentcore_container
     assert captured["path"] == "/plugins/lightbulb-channel/inbound/agent_friday"
     assert captured["ip"] == "agentcore"
-    assert captured["headers"] == {"Authorization": "Bearer tok_abc"}
+    # The bridge's inbound door is gated on the GATEWAY token (server.py's _authorized),
+    # never the hook token -- final-review C2.
+    assert captured["headers"] == {"Authorization": "Bearer gw_abc"}
     # No session_key argument -> OMITTED entirely (never sent as a literal null), same
     # idiom as the ECS branch's own "no session_key -> key absent" test above.
     assert captured["json_body"] == {
@@ -309,6 +312,7 @@ async def test_agentcore_row_forwards_the_session_key_and_a_replayed_200_still_d
     just as much a delivery as a fresh 202 ``accepted``."""
     agentcore_container = {
         "hook_token": "tok_abc",
+        "gateway_token": "gw_abc",
         "runtime_host": "agentcore",
         "agentcore_runtime_arn": "arn:x",
     }

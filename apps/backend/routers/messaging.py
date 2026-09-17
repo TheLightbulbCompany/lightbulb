@@ -636,7 +636,10 @@ async def post_paperclip_run(owner_id: str, body: PaperclipRunRequest, request: 
                 "sessionKey": f"agent:{body.agent_id}:paperclip:{body.run_id}",
                 "message": {"text": text},
             },
-            headers={"Authorization": f"Bearer {(container or {}).get('hook_token') or ''}"},
+            # The bridge's inbound door is gated on the GATEWAY token (server.py's
+            # _authorized), never the hook token -- the hook token is for backend-side
+            # routes the bridge itself calls back into (final-review C2).
+            headers={"Authorization": f"Bearer {(container or {}).get('gateway_token') or ''}"},
             # AgentCore holds the invoke through a cold microVM start -- same ~90s budget as
             # the canonical ingress caller (openclaw_work._post); a Paperclip wake can hit a
             # parked workspace exactly like a room message can.

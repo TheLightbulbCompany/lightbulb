@@ -9,6 +9,7 @@ from core.services import runtime_transport
 from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 
 OWNER, TOKEN, AGENT, RUN = "org_1", "hook-token-for-a", "agent_ceo", "run_123"
+GATEWAY_TOKEN = "gateway-token-for-a"
 H = {"Authorization": f"Bearer {TOKEN}"}
 BODY = {
     "runId": RUN,
@@ -21,7 +22,14 @@ BODY = {
 def _container():
     return patch(
         "routers.messaging.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"owner_id": OWNER, "hook_token": TOKEN, "runtime_host": "agentcore"}),
+        AsyncMock(
+            return_value={
+                "owner_id": OWNER,
+                "hook_token": TOKEN,
+                "gateway_token": GATEWAY_TOKEN,
+                "runtime_host": "agentcore",
+            }
+        ),
     )
 
 
@@ -68,7 +76,9 @@ def test_valid_token_forwards_a_paperclip_run_event_to_the_bridge(client):
         "sessionKey": f"agent:{AGENT}:paperclip:{RUN}",
         "message": {"text": "New comment on your task"},
     }
-    assert captured["headers"] == {"Authorization": f"Bearer {TOKEN}"}
+    # The caller's own hook token (TOKEN) authenticates INTO this route; the outbound call to
+    # the bridge's inbound door carries the container's gateway token instead (final-review C2).
+    assert captured["headers"] == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
     # AgentCore holds the invoke through a cold microVM start -- same ~90s budget as the
     # canonical ingress caller (openclaw_work._post), not a short ECS-era timeout.
     assert captured["timeout_s"] == _AGENTCORE_INGRESS_TIMEOUT_S == 90.0

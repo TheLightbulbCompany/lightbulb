@@ -26,7 +26,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from bridge import GATEWAY_TOKEN, HOME, OWNER, PORT, STARTED, now
+from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
 from bridge import sync, turn
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
@@ -53,13 +53,84 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         threading.Thread(target=turn.run_turn, args=(agent_id, body), daemon=True, name=f"turn-{run_id}").start()
         return 202, {"eventId": body.get("eventId"), "runId": run_id, "status": "accepted"}
     if path == "/plugins/lightbulb-channel/rpc" and method == "POST":
-        m = (body or {}).get("method") if isinstance(body, dict) else None
-        if m == "health":
-            return 200, {"ok": True, "payload": {"ready": True, "runtime": "hermes", "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy}}
-        if m == "agents.list":
-            return 200, {"ok": True, "payload": {"agents": [{"id": p.name} for p in (HOME / "profiles").glob("*") if p.is_dir()]}}
-        return 200, {"ok": False, "error": {"code": "UNAVAILABLE", "message": f"method not implemented in the spike bridge: {m}"}}
+        return _rpc(body)
     return 404, {"error": "not_found", "path": path}
+
+
+# ---- RPC (spec §5) ------------------------------------------------------------------------------
+RPC_DEFAULT_TIMEOUT_MS = 30_000
+RPC_MAX_TIMEOUT_MS = 120_000
+
+# Control-panel surfaces only. Stubbing them keeps the panels rendering an explicit
+# "unavailable" instead of spinning; each gets a real implementation when its Hermes home
+# exists. The SHAPE is the contract — container_rpc unwraps {ok:false} into a RuntimeError
+# carrying this exact JSON, so it must never wobble.
+UI_ONLY_METHODS = frozenset({
+    "tools.catalog", "commands.list", "models.list", "chat.history", "agent.identity.get",
+    "skills.install", "skills.search", "skills.status", "skills.update",
+    "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.list",
+    "skills.proposals.reject",
+    "sessions.list", "sessions.patch", "sessions.delete", "sessions.rewind", "sessions.search",
+    "sessions.branches.list", "sessions.branches.switch",
+    "doctor.memory.status", "doctor.memory.dreamDiary", "doctor.memory.resetDreamDiary",
+    "doctor.memory.backfillDreamDiary", "doctor.memory.dedupeDreamDiary",
+    "doctor.memory.repairDreamingArtifacts", "doctor.memory.resetGroundedShortTerm",
+    # browser.request is retired with the container browser (spec §5).
+    "browser.request",
+})
+
+
+def _profiles() -> list[str]:
+    return sorted(p.name for p in (sync.HOME / "profiles").glob("*") if p.is_dir())
+
+
+def _boot_ready() -> bool:
+    """Ingress cannot be accepted without the hook token (run callbacks) and the profiles
+    dir. This is the whole readiness answer: cheap, local, and true only when a turn would
+    actually work — readiness_state treats any exception here as 'not ready'."""
+    return bool(HOOK_TOKEN) and (sync.HOME / "profiles").is_dir()
+
+
+def _health(_params: dict) -> dict:
+    return {"ok": True, "payload": {
+        "ready": _boot_ready(), "runtime": "hermes",
+        "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
+        "agents": len(_profiles()),
+    }}
+
+
+RPC_METHODS: dict = {"health": _health}
+
+
+def _unavailable(method: str) -> dict:
+    return {"ok": False, "error": {"code": "UNAVAILABLE",
+                                   "message": f"{method} is not available on the Hermes runtime"}}
+
+
+for _m in UI_ONLY_METHODS:
+    RPC_METHODS.setdefault(_m, (lambda m: lambda _p: _unavailable(m))(_m))
+
+
+def _rpc(body) -> tuple[int, dict]:
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "body must be an object"}}
+    method, params = body.get("method"), body.get("params", {})
+    if not isinstance(method, str) or not method:
+        return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "method is required"}}
+    if not isinstance(params, dict):
+        return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "params must be an object"}}
+    handler = RPC_METHODS.get(method)
+    if handler is None:
+        return 200, _unavailable(method)
+    try:
+        result = handler(params)
+    except Exception:  # noqa: BLE001 — the exception text may carry params; never return it
+        log.warning("rpc %s failed", method, exc_info=True)
+        return 200, {"ok": False, "error": {"code": "UNAVAILABLE",
+                                            "message": "gateway method failed before returning a response"}}
+    if result.get("ok") is False and (result.get("error") or {}).get("code") == "AGENT_TIMEOUT":
+        return 504, result
+    return 200, result
 
 
 # ---- /ws door probe (throwaway: M2 replaces this echo with the node protocol) ----------------
@@ -158,9 +229,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    HOME.mkdir(parents=True, exist_ok=True)
-    (HOME / "profiles").mkdir(exist_ok=True)
-    log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, HOME, OWNER)
+    sync.HOME.mkdir(parents=True, exist_ok=True)
+    (sync.HOME / "profiles").mkdir(exist_ok=True)
+    log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

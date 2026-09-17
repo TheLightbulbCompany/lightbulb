@@ -109,6 +109,15 @@ API_ERROR_STATUS = {
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
     "INTERNAL_ERROR": 500,
+    # Task 28 node-invoke (M2-R11): NODE_NOT_ATTACHED covers both "nothing is attached
+    # anywhere" and "a forwarded call found no local session either" -- the caller reacts
+    # to both the same way (no node to run this on). NODE_MOVED is reserved for a future
+    # caller that needs to distinguish "it moved" from "it was never here"; nothing in
+    # Task 28 raises it today, but it is a real, tested status mapping.
+    "NODE_NOT_ATTACHED": 409,
+    "COMMAND_NOT_ALLOWED": 403,
+    "NODE_TIMEOUT": 504,
+    "NODE_MOVED": 409,
 }
 
 ROOM_LIVE_EVENT_TYPES = frozenset(
@@ -506,6 +515,30 @@ class UsageReportRequest(ContractModel):
 class UsageReportResponse(ContractModel):
     run_id: str
     status: Literal["applied", "replayed", "ignored"]
+
+
+class NodeInvokeRequest(ContractModel):
+    """Body the Hermes bridge's ``lightbulb_node`` plugin posts once per command
+    (``apps/infra/hermes/plugins/lightbulb_node/__init__.py::_invoke``, spec §4.4, Task 28).
+    ``paramsJSON`` stays a JSON string end to end -- an object there is a silent no-op on the
+    Rust client and INVALID_REQUEST on the CLI (report 02 R7), same reason ``node_broker``
+    keeps it a string on the wire to the node."""
+
+    command: str = Field(min_length=1, max_length=128)
+    params_json: str = Field(alias="paramsJSON", max_length=1_048_576)
+    timeout_ms: int = Field(alias="timeoutMs", ge=1_000, le=600_000, default=120_000)
+
+
+class NodeInvokeResponse(ContractModel):
+    """Mirrors ``NodeSession.invoke``'s own return shape verbatim -- ``ok``/``payload`` on
+    success, or ``ok: false`` + ``error: {code, message}`` when the NODE ran the command but it
+    failed (a spawn error; a nonzero exit is still ``ok: true``, see the bridge plugin's
+    ``NodeEnvironment.execute``). A transport-level failure (no node attached, timeout, the
+    command isn't declared) never reaches this model -- it is an ``ApiProblem`` instead."""
+
+    ok: bool
+    payload: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
 
 
 class PaperclipRunContext(ContractModel):

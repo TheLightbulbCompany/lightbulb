@@ -1,4 +1,8 @@
+import asyncio
 import base64
+import json
+
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.services import node_broker
@@ -71,3 +75,77 @@ def test_a_clock_skewed_signed_at_is_not_a_rejection():
     # Our Rust client signs with its LOCAL clock and never reads the challenge ts.
     assert node_broker.hello_ok("r", "c")  # sentinel: nothing in the broker compares signedAt to ts
     assert "signedAt" not in str(node_broker.challenge_frame())
+
+
+def test_params_json_is_a_string_not_an_object():
+    frame = node_broker.invoke_request("inv-1", "dev-1", "system.run", {"command": ["bash", "-lc", "ls"]}, 120_000)
+    assert frame == {
+        "type": "event",
+        "event": "node.invoke.request",
+        "payload": {
+            "id": "inv-1",
+            "nodeId": "dev-1",
+            "command": "system.run",
+            "paramsJSON": json.dumps({"command": ["bash", "-lc", "ls"]}),
+            "timeoutMs": 120_000,
+        },
+    }
+    assert isinstance(frame["payload"]["paramsJSON"], str)
+
+
+async def test_a_result_resolves_its_own_invoke_and_is_acked():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    task = asyncio.create_task(session.invoke("system.run", {"command": ["ls"]}, 5_000))
+    await asyncio.sleep(0)
+    invoke_id = next(iter(session.pending))
+    ack = session.resolve(
+        {
+            "type": "req",
+            "id": "r-9",
+            "method": "node.invoke.result",
+            "params": {
+                "id": invoke_id,
+                "nodeId": "dev-1",
+                "ok": True,
+                "payloadJSON": json.dumps({"stdout": "README.md", "exitCode": 0}),
+            },
+        }
+    )
+    assert ack == {"type": "res", "id": "r-9", "ok": True}
+    assert (await task) == {"ok": True, "payload": {"stdout": "README.md", "exitCode": 0}}
+    assert session.pending == {}
+
+
+async def test_a_late_or_unknown_result_is_acked_and_dropped_not_raised():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    assert session.resolve(
+        {
+            "type": "req",
+            "id": "r-1",
+            "method": "node.invoke.result",
+            "params": {"id": "ghost", "ok": True},
+        }
+    ) == {"type": "res", "id": "r-1", "ok": True}
+
+
+async def test_a_timeout_clears_the_pending_entry_so_the_map_cannot_grow():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    with pytest.raises(node_broker.NodeInvokeTimeout):
+        await session.invoke("system.run", {"command": ["sleep", "9"]}, 10)
+    assert session.pending == {}
+
+
+async def test_a_command_the_device_never_declared_is_refused_before_it_reaches_the_socket():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    with pytest.raises(node_broker.CommandNotAllowed):
+        await session.invoke("camera.capture", {}, 1_000)
+
+
+async def test_progress_and_node_event_are_acked_and_need_no_implementation():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    for method in ("node.invoke.progress", "node.event"):
+        assert session.resolve({"type": "req", "id": "x", "method": method, "params": {}}) == {
+            "type": "res",
+            "id": "x",
+            "ok": True,
+        }

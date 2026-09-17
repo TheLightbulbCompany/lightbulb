@@ -7,9 +7,12 @@ CLI node-host's contract, which is a strict superset of our Rust client's.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 import secrets
 import time
+import uuid
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -100,3 +103,83 @@ def signature_matches(params: dict, nonce: str) -> bool:
         return True
     except (InvalidSignature, ValueError, TypeError):
         return False
+
+
+class CommandNotAllowed(Exception):
+    """The paired device never declared this command — the allowlist is the paired record's
+    own `commands`, which replaces the container's tools-deny flip (report 02 §2.2 step 4)."""
+
+
+class NodeInvokeTimeout(Exception):
+    pass
+
+
+def invoke_request(invoke_id: str, node_id: str, command: str, params: dict, timeout_ms: int) -> dict:
+    return {
+        "type": "event",
+        "event": "node.invoke.request",
+        "payload": {
+            "id": invoke_id,
+            "nodeId": node_id,
+            "command": command,
+            # A JSON STRING, not an object: an object is a silent no-op on the Rust client and an
+            # INVALID_REQUEST on the CLI (report 02 R7).
+            "paramsJSON": json.dumps(params or {}),
+            "timeoutMs": int(timeout_ms),
+        },
+    }
+
+
+def ack(req_id: str) -> dict:
+    """Every node->gateway `req` must get a `res`. An unanswered one keeps a pending entry
+    alive on the CLI, which SUPPRESSES its tick watchdog (client.ts:1305-1311)."""
+    return {"type": "res", "id": req_id, "ok": True}
+
+
+class NodeSession:
+    """One live desktop socket's invoke map. Keyed by INVOKE id, never node id: concurrent
+    tool calls from one agent interleave by design."""
+
+    def __init__(self, node_id: str, commands: set[str]) -> None:
+        self.node_id, self.commands = node_id, set(commands)
+        self.pending: dict[str, asyncio.Future] = {}
+        self.send: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def invoke(self, command: str, params: dict, timeout_ms: int) -> dict:
+        if command not in self.commands:
+            raise CommandNotAllowed(command)
+        invoke_id = str(uuid.uuid4())
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.pending[invoke_id] = future
+        await self.send.put(invoke_request(invoke_id, self.node_id, command, params, timeout_ms))
+        try:
+            return await asyncio.wait_for(future, timeout=timeout_ms / 1000 + 5)
+        except asyncio.TimeoutError as exc:
+            raise NodeInvokeTimeout(command) from exc
+        finally:
+            self.pending.pop(invoke_id, None)
+
+    def resolve(self, frame: dict) -> dict | None:
+        """Answer a node->gateway req. Returns the ack to send, or None for a non-req frame."""
+        if frame.get("type") != "req":
+            return None
+        params = frame.get("params") or {}
+        if frame.get("method") == "node.invoke.result":
+            future = self.pending.get(str(params.get("id") or ""))
+            if future is not None and not future.done():
+                payload = params.get("payload")
+                if payload is None and isinstance(params.get("payloadJSON"), str):
+                    try:
+                        payload = json.loads(params["payloadJSON"])
+                    except ValueError:
+                        payload = None
+                future.set_result(
+                    {
+                        "ok": bool(params.get("ok")),
+                        "payload": payload,
+                        **({"error": params["error"]} if params.get("error") else {}),
+                    }
+                )
+        # progress / node.event / anything else: ack and drop. The desktop's declared surface
+        # never streams, so there is nothing to implement here.
+        return ack(str(frame.get("id") or ""))

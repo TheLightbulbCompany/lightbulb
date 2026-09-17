@@ -264,7 +264,8 @@ async def test_apply_agentcore_openclaw_paths_provider_with_no_hermes_equivalent
 async def test_apply_agentcore_parallel_projects_env_and_config_per_roster_agent(monkeypatch):
     """M6-R31: parallel IS in HERMES_OPENCLAW_PATHS_PROVIDERS -- its key lands in every roster
     agent's .env as PARALLEL_API_KEY, and web.backend is selected deterministically so Hermes's
-    keyless ring doesn't pick a different vendor at random."""
+    keyless ring doesn't pick a different vendor at random. Both land via ONE combined write
+    (fix round 1, Important 1) so a partial projection can never be left behind silently."""
     from core.services import messaging as messaging_mod
     from core.services import hermes_profiles as hp_mod
     from core.services.credentials import apply_connection as ac
@@ -272,26 +273,41 @@ async def test_apply_agentcore_parallel_projects_env_and_config_per_roster_agent
     monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr(messaging_mod, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}, {"id": "eng"}]))
 
-    env_calls = []
-    config_calls = []
+    calls = []
     monkeypatch.setattr(
-        hp_mod, "patch_profile_env", lambda owner, agent, updates: env_calls.append((owner, agent, updates))
-    )
-    monkeypatch.setattr(
-        hp_mod, "patch_profile_config", lambda owner, agent, patch: config_calls.append((owner, agent, patch))
+        hp_mod,
+        "patch_profile_env_and_config",
+        lambda owner, agent, env, config: calls.append((owner, agent, env, config)),
     )
 
     result = await ac.apply_connection("org_1", "parallel", {"token": "par-live-key"})
 
     assert result is None
-    assert env_calls == [
-        ("org_1", "ceo", {"PARALLEL_API_KEY": "par-live-key"}),
-        ("org_1", "eng", {"PARALLEL_API_KEY": "par-live-key"}),
+    assert calls == [
+        ("org_1", "ceo", {"PARALLEL_API_KEY": "par-live-key"}, {"web": {"backend": "parallel"}}),
+        ("org_1", "eng", {"PARALLEL_API_KEY": "par-live-key"}, {"web": {"backend": "parallel"}}),
     ]
-    assert config_calls == [
-        ("org_1", "ceo", {"web": {"backend": "parallel"}}),
-        ("org_1", "eng", {"web": {"backend": "parallel"}}),
-    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_agentcore_parallel_projection_failure_raises_and_is_not_recorded_connected(monkeypatch):
+    """Fix round 1, Important 1: the openclaw_paths projection has no later re-assert pass to
+    self-heal a missed write (unlike the MCP reconcile rail), so a failed write must propagate --
+    connect_paste's existing rollback is what keeps a failed connect from reading "connected"."""
+    from core.services import messaging as messaging_mod
+    from core.services import hermes_profiles as hp_mod
+    from core.services.credentials import apply_connection as ac
+
+    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr(messaging_mod, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
+
+    def _boom(owner, agent, env, config):
+        raise FileNotFoundError("no config.yaml for org_1/hermes/ceo/")
+
+    monkeypatch.setattr(hp_mod, "patch_profile_env_and_config", _boom)
+
+    with pytest.raises(FileNotFoundError):
+        await ac.apply_connection("org_1", "parallel", {"token": "par-live-key"})
 
 
 @pytest.mark.asyncio
@@ -302,19 +318,34 @@ async def test_clear_hermes_openclaw_paths_projection_reverts_env_and_config(mon
     from core.services.credentials import apply_connection as ac
 
     monkeypatch.setattr(messaging_mod, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
-    env_calls = []
-    config_calls = []
+    calls = []
     monkeypatch.setattr(
-        hp_mod, "patch_profile_env", lambda owner, agent, updates: env_calls.append((owner, agent, updates))
-    )
-    monkeypatch.setattr(
-        hp_mod, "patch_profile_config", lambda owner, agent, patch: config_calls.append((owner, agent, patch))
+        hp_mod,
+        "patch_profile_env_and_config",
+        lambda owner, agent, env, config: calls.append((owner, agent, env, config)),
     )
 
     await ac.clear_hermes_openclaw_paths_projection("org_1", "parallel")
 
-    assert env_calls == [("org_1", "ceo", {"PARALLEL_API_KEY": ""})]
-    assert config_calls == [("org_1", "ceo", {"web": {"backend": ""}})]
+    assert calls == [("org_1", "ceo", {"PARALLEL_API_KEY": ""}, {"web": {"backend": ""}})]
+
+
+@pytest.mark.asyncio
+async def test_clear_hermes_openclaw_paths_projection_failure_is_swallowed(monkeypatch):
+    """Unlike connect, a disconnect stays best-effort -- the row has already committed its
+    disconnect by the time this runs, so there is no rollback for a raise to trigger."""
+    from core.services import messaging as messaging_mod
+    from core.services import hermes_profiles as hp_mod
+    from core.services.credentials import apply_connection as ac
+
+    monkeypatch.setattr(messaging_mod, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
+
+    def _boom(owner, agent, env, config):
+        raise RuntimeError("s3 down")
+
+    monkeypatch.setattr(hp_mod, "patch_profile_env_and_config", _boom)
+
+    await ac.clear_hermes_openclaw_paths_projection("org_1", "parallel")  # must not raise
 
 
 @pytest.mark.asyncio

@@ -925,27 +925,40 @@ def _rewrite_named_env_lines(dotenv_text: str, keys_to_drop: set[str], live: dic
     return out + "\n" if out and trailing_newline else out
 
 
-def patch_profile_env(owner_id: str, agent_id: str, updates: dict[str, str]) -> None:
-    """Merge named ``key=value`` ``updates`` into a profile's stored ``.env`` -- the
-    general-purpose sibling of the MCP-only secrets rail (``_refresh_one_profile``/
-    ``_rewrite_mcp_env_lines``) for a provider whose Hermes equivalent is a bare environment
-    variable Hermes reads directly, with no ``mcp_servers`` shape and no ``config.yaml`` field of
-    its own (M6-R31: ``openclaw_paths``-wiring providers on AgentCore, e.g. ``parallel``'s
-    ``PARALLEL_API_KEY`` -- verified against the image: ``tools/web_tools.py``'s
-    ``_has_env``/``_env_value`` read it straight from the environment, never via a config.yaml
-    reference). A value of ``""`` clears the key on disconnect rather than leaving a stale one.
+def patch_profile_env_and_config(owner_id: str, agent_id: str, env_updates: dict[str, str], config_patch: dict) -> None:
+    """Merge named ``key=value`` ``env_updates`` into a profile's stored ``.env`` AND deep-merge
+    ``config_patch`` into its ``config.yaml``, bumping ``.revision`` ONCE after BOTH have landed
+    -- the combined write for a provider whose Hermes equivalent is a bare environment variable
+    Hermes reads directly (no ``mcp_servers`` shape, no ``config.yaml`` field of its own: M6-R31,
+    e.g. ``parallel``'s ``PARALLEL_API_KEY``, verified against the image -- ``tools/web_tools.py``'s
+    ``_has_env``/``_env_value`` read it straight from the environment) that ALSO needs a
+    config.yaml selector patched alongside it (e.g. ``web.backend``).
 
-    Does NOT bump ``.revision`` itself -- every call site pairs this with a ``patch_profile_config``
-    call for the same profile (M6-R31's connect/disconnect both patch a ``config.yaml`` selector
-    alongside the env value), and that call's own ``_upload_config_yaml`` bumps it LAST, after both
-    files have landed."""
+    Fix round 1, Important 1: this used to be two separate calls
+    (``patch_profile_env`` then ``patch_profile_config``) — if the second raised (most likely:
+    ``read_profile_config(required=True)`` finding no ``config.yaml`` yet), the ``.env`` PUT from
+    the first call had already landed with no ``.revision`` bump to ever surface it to the bridge
+    -- a silently orphaned partial write. Reading BOTH current files before EITHER ``put_object``
+    closes that failure window (the likeliest raise, a not-yet-provisioned profile, now happens
+    before any write); an S3 outage strictly between the two PUTs below is the same residual
+    "not transactional" risk every other multi-object writer in this module already accepts (see
+    ``_config_patch_roster``'s own ponytail note). Raises (``FileNotFoundError``/``ValueError``/a
+    transient ``ClientError``) rather than swallowing -- the caller decides whether that's
+    fatal (a connect: yes) or best-effort (a disconnect: it wraps this itself).
+
+    A value of ``""`` in ``env_updates`` clears that key (disconnect) rather than leaving a stale
+    one."""
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
     prefix = profile_prefix(owner_id, agent_id)
+    config = _deep_merge(read_profile_config(owner_id, agent_id, required=True), config_patch or {})
     dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
-    live = {k: v for k, v in updates.items() if v}
-    _s3_put(bucket, f"{prefix}.env", _rewrite_named_env_lines(dotenv_text, set(updates), live))
+    live = {k: v for k, v in env_updates.items() if v}
+    new_dotenv = _rewrite_named_env_lines(dotenv_text, set(env_updates), live)
+    _s3_put(bucket, f"{prefix}.env", new_dotenv)
+    _s3_put(bucket, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+    _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
 
 
 # ---- Row #15 / Ruling M6-R30: owner facts staged into every profile ----------------------------

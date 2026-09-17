@@ -212,24 +212,36 @@ def test_invoke_reads_the_hook_token_from_the_process_env_not_a_turn_context_fil
 
 def _stub_terminal_env_provider(monkeypatch):
     """M2-R7: minimal real base, matching agent/terminal_env_provider.py's actual abstract
-    surface (name/is_available/create_environment), stubbed the way test_home_scope.py stubs
-    hermes_constants -- this test runner has no Hermes image on the path."""
+    surface, stubbed the way test_home_scope.py stubs hermes_constants -- this test runner has
+    no Hermes image on the path. Fix round 1, item 3: a real abc.ABC with `name` as an
+    abstract @property and is_available/create_environment as abstract methods (exactly how
+    the real base declares them), not a plain class -- so a future regression that drops one
+    of LightbulbNodeProvider's overrides fails these tests with a TypeError at instantiation,
+    the same way it would fail against the real Hermes image."""
+    import abc
     import types
 
     fake_pkg = types.ModuleType("agent")
     fake_mod = types.ModuleType("agent.terminal_env_provider")
 
-    class TerminalEnvironmentProvider:
+    class TerminalEnvironmentProvider(abc.ABC):
         is_remote = True
         is_container = True
         session_isolated_when_nonpersistent = False
 
-        def is_available(self):
-            raise NotImplementedError
+        @property
+        @abc.abstractmethod
+        def name(self):
+            ...
 
+        @abc.abstractmethod
+        def is_available(self):
+            ...
+
+        @abc.abstractmethod
         def create_environment(self, *, cwd, timeout, task_id="default", image=None,
                                container_config=None, **kwargs):
-            raise NotImplementedError
+            ...
 
     fake_mod.TerminalEnvironmentProvider = TerminalEnvironmentProvider
     monkeypatch.setitem(sys.modules, "agent", fake_pkg)

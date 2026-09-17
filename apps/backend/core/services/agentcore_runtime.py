@@ -37,7 +37,12 @@ _MAX_NAME_LEN = 48
 
 
 def _env() -> str:
-    return settings.ENVIRONMENT
+    # m5: an unset ENVIRONMENT (empty string is Settings' own default) must never silently
+    # produce a double-slash name/secret path (e.g. "lightbulb//hermes/<owner>/boot") -- that
+    # falls outside every environment-scoped IAM grant. Matches the fallback the original brief
+    # snippet already had for boot_secret_name; centralized here since runtime_name_for shares
+    # this same helper.
+    return settings.ENVIRONMENT or "dev"
 
 
 def runtime_name_for(owner_id: str) -> str:
@@ -299,3 +304,47 @@ async def ensure_runtime(owner_id: str) -> dict:
     )
     logger.info("agentcore runtime created owner=%s arn=%s", owner_id, arn)
     return {"owner_id": owner_id, "runtime_arn": arn, "created": True}
+
+
+# --- Boot secret (M4-R4/R5) -------------------------------------------------
+#
+# One JSON secret per owner, ``lightbulb/{env}/hermes/{owner_id}/boot`` =
+# ``{"hookToken", "gatewayToken", "bedrockBearer"}``, named by the ONE env var
+# below in a runtime's ``environmentVariables`` — never a plaintext credential
+# value. The bridge (``apps/infra/hermes/bridge/sync.py::load_boot_secrets``,
+# wired in ``apps/infra/hermes/bridge/__init__.py``) resolves it at boot with
+# the runtime's own execution role; ``core.billing.bedrock_gate_tokens``'s
+# ``_agentcore_presentable_hashes`` reads the SAME secret to drive gate-token
+# liveness. A per-credential secret-name scheme was considered and rejected —
+# there is exactly one boot-secret mechanism, not three.
+#
+# Duplicated here (not imported) from ``bedrock_gate_tokens._BOOT_SECRET_ENV``:
+# both modules treat it as a stable, external contract string shared with the
+# bridge, not an implementation detail either module owns.
+#
+# NOTE: ``ensure_runtime``/``build_runtime_env`` above still embed the plaintext
+# ``AWS_BEARER_TOKEN_BEDROCK``/``OPENCLAW_HOOK_TOKEN`` — that is the OTHER stream's
+# OpenClaw-gateway migration path (ECS -> AgentCore for an EXISTING owner), not this one.
+# The Hermes fresh-provision path (``hermes_provisioning.py``) uses this boot secret +
+# ``BOOT_SECRET_ENV_VAR`` exclusively. ``ensure_runtime``'s plaintext path is scheduled for
+# deletion at cutover (M6), not retrofitted onto the boot secret.
+BOOT_SECRET_ENV_VAR = "LIGHTBULB_SECRET_ID"
+
+
+def boot_secret_name(owner_id: str) -> str:
+    """The name of this owner's one JSON boot secret."""
+    return f"lightbulb/{_env()}/hermes/{owner_id}/boot"
+
+
+async def write_boot_secret(owner_id: str, *, hook_token: str, gateway_token: str, bedrock_bearer: str) -> str:
+    """Create or update the owner's boot secret; returns its name (the value a runtime's
+    ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret."""
+    import boto3
+
+    from core.secrets_manager import create_or_update_secret
+
+    name = boot_secret_name(owner_id)
+    value = json.dumps({"hookToken": hook_token, "gatewayToken": gateway_token, "bedrockBearer": bedrock_bearer})
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    await run_in_thread(create_or_update_secret, sm, name, value)
+    return name

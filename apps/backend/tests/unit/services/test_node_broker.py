@@ -56,6 +56,21 @@ def test_the_v3_payload_string_is_pipe_joined_in_the_locked_order():
     )
 
 
+def test_device_family_is_read_from_client_where_the_cli_node_host_puts_it():
+    # The vendored CLI's buildDeviceAuthPayloadV3 signs `client.deviceFamily` ("mac"); the
+    # Rust device client sends none. Reading it off `device` produced "...|macos|" for a
+    # frame signed as "...|macos|mac", so every real CLI connect failed bad_signature
+    # (found by the Task 30 loopback proof, 2026-09-17).
+    params = {
+        "client": {"id": "node-host", "mode": "node", "platform": "macOS", "deviceFamily": "Mac"},
+        "role": "node",
+        "scopes": [],
+        "auth": {"token": "gw-tok"},
+        "device": {"id": "did-abc", "signedAt": 1700000000000, "nonce": "nonce-xyz"},
+    }
+    assert node_broker.device_payload_v3(params, "nonce-xyz").endswith("|macos|mac")
+
+
 def test_a_real_ed25519_signature_verifies_and_a_tampered_one_does_not():
     key = Ed25519PrivateKey.generate()
     raw = key.public_key().public_bytes_raw()

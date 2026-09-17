@@ -181,6 +181,22 @@ def test_is_available_requires_both_the_api_url_and_the_hook_token(monkeypatch):
     assert provider.is_available() is True
 
 
+def test_the_envelope_timeout_outlives_the_nodes_own_kill_deadline(monkeypatch):
+    # Equal values let the backend's wait (no grace of its own) win the race against the
+    # node's kill deadline: 504 NODE_TIMEOUT + an orphaned child on the Mac instead of the
+    # node's clean {exitCode:124, timedOut:true}. Found by the Task 30 loopback proof.
+    seen = {}
+
+    def fake_invoke(command, params, timeout_ms):
+        seen.update(params=params, timeout_ms=timeout_ms)
+        return {"ok": True, "payload": {"exitCode": 0, "timedOut": False, "stdout": "", "stderr": ""}}
+
+    monkeypatch.setattr(lightbulb_node, "_invoke", fake_invoke)
+    lightbulb_node.NodeEnvironment("/tmp", 180).execute("true", timeout=30)
+    assert seen["params"]["timeoutMs"] == 30_000
+    assert seen["timeout_ms"] == 30_000 + lightbulb_node.ENVELOPE_GRACE_MS
+
+
 def test_invoke_reads_the_hook_token_from_the_process_env_not_a_turn_context_file(monkeypatch):
     """M2-R12: exec is not turn-scoped, so the bearer must come from the process env the boot
     fetch (bridge/__init__.py) writes into -- never a per-turn `.lightbulb-turn` file."""

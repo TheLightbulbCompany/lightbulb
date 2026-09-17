@@ -460,6 +460,56 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
     assert updated == {"arn": "arn:found-by-name", "image_uri": HERMES_IMAGE}
 
 
+# --- N1/M4-R39: provision_hermes_runtime gets the same freshness guard as prepare -----------
+
+
+@pytest.mark.asyncio
+async def test_provision_hermes_runtime_refuses_a_live_ecs_owner_without_migrate(monkeypatch):
+    """A service_name row is a live ECS workspace -- without migrate=True this must not create a
+    SECOND runtime and flip the row to runtime_host=agentcore/status=running out from under it."""
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"service_name": "openclaw-org_a-abc123"}),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _explode)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _explode)
+
+    with pytest.raises(ValueError, match="openclaw-org_a-abc123"):
+        await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+
+
+@pytest.mark.asyncio
+async def test_provision_hermes_runtime_migrate_true_proceeds_for_a_live_ecs_owner(monkeypatch):
+    """The M6 cutover job's sanctioned bypass: migrate=True proceeds to create the runtime even
+    though the row still carries a live ECS service_name -- the job stops that ECS service itself
+    once this reaches READY, which is not this module's job."""
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"service_name": "openclaw-org_a-abc123"}),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:aws:bedrock-agentcore:...:runtime/r1")
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(
+            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
+        ),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
+    _no_runtime_found_by_name(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
+
+    arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", migrate=True)
+    assert arn == "arn:aws:bedrock-agentcore:...:runtime/r1"
+
+
 # --- M4-R28: fenced terminal write, mirroring ecs_manager.wait_for_running -----------------
 
 

@@ -401,7 +401,9 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
         await upload_profile(owner_id, agent_id, files)
 
 
-async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> str:
+async def provision_hermes_runtime(
+    owner_id: str, *, claim_id: str, attempt_token: str | None = None, migrate: bool = False
+) -> str:
     """Create this workspace's AgentCore runtime and point its container row at it.
 
     REQUIRES ``prepare_hermes_workspace`` to have already run for this owner — it writes the boot
@@ -413,6 +415,18 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     with no AWS call and no row write. A row with the ARN but NOT yet ``running`` (a retry that
     reached the create but not the terminal write) skips straight to the READY poll instead of
     creating again (M4-R35/C1) — see the ARN-recording comment below for why that field exists.
+
+    N1/M4-R39 freshness guard: the SAME ``service_name``/``migrate`` check ``prepare_hermes_workspace``
+    already makes (see its docstring) — this function is the OTHER half of that guard. Without it, a
+    dispatch that reached here for an owner with a live ECS service would still create a runtime and
+    flip the row to ``runtime_host="agentcore"``/``status="running"`` — pointing
+    ``runtime_transport.host_for`` at a runtime whose boot secret was never written (``prepare``
+    already refused to mint it), while the ECS task keeps serving traffic underneath it. Raises
+    ``ValueError`` (not a bare ``RuntimeError``) so ``classify_provision_error`` maps it to
+    deterministic/``EXIT_DETERMINISTIC`` unconditionally, running C2's release-to-error path instead
+    of looping forever. ``migrate=True`` is the sanctioned bypass for the M6 cutover job, which calls
+    both this and ``prepare_hermes_workspace`` with ``migrate=True`` and stops the ECS service itself
+    once this reaches READY — not this module's job.
 
     ``claim_id``/``attempt_token`` fence every write here (see module docstring, M4-R28) — the
     caller (``provision_runner.run``) always holds a claim; both are threaded straight from there.
@@ -430,6 +444,17 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     arn = row.get("agentcore_runtime_arn")
     if arn and row.get("status") == "running":
         return arn
+    if row.get("service_name") and not migrate:
+        logger.info(
+            "provision_hermes_runtime: owner %s has a live ECS service (service_name=%s) and "
+            "migrate=False -- refusing to create a second runtime for it (N1/M4-R39)",
+            owner_id,
+            row.get("service_name"),
+        )
+        raise ValueError(
+            f"provision_hermes_runtime refused for owner={owner_id}: live ECS service "
+            f"{row.get('service_name')!r} present and migrate=False (N1/M4-R39)"
+        )
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
     await _write_profiles(owner_id, aip_arns)

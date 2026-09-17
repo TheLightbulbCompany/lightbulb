@@ -465,7 +465,9 @@ async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str) -> dict:
     return entry
 
 
-async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, container: dict) -> None:
+async def _build_and_upload_agent_profile(
+    *, owner_id: str, agent_id: str, container: dict, soul_md_override: str | None = None
+) -> None:
     """The Hermes-profile half of an AgentCore install: config.yaml/.env/SOUL.md
     for the freshly-registered agent.
 
@@ -484,11 +486,41 @@ async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, conta
     Uploaded (and its own ``.revision`` written) BEFORE
     ``deploy_tarball_to_profile`` runs, so the newly-minted agent has a
     complete, bootable profile even before its marketplace content lands.
+
+    ``soul_md_override`` (M6-R41): the seller's own SOUL.md text, read out of
+    the marketplace artifact by ``_install_agentcore_deploy`` -- threaded
+    straight through to ``write_profile_for_agent``'s own parameter of the
+    same name. ``None`` (no SOUL.md in the tarball) keeps the roster-derived
+    default.
     """
     from core.services.hermes_provisioning import write_profile_for_agent
 
     agent_row = await _resolve_agent_row_for_profile(owner_id, agent_id)
-    await write_profile_for_agent(owner_id, agent_row, container_row=container)
+    await write_profile_for_agent(owner_id, agent_row, container_row=container, soul_md_override=soul_md_override)
+
+
+def _read_soul_md_from_tar(tar_bytes: bytes) -> str | None:
+    """M6-R41: the seller's own ``SOUL.md``, read out of the marketplace artifact BEFORE the
+    profile writer runs -- the OpenClaw workspace's ``SOUL.md`` IS the agent's identity (the ECS
+    install path already ships it verbatim, untouched, via the buyer's EFS extract), and F3's
+    widened ``_DEPLOY_PROFILE_SKIP_NAMES`` means ``deploy_tarball_to_profile``'s own later
+    content pass now skips it -- without this, an AgentCore install would silently fall back to
+    the roster-derived identity instead of the seller's own persona/instructions.
+
+    ``None`` when the tarball is empty or carries no ``SOUL.md`` -- callers pass that straight
+    through as ``write_profile_for_agent``'s own ``soul_md_override``, whose ``None`` default
+    keeps producing the roster-derived identity, unchanged.
+    """
+    if not tar_bytes:
+        return None
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tf:
+        for member in tf.getmembers():
+            if member.isfile() and Path(member.name).name == "SOUL.md":
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    return None
+                return extracted.read().decode("utf-8", errors="replace")
+    return None
 
 
 async def _install_agentcore_deploy(
@@ -524,6 +556,16 @@ async def _install_agentcore_deploy(
     bootable profile; reversing the order could momentarily advertise
     marketplace content with no profile underneath it.
 
+    M6-R41: the profile's SOUL.md is the SELLER's own, read out of the tarball
+    (``_read_soul_md_from_tar``) and threaded into the profile write as
+    ``soul_md_override`` -- ``deploy_tarball_to_profile``'s later content pass
+    skips SOUL.md (F3/M6-R36), so without this the profile write's own
+    roster-derived default would silently win instead of the seller's actual
+    persona/instructions (the ECS install path already ships this file
+    verbatim via the buyer's EFS extract; this is the AgentCore equivalent).
+    ``None`` when the tarball carries no SOUL.md -- unchanged, roster-derived
+    identity.
+
     Rollback: only the Paperclip agent THIS call minted is torn down on
     failure — a pre-minted agent is the caller's own rollback envelope
     (mirrors every ECS caller's existing ``unwind``/``_rollback_agent``).
@@ -550,7 +592,10 @@ async def _install_agentcore_deploy(
         new_agent_id = paperclip_agent["id"]
 
     try:
-        await _build_and_upload_agent_profile(owner_id=owner_id, agent_id=new_agent_id, container=container)
+        soul_md = _read_soul_md_from_tar(tar_bytes)
+        await _build_and_upload_agent_profile(
+            owner_id=owner_id, agent_id=new_agent_id, container=container, soul_md_override=soul_md
+        )
         await deploy_tarball_to_profile(
             owner_id=owner_id, agent_id=new_agent_id, tar_bytes=tar_bytes, container=container
         )

@@ -54,13 +54,13 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   ),
 );
 
-// hermes-version.json is the promotion tag for the Hermes bridge image, same
-// pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml
-// pushes a candidate but never writes this file — a human bumps `tag` in a PR
-// to promote it. No per-env split yet because AGENTCORE_HERMES_IMAGE below is
-// dev-only until M6 (prod stays empty on purpose).
+// hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
+// same pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml pushes a
+// uniquely-tagged candidate (h-<date>-<sha7>) but never writes this file — a human bumps
+// dev.tag (then prod.tag) in a PR to promote it. prod.tag stays "" until M6.
 interface HermesVersionConfig {
-  tag: string;
+  dev: { tag: string };
+  prod: { tag: string };
   [key: string]: unknown;
 }
 
@@ -1404,6 +1404,7 @@ export class ServiceStack extends cdk.Stack {
     const currentOpenClawVersion = env.startsWith("prod")
       ? OPENCLAW_VERSION.prod
       : OPENCLAW_VERSION.dev;
+    const currentHermesTag = env === "prod" ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1441,13 +1442,13 @@ export class ServiceStack extends cdk.Stack {
         env === "dev"
           ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v7`
           : "",
-      // The Hermes bridge image a workspace's AgentCore runtime runs. DEV ONLY: empty in
-      // prod makes provision_hermes_runtime refuse, so nothing moves a prod workspace
-      // until it is promoted.
-      AGENTCORE_HERMES_IMAGE:
-        env === "dev"
-          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${HERMES_VERSION.tag}`
-          : "",
+      // The Hermes bridge image a workspace's AgentCore runtime runs. Per-env promotion
+      // tag from hermes-version.json#dev.tag/#prod.tag (M4-R34). Empty tag (prod today)
+      // makes provision_hermes_runtime refuse, so nothing moves a prod workspace until a
+      // human flips prod.tag to an already-pushed h-<date>-<sha7> build.
+      AGENTCORE_HERMES_IMAGE: currentHermesTag
+        ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${currentHermesTag}`
+        : "",
       // Flipped to "true" per environment only when the milestone's dev proof has landed.
       HERMES_RUNTIME: "false",
       WS_MANAGEMENT_API_URL: props.managementApiUrl,

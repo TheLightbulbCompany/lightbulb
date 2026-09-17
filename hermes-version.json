@@ -1,9 +1,14 @@
 {
-  "tag": "h-v1",
   "base": {
     "image": "nousresearch/hermes-agent@sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103",
     "version": "0.21.3",
     "pulled": "2026-09-16"
   },
-  "notes": "Initial production Hermes-on-AgentCore image pin (Task 20, M4). Built by .github/workflows/build-hermes-image.yml from apps/infra/hermes/Dockerfile; base pinned by digest (M4-R31) to `base.image` above -- nousresearch/hermes-agent publishes no numbered tags upstream, only date-stamped vYYYY.M.D tags plus latest/main, so the brief's `:0.21.3` tag placeholder does not exist. `base.version` is what that digest reports via importlib.metadata.version('hermes-agent'); `base.pulled` is when it was pulled as `latest` and digest-pinned. This JSON is the promotion RECORD; the Dockerfile's FROM line is what actually builds -- keep them in lockstep by hand. dev.tag equivalent: this file has no per-env split yet (single `tag` field) because AGENTCORE_HERMES_IMAGE is dev-only until M6 -- service-stack.ts reads `tag` for dev and leaves prod empty. Bump `tag` here in a PR (+ a CDK deploy) to promote a new build; the workflow itself never writes this file."
+  "dev": {
+    "tag": "h-v1"
+  },
+  "prod": {
+    "tag": ""
+  },
+  "notes": "M4-R34: dev.tag/prod.tag are the per-env promotion gate, exactly like openclaw-version.json's fields of the same name. .github/workflows/build-hermes-image.yml pushes ONE uniquely-tagged candidate per build (h-<YYYY.M.D>-<sha7>, e.g. h-2026.9.17-abc1234) and never writes to this file -- a human lands a PR flipping dev.tag (then prod.tag, after dev validation) to an already-pushed tag; service-stack.ts reads HERMES_VERSION.dev.tag / HERMES_VERSION.prod.tag straight into AGENTCORE_HERMES_IMAGE, empty -> \"\" env var. prod.tag stays \"\" until M6. IMPORTANT: dev.tag's current value `h-v1` is a PLACEHOLDER CARRIED FROM TASK 20 AND DOES NOT EXIST IN ECR -- the workflow has never actually run, so no h-<date>-<sha> tag has been pushed yet, and the spike runtime deployed today is still on the manually-pushed `spike-m1-rc4` tag. The FIRST real run of build-hermes-image.yml produces the first genuine h-<date>-<sha7> tag (printed in its job summary); dev.tag must be flipped to that real tag in a PR BEFORE any provisioning path reads AGENTCORE_HERMES_IMAGE, or CDK will hand containers a tag ECR has never held. Also note: the Dockerfile's `RUN uv pip install --upgrade \"anthropic>=1.0\"` is an unpinned floating lower-bound (mirrors Dockerfile.spike as-is) -- it re-resolves to whatever the latest anthropic release is at build time, so two builds on the same base digest can still pick up different anthropic versions. Left unpinned deliberately for this task (matches the proven spike); a follow-up should pin an exact version once the SDK's bearer-mode API stabilizes."
 }

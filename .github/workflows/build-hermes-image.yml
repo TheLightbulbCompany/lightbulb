@@ -1,9 +1,15 @@
 name: build-hermes-image
 
 # Hermes bridge image (M4 Task 20). Mirrors build-openclaw-image.yml / build-paperclip-image.yml:
-# OIDC role, ECR login, path-filtered, and it NEVER writes the version pin — a human lands the
-# hermes-version.json tag bump (which service-stack.ts reads for the dev container env), same
-# manual promotion gate the OpenClaw and Paperclip images have.
+# OIDC role, ECR login, path-filtered.
+#
+# M4-R34: this workflow pushes exactly ONE tag per build, unique to the commit
+# (h-<YYYY.M.D>-<sha7>, mirroring OpenClaw's <date>-isol8.N-<sha> style) — never a static
+# pin value. A static pin re-pushed on every merge either 409s under ECR tag immutability
+# (build-openclaw-image.yml preflights exactly that failure mode) or, without immutability,
+# silently re-points whatever the dev container is running with no human gate at all. The
+# promotion gate lives entirely in hermes-version.json's dev.tag/prod.tag (read by
+# service-stack.ts): a human copies the tag this job's summary prints and lands it in a PR.
 concurrency:
   group: build-hermes-image
   cancel-in-progress: false
@@ -33,13 +39,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Read version metadata
+      - name: Compute the unique build tag
         id: meta
         run: |
+          # h-<YYYY.M.D>-<sha7>, e.g. h-2026.9.17-abc1234. No leading zeros on month/day
+          # (matches the openclaw-version.json dated-tag convention). Sha-derived, not a
+          # pin: this tag has never existed in ECR before this push, so there is nothing
+          # to collide with under tag immutability, and it never overwrites a running
+          # container's image.
+          DATE=$(date -u +%Y.%-m.%-d)
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          PIN_TAG=$(node -p "require('./hermes-version.json').tag")
-          echo "sha_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "pin_tag=${PIN_TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag=h-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -68,12 +78,7 @@ jobs:
           file: apps/infra/hermes/Dockerfile
           platforms: linux/arm64
           push: true
-          # Two tags per build (M4-R30): the short sha for traceability, and the
-          # hermes-version.json#tag candidate a human promotes by editing that file
-          # (never this workflow) in a PR + CDK deploy.
-          tags: |
-            ${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.sha_tag }}
-            ${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.pin_tag }}
+          tags: ${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -81,7 +86,6 @@ jobs:
         run: |
           echo "## Built Hermes image" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.pin_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.sha_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Bump \`hermes-version.json#tag\` in a PR to change what the next dev CDK deploy pins." >> "$GITHUB_STEP_SUMMARY"
+          echo "This tag was never written anywhere else — copy it into \`hermes-version.json\`'s \`dev.tag\` (then, after dev validation, \`prod.tag\`) in a PR to promote it." >> "$GITHUB_STEP_SUMMARY"

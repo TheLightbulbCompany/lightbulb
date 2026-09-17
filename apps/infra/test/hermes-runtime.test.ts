@@ -10,9 +10,9 @@ import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
 
-// hermes-version.json is the single source of truth for the dev promotion tag
-// (M4-R30), mirroring how openclaw-version.json's dev.tag/prod.tag are read.
-const HERMES_VERSION: { tag: string } = JSON.parse(
+// hermes-version.json is the single source of truth for the per-env promotion tag
+// (M4-R34), mirroring how openclaw-version.json's dev.tag/prod.tag are read.
+const HERMES_VERSION: { dev: { tag: string }; prod: { tag: string } } = JSON.parse(
   readFileSync(join(__dirname, "../../../hermes-version.json"), "utf8"),
 );
 
@@ -161,10 +161,11 @@ describe("hermes runtime wiring", () => {
   const dev = buildStacks("dev");
   const prod = buildStacks("prod");
 
-  it("gives dev a Hermes image pinned to hermes-version.json's tag, and leaves prod empty so a promotion is deliberate", () => {
+  it("gives dev a Hermes image pinned to hermes-version.json's dev.tag, and leaves prod empty (prod.tag is unset) so a promotion is deliberate", () => {
     expect(backendContainerEnv(dev.serviceTemplate, "dev").AGENTCORE_HERMES_IMAGE).toBe(
-      `877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:${HERMES_VERSION.tag}`,
+      `877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:${HERMES_VERSION.dev.tag}`,
     );
+    expect(HERMES_VERSION.prod.tag).toBe("");
     expect(backendContainerEnv(prod.serviceTemplate, "prod").AGENTCORE_HERMES_IMAGE).toBe("");
   });
 

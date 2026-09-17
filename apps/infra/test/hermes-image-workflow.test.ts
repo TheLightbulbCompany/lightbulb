@@ -41,11 +41,24 @@ describe("build-hermes-image workflow", () => {
   it("pushes to the Hermes ECR repo and never writes the version pin", () => {
     expect(workflow).toContain("lightbulb/hermes-agent-arm64");
     expect(workflow).not.toContain("AGENTCORE_HERMES_IMAGE");
+    expect(workflow).not.toMatch(/>\s*\.?\/?hermes-version\.json/);
   });
 
-  it("pushes both the short-sha tag and the hermes-version.json promotion tag (M4-R30)", () => {
-    expect(workflow).toContain("hermes-version.json");
-    expect(workflow).toMatch(/sha-\$\{?SHORT_SHA\}?/);
+  it("pushes exactly one sha-derived tag per build, and the push target never references the JSON pin (M4-R34)", () => {
+    // Sha-derived: a static tag re-pushed every build either 409s under ECR tag
+    // immutability or silently re-points the dev image with no human gate.
+    expect(workflow).toContain("git rev-parse --short=7 HEAD");
+    expect(workflow).toMatch(/tag=h-\$\{DATE\}-\$\{SHORT_SHA\}/);
+
+    // The `tags:` line under the build-push-action step is the actual push target.
+    // It must be built entirely from this job's own computed output, never from
+    // hermes-version.json (that file is the promotion record a human edits after
+    // the fact, not something this workflow reads or writes).
+    const tagsLine = workflow.match(/^\s*tags:.*$/m)?.[0] ?? "";
+    expect(tagsLine).not.toBe("");
+    expect(tagsLine).toContain("steps.meta.outputs.tag");
+    expect(tagsLine).not.toContain("hermes-version.json");
+    expect(tagsLine).not.toMatch(/\.dev\.tag|\.prod\.tag/);
   });
 
   it("reuses the same OIDC builder role as the OpenClaw/Paperclip image builds", () => {

@@ -47,8 +47,66 @@ from typing import Final
 
 from core.config import apex_domain, settings, url_host
 from core.crypto.operator_device import generate_operator_device, private_key_pem
+from core.repositories import container_repo
 
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
+
+# Paperclip's own first-party webhook adapter (fork docs/adapters/http.md at
+# v2026.813-isol8.6, confirmed against cli/src/adapters/registry.ts's
+# `httpCLIAdapter` / `adaptersByType` at the same tag): Paperclip POSTs the run
+# to a URL and the agent calls back to the Paperclip API. No fork patch, no
+# operator socket -- which is the whole point, because a Hermes microVM has no
+# gateway for an operator to connect to. The same tag also ships built-in
+# `hermes_local`/`hermes_gateway` adapter types (a "Hermes API server" the
+# fork dials directly), but that would mean handing Paperclip a door straight
+# into the bridge/runtime outside our backend's hook-token boundary -- the
+# spec's own shape (§4.9) is "a backend door that invokes the bridge", i.e.
+# this `http` adapter POSTing into OUR route, not a native Hermes adapter
+# bypassing it.
+HTTP_ADAPTER_TYPE: Final[str] = "http"
+
+# Generous ceiling for a Paperclip-driven run reaching us over the `http`
+# adapter's webhook -- these are substantive single-run wakes, not a
+# heartbeat ping. Mirrors the reasoning behind AGENT_RUN_TIMEOUT_SEC below,
+# just for the new adapter type.
+PAPERCLIP_RUN_TIMEOUT_SEC: Final[int] = 900
+
+
+async def adapter_type_for(owner_id: str, *, runtime_host: str | None = None) -> str:
+    """Which Paperclip adapter type carries this owner's agent runs.
+
+    ``runtime_host``: an explicit hint from a caller that already has it (e.g. from a
+    container row it fetched for another reason, such as the hook token) -- wins outright,
+    no DB read. Otherwise this reads the owner's container row itself: a MISSING row is the
+    pre-migration ECS default (same absent/unknown-is-ECS convention as
+    ``runtime_transport.host_for``), but a read that RAISES PROPAGATES. A seed-time exception
+    on a DynamoDB blip is the right failure to surface -- silently mis-assigning the wrong
+    adapter (and thus wiring an agent nobody can reach) is not.
+    """
+    host = runtime_host
+    if host is None:
+        container = await container_repo.get_by_owner_id(owner_id)
+        host = (container or {}).get("runtime_host")
+    return HTTP_ADAPTER_TYPE if host == "agentcore" else OPENCLAW_GATEWAY_TYPE
+
+
+def build_http_adapter_config(owner_id: str, agent_id: str, *, hook_token: str) -> dict:
+    """adapterConfig for the ``http`` adapter type.
+
+    Paperclip POSTs its run-trigger webhook to our own
+    ``POST /internal/paperclip/runs/{owner_id}`` door (hook-token authed, same
+    boundary every other internal callback in ``routers/messaging.py`` uses),
+    which invokes the bridge with ``eventKind: "paperclip_run"`` and answers
+    with the bridge's own response -- the "agent calls back to the Paperclip
+    API" leg from the fork's docs is unchanged, it just starts here instead of
+    inside a container.
+    """
+    return {
+        "url": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/internal/paperclip/runs/{owner_id}",
+        "headers": {"Authorization": f"Bearer {hook_token}", "X-Lightbulb-Agent": agent_id},
+        "timeoutSec": PAPERCLIP_RUN_TIMEOUT_SEC,
+    }
+
 
 # clientId the synthesized adapter URL advertises so the gateway relay's
 # upgrade auth (core/services/machine_auth.py) admits it as an operator

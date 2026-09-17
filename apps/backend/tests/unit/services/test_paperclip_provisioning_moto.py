@@ -46,6 +46,19 @@ def _service_token_key(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _ecs_default_container(monkeypatch):
+    """provision_org's starter-seed loop picks its adapter type via
+    paperclip_adapter_config.adapter_type_for, which reads the owner's container row --
+    a DIFFERENT table than this file's moto-backed paperclip-companies fixture, so an
+    unmocked call 404s (ResourceNotFoundException). A MISSING row is the correct
+    pre-migration ECS default (see adapter_type_for's docstring), not a table this
+    provisioning-orchestrator suite needs to model."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
 def _stub_admin_session(monkeypatch):
     """Stub get_admin_session_cookie to return a fake cookie for all tests.
 

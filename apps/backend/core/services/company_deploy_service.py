@@ -49,26 +49,20 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import service_token
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import get_catalog_service
 from core.services.company_agent_materializer import materialize_agent
 from core.services.company_package import DeployPlan, PlannedAgent, parse_deploy_plan
 from core.services.config_patcher import apply_deploy_aux_mutations
-from core.services.paperclip_adapter_config import (
-    OPENCLAW_GATEWAY_TYPE,
-    synthesize_openclaw_adapter,
-)
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_agent_lifecycle import delete_paperclip_for_marketplace
+from core.services.paperclip_agent_lifecycle import delete_paperclip_for_marketplace, resolve_agent_adapter
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
     is_seeded_agent,
     pair_with_openclaw,
     resolve_company_id_for_owner,
 )
-from core.services.paperclip_provisioning import _ws_gateway_url
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +77,6 @@ COMPANY_IMPORT_AGENT_BUDGET_CENTS = 1000
 # monkeypatch the security-critical wiring — admin session, adapter synthesis,
 # pairing — without the full AWS / Paperclip stack).
 # ---------------------------------------------------------------------------
-
-
-def _gateway_url() -> str:
-    """WS gateway URL for the running environment (allowlisted by the adapter)."""
-    return _ws_gateway_url(settings.ENVIRONMENT or "")
 
 
 async def _open_admin_session() -> tuple[httpx.AsyncClient, PaperclipAdminClient, str]:
@@ -298,11 +287,11 @@ async def _run_company_deploy(
             reports_to = _resolve_reports_to(planned, plan, friday_id, slug_to_id)
 
             # Adapter is ALWAYS synthesized server-side — a PlannedAgent carries
-            # no adapter, so nothing package-supplied can reach Paperclip.
-            adapter_config = synthesize_openclaw_adapter(
-                gateway_url=_gateway_url(),
-                service_token=service_token.mint(owner_id),
-                user_id=owner_id,
+            # no adapter, so nothing package-supplied can reach Paperclip. Picked by the
+            # owner's runtime_host (ECS -> openclaw_gateway, AgentCore -> the fork's http
+            # adapter) via the one shared resolver every Paperclip agent-creation door uses.
+            adapter_type, adapter_config = await resolve_agent_adapter(
+                owner_id, agent_label=planned.name, gateway_user_id=owner_id
             )
             # Deliberately omit agent-create idempotency here. The owner-wide
             # deploy claim serializes whole runs, but nothing REPLAYS a
@@ -314,7 +303,7 @@ async def _run_company_deploy(
                 company_id=company_id,
                 name=planned.name,
                 role=planned.role,
-                adapter_type=OPENCLAW_GATEWAY_TYPE,
+                adapter_type=adapter_type,
                 adapter_config=adapter_config,
                 title=planned.title,
                 capabilities=planned.capabilities,

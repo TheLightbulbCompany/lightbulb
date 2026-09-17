@@ -28,11 +28,14 @@ from __future__ import annotations
 import io
 import tarfile
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.services import company_deploy_service as svc
+from core.services import service_token as service_token_mod
 from core.services.company_package import DeployPlan, PlannedAgent, PlannedRoutine
+from core.services.paperclip_agent_lifecycle import resolve_agent_adapter as real_resolve_agent_adapter
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "companies" / "gstack"
 
@@ -169,17 +172,15 @@ def _install(monkeypatch, h: Harness, plan=None):
 
     monkeypatch.setattr(svc, "resolve_company_id_for_owner", fake_resolve_company)
 
-    # Token + adapter synthesis (server-side).
-    monkeypatch.setattr(svc.service_token, "mint", lambda owner_id: "svc_tok")
-    monkeypatch.setattr(
-        svc,
-        "synthesize_openclaw_adapter",
-        lambda *, gateway_url, service_token, user_id: {
-            "url": gateway_url,
-            "authToken": service_token,
-            "sessionKey": user_id,
-        },
-    )
+    # Adapter selection + synthesis (server-side) -- faked at the ONE shared seam
+    # (resolve_agent_adapter) every Paperclip agent-creation door now calls through,
+    # rather than its two internal pieces (adapter_type_for's container-row read +
+    # synthesize_openclaw_adapter). Byte-identical to today's ECS/openclaw_gateway shape;
+    # the dedicated adapter-selection tests below exercise the real resolver.
+    async def fake_resolve_adapter(owner_id, *, agent_label, gateway_user_id):
+        return "openclaw_gateway", {"url": "wss://fake", "authToken": "svc_tok", "sessionKey": gateway_user_id}
+
+    monkeypatch.setattr(svc, "resolve_agent_adapter", fake_resolve_adapter)
 
     # Pairing + materialize.
     async def fake_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
@@ -370,6 +371,52 @@ async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
         assert call["adapter_type"] == "openclaw_gateway"
         assert call["budget_monthly_cents"] == 1000
         assert call["adapter_config"]["authToken"] == "svc_tok"
+
+
+@pytest.mark.asyncio
+async def test_ecs_owner_adapter_selection_is_byte_identical_via_the_real_resolver(monkeypatch):
+    """Same real ``resolve_agent_adapter`` the AgentCore test below exercises, but with no
+    container row -- the pre-migration ECS default, byte-identical to what the harness's own
+    fake (above) already asserts."""
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+    monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
+    monkeypatch.setattr(svc.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(service_token_mod, "mint", lambda owner_id: "svc_tok")
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls
+    for call in h.admin.create_calls:
+        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["adapter_config"]["authToken"] == "svc_tok"
+
+
+@pytest.mark.asyncio
+async def test_agentcore_owner_gets_the_http_adapter_via_the_real_resolver(monkeypatch):
+    """The one shared resolver (paperclip_agent_lifecycle.resolve_agent_adapter) picks the
+    adapter type from the owner's ACTUAL container row -- an AgentCore-hosted owner's
+    company-deploy agents get the fork's http adapter, not a device-paired openclaw_gateway
+    one that has no gateway to pair with."""
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+    monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
+    monkeypatch.setattr(
+        svc.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"runtime_host": "agentcore", "hook_token": "hook_abc"}),
+    )
+    monkeypatch.setattr(svc.settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls
+    for call in h.admin.create_calls:
+        assert call["adapter_type"] == "http"
+        assert call["adapter_config"]["headers"]["Authorization"] == "Bearer hook_abc"
+        assert call["adapter_config"]["url"] == f"https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/{OWNER}"
 
 
 @pytest.mark.asyncio

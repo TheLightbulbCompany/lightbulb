@@ -15,6 +15,17 @@ from core.services.paperclip_agent_lifecycle import (  # noqa: E402
 from core.services.paperclip_meta import PaperclipMeta  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _ecs_default_container(monkeypatch):
+    """Both create paths pick their adapter type via
+    paperclip_agent_lifecycle.resolve_agent_adapter -> adapter_type_for, which reads the
+    owner's container row. A MISSING row is the correct pre-migration ECS default; these
+    meta-kwarg-threading tests don't model a container table."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
 async def test_create_paperclip_for_chat_forwards_meta_fields():
     """When meta is supplied, create_paperclip_for_chat passes

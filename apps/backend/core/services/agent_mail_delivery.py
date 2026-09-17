@@ -36,6 +36,7 @@ from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.repositories import container_repo
 from core.services import runtime_transport
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.trial_cap import trial_block_reason
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,47 @@ async def deliver_to_agent(
             return "woken"
 
         hook_token = (container or {}).get("hook_token") or ""
+        headers = {"Authorization": f"Bearer {hook_token}"}
+
+        if runtime_transport.host_for(container or {}) == "agentcore":
+            # Hermes has no OpenClaw hooks ingress; mail enters on the one inbound door the
+            # bridge serves, tagged with its own eventKind. `deliver:false` goes away with the
+            # channel-outbound layer that made it necessary -- the bridge has none.
+            response = await runtime_transport.request(
+                container,
+                f"/plugins/lightbulb-channel/inbound/{agent_id}",
+                ip=ip,
+                json_body={
+                    "version": 1,
+                    "eventId": idempotency_key,
+                    "eventKind": "agent_mail",
+                    "targetAgentId": agent_id,
+                    # Omitted entirely (never sent as a literal `null`) when there's no
+                    # usable Message-ID to derive one from -- same idiom as the ECS branch
+                    # below, and what a well-behaved JSON producer does for "no value" rather
+                    # than asserting a null.
+                    **({"sessionKey": session_key} if session_key else {}),
+                    "message": {"text": message},
+                },
+                headers=headers,
+                # AgentCore holds the invoke through a cold microVM start (~90s budget,
+                # same as the canonical ingress caller in openclaw_work._post) -- a mail
+                # delivery to a parked workspace must outlast that, not the old 10s ECS-era
+                # budget.
+                timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+            )
+            # 202 accepted and 200 replayed (idempotent replay of the same eventId) both mean
+            # the message reached the agent.
+            if not 200 <= response.status_code < 300:
+                logger.warning(
+                    "agent_mail_delivery failed owner=%s agent=%s err=agentcore inbound returned %s",
+                    owner_id,
+                    agent_id,
+                    response.status_code,
+                )
+                return "error"
+            return "delivered"
+
         target = f"http://{ip}:{GATEWAY_PORT}/hooks/agent"
         body = {
             "message": message,
@@ -108,33 +150,6 @@ async def deliver_to_agent(
             # working one. Opting out is what this field exists for.
             "deliver": False,
         }
-        headers = {"Authorization": f"Bearer {hook_token}"}
-
-        if runtime_transport.host_for(container or {}) == "agentcore":
-            response = await runtime_transport.request(
-                container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
-            )
-            # Same pre-flag backward compatibility as the ECS branch below.
-            if response.status_code == 400 and session_key:
-                logger.info(
-                    "agent_mail_delivery: container rejected sessionKey (pre-flag config), "
-                    "retrying unthreaded owner=%s agent=%s",
-                    owner_id,
-                    agent_id,
-                )
-                body.pop("sessionKey", None)
-                response = await runtime_transport.request(
-                    container, "/hooks/agent", ip=ip, json_body=body, headers=headers, timeout_s=10.0
-                )
-            if not 200 <= response.status_code < 300:
-                logger.warning(
-                    "agent_mail_delivery failed owner=%s agent=%s err=agentcore hook returned %s",
-                    owner_id,
-                    agent_id,
-                    response.status_code,
-                )
-                return "error"
-            return "delivered"
 
         async with _client_factory() as client:
             response = await client.post(target, json=body, headers=headers)

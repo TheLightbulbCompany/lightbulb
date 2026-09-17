@@ -25,6 +25,7 @@ from core.services import local_sessions
 from core.services import local_session_grants
 from core.services import runtime_transport
 from core.services.live_events import get_live_event_publisher
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.messaging import (
     AbortRunResponse,
     AgentMessageReceiptResponse,
@@ -45,6 +46,7 @@ from core.services.messaging import (
     RoomDetail,
     RoomListResponse,
     MessageAttachment,
+    PaperclipRunRequest,
     RunEventRequest,
     RunEventResponse,
     RunStatusResponse,
@@ -593,3 +595,57 @@ async def post_run_event(owner_id: str, body: RunEventRequest, request: Request)
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
+
+
+@router.get("/internal/messaging/attachments/{owner_id}/{room_id}/{attachment_id}")
+async def get_internal_attachment(owner_id: str, room_id: str, attachment_id: str, request: Request):
+    """Hook-token twin of ``get_room_attachment`` (Clerk-authed, above) for the bridge's
+    ``sync.materialize_attachments`` -- a Hermes microVM has no EFS to read attachments from
+    directly, so it fetches them over this door instead (Task 25, spec §5 "Ingress")."""
+    await _require_hook_token(owner_id, request)
+    attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
+    return Response(content=data, media_type=attachment.content_type)
+
+
+@router.post("/internal/paperclip/runs/{owner_id}")
+async def post_paperclip_run(owner_id: str, body: PaperclipRunRequest, request: Request):
+    """Paperclip's ``http`` adapter (``paperclip_adapter_config.HTTP_ADAPTER_TYPE``) posts a
+    run trigger here instead of dialing an operator gateway socket -- Hermes has none for it to
+    connect to. This door re-shapes the fork's own webhook body (fork docs/adapters/http.md:
+    ``{runId, agentId, companyId, context:{taskId, wakeReason, commentId}}``) into the bridge's
+    inbound ingress envelope, tags it ``eventKind: "paperclip_run"``, and returns whatever the
+    bridge answered (its ``202 accepted`` is what Paperclip's adapter captures as the run
+    result; the agent's actual output still comes back over Paperclip's own callback API,
+    unchanged from every other adapter). ``body`` is a typed model (not a hand-parsed dict) so
+    a malformed request 422s instead of 500ing.
+    """
+    container = await _require_hook_token(owner_id, request)
+    context = body.context
+    wake_reason = (context.wake_reason if context else "") or ""
+    task_id = (context.task_id if context else "") or ""
+    text = wake_reason or (f"Paperclip task {task_id}" if task_id else "Paperclip triggered a run.")
+    try:
+        response = await runtime_transport.request(
+            container,
+            f"/plugins/lightbulb-channel/inbound/{body.agent_id}",
+            json_body={
+                "version": 1,
+                "eventId": body.run_id,
+                "eventKind": "paperclip_run",
+                "targetAgentId": body.agent_id,
+                "sessionKey": f"agent:{body.agent_id}:paperclip:{body.run_id}",
+                "message": {"text": text},
+            },
+            headers={"Authorization": f"Bearer {(container or {}).get('hook_token') or ''}"},
+            # AgentCore holds the invoke through a cold microVM start -- same ~90s budget as
+            # the canonical ingress caller (openclaw_work._post); a Paperclip wake can hit a
+            # parked workspace exactly like a room message can.
+            timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+        )
+    except httpx.HTTPError as exc:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not reach the runtime.", retryable=True, retry_after=3) from exc
+    return Response(
+        content=response.text,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+    )

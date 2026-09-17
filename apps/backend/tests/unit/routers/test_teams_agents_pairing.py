@@ -20,6 +20,19 @@ os.environ.setdefault(
 os.environ.setdefault("PAPERCLIP_SERVICE_TOKEN_KEY", "test-key-not-used")
 
 
+@pytest.fixture(autouse=True)
+def _ecs_default_container(monkeypatch):
+    """Every test in this file exercises the ECS/openclaw_gateway path.
+    ``create_agent`` now picks its adapter type via
+    ``paperclip_agent_lifecycle.resolve_agent_adapter``, which reads the owner's
+    container row (``adapter_type_for``) -- a row that doesn't exist under test. A
+    MISSING row is the correct ECS default (see that function's docstring), not a
+    real DynamoDB call, so this stands in for "no container row yet" everywhere."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
 async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypatch):
     """After Paperclip create_agent succeeds, the route calls
@@ -256,17 +269,19 @@ async def test_teams_create_agent_mints_service_token_with_owner_id(monkeypatch)
     from routers.teams.agents import create_agent
     from routers.teams.schemas import CreateAgentBody
 
-    # Capture the value passed to service_token.mint().
+    # create_agent no longer mints/synthesizes inline -- both now happen inside the shared
+    # paperclip_agent_lifecycle.resolve_agent_adapter (openclaw_gateway branch), so that's
+    # where the patches now go.
     mint_mock = MagicMock(return_value="svc.tok.minted-for-org")
     monkeypatch.setattr(
-        "routers.teams.agents.service_token.mint",
+        "core.services.paperclip_agent_lifecycle.service_token.mint",
         mint_mock,
     )
     # Capture the synthesized adapter config so we can confirm the minted
     # token threaded through.
     synth_mock = MagicMock(return_value={"authToken": "svc.tok.minted-for-org"})
     monkeypatch.setattr(
-        "routers.teams.agents.synthesize_openclaw_adapter",
+        "core.services.paperclip_agent_lifecycle.synthesize_openclaw_adapter",
         synth_mock,
     )
 
@@ -312,11 +327,11 @@ async def test_teams_create_agent_mints_with_user_id_for_personal_owner(monkeypa
 
     mint_mock = MagicMock(return_value="svc.tok.minted-for-personal")
     monkeypatch.setattr(
-        "routers.teams.agents.service_token.mint",
+        "core.services.paperclip_agent_lifecycle.service_token.mint",
         mint_mock,
     )
     monkeypatch.setattr(
-        "routers.teams.agents.synthesize_openclaw_adapter",
+        "core.services.paperclip_agent_lifecycle.synthesize_openclaw_adapter",
         MagicMock(return_value={"authToken": "svc.tok.minted-for-personal"}),
     )
     monkeypatch.setattr(

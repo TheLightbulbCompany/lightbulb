@@ -1,6 +1,7 @@
 # Mobile visual refresh: depth, size, and the dark-mode question
 
-**Status:** PROPOSED — awaiting owner review. No implementation until approved.
+**Status:** DECISION TAKEN 2026-09-17 (§3: depth + dark mode + gradients +
+type scale, all four). No implementation until the plan is approved.
 **Date:** 2026-09-17
 **Scope:** the visual layer of the Expo iOS app (`apps/mobile/`).
 **Out of scope:** mobile file attachments (owner deferred), new features, the
@@ -63,18 +64,38 @@ what a literal reading of "add gradients" would mean:
 
 There are no gradients anywhere in the system today, by design.
 
-Three readings of the request, and the owner must pick:
+Three readings of the request:
 
 | Reading | What ships | Cost |
 |---|---|---|
-| **A. Depth, not gradients** *(recommended)* | port the web's plane ladder — genuinely distinct surface steps, so the list, the chrome and the message pane separate | no brand-manual change; matches what the web already proved |
+| **A. Depth, not gradients** | port the web's plane ladder — genuinely distinct surface steps, so the list, the chrome and the message pane separate | no brand-manual change; matches what the web already proved |
 | **B. Dark mode** | add the `.dark` counterpart to mobile, keyed off `useColorScheme` | the references are all dark; larger job; the web tokens already exist to copy |
-| **C. Literal gradients** | decorative gradient fills in the chrome | **requires the owner to amend the Brand Identity Manual.** Not something to do quietly |
+| **C. Literal gradients** | decorative gradient fills in the chrome | **requires amending the Brand Identity Manual** |
 
-**Recommendation: A, then B.** A alone likely resolves the complaint, because
-A is exactly what fixed it on web. B is the bigger win against those specific
-screenshots. C should not happen without the owner explicitly changing the
-brand rules, and is not included below.
+**RULED 2026-09-17: all three, plus the type-scale bump.** The owner was shown
+the brand-manual consequence of C and chose it anyway. That is a legitimate
+call and it is recorded here so nobody "fixes" it back later — but it carries
+two obligations that are not optional:
+
+1. **The Brand Identity Manual must actually be amended.** Right now
+   `theme.ts` and `globals.css` both encode "no large decorative fills" as a
+   rule with reasons attached, and `src/__tests__/brandTokens.test.ts` plus
+   `scripts/brand-tokens-scan.mjs` enforce the token discipline in CI. Adding
+   gradients without changing the stated rule leaves the codebase asserting one
+   thing and rendering another, and the next person to read the manual will
+   revert it in good faith. **The manual change is part of the work, not a
+   follow-up.**
+2. **Gradients must not be mobile-only.** `theme.ts`'s entire premise is that
+   it mirrors `globals.css` one-for-one, and the web theme spec explicitly
+   warned that divergence "gets worse" if theme work covers only one surface. A
+   gradient layer invented for mobile alone re-creates exactly the drift that
+   spec was written to stop. Define it once, in the shared vocabulary, even if
+   mobile is the only surface that consumes it at first.
+
+**Sequencing recommendation stands even so: A and the type bump first.** They
+are the cheapest and are what actually fixed this complaint on web — shipping
+them first tells us how much of the problem was ever about gradients. B and C
+follow. Do not start with C.
 
 ## 4. Design — what actually changes
 
@@ -155,8 +176,14 @@ conceptually aligned; do not design a third pattern.
 
 ## 8. Open questions for the owner
 
-1. **A, B, or C in §3?** This is the decision the rest depends on.
-2. Is dark mode actually what you are asking for? Every reference you sent is
-   dark and our app cannot do it.
-3. How large is "big enough" for text — is there a screen you can point at and
-   say "this size"? A reference beats a number.
+§3 is settled — all four. Still open:
+
+1. How large is "big enough" for text? A reference beats a number: point at a
+   screen and say "this size." Without one, the type bump is a guess, and a
+   guess that lands wrong costs another round trip through `theme.ts`'s ~100
+   call sites.
+2. Where should gradients actually appear? "In the chrome" is not specific
+   enough to build. Naming two or three surfaces (the sidebar? the header? the
+   active row?) is enough.
+3. Does the Brand Identity Manual amendment need anyone else's sign-off, or is
+   this decision sufficient?

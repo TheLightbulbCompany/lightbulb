@@ -1,6 +1,7 @@
 # First run: a better seed, connector widgets, and a context dump
 
-**Status:** PROPOSED — awaiting owner review. No implementation until approved.
+**Status:** DECISIONS TAKEN 2026-09-17 (§2 and §4.3 below). Remaining open
+questions in §6. No implementation until the plan is approved.
 **Date:** 2026-09-17
 **Scope:** what a brand-new owner sees the first time they open Lightbulb.
 **Out of scope:** the mobile visual refresh, sidebar IA, tool-trace rendering.
@@ -45,9 +46,10 @@ owner to rule on:
 > pass. The context dump is the *low-trust* alternative that gets Lightbulb
 > useful without any OAuth at all.
 
-If the owner disagrees and wants connectors to be a prominent required-feeling
-step, say so — it is a legitimate call, but it should be made knowingly,
-because it reverses a documented position.
+**RULED 2026-09-17: offered, never required.** The owner was shown the July
+position and chose to keep it intact — connector tiles are an accelerant, not a
+gate, and nothing in the first run blocks on OAuth. The July doc's thesis
+survives; this spec only adds a door for the user who already wants it.
 
 ## 3. What exists today
 
@@ -139,24 +141,48 @@ handles upload, type validation and size caps
 (`POST /messaging/rooms/{room_id}/attachments`, 20 MiB non-image,
 `MESSAGE_ATTACHMENT_ACCEPT`) — reuse it rather than building a second uploader.
 
-**Destination — this is the real design question.** Three options:
+**Destination — DECIDED 2026-09-17.** The owner's requirement: *"having it just
+like how Claude does it: you store it somewhere and can edit it, but it updates
+as it learns more about you."*
 
-| Option | Where it lands | Trade-off |
-|---|---|---|
-| **A. Agent memory** | the workspace's persistent memory | every agent sees it on every turn forever; risks polluting context with a wall of stale text |
-| **B. A workspace document** | staged like `BRIEF.md` | inspectable and editable by the owner; agents read it when relevant rather than always |
-| **C. First-message capture** | fed through the existing first-message → goal/project → `BRIEF.md` path | zero new machinery; but that path is built for a couple of sentences, not a 40 KB dump |
+**That store already exists. It is `memories/USER.md`.**
 
-**Recommendation: B, with C's summarisation step.** Store the raw dump as an
-owner-visible document, and run it once through the CEO to produce the same
-goal/project/`BRIEF.md` artifacts the first message would have produced. The
-owner keeps something they can read and correct; the agents get a digest
-rather than a wall.
+Hermes ships its own user-profile memory store at
+`$HERMES_HOME/memories/USER.md` (`tools/memory_tool.py::get_memory_dir`), which
+the agent reads and **maintains itself as it learns** — precisely the living-
+profile behaviour asked for. Two pieces of plumbing are already in place:
 
-Note the Hermes migration is actively changing where agent memory and profiles
-live (`cf5931806` seeds agent memory with `memories/MEMORY.md` + `USER.md`;
-profiles now live in S3 on AgentCore). **Confirm the current memory contract
-against Hermes before implementing** — the pre-Hermes answer is likely stale.
+- `core/services/hermes_memory_migration.py` merges an incoming `USER.md` into
+  the profile location under Hermes's real char budget, with overflow spilled
+  to a separate file. The entry-extraction and merge semantics are ported from
+  Hermes's own migration tool, so appends behave the way Hermes expects.
+- `routers/workspace_files.py` already allowlists `USER.md` and maps it to
+  `memories/USER.md` on AgentCore (`_AGENTCORE_CONFIG_PATHS`), so the owner can
+  **already read and edit it** through the Files panel.
+
+So the context dump is not a new storage design. It is a **first-run door onto
+an existing store**:
+
+1. The owner pastes (or drops a file). The raw text is merged into
+   `memories/USER.md` through `hermes_memory_migration`'s merge path — never a
+   blind overwrite, so a second dump augments rather than destroys the first.
+2. The char budget is enforced by that same code, with overflow spilled rather
+   than silently truncated. A 40 KB paste must not blow the profile.
+3. The CEO runs the existing first-message capture once over it to produce the
+   initial goal/project and stage `BRIEF.md`.
+4. From then on the agent maintains the file itself, and the owner can edit it
+   in the Files panel at any time.
+
+Implementation notes that are easy to get wrong:
+
+- **Do not write to `workspace/USER.md`.** That is the pre-Hermes location and
+  Hermes never reads it — the bug `cf5931806` was fixed to stop exactly that,
+  and it silently lost every migrated agent's memory. The real path is
+  `memories/USER.md` under the profile.
+- `memories/MEMORY.md` is the *agent's* notes, not the user profile. The dump
+  belongs in `USER.md`. Do not conflate them.
+- Profiles live in **S3** on AgentCore, not EFS. Anything assuming an EFS path
+  here is stale.
 
 **Privacy:** a business context dump is among the most sensitive things an
 owner will ever paste. It must never leave the owner's own workspace storage,
@@ -173,12 +199,18 @@ The three parts are independent and should ship as three PRs:
 
 ## 6. Open questions for the owner
 
-1. **The §2 contradiction** — connectors offered-not-required, as recommended?
-   Or a deliberate reversal of the July position?
-2. Which connectors are "featured"? The recommendation is Google Workspace and
+Settled: the §2 contradiction (offered, never required) and the context-dump
+destination (`memories/USER.md`). Still open:
+
+1. Which connectors are "featured"? The recommendation is Google Workspace and
    GitHub only, since those are the two you named — more tiles means less
    emphasis on each.
-3. Context dump destination — A, B or C?
-4. Should the first run differ for someone joining an existing workspace
-   versus creating one? Right now this spec assumes workspace creators only; a
-   joiner arriving to a populated workspace probably wants neither card.
+2. Should the first run differ for someone **joining** an existing workspace
+   versus **creating** one? This spec currently assumes creators; a joiner
+   arriving to a populated workspace probably wants neither card, and since
+   every owner is now a Clerk org, joiners are a real and common case.
+3. Whose `USER.md` does the dump land in? The starter roster is six agents. If
+   each has its own profile, a dump into the CEO's alone leaves the specialists
+   ignorant; writing to all six duplicates the content six ways. **Resolve this
+   against the Hermes profile model before implementing** — it is the one thing
+   in §4.3 the existing code does not already answer.

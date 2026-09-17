@@ -3,7 +3,16 @@
 # (.github/workflows/build-hermes-image.yml). Runtime contents mirror the spike exactly —
 # only the ordering differs, to do all root-owned setup (skill binaries, managed overlay)
 # before the single USER switch to the unprivileged runtime uid AgentCore expects.
-FROM nousresearch/hermes-agent:0.21.3
+#
+# M4-R31: nousresearch/hermes-agent publishes no numbered tags upstream (only date-stamped
+# `vYYYY.M.D` tags + `latest`/`main`), so a `:0.21.3` tag pin (the brief's placeholder) does
+# not exist and would 404. Pin by DIGEST instead, to the exact image already proven end to
+# end in dev: digest sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103,
+# reporting version 0.21.3 (`importlib.metadata.version('hermes-agent')`), pulled as `latest`
+# on 2026-09-16T20:56Z. Re-derive the digest with:
+#   docker image inspect nousresearch/hermes-agent:latest --format '{{join .RepoDigests ","}}'
+# Mirrored in hermes-version.json#base (the promotion record; this line is what actually builds).
+FROM nousresearch/hermes-agent@sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103
 
 # The bundled Anthropic SDK (0.87) predates AnthropicBedrock's bearer mode (api_key /
 # AWS_BEARER_TOKEN_BEDROCK + ANTHROPIC_BEDROCK_BASE_URL), which is how our bedrock-gate is

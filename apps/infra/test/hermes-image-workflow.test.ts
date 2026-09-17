@@ -8,6 +8,9 @@ import { describe, expect, it } from "vitest";
 const ROOT = join(__dirname, "../../..");
 const workflow = readFileSync(join(ROOT, ".github/workflows/build-hermes-image.yml"), "utf8");
 const dockerfile = readFileSync(join(ROOT, "apps/infra/hermes/Dockerfile"), "utf8");
+const HERMES_VERSION: { base?: { image?: string } } = JSON.parse(
+  readFileSync(join(ROOT, "hermes-version.json"), "utf8"),
+);
 
 /** The `on:` trigger block only, so a path string mentioned elsewhere (e.g. a comment
  * about the build job) can't accidentally satisfy a trigger assertion. */
@@ -49,11 +52,19 @@ describe("build-hermes-image workflow", () => {
     expect(workflow).toContain("arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder");
   });
 
-  it("the production image pins its base, bakes the plugins, skills and managed overlay", () => {
-    expect(dockerfile).toMatch(/^FROM nousresearch\/hermes-agent:\d/m); // pinned, never :latest
+  it("the production image bakes the plugins, skills and managed overlay", () => {
     expect(dockerfile).toContain("COPY plugins/ /opt/hermes/plugins/");
     expect(dockerfile).toContain("COPY skills/ /opt/hermes-skills/");
     expect(dockerfile).toContain("COPY managed/config.yaml /etc/hermes/config.yaml");
+  });
+
+  it("pins its base by DIGEST, never a tag (M4-R31 — nousresearch/hermes-agent ships no numbered tags)", () => {
+    // A tag pin (`:0.21.3`, `:latest`, anything without `@sha256:...`) must fail this.
+    expect(dockerfile).toMatch(/^FROM nousresearch\/hermes-agent@sha256:[0-9a-f]{64}$/m);
+    expect(dockerfile).not.toMatch(/^FROM nousresearch\/hermes-agent:\S/m);
+
+    const fromLine = dockerfile.match(/^FROM (nousresearch\/hermes-agent@sha256:[0-9a-f]{64})$/m);
+    expect(fromLine?.[1]).toBe(HERMES_VERSION.base?.image);
   });
 
   it("switches USER exactly once, with nothing after CMD", () => {

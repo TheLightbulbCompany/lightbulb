@@ -165,6 +165,62 @@ async def test_prepare_hermes_workspace_is_a_noop_once_already_fully_provisioned
     await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
 
 
+# --- I3/M4-R37: freshness guard against rotating a live ECS owner's bearer -----------------
+
+
+@pytest.mark.asyncio
+async def test_prepare_hermes_workspace_refuses_a_live_ecs_owner_without_migrate(monkeypatch):
+    """HERMES_RUNTIME is one env-wide flag; the first dispatch after a flip must not mint
+    Hermes credentials (and rotate the owner's live bearer) for an owner already running on
+    ECS -- mirrors ensure_runtime's own guard against two gateways on one owner."""
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"service_name": "openclaw-org_a-abc123", "hook_token": "ecs-hook", "gateway_token": "ecs-gw"}),
+    )
+    monkeypatch.setattr(hermes_provisioning, "ensure_agentcore_trust", _explode)
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _explode)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _explode)
+
+    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+
+
+@pytest.mark.asyncio
+async def test_prepare_hermes_workspace_migrate_true_proceeds_for_a_live_ecs_owner(monkeypatch):
+    """The one sanctioned bypass: the M6 cutover job passes migrate=True and deliberately
+    crosses an existing ECS owner over, reusing its hook/gateway tokens exactly as the
+    fresh-provision path does and minting only a fresh bearer."""
+    _patch_owner_aws(
+        monkeypatch,
+        existing_row={"service_name": "openclaw-org_a-abc123", "hook_token": "ecs-hook", "gateway_token": "ecs-gw"},
+    )
+
+    written = {}
+
+    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer):
+        written.update(hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer)
+        return f"lightbulb/dev/hermes/{owner_id}/boot"
+
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
+
+    row_fields = {}
+
+    async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
+        row_fields.update(fields)
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
+
+    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1", migrate=True)
+
+    # Reused off the row -- the ECS-minted tokens, not fresh ones.
+    assert written["hookToken"] == "ecs-hook"
+    assert written["gatewayToken"] == "ecs-gw"
+    assert row_fields["hook_token"] == "ecs-hook"
+    assert row_fields["gateway_token"] == "ecs-gw"
+    # The bearer is always freshly minted (see _patch_owner_aws's mint_gate_token double).
+    assert written["bedrockBearer"] == "bearer-plaintext"
+
+
 # --- provision_hermes_runtime ---------------------------------------------------------------
 
 

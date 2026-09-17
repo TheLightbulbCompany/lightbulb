@@ -230,7 +230,9 @@ def _wait_for_runtime_ready(runtime_arn: str) -> None:
     raise RuntimeError(f"AgentCore runtime {runtime_arn} did not reach READY within the poll window")
 
 
-async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> None:
+async def prepare_hermes_workspace(
+    owner_id: str, *, claim_id: str, attempt_token: str | None = None, migrate: bool = False
+) -> None:
     """M4-R33: mint the owner's hook/gateway tokens + a fresh gate bearer, write the ONE JSON boot
     secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
     roster, so the ``http`` adapter's ``Authorization`` header
@@ -244,6 +246,22 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     still-unprovisioned owner re-mints (``mint_gate_token`` always rotates), which is safe — nothing
     ever presented the prior one, since the runtime was never created.
 
+    I3/M4-R37 freshness guard: ``settings.HERMES_RUNTIME`` is ONE flag for the whole environment,
+    and ``provision_runner.run`` branches on it alone — so the first dispatch after a flip reaches
+    an owner who is ALREADY a live ECS workspace (a self-heal, a reconcile, any ordinary
+    re-dispatch), not just fresh owners. Minting here for one of those would rotate
+    ``mint_gate_token``'s bearer into a boot secret their live ECS task never reads (their
+    container keeps using its OWN, now-superseded bearer until the liveness predicate expires it)
+    and, downstream, ``provision_hermes_runtime`` would create a SECOND runtime beside their
+    running container. Mirrors ``agentcore_runtime.ensure_runtime``'s own guard
+    (refuses unless ``status == "stopped"``) for the same reason: "two gateways [next to each
+    other] on one access point." Detected via ``service_name`` — the same field
+    ``_container_already_healthy`` uses to mean "an ECS service was actually created for this
+    owner." ``migrate=True`` is the ONE sanctioned bypass, for the M6 cutover job that
+    deliberately crosses an existing ECS owner over: it reuses ``hook_token``/``gateway_token``
+    off the row exactly as the fresh-provision path does (they already exist, minted at ECS
+    provision time) and mints only a fresh bearer, via this same function.
+
     ``hook_token``/``gateway_token`` are re-minted only when the row does not already carry one —
     mirrors ``ecs_manager``'s own "reuse if present" convention (``container.get("hook_token") or
     secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already handed
@@ -254,6 +272,14 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     """
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     if row.get("agentcore_runtime_arn"):
+        return
+    if row.get("service_name") and not migrate:
+        logger.info(
+            "prepare_hermes_workspace: owner %s has a live ECS service (service_name=%s) and "
+            "migrate=False -- refusing to mint Hermes credentials for it (I3/M4-R37)",
+            owner_id,
+            row.get("service_name"),
+        )
         return
 
     import secrets as _secrets

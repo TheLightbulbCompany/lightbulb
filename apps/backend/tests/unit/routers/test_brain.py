@@ -2,7 +2,7 @@
 
 import io
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -31,6 +31,16 @@ def _local_environment(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "local")
 
 
+@pytest.fixture(autouse=True)
+def _ecs_container_row(monkeypatch):
+    """Default every direct-handler test to "no container row" — the AgentCore fence
+    added in `_resolve_ecs_owner_id` (M6 task 10-D) reads one per call, and
+    `runtime_transport.host_for` fails closed to "ecs" for a missing/None row, matching
+    every test in this file's pre-existing (pre-migration) assumption. Tests that care
+    about the AgentCore branch override this via `monkeypatch.setattr` directly."""
+    monkeypatch.setattr("routers.brain.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+
+
 @pytest.fixture()
 def workspace(tmp_path: Path, monkeypatch) -> Workspace:
     """Fresh Workspace rooted at tmp_path, patched into the brain router."""
@@ -52,6 +62,68 @@ def wiki_root(workspace: Workspace) -> Path:
     (root / "index.md").write_text("# Index\n", encoding="utf-8")
     (root / "topics" / "agents.md").write_text("# Agents\n", encoding="utf-8")
     return root
+
+
+# ===========================================================================
+# AgentCore fence (M6 task 10-D, row 20)
+# ===========================================================================
+
+
+class TestBrainAgentCoreFence:
+    @pytest.mark.asyncio
+    async def test_tree_returns_410_for_agentcore_row(self, workspace, monkeypatch):
+        from routers.brain import list_brain_tree
+
+        monkeypatch.setattr(
+            "routers.brain.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"runtime_host": "agentcore"}),
+        )
+        with pytest.raises(HTTPException) as exc:
+            await list_brain_tree(auth=_auth())
+        assert exc.value.status_code == 410
+        assert exc.value.detail == "unsupported_on_agentcore"
+
+    @pytest.mark.asyncio
+    async def test_read_write_upload_delete_all_refuse_agentcore(self, workspace, wiki_root, monkeypatch):
+        from routers.brain import (
+            BrainWriteRequest,
+            delete_brain_file,
+            read_brain_file,
+            upload_brain_files,
+            write_brain_file,
+        )
+
+        monkeypatch.setattr(
+            "routers.brain.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"runtime_host": "agentcore"}),
+        )
+        with pytest.raises(HTTPException) as exc:
+            await read_brain_file(path="index.md", auth=_auth())
+        assert exc.value.status_code == 410
+
+        with pytest.raises(HTTPException) as exc:
+            await write_brain_file(body=BrainWriteRequest(path="index.md", content="x"), auth=_auth())
+        assert exc.value.status_code == 410
+
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload("note.md", b"hi")], auth=_auth())
+        assert exc.value.status_code == 410
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_brain_file(path="index.md", auth=_auth())
+        assert exc.value.status_code == 410
+
+    @pytest.mark.asyncio
+    async def test_tree_unaffected_for_ecs_row(self, workspace, wiki_root, monkeypatch):
+        """An explicit ECS row (not just a missing one) behaves exactly like today."""
+        from routers.brain import list_brain_tree
+
+        monkeypatch.setattr(
+            "routers.brain.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"runtime_host": "ecs"}),
+        )
+        tree = await list_brain_tree(auth=_auth())
+        assert {f["path"] for f in tree["files"]} >= {"index.md", "topics/agents.md"}
 
 
 # ===========================================================================

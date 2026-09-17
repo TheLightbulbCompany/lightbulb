@@ -31,6 +31,8 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
+from core.repositories import container_repo
+from core.services import runtime_transport
 from core.services.efs_file_lock import get_file_lock, open_lock_fd
 from routers.container_files import MAX_FILE_SIZE, MAX_FILES_PER_REQUEST, _sanitize_filename
 from routers.workspace_files import (
@@ -55,6 +57,19 @@ BRAIN_SUBTREE = "wiki/main"
 # Dot-prefixed + distinctive so it can never collide with agent-written vault
 # content (a plain `{file}.lock` did — an agent's report.md.lock is real data).
 _LOCK_SUFFIX = ".lb-lock"
+
+
+async def _resolve_ecs_owner_id(auth: AuthContext) -> str:
+    """``resolve_owner_id`` plus the AgentCore fence (M6 task 10-D, row 20, owner ruling
+    M6-R50). The vault this router serves is written by the container-side memory-wiki
+    plugin, which has no Hermes equivalent — a migrated workspace's vault is frozen at
+    whatever it held at cutover, so every route refuses outright rather than serving or
+    silently accepting writes into a wiki no agent reads."""
+    owner_id = resolve_owner_id(auth)
+    container = await container_repo.get_by_owner_id(owner_id)
+    if container and runtime_transport.host_for(container) == "agentcore":
+        raise HTTPException(status_code=410, detail="unsupported_on_agentcore")
+    return owner_id
 
 
 def _lock_sidecar_path(resolved: Path) -> Path:
@@ -103,7 +118,7 @@ async def list_brain_tree(auth: AuthContext = Depends(get_current_user)):
     A missing vault (the plugin hasn't written yet) is an empty tree, never
     an error — _collect_recursive swallows the not-found.
     """
-    owner_id = resolve_owner_id(auth)
+    owner_id = await _resolve_ecs_owner_id(auth)
     workspace = get_workspace()
     entries: list = []
     # Blocking EFS walk: off the event loop (bounded — the vault is wiki pages, not a repo).
@@ -117,7 +132,7 @@ async def read_brain_file(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Read a wiki page's content and metadata."""
-    owner_id = resolve_owner_id(auth)
+    owner_id = await _resolve_ecs_owner_id(auth)
     workspace = get_workspace()
     full_path = _guard_brain_path(workspace, owner_id, path)
     try:
@@ -193,7 +208,7 @@ async def write_brain_file(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Write a wiki page (creating parents), size-capped and locked."""
-    owner_id = resolve_owner_id(auth)
+    owner_id = await _resolve_ecs_owner_id(auth)
     workspace = get_workspace()
     if len(body.content.encode("utf-8")) > MAX_WRITE_SIZE:
         raise HTTPException(
@@ -344,7 +359,7 @@ async def upload_brain_files(
             detail=f"Too many files. Maximum {MAX_FILES_PER_REQUEST} per request.",
         )
 
-    owner_id = resolve_owner_id(auth)
+    owner_id = await _resolve_ecs_owner_id(auth)
     workspace = get_workspace()
 
     uploaded = []
@@ -402,7 +417,7 @@ async def delete_brain_file(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Delete a wiki page (owner removes a wrong note). Refuses directories."""
-    owner_id = resolve_owner_id(auth)
+    owner_id = await _resolve_ecs_owner_id(auth)
     workspace = get_workspace()
     full_path = _guard_brain_path(workspace, owner_id, path)
     try:

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Bot, ScrollText, Wrench, MessageSquare, CalendarClock } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentToolsTab } from "./AgentToolsTab";
@@ -58,8 +59,12 @@ export function AgentInspectorPanel({
   initialTab = null,
 }: AgentInspectorPanelProps = {}) {
   // Channels require an active subscription (or trial), mirroring AgentsPanel.
+  // M6 task 10-D, row 25: also gone outright on a confirmed AgentCore
+  // workspace — channel wiring is M5/LATER there, and the tab's own probe
+  // (`channels.status`) always answers `[]`.
   const { isSubscribed } = useBilling();
-  const channelsEnabled = isSubscribed;
+  const agentCoreHidden = useHiddenOnAgentCore() === "hidden";
+  const channelsEnabled = isSubscribed && !agentCoreHidden;
 
   // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
   // inspector only has an id from the URL, not the agent object).

@@ -29,12 +29,14 @@ import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
   RELOCATED_PANEL_HREFS,
   SETTINGS_NAV_SECTIONS,
+  filterNavSectionsForRuntime,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
 
@@ -682,7 +684,10 @@ function SettingsPageInner() {
   // The Settings consolidation: 6-group nav + the config panels relocated from
   // the Control tab (Usage, Model & Credits, MCP servers, the ENGINE ROOM
   // trio, Channel Status).
-  const navSections = SETTINGS_NAV_SECTIONS;
+  // M6 task 10-D: Dreams and Channel Status drop off the nav on a confirmed
+  // AgentCore workspace — never merely "not yet known" (see useHiddenOnAgentCore).
+  const agentCoreHidesNav = useHiddenOnAgentCore() === "hidden";
+  const navSections = filterNavSectionsForRuntime(SETTINGS_NAV_SECTIONS, agentCoreHidesNav);
 
   // Personal owners are admins; org members are admins only with org:admin.
   const isAdmin = useIsWorkspaceAdmin();

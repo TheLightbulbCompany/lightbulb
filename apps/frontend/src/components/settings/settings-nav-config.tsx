@@ -41,6 +41,25 @@ export type NavSection = { label: string; items: NavItem[] };
 // admin may see or mint one (the panel and the backend both re-check).
 export const ADMIN_ONLY_PANELS = new Set(["usage", "members"]);
 
+// Panels with no Hermes/AgentCore equivalent (M6 task 10-D, owner ruling
+// M6-R50): dropped from the nav on a confirmed AgentCore workspace. The panel
+// components themselves also self-gate (defense in depth against a stale
+// deep link), so this is only about not OFFERING a dead end.
+export const HIDDEN_ON_AGENTCORE_PANELS = new Set(["dreams", "channel-status"]);
+
+/** Drops `HIDDEN_ON_AGENTCORE_PANELS` items (and any section left empty by
+ *  that) when `hidden` is true — never while the host is merely unknown, so
+ *  the nav renders exactly as it does today until AgentCore is confirmed. */
+export function filterNavSectionsForRuntime(sections: NavSection[], hidden: boolean): NavSection[] {
+  if (!hidden) return sections;
+  return sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => !HIDDEN_ON_AGENTCORE_PANELS.has(item.id)),
+    }))
+    .filter((section) => section.items.length > 0);
+}
+
 // Six intent-ordered groups (design.md §5). The relocated Control config panels
 // (Usage, Model & Credits, MCP servers, the ENGINE ROOM trio, Channel Status)
 // live here alongside the original Account-group panels.

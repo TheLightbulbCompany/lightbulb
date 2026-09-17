@@ -2,6 +2,17 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DreamsPanel } from "../DreamsPanel";
 
+// This file is about the Dreams UI itself, not the AgentCore hide (see the
+// dedicated DreamsPanel.agentcore.test.tsx) — pin every test here to "shown"
+// (ECS), matching the pre-M6-task-10-D behaviour these tests were written
+// against. `importOriginal` keeps every other export (notably
+// `agentDisplayName`, re-exported through `@/hooks/useAgents` below) real —
+// a bare object mock here silently blanks it and breaks the agent selector.
+vi.mock("@lightbulb/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@lightbulb/shared")>();
+  return { ...actual, useHiddenOnAgentCore: () => "shown" };
+});
+
 const rpcMock = vi.fn();
 const patchConfigMock = vi.fn().mockResolvedValue({ ok: true });
 // Overridable per-test: the real `agents.list` payload shape is

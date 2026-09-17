@@ -3,6 +3,15 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { ChannelsStatusPanel } from "../ChannelsStatusPanel";
 
+// This file is about the panel's own rendering, not the AgentCore hide (see
+// the dedicated ChannelsStatusPanel.agentcore.test.tsx) — pin every test here
+// to "shown" (ECS), matching the pre-M6-task-10-D behaviour these tests were
+// written against.
+vi.mock("@lightbulb/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@lightbulb/shared")>();
+  return { ...actual, useHiddenOnAgentCore: () => "shown" };
+});
+
 // useRuntimeRpc is the only data source. Stub it so each test seeds a
 // snapshot and we can assert mutate() is called by the Probe button.
 const mockData = vi.fn();

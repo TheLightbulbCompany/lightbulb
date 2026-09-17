@@ -1,6 +1,7 @@
 import { Section } from "@expo/ui/swift-ui";
 import type { SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 
@@ -84,10 +85,15 @@ const PANELS: PanelRow[] = [
 ];
 
 export default function ControlIndex() {
+  // M6 task 10-D, row 34: channel wiring is M5/LATER on Hermes — the row is
+  // dropped outright on a confirmed AgentCore workspace, never merely "not
+  // yet known" (matching the web rail's useHiddenOnAgentCore contract).
+  const channelsHidden = useHiddenOnAgentCore() === "hidden";
+  const panels = channelsHidden ? PANELS.filter((p) => p.key !== "channels") : PANELS;
   return (
     <GroupedList>
       <Section title="Panels">
-        {PANELS.map((panel) => (
+        {panels.map((panel) => (
           <NavigationRow
             key={panel.key}
             title={panel.label}

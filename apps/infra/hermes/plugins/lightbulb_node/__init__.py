@@ -23,6 +23,7 @@ import urllib.request
 import uuid
 
 DEFAULT_TIMEOUT_S = 180
+ENVELOPE_GRACE_MS = 5_000   # the backend waits this much longer than the node's own kill deadline
 _TIMEOUT_RETURNCODE = 124   # Hermes's own sentinel (tools/environments/base.py:401-405, 575)
 
 
@@ -74,7 +75,12 @@ class NodeEnvironment:
         params = {"command": ["bash", "-lc", command], "cwd": cwd or self._cwd,
                   "timeoutMs": seconds * 1000}
         try:
-            answer = _invoke("system.run", params, seconds * 1000)
+            # The node's own kill deadline is params.timeoutMs; the envelope timeout is the
+            # backend's wait for the node's answer (NodeSession.invoke has no grace of its
+            # own). Equal values let the envelope win the race: 504 NODE_TIMEOUT and an
+            # orphaned child on the Mac instead of the node's clean {exitCode:124,
+            # timedOut:true}. Found by the Task 30 loopback proof.
+            answer = _invoke("system.run", params, seconds * 1000 + ENVELOPE_GRACE_MS)
         except urllib.error.HTTPError as exc:
             # The node route answers a well-formed failure (404 NODE_NOT_ATTACHED, 409
             # COMMAND_NOT_ALLOWED, 403, 504 NODE_TIMEOUT, ...) with a JSON {code, message}

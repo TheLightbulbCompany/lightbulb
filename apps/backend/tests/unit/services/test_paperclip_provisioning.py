@@ -150,6 +150,56 @@ async def test_provision_org_mints_service_token_with_owner_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_provision_org_with_agentcore_runtime_host_seeds_the_http_adapter(monkeypatch):
+    """M4-R8 / M1 Ruling 10: an explicit runtime_host="agentcore" hint threads through
+    to adapter_type_for and wins outright for the ADAPTER-TYPE decision itself (no
+    container-row read needed there) — this is what lets a FRESH Hermes provision
+    seed every starter agent onto the http adapter BEFORE the containers row exists
+    to carry runtime_host itself. The single row read that DOES happen is the
+    separate, expected hook-token lookup the http-adapter branch always makes."""
+    from core.repositories import container_repo
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    row_spy = AsyncMock(return_value={"hook_token": "hook-1"})
+    monkeypatch.setattr(container_repo, "get_by_owner_id", row_spy)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_hermes",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+        runtime_host="agentcore",
+    )
+
+    adapter_types = {call.kwargs["adapter_type"] for call in admin.create_agent.call_args_list}
+    assert adapter_types == {"http"}
+    # Exactly one read (the hook-token lookup), not a second one to decide the
+    # adapter type — the explicit hint is what skips that second read.
+    row_spy.assert_awaited_once_with("org_hermes")
+
+
+@pytest.mark.asyncio
+async def test_provision_org_with_no_runtime_host_hint_falls_back_to_the_ecs_default(monkeypatch):
+    """No hint (every existing caller, and the reconcile path) preserves the old
+    read-the-row-or-default-ECS behavior — a fresh provision_org call gains no new
+    behavior unless it explicitly opts in with runtime_host."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_ecs",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    adapter_types = {call.kwargs["adapter_type"] for call in admin.create_agent.call_args_list}
+    assert adapter_types == {"openclaw_gateway"}
+
+
+@pytest.mark.asyncio
 async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
     """Member provisioning must mint the JWT with ``sub == owner_id``,
     NOT the joining member's ``user_id`` — same routing constraint as

@@ -374,6 +374,13 @@ class Settings(BaseSettings):
     # is not enabled here; ensure_runtime refuses rather than guessing an image.
     AGENTCORE_GATEWAY_IMAGE: str = ""
 
+    # Provision new workspaces onto Hermes/AgentCore instead of ECS. Per ENVIRONMENT, not per
+    # owner: the choice is recorded on the container row at provision and read from there after.
+    HERMES_RUNTIME: bool = False
+    # The Hermes bridge image a workspace's AgentCore runtime runs. Empty = provision_hermes_runtime
+    # refuses rather than guessing an image (mirrors AGENTCORE_GATEWAY_IMAGE above).
+    AGENTCORE_HERMES_IMAGE: str = ""
+
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
     # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,
     # so an address is "{agent}@{slug}.{AGENT_EMAIL_DOMAIN}" (e.g.

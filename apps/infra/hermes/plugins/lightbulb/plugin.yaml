@@ -1,0 +1,8 @@
+name: lightbulb
+version: 1.0.0
+description: "Lightbulb room tools: post to a room, suggest a hire, read shared local sessions."
+author: "Lightbulb"
+provides_tools:
+  - send_room_message
+  - hire_suggestion
+  - lightbulb_local_sessions

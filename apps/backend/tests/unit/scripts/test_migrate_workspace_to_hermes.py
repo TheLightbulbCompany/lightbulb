@@ -164,7 +164,10 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     leased.assert_awaited_once()
     stamped_fields = leased.await_args.args[2]
     assert stamped_fields["hermes_migrated_at"]
-    assert stamped_fields["status"] == "running"
+    # Ruling M6-R17: status is NOT re-asserted here -- stop_user_service(force=True) never
+    # touches the row any more, so status is exactly what provision_hermes_runtime's own
+    # terminal write already set ("running"), untouched since.
+    assert "status" not in stamped_fields
 
     # Every agent got a profile prefix, the SOUL.md override, and the carried EFS content --
     # each agent's .revision write is the LAST key for that agent.

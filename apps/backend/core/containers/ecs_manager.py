@@ -1436,13 +1436,17 @@ class EcsManager:
                 reason keeps the status poll's wake/self-heal behavior, so a
                 killswitch or admin stop can never masquerade as a healthy
                 parked box.
-            force: Ruling M6-R15 — skip the ``_hosted_on_agentcore`` no-op guard.
-                The ONE sanctioned bypass, for ``scripts/migrate_workspace_to_hermes.py``
-                scaling down the ECS service a workspace it just moved to AgentCore no
-                longer needs — by the time it calls this, the row's ``runtime_host`` already
-                reads "agentcore" (the migration's own terminal write), which would
-                otherwise make this a no-op forever and leave the retired ECS task running.
-                Every other caller passes nothing and keeps today's guarded behavior.
+            force: Ruling M6-R15/M6-R17 — skip the ``_hosted_on_agentcore`` no-op guard AND
+                skip the row write below entirely. The ONE sanctioned bypass, for
+                ``scripts/migrate_workspace_to_hermes.py`` scaling down the ECS service a
+                workspace it just moved to AgentCore no longer needs — by the time it calls
+                this, the row's ``runtime_host`` already reads "agentcore" (the migration's
+                own terminal write), which would otherwise make this a no-op forever and
+                leave the retired ECS task running. The row write is skipped rather than
+                reused because ``status="stopped"`` would be false for a workspace that is
+                actually live on AgentCore; the migration job's own fenced stamp is the sole
+                writer of that row's terminal state in this case. Every other caller passes
+                nothing and keeps today's fully guarded behavior (no-op AND row write both).
 
         Raises:
             EcsManagerError: If the ECS update_service call fails. A service
@@ -1495,7 +1499,13 @@ class EcsManager:
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
         container = await container_repo.get_by_owner_id(user_id)
-        if container:
+        # Ruling M6-R17: force=True (the migration job's bypass, above) never writes
+        # status="stopped" -- the row is ALREADY on agentcore at that point (this is the ECS
+        # service the migration is retiring, not the workspace's live host), and stamping
+        # "stopped" onto a workspace that is actually running there is a lie the row would tell
+        # every other reader until something else corrects it. The migration job's own
+        # _stamp_migrated is the sole writer of that row's terminal state in this case.
+        if container and not force:
             await container_repo.update_status(user_id, "stopped")
             # Separate call because stamp_stop_reason needs a conditional REMOVE
             # of parked_at that a plain field merge cannot express. Order no

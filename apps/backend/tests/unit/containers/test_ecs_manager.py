@@ -960,9 +960,11 @@ class TestStopUserService:
 
     @pytest.mark.asyncio
     async def test_stop_on_an_agentcore_row_with_force_scales_to_zero(self, manager, mock_ecs_client):
-        """Ruling M6-R15: force=True is the ONE sanctioned bypass of the AgentCore guard, for the
-        M6 migration job scaling down the ECS service it is retiring -- same scale-to-zero path
-        and same row writes as an ordinary ECS stop, nothing else changes."""
+        """Ruling M6-R15/M6-R17: force=True is the ONE sanctioned bypass of the AgentCore guard,
+        for the M6 migration job scaling down the ECS service it is retiring -- same scale-to-zero
+        ECS call, but NO row write: the row is on agentcore and status="stopped" would be a lie
+        about a workspace that is actually live there. The migration job's own _stamp_migrated
+        is the only writer of this row's terminal state in that case."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(
                 return_value={**_make_container_dict(status="running"), "runtime_host": "agentcore"}
@@ -977,8 +979,8 @@ class TestStopUserService:
                 service="openclaw-user_test_123-f4ae64abb2db",
                 desiredCount=0,
             )
-            mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
-            mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "hermes_migration")
+            mock_repo.update_status.assert_not_called()
+            mock_repo.stamp_stop_reason.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

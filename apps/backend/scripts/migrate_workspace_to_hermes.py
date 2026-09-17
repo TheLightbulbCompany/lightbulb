@@ -346,21 +346,22 @@ async def _reconcile_chatgpt_oauth(owner_id: str) -> None:
 
 
 async def _stamp_migrated(owner_id: str) -> None:
-    """Ruling M6-R16 — the job's LAST fenced write. ``provision_hermes_runtime`` already
+    """Ruling M6-R16/M6-R17 — the job's LAST fenced write. ``provision_hermes_runtime`` already
     released the lease this job's earlier claim held (its own terminal write uses
     ``release_lease=True``), so there is nothing left to reuse — this re-claims via
     ``takeover_provision`` purely to make this a FENCED write like every other terminal
-    transition in this job. Stamps ``hermes_migrated_at`` (what makes the tail re-enterable: a
-    later run's precondition check treats a stamped row as done) and re-asserts
-    ``status="running"`` — ``stop_user_service``'s own row write (still needed for its ECS
-    ``desiredCount=0`` side effect) unconditionally sets ``status="stopped"``, which is wrong for
-    a workspace that is actually live on AgentCore; this stamp corrects it as the final word.
+    transition in this job. Stamps ``hermes_migrated_at`` ALONE (what makes the tail
+    re-enterable: a later run's precondition check treats a stamped row as done) — ``status`` is
+    NOT written here: ``stop_user_service(force=True)`` no longer touches the row at all
+    (M6-R17), so ``status`` is exactly whatever ``provision_hermes_runtime``'s own terminal write
+    already set it to ("running"), and re-asserting it here would just be a second writer of a
+    value nothing else has touched.
     """
     claim_id = await container_repo.takeover_provision(owner_id)
     await container_repo.update_container_leased(
         owner_id,
         claim_id,
-        {"hermes_migrated_at": utc_now_iso(), "status": "running"},
+        {"hermes_migrated_at": utc_now_iso()},
         attempt_token=claim_id,
         release_lease=True,
     )

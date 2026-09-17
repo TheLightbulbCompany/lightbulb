@@ -14,6 +14,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOOK_TOKEN, MODEL, OWNER, now
+from bridge import sync
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -375,10 +376,13 @@ class FramePublisher:
 
 
 # ---- structured room context (spec §5 "Context and threading") ------------------------------
-def room_context(body: dict, agent_id: str) -> dict:
+def room_context(body: dict, agent_id: str, media: list[str] | None = None) -> dict:
     """The structured room payload the agent reasons over — the Hermes home of OpenClaw's
     extra.ChannelStructuredContext (report 03 §2). Deliberately verbatim: the frontend and
-    the backend both already speak these shapes, so no field is renamed on the way in."""
+    the backend both already speak these shapes, so no field is renamed on the way in.
+
+    `media` (Task 25) is the list of local file paths materialized from the ingress's own
+    and its history's attachments — the OpenClaw plugin's `media` key."""
     msg = body.get("message") or {}
     return {
         "room": body.get("room") or {},
@@ -394,11 +398,12 @@ def room_context(body: dict, agent_id: str) -> dict:
             "text": msg.get("text") or "",
             "createdAt": msg.get("createdAt"),
         },
+        "media": media or [],
     }
 
 
-def system_prompt(body: dict, agent_id: str) -> str:
-    ctx = room_context(body, agent_id)
+def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> str:
+    ctx = room_context(body, agent_id, media=media)
     me = next((p for p in ctx["participants"] if p.get("id") == agent_id), {})
     room = ctx["room"]
     name = me.get("displayName") or me.get("name") or "an agent"
@@ -531,11 +536,12 @@ def _construct_agent(agent_id: str, body: dict, frames):
 def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
     """The one seam every other test replaces instead of constructing a real AIAgent."""
     msg = body.get("message") or {}
+    media = sync.materialize_attachments(body)
     agent = _construct_agent(agent_id, body, frames)
     attach_agent((body.get("run") or {}).get("runId"), agent)
     result = agent.run_conversation(
         user_message=f"{(body.get('sender') or {}).get('id', '?')}: {msg.get('text', '')}",
-        system_message=system_prompt(body, agent_id),
+        system_message=system_prompt(body, agent_id, media=media),
         conversation_history=_history(body, agent_id) or None,
     ) or {}
     usage = {**ZERO_USAGE,

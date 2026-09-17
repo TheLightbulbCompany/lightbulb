@@ -27,6 +27,10 @@ EXCLUDE_GLOBS = (
     "*.db-shm",
     "*.sqlite-wal",
     "*.sqlite-shm",
+    # Task 25: attachments materialized locally for a turn (media/messaging/attachments/...)
+    # are re-fetched from the backend on the next process, not synced to S3.
+    "media/messaging/*",
+    "media/messaging/**/*",
 )
 
 
@@ -176,3 +180,43 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     config = deep_merge(read_profile_config(agent_id), auxiliary_pin(_aux_defaults(), model))
     write_profile_config(agent_id, config)
     return config
+
+
+# ---- attachment materialization for the turn (Task 25) -----------------------------------
+# `HOOK_TOKEN` is mutable module state on `bridge` (bridge/__init__.py overwrites it in place
+# after the boot-secrets fetch), and this module is imported DURING bridge/__init__.py's own
+# execution (for load_boot_secrets), before that fetch runs. A top-level `from bridge import
+# HOOK_TOKEN`/`API`/`OWNER` here would freeze the stale pre-fetch value forever (Python only
+# executes a module's top level once); server.py/turn.py can capture them at their own
+# top-level import because they are imported only after bridge/__init__.py has fully finished
+# (see the comment there). So this reads `bridge.API`/`bridge.OWNER`/`bridge.HOOK_TOKEN`
+# lazily, at call time, via the module object.
+_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
+        "application/pdf": ".pdf"}
+
+
+def _get_backend_bytes(path: str) -> bytes:
+    import bridge
+    import urllib.request
+
+    req = urllib.request.Request(f"{bridge.API}/api/v1/internal/messaging/{path}",
+                                 headers={"Authorization": f"Bearer {bridge.HOOK_TOKEN}"})
+    with urllib.request.urlopen(req, timeout=30) as res:
+        return res.read()
+
+
+def materialize_attachments(body: dict) -> list[str]:
+    """Download the attachments a turn can see into the plugin-era layout; skip files
+    already present (a turn revisiting the same history does not re-fetch them)."""
+    import bridge
+
+    room_id = (body.get("room") or {}).get("id")
+    out: list[str] = []
+    for m in [body.get("message") or {}] + list(body.get("recentHistory", [])):
+        for att in m.get("attachments") or []:
+            target = HOME / "media" / "messaging" / "attachments" / room_id / f"{att['id']}{_EXT.get(att.get('contentType'), '')}"
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(_get_backend_bytes(f"attachments/{bridge.OWNER}/{room_id}/{att['id']}"))
+            out.append(str(target))
+    return out

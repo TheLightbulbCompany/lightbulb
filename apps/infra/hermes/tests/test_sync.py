@@ -7,6 +7,7 @@ def test_request_dumps_logs_and_turn_context_never_leave_the_microvm():
     assert sync.is_excluded("logs/hermes.log") is True
     assert sync.is_excluded(".lightbulb-turn/room:agent.json") is True
     assert sync.is_excluded("state.db-wal") is True
+    assert sync.is_excluded("media/messaging/room-1/a1.png") is True
     assert sync.is_excluded("memories/MEMORY.md") is False
     assert sync.is_excluded("sessions/index.db") is False
 

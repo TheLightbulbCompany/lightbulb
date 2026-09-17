@@ -210,6 +210,15 @@ class ConnectionService:
                 f"Failed to query connections for owner {owner_id}: {e.response['Error']['Message']}"
             ) from e
 
+    @staticmethod
+    def _ttl_is_live(ttl_raw: Optional[str], now: int) -> bool:
+        """Shared freshness rule for a presence row's raw ``ttl`` numeric
+        attribute value: missing counts as live (over-preserve, defensive
+        against an absent attribute or a just-deleted row); expired does not.
+        Used by both `has_live_operator_connection` and `find_node_presence`.
+        """
+        return ttl_raw is None or int(ttl_raw) > now
+
     async def has_live_operator_connection(self, owner_id: str) -> bool:
         """Is a Paperclip run executing against this owner's container right now?
 
@@ -251,7 +260,7 @@ class ConnectionService:
                 ConsistentRead=True,
             )
             ttl_raw = response.get("Item", {}).get("ttl", {}).get("N")
-            if ttl_raw is None or int(ttl_raw) > now:
+            if self._ttl_is_live(ttl_raw, now):
                 return True
         return False
 
@@ -396,9 +405,27 @@ class ConnectionService:
         node-invoke HTTP call (M2-R3). The `by-owner-id` GSI doesn't project
         `taskAddress`, so the first `node`-typed candidate is fetched in full
         via `get_connection` -- same shape as `delete_relay_rows_for_device`.
+
+        Freshness-checked with the same rule as `has_live_operator_connection`:
+        DynamoDB's TTL sweep can lag up to 48h, so a candidate whose `ttl` has
+        already expired is skipped rather than handed to Task 28's bridge as a
+        forwarding target -- a dead task's row must not be forwarded to. A row
+        with no `ttl` at all is treated as live (same over-preserve bias).
         """
+        now = int(time.time())
         for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
             if kind != "node":
+                continue
+            ttl_response = await asyncio.to_thread(
+                self._client.get_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": connection_id}},
+                ProjectionExpression="#ttl",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ConsistentRead=True,
+            )
+            ttl_raw = ttl_response.get("Item", {}).get("ttl", {}).get("N")
+            if not self._ttl_is_live(ttl_raw, now):
                 continue
             full = await asyncio.to_thread(self.get_connection, connection_id)
             if full is None:

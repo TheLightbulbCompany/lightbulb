@@ -9,6 +9,8 @@ is the read Task 28's bridge calls directly to find where to forward a
 node-invoke HTTP call.
 """
 
+import time
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -93,19 +95,21 @@ def ddb_table_with_owner_gsi():
         yield "ws-conn-test-taskaddr"
 
 
-def _admit_node(table: str, connection_id: str, owner_id: str, device_id: str, task_addr: str) -> None:
-    boto3.client("dynamodb", region_name="us-east-1").put_item(
-        TableName=table,
-        Item={
-            "connectionId": {"S": connection_id},
-            "userId": {"S": "u1"},
-            "orgId": {"S": owner_id},
-            "ownerId": {"S": owner_id},
-            "connectionType": {"S": "node"},
-            "deviceId": {"S": device_id},
-            "taskAddress": {"S": task_addr},
-        },
-    )
+def _admit_node(
+    table: str, connection_id: str, owner_id: str, device_id: str, task_addr: str, ttl: int | None = None
+) -> None:
+    item = {
+        "connectionId": {"S": connection_id},
+        "userId": {"S": "u1"},
+        "orgId": {"S": owner_id},
+        "ownerId": {"S": owner_id},
+        "connectionType": {"S": "node"},
+        "deviceId": {"S": device_id},
+        "taskAddress": {"S": task_addr},
+    }
+    if ttl is not None:
+        item["ttl"] = {"N": str(ttl)}
+    boto3.client("dynamodb", region_name="us-east-1").put_item(TableName=table, Item=item)
 
 
 @pytest.mark.asyncio
@@ -127,3 +131,39 @@ async def test_find_node_presence_returns_none_when_owner_has_no_node_row(ddb_ta
     svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
 
     assert await svc.find_node_presence("org_1") is None
+
+
+@pytest.mark.asyncio
+async def test_find_node_presence_returns_none_when_the_only_row_is_expired(ddb_table_with_owner_gsi):
+    """DynamoDB's TTL sweep can lag up to 48h (see has_live_operator_connection),
+    so a dead task's row must not be forwarded to -- same freshness rule."""
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit_node(
+        ddb_table_with_owner_gsi, "relay#1", "org_1", "dev-1", "http://10.0.1.7:8000", ttl=int(time.time()) - 10
+    )
+
+    assert await svc.find_node_presence("org_1") is None
+
+
+@pytest.mark.asyncio
+async def test_find_node_presence_returns_a_fresh_ttl_row(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit_node(
+        ddb_table_with_owner_gsi, "relay#1", "org_1", "dev-1", "http://10.0.1.7:8000", ttl=int(time.time()) + 120
+    )
+
+    assert await svc.find_node_presence("org_1") == {
+        "connectionId": "relay#1",
+        "taskAddress": "http://10.0.1.7:8000",
+        "deviceId": "dev-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_find_node_presence_treats_a_missing_ttl_as_live(ddb_table_with_owner_gsi):
+    """Over-preserve, same bias as has_live_operator_connection: a row with
+    no ttl attribute at all is treated as live."""
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit_node(ddb_table_with_owner_gsi, "relay#1", "org_1", "dev-1", "http://10.0.1.7:8000", ttl=None)
+
+    assert await svc.find_node_presence("org_1") is not None

@@ -29,7 +29,7 @@
 ## File Structure
 
 New (bridge and Hermes plugins, `apps/infra/hermes/`):
-- `bridge/server.py` (HTTP server, `/ping`, `/invocations` envelope, route table, RPC method table), `bridge/turn.py` (one Hermes turn: profile scope, context payload, threading, run registry + abort/steer, hook-token callbacks, AppSync frames), `bridge/sync.py` (S3 profile restore/save with excludes, Secrets Manager fetch at boot).
+- the `bridge/` package replacing today's single `bridge.py`: `bridge/server.py` (HTTP server, `/ping`, `/invocations` envelope, route table, RPC method table), `bridge/turn.py` (one Hermes turn: profile scope, context payload, threading, ambient gate, run registry + abort/steer, hook-token callbacks, AppSync frames), `bridge/sync.py` (S3 profile restore/save with excludes, Secrets Manager fetch at boot, attachment materialization). Imports are `from bridge import sync` / `from bridge.turn import …`.
 - `plugins/lightbulb/` (Hermes tool plugin: `send_room_message`, `hire_suggestion`, `local_sessions`, usage report, `pcp_` redaction pattern), `plugins/lightbulb_node/` (terminal environment provider + `nodes` tool, one plugin).
 - `Dockerfile` (production image: Hermes base, plugins, skills, Linux skill binaries, bridge), `tests/` (pytest, no AWS).
 
@@ -55,6 +55,17 @@ Deleted at cutover (M6): spec §9.
 | M5 | Browser + Shopify door | M2 (node relay for the callback), M4 (profile writer) | panel shows the AgentCore Browser; agent drives it; Shopify login persists |
 | M6 | Migrate, roll out, delete | M1–M5 | founder migrated and used a day; prod dispatch; per-workspace flips; deletion PRs merged |
 
----
+## Milestone plans
 
-<!-- Milestone task sections are assembled below from the milestone drafts. -->
+The tasks live in one file per milestone (each starts with a pointer back here; task numbering is local to its file). Execute in milestone order; within a milestone, in task order.
+
+| file | tasks |
+|---|---|
+| `2026-09-16-hermes-agentcore-migration-M1-room-turn.md` | M1 room-turn parity (25 tasks: bridge package + secrets at boot, ingress + PDF, threading, context, AppSync frames + vocabulary, run.ended/usage, abort, steer, the `lightbulb` plugin, RPC, auxiliary pins, agent mail, Paperclip adapter door, delete the spike hatches, optional streaming deltas, ambient gate, attachments) |
+| `2026-09-16-hermes-agentcore-migration-M2-node-exec.md` | M2 node exec (7 tasks: handshake frames, invoke correlation, relay termination + hook no-ops, presence task address + security-group self-ingress, internal route, `lightbulb_node` provider, vendored node-host loopback proof + dev proof) |
+| `2026-09-16-hermes-agentcore-migration-M3-device-commands.md` | M3 device commands (6 tasks) |
+| `2026-09-16-hermes-agentcore-migration-M4-config-providers-provisioning.md` | M4 config writer, providers, provisioning, secrets, park/wake (18 tasks) |
+| `2026-09-16-hermes-agentcore-migration-M5-browser-shopify.md` | M5 browser + Shopify door (6 tasks) |
+| `2026-09-16-hermes-agentcore-migration-M6-migrate-rollout-delete.md` | M6 migrate, roll out, delete (8 tasks, incl. retiring the VNC browser panel at cutover) |
+
+Shared conventions every milestone file assumes: bridge tests run with `cd apps/backend && uv run pytest ../infra/hermes/tests -q` (the `conftest.py` there puts `apps/infra/hermes` on `sys.path`); backend tests with `cd apps/backend && uv run pytest tests/unit -q`; Hermes source is read from the image (`docker run --rm --entrypoint sed lightbulb/hermes-spike:1 -n '<range>' /opt/hermes/<path>`) until the production image exists; dev proofs run against the Hermes dev workspace named in Global Constraints with the scripts in the job tmp dir (`hermes-room.py`, `hermes-spike-invoke.py`, `hermes-build-push.sh`, `hermes-spike-runtime.py`).

@@ -44,6 +44,7 @@ from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.inbound_triggers import automation_requirement
 from core.services.messaging import ApiProblem
 from core.services.catalog_service import (
+    HERMES_PROFILE_ERROR_PREFIX,
     CatalogService,
     MissingCredentialsError,
     emit_agent_deployed,
@@ -1201,6 +1202,19 @@ async def deploy_listing(
                 raise HTTPException(
                     status_code=409,
                     detail={"error": "missing_credentials", "missing": exc.missing},
+                ) from exc
+            # Fix round 2, gap 1 (M6-R11): an AgentCore install's Hermes
+            # profile step failed hard (missing BYO key, failed Paperclip
+            # mint) -- retryable, not a generic server error. Discriminated
+            # by the shared message prefix, not by exception type: a bare
+            # RuntimeError also legitimately surfaces from
+            # create_paperclip_for_marketplace / deploy_tarball_to_profile /
+            # ensure_operator_device_paired in this same try block and must
+            # keep mapping to the blanket 500 below.
+            if isinstance(exc, RuntimeError) and str(exc).startswith(HERMES_PROFILE_ERROR_PREFIX):
+                raise HTTPException(
+                    status_code=503,
+                    detail="agentcore profile provisioning unavailable — retry the install in a moment",
                 ) from exc
             raise HTTPException(
                 status_code=500,

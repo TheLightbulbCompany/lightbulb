@@ -150,17 +150,33 @@ async def test_deploy_tarball_to_profile_handles_empty_tar_bytes(s3_hermes_bucke
 # ---------------------------------------------------------------------------
 
 
+_UNSET = object()
+
+
 def _patch_profile_inputs(
-    stack: contextlib.ExitStack, *, provider_choice="bedrock_claude", byo_provider=None, roster=None
+    stack: contextlib.ExitStack,
+    *,
+    provider_choice="bedrock_claude",
+    byo_provider=None,
+    roster=None,
+    billing_row=_UNSET,
+    patch_paperclip_key=True,
 ):
     """Enter (on ``stack``) a patch for every collaborator
     _build_and_upload_agent_profile reads, at the module paths it imports
-    them from (all local imports inside the function)."""
+    them from (all local imports inside the function).
+
+    ``billing_row`` overrides the billing_repo return value wholesale (e.g.
+    ``None`` to simulate no billing row at all); the default derives one from
+    ``provider_choice``/``byo_provider`` as before. ``patch_paperclip_key``
+    lets a test drop the default stub and patch a layer underneath instead
+    (``ensure_paperclip_api_key``) to exercise the real raise.
+    """
+    billing_value = (
+        {"provider_choice": provider_choice, "byo_provider": byo_provider} if billing_row is _UNSET else billing_row
+    )
     stack.enter_context(
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"provider_choice": provider_choice, "byo_provider": byo_provider}),
-        )
+        patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=billing_value))
     )
     stack.enter_context(patch("core.services.messaging.load_agent_roster", new=AsyncMock(return_value=roster or [])))
     stack.enter_context(
@@ -171,9 +187,10 @@ def _patch_profile_inputs(
     stack.enter_context(
         patch("core.services.provisioning_landing.build_provisioned_env", new=AsyncMock(return_value={}))
     )
-    stack.enter_context(
-        patch("core.services.catalog_service._resolve_paperclip_api_key", new=AsyncMock(return_value="pk-123"))
-    )
+    if patch_paperclip_key:
+        stack.enter_context(
+            patch("core.services.catalog_service._resolve_paperclip_api_key", new=AsyncMock(return_value="pk-123"))
+        )
 
 
 @pytest.mark.asyncio
@@ -231,6 +248,79 @@ async def test_build_and_upload_agent_profile_falls_back_when_roster_read_fails(
 
     agent_row = write_mock.call_args.args[1]
     assert agent_row == {"id": "agent_new", "name": "Fallback Name", "role": "general"}
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2, gap 1 (M6-R11): a profile that boots but cannot authenticate
+# is a failure, not a degrade.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_and_upload_agent_profile_raises_when_byo_key_missing():
+    """provider_choice=byo_key with no readable key must never ship a
+    profile with no LLM credential at all."""
+    upload_mock = AsyncMock(return_value=None)
+    write_mock = MagicMock(return_value="FILES")
+    with contextlib.ExitStack() as stack:
+        _patch_profile_inputs(stack, provider_choice="byo_key", byo_provider="anthropic")
+        stack.enter_context(
+            patch("core.services.catalog_service._resolve_byo_api_key", new=AsyncMock(return_value=None))
+        )
+        stack.enter_context(patch("core.services.hermes_profiles.write_agent_profile", new=write_mock))
+        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
+        with pytest.raises(RuntimeError, match="byo"):
+            await catalog_service._build_and_upload_agent_profile(
+                owner_id="owner_1", agent_id="agent_new", container={}, manifest={"name": "Demo"}
+            )
+    write_mock.assert_not_called()
+    upload_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_and_upload_agent_profile_raises_when_paperclip_key_mint_fails():
+    """A failed/empty Paperclip key mint must never ship a profile whose
+    paperclip skill silently 401s on every call."""
+    upload_mock = AsyncMock(return_value=None)
+    write_mock = MagicMock(return_value="FILES")
+    with contextlib.ExitStack() as stack:
+        _patch_profile_inputs(stack, patch_paperclip_key=False)
+        stack.enter_context(
+            patch("core.services.paperclip_api_key.ensure_paperclip_api_key", new=AsyncMock(return_value=None))
+        )
+        stack.enter_context(patch("core.services.hermes_profiles.write_agent_profile", new=write_mock))
+        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
+        with pytest.raises(RuntimeError, match="paperclip"):
+            await catalog_service._build_and_upload_agent_profile(
+                owner_id="owner_1", agent_id="agent_new", container={}, manifest={"name": "Demo"}
+            )
+    write_mock.assert_not_called()
+    upload_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_and_upload_agent_profile_defaults_to_bedrock_claude_when_billing_row_missing():
+    """No billing row at all (not even a bedrock_claude default written yet)
+    must still build a working profile rather than raise -- this is the
+    existing behaviour and must survive gap 1's new hard checks."""
+    written = {}
+
+    def fake_write_agent_profile(owner_id, agent, **kwargs):
+        written["kwargs"] = kwargs
+        return "FILES"
+
+    upload_mock = AsyncMock(return_value=None)
+    with contextlib.ExitStack() as stack:
+        _patch_profile_inputs(stack, billing_row=None, roster=[{"id": "agent_new", "name": "Demo", "role": "general"}])
+        stack.enter_context(
+            patch("core.services.hermes_profiles.write_agent_profile", side_effect=fake_write_agent_profile)
+        )
+        stack.enter_context(patch("core.services.hermes_profiles.upload_profile", new=upload_mock))
+        await catalog_service._build_and_upload_agent_profile(
+            owner_id="owner_1", agent_id="agent_new", container={}, manifest={"name": "Demo"}
+        )
+    assert written["kwargs"]["provider_choice"] == "bedrock_claude"
+    upload_mock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

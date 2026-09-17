@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from core.auth import AuthContext  # noqa: E402
+from core.services.catalog_service import HERMES_PROFILE_ERROR_PREFIX  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -1254,6 +1255,48 @@ def test_deploy_failure_does_not_bump_install_count(
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 500
     _stub_listing_install_counter.assert_not_awaited()
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_maps_a_failed_hermes_profile_to_503_not_500(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+    _stub_listing_install_counter,
+):
+    """Fix round 2, gap 1 (M6-R11): _build_and_upload_agent_profile's hard
+    failures (missing BYO key, failed Paperclip mint) must reach the buyer as
+    a retryable 503, not the blanket 500 every other unexpected
+    deploy_from_artifact failure gets -- discriminated by the shared
+    HERMES_PROFILE_ERROR_PREFIX, not by exception type (a bare RuntimeError
+    also legitimately surfaces from create_paperclip_for_marketplace /
+    deploy_tarball_to_profile / ensure_operator_device_paired in the same
+    try block and must keep mapping to 500)."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock(
+        side_effect=RuntimeError(f"{HERMES_PROFILE_ERROR_PREFIX}owner_1 agent=agent_abc123: byo api key read failed")
+    )
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 503, resp.text
+    _stub_listing_install_counter.assert_not_awaited()
+    mock_delete_pc.assert_awaited_once()
 
 
 @patch("core.repositories.marketplace_repo._purchases_table")

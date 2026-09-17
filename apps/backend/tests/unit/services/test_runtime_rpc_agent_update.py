@@ -7,6 +7,18 @@ from core.services.messaging import ApiProblem
 from core.services.paperclip_admin_client import PaperclipApiError
 
 
+def _not_agentcore(monkeypatch):
+    """These tests exercise the ECS (forward-to-container) path -- an AgentCore row's
+    agents.update leg is covered by test_runtime_rpc_agent_update_agentcore.py. `_is_agentcore`
+    is `async def`, so the replacement must be a real coroutine function (an `await` on a bare
+    value raises `TypeError`)."""
+
+    async def fake(owner_id):
+        return False
+
+    monkeypatch.setattr(runtime_rpc, "_is_agentcore", fake)
+
+
 class _Http:
     async def __aenter__(self):
         return self
@@ -118,6 +130,7 @@ class _CountingName(str):
 @pytest.mark.asyncio
 async def test_execute_normalizes_agent_name_once_before_both_writes(monkeypatch):
     _CountingName.strip_calls = 0
+    _not_agentcore(monkeypatch)
     mirror = AsyncMock()
     monkeypatch.setattr(runtime_rpc, "_mirror_agent_update", mirror)
     call_mock = AsyncMock(return_value={})

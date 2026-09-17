@@ -137,6 +137,9 @@ _HERMES_PROFILE_METHODS = frozenset({"config.get", "config.patch", "config.set",
 # A mutating method that lands here invalidates the named resource for every
 # open frontend tab (the prior per-connection `*.changed` broadcast is gone).
 _INVALIDATES = {
+    # "agents.create" is only ever passed to _invalidate from _create_agent's AgentCore branch
+    # (Q9a row #1) -- the ECS branch stays byte-identical and never invalidates here.
+    "agents.create": "agents",
     "agents.update": "agents",
     "agents.delete": "agents",
     "config.set": "config",
@@ -399,6 +402,8 @@ async def execute_sync(
     if method == "agents.update":
         params = _sanitize_agent_update(params)
     if method == "agents.delete":
+        from core.services.config_patcher import ConfigPatchError
+
         agent_id = params.get("agentId")
         if not isinstance(agent_id, str) or not agent_id:
             raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
@@ -406,16 +411,45 @@ async def execute_sync(
             result = await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
+        except ConfigPatchError as exc:
+            # Row #3 (Q9a): an ECS EFS failure (e.g. a stale lock) must be a clean RPC error,
+            # not a 500 -- the AgentCore branch never reaches this (it deletes the S3 profile
+            # prefix instead, see delete_agent_everywhere), so this only ever fires for ECS.
+            raise ApiProblem(
+                "RUNTIME_UNAVAILABLE",
+                "The runtime configuration could not be updated.",
+                retryable=True,
+                retry_after=3,
+                details={"method": method},
+            ) from exc
         await _invalidate(owner_id, method)
         return result
     if method == "agents.create":
+        from core.services.hermes_provisioning import HermesProfileError
+
         container, ip = await container_rpc.running_container(owner_id)
-        return await _create_agent(owner_id, user_id, _sanitize_agent_create(params), ip, container["gateway_token"])
-    if method == "agents.update":
         try:
-            await _mirror_agent_update(owner_id, params)
+            return await _create_agent(
+                owner_id, user_id, _sanitize_agent_create(params), container, ip, container["gateway_token"]
+            )
+        except HermesProfileError as exc:
+            # Row #1 (Q9a): a missing BYO key / failed Paperclip key mint on an AgentCore
+            # create must be a clean RPC error, not a 500.
+            raise ApiProblem(
+                "RUNTIME_UNAVAILABLE",
+                str(exc),
+                retryable=True,
+                retry_after=3,
+                details={"method": method},
+            ) from exc
+    if method == "agents.update":
+        is_agentcore_owner = await _is_agentcore(owner_id)
+        try:
+            await _mirror_agent_update(owner_id, params, agentcore=is_agentcore_owner)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
+        if is_agentcore_owner:
+            return await _patch_agentcore_agent_update(owner_id, params)
     if method in _HERMES_PROFILE_METHODS and await _is_agentcore(owner_id):
         # M4-R1/M4-R43 (fix round 1 continuation): an AgentCore row's Hermes profile lives in
         # S3, not behind a live gateway socket — the backend is the ONLY writer of a profile
@@ -527,7 +561,9 @@ def _normalize_gateway_error(method: str, exc: RuntimeError) -> ApiProblem:
     )
 
 
-async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip: str, token: str) -> dict:
+async def _create_agent(
+    owner_id: str, user_id: str, params: dict[str, Any], container: dict, ip: str, token: str
+) -> dict:
     name = params["name"]
     role = params.get("role")
     model = params.get("model")
@@ -549,7 +585,17 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
         paperclip_agent=paperclip_agent,
         gateway_token=token,
     )
-    if meta is not None:
+    if runtime_transport.host_for(container) == "agentcore":
+        # Row #1 (Q9a, task-9-scan.md): an AgentCore agent has no openclaw.json to stage
+        # Paperclip meta into -- apply_paperclip_meta is an EFS write and would raise
+        # ConfigPatchError, unwrapped, for this owner. write_profile_for_agent is what gives
+        # the new agent its config, its Paperclip key, and its SOUL (the identity-staging gap
+        # scan row #16 flagged).
+        from core.services.hermes_provisioning import write_profile_for_agent
+
+        await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
+        await _invalidate(owner_id, "agents.create")
+    elif meta is not None:
         from core.services.config_patcher import apply_paperclip_meta
 
         block = {"role": meta.role}
@@ -596,7 +642,25 @@ async def _mirror_paperclip_update_with_retry(
             await asyncio.sleep(0.2 * 2**attempt)
 
 
-async def _mirror_agent_update(owner_id: str, params: dict[str, Any]) -> None:
+async def _patch_agentcore_agent_update(owner_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    """``agents.update``'s AgentCore leg (Q9a row #2). The update was already mirrored to
+    Paperclip by ``_mirror_agent_update`` above -- name/role/title/capabilities/icon land there
+    and drive SOUL.md alone (``hermes_profiles.build_soul_md``), which is NOT rewritten here:
+    re-running ``write_profile_for_agent`` for this agent would clobber the owner's own
+    ``config.yaml`` edits. ``model`` is the one update field that is also a real ``config.yaml``
+    key (``write_agent_profile``'s ``model`` block), so it is the only field patched -- as a
+    nested ``{"model": {"default": ...}}`` merge so the stored ``provider`` survives, "leaving
+    everything else" per the ruling.
+    """
+    agent_id = params.get("agentId")
+    model = params.get("model")
+    if isinstance(agent_id, str) and agent_id and isinstance(model, str) and model:
+        await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, {"model": {"default": model}})
+    await _invalidate(owner_id, "agents.update")
+    return {"ok": True}
+
+
+async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentcore: bool = False) -> None:
     inner = params.get("params") or {}
     paperclip = inner.get("paperclip") if isinstance(inner, dict) else None
     name = params.get("name")
@@ -636,6 +700,13 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any]) -> None:
     except (PaperclipApiError, httpx.HTTPError, RuntimeError):
         logger.warning("Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
     if not isinstance(paperclip, dict):
+        return
+    if agentcore:
+        # Row #2 (Q9a, task-9-scan.md): an AgentCore row has no openclaw.json for
+        # apply_paperclip_meta to write -- role/title/capabilities/icon already landed on the
+        # Paperclip row above. SOUL.md (which derives them) is deliberately NOT rewritten here;
+        # see _patch_agentcore_agent_update's docstring for why.
+        params.pop("params", None)
         return
     try:
         from core.services.config_patcher import apply_paperclip_meta

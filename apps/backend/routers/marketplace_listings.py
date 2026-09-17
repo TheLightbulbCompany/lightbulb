@@ -42,6 +42,7 @@ from core.services import (
 from core.services.agent_roster import roster_entries
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.inbound_triggers import automation_requirement
+from core.services.messaging import ApiProblem
 from core.services.catalog_service import (
     CatalogService,
     MissingCredentialsError,
@@ -68,20 +69,26 @@ router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
 
 
 async def _container_for_export_routing(owner_id: str) -> dict | None:
-    """Best-effort container-row read for the export/preview S3-vs-EFS branch
+    """Container-row read for the export/preview S3-vs-EFS branch
     (agent_export._resolve_agent_location via runtime_transport.host_for).
 
-    A read failure degrades to ``None`` (host_for's own "absent means ECS"
-    default) rather than failing the whole preview/publish request -- this
-    lookup is a routing hint, not a requirement, matching the graceful-degrade
-    posture every other best-effort container/Paperclip read in this codebase
-    already uses (e.g. agent_export.resolve_apex_ceo_agent_id).
+    Fix round 2, gap 2: a read failure RAISES ``ApiProblem("RUNTIME_UNAVAILABLE")``
+    (503) instead of degrading to ``None`` -- mirrors
+    ``core.services.messaging.load_agent_roster``'s handling of a
+    container-row read failure. Degrading here used to route an AgentCore
+    seller onto the EFS branch on a mere transient blip, which then 404s as
+    "agent not found" instead of surfacing the real, retryable failure.
     """
     try:
         return await container_repo.get_by_owner_id(owner_id)
-    except Exception:
-        logger.exception("marketplace_listings: container lookup failed for owner=%s (defaulting to EFS)", owner_id)
-        return None
+    except Exception as exc:
+        logger.exception("marketplace_listings: container lookup failed for owner=%s", owner_id)
+        raise ApiProblem(
+            "RUNTIME_UNAVAILABLE",
+            "Could not resolve your container for this request.",
+            retryable=True,
+            retry_after=3,
+        ) from exc
 
 
 def _count_field(field) -> int:

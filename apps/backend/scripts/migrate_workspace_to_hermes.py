@@ -178,7 +178,11 @@ def _stop_runtime_session(runtime_arn: str, session_id: str) -> None:
 
 
 async def _load_company(owner_id: str):
-    return await PaperclipRepo(table_name=_PAPERCLIP_TABLE).get(owner_id)
+    # The paperclip-companies table is keyed by USER id (one row per user); an org's row is
+    # keyed by the org creator's user id, so ``get(owner_id)`` never finds it for an org owner.
+    # ``resolve_owner_row`` is the one resolution path every other reader uses (by-org-id GSI).
+    # Found by the first dev dry run: every parked dev workspace read as "no company" (exit 2).
+    return await PaperclipRepo(table_name=_PAPERCLIP_TABLE).resolve_owner_row(owner_id, consistent_read=True)
 
 
 def _agent_workspace_dir(owner_id: str, agent_id: str) -> Path:

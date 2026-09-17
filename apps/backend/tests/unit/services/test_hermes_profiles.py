@@ -15,7 +15,7 @@ def cfg(**kw):
 
 
 def test_model_is_written_as_a_dict_with_default_never_a_bare_string():
-    assert cfg()["model"] == {"default": AIPS["sonnet"], "provider": "bedrock"}
+    assert cfg()["model"] == {"default": AIPS["sonnet"], "provider": "bedrock", "context_length": 200_000}
 
 
 def test_the_ceo_profile_is_pinned_to_the_premium_tier():

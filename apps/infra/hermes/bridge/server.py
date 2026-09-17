@@ -93,9 +93,15 @@ def _boot_ready() -> bool:
     return bool(HOOK_TOKEN) and (sync.HOME / "profiles").is_dir()
 
 
-def _health(_params: dict) -> dict:
+def _health(_params: dict, **_kwargs) -> dict:
+    # container_rpc.call only raises when the gateway answers {ok:false} (or the transport
+    # itself fails) -- it never inspects the payload -- and readiness_state's
+    # _gateway_reachable treats "no exception" as ready. So a not-ready bridge MUST answer
+    # ok:false here, or a booting container reads as ready fleet-wide.
+    if not _boot_ready():
+        return {"ok": False, "error": {"code": "NOT_READY", "message": "ingress cannot be accepted yet"}}
     return {"ok": True, "payload": {
-        "ready": _boot_ready(), "runtime": "hermes",
+        "ready": True, "runtime": "hermes",
         "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
         "agents": len(_profiles()),
     }}
@@ -110,7 +116,7 @@ def _unavailable(method: str) -> dict:
 
 
 for _m in UI_ONLY_METHODS:
-    RPC_METHODS.setdefault(_m, (lambda m: lambda _p: _unavailable(m))(_m))
+    RPC_METHODS.setdefault(_m, (lambda m: lambda _p, **_kwargs: _unavailable(m))(_m))
 
 
 def _rpc(body) -> tuple[int, dict]:
@@ -121,11 +127,15 @@ def _rpc(body) -> tuple[int, dict]:
         return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "method is required"}}
     if not isinstance(params, dict):
         return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "params must be an object"}}
+    timeout_ms = body.get("timeoutMs", RPC_DEFAULT_TIMEOUT_MS)
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms <= 0:
+        return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "timeoutMs must be a positive integer"}}
+    timeout_ms = min(timeout_ms, RPC_MAX_TIMEOUT_MS)
     handler = RPC_METHODS.get(method)
     if handler is None:
         return 200, _unavailable(method)
     try:
-        result = handler(params)
+        result = handler(params, timeout_ms=timeout_ms)
     except Exception:  # noqa: BLE001 — the exception text may carry params; never return it
         log.warning("rpc %s failed", method, exc_info=True)
         return 200, {"ok": False, "error": {"code": "UNAVAILABLE",
@@ -142,20 +152,20 @@ def _require_profile(params: dict) -> str:
     return agent_id
 
 
-def _config_get(params: dict) -> dict:
+def _config_get(params: dict, **_kwargs) -> dict:
     if params.get("agentId"):
         return {"ok": True, "payload": {"config": sync.read_profile_config(_require_profile(params))}}
     return {"ok": True, "payload": {"config": {name: sync.read_profile_config(name) for name in _profiles()}}}
 
 
-def _config_patch(params: dict) -> dict:
+def _config_patch(params: dict, **_kwargs) -> dict:
     agent_id = _require_profile(params)
     merged = sync.deep_merge(sync.read_profile_config(agent_id), params.get("patch") or {})
     sync.write_profile_config(agent_id, merged)
     return {"ok": True, "payload": {"config": merged}}
 
 
-def _config_set(params: dict) -> dict:
+def _config_set(params: dict, **_kwargs) -> dict:
     agent_id = _require_profile(params)
     config = params.get("config") or {}
     sync.write_profile_config(agent_id, config)
@@ -170,7 +180,7 @@ def _agent_id_param(params: dict) -> str:
     return str(params.get("agent_id") or params.get("agentId") or "")
 
 
-def _agents_list(_params: dict) -> dict:
+def _agents_list(_params: dict, **_kwargs) -> dict:
     agents = []
     for name in _profiles():
         config = sync.read_profile_config(name)
@@ -179,7 +189,7 @@ def _agents_list(_params: dict) -> dict:
     return {"ok": True, "payload": {"agents": agents}}
 
 
-def _agents_update(params: dict) -> dict:
+def _agents_update(params: dict, **_kwargs) -> dict:
     agent_id = _require_profile({"agentId": _agent_id_param(params)})
     patch = {k: v for k, v in params.items() if k not in ("agent_id", "agentId")}
     merged = sync.deep_merge(sync.read_profile_config(agent_id), {"agent": patch} if patch else {})
@@ -187,20 +197,20 @@ def _agents_update(params: dict) -> dict:
     return {"ok": True, "payload": {"agent": {"id": agent_id, **(merged.get("agent") or {})}}}
 
 
-def _agents_delete(params: dict) -> dict:
+def _agents_delete(params: dict, **_kwargs) -> dict:
     agent_id = _require_profile({"agentId": _agent_id_param(params)})
     shutil.rmtree(sync.HOME / "profiles" / agent_id, ignore_errors=True)
     sync.delete_profile_objects(agent_id)   # otherwise the next restore resurrects the profile
     return {"ok": True, "payload": {"deleted": True}}
 
 
-def _channels_status(params: dict) -> dict:
+def _channels_status(params: dict, **_kwargs) -> dict:
     # The BRIDGE owns channel ingress on Hermes, and Slack/Discord enter through the backend,
     # so there is no per-container channel account to report. Empty is the true answer.
     return {"ok": True, "payload": {"channels": [], "probe": bool(params.get("probe"))}}
 
 
-def _models_auth_status(_params: dict) -> dict:
+def _models_auth_status(_params: dict, **_kwargs) -> dict:
     ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
     return {"ok": True, "payload": {"providers": [
         {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}

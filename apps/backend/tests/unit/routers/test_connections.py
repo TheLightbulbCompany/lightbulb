@@ -2923,6 +2923,7 @@ class TestProjectsRailNamespaceIsInvisibleHere:
         connected."""
         from core.services.credentials import mcp_server
 
+        monkeypatch.setattr(mcp_server.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
         monkeypatch.setattr(
             mcp_server.integrations_repo,
             "list_for_owner",

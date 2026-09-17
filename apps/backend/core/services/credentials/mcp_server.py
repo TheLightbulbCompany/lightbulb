@@ -50,8 +50,19 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
         the block is emitted from the registry + connected status alone — without
         it a full-config overwrite (reprovision) drops the live server entry even
         though the OAuth token file survives on EFS.
+
+    A THIRD, non-provider shape is folded in too: manually-defined servers an
+    owner adds via the Integrations panel's raw MCP editor
+    (routers/integrations.py). On ECS those go straight into openclaw.json's
+    mcp.servers and this function never sees them. An AgentCore owner has no
+    openclaw.json to write into, so the manual editor stores them on the
+    reserved integrations_repo.MANUAL_MCP_KEY row instead, and this is where
+    they surface — seeded FIRST so a same-key connected integration below
+    always wins the collision, matching the ECS reconcile's own "integration
+    ownership wins" rule (routers/integrations.py's own re-assert-after-write
+    comments).
     """
-    servers: dict[str, dict] = {}
+    servers: dict[str, dict] = dict(await integrations_repo.get_manual_mcp_servers(owner_id))
     for row in await integrations_repo.list_for_owner(owner_id):
         provider = row.get("provider")
         if not provider or row.get("status", "connected") != "connected":

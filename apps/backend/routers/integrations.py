@@ -19,12 +19,14 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.containers.config import read_openclaw_config_from_efs
+from core.repositories import integrations_repo
+from core.services import runtime_transport
 from core.services.config_patcher import (
     ConfigPatchError,
     delete_openclaw_config_path,
     set_openclaw_config_path,
 )
-from core.services.credentials.mcp_server import reconcile_integrations
+from core.services.credentials.mcp_server import build_connected_integration_servers, reconcile_integrations
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +159,20 @@ def _validate_servers(servers: dict) -> dict:
     return normalized
 
 
+async def _agentcore_refresh(owner_id: str) -> dict:
+    """AgentCore twin of the ECS write-then-reconcile-then-reread sequence: fan
+    the (manual ∪ connected-integration) merge out to every Hermes profile,
+    then return that merge for the response body -- the manual write itself
+    already landed on the reserved integrations_repo.MANUAL_MCP_KEY row before
+    this is called. Best-effort like the ECS reconcile call: the manual write
+    already committed, so a profile-refresh hiccup must not 500 it."""
+    try:
+        await reconcile_integrations(owner_id)
+    except Exception:
+        logger.exception("hermes profile refresh after manual MCP write failed for %s", owner_id)
+    return await build_connected_integration_servers(owner_id)
+
+
 async def _read_mcp_servers(owner_id: str) -> dict:
     """Return the current ``mcp.servers`` block, or empty dict if absent."""
     config = await read_openclaw_config_from_efs(owner_id)
@@ -212,6 +228,12 @@ async def replace_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     servers = _validate_servers(body.servers)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # No openclaw.json to write into -- the manual bucket IS the whole
+        # replace target, mirroring PUT's "keys not present are deleted"
+        # semantics for the manual-only dict.
+        await integrations_repo.set_manual_mcp_servers(owner_id, servers)
+        return {"servers": await _agentcore_refresh(owner_id)}
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers"], servers)
     except ConfigPatchError as exc:
@@ -249,6 +271,11 @@ async def upsert_mcp_server(
     if auth.is_org_context:
         require_org_admin(auth)
     entry = _normalize_entry(body)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        manual = await integrations_repo.get_manual_mcp_servers(owner_id)
+        manual[name] = entry
+        await integrations_repo.set_manual_mcp_servers(owner_id, manual)
+        return {"servers": await _agentcore_refresh(owner_id)}
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:
@@ -280,6 +307,11 @@ async def delete_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        manual = await integrations_repo.get_manual_mcp_servers(owner_id)
+        manual.pop(name, None)
+        await integrations_repo.set_manual_mcp_servers(owner_id, manual)
+        return {"servers": await _agentcore_refresh(owner_id)}
     try:
         await delete_openclaw_config_path(owner_id, ["mcp", "servers", name])
     except ConfigPatchError as exc:

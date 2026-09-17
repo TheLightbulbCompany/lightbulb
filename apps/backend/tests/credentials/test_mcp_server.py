@@ -4,6 +4,16 @@ from unittest.mock import AsyncMock
 from core.services.credentials.mcp_server import build_mcp_server_block
 
 
+@pytest.fixture(autouse=True)
+def _no_manual_servers_by_default(monkeypatch):
+    """build_connected_integration_servers now also reads the manual-MCP row
+    (a real DynamoDB read when unmocked). Default it to empty for every test
+    in this file; the manual-servers tests below override it per test."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
+
+
 def test_resolve_source_literal_returns_static_string():
     # `literal:` lets a provider set a static env value (e.g. a feature flag)
     # with no dependence on the credential or raw input.
@@ -328,3 +338,90 @@ async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instea
 
     assert called == {"owner_id": "org_a", "agent_ids": ["a1", "a2"]}
     assert ecs_calls == []  # the ECS/openclaw.json path is never reached
+
+
+# ---------------------------------------------------------------------------
+# Row #6: manual MCP servers (an AgentCore owner's raw-editor entries)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_includes_manual_servers(monkeypatch):
+    """Manual servers (stored on integrations_repo.MANUAL_MCP_KEY for an
+    AgentCore owner -- see routers/integrations.py) are folded into the same
+    merged map connected integrations project into."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "get_manual_mcp_servers",
+        AsyncMock(return_value={"my-custom": {"command": "node", "args": ["x.js"], "env": {}}}),
+    )
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    servers = await m.build_connected_integration_servers("org_1")
+
+    assert servers == {"my-custom": {"command": "node", "args": ["x.js"], "env": {}}}
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_connected_integration_wins_manual_collision(monkeypatch):
+    """A manual server sharing a key with a connected integration must not
+    shadow it -- integration ownership always wins, mirroring the ECS
+    reconcile's own re-assert-after-write rule."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "get_manual_mcp_servers",
+        AsyncMock(return_value={"stripe": {"command": "should-be-overwritten"}, "my-custom": {"command": "keep"}}),
+    )
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+    monkeypatch.setattr(m.integration_secret_store, "get", AsyncMock(return_value=None))
+
+    servers = await m.build_connected_integration_servers("org_1")
+
+    assert servers["stripe"] == {
+        "transport": "streamable-http",
+        "url": "https://mcp.stripe.com",
+        "auth": "oauth",
+        "requestTimeoutMs": 60000,
+    }
+    assert servers["my-custom"] == {"command": "keep"}
+
+
+@pytest.mark.asyncio
+async def test_manual_server_secret_scrubbed_to_env_ref_not_config(monkeypatch):
+    """M6-R24/M4-R17: a manual server's header/env secret rides the same
+    translate_mcp_servers scrub as any registry mcp_server block -- it never
+    lands literally in config.yaml, only as a ${VAR} ref, with the real value
+    moved to the profile .env."""
+    from core.services import hermes_profiles
+    from core.services.credentials import mcp_server as m
+
+    secret = "Bearer sk_live_super_secret"
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "get_manual_mcp_servers",
+        AsyncMock(
+            return_value={
+                "acme": {
+                    "transport": "streamable-http",
+                    "url": "https://acme.example/mcp",
+                    "headers": {"Authorization": secret},
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    connected = await m.build_connected_integration_servers("org_1")
+    config, secrets = hermes_profiles.translate_mcp_servers(connected)
+
+    assert config["acme"]["headers"]["Authorization"] == "${MCP_ACME_AUTHORIZATION}"
+    assert secrets["MCP_ACME_AUTHORIZATION"] == secret
+    assert secret not in repr(config)

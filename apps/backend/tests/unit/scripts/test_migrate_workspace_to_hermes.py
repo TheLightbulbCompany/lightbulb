@@ -207,6 +207,10 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     # touches the row any more, so status is exactly what provision_hermes_runtime's own
     # terminal write already set ("running"), untouched since.
     assert "status" not in stamped_fields
+    # Fix round 2, item 3: a successful stamp also clears any earlier hermes_migrate_error/
+    # hermes_migrate_exit_code left by a previous pre-flip failure (Ruling M6-R22).
+    assert stamped_fields["hermes_migrate_error"] is None
+    assert stamped_fields["hermes_migrate_exit_code"] is None
 
     # Every agent got a profile prefix, the SOUL.md override, and the carried EFS content --
     # each agent's .revision write is the LAST key for that agent.
@@ -859,3 +863,19 @@ async def test_a_provision_superseded_from_the_stamp_maps_to_lost_claim(precondi
     monkeypatch.setattr(mod, "_stamp_migrated", AsyncMock(side_effect=ProvisionSuperseded("taken")))
 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_LOST_CLAIM
+
+
+async def test_stamp_migrated_clears_an_earlier_error(monkeypatch):
+    """Fix round 2, item 3: a row carrying an earlier hermes_migrate_error/hermes_migrate_exit_code
+    (from a previous pre-flip failure, Ruling M6-R22) is stamped clean on success -- rollback
+    already uses None the same way to clear a field."""
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    leased = AsyncMock()
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", leased)
+
+    await mod._stamp_migrated(OWNER)
+
+    fields = leased.await_args.args[2]
+    assert fields["hermes_migrated_at"]
+    assert fields["hermes_migrate_error"] is None
+    assert fields["hermes_migrate_exit_code"] is None

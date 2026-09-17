@@ -434,18 +434,23 @@ async def _stamp_migrated(owner_id: str) -> None:
     released the lease this job's earlier claim held (its own terminal write uses
     ``release_lease=True``), so there is nothing left to reuse — this re-claims via
     ``takeover_provision`` purely to make this a FENCED write like every other terminal
-    transition in this job. Stamps ``hermes_migrated_at`` ALONE (what makes the tail
-    re-enterable: a later run's precondition check treats a stamped row as done) — ``status`` is
-    NOT written here: ``stop_user_service(force=True)`` no longer touches the row at all
-    (M6-R17), so ``status`` is exactly whatever ``provision_hermes_runtime``'s own terminal write
-    already set it to ("running"), and re-asserting it here would just be a second writer of a
-    value nothing else has touched.
+    transition in this job. Stamps ``hermes_migrated_at`` (what makes the tail re-enterable: a
+    later run's precondition check treats a stamped row as done) — ``status`` is NOT written
+    here: ``stop_user_service(force=True)`` no longer touches the row at all (M6-R17), so
+    ``status`` is exactly whatever ``provision_hermes_runtime``'s own terminal write already set
+    it to ("running"), and re-asserting it here would just be a second writer of a value nothing
+    else has touched.
+
+    Fix round 2, item 3: also clears ``hermes_migrate_error``/``hermes_migrate_exit_code`` (to
+    ``None``, the same convention ``rollback`` already uses to clear a field) — a successful
+    migration that follows one or more pre-flip failures (Ruling M6-R22) must not leave the
+    row's last word being a stale error from an attempt that no longer matters.
     """
     claim_id = await container_repo.takeover_provision(owner_id)
     await container_repo.update_container_leased(
         owner_id,
         claim_id,
-        {"hermes_migrated_at": utc_now_iso()},
+        {"hermes_migrated_at": utc_now_iso(), "hermes_migrate_error": None, "hermes_migrate_exit_code": None},
         attempt_token=claim_id,
         release_lease=True,
     )

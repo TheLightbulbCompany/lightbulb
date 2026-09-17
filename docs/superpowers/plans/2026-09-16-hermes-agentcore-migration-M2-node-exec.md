@@ -900,7 +900,7 @@ def test_cleanup_never_touches_the_users_mac(monkeypatch):
     assert env(monkeypatch, {"ok": True, "payload": {}}).cleanup() is None
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_plugin_node.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_plugin_node.py -q`
   Expected: FAIL with `ModuleNotFoundError: No module named 'lightbulb_node'`
 - [ ] **Step 3: Write minimal implementation**
 ```yaml
@@ -1001,7 +1001,7 @@ def register(ctx) -> None:
 ```
   Selection is per profile: `terminal.backend: lightbulb_node` in the agent's `config.yaml`, which Task 17's `config.patch` can already write.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `91 passed`
 - [ ] **Step 5: Commit**
 ```bash

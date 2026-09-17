@@ -88,7 +88,7 @@ def test_the_default_s3_prefix_stays_inside_the_owner_grant():
     assert bridge.default_s3_prefix("org_test") == "org_test/hermes"
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: FAIL with `ModuleNotFoundError: No module named 'bridge.server'; 'bridge' is not a package`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -139,7 +139,7 @@ if __name__ == "__main__":
     main()
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `4 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -188,7 +188,7 @@ def test_boot_secrets_come_from_secrets_manager_not_the_runtime_env():
     }
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_sync.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_sync.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.sync' has no attribute 'is_excluded'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -233,7 +233,7 @@ def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
             continue
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_sync.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_sync.py -q`
   Expected: PASS — `2 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -333,7 +333,7 @@ def test_an_unsupported_attachment_type_is_still_refused():
         turn.parse_ingress(f.ingress(message=msg))
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_ingress.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_ingress.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'parse_ingress'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -410,7 +410,7 @@ def parse_ingress(body: dict) -> dict:
             return 400, {"error": "invalid_ingress", "message": exc.message}
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `12 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -467,7 +467,7 @@ def test_the_final_reply_carries_the_thread_root(home, posted, monkeypatch):
     assert reply["eventId"] == f"{body['eventId']}:ceo:reply"
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_threading.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_threading.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'reply_thread_root'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -492,7 +492,7 @@ def reply_thread_root(room_kind: str, message: dict) -> str | None:
                 "threadRootMessageId": thread_root,
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `16 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -548,7 +548,7 @@ def test_the_system_prompt_embeds_the_context_as_parseable_json():
     assert "CEO" in prompt
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_context.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_context.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'room_context'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -589,7 +589,7 @@ def system_prompt(body: dict, agent_id: str) -> str:
 ```
   and in `run_turn`, `system_message=system_prompt(body, agent_id)`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `19 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -657,7 +657,7 @@ def test_the_publish_body_double_encodes_the_event(monkeypatch):
     assert seen["auth"].startswith("AWS4-HMAC-SHA256 Credential=AK/")
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_frames.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_frames.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'frame_event'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -712,7 +712,7 @@ def publish_frame(endpoint: str, channel: str, event: dict) -> int:
         return 0
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `22 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -786,7 +786,7 @@ def test_a_non_tool_progress_event_becomes_agent_activity_and_tool_events_are_ne
     assert len(sent) == 1
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_frame_vocabulary.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_frame_vocabulary.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'FramePublisher'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -867,7 +867,7 @@ class FramePublisher:
         frames.finished(outcome, reply, error_kind)
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `26 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -934,7 +934,7 @@ def test_hermes_prose_from_a_dead_model_is_never_posted(api_calls, final, expect
     assert usage["inputTokens"] == 11
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_run_outcome.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_run_outcome.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'run_ended_body'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -996,7 +996,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
 ```
   (`attach_agent` lands in Task 9; until then it is a no-op stub.)
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `32 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1066,7 +1066,7 @@ def test_a_turn_aborted_before_it_launched_reports_zero_usage(home, posted, monk
     assert ended["outcome"] == "aborted" and ended["usage"] == turn.ZERO_USAGE
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_abort.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_abort.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'RUNS'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -1127,7 +1127,7 @@ _RUN_CONTROL_RE = re.compile(r"^/plugins/lightbulb-channel/runs/([0-9a-f-]{36})/
         return 404, {"runId": run_id, "state": "not_found"}
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `37 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1191,7 +1191,7 @@ def test_empty_or_oversized_text_is_400():
     assert server.handle_plugin(PATH, "POST", AUTH, {"text": "x" * 100_001})[0] == 400
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_steer.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_steer.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'steer_run'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -1224,7 +1224,7 @@ def steer_run(run_id: str, text: str) -> bool:
         return 404, {"runId": run_id, "state": "not_found"}
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `41 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1318,7 +1318,7 @@ def test_a_non_uuid_room_is_refused_before_any_network_call(tmp_path, monkeypatc
                                                             session_id=SESSION)
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_plugin_lightbulb.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_plugin_lightbulb.py -q`
   Expected: FAIL with `ModuleNotFoundError: No module named 'lightbulb'`
 - [ ] **Step 3: Write minimal implementation**
 ```yaml
@@ -1461,7 +1461,7 @@ def register(ctx) -> None:
             tc.clear(_profile_dir(agent_id), session_id)
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `45 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1509,7 +1509,7 @@ def test_an_empty_listings_array_returns_an_error_not_a_card_that_renders_nothin
     assert "at least one listing" in lightbulb._hire_suggestion({"reason": "r", "listings": []})
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_plugin_hire.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_plugin_hire.py -q`
   Expected: FAIL with `AttributeError: module 'lightbulb' has no attribute '_hire_suggestion'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -1559,7 +1559,7 @@ def _hire_suggestion(args: dict, **_kw) -> str:
 ```
   and in `register(ctx)`: `ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion, description=HIRE_SCHEMA["description"], emoji="🧑‍💼")`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `48 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1608,7 +1608,7 @@ def test_registration_is_reported_and_a_failure_never_breaks_plugin_load():
     assert lightbulb._register_redaction(lambda patterns, source: (_ for _ in ()).throw(RuntimeError())) == 0
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_plugin_redaction.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_plugin_redaction.py -q`
   Expected: FAIL with `AttributeError: module 'lightbulb' has no attribute 'REDACTION_PATTERNS'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -1633,7 +1633,7 @@ def _register_redaction_default() -> int:
 ```
   and as the first line of `register(ctx)`: `_register_redaction_default()`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `51 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1727,7 +1727,7 @@ def test_every_transport_failure_collapses_to_one_generic_message(tmp_path, monk
     assert out == lightbulb.SESSIONS_UNAVAILABLE and "503" not in out
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_plugin_sessions.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_plugin_sessions.py -q`
   Expected: FAIL with `AttributeError: module 'lightbulb' has no attribute '_local_sessions'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -1816,7 +1816,7 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
 ```
   and in `register(ctx)`: `ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions, description=SESSIONS_SCHEMA["description"], emoji="🖥️")`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `56 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1867,7 +1867,7 @@ def test_the_error_text_is_never_forwarded(posted):
     assert "error" not in body and "durationMs" not in body and body["success"] is False
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_usage_report.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_usage_report.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.turn' has no attribute 'report_usage'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -1890,7 +1890,7 @@ def report_usage(session_key, agent_id, run_id, success, duration_ms, usage) -> 
 ```
   and in `run_turn`, after the run.ended callback: `report_usage(session_key, agent_id, run_id, outcome == "completed", int(took * 1000), usage)`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `59 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -1974,7 +1974,7 @@ def test_an_unknown_method_is_unavailable_not_404():
     assert code == 200 and obj["error"]["code"] == "UNAVAILABLE"
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_rpc_transport.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_rpc_transport.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.server' has no attribute 'UI_ONLY_METHODS'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -2046,7 +2046,7 @@ def _rpc(body) -> tuple[int, dict]:
 ```
   plus `for _m in UI_ONLY_METHODS: RPC_METHODS.setdefault(_m, (lambda m: lambda _p: _unavailable(m))(_m))`, and route the RPC path through `_rpc`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `66 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -2116,7 +2116,7 @@ def test_an_unknown_profile_is_unavailable_not_a_crash(home):
     assert call("config.patch", {"agentId": "ghost", "patch": {}})[1]["error"]["code"] == "UNAVAILABLE"
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_rpc_config.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_rpc_config.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.sync' has no attribute 'deep_merge'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -2192,7 +2192,7 @@ RPC_METHODS.update({"config.get": _config_get, "config.patch": _config_patch, "c
 ```
   (`LookupError` falls into `_rpc`'s generic `UNAVAILABLE` handler — no profile name is echoed back.)
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `71 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -2265,7 +2265,7 @@ def test_models_auth_status_reports_the_real_bedrock_gate_binding(monkeypatch):
     assert call("models.authStatus")["payload"]["providers"][0]["status"] == "missing"
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_rpc_agents.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_rpc_agents.py -q`
   Expected: FAIL with `assert {'ok': False, 'error': {'code': 'UNAVAILABLE', ...}}` — `agents.list` is not registered
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -2331,7 +2331,7 @@ def delete_profile_objects(agent_id: str) -> int:
     return removed
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `76 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -2397,7 +2397,7 @@ def test_pinning_merges_under_an_existing_profile_config_without_losing_it(home,
                                              "fallback_chain": [], "timeout": 300}
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_auxiliary_pin.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_auxiliary_pin.py -q`
   Expected: FAIL with `AttributeError: module 'bridge.sync' has no attribute 'auxiliary_pin'`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -2430,7 +2430,7 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
 ```
   and in `run_turn`, right after `restore_profile(agent_id)`: `pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or MODEL)`.
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `80 passed`
 - [ ] **Step 5: Commit**
 ```bash
@@ -2485,7 +2485,7 @@ def test_a_mail_turn_posts_usage_and_no_run_callbacks_or_frames(home, posted, mo
     assert not any(p.startswith("runs/") for p in paths)
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_agent_mail.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_agent_mail.py -q`
   Expected: FAIL with `bridge.turn.IngressError: eventKind must be one of user_request|room_event`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -2516,7 +2516,7 @@ EVENT_KINDS = ROOM_EVENT_KINDS + ("agent_mail",)
             path, body = "/hooks/agent", {...}   # unchanged
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q && cd ../../backend && uv run pytest tests/unit/services/test_agent_mail_delivery.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q && cd ../../backend && uv run pytest tests/unit/services/test_agent_mail_delivery.py -q`
   Expected: PASS — `83 passed` then the backend suite green
 - [ ] **Step 5: Commit**
 ```bash
@@ -2634,7 +2634,7 @@ def test_the_throwaway_ws_echo_is_gone():
         assert banned not in source
 ```
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests/test_no_diagnostic_hatch.py -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests/test_no_diagnostic_hatch.py -q`
   Expected: FAIL with `AssertionError: subprocess still present in server.py`
 - [ ] **Step 3: Write minimal implementation**
 ```python
@@ -2659,7 +2659,7 @@ def test_the_throwaway_ws_echo_is_gone():
         self._send(200, {"status": code, "headers": {"content-type": "application/json"}, "body": obj})
 ```
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore python -m pytest tests -q`
+  Run: `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q`
   Expected: PASS — `85 passed`
 - [ ] **Step 5: Commit**
 ```bash

@@ -422,3 +422,33 @@ async def test_a_leg_exception_closes_1011_and_logs_it(caplog):
         )
     assert code == 1011
     assert any("relay leg failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_serve_task_cancels_and_awaits_every_leg():
+    """Fix round 1, item 6 (important): asyncio.wait does not cancel its own awaitables --
+    if `_pump`'s own coroutine is cancelled while blocked inside asyncio.wait (a shutdown/
+    drain interrupting the connection, NOT a leg finishing on its own), the reader/writer/
+    ticker (and refresher, when wired) tasks it created were left running with nothing left
+    to ever cancel or await them."""
+    socket = _FeedableSocket()
+    socket.feed(_connect_frame("c-8", ["system.run"]))
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(node_broker, "TICK_INTERVAL_MS", 60_000),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+    ):
+        before = asyncio.all_tasks()
+        serve_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(socket, _identity(), {"runtime_host": "agentcore"})
+        )
+        await _poll_until(lambda: ("org_1", "dev-1") in gateway_relay.node_sessions)
+        await asyncio.sleep(0)  # let the reader/writer/ticker legs actually start running
+
+        serve_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await serve_task
+
+        await asyncio.sleep(0)  # give any leaked task one more turn to (fail to) wind down
+        leaked = asyncio.all_tasks() - before - {asyncio.current_task()}
+        assert all(task.done() for task in leaked), [t.get_coro() for t in leaked if not t.done()]

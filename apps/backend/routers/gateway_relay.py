@@ -466,7 +466,23 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
 
     legs = {asyncio.create_task(leg()) for leg in (reader, writer, ticker)}
     waitable = legs | ({refresher} if refresher is not None else set())
-    done, pending = await asyncio.wait(waitable, return_when=asyncio.FIRST_COMPLETED)
+    done: set[asyncio.Task] = set()
+    pending: set[asyncio.Task] = set(waitable)
+    try:
+        done, pending = await asyncio.wait(waitable, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        # asyncio.wait does NOT cancel its own awaitables -- if THIS coroutine is itself
+        # cancelled while blocked on the wait above (a shutdown/drain interrupting the
+        # connection, not a leg finishing on its own), the wait call never returns and the
+        # cancel+await below would never run if it lived after it instead of in this
+        # `finally`. `pending` still holds every leg (none observed as done yet) in that
+        # case, so this unconditionally cancels and awaits all of them either way
+        # (fix round 1, item 6).
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*waitable, return_exceptions=True)
+
     # Reuses the ECS relay's own `_pick_close_code` (revoke wins over any same-batch leg
     # failure) and its "relay leg failed" logging pattern; a `_FrameTooLarge` refines the
     # generic 1011 down to the more specific 1009, but never overrides a 1008 revoke.
@@ -481,7 +497,4 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
             close_code = 1009
         elif close_code == 1011:
             logger.warning("relay leg failed kind=node", exc_info=exc)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*waitable, return_exceptions=True)
     return close_code

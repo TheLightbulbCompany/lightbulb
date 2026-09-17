@@ -1,3 +1,5 @@
+import re
+
 from core.services import hermes_profiles
 
 AIPS = {
@@ -183,3 +185,100 @@ def test_render_dotenv_refuses_an_illegal_key():
 
     with pytest.raises(ValueError):
         hermes_profiles.render_dotenv({"not a key": "x"})
+
+
+# Fix round 1, I3: a small, faithful copy of Hermes's OWN ``.env`` grammar — the exact functions
+# every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard scrub, ...) parses
+# through — so the round-trip test below exercises the real algorithm, not our own assumptions
+# about it. Verified against the image:
+#   docker run --rm --entrypoint grep lightbulb/hermes-spike:m1-rc4 -n -A40 "def load_env_file" \
+#     /opt/hermes/agent/secret_scope.py
+def _hermes_strip_inline_comment(value: str) -> str:
+    """Copy of ``agent/secret_scope.py:181-201``."""
+    value = value.strip()
+    if not value:
+        return value
+    quote = value[0]
+    if quote in ("'", '"'):
+        i = 1
+        while i < len(value):
+            ch = value[i]
+            if quote == '"' and ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                return value[: i + 1] if value[i + 1 :].lstrip().startswith("#") else value
+            i += 1
+        return value
+    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
+
+
+def _hermes_parse_env_value(raw_value: str) -> str:
+    """Copy of ``agent/secret_scope.py:204-219``."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        quoted = value[1:-1]
+        parsed: list[str] = []
+        i = 0
+        while i < len(quoted):
+            escaped = quoted[i] == "\\" and quoted[i + 1 : i + 2] in ('"', "\\")
+            parsed.append(quoted[i + 1] if escaped else quoted[i])
+            i += 2 if escaped else 1
+        return "".join(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
+def _hermes_load_env_file(text: str) -> dict:
+    """Copy of ``agent/secret_scope.py:222-251`` ``load_env_file``, minus file I/O and BOM
+    handling (``render_dotenv``'s output is already a decoded ``str``)."""
+    secrets: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and key:
+            secrets[key] = _hermes_parse_env_value(_hermes_strip_inline_comment(value))
+    return secrets
+
+
+def test_render_dotenv_round_trips_through_the_real_hermes_parser_for_every_special_character():
+    values = {
+        "PLAIN": "abc123",
+        "WITH_SPACE": "one two",
+        "WITH_QUOTE": 'say "hi"',
+        "WITH_BACKSLASH": r"C:\Users\x",
+        "WITH_HASH": "value#not-a-comment",
+        "WITH_EQUALS": "a=b=c",
+        "LEADING_TRAILING_SPACE": "  padded  ",
+        "TRAILING_BACKSLASH": "foo\\",
+        "DOUBLE_TRAILING_BACKSLASH": "foo\\\\",
+        "LITERAL_BACKSLASH_N_TEXT": "line1\\nline2",  # the two chars \ and n — NOT a real newline
+        "HASH_WITH_LEADING_SPACE": "value # looks like a comment but is not",
+    }
+    rendered = hermes_profiles.render_dotenv(values)
+    assert _hermes_load_env_file(rendered) == values
+
+
+def test_render_dotenv_rejects_a_value_containing_a_real_newline():
+    """``load_env_file`` splits on ``text.splitlines()`` BEFORE any value parsing
+    (``secret_scope.py:241``), so an embedded newline byte has NO valid encoding in this grammar —
+    it would truncate its own assignment and reinterpret every following line as a fresh
+    ``KEY=VALUE`` (silently dropping the rest of the file, or injecting an attacker-chosen
+    variable). Reject rather than silently corrupt the file."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        hermes_profiles.render_dotenv({"X": "line1\nline2"})
+
+
+def test_render_dotenv_rejects_a_value_containing_a_carriage_return():
+    import pytest
+
+    with pytest.raises(ValueError):
+        hermes_profiles.render_dotenv({"X": "line1\rline2"})

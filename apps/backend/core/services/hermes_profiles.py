@@ -234,15 +234,35 @@ def build_profile_env(
 
 
 def render_dotenv(env: dict[str, str]) -> str:
+    """Render Hermes's exact ``.env`` grammar — verified against ``agent/secret_scope.py``'s
+    ``load_env_file``/``_parse_env_value``/``_strip_inline_comment`` in the
+    ``lightbulb/hermes-spike:m1-rc4`` image (fix round 1, I3):
+
+    * The parser is strictly LINE-based (``text.splitlines()`` runs before any value parsing), so
+      a literal newline or carriage return in a value has NO valid encoding at all — it would
+      truncate the assignment and reinterpret every following line as a fresh ``KEY=VALUE``.
+      Reject those values outright.
+    * When quoting is needed, the parser reverses exactly two escapes inside a double-quoted
+      value: ``\\"`` and ``\\\\`` — nothing else. Escaping the backslash FIRST (before the quote)
+      guarantees any run of backslashes immediately before the closing quote we add is always
+      even, so the parser's escape-skip logic can never walk past our closing quote and treat it
+      as escaped content (the "trailing backslash breaks the quoting" failure mode).
+    """
     lines = []
     for key, value in env.items():
         if not _KEY_RE.match(key):
             raise ValueError(f"illegal dotenv key: {key!r}")
         text = str(value)
+        if "\n" in text or "\r" in text:
+            raise ValueError(
+                f"dotenv value for {key!r} contains a newline; Hermes's .env is line-based "
+                "and has no valid encoding for one"
+            )
         if _PLAIN_RE.match(text):
             lines.append(f"{key}={text}")
         else:
-            lines.append(f'{key}="' + text.replace('"', '\\"') + '"')
+            escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{key}="{escaped}"')
     return "\n".join(lines)
 
 

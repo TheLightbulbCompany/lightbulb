@@ -112,12 +112,14 @@ async def reconcile_integrations(owner_id: str) -> None:
     bridge's own ensure_profile() re-pull picks it up before the agent's next turn.
     """
     if await runtime_transport.is_agentcore_owner(owner_id):
-        from core.dynamodb import run_in_thread
         from core.services.hermes_profiles import refresh_integrations
         from core.services.messaging import load_agent_roster
 
+        # I1 (fix round 1 continuation, M4-R46): refresh_integrations is genuinely async now —
+        # no more run_in_thread hop. It was never blocking anything but its own small S3 PUTs,
+        # and the old asyncio.run()-based sync wrapper it called into is gone.
         agents = await load_agent_roster(owner_id)
-        await run_in_thread(refresh_integrations, owner_id, [agent["id"] for agent in agents])
+        await refresh_integrations(owner_id, [agent["id"] for agent in agents])
         return
     for key, block in (await build_connected_integration_servers(owner_id)).items():
         try:

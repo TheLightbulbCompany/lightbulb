@@ -315,10 +315,11 @@ async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instea
         AsyncMock(return_value=[{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}]),
     )
     called = {}
-    monkeypatch.setattr(
-        "core.services.hermes_profiles.refresh_integrations",
-        lambda owner_id, agent_ids: called.update(owner_id=owner_id, agent_ids=agent_ids),
-    )
+
+    async def fake_refresh(owner_id, agent_ids):
+        called.update(owner_id=owner_id, agent_ids=agent_ids)
+
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
     ecs_calls = []
     monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
     monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", lambda *a: ecs_calls.append(a))

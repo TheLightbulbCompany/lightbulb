@@ -665,23 +665,15 @@ def set_profile_config(owner_id: str, agent_id: str, config: dict) -> dict:
 
 
 # ---- Task 14: integration token refresh rewrites the profile -----------------------------------
-def _connected_servers(owner_id: str) -> dict:
-    """Sync seam over the async producer — this whole module stays a plain-sync/one-caller-wraps-
-    it design (see upload_profile's own docstring), and ``refresh_integrations``'s one caller
-    (``credentials.mcp_server.reconcile_integrations``) already runs this under ``run_in_thread``."""
-    import asyncio
-
-    from core.services.credentials.mcp_server import build_connected_integration_servers
-
-    return asyncio.run(build_connected_integration_servers(owner_id))
-
-
-def _integration_credential(owner_id: str, provider: str) -> dict:
-    import asyncio
-
-    from core.services.credentials import integration_secret_store
-
-    return asyncio.run(integration_secret_store.get(owner_id, provider)) or {}
+def _require_text(bucket: str, key: str, what: str) -> str:
+    """C4 (fix round 1 continuation): raise instead of silently treating an absent object as an
+    empty/unprovisioned one — a WRITER (refresh/patch) landing on a profile that has no
+    ``config.yaml``/``.env`` yet is a provisioning defect, never something to merge onto ``{}``/
+    write a ``.env`` holding only MCP lines."""
+    body = _s3_get(bucket, key)
+    if body is None:
+        raise FileNotFoundError(f"no {what} at {key}")
+    return body
 
 
 def _put_token_file(owner_id: str, agent_id: str, name: str, blob: dict) -> None:
@@ -691,8 +683,23 @@ def _put_token_file(owner_id: str, agent_id: str, name: str, blob: dict) -> None
     _s3_put(settings.OWNER_STATE_BUCKET, key, _json.dumps(blob))
 
 
-def _write_mcp_token_files(owner_id: str, agent_id: str, servers: dict) -> None:
-    """Seed ``$HERMES_HOME/mcp-tokens/<server>.json`` for OAuth-remote servers only.
+def _write_mcp_token_files(
+    owner_id: str,
+    agent_id: str,
+    servers: dict,
+    credentials: dict[str, dict] | None = None,
+    *,
+    previously_oauth: frozenset[str] = frozenset(),
+) -> None:
+    """Seed ``$HERMES_HOME/mcp-tokens/<server>.json`` for OAuth-remote servers — WRITE ONCE
+    (M4-R47, fix round 1 continuation): only when the object is absent. After the seed, Hermes's
+    own ``OAuthClientProvider`` refreshes the token IN PLACE for the life of the process (report
+    06 §4.4) — the container is the sole rotator from then on, so re-seeding on every reconcile
+    would clobber an already-rotated live token with a stale copy from the credential store.
+
+    ``previously_oauth`` (the OAuth server names the CALLER's stored config.yaml had before this
+    reconcile) names what just disconnected: that server's token file is deleted so a later
+    reconnect seeds a fresh one instead of resurrecting the old grant.
 
     On-disk shape verified against ``tools/mcp_oauth.py``'s ``HermesTokenStorage`` in the
     ``lightbulb/hermes-spike:m1-rc4`` image (``set_tokens``/``get_tokens``/``_fixup_loaded_tokens``,
@@ -713,17 +720,18 @@ def _write_mcp_token_files(owner_id: str, agent_id: str, servers: dict) -> None:
     # exotic server key.
 
     Key-based and stdio servers carry their credential through the profile ``.env`` instead and
-    get no token file. After the seed, Hermes's own ``OAuthClientProvider`` refreshes in place for
-    the life of the process (report 06 §4.4) — the backend does not re-push per turn.
+    get no token file.
     """
-    for name, block in (servers or {}).items():
-        if block.get("auth") != "oauth":
-            continue
-        _put_token_file(owner_id, agent_id, name, _integration_credential(owner_id, name))
-
-
-def _read_dotenv(owner_id: str, agent_id: str) -> str:
-    return _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}.env") or ""
+    bucket = settings.OWNER_STATE_BUCKET
+    credentials = credentials or {}
+    now_oauth = {name for name, block in (servers or {}).items() if block.get("auth") == "oauth"}
+    for name in previously_oauth - now_oauth:
+        _s3_delete(bucket, f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json")
+    for name in now_oauth:
+        key = f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json"
+        if _s3_get(bucket, key) is not None:
+            continue  # already seeded once — the container is the sole rotator from here on
+        _put_token_file(owner_id, agent_id, name, credentials.get(name) or {})
 
 
 def _rewrite_mcp_env_lines(dotenv_text: str, new_secrets: dict[str, str]) -> str:
@@ -732,13 +740,20 @@ def _rewrite_mcp_env_lines(dotenv_text: str, new_secrets: dict[str, str]) -> str
     (``PAPERCLIP_API_KEY``, a BYO key, an owner-provisioned env var) passes through untouched.
     Line-level surgery, not a full dotenv parse: identifying an ``MCP_``-prefixed KEY only needs
     the text before the first ``=``, which ``render_dotenv`` always writes verbatim regardless of
-    whether the VALUE side is quoted."""
+    whether the VALUE side is quoted.
+
+    Minor 5 (fix round 1 continuation): the trailing newline the STORED ``.env`` carried is
+    preserved (``"\n".join`` alone drops it, since ``splitlines()`` never yields a trailing empty
+    element) — an empty starting dotenv (nothing stored yet) carries no trailing newline to
+    preserve, matching a from-scratch write."""
+    trailing_newline = dotenv_text.endswith("\n")
     kept = [line for line in dotenv_text.splitlines() if not line.split("=", 1)[0].startswith("MCP_")]
     new_lines = render_dotenv(new_secrets).splitlines() if new_secrets else []
-    return "\n".join(kept + new_lines)
+    out = "\n".join(kept + new_lines)
+    return out + "\n" if out and trailing_newline else out
 
 
-def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
+async def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
     """Re-assert every connected integration into each profile's ``config.yaml``
     (``mcp_servers``) and ``.env`` (the secret values I1's ``${MCP_<SERVER>_<VAR>}`` refs point
     at), then bump the revision.
@@ -749,21 +764,41 @@ def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
     LAST, after both files, for the same reason ``upload_profile``/``_upload_config_yaml`` do:
     the bridge's ``ensure_profile`` must never see a revision bump before the files it describes
     have actually landed.
+
+    I1 (fix round 1 continuation, M4-R46/M4-R11): genuinely ``async`` — awaits its two producers
+    directly instead of the old ``asyncio.run()``-based sync wrappers (``_connected_servers``/
+    ``_integration_credential``, both deleted). Those blew up with ``RuntimeError`` the moment a
+    caller (``reconcile_integrations`` is itself ``async``) awaited this from inside a running
+    loop, which is exactly the calling context — the ``run_in_thread`` hop that used to paper
+    over it bought nothing this module's S3 PUTs actually needed.
     """
-    connected = _connected_servers(owner_id)
+    from core.services.credentials import integration_secret_store
+    from core.services.credentials.mcp_server import build_connected_integration_servers
+
+    bucket = settings.OWNER_STATE_BUCKET
+    connected = await build_connected_integration_servers(owner_id)
     servers, secrets = translate_mcp_servers(connected)
+    # Minor 8: one Secrets Manager read per OAuth server per reconcile, not per (agent, server)
+    # pair — hoisted out of the per-agent loop below.
+    credentials = {
+        name: (await integration_secret_store.get(owner_id, name)) or {}
+        for name, block in connected.items()
+        if block.get("auth") == "oauth"
+    }
     for agent_id in agent_ids:
         prefix = profile_prefix(owner_id, agent_id)
-        config = read_profile_config(owner_id, agent_id)
-        config["mcp_servers"] = servers
-        _write_mcp_token_files(owner_id, agent_id, connected)
-        _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
-        _s3_put(
-            settings.OWNER_STATE_BUCKET,
-            f"{prefix}.env",
-            _rewrite_mcp_env_lines(_read_dotenv(owner_id, agent_id), secrets),
+        config = yaml.safe_load(_require_text(bucket, f"{prefix}config.yaml", "config.yaml")) or {}
+        dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
+        previously_oauth = frozenset(
+            name
+            for name, block in (config.get("mcp_servers") or {}).items()
+            if isinstance(block, dict) and block.get("auth") == "oauth"
         )
-        _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
+        config["mcp_servers"] = servers
+        _write_mcp_token_files(owner_id, agent_id, connected, credentials, previously_oauth=previously_oauth)
+        _s3_put(bucket, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+        _s3_put(bucket, f"{prefix}.env", _rewrite_mcp_env_lines(dotenv_text, secrets))
+        _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
 
 
 # ---- Task 15: ChatGPT OAuth staged into the ROOT auth.json --------------------------------------

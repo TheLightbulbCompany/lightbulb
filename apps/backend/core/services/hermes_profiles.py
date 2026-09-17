@@ -209,3 +209,30 @@ def translate_mcp_servers(servers: dict | None) -> dict:
             entry["sampling"] = {v: sampling[k] for k, v in _MCP_SAMPLING.items() if k in sampling}
         out[name] = entry
     return out
+
+
+_CEO_LINE = (
+    "You are the CEO of this workspace. The other agents report to you; you set direction, "
+    "approve spend and answer the owner first."
+)
+
+
+def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
+    """The profile's ``SOUL.md`` — the agent's identity, from the Paperclip roster row.
+
+    Hermes reads ``$HERMES_HOME/SOUL.md`` per profile (config_home.py:66). There is no
+    ``agents.list[*].name`` to carry a display name any more, so the name lives here and in the
+    Paperclip row, and nowhere in config.yaml.
+    """
+    name = agent.get("name") or agent["id"]
+    role = agent.get("role") or "general"
+    lines = [f"# {name}", ""]
+    if agent.get("title"):
+        lines += [f"**{agent['title']}**", ""]
+    where = f" at {company_name}" if company_name else ""
+    lines.append(f"You are {name}, the {role} agent{where} on Lightbulb.")
+    if role == "ceo":
+        lines.append(_CEO_LINE)
+    if agent.get("capabilities"):
+        lines += ["", "## What you do", "", agent["capabilities"]]
+    return "\n".join(lines) + "\n"

@@ -542,6 +542,13 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:CreateWorkloadIdentity",
           "bedrock-agentcore:GetWorkloadIdentity",
           "bedrock-agentcore:DeleteWorkloadIdentity",
+          // The create request's tags are copied onto the auto-created workload identity
+          // too, under the caller's identity: without Tag* here CreateAgentRuntime 403s
+          // with "not authorized to perform bedrock-agentcore:TagResource on
+          // workload-identity-directory/default/workload-identity/*" (first dev migration).
+          "bedrock-agentcore:TagResource",
+          "bedrock-agentcore:UntagResource",
+          "bedrock-agentcore:ListTagsForResource",
         ],
         resources: [
           agentcoreArn("workload-identity-directory/default"),
@@ -879,7 +886,9 @@ export class ServiceStack extends cdk.Stack {
     // workspace (lightbulb/{env}/hermes/{owner}/boot = hook + gateway tokens + gate bearer)
     // and account wipe / rollback delete it; the runtime role only READS it (container-stack
     // boundary grant). Found by the first dev migration run: the task role could read but
-    // not create. Same tight prefix scoping as the statements above.
+    // not create. Same tight prefix scoping as the statements above. (CDK packs the task
+    // role's statements into the inline default policy and overflows into a managed policy
+    // automatically — see the overflow note further down — so placement is not asserted.)
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "HermesBootSecretsRW",

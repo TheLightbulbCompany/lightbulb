@@ -27,12 +27,13 @@ EFS -> Hermes profile mapping (spec §4.8), applied per roster agent:
                                         ``soul_md_override`` — verbatim, not regenerated)
     AGENTS.md                          AGENTS.md (verbatim copy)
     skills/**                          skills/** (verbatim copy, same relative paths)
-    MEMORY.md + memory/**              memories/MEMORY.md (Ruling M6-R47: extracted into
-                                        entries and merged under a char budget by
-                                        ``core.services.hermes_memory_import.build_memory_files``
-                                        — a verbatim copy lands somewhere Hermes never reads,
-                                        see ``tools/memory_tool.py::get_memory_dir`` in the
-                                        pinned Hermes source)
+    MEMORY.md + memory/**              memories/MEMORY.md (Ruling M6-R47: run through Hermes's
+                                        OWN OpenClaw migration tool, vendored at
+                                        ``vendor/hermes_openclaw_migration/`` and driven by
+                                        ``core.services.hermes_memory_migration.build_memory_files``
+                                        — a verbatim copy lands somewhere Hermes never reads, see
+                                        ``tools/memory_tool.py::get_memory_dir`` in the pinned
+                                        Hermes source)
     USER.md                            memories/USER.md (same module, own char budget)
     (nothing else)                     config.yaml, .env — generated fresh by the writer,
                                         never read from EFS (spec §4.5: profiles carry no
@@ -122,7 +123,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.services import runtime_transport
 from core.services.container_provision import resolve_provider_choice
-from core.services.hermes_memory_import import build_memory_files
+from core.services.hermes_memory_migration import build_memory_files
 from core.services.hermes_profiles import profile_prefix, upload_profile, write_agent_profile
 from core.services.hermes_provisioning import (
     prepare_hermes_workspace,

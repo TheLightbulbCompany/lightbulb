@@ -66,6 +66,7 @@ describe("SkillsTab on an AgentCore workspace", () => {
   it("disables a skill through config.patch, carrying every name that stays off", async () => {
     rpcData.mockReturnValue({
       skills: [hermesSkill(), hermesSkill({ name: "shopify", skillKey: "shopify", disabled: true })],
+      disabledNames: ["shopify"],
     });
     render(<SkillsTab />);
 
@@ -79,6 +80,32 @@ describe("SkillsTab on an AgentCore workspace", () => {
     });
   });
 
+  // Review I3. The bridge scans ONE profile's disk, so a skill another agent wrote and the
+  // owner disabled renders in NO row here. Rebuilding the list from rows dropped it, and a
+  // wholesale list replace turns that drop into a silent re-enable on every profile.
+  it("keeps a disabled name that has no row, instead of silently re-enabling it", () => {
+    rpcData.mockReturnValue({
+      skills: [hermesSkill()],
+      disabledNames: ["written-by-another-agent"],
+    });
+    render(<SkillsTab />);
+    fireEvent.click(screen.getByRole("button", { name: /^disable$/i }));
+    expect(mockCallRpc).toHaveBeenCalledWith("config.patch", {
+      patch: { skills: { disabled: ["pdf", "written-by-another-agent"] } },
+    });
+  });
+
+  it("falls back to the rendered rows when an older bridge sends no disabledNames", () => {
+    rpcData.mockReturnValue({
+      skills: [hermesSkill(), hermesSkill({ name: "shopify", skillKey: "shopify", disabled: true })],
+    });
+    render(<SkillsTab />);
+    fireEvent.click(screen.getByRole("button", { name: /^disable$/i }));
+    expect(mockCallRpc).toHaveBeenCalledWith("config.patch", {
+      patch: { skills: { disabled: ["pdf", "shopify"] } },
+    });
+  });
+
   it("still sends skills.update on ECS", () => {
     runtimeHost = "ecs";
     rpcData.mockReturnValue({ skills: [hermesSkill()] });
@@ -87,13 +114,18 @@ describe("SkillsTab on an AgentCore workspace", () => {
     expect(mockCallRpc).toHaveBeenCalledWith("skills.update", { skillKey: "pdf", enabled: false });
   });
 
-  it("points the hub search at Hermes, not ClawHub", () => {
+  // Ruling M6-R56: hub search + install are cut on this runtime. The panel is a READ.
+  it("offers no hub search on AgentCore, and still does on ECS", () => {
     rpcData.mockReturnValue({ skills: [hermesSkill()] });
+    const { unmount } = render(<SkillsTab />);
+    fireEvent.change(screen.getByPlaceholderText(/search skills/i), { target: { value: "pdf" } });
+    expect(screen.queryByRole("button", { name: /Search ClawHub for/i })).toBeNull();
+    unmount();
+
+    runtimeHost = "ecs";
     render(<SkillsTab />);
-    fireEvent.change(screen.getByPlaceholderText(/search skills/i), {
-      target: { value: "pdf" },
-    });
-    expect(screen.getByRole("button", { name: /Search Hermes skills hub for/i })).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/search skills/i), { target: { value: "pdf" } });
+    expect(screen.getByRole("button", { name: /Search ClawHub for/i })).toBeInTheDocument();
   });
 });
 

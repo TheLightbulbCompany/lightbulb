@@ -31,11 +31,30 @@ def _clear_restore_state():
     server._roster_cache = (0.0, ())
 
 
+def _parse_config_string_list(value):
+    """Verbatim port of `agent.skill_utils.parse_config_string_list` at v2026.9.14 — the real
+    module only exists inside the image, and the bridge calls this one by name. Kept
+    byte-faithful so the assertions below mean what they say; re-check it on a Hermes bump."""
+    import ast
+
+    if isinstance(value, str):
+        if value.strip().startswith("["):
+            try:
+                parsed = ast.literal_eval(value.strip())
+            except (ValueError, SyntaxError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        return [value]
+    return [str(item) for item in value] if isinstance(value, (list, tuple, set, frozenset)) else []
+
+
 @pytest.fixture
 def fake_hermes(monkeypatch):
     """Minimal stand-ins for the Hermes modules the panel RPCs import."""
     skill_utils = types.ModuleType("agent.skill_utils")
     skill_utils.ESSENTIAL_SKILLS = frozenset({"hermes-agent"})
+    skill_utils.parse_config_string_list = _parse_config_string_list
     skills_tool = types.ModuleType("tools.skills_tool")
     skills_tool._find_all_skills = lambda **_kw: [
         {"name": "hermes-agent", "description": "core", "category": None},
@@ -115,48 +134,37 @@ def test_skill_proposals_are_empty_because_write_approval_is_pinned_off(home):
     assert payload == {"proposals": [], "reason": "write_approval_disabled"}
 
 
-def test_skills_search_needs_a_query_before_it_touches_the_hub(home):
-    assert call("skills.search", {"query": "  "})[1]["payload"]["results"] == []
+@pytest.mark.parametrize("method", ["skills.install", "skills.search"])
+def test_hub_install_and_search_are_cut(home, fake_hermes, method):
+    """Ruling M6-R56. Hermes's hub machinery resolves its HUB_DIR from the live home, so its
+    index cache (tens of MB) lands in the profile and syncs to S3; the GitHub adapter wants a
+    secret scope a settings RPC should not install; and a cold fetch+scan+upload cannot fit the
+    90 s ingress cap. The Skills panel is a READ on this runtime."""
+    code, obj = call(method, {"query": "pdf", "source": "official/pdf"})
+    assert code == 200 and obj["ok"] is False
+    assert obj["error"]["code"] == "UNAVAILABLE"
 
 
-def test_installing_a_skill_lands_it_in_every_profile(home, fake_hermes, monkeypatch):
-    for name in ("ceo", "growth"):
-        (home / "profiles" / name).mkdir(parents=True)
-    hub = types.ModuleType("hermes_cli.skills_hub")
-
-    def _install(identifier, **_kw):
-        skill = home / "profiles" / "ceo" / "skills" / identifier.rsplit("/", 1)[-1]
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text("---\nname: pdf\n---\n")
-
-    hub.do_install = _install
-    rich = types.ModuleType("rich.console")
-    rich.Console = lambda **_kw: None
-    hermes_cli = sys.modules.get("hermes_cli") or types.ModuleType("hermes_cli")
-    rich_pkg = sys.modules.get("rich") or types.ModuleType("rich")
-    for name, module in (("hermes_cli", hermes_cli), ("hermes_cli.skills_hub", hub),
-                         ("rich", rich_pkg), ("rich.console", rich)):
-        monkeypatch.setitem(sys.modules, name, module)
-
-    payload = call("skills.install", {"source": "official/pdf"})[1]["payload"]
-    assert payload["installed"] is True and payload["agents"] == ["ceo", "growth"]
-    # The fetch/scan ran once, and the files were copied to the other profile —
-    # the Skills panel is workspace-level, so an install for one agent would be a lie.
-    assert (home / "profiles" / "growth" / "skills" / "pdf" / "SKILL.md").is_file()
-
-
-def test_a_failed_install_is_an_error_not_a_green_check(home, fake_hermes, monkeypatch):
+def test_status_returns_the_STORED_disabled_list_not_just_what_rendered(home, fake_hermes):
+    """Review I3. A disabled name whose skill is not on THIS profile's disk renders in no row.
+    A client rebuilding the list from rows would drop it, and because a deep merge replaces a
+    list wholesale, dropping it silently re-enables that skill on every profile."""
     (home / "profiles" / "ceo").mkdir(parents=True)
-    hub = types.ModuleType("hermes_cli.skills_hub")
-    hub.do_install = lambda *_a, **_kw: None  # writes nothing
-    rich = types.ModuleType("rich.console")
-    rich.Console = lambda **_kw: None
-    hermes_cli = sys.modules.get("hermes_cli") or types.ModuleType("hermes_cli")
-    rich_pkg = sys.modules.get("rich") or types.ModuleType("rich")
-    for name, module in (("hermes_cli", hermes_cli), ("hermes_cli.skills_hub", hub),
-                         ("rich", rich_pkg), ("rich.console", rich)):
-        monkeypatch.setitem(sys.modules, name, module)
-    assert call("skills.install", {"source": "official/pdf"})[1]["error"]["code"] == "UNAVAILABLE"
+    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify", "not-on-this-disk"]}})
+    payload = call("skills.status")[1]["payload"]
+    assert payload["disabledNames"] == ["not-on-this-disk", "shopify"]
+    # ...and the name with no row is genuinely absent from the rows, which is the whole point.
+    assert "not-on-this-disk" not in {s["name"] for s in payload["skills"]}
+
+
+def test_a_disabled_list_stored_as_a_json_string_is_unpacked(home, fake_hermes):
+    """Review I6.1: `hermes config set` writes a list as a quoted literal. Read as one name it
+    would show every skill enabled AND let the next toggle wipe the real list."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"skills": {"disabled": '["pdf", "shopify"]'}})
+    payload = call("skills.status")[1]["payload"]
+    assert payload["disabledNames"] == ["pdf", "shopify"]
+    assert {s["name"] for s in payload["skills"] if s["disabled"]} == {"pdf", "shopify"}
 
 
 # ---- models.authStatus -------------------------------------------------------------------------
@@ -196,6 +204,22 @@ def test_auth_status_reports_chatgpt_oauth_from_the_root_auth_json(home, monkeyp
     (home / "auth.json").write_text("{}")
     assert call("models.authStatus")[1]["payload"]["providers"] == [
         {"provider": "openai-codex", "status": "ok", "via": "chatgpt-oauth"}]
+
+
+def test_auth_status_reads_ONE_profile_because_the_provider_is_owner_level(home, monkeypatch):
+    """Review I2. `hermes_profiles.model_block` derives `model.provider` from owner-level
+    inputs only, so a second profile cannot hold a second answer — and a per-agent
+    `ensure_profile` is a full prefix LIST + recency pull on a cold microVM, inside the 90 s
+    ingress cap."""
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
+    for name in ("ceo", "growth"):
+        (home / "profiles" / name).mkdir(parents=True)
+        sync.write_profile_config(name, {"model": {"provider": "bedrock"}})
+    pulled = []
+    monkeypatch.setattr(sync, "ensure_profile", lambda agent_id: pulled.append(agent_id))
+    providers = call("models.authStatus")[1]["payload"]["providers"]
+    assert providers == [{"provider": "bedrock", "status": "ok", "via": "bedrock-gate"}]
+    assert pulled == ["ceo"]  # the first roster profile, and only it
 
 
 def test_auth_status_falls_back_to_the_runtime_bearer_with_no_profile(home, monkeypatch):

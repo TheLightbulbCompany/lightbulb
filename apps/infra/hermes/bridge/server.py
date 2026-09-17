@@ -123,6 +123,13 @@ UI_ONLY_METHODS = frozenset({
     # `models.list` is served for real by task 10-C's `_models_list` below.
     "tools.catalog", "commands.list", "chat.history", "agent.identity.get",
     "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.reject",
+    # Ruling M6-R56: hub search + install are cut. Both ran Hermes's hub machinery inside one
+    # turn-free RPC, and that machinery does not fit here: `tools/skills_hub.py` resolves its
+    # HUB_DIR from the LIVE hermes home, so the index cache (tens of MB) lands inside the
+    # profile and syncs to S3; the GitHub adapter reads GITHUB_TOKEN through the secret scope,
+    # which a settings RPC has no business installing; and a cold fetch + scan + upload cannot
+    # fit the 90 s AgentCore ingress cap the brief set. The Skills panel is a READ on Hermes.
+    "skills.install", "skills.search",
     # Ruling M6-R54: sessions stay stubbed. The backend's session guard is a PRIVACY rule
     # (a person sees only their own personal sessions) and Hermes has no personal session --
     # every one of ours is room- or event-scoped -- so there is no AgentCore shape for this
@@ -342,7 +349,13 @@ def _models_list(params: dict, **_kwargs) -> dict:
 
 def _dotenv_has(agent_id: str, key: str) -> bool:
     """Is `key` set to a non-empty value in the profile's own `.env`? Presence only -- the value
-    is a credential and is never read out of this function."""
+    is a credential and is never read out of this function.
+
+    Deliberately NOT `agent.secret_scope.load_env_file` (review M3), which exists and would
+    parse the same grammar: that one MATERIALIZES every value into a dict, and a credential
+    this function never needs cannot leak from a boolean. The grammar it has to match is our
+    own writer's, `hermes_profiles.render_dotenv` -- `KEY=value` / `KEY="escaped"`, no
+    `export`, no interpolation."""
     path = sync.HOME / "profiles" / agent_id / ".env"
     if not path.is_file():
         return False
@@ -375,24 +388,33 @@ def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
 
 
 def _models_auth_status(params: dict, **_kwargs) -> dict:
-    """One entry per provider this owner's profiles actually name, with whether its credential
-    is present. The old answer was hardcoded `bedrock` + the gate bearer, so a BYO-key or
-    ChatGPT-OAuth owner got a permanently wrong dot (scan row 22)."""
-    agents = [params["agentId"]] if params.get("agentId") else _roster()
-    providers: dict[str, dict] = {}
-    for agent_id in agents:
+    """The owner's provider and whether its credential is present. The old answer was hardcoded
+    `bedrock` + the gate bearer, so a BYO-key or ChatGPT-OAuth owner got a permanently wrong dot
+    (scan row 22).
+
+    ONE profile, not the roster (review I2). The provider is an OWNER-level choice: every
+    profile's `model.provider` is derived by `hermes_profiles.model_block` from
+    `(provider_choice, byo_provider, …)`, which has no per-agent input -- only the model ID
+    differs (the CEO's premium tier). So a second read cannot produce a second answer, and
+    looping the roster cost one `ensure_profile` per agent, which on a cold microVM is NOT the
+    "five backend-owned files" the old comment claimed: `ensure_profile` falls through to
+    `_download_profile`, a full prefix LIST plus a recency pull of nearly every object.
+    """
+    roster = _roster()
+    agent_id = params.get("agentId") or (roster[0] if roster else "")
+    provider = ""
+    if agent_id:
         with contextlib.suppress(Exception):
-            sync.ensure_profile(agent_id)  # cheap: the five backend-owned files only
+            # One profile's worth. Still not free on a cold microVM -- see the docstring.
+            sync.ensure_profile(agent_id)
         provider = ((sync.read_profile_config(agent_id).get("model") or {}).get("provider") or "").strip()
-        if not provider or provider in providers:
-            continue
-        ok, via = _provider_credential(agent_id, provider)
-        providers[provider] = {"provider": provider, "status": "ok" if ok else "missing", "via": via}
-    if not providers:  # no profile readable yet -- the gate bearer is still the runtime's own truth
+    if not provider:  # no profile readable yet -- the gate bearer is still the runtime's own truth
         ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
-        providers["bedrock"] = {"provider": "bedrock", "status": "ok" if ok else "missing",
-                                "via": "bedrock-gate"}
-    return {"ok": True, "payload": {"providers": list(providers.values())}}
+        return {"ok": True, "payload": {"providers": [
+            {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}
+    ok, via = _provider_credential(agent_id, provider)
+    return {"ok": True, "payload": {"providers": [
+        {"provider": provider, "status": "ok" if ok else "missing", "via": via}]}}
 
 
 RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update,
@@ -428,11 +450,26 @@ def _profile_scope(agent_id: str):
     return turn._hermes_home_scope(agent_id)
 
 
-def _disabled_names(config: dict) -> set[str]:
+def _disabled_names(config: dict) -> list[str]:
+    """The profile's STORED `skills.disabled`, normalized by Hermes's own
+    `parse_config_string_list` -- `hermes config set` writes a list as a quoted JSON/Python
+    literal STRING, and reading that as one skill literally named `["pdf","shopify"]` would
+    show every skill enabled and let the next toggle wipe the real list (review I6.1).
+    That helper is pure (no home scope, no session context), so it is safe to call here.
+
+    Deliberately NOT `agent.skill_utils.get_disabled_skill_names`, whose extra behaviours are
+    wrong for a list we hand back to be re-written: it unions `skills.platform_disabled[…]`
+    (promoting a platform-scoped disable to a global one on the next write) and reads
+    `gateway.session_context`, which has no session outside a turn. Neither divergence is
+    reachable -- nothing on this platform writes `platform_disabled` -- and both are recorded
+    in the task report as review I6.2/I6.3.
+
+    Sorted and de-duplicated, because this list IS the next patch the client sends back.
+    """
+    from agent.skill_utils import parse_config_string_list
+
     raw = (config.get("skills") or {}).get("disabled")
-    if isinstance(raw, str):
-        raw = [raw]
-    return {str(v).strip() for v in (raw or []) if str(v).strip()}
+    return sorted({v.strip() for v in parse_config_string_list(raw) if v.strip()})
 
 
 def _skills_status(params: dict, **_kwargs) -> dict:
@@ -449,7 +486,7 @@ def _skills_status(params: dict, **_kwargs) -> dict:
     roster = _roster()
     agent_id = params.get("agentId") or (roster[0] if roster else "")
     if not agent_id:
-        return {"ok": True, "payload": {"skills": []}}
+        return {"ok": True, "payload": {"skills": [], "disabledNames": []}}
     with _profile_scope(agent_id):
         found = _find_all_skills(skip_disabled=True)
         skills_dir = str(sync.HOME / "profiles" / agent_id / "skills")
@@ -457,6 +494,12 @@ def _skills_status(params: dict, **_kwargs) -> dict:
     empty = {"bins": [], "env": [], "config": [], "os": []}
     return {"ok": True, "payload": {
         "managedSkillsDir": skills_dir,
+        # Review I3: the STORED list, not "which rendered rows are off". A disabled name whose
+        # skill is not on THIS profile's disk (another agent wrote it) appears in no row, so a
+        # client rebuilding the list from rows would drop it -- and because a deep merge
+        # replaces a list wholesale, dropping it silently RE-ENABLES that skill everywhere.
+        # The panel patches this list, not its own rows.
+        "disabledNames": disabled,
         "skills": [{
             "name": s["name"], "description": s.get("description") or "",
             "skillKey": s["name"], "source": s.get("category") or "hermes",
@@ -479,76 +522,6 @@ def _skills_update(_params: dict, **_kwargs) -> dict:
     return _unsupported("Skills are enabled through config.patch skills.disabled, not here.")
 
 
-def _skills_search(params: dict, **_kwargs) -> dict:
-    """Hermes's OWN skills hub (`hermes skills search`), not ClawHub."""
-    query = str(params.get("query") or params.get("q") or "").strip()
-    if not query:
-        return {"ok": True, "payload": {"results": []}}
-    from hermes_cli.skills_hub import _sources
-    from tools.skills_hub_search import unified_search
-
-    limit = params.get("limit")
-    limit = limit if isinstance(limit, int) and 0 < limit <= 50 else 10
-    results = unified_search(query, _sources(), limit=limit)
-    return {"ok": True, "payload": {"results": [{
-        "name": r.name, "description": r.description, "id": r.identifier,
-        "identifier": r.identifier, "source": r.source, "trust": r.trust_level,
-    } for r in results]}}
-
-
-def _skills_dir(agent_id: str):
-    return sync.HOME / "profiles" / agent_id / "skills"
-
-
-def _skill_files(agent_id: str) -> set[str]:
-    root = _skills_dir(agent_id)
-    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} if root.is_dir() else set()
-
-
-def _skills_install(params: dict, **_kwargs) -> dict:
-    """`hermes skills install <identifier>`, then push it so it survives this microVM (an RPC
-    runs outside a turn, and only a turn saves a profile).
-
-    The Skills panel is WORKSPACE-level, so the install has to land for every agent, not just
-    one. The fetch/scan runs ONCE in the first profile and the resulting files are copied into
-    the rest -- installing per profile would pay the hub fetch and the security scan N times
-    inside one 120 s RPC. The copy targets do not need restoring first: ``save_profile`` uploads
-    only what is locally present and never deletes, so a profile this process has never pulled
-    gets exactly these new files added to its S3 prefix.
-    """
-    from hermes_cli.skills_hub import do_install
-    from rich.console import Console
-    from tools.skills_tool import _find_all_skills
-
-    identifier = str(params.get("source") or params.get("identifier") or params.get("name") or "").strip()
-    if not identifier:
-        return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "source is required"}}
-    roster = _roster()
-    agent_id = params.get("agentId") or (roster[0] if roster else "")
-    if not agent_id:
-        return _unsupported("This workspace has no agent profile to install into.")
-    with _profile_scope(agent_id):
-        before = _skill_files(agent_id)
-        do_install(identifier, console=Console(quiet=True), skip_confirm=True)
-        # do_install reports through its console, so "did it land" is read back off disk.
-        installed = any(s["name"] == identifier.rsplit("/", 1)[-1] for s in _find_all_skills(skip_disabled=True))
-        added = sorted(_skill_files(agent_id) - before)
-    if not installed or not added:
-        return {"ok": False, "error": {"code": "UNAVAILABLE",
-                                       "message": f"{identifier} could not be installed"}}
-    sync.save_profile(agent_id)
-    targets = [agent_id] if params.get("agentId") else roster
-    for other in targets:
-        if other == agent_id:
-            continue
-        for rel in added:
-            dest = _skills_dir(other) / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(_skills_dir(agent_id) / rel, dest)
-        sync.save_profile(other)
-    return {"ok": True, "payload": {"installed": True, "agents": targets, "source": identifier}}
-
-
 def _skills_proposals_list(_params: dict, **_kwargs) -> dict:
     """Hermes's nearest equivalent to skill proposals is the staged-write approval queue, and it
     only exists when `skills.write_approval` is on. Every profile pins it OFF
@@ -559,7 +532,6 @@ def _skills_proposals_list(_params: dict, **_kwargs) -> dict:
 
 RPC_METHODS.update({
     "skills.status": _skills_status, "skills.update": _skills_update,
-    "skills.search": _skills_search, "skills.install": _skills_install,
     "skills.proposals.list": _skills_proposals_list,
 })
 

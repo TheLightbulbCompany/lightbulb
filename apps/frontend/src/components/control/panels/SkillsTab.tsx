@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { SKILL_INTEGRATIONS } from "./skill-integrations";
-import { SkillHubSearch } from "./SkillHubSearch";
+import { ClawHubSearch } from "./ClawHubSearch";
 
 // --- Types matching the skills.status response ---
 // Both runtimes answer this shape. Hermes has no per-skill dependency manifest,
@@ -55,6 +55,8 @@ interface SkillStatusReport {
   workspaceDir?: string;
   managedSkillsDir?: string;
   skills: SkillStatusEntry[];
+  /** AgentCore only: the profile's STORED `skills.disabled`. See `toggleSkill`. */
+  disabledNames?: string[];
 }
 
 // --- Category mapping ---
@@ -227,6 +229,14 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   // bridge's own write would never reach S3, so it refuses `skills.update`. The
   // roster-wide `config.patch` (no agentId) is the door, and because a deep merge
   // replaces a list wholesale the patch has to carry every name that stays off.
+  //
+  // That list is `disabledNames` — the STORED list the bridge read out of config.yaml —
+  // never "which rendered rows are off" (review I3). A disabled skill that is not on the
+  // profile the bridge scanned renders in no row at all, so rebuilding from rows would
+  // drop it, and a wholesale list replace turns that drop into a silent RE-ENABLE of a
+  // skill somebody deliberately turned off. Falls back to the rows only if an older
+  // bridge image sends no `disabledNames`.
+  const storedDisabled = Array.isArray(raw) ? undefined : raw?.disabledNames;
   const toggleSkill = async (skill: SkillStatusEntry) => {
     if (!onAgentCore) {
       await callRpc("skills.update", {
@@ -235,7 +245,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
       });
       return;
     }
-    const disabled = new Set(skills.filter((s) => s.disabled).map((s) => s.name));
+    const disabled = new Set(
+      storedDisabled ?? skills.filter((s) => s.disabled).map((s) => s.name),
+    );
     if (skill.disabled) disabled.delete(skill.name);
     else disabled.add(skill.name);
     await callRpc("config.patch", {
@@ -272,7 +284,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               Skill Store
             </h2>
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
-              Discover and install skills for your agent
+              {onAgentCore
+                ? "Your agents' skills. Turn one off, or ask an agent to write a new one."
+                : "Discover and install skills for your agent"}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -328,13 +342,14 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           />
         </div>
 
-        {/* ClawHub registry search — in-app browse + one-click install */}
-        <SkillHubSearch
-          query={filter}
-          callRpc={callRpc}
-          onInstalled={mutate}
-          hub={onAgentCore ? "hermes" : "clawhub"}
-        />
+        {/* ClawHub registry search — in-app browse + one-click install. OpenClaw only
+            (ruling M6-R56): Hermes's hub runs inside the agent's own home, so browsing it
+            from a settings RPC dragged its multi-MB index cache into the profile, wanted a
+            secret scope, and could not fit the ingress budget. On Hermes the panel is a
+            READ, and the agent writes its own skills through skill-creator (above). */}
+        {!onAgentCore && (
+          <ClawHubSearch query={filter} callRpc={callRpc} onInstalled={mutate} />
+        )}
 
         {/* Category pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">

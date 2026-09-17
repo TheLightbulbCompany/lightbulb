@@ -430,6 +430,9 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 new_agent_id=agent_id,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
+                # Fix round 1, item 1: `container` is already in scope from
+                # resolve_running_container above.
+                container=container,
             )
         except Exception as exc:
             logger.exception(

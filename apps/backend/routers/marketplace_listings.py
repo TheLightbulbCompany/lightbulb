@@ -67,6 +67,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
 
 
+async def _container_for_export_routing(owner_id: str) -> dict | None:
+    """Best-effort container-row read for the export/preview S3-vs-EFS branch
+    (agent_export._resolve_agent_location via runtime_transport.host_for).
+
+    A read failure degrades to ``None`` (host_for's own "absent means ECS"
+    default) rather than failing the whole preview/publish request -- this
+    lookup is a routing hint, not a requirement, matching the graceful-degrade
+    posture every other best-effort container/Paperclip read in this codebase
+    already uses (e.g. agent_export.resolve_apex_ceo_agent_id).
+    """
+    try:
+        return await container_repo.get_by_owner_id(owner_id)
+    except Exception:
+        logger.exception("marketplace_listings: container lookup failed for owner=%s (defaulting to EFS)", owner_id)
+        return None
+
+
 def _count_field(field) -> int:
     """Count items in an agent config field that may be array- or object-shaped.
 
@@ -1089,6 +1106,11 @@ async def deploy_listing(
                 new_agent_id=new_agent_id,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
+                # Fix round 1, item 1: `container` is already in scope from
+                # resolve_running_container above -- thread it through so an
+                # AgentCore row's deploy reaches the S3-profile branch instead
+                # of assuming EFS.
+                container=container,
             )
 
             # Register the deployed agent's operator device into the running
@@ -1396,6 +1418,10 @@ async def my_agent_artifact_preview(
     same way as the actual publish endpoint.
     """
     owner_id = resolve_owner_id(auth)
+    # Fix round 1, item 1: AgentCore sellers read their Hermes S3 profile
+    # instead of EFS (agent_export._resolve_agent_location); ECS/unknown rows
+    # (container absent, the pre-migration default) take the unchanged EFS path.
+    container = await _container_for_export_routing(owner_id)
 
     # Resolve a legacy slug → live workspace UUID BEFORE the Friday guard, so a
     # slug like "friday" (which resolves to the CEO's workspace) can't slip past
@@ -1427,6 +1453,7 @@ async def my_agent_artifact_preview(
             agent_export.enumerate_for_preview,
             seller_id=owner_id,
             agent_id=resolved_agent_id,
+            container=container,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1496,6 +1523,10 @@ async def upload_artifact_from_agent(
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # Fix round 1, item 1: AgentCore sellers read their Hermes S3 profile
+    # instead of EFS; ECS/unknown rows (container absent) take the unchanged
+    # EFS path.
+    container = await _container_for_export_routing(owner_id)
 
     # Resolve a legacy slug → live workspace UUID up front so the Friday guard,
     # routine capture, export, and persisted row all key off the same resolved
@@ -1562,6 +1593,7 @@ async def upload_artifact_from_agent(
             enable_acp=payload.enable_acp,
             requires_desktop=payload.requires_desktop,
             paths=payload.paths,
+            container=container,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -120,12 +120,20 @@ def _selection(payload: schemas.ImportConfirmRequest) -> backup_import.ImportSel
     )
 
 
-def _export(owner_id: str, import_id: str, normalized: backup_import.ImportNormalized):
+def _export(
+    owner_id: str,
+    import_id: str,
+    normalized: backup_import.ImportNormalized,
+    container: dict | None = None,
+):
     package = agent_export.export_built_agent_from_staging(
         owner_id=owner_id,
         staging_agent_id=import_id,
         selected_mcps=normalized.mcp_names,
         selected_skills=normalized.skill_names,
+        # Fix round 1, item 1: an AgentCore owner's staging build reads its
+        # Hermes S3 profile instead of assuming EFS.
+        container=container,
     )
     package.openclaw_slice["cron_jobs"] = normalized.cron_jobs
     return package
@@ -156,7 +164,7 @@ async def presign_import(
     return {"upload_url": url, "key": key, "max_bytes": backup_import.MAX_UPLOAD_BYTES, "expires_in": PRESIGN_TTL_S}
 
 
-def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
+def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None, container: dict | None = None):
     s3 = _s3()
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
     staging_dir = _staging_dir(owner_id, import_id)
@@ -206,7 +214,7 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
             return normalized
 
         normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
-        package = _export(owner_id, import_id, normalized)
+        package = _export(owner_id, import_id, normalized, container)
         _delete_raw()
         return normalized, report, package
     except (backup_import.BackupImportError, claude_code_import.ClaudeImportError):
@@ -221,7 +229,7 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
 @router.post("", response_model=schemas.ImportPreviewResponse)
 async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
-    await _require_container(owner_id)
+    container = await _require_container(owner_id)
     m = _KEY_RE.match(payload.key)
     if not m or m.group(1) != owner_id:
         raise HTTPException(status_code=400, detail="invalid upload key")
@@ -239,7 +247,7 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     import_id = f"import-{uuid.uuid4().hex[:12]}"
     staging_dir = _staging_dir(owner_id, import_id)
     try:
-        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
+        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag, container)
     except agent_export.ExportTooLargeError as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -419,7 +427,7 @@ async def confirm_import(
             normalized = await run_in_thread(
                 backup_import.restage, staging_dir, agent_id=source_agent_id, selection=selection, fleet_version=fleet
             )
-            package = await run_in_thread(_export, owner_id, import_id, normalized)
+            package = await run_in_thread(_export, owner_id, import_id, normalized, container)
             result = await register_staged_agent_under_claim(
                 owner_id=owner_id,
                 payload=RegisterBuiltAgentRequest(

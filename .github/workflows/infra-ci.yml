@@ -27,6 +27,7 @@ on:
       - '.github/workflows/desktop-build.yml'
       - 'openclaw-version.json'
       - 'paperclip-version.json'
+      - 'hermes-version.json'
       - 'pnpm-lock.yaml'
 
 # Supersede in-flight runs for the same PR. `github.ref` is refs/pull/<n>/merge

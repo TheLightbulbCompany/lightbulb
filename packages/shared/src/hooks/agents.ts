@@ -31,12 +31,29 @@ export interface AgentsListResponse {
   agents?: Agent[];
 }
 
+/**
+ * On an AgentCore (Hermes) workspace there are no model refs on the wire at all: the roster
+ * intercept reports a closed TIER vocabulary, and `agents.update {model}` accepts only those
+ * two values (`runtime_rpc._AGENTCORE_MODEL_TIERS`). A raw ref could point outside the owner's
+ * own Bedrock grant, so one is never stored. These are the display labels for them — no ECS
+ * model ref collides, since every ECS ref is `provider/model`-shaped.
+ */
+const MODEL_TIER_LABELS: Readonly<Record<string, string>> = {
+  standard: "Standard",
+  premium: "Premium",
+};
+
 /** Normalize an `Agent.model` field to a plain string (or undefined). */
 export function getAgentModelString(agent: Pick<Agent, "model"> | undefined): string | undefined {
   const model = agent?.model;
-  if (typeof model === "string") return model.trim() || undefined;
-  if (model && typeof model === "object") return model.primary?.trim() || undefined;
-  return undefined;
+  const ref =
+    typeof model === "string"
+      ? model.trim()
+      : model && typeof model === "object"
+        ? model.primary?.trim()
+        : undefined;
+  if (!ref) return undefined;
+  return MODEL_TIER_LABELS[ref] ?? ref;
 }
 
 /** Resolve the human-readable label for an agent. Prefers ``identity.name``

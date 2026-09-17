@@ -66,7 +66,11 @@ import useSWR from "swr";
 
 import { fetchJsonWithStatus, type ApiClientConfig } from "../api/client";
 import { ApiError } from "../api/error";
-import { classifyContainerStatus, type ClassifiedStatus } from "./containerStatus";
+import {
+  classifyContainerStatus,
+  publishRuntimeHost,
+  type ClassifiedStatus,
+} from "./containerStatus";
 import { deriveUIPhase, type DerivedUIPhase, type StatusContract } from "./statusContract";
 
 const FAST_POLL_MS = 5_000;
@@ -357,6 +361,17 @@ export function useOnboardingStatus(
   const lastGood = lastGoodRef.current;
 
   const classified = lastGood?.kind === "classified" ? lastGood.classified : null;
+
+  // This is the ONE reader of `/container/status`, so it is the one place that can hand the
+  // runtime capability signal to surfaces that never see the body (M6 task 10, row 0). In an
+  // effect, not during render — `publishRuntimeHost` notifies subscribers synchronously.
+  // Defensive about the body exactly as `derivePhaseFromOutcome` is: an empty or malformed
+  // 200 parses to `null` (fetchJsonWithStatus nulls out a JSON parse failure).
+  const body = classified?.kind === "container" ? classified.body : undefined;
+  const runtimeHost = body && typeof body === "object" ? body.runtime_host : undefined;
+  useEffect(() => {
+    if (runtimeHost) publishRuntimeHost(runtimeHost);
+  }, [runtimeHost]);
   // Both failure routes surface here, so a caller with NO last good to fall
   // back on still gets a real error rather than a silently stuck UI — the
   // contract `useProvisioningState` depends on for an unrecognized status.

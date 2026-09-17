@@ -540,6 +540,9 @@ def _status_response(contract: dict, *, parked: bool = False) -> dict:
         "chat_available": contract.get("chat_available"),
         "container_status": contract.get("container_status"),
         "container_substatus": contract.get("container_substatus"),
+        # "ecs" | "agentcore" -- the client's runtime capability signal (M6 task 10, row 0).
+        # snake_case like the rest of this body, NOT the camelCase the RPC surfaces use.
+        "runtime_host": contract.get("runtime_host"),
         "parked": bool(contract.get("parked", False)),
         "generations": contract.get("generations"),
         "funnel": contract.get("funnel"),

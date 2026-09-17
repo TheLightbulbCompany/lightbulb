@@ -383,3 +383,97 @@ async def test_agents_update_on_ecs_row_still_forwards_to_container_rpc(monkeypa
     call_mock.assert_awaited_once_with(
         "owner_1", "agents.update", {"agentId": "a1", "model": "gpt-5"}, timeout_s=rpc._RPC_TIMEOUT_S
     )
+
+
+# ---------------------------------------------------------------------------
+# M6 task 10, row 12 -- agents.update must not answer ok while writing nothing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agents_update_tools_is_refused_on_an_agentcore_row(monkeypatch):
+    """The scan's worst failure class: the Tools tab's Save returned {"ok": True} while
+    _mirror_agent_update early-returned and wrote NOTHING. Hermes gates by toolset, so the
+    field has no home -- refuse it instead of confirming it."""
+    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
+    mirror = AsyncMock()
+    monkeypatch.setattr(rpc, "_mirror_agent_update", mirror)
+    call_mock = AsyncMock()
+    monkeypatch.setattr(rpc.container_rpc, "call", call_mock)
+
+    with pytest.raises(ApiProblem) as exc_info:
+        await rpc.execute_sync(
+            owner_id="owner_1",
+            user_id="user_1",
+            request_id="r1",
+            method="agents.update",
+            params={"agentId": "a1", "tools": {"profile": "coding", "deny": ["exec"]}},
+        )
+
+    error = exc_info.value.error
+    assert error.message == "Per-tool allow/deny lists are not available on this runtime."
+    assert error.details["upstreamCode"] == "UNSUPPORTED_ON_AGENTCORE"
+    assert error.details["fields"] == ["tools"]
+    # Refused BEFORE any side effect -- a half-applied update would be worse than the lie.
+    mirror.assert_not_awaited()
+    call_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agents_update_refuses_any_other_unwritable_field_too(monkeypatch):
+    """Row 12 is not tools-specific: the same silent lie covers every future field the
+    intercept does not persist, including an unknown key under `params`."""
+    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
+    monkeypatch.setattr(rpc, "_mirror_agent_update", AsyncMock())
+
+    with pytest.raises(ApiProblem) as exc_info:
+        await rpc.execute_sync(
+            owner_id="owner_1",
+            user_id="user_1",
+            request_id="r1",
+            method="agents.update",
+            params={"agentId": "a1", "heartbeat": {"enabled": True}, "params": {"identity": {}}},
+        )
+
+    assert exc_info.value.error.details["fields"] == ["heartbeat", "params.identity"]
+    assert "Per-tool" not in exc_info.value.error.message
+
+
+@pytest.mark.asyncio
+async def test_agents_update_still_accepts_what_the_intercept_actually_writes(monkeypatch):
+    """name + params.paperclip + model are persisted (Paperclip mirror, SOUL.md, model block),
+    so they must NOT be caught by the refusal."""
+    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
+    mirror = AsyncMock()
+    monkeypatch.setattr(rpc, "_mirror_agent_update", mirror)
+
+    result = await rpc.execute_sync(
+        owner_id="owner_1",
+        user_id="user_1",
+        request_id="r1",
+        method="agents.update",
+        params={"agentId": "a1", "name": "Ada", "model": "premium", "params": {"paperclip": {"role": "ceo"}}},
+    )
+
+    assert result == {"ok": True}
+    mirror.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agents_update_tools_still_forwards_on_an_ecs_row(monkeypatch):
+    """ECS behaviour is unchanged -- the live gateway owns per-tool allow/deny there."""
+    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(False))
+    monkeypatch.setattr(rpc, "_mirror_agent_update", AsyncMock())
+    call_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(rpc.container_rpc, "call", call_mock)
+
+    result = await rpc.execute_sync(
+        owner_id="owner_1",
+        user_id="user_1",
+        request_id="r1",
+        method="agents.update",
+        params={"agentId": "a1", "tools": {"deny": ["exec"]}},
+    )
+
+    assert result == {"ok": True}
+    call_mock.assert_awaited_once()

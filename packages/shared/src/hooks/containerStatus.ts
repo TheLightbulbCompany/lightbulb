@@ -18,6 +18,15 @@
  * status-code table below.
  */
 
+import { useSyncExternalStore } from "react";
+
+/**
+ * Which runtime hosts this workspace — `containers.runtime_host`, via
+ * `core/services/runtime_transport.host_for`, which fails closed to `"ecs"`.
+ * A workspace moves ECS -> AgentCore once, one way, and never back.
+ */
+export type RuntimeHost = "ecs" | "agentcore";
+
 /**
  * The 200 body — the composed `StatusContract` (see `statusContract.ts` and
  * `core/services/readiness_state.compute_status`/
@@ -44,6 +53,9 @@ export interface ContainerStatusBody {
   onboarded?: boolean;
   /** Set alongside `lifecycle: "parked"` on a deliberately-asleep, wake-gated trial box. */
   parked?: boolean;
+  /** Runtime capability signal — absent on a backend older than M6 task 10, which is
+   * indistinguishable from `"ecs"` and must be treated as such. */
+  runtime_host?: RuntimeHost;
   /** Non-blocking Paperclip (Teams) seed health — `"failed"` is the only
    * value any binding acts on today. */
   teams_state?: string | null;
@@ -151,4 +163,56 @@ export function classifyContainerStatus(res: {
   }
 
   return { kind: "unrecognized", status };
+}
+
+/* ---------------------------------------------------------------------------
+ * The runtime capability signal (M6 task 10, row 0)
+ *
+ * `runtime_host` arrives on the `/container/status` body, but the surfaces that
+ * need it (control panels, deep leaf components) do not hold that body and must
+ * not open a second poll to get it. So the ONE reader of that endpoint —
+ * `useOnboardingStatus` — publishes the field here and `useRuntimeHost()` is a
+ * parameterless subscriber. Module state + a listener set + `useSyncExternalStore`
+ * is the pattern `workspaceController.ts` and `lampStore.ts` already use.
+ *
+ * `undefined` means NOT KNOWN YET (no status has landed, or a backend older than
+ * this change). Every caller must treat it as "behave exactly as before", never
+ * as "this is AgentCore". A caller that ALREADY holds the status body should read
+ * `body.runtime_host` directly instead of subscribing here: it gets the answer in
+ * the same render with no unknown-on-first-render window — which matters when the
+ * consequence of guessing wrong is an RPC that wakes and bills a microVM
+ * (`useSystemHealth` does exactly that).
+ * ------------------------------------------------------------------------- */
+
+let currentRuntimeHost: RuntimeHost | undefined;
+const runtimeHostListeners = new Set<() => void>();
+
+/** Called by `useOnboardingStatus` whenever a status body names a host. Deliberately never
+ * publishes `undefined`: a disabled or failing poll must not blank a host we already know. */
+export function publishRuntimeHost(host: RuntimeHost): void {
+  if (host === currentRuntimeHost) return;
+  currentRuntimeHost = host;
+  for (const listener of runtimeHostListeners) listener();
+}
+
+function subscribeRuntimeHost(listener: () => void): () => void {
+  runtimeHostListeners.add(listener);
+  return () => {
+    runtimeHostListeners.delete(listener);
+  };
+}
+
+function readRuntimeHost(): RuntimeHost | undefined {
+  return currentRuntimeHost;
+}
+
+/** Test-only reset — this module's state outlives any one test's renders. */
+export function __resetRuntimeHost(): void {
+  currentRuntimeHost = undefined;
+  runtimeHostListeners.clear();
+}
+
+/** The workspace's runtime, or `undefined` while unknown (see the block comment above). */
+export function useRuntimeHost(): RuntimeHost | undefined {
+  return useSyncExternalStore(subscribeRuntimeHost, readRuntimeHost, readRuntimeHost);
 }

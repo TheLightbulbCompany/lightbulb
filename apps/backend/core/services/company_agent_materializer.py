@@ -47,6 +47,17 @@ class _WorkspaceWriter(Protocol):
 _ApplyAux = Callable[..., Awaitable[None]]
 
 
+def render_agent_identity_md(planned: PlannedAgent) -> str:
+    """The ``AGENTS.md`` content for one company agent: the planner's body verbatim, plus the
+    appended Paperclip credential rule (see that module's docstring for why the append is
+    unconditional). Shared by the ECS write below (EFS ``workspace-{id}/AGENTS.md``) and the
+    AgentCore per-agent loop (``company_deploy_service``'s ``hermes_profiles.
+    upload_profile_files`` upload, M6-R33) -- one function so the two transports can never
+    describe "this agent's identity content" differently.
+    """
+    return planned.body_md.rstrip("\n") + "\n" + PAPERCLIP_CREDENTIAL_RULE
+
+
 async def materialize_agent(
     *,
     owner_id: str,
@@ -86,11 +97,7 @@ async def materialize_agent(
     # this agent with text that still tells it to load the key from a file.
     # Without this a freshly materialized specialist follows that and prints a
     # live key into its visible reasoning.
-    workspace.write_file_if_missing(
-        owner_id,
-        f"{ws_root}/AGENTS.md",
-        planned.body_md.rstrip("\n") + "\n" + PAPERCLIP_CREDENTIAL_RULE,
-    )
+    workspace.write_file_if_missing(owner_id, f"{ws_root}/AGENTS.md", render_agent_identity_md(planned))
 
     # 2. Skill files (bytes — may be non-text). None / empty is a no-op.
     for relpath, data in (skill_assets or {}).items():

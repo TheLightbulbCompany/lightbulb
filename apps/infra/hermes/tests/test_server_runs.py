@@ -1,6 +1,8 @@
 """Server-side half of Tasks 3/9/10/11: wiring lane A's turn.py pipeline (parse_ingress, the
 RUNS registry, abort_run/steer_run) into lane B's handle_plugin routing. Mirrors
 test_server_routes.py's style and conftest's `home`/`posted`/autouse-RUNS-clearing fixtures."""
+import json
+
 from bridge import server, turn
 from tests import factories as f
 
@@ -105,3 +107,24 @@ def test_a_replayed_run_id_answers_200_and_constructs_no_second_thread(home, pos
     assert code2 == 200
     assert obj2 == {"eventId": body["eventId"], "runId": body["run"]["runId"], "status": "replayed"}
     assert len(created) == 1  # the replay never even constructs a second Thread
+
+
+# ---- Step 3: local-session token header (Task 11's server half) -------------------------------
+def test_the_local_session_token_header_is_read_case_insensitively_and_passed_to_run_turn(home, posted, monkeypatch):
+    mod, created = _capturing_threading()
+    monkeypatch.setattr(server, "threading", mod)
+    seen = {}
+
+    def fake_run_hermes(agent_id, body, frames):
+        path = turn._turn_context_path(turn._profile_dir(agent_id), f"{body['room']['id']}:{agent_id}")
+        seen["ctx"] = json.loads(path.read_text())
+        return "completed", None, "ack", turn.ZERO_USAGE
+
+    monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)
+    body = f.ingress()
+    # deliberately lowercase, unlike the canonical `X-Lightbulb-Local-Session-Token` spelling
+    headers = {**AUTH, "x-lightbulb-local-session-token": "jwt-xyz-999"}
+    code, _obj = server.handle_plugin(_inbound_path(body["targetAgentId"]), "POST", headers, body)
+    assert code == 202
+    created[0].run_now()
+    assert seen["ctx"]["localSessionToken"] == "jwt-xyz-999"

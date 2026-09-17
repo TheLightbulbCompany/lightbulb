@@ -41,6 +41,11 @@ def _authorized(headers: dict) -> bool:
     return bool(GATEWAY_TOKEN) and raw.strip() == f"Bearer {GATEWAY_TOKEN}"
 
 
+def _header(headers: dict, name: str) -> str | None:
+    name = name.lower()
+    return next((v for k, v in headers.items() if k.lower() == name), None)
+
+
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
@@ -60,7 +65,9 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
             "runId": run_id, "type": "run.started", "at": now(),
             "sessionKey": turn._resolve_session_key(agent_id, body),
         })
-        threading.Thread(target=turn.run_turn, args=(agent_id, body), daemon=True, name=f"turn-{run_id}").start()
+        local_session_token = _header(headers, "X-Lightbulb-Local-Session-Token")
+        threading.Thread(target=turn.run_turn, args=(agent_id, body, local_session_token),
+                         daemon=True, name=f"turn-{run_id}").start()
         return 202, {"eventId": body.get("eventId"), "runId": run_id, "status": "accepted"}
     if path == "/plugins/lightbulb-channel/rpc" and method == "POST":
         return _rpc(body)

@@ -115,7 +115,7 @@ def test_the_stream_callbacks_are_wired_onto_the_agent(monkeypatch):
     """The whole feature is inert unless _construct_agent hands Hermes these two kwargs."""
     seen = {}
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda agent_id: None)
-    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id, model: None)
+    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id, model: {})
 
     class FakeAgent:
         def __init__(self, **kwargs):

@@ -771,6 +771,34 @@ def _secret_scope(agent_id: str):
     return _scope()
 
 
+def profile_model(config: dict) -> tuple[str, str]:
+    """(model id, provider) for this turn, from the profile's OWN `model` block in config.yaml
+    — the block the backend's `hermes_profiles.model_block` writes (the CEO's premium tier on a
+    paid workspace, a BYO/ChatGPT provider on those plans).
+
+    The bridge has to resolve this itself: Hermes stores the `model` kwarg VERBATIM
+    (`agent_init._PASSTHROUGH_PARAMS` -> `agent.model`, agent_init.py:2143/2224 on the pinned
+    tag v2026.9.14) and never reads `model.default` for it — an omitted or empty `model` just
+    leaves `agent.model` "". So passing the runtime-wide ANTHROPIC_MODEL for every agent did
+    not only ignore the profile's tier: it also silently dropped the backend's
+    `model.context_length` pin, which `_scope_context_length_to_default_runtime`
+    (agent_init.py:1597-1640) discards whenever `agent.model` differs from the configured
+    default. A dict-valued default pairs model+provider — the other shape
+    `hermes_cli.config.split_model_config_default` accepts.
+
+    Fallbacks keep today's behaviour for a profile that pins neither: the runtime-wide MODEL
+    and provider "bedrock"."""
+    block = config.get("model") if isinstance(config, dict) else None
+    block = block if isinstance(block, dict) else {}
+    raw = block.get("default")
+    if isinstance(raw, dict):
+        model = str(raw.get("model") or raw.get("default") or "").strip()
+        provider = str(raw.get("provider") or "").strip()
+    else:
+        model, provider = str(raw or "").strip(), str(block.get("provider") or "").strip()
+    return model or MODEL, provider or "bedrock"
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -792,7 +820,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     # gaps against a stale local copy and immediately re-uploads it, clobbering the fresher
     # backend write (the same clobber-by-save_profile risk fix round 1's C4 flagged).
     sync.ensure_profile(agent_id)
-    pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or MODEL)
+    config = pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or MODEL)
+    model, provider = profile_model(config)  # the profile's tier, not the runtime-wide one
     room = body.get("room") or {}
     callbacks = {}
     if frames is not None:
@@ -802,8 +831,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     return AIAgent(
-        model=MODEL,
-        provider="bedrock",
+        model=model,
+        provider=provider,
         quiet_mode=True,
         session_id=session_key,
         platform="lightbulb",
@@ -840,6 +869,10 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
             conversation_history=_history(body, agent_id) or None,
         ) or {}
     usage = {**ZERO_USAGE,
+             # the model this agent actually ran on (profile_model), not the runtime-wide
+             # default -- usage_service prices per model ref, so the CEO's premium tier would
+             # otherwise be billed to the fleet's sonnet id.
+             "model": getattr(agent, "model", "") or MODEL,
              "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
              "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
              "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),

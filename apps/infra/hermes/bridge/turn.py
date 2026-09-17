@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import traceback
@@ -78,6 +79,24 @@ def abort_run(run_id: str) -> bool:
             agent.interrupt(hard_cancel=True, tool_reason="explicit stop requested")
         except Exception:  # noqa: BLE001
             log.warning("abort: interrupt failed run=%s", run_id, exc_info=True)
+    return True
+
+
+# ---- non-room usage report (spec §5 "Non-room usage") ---------------------------------------
+ROOM_SESSION_RE = re.compile(r"^agent:[^:]+:lightbulb:channel:[0-9a-f-]{36}$")
+
+
+def report_usage(session_key, agent_id, run_id, success, duration_ms, usage) -> bool:
+    """Usage for every run the ROOM contract does not cover (mail, Paperclip, cron).
+    A room run reports exclusively through run.ended — reporting both would double-count,
+    which is why the split is a hard regex on the session key, on both sides."""
+    if not session_key or not agent_id or not run_id or ROOM_SESSION_RE.match(session_key):
+        return False
+    body = {"sessionKey": session_key, "agentId": agent_id, "runId": run_id, "success": bool(success),
+            "usage": usage}
+    if isinstance(duration_ms, int):
+        body["durationMs"] = duration_ms      # the error text is NEVER forwarded: it can carry model output
+    _post_backend(f"usage/{OWNER}", body)
     return True
 
 
@@ -522,6 +541,7 @@ def run_turn(agent_id: str, body: dict) -> None:
             },
         )
     _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
+    report_usage(session_key, agent_id, run_id, outcome == "completed", int(took * 1000), usage)
     try:
         save_profile(agent_id)
     except Exception as exc:  # noqa: BLE001

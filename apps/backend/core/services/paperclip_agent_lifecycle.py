@@ -386,10 +386,13 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
 
     from core.containers import get_ecs_manager, get_workspace
     from core.containers.workspace import cleanup_deleted_agent
+    from core.dynamodb import run_in_thread
+    from core.services import hermes_profiles
     from core.services.config_patcher import (
         deregister_lightbulb_agent_account,
         remove_from_openclaw_config_list,
     )
+    from core.services.runtime_transport import host_for
 
     preserved = await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
 
@@ -400,18 +403,25 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
         if any(agent.get("id") == agent_id for agent in live_agents):
             await delete_runtime_agent_with_lock_retry(owner_id=owner_id, agent_id=agent_id)
 
-    # Belt-and-suspenders persistence cleanup: gateway deletion updates a
-    # running process, while this guarantees a stopped/restarted container
-    # cannot reload the removed entry from openclaw.json.
-    await remove_from_openclaw_config_list(
-        owner_id,
-        ["agents", "list"],
-        lambda entry: isinstance(entry, dict) and entry.get("id") == agent_id,
-    )
-    # Same belt-and-suspenders reasoning as above: the agent's Lightbulb
-    # channel account + binding are Lightbulb-side config OpenClaw's own
-    # agents.delete RPC knows nothing about, so they never self-clean.
-    await deregister_lightbulb_agent_account(owner_id, agent_id)
+    if host_for(container or {}) == "agentcore":
+        # Q9a row #3: no openclaw.json for an AgentCore owner -- every EFS-touching cleanup
+        # below (config-list removal, the Lightbulb channel account, which is an OpenClaw-only
+        # concept) would raise ConfigPatchError on the missing file (task-9-scan.md row #3).
+        # The S3 profile prefix is this transport's equivalent durable record to remove.
+        await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
+    else:
+        # Belt-and-suspenders persistence cleanup: gateway deletion updates a
+        # running process, while this guarantees a stopped/restarted container
+        # cannot reload the removed entry from openclaw.json.
+        await remove_from_openclaw_config_list(
+            owner_id,
+            ["agents", "list"],
+            lambda entry: isinstance(entry, dict) and entry.get("id") == agent_id,
+        )
+        # Same belt-and-suspenders reasoning as above: the agent's Lightbulb
+        # channel account + binding are Lightbulb-side config OpenClaw's own
+        # agents.delete RPC knows nothing about, so they never self-clean.
+        await deregister_lightbulb_agent_account(owner_id, agent_id)
     # cleanup_deleted_agent is intentionally best-effort, but the sidecar is
     # also the marketplace's install record. Remove it strictly before the
     # Paperclip handle disappears so a failed unlink leaves a visible, retryable

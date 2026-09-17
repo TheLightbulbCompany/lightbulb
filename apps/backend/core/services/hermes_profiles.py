@@ -551,6 +551,24 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
 
 
+def delete_profile(owner_id: str, agent_id: str) -> None:
+    """``agents.delete`` on an AgentCore row (Q9a row #3): there is no ``openclaw.json`` entry to
+    remove, so this agent's own S3 profile prefix -- config.yaml/.env/SOUL.md/mcp-tokens/.revision
+    -- is the durable record to delete instead. One ``delete_objects`` call per
+    ``list_objects_v2`` page (S3's own 1000-key batch cap covers both), sync boto3 -- call via
+    ``run_in_thread``."""
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return
+    client = _shared_s3_client()
+    prefix = profile_prefix(owner_id, agent_id)
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if keys:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+
+
 # ---- Task 13a: config.get/config.patch/config.set on an AgentCore row --------------------------
 # Spec §4.5: "Config is read once per AIAgent construction and cached on file mtime, so rewriting
 # profiles/<id>/config.yaml takes effect on the agent's next turn. No watcher, no restart." The

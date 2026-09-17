@@ -1,0 +1,24 @@
+bedrock:
+  discovery:
+    # Default is TRUE and calls ListFoundationModels hourly; the per-owner role denies it.
+    enabled: false
+telemetry:
+  shared_metrics:
+    enabled: false
+    send: false
+updates:
+  check: false
+approvals:
+  # Blocks even under mode=off / --yolo. Belt for the profile's own copy.
+  deny:
+    - "rm -rf /"
+    - "mkfs*"
+    - "dd if=* of=/dev/*"
+    - ":(){:|:&};:"
+nous:
+  # The free/anonymous Nous tier is the one credential-less lane on Hermes's own vision
+  # auto-chain (hermes_cli/anon_auth.py::guest_enabled is its single reader). Belt for the
+  # profile's own copy -- normally inert (guest_enabled also requires
+  # HERMES_GUEST_ONBOARDING=1, which this platform never sets), but the managed overlay wins
+  # after env expansion and cannot be undone from inside a profile's own config.yaml.
+  guest: false

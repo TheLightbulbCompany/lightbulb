@@ -28,11 +28,20 @@ from __future__ import annotations
 import io
 import tarfile
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.services import company_deploy_service as svc
+from core.services import service_token as service_token_mod
+from core.services.company_agent_materializer import render_agent_identity_md
 from core.services.company_package import DeployPlan, PlannedAgent, PlannedRoutine
+from core.services.hermes_provisioning import HermesProfileError
+from core.services.paperclip_agent_lifecycle import resolve_agent_adapter as real_resolve_agent_adapter
+from core.services.paperclip_openclaw_pairing import (
+    ensure_operator_device_paired as real_ensure_operator_device_paired,
+)
+from core.services.paperclip_openclaw_pairing import pair_with_openclaw as real_pair_with_openclaw
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "companies" / "gstack"
 
@@ -169,17 +178,15 @@ def _install(monkeypatch, h: Harness, plan=None):
 
     monkeypatch.setattr(svc, "resolve_company_id_for_owner", fake_resolve_company)
 
-    # Token + adapter synthesis (server-side).
-    monkeypatch.setattr(svc.service_token, "mint", lambda owner_id: "svc_tok")
-    monkeypatch.setattr(
-        svc,
-        "synthesize_openclaw_adapter",
-        lambda *, gateway_url, service_token, user_id: {
-            "url": gateway_url,
-            "authToken": service_token,
-            "sessionKey": user_id,
-        },
-    )
+    # Adapter selection + synthesis (server-side) -- faked at the ONE shared seam
+    # (resolve_agent_adapter) every Paperclip agent-creation door now calls through,
+    # rather than its two internal pieces (adapter_type_for's container-row read +
+    # synthesize_openclaw_adapter). Byte-identical to today's ECS/openclaw_gateway shape;
+    # the dedicated adapter-selection tests below exercise the real resolver.
+    async def fake_resolve_adapter(owner_id, *, agent_label, gateway_user_id):
+        return "openclaw_gateway", {"url": "wss://fake", "authToken": "svc_tok", "sessionKey": gateway_user_id}
+
+    monkeypatch.setattr(svc, "resolve_agent_adapter", fake_resolve_adapter)
 
     # Pairing + materialize.
     async def fake_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
@@ -370,6 +377,52 @@ async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
         assert call["adapter_type"] == "openclaw_gateway"
         assert call["budget_monthly_cents"] == 1000
         assert call["adapter_config"]["authToken"] == "svc_tok"
+
+
+@pytest.mark.asyncio
+async def test_ecs_owner_adapter_selection_is_byte_identical_via_the_real_resolver(monkeypatch):
+    """Same real ``resolve_agent_adapter`` the AgentCore test below exercises, but with no
+    container row -- the pre-migration ECS default, byte-identical to what the harness's own
+    fake (above) already asserts."""
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+    monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
+    monkeypatch.setattr(svc.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(service_token_mod, "mint", lambda owner_id: "svc_tok")
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls
+    for call in h.admin.create_calls:
+        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["adapter_config"]["authToken"] == "svc_tok"
+
+
+@pytest.mark.asyncio
+async def test_agentcore_owner_gets_the_http_adapter_via_the_real_resolver(monkeypatch):
+    """The one shared resolver (paperclip_agent_lifecycle.resolve_agent_adapter) picks the
+    adapter type from the owner's ACTUAL container row -- an AgentCore-hosted owner's
+    company-deploy agents get the fork's http adapter, not a device-paired openclaw_gateway
+    one that has no gateway to pair with."""
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+    monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
+    monkeypatch.setattr(
+        svc.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"runtime_host": "agentcore", "hook_token": "hook_abc"}),
+    )
+    monkeypatch.setattr(svc.settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls
+    for call in h.admin.create_calls:
+        assert call["adapter_type"] == "http"
+        assert call["adapter_config"]["headers"]["Authorization"] == "Bearer hook_abc"
+        assert call["adapter_config"]["url"] == f"https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/{OWNER}"
 
 
 @pytest.mark.asyncio
@@ -638,6 +691,204 @@ async def test_missing_gateway_token_creates_nothing(monkeypatch):
 
     assert h.admin.create_calls == []
     assert h.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# M6-R25: transport-aware readiness gate (row #9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_without_runtime_arn_creates_nothing(monkeypatch):
+    """An AgentCore row that hasn't minted its runtime ARN yet is not
+    reachable -- no gateway_token fallback applies to it."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = {"runtime_host": "agentcore"}  # no agentcore_runtime_arn yet
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls == []
+    assert h.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# M6-R33: the AgentCore per-agent loop (lifts M6-R26's temporary refusal)
+# ---------------------------------------------------------------------------
+
+AGENTCORE_CONTAINER = {
+    "runtime_host": "agentcore",
+    "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/abc",
+    "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:foundation-model/sonnet"},
+}
+
+
+class _RecordingWriteProfile:
+    """Stands in for hermes_provisioning.write_profile_for_agent -- records every call
+    instead of touching S3/Paperclip."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
+        self.calls.append(
+            {"owner_id": owner_id, "agent_row": agent_row, "container_row": container_row, "inputs": inputs}
+        )
+
+
+class _RecordingUploadFiles:
+    """Stands in for hermes_profiles.upload_profile_files -- records every call instead of
+    touching S3."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    async def __call__(self, owner_id, agent_id, files):
+        self.calls.append((owner_id, agent_id, files))
+
+
+def _wire_agentcore_profile(monkeypatch):
+    """Fake the Hermes profile-writing boundary (resolve_profile_inputs /
+    write_profile_for_agent / upload_profile_files) and restore pair_with_openclaw /
+    ensure_operator_device_paired to their REAL implementations -- container_rpc.call is
+    left genuinely unmocked, so if the AgentCore branch still reached pairing it would
+    attempt a live HTTP call and fail loudly in this sandbox instead of a fake silently
+    recording it."""
+    resolve_calls: list[str] = []
+    inputs_sentinel = object()
+
+    async def fake_resolve_profile_inputs(owner_id, *, container_row):
+        resolve_calls.append(owner_id)
+        return inputs_sentinel
+
+    write_profile = _RecordingWriteProfile()
+    upload_files = _RecordingUploadFiles()
+    monkeypatch.setattr(svc, "resolve_profile_inputs", fake_resolve_profile_inputs)
+    monkeypatch.setattr(svc, "write_profile_for_agent", write_profile)
+    monkeypatch.setattr(svc, "upload_profile_files", upload_files)
+    monkeypatch.setattr(svc, "pair_with_openclaw", real_pair_with_openclaw)
+    monkeypatch.setattr(svc, "ensure_operator_device_paired", real_ensure_operator_device_paired)
+    return resolve_calls, write_profile, upload_files, inputs_sentinel
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_runs_the_per_agent_loop_with_no_pairing_or_efs(monkeypatch):
+    """M6-R33: an AgentCore row with a runtime ARN now runs the REAL per-agent loop instead
+    of M6-R26's refusal -- N Paperclip creates, N write_profile_for_agent calls sharing the
+    ONE resolved inputs, this agent's content uploaded via upload_profile_files, and neither
+    pairing nor EFS materialization is reached."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+    resolve_calls, write_profile, upload_files, inputs_sentinel = _wire_agentcore_profile(monkeypatch)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO", "Worker"]
+
+    # Owner-level inputs resolved exactly ONCE for the whole roster.
+    assert resolve_calls == [OWNER]
+    assert len(write_profile.calls) == 3
+    assert {id(c["inputs"]) for c in write_profile.calls} == {id(inputs_sentinel)}
+    for call in write_profile.calls:
+        assert call["container_row"] is h.container
+
+    # Each agent's own content (today: just AGENTS.md) lands under ITS profile.
+    by_agent_id = {agent_id: files for _, agent_id, files in upload_files.calls}
+    assert set(by_agent_id) == {h.admin.name_to_id[n] for n in ("CEO", "CTO", "Worker")}
+    for planned in plan.agents:
+        agent_id = h.admin.name_to_id[planned.name]
+        assert by_agent_id[agent_id] == {"AGENTS.md": render_agent_identity_md(planned).encode()}
+
+    # No pairing, no EFS materialize.
+    assert h.materialize_calls == []
+    assert h.deleted == []
+    assert h.unwound == []
+
+
+@pytest.mark.asyncio
+async def test_agentcore_skipped_aux_mutations_logged_and_counted(monkeypatch, caplog):
+    """apply_deploy_aux_mutations has no Hermes equivalent yet -- each skipped kind is logged
+    at INFO per agent, and the deploy summary rolls the per-kind counts up once at the end."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
+
+    with caplog.at_level("INFO"):
+        await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert caplog.text.count("skipped aux mutation kind=agent_entry") == 3
+    assert caplog.text.count("skipped aux mutation kind=plugins_patch") == 3
+    assert "agentcore deploy summary" in caplog.text
+    assert "'agent_entry': 3" in caplog.text
+    assert "'plugins_patch': 3" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(monkeypatch, caplog):
+    """A HermesProfileError partway through the AgentCore loop rolls back exactly the agents
+    created so far via a straight Paperclip delete -- never catalog.unwind_partial_deploy
+    (there is no EFS/openclaw.json/.template sidecar state on this transport to unwind). S3
+    profile objects are left in place; a re-run overwrites them. The deploy reports the
+    failure (logged), never raises to its fire-and-forget caller."""
+    plan = _simple_plan()
+    h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
+    _install(monkeypatch, h, plan=plan)
+    _resolve_calls, write_profile, _upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
+
+    async def boom(owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
+        if agent_row["name"] == "CTO":
+            raise HermesProfileError("paperclip API key mint/read failed")
+        write_profile.calls.append(
+            {"owner_id": owner_id, "agent_row": agent_row, "container_row": container_row, "inputs": inputs}
+        )
+
+    monkeypatch.setattr(svc, "write_profile_for_agent", boom)
+
+    # Must NOT raise.
+    with caplog.at_level("ERROR"):
+        await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    # The deploy reports the failure...
+    assert f"company_deploy: owner={OWNER} failed" in caplog.text
+    # CEO + CTO created before the crash; the Worker was never reached.
+    assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO"]
+    ceo_id = h.admin.name_to_id["CEO"]
+    cto_id = h.admin.name_to_id["CTO"]
+    assert sorted(h.deleted) == sorted([ceo_id, cto_id])
+    # Never through the ECS-only container/EFS unwind path.
+    assert h.unwound == []
+
+
+@pytest.mark.asyncio
+async def test_agentcore_ecs_row_stays_on_the_unchanged_pairing_path(monkeypatch):
+    """Sanity check that the branch really is transport-gated: an ECS row (the default
+    Harness container) still pairs + materializes, never touching the AgentCore helpers."""
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+    _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
+    # Undo the pairing/ensure restoration for THIS test -- the harness's own fakes should be
+    # the ones reached on an ECS row, not the real network-bound implementations.
+    fake_pair = AsyncMock()
+    monkeypatch.setattr(svc, "pair_with_openclaw", fake_pair)
+    monkeypatch.setattr(svc, "ensure_operator_device_paired", AsyncMock())
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert len(h.materialize_calls) == 3
+    assert fake_pair.await_count == 3
+    assert write_profile.calls == []
+    assert upload_files.calls == []
 
 
 # ---------------------------------------------------------------------------

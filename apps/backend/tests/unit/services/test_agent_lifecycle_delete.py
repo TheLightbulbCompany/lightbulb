@@ -385,3 +385,88 @@ async def test_delete_everywhere_allows_starter_specialist():
 
     assert result["deleted"] is True
     delete_paperclip.assert_awaited_once_with(owner_id="owner", agent_id="starter-specialist")
+
+
+# ---------------------------------------------------------------------------
+# Q9a row #3 (task-9-scan.md): an AgentCore row has no openclaw.json -- the S3
+# profile prefix is the durable record to remove instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_everywhere_on_agentcore_row_deletes_s3_profile_not_efs():
+    """F4 (predeploy review, M6-R37): the agents.list probe (and the gateway delete it might
+    trigger) is an ECS-only concept -- an AgentCore row has no gateway RPC to check first, and
+    probing one anyway paid runtime_rpc's 30s default against a possibly-parked microVM for an
+    answer this branch never used. The S3 profile delete below is this transport's whole
+    story, so container_rpc.call must never be reached at all here."""
+    events: list[str] = []
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(
+        return_value=({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}, "agentcore")
+    )
+    gw_call = AsyncMock(side_effect=AssertionError("agents.list must never be probed on an agentcore row"))
+    delete_profile = MagicMock(side_effect=lambda *_: events.append("s3"))
+    remove_config = AsyncMock(side_effect=lambda *_a, **_k: events.append("config"))
+    deregister = AsyncMock(side_effect=lambda *_a, **_k: events.append("deregister"))
+    workspace = MagicMock()
+    workspace.remove_template_sidecar = MagicMock(side_effect=lambda *_: events.append("sidecar"))
+
+    async def record_workspace(*_a, **_k):
+        events.append("workspace")
+
+    async def record_paperclip(**_kwargs):
+        events.append("paperclip")
+
+    with (
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=workspace),
+        patch.object(lifecycle.container_rpc, "call", gw_call),
+        patch("core.services.hermes_profiles.delete_profile", delete_profile),
+        patch("core.services.config_patcher.remove_from_openclaw_config_list", remove_config),
+        patch("core.services.config_patcher.deregister_lightbulb_agent_account", deregister),
+        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock(side_effect=record_workspace)),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock(side_effect=record_paperclip)),
+    ):
+        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
+
+    assert result["deleted"] is True
+    # No EFS call at all -- the openclaw.json-shaped cleanup is entirely skipped.
+    assert events == ["s3", "sidecar", "workspace", "paperclip"]
+    delete_profile.assert_called_once_with("owner", "retiring")
+    remove_config.assert_not_awaited()
+    deregister.assert_not_awaited()
+    gw_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_everywhere_on_ecs_row_still_removes_from_openclaw_config():
+    """The ECS branch stays byte-identical: unchanged EFS cleanup, no S3 profile delete."""
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    workspace = MagicMock()
+    workspace.remove_template_sidecar = MagicMock()
+    delete_profile = MagicMock()
+
+    with (
+        patch(
+            "core.services.paperclip_openclaw_pairing.is_seeded_agent",
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=workspace),
+        patch("core.services.hermes_profiles.delete_profile", delete_profile),
+        patch("core.services.config_patcher.remove_from_openclaw_config_list", new=AsyncMock()) as remove_config,
+        patch("core.services.config_patcher.deregister_lightbulb_agent_account", new=AsyncMock()) as deregister,
+        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock()),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
+    ):
+        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
+
+    assert result["deleted"] is True
+    remove_config.assert_awaited_once()
+    deregister.assert_awaited_once()
+    delete_profile.assert_not_called()
+    delete_paperclip.assert_awaited_once_with(owner_id="owner", agent_id="retiring")

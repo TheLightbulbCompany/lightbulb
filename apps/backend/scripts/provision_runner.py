@@ -56,6 +56,12 @@ import logging
 import os
 import sys
 
+from core.config import settings
+
+# Imported eagerly (unlike this module's other core.* imports, which are lazy inside
+# functions) so tests can monkeypatch `provision_runner.hermes_provisioning` directly.
+from core.services import hermes_provisioning
+
 EXIT_OK = 0
 EXIT_DETERMINISTIC = 10
 EXIT_TRANSIENT = 11
@@ -132,10 +138,17 @@ async def _container_already_healthy(manager, owner_id: str, row: dict | None) -
         return False
 
 
-async def _seed_owner_paperclip(owner_id: str) -> int:
+async def _seed_owner_paperclip(owner_id: str, *, runtime_host: str | None = None) -> int:
     """Step 0: run the OWNER Paperclip seed under the executor's single-flight,
     BEFORE the container work. Returns an exit code from the runner's ABI
     (0 ok / 10 deterministic / 11 transient).
+
+    ``runtime_host``: forwarded to ``_ensure_paperclip_for_org`` only when set
+    (M4-R8) — ``run()`` passes ``"agentcore"`` here when ``settings.HERMES_RUNTIME``
+    is on, so the starter-seed loop wires the ``http`` adapter for every agent
+    BEFORE the containers row exists to read it from (see
+    ``paperclip_adapter_config.adapter_type_for``). ``None`` (the default, and
+    every non-Hermes caller) is unchanged behavior.
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + starter roster) on the poll thread, where load-balanced
@@ -214,12 +227,10 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
         # the company already exists (an idempotent re-run) this same call
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
-        await _ensure_paperclip_for_org(
-            org_id=owner_id,
-            user_id=creator_user_id,
-            email=owner_email,
-            is_admin=True,
-        )
+        ensure_org_kwargs = dict(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
+        if runtime_host is not None:
+            ensure_org_kwargs["runtime_host"] = runtime_host
+        await _ensure_paperclip_for_org(**ensure_org_kwargs)
         await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
@@ -233,9 +244,23 @@ async def run(owner_id: str, claim_id: str) -> int:
     from core.observability.logging import bind_log_context
     from core.repositories import container_repo
     from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
+    from core.services import runtime_transport
 
     bind_log_context(user_id=owner_id)
-    manager = _get_manager()
+
+    # Minor (predeploy review, M6-R39): an existing row already on agentcore takes the Hermes
+    # leg regardless of settings.HERMES_RUNTIME -- the flag is ONE per-environment switch, and a
+    # dispatch that reached here for an already-migrated owner while it happens to read False
+    # would otherwise start an ECS task beside a LIVE microVM on the same access point and
+    # rotate the bearer the microVM is still presenting. The worst failure this design wants to
+    # avoid, for one extra eventually-consistent read.
+    existing_row = await container_repo.get_by_owner_id(owner_id)
+    hermes = settings.HERMES_RUNTIME or runtime_transport.host_for(existing_row or {}) == "agentcore"
+    # Hermes/AgentCore has no ECS service to manage — the manager is purely an ECS
+    # concept, so it is never constructed on that leg (tests rely on this: a manager
+    # double that explodes on any call proves the Hermes leg never touches it).
+    runtime_host = "agentcore" if hermes else None
+    manager = None if hermes else _get_manager()
     # Attempt-token fencing (hazard 1, spec §7): every attempt -- including
     # attempt 0, where this is a same-value no-op re-assertion -- re-stamps
     # the row's provision_attempt_token BEFORE any other checkpoint. See
@@ -246,6 +271,24 @@ async def run(owner_id: str, claim_id: str) -> int:
     attempt_token = os.environ.get("PROVISION_ATTEMPT_TOKEN") or claim_id
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
+
+        if hermes:
+            # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0
+            # seeds the roster. Step 0's starter-agent loop bakes hook_token into the http
+            # adapter's Authorization header at seed time — seeding first shipped every starter
+            # agent with an EMPTY bearer, since nothing had minted one yet. Fenced, NON-terminal
+            # (the provision isn't done): a lost fence here raises ProvisionSuperseded, caught by
+            # the same handler as every other checkpoint in this function.
+            # C2/M4-R36: any OTHER exception is released to error here — prepare_hermes_workspace
+            # has no internal release of its own (unlike provision_user_container on the ECS leg).
+            try:
+                await hermes_provisioning.prepare_hermes_workspace(
+                    owner_id, claim_id=claim_id, attempt_token=attempt_token
+                )
+            except ProvisionSuperseded:
+                raise
+            except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
+                return await _release_hermes_failure_to_error(owner_id, claim_id, attempt_token, exc, "prepare")
 
         # Step 0: the OWNER Paperclip seed runs HERE, under the executor's
         # single-flight (this is the ONLY runner for this owner's claim),
@@ -260,7 +303,11 @@ async def run(owner_id: str, claim_id: str) -> int:
         # same release_provision_to_error pattern provision_user_container uses
         # for its own failures — so seed success is tied to the execution rather
         # than silently swallowed.
-        seed_exit = await _seed_owner_paperclip(owner_id)
+        # Omit runtime_host entirely (rather than passing it as None) when the flag is
+        # off, so every existing ECS-leg caller's _seed_owner_paperclip call stays
+        # byte-identical (M4-R8: "ECS callers unchanged").
+        seed_kwargs = {"runtime_host": runtime_host} if runtime_host is not None else {}
+        seed_exit = await _seed_owner_paperclip(owner_id, **seed_kwargs)
         if seed_exit != EXIT_OK:
             try:
                 await container_repo.release_provision_to_error(
@@ -277,6 +324,28 @@ async def run(owner_id: str, claim_id: str) -> int:
             except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
                 logger.exception("seed step 0: error release failed for owner %s", owner_id)
             return seed_exit
+
+        if hermes:
+            # CreateAgentRuntime is one synchronous call, so there is no service to poll and
+            # no generation to re-read: provision_hermes_runtime writes the terminal row
+            # itself, FENCED on the same claim_id/attempt_token this run already holds
+            # (M4-R28 — mirrors manager.wait_for_running's own fenced terminal write below).
+            # Everything else below this branch (manager, pre_row/generation fencing,
+            # wait_for_running) is an ECS concept and is skipped wholesale. A lost fence
+            # raises ProvisionSuperseded, caught by the same handler as the ECS leg's.
+            # C2/M4-R36: any OTHER exception is released to error here, same as prepare's own
+            # branch above — provision_hermes_runtime has no internal release of its own.
+            try:
+                await hermes_provisioning.provision_hermes_runtime(
+                    owner_id, claim_id=claim_id, attempt_token=attempt_token
+                )
+            except ProvisionSuperseded:
+                raise
+            except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
+                return await _release_hermes_failure_to_error(
+                    owner_id, claim_id, attempt_token, exc, "runtime provision"
+                )
+            return EXIT_OK
 
         # Read the container-incarnation fence off the row (see module
         # docstring for why this is NOT threaded through the SFN input).
@@ -357,6 +426,35 @@ async def run(owner_id: str, claim_id: str) -> int:
     # external actor owns the row now — succeed quietly, write nothing.
     logger.info("owner %s left provisioning externally (status=%s)", owner_id, status)
     return EXIT_OK
+
+
+async def _release_hermes_failure_to_error(
+    owner_id: str, claim_id: str, attempt_token: str | None, exc: Exception, stage: str
+) -> int:
+    """C2/M4-R36: the Hermes leg's own error-release call — same shape as step 0's (classify,
+    release_provision_to_error, map to the exit-code ABI), and the same job
+    ``provision_user_container`` does INTERNALLY for the ECS leg (see the comment on the bare
+    ``except Exception`` below). Without this, a raise out of ``prepare_hermes_workspace`` or
+    ``provision_hermes_runtime`` left ``status="provisioning"`` with a LIVE claim and no
+    ``last_error``/``retryable`` — an open-ended spinner for the owner and nothing for the SFN
+    watch loop's error branch or the frontend's error auto-retry to act on.
+    """
+    from core.repositories import container_repo
+    from core.repositories.container_repo import classify_provision_error
+
+    logger.exception("hermes %s failed for owner %s", stage, owner_id)
+    _, retryable = classify_provision_error(exc)
+    try:
+        await container_repo.release_provision_to_error(
+            owner_id,
+            claim_id,
+            last_error=f"hermes {stage} failed: {exc}",
+            retryable=retryable,
+            attempt_token=attempt_token,
+        )
+    except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
+        logger.exception("hermes %s: error release failed for owner %s", stage, owner_id)
+    return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
 
 
 async def _stand_down_superseded(owner_id: str) -> int:

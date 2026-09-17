@@ -89,3 +89,22 @@ def test_root_domain_is_the_apex_of_frontend_url():
     prod = Settings(FRONTEND_URL="https://isol8.co")
     assert (dev.frontend_host, dev.root_domain) == ("dev.isol8.co", "isol8.co")
     assert (prod.frontend_host, prod.root_domain) == ("isol8.co", "isol8.co")
+
+
+def test_owner_state_bucket_falls_back_to_litestream_bucket_when_unset():
+    """M4-R7: another lane renames the CDK env var later; both names must keep working
+    until that rename ships, so an unset OWNER_STATE_BUCKET reads LITESTREAM_BUCKET."""
+    settings = Settings(LITESTREAM_BUCKET="lightbulb-dev-openclaw-replicas")
+    assert settings.OWNER_STATE_BUCKET == "lightbulb-dev-openclaw-replicas"
+
+
+def test_owner_state_bucket_env_var_wins_over_the_litestream_fallback():
+    settings = Settings(
+        LITESTREAM_BUCKET="lightbulb-dev-openclaw-replicas",
+        OWNER_STATE_BUCKET="lightbulb-dev-owner-state",
+    )
+    assert settings.OWNER_STATE_BUCKET == "lightbulb-dev-owner-state"
+
+
+def test_owner_state_bucket_stays_empty_when_both_are_unset():
+    assert Settings().OWNER_STATE_BUCKET == ""

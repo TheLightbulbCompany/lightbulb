@@ -19,12 +19,18 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.containers.config import read_openclaw_config_from_efs
+from core.repositories import integrations_repo
+from core.services import runtime_transport
 from core.services.config_patcher import (
     ConfigPatchError,
     delete_openclaw_config_path,
     set_openclaw_config_path,
 )
-from core.services.credentials.mcp_server import reconcile_integrations
+from core.services.credentials.mcp_server import (
+    build_connected_integration_servers,
+    integration_owned_server_keys,
+    reconcile_integrations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +132,39 @@ class PatchServerRequest(ServerEntry):
     pass
 
 
+def _check_no_sanitized_name_collisions(servers: dict[str, dict]) -> None:
+    """M6-R26 fix round 1, minor: two server names that sanitize to the same
+    ``MCP_<SERVER>_<VAR>`` prefix (e.g. ``acme-crm`` vs ``acme_crm``) would
+    otherwise only be caught much later, inside
+    ``hermes_profiles.translate_mcp_servers`` -- which raises a ``ValueError``
+    deep inside an AgentCore write's best-effort profile refresh (swallowed
+    there so a hiccup can't fail a committed write), silently landing a
+    profile whose Hermes env vars never actually updated behind a 200 OK.
+    Reject the collision here instead, at submission time, using the exact
+    same sanitizer so the two can never disagree. Scoped to the payload being
+    submitted -- checking against already-connected integrations is Q9c's
+    manual-vs-integration shadowing work."""
+    from core.services.hermes_profiles import _mcp_env_key
+
+    seen: dict[str, str] = {}
+    for name, entry in servers.items():
+        for field in ("env", "headers"):
+            values = entry.get(field)
+            if not isinstance(values, dict):
+                continue
+            for var_name in values:
+                key = _mcp_env_key(name, var_name)
+                origin = seen.setdefault(key, name)
+                if origin != name:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Server names {origin!r} and {name!r} collide once sanitized to the "
+                            f"same env var ({key!r}) -- rename one of them."
+                        ),
+                    )
+
+
 def _validate_servers(servers: dict) -> dict:
     """Validate each server entry and return the normalized dict to store.
 
@@ -154,7 +193,46 @@ def _validate_servers(servers: dict) -> dict:
                 detail=f"Server '{name}' is invalid: {exc.errors()}",
             ) from exc
         normalized[name] = _normalize_entry(model)
+    _check_no_sanitized_name_collisions(normalized)
     return normalized
+
+
+async def _reject_integration_owned_key_collisions(owner_id: str, names: set[str]) -> None:
+    """Ruling M6-R32: a manual server whose key equals a CONNECTED integration's owned key is
+    rejected here, at write time, with a 409 naming the integration -- instead of being
+    silently overwritten by the very next reconcile/refresh (ECS's own re-assert-after-write,
+    or AgentCore's build_connected_integration_servers seeding manual first) and vanishing from
+    the response with no signal to the caller. Checked before either runtime branch, since both
+    exhibit the same silent-overwrite shape today."""
+    owned = await integration_owned_server_keys(owner_id)
+    collisions = sorted(names & owned.keys())
+    if collisions:
+        name = collisions[0]
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{name}' is owned by the connected {owned[name]!r} integration -- "
+                f"rename this server or disconnect {owned[name]!r} first."
+            ),
+        )
+
+
+async def _agentcore_refresh(owner_id: str) -> dict:
+    """AgentCore twin of the ECS write-then-reconcile-then-reread sequence: fan
+    the (manual ∪ connected-integration) merge out to every Hermes profile,
+    then return that merge for the response body -- the manual write itself
+    already landed on the reserved integrations_repo.MANUAL_MCP_KEY row before
+    this is called. Best-effort like the ECS reconcile call: the manual write
+    already committed, so a profile-refresh hiccup must not 500 it.
+
+    Every call site already resolved runtime_transport.is_agentcore_owner to
+    decide to call this at all -- agentcore=True skips reconcile_integrations'
+    own second read (M6-R26 fix round 1, Important 4)."""
+    try:
+        await reconcile_integrations(owner_id, agentcore=True)
+    except Exception:
+        logger.exception("hermes profile refresh after manual MCP write failed for %s", owner_id)
+    return await build_connected_integration_servers(owner_id)
 
 
 async def _read_mcp_servers(owner_id: str) -> dict:
@@ -192,6 +270,14 @@ async def list_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # M6-R26 fix round 1, Critical 2: an AgentCore owner has no openclaw.json,
+    # so _read_mcp_servers (EFS) always answered {} here -- and the frontend's
+    # McpServersTab merges {...previousServers, ...newlyWritten} on every add,
+    # so a GET that always reads back empty made every write's "success" state
+    # silently drop everything that came before it. Same merged shape the
+    # write endpoints already return.
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return {"servers": await build_connected_integration_servers(owner_id)}
     servers = await _read_mcp_servers(owner_id)
     return {"servers": servers}
 
@@ -212,6 +298,13 @@ async def replace_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     servers = _validate_servers(body.servers)
+    await _reject_integration_owned_key_collisions(owner_id, set(servers))
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # No openclaw.json to write into -- the manual bucket IS the whole
+        # replace target, mirroring PUT's "keys not present are deleted"
+        # semantics for the manual-only dict.
+        await integrations_repo.set_manual_mcp_servers(owner_id, servers)
+        return {"servers": await _agentcore_refresh(owner_id)}
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers"], servers)
     except ConfigPatchError as exc:
@@ -249,14 +342,23 @@ async def upsert_mcp_server(
     if auth.is_org_context:
         require_org_admin(auth)
     entry = _normalize_entry(body)
+    await _reject_integration_owned_key_collisions(owner_id, {name})
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        manual = await integrations_repo.get_manual_mcp_servers(owner_id)
+        manual[name] = entry
+        await integrations_repo.set_manual_mcp_servers(owner_id, manual)
+        return {"servers": await _agentcore_refresh(owner_id)}
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
-    # An upsert whose name collides with an integration-owned key (e.g. `stripe`)
-    # would overwrite it with the user's value. Re-assert integration-owned keys
-    # so integration ownership always wins. Best-effort for the same reason as
-    # the PUT path — read AFTER reconcile so the response reflects the final state.
+    # Fix round 1, minor: the stale comment here described re-asserting an
+    # integration-owned key THIS upsert's own name collided with -- that case is
+    # now rejected outright above (_reject_integration_owned_key_collisions,
+    # M6-R32) before any write happens. This reconcile call is the same general
+    # self-heal every other write endpoint here runs (a stale/missed reconcile
+    # elsewhere, a reprovision). Best-effort — read AFTER reconcile so the
+    # response reflects the final state.
     try:
         await reconcile_integrations(owner_id)
     except Exception:
@@ -280,6 +382,11 @@ async def delete_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        manual = await integrations_repo.get_manual_mcp_servers(owner_id)
+        manual.pop(name, None)
+        await integrations_repo.set_manual_mcp_servers(owner_id, manual)
+        return {"servers": await _agentcore_refresh(owner_id)}
     try:
         await delete_openclaw_config_path(owner_id, ["mcp", "servers", name])
     except ConfigPatchError as exc:

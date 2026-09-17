@@ -254,6 +254,36 @@ async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
 
 
 @pytest.mark.asyncio
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_deploy_for_approval_threads_the_resolved_container_through(
+    get_listing, get_ecs, get_catalog, fetch, _pair, monkeypatch
+):
+    """Fix round 1, item 1: `container` is already resolved by
+    resolve_running_container right above the deploy_from_artifact call --
+    deploy_for_approval must thread it through so an AgentCore row reaches
+    the S3-profile branch instead of assuming EFS."""
+    get_listing.return_value = _PUBLISHED
+    agentcore_container = {"gateway_token": "gwt", "runtime_host": "agentcore"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(agentcore_container, "agentcore"))
+    get_ecs.return_value = ecs
+    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    _admin_double(monkeypatch)
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    kwargs = catalog.deploy_from_artifact.await_args.kwargs
+    assert kwargs["container"] == agentcore_container
+
+
+@pytest.mark.asyncio
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")

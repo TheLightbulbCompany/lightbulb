@@ -93,6 +93,7 @@ async def test_push_credential_stages_and_clears_when_tokens_present():
             "core.services.oauth_service.get_decrypted_tokens",
             new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
         ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
         patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()) as stage,
         patch("core.containers.workspace.clear_default_agent_auth_profile_row", new=AsyncMock()) as clear,
     ):
@@ -102,9 +103,31 @@ async def test_push_credential_stages_and_clears_when_tokens_present():
     clear.assert_awaited_once_with(user_id="org_1")
 
 
+async def test_push_credential_stages_the_root_auth_json_for_an_agentcore_owner_no_efs():
+    """Task 15: an AgentCore owner has no EFS to stage, no clear-auth-sentinel, no forced
+    redeploy — the equivalent is hermes_profiles.stage_codex_auth writing the ROOT auth.json,
+    which Hermes re-reads at credential resolution time (no bounce needed)."""
+    with (
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
+        ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=True)),
+        patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()) as stage,
+        patch("core.containers.workspace.clear_default_agent_auth_profile_row", new=AsyncMock()) as clear,
+        patch("core.services.hermes_profiles.stage_codex_auth") as codex_stage,
+    ):
+        result = await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c")
+    assert result is True
+    codex_stage.assert_called_once_with("org_1", {"access_token": "a", "refresh_token": "r"})
+    stage.assert_not_awaited()  # the EFS path is never reached
+    clear.assert_not_awaited()
+
+
 async def test_push_credential_noop_when_no_tokens():
     with (
         patch("core.services.oauth_service.get_decrypted_tokens", new=AsyncMock(return_value=None)),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
         patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()) as stage,
         patch("core.containers.workspace.clear_default_agent_auth_profile_row", new=AsyncMock()) as clear,
     ):
@@ -120,6 +143,7 @@ async def test_push_credential_best_effort_when_stage_raises():
             "core.services.oauth_service.get_decrypted_tokens",
             new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
         ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
         patch(
             "core.containers.workspace.pre_stage_auth_profile_store",
             new=AsyncMock(side_effect=RuntimeError("no workspace yet")),
@@ -139,6 +163,7 @@ async def test_push_credential_restart_required_schedules_bounce():
             "core.services.oauth_service.get_decrypted_tokens",
             new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
         ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
         patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()),
         patch(
             "core.containers.workspace.clear_default_agent_auth_profile_row",
@@ -159,6 +184,7 @@ async def test_push_credential_plain_clear_does_not_bounce():
             "core.services.oauth_service.get_decrypted_tokens",
             new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
         ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
         patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()),
         patch(
             "core.containers.workspace.clear_default_agent_auth_profile_row",

@@ -54,6 +54,20 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   ),
 );
 
+// hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
+// same pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml pushes a
+// uniquely-tagged candidate (h-<date>-<sha7>) but never writes this file — a human bumps
+// dev.tag (then prod.tag) in a PR to promote it. prod.tag stays "" until M6.
+interface HermesVersionConfig {
+  dev: { tag: string };
+  prod: { tag: string };
+  [key: string]: unknown;
+}
+
+const HERMES_VERSION: HermesVersionConfig = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "hermes-version.json"), "utf8"),
+);
+
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
  * cycles. ServiceStack imports them locally via fromSecretNameV2, which
@@ -307,6 +321,16 @@ export class ServiceStack extends cdk.Stack {
       props.albSecurityGroup,
       ec2.Port.tcp(8000),
       "HTTP from ALB",
+    );
+
+    // A desktop node's WebSocket is pinned to the task that accepted it, but the owner's Hermes
+    // runtime calls the node-invoke route through the ALB and lands on any task. That task
+    // forwards to the socket's owner using the address on the presence row -- which needs the
+    // service to be able to reach itself.
+    serviceSg.addIngressRule(
+      serviceSg,
+      ec2.Port.tcp(8000),
+      "Peer backend task forwarding (node invoke)",
     );
 
     // Cross-stack security group ingress rules.
@@ -1380,6 +1404,9 @@ export class ServiceStack extends cdk.Stack {
     const currentOpenClawVersion = env.startsWith("prod")
       ? OPENCLAW_VERSION.prod
       : OPENCLAW_VERSION.dev;
+    // Minor (predeploy review housekeeping): matches the OpenClaw line above -- env.startsWith,
+    // not ===, so this stays correct if a prod-prefixed variant is ever introduced.
+    const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1401,10 +1428,14 @@ export class ServiceStack extends cdk.Stack {
       OPENCLAW_GATEWAY_BUILD_ID: OPENCLAW_VERSION.gatewayBuildId,
       OPENCLAW_EXTENDED_ARTIFACT_DIGEST: currentOpenClawVersion.artifactDigest,
       OPENCLAW_RUNTIME_MANIFEST_DIGEST: currentOpenClawVersion.runtimeManifestDigest,
-      // The Litestream replica bucket for this env. Every backend code path
-      // that touches the local-sqlite layout (sentinel writes, replica
-      // lifecycle deletes) keys off this being set. Name-based (never a
-      // bucket ref) per the KMS-cycle posture.
+      // The per-owner state bucket. Named for what it holds, not for the tool
+      // that first used it: OpenClaw's litestream replicas AND (under
+      // <owner>/hermes/) the Hermes profile set both live here, inside the
+      // same per-owner <owner>/* IAM grant. No second bucket. LITESTREAM_BUCKET
+      // rides alongside it during the transition (M4-R6) so a CDK deploy and a
+      // backend roll can land in either order — drop the old name once the
+      // backend only reads OWNER_STATE_BUCKET.
+      OWNER_STATE_BUCKET: `lightbulb-${env}-openclaw-replicas`,
       LITESTREAM_BUCKET: `lightbulb-${env}-openclaw-replicas`,
       // The gateway-only arm64 image a workspace's AgentCore runtime runs. DEV ONLY for
       // now: empty in prod makes ensure_runtime refuse, so nothing can move a prod
@@ -1413,6 +1444,15 @@ export class ServiceStack extends cdk.Stack {
         env === "dev"
           ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v7`
           : "",
+      // The Hermes bridge image a workspace's AgentCore runtime runs. Per-env promotion
+      // tag from hermes-version.json#dev.tag/#prod.tag (M4-R34). Empty tag (prod today)
+      // makes provision_hermes_runtime refuse, so nothing moves a prod workspace until a
+      // human flips prod.tag to an already-pushed h-<date>-<sha7> build.
+      AGENTCORE_HERMES_IMAGE: currentHermesTag
+        ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${currentHermesTag}`
+        : "",
+      // Flipped to "true" per environment only when the milestone's dev proof has landed.
+      HERMES_RUNTIME: "false",
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

@@ -25,7 +25,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import connection_service
+from core.services import connection_service, runtime_transport
 from core.services.container_provision import resolve_provider_choice
 from core.services.credentials import integration_secret_store
 
@@ -84,6 +84,17 @@ async def provision_container(
 
     # Check for existing service
     existing = await container_repo.get_by_owner_id(owner_id)
+    if existing and runtime_transport.host_for(existing) == "agentcore":
+        # Row #18: this door writes ECS-shaped config and spins an ECS service --
+        # meaningless for a workspace already on AgentCore. POST /agentcore/provision
+        # is the correct, idempotent re-entry point for that row.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This workspace already runs on AgentCore. Use "
+                "POST /api/v1/debug/agentcore/provision to (re)provision it there."
+            ),
+        )
     if existing and existing.get("status") in ("running", "provisioning"):
         return {
             "status": "already_running",
@@ -167,6 +178,36 @@ async def redeploy_container(
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
+    if runtime_transport.host_for(container) == "agentcore":
+        # Row #18: the AgentCore twin of the ECS wholesale-rewrite below -- rewrite every
+        # roster profile from the row's own aip_arns (the same inputs write_profiles
+        # already sources at fresh provision -- resolve_profile_inputs), then stop the
+        # runtime session so the NEXT invoke cold-restores instead of a warm microVM
+        # serving whatever it cached mid-turn. Never touches ECS for this row.
+        from core.services import hermes_provisioning
+
+        await hermes_provisioning.write_profiles(owner_id, container.get("bedrock_aip_arns") or {})
+        runtime_arn = container.get("agentcore_runtime_arn")
+        if runtime_arn:
+            from core.dynamodb import run_in_thread
+            from scripts.migrate_workspace_to_hermes import _stop_runtime_session
+
+            try:
+                await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
+            except Exception:  # noqa: BLE001 — best-effort, same as the migration job's own use of this helper
+                logger.warning(
+                    "debug redeploy: StopRuntimeSession failed for owner=%s runtime_arn=%s",
+                    owner_id,
+                    runtime_arn,
+                    exc_info=True,
+                )
+        return {
+            "status": "profiles_rewritten",
+            "owner_id": owner_id,
+            "owner_type": owner_type,
+            "runtime_host": "agentcore",
+        }
+
     try:
         # Under the flat-fee model, openclaw.json is generated wholly from
         # provider_choice — there is no per-tier "backend policy patch" to
@@ -230,6 +271,20 @@ async def remove_container(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
+
+    container = await container_repo.get_by_owner_id(owner_id)
+    if container and runtime_transport.host_for(container) == "agentcore":
+        # Row #18: no ECS service exists for this row to tear down. Point at the
+        # dedicated rollback path instead of silently no-oping or 503ing on a
+        # nonexistent ECS service lookup.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This workspace runs on AgentCore -- ECS teardown does not apply. Use "
+                "scripts/migrate_workspace_to_hermes.py --rollback --owner-id "
+                f"{owner_id} to move it back to ECS."
+            ),
+        )
 
     try:
         await get_ecs_manager().delete_user_service(owner_id)

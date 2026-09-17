@@ -49,26 +49,23 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import service_token
+from core.services import runtime_transport
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import get_catalog_service
-from core.services.company_agent_materializer import materialize_agent
+from core.services.company_agent_materializer import materialize_agent, render_agent_identity_md
 from core.services.company_package import DeployPlan, PlannedAgent, parse_deploy_plan
 from core.services.config_patcher import apply_deploy_aux_mutations
-from core.services.paperclip_adapter_config import (
-    OPENCLAW_GATEWAY_TYPE,
-    synthesize_openclaw_adapter,
-)
+from core.services.hermes_profiles import upload_profile_files
+from core.services.hermes_provisioning import resolve_profile_inputs, write_profile_for_agent
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_agent_lifecycle import delete_paperclip_for_marketplace
+from core.services.paperclip_agent_lifecycle import delete_paperclip_for_marketplace, resolve_agent_adapter
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
     is_seeded_agent,
     pair_with_openclaw,
     resolve_company_id_for_owner,
 )
-from core.services.paperclip_provisioning import _ws_gateway_url
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +80,6 @@ COMPANY_IMPORT_AGENT_BUDGET_CENTS = 1000
 # monkeypatch the security-critical wiring — admin session, adapter synthesis,
 # pairing — without the full AWS / Paperclip stack).
 # ---------------------------------------------------------------------------
-
-
-def _gateway_url() -> str:
-    """WS gateway URL for the running environment (allowlisted by the adapter)."""
-    return _ws_gateway_url(settings.ENVIRONMENT or "")
 
 
 async def _open_admin_session() -> tuple[httpx.AsyncClient, PaperclipAdminClient, str]:
@@ -219,16 +211,22 @@ async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes, 
     fence the deploy route checks.
     """
     created: list[dict] = []
+    run_state: dict = {}
     failure: BaseException | None = None
     try:
-        await _run_company_deploy(owner_id=owner_id, tar_bytes=tar_bytes, created=created, claim_token=claim_token)
+        await _run_company_deploy(
+            owner_id=owner_id, tar_bytes=tar_bytes, created=created, claim_token=claim_token, run_state=run_state
+        )
     except Exception as exc:  # noqa: BLE001 — background target must never escape
         failure = exc
         logger.exception("company_deploy: owner=%s failed — rolling back %d created agent(s)", owner_id, len(created))
         # cause=exc lets unwind_partial_deploy skip the EFS/openclaw.json edit
         # on a client-side TimeoutError (pair_with_openclaw can time out) —
-        # see its docstring.
-        await _rollback(owner_id, created, cause=exc)
+        # see its docstring. is_agentcore (M6-R33) picks the AgentCore rollback
+        # posture instead — delete the Paperclip agent only; there is no
+        # EFS/openclaw.json state to unwind, and S3 profile objects are left
+        # for a re-run to overwrite.
+        await _rollback(owner_id, created, cause=exc, is_agentcore=run_state.get("is_agentcore", False))
     else:
         # REAL success only — `created` is empty on the creating-nothing early
         # returns (no company / container unreachable / no Friday), which must
@@ -250,13 +248,23 @@ async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes, 
 
 
 async def _run_company_deploy(
-    *, owner_id: str, tar_bytes: bytes, created: list[dict], claim_token: str | None = None
+    *,
+    owner_id: str,
+    tar_bytes: bytes,
+    created: list[dict],
+    claim_token: str | None = None,
+    run_state: dict | None = None,
 ) -> None:
     """Inner orchestration (may raise — the public wrapper rolls back + swallows).
 
     Appends each freshly-created Paperclip agent dict to ``created`` as it is
     made, so the wrapper's failure path can tear down exactly this run's agents.
+
+    ``run_state`` (M6-R33) is the ``is_agentcore`` counterpart of ``created`` —
+    a mutable dict the wrapper reads after a failure to pick the matching
+    rollback posture, since this function may raise before returning anything.
     """
+    run_state = {} if run_state is None else run_state
     plan = await _parse_plan_async(tar_bytes)
 
     repo = PaperclipRepo(table_name="paperclip-companies")
@@ -267,15 +275,34 @@ async def _run_company_deploy(
 
     # Container reachability — an unreachable container means we create NOTHING,
     # so we never orphan Paperclip agents against a container that can't pair
-    # them.
+    # them. Transport-aware (M6-R25): resolve_running_container already
+    # returns an AgentCore row unconditionally (no task IP to discover), but
+    # this door's OWN gate below required a truthy gateway_token, which is an
+    # ECS pairing concept an AgentCore row has no reason to carry yet.
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
     except Exception:  # noqa: BLE001 — treat any ECS/DDB error as unreachable
         container, ip = None, None
-    gateway_token = container.get("gateway_token") if isinstance(container, dict) else None
-    if not container or not ip or not gateway_token:
-        logger.warning("company_deploy: owner=%s container unreachable — creating nothing", owner_id)
-        return
+    is_agentcore = bool(container) and runtime_transport.host_for(container) == "agentcore"
+    gateway_token = None
+    if is_agentcore:
+        # Any InvokeAgentRuntime call wakes the microVM (M4 Task 22) — there is
+        # no task IP to discover and no gateway_token gate to clear; the row
+        # existing with a minted runtime ARN IS "reachable". Keep this gate —
+        # it's the right readiness check.
+        if not container.get("agentcore_runtime_arn"):
+            logger.warning("company_deploy: owner=%s agentcore row has no runtime ARN yet — creating nothing", owner_id)
+            return
+        # M6-R33 lifts M6-R26's refusal: the per-agent loop below now has a
+        # real AgentCore path (write_profile_for_agent + upload_profile_files,
+        # no pairing/EFS). Record it so a mid-loop failure's rollback (in the
+        # public wrapper) picks the matching posture.
+        run_state["is_agentcore"] = True
+    else:
+        gateway_token = container.get("gateway_token") if isinstance(container, dict) else None
+        if not container or not ip or not gateway_token:
+            logger.warning("company_deploy: owner=%s container unreachable — creating nothing", owner_id)
+            return
 
     http, admin, cookie = await _open_admin_session()
     try:
@@ -286,6 +313,12 @@ async def _run_company_deploy(
 
         slug_to_id: dict[str, str] = {}
         workspace = get_workspace()
+        # AgentCore (M6-R33): owner-level profile inputs (billing/Secrets/
+        # integrations/env) are resolved ONCE for the whole roster, mirroring
+        # hermes_provisioning.write_profiles's own fan-out — never once per
+        # agent, and never on the ECS branch.
+        profile_inputs = await resolve_profile_inputs(owner_id, container_row=container) if is_agentcore else None
+        skipped_aux: dict[str, int] = defaultdict(int)
 
         for planned in plan.agents:
             # Keep the owner-wide deploy lease live across the whole run: each
@@ -298,11 +331,11 @@ async def _run_company_deploy(
             reports_to = _resolve_reports_to(planned, plan, friday_id, slug_to_id)
 
             # Adapter is ALWAYS synthesized server-side — a PlannedAgent carries
-            # no adapter, so nothing package-supplied can reach Paperclip.
-            adapter_config = synthesize_openclaw_adapter(
-                gateway_url=_gateway_url(),
-                service_token=service_token.mint(owner_id),
-                user_id=owner_id,
+            # no adapter, so nothing package-supplied can reach Paperclip. Picked by the
+            # owner's runtime_host (ECS -> openclaw_gateway, AgentCore -> the fork's http
+            # adapter) via the one shared resolver every Paperclip agent-creation door uses.
+            adapter_type, adapter_config = await resolve_agent_adapter(
+                owner_id, agent_label=planned.name, gateway_user_id=owner_id
             )
             # Deliberately omit agent-create idempotency here. The owner-wide
             # deploy claim serializes whole runs, but nothing REPLAYS a
@@ -314,7 +347,7 @@ async def _run_company_deploy(
                 company_id=company_id,
                 name=planned.name,
                 role=planned.role,
-                adapter_type=OPENCLAW_GATEWAY_TYPE,
+                adapter_type=adapter_type,
                 adapter_config=adapter_config,
                 title=planned.title,
                 capabilities=planned.capabilities,
@@ -323,25 +356,61 @@ async def _run_company_deploy(
             )
             pc_id = pc["id"]
             slug_to_id[planned.slug] = pc_id
-            # Track the agent BEFORE pairing/materialize so a failure in either
-            # rolls back the agent that was already created.
+            # Track the agent BEFORE pairing/materialize (or, on AgentCore, the
+            # profile write) so a failure in either rolls back the agent that
+            # was already created.
             created.append(pc)
 
-            # Register the agent in the running container + trust its operator
-            # device, exactly like the /teams create path.
-            await pair_with_openclaw(owner_id=owner_id, paperclip_agent=pc)
-            await ensure_operator_device_paired(owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token)
+            if is_agentcore:
+                # M6-R33: no gateway to pair against and no EFS workspace to
+                # write into -- the Hermes profile IS the pairing.
+                # write_profile_for_agent mints this agent's own Paperclip key
+                # and writes config.yaml/.env/SOUL.md; the package's own
+                # per-agent content (today: just AGENTS.md -- materialize_agent
+                # writes no other file for a company deploy, skill_assets is
+                # always None at this call site) rides in a second small
+                # upload ending in its own .revision.
+                await write_profile_for_agent(owner_id, pc, container_row=container, inputs=profile_inputs)
+                await upload_profile_files(owner_id, pc_id, {"AGENTS.md": render_agent_identity_md(planned).encode()})
+                # apply_deploy_aux_mutations (the agents.list entry -- including
+                # the planner's skills binding -- and the paperclip-creds
+                # plugin enable) has no Hermes equivalent yet: a Hermes profile
+                # has no per-agent agents.list, and its .env already carries
+                # PAPERCLIP_API_KEY directly (written above). Never raise,
+                # never touch EFS -- log and count each kind for the deploy
+                # summary logged after the loop.
+                for kind in ("agent_entry", "plugins_patch"):
+                    skipped_aux[kind] += 1
+                    logger.info(
+                        "company_deploy: owner=%s agent=%s skipped aux mutation kind=%s (no Hermes equivalent yet)",
+                        owner_id,
+                        pc_id,
+                        kind,
+                    )
+            else:
+                # Register the agent in the running container + trust its operator
+                # device, exactly like the /teams create path.
+                await pair_with_openclaw(owner_id=owner_id, paperclip_agent=pc)
+                await ensure_operator_device_paired(owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token)
 
-            # Land identity + skill bindings onto EFS + openclaw.json. Company
-            # agents are peers in one owner-authored org, so the materializer is
-            # delegation-preserving (no single-agent containment clamp).
-            await materialize_agent(
-                owner_id=owner_id,
-                new_agent_id=pc_id,
-                planned=planned,
-                skill_assets=None,
-                workspace=workspace,
-                apply_aux=apply_deploy_aux_mutations,
+                # Land identity + skill bindings onto EFS + openclaw.json. Company
+                # agents are peers in one owner-authored org, so the materializer is
+                # delegation-preserving (no single-agent containment clamp).
+                await materialize_agent(
+                    owner_id=owner_id,
+                    new_agent_id=pc_id,
+                    planned=planned,
+                    skill_assets=None,
+                    workspace=workspace,
+                    apply_aux=apply_deploy_aux_mutations,
+                )
+
+        if is_agentcore:
+            logger.info(
+                "company_deploy: owner=%s agentcore deploy summary -- created=%d skipped_aux=%s",
+                owner_id,
+                len(created),
+                dict(skipped_aux),
             )
 
         # Routine creation is OUTSIDE the rollback-triggering path. Once every
@@ -391,7 +460,9 @@ async def _create_routines(
         )
 
 
-async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException | None = None) -> None:
+async def _rollback(
+    owner_id: str, created: list[dict], *, cause: BaseException | None = None, is_agentcore: bool = False
+) -> None:
     """Best-effort teardown of exactly the agents this run created.
 
     For each created agent: guard ``is_seeded_agent`` (fails CLOSED — a seeded
@@ -400,16 +471,24 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
     container/EFS side effects. Each step is in its own try/except so one stuck
     delete can't strand the rest. Never raises.
 
-    ``cause`` is threaded into ``unwind_partial_deploy`` so it can skip the
-    EFS/openclaw.json edit on a client-side TimeoutError — see its docstring.
-    It applies to the LAST created agent ONLY. ``created`` is appended to right
-    after ``create_agent`` and before that agent is paired/materialized, so the
-    only agent the container can still be mid-write on is ``created[-1]``;
-    everything before it finished its RPCs. Applying one agent's TimeoutError to
-    the whole list is what turned a 10-agent deploy whose 10th agent timed out
-    into nine permanently-stranded EFS workspaces + openclaw.json entries, while
-    their Paperclip rows were deleted anyway — nine unreachable ghosts where the
-    pre-branch behaviour unwound all ten.
+    ``is_agentcore`` (M6-R33): the AgentCore per-agent loop wrote no
+    ``.template`` sidecar and no ``openclaw.json``/EFS state for ``catalog.
+    unwind_partial_deploy`` to reverse — there is nothing for it to unwind.
+    Its rollback is exactly ``_install_agentcore_deploy``'s own failure
+    posture: delete the Paperclip agent and leave its S3 profile objects in
+    place (a re-run overwrites them).
+
+    ``cause`` is threaded into ``unwind_partial_deploy`` (ECS only) so it can
+    skip the EFS/openclaw.json edit on a client-side TimeoutError — see its
+    docstring. It applies to the LAST created agent ONLY. ``created`` is
+    appended to right after ``create_agent`` and before that agent is
+    paired/materialized, so the only agent the container can still be
+    mid-write on is ``created[-1]``; everything before it finished its RPCs.
+    Applying one agent's TimeoutError to the whole list is what turned a
+    10-agent deploy whose 10th agent timed out into nine permanently-stranded
+    EFS workspaces + openclaw.json entries, while their Paperclip rows were
+    deleted anyway — nine unreachable ghosts where the pre-branch behaviour
+    unwound all ten.
     """
     catalog = get_catalog_service()
     last_id = next((pc.get("id") if isinstance(pc, dict) else pc for pc in reversed(created)), None)
@@ -428,6 +507,15 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
                 continue
         except Exception:
             logger.exception("company_deploy rollback: is_seeded_agent check failed for agent=%s — skipping", pc_id)
+            continue
+        if is_agentcore:
+            # No container/EFS state was ever written for this agent — there
+            # is nothing to unwind. S3 profile objects are left as-is; a
+            # re-run overwrites them (M6-R33).
+            try:
+                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=pc_id)
+            except Exception:
+                logger.exception("company_deploy rollback: delete failed for agentcore agent=%s", pc_id)
             continue
         # Container side first: when the unwind is SKIPPED (timeout) the install
         # is still standing, so the Paperclip row has to stay with it — deleting

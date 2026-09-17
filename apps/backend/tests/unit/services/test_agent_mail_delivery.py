@@ -11,6 +11,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import agent_mail_delivery as delivery  # noqa: E402
 from core.services import runtime_transport  # noqa: E402
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S  # noqa: E402
 
 
 def _fake_ecs(container, ip):
@@ -244,11 +245,15 @@ async def test_pre_flag_container_rejecting_session_key_retries_unthreaded(monke
 
 
 @pytest.mark.asyncio
-async def test_agentcore_row_delivers_through_the_runtime_transport_seam(monkeypatch):
-    """An owner on AgentCore never dials an IP -- the request goes through
-    ``runtime_transport.request`` instead, and the ECS client is never built."""
+async def test_agentcore_row_delivers_through_the_inbound_door_as_agent_mail(monkeypatch):
+    """An owner on AgentCore never dials an IP, and never hits the OpenClaw
+    ``/hooks/agent`` route either -- Hermes has no hooks ingress, so mail joins
+    the one inbound door the bridge serves, tagged with its own eventKind.
+    ``deliver: False`` is gone too: it only existed to silence OpenClaw's
+    channel-outbound layer, which the bridge doesn't have."""
     agentcore_container = {
         "hook_token": "tok_abc",
+        "gateway_token": "gw_abc",
         "runtime_host": "agentcore",
         "agentcore_runtime_arn": "arn:x",
     }
@@ -270,7 +275,7 @@ async def test_agentcore_row_delivers_through_the_runtime_transport_seam(monkeyp
         captured["json_body"] = json_body
         captured["headers"] = headers
         captured["timeout_s"] = timeout_s
-        return runtime_transport.RuntimeResponse(200, '{"ok": true, "runId": "run_1"}', {})
+        return runtime_transport.RuntimeResponse(202, '{"eventId": "eml_1", "runId": null, "status": "accepted"}', {})
 
     monkeypatch.setattr(runtime_transport, "request", fake_request)
 
@@ -280,12 +285,60 @@ async def test_agentcore_row_delivers_through_the_runtime_transport_seam(monkeyp
 
     assert result == "delivered"
     assert captured["container"] is agentcore_container
-    assert captured["path"] == "/hooks/agent"
+    assert captured["path"] == "/plugins/lightbulb-channel/inbound/agent_friday"
     assert captured["ip"] == "agentcore"
-    assert captured["headers"] == {"Authorization": "Bearer tok_abc"}
-    assert captured["json_body"]["message"] == "hi"
-    assert captured["json_body"]["agentId"] == "agent_friday"
-    assert captured["timeout_s"] == 10.0
+    # The bridge's inbound door is gated on the GATEWAY token (server.py's _authorized),
+    # never the hook token -- final-review C2.
+    assert captured["headers"] == {"Authorization": "Bearer gw_abc"}
+    # No session_key argument -> OMITTED entirely (never sent as a literal null), same
+    # idiom as the ECS branch's own "no session_key -> key absent" test above.
+    assert captured["json_body"] == {
+        "version": 1,
+        "eventId": "eml_1",
+        "eventKind": "agent_mail",
+        "targetAgentId": "agent_friday",
+        "message": {"text": "hi"},
+    }
+    assert "sessionKey" not in captured["json_body"]
+    # AgentCore holds the invoke through a cold microVM start -- the same 90s budget the
+    # canonical ingress caller (openclaw_work._post) uses, not the old ECS-era 10s.
+    assert captured["timeout_s"] == _AGENTCORE_INGRESS_TIMEOUT_S == 90.0
+    assert "deliver" not in captured["json_body"]
+
+
+@pytest.mark.asyncio
+async def test_agentcore_row_forwards_the_session_key_and_a_replayed_200_still_delivers(monkeypatch):
+    """A 200 ``replayed`` answer (the ingress already ran for this eventId) is
+    just as much a delivery as a fresh 202 ``accepted``."""
+    agentcore_container = {
+        "hook_token": "tok_abc",
+        "gateway_token": "gw_abc",
+        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:x",
+    }
+    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs(agentcore_container, "agentcore"))
+    monkeypatch.setattr(delivery, "_client_factory", lambda: (_ for _ in ()).throw(AssertionError("no ECS client")))
+
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["json_body"] = json_body
+        return runtime_transport.RuntimeResponse(200, '{"eventId": "eml_1", "status": "replayed"}', {})
+
+    monkeypatch.setattr(runtime_transport, "request", fake_request)
+
+    result = await delivery.deliver_to_agent(
+        owner_id="org_1",
+        agent_id="agent_friday",
+        message="hi",
+        idempotency_key="eml_1",
+        session_key="lightbulb-email:thread-42",
+    )
+
+    assert result == "delivered"
+    assert captured["json_body"]["sessionKey"] == "lightbulb-email:thread-42"
 
 
 @pytest.mark.asyncio

@@ -370,9 +370,21 @@ class Settings(BaseSettings):
     # the EFS state layout: the backend can reach hot SQLite directly on EFS
     # and every local-sqlite code path (sentinel, S3 replica lifecycle) stays inert.
     LITESTREAM_BUCKET: str = ""
+    # Hermes per-owner profile state (config.yaml/.env/SOUL.md — see core.services.hermes_profiles),
+    # in the SAME bucket as the litestream replicas. M4-R7: a later lane renames the CDK env var
+    # that feeds this; until that ships, an unset value falls back to LITESTREAM_BUCKET (see
+    # _default_owner_state_bucket below) so both names keep working.
+    OWNER_STATE_BUCKET: str = ""
     # The gateway-only arm64 image a workspace's AgentCore runtime runs. Empty = the platform
     # is not enabled here; ensure_runtime refuses rather than guessing an image.
     AGENTCORE_GATEWAY_IMAGE: str = ""
+
+    # Provision new workspaces onto Hermes/AgentCore instead of ECS. Per ENVIRONMENT, not per
+    # owner: the choice is recorded on the container row at provision and read from there after.
+    HERMES_RUNTIME: bool = False
+    # The Hermes bridge image a workspace's AgentCore runtime runs. Empty = provision_hermes_runtime
+    # refuses rather than guessing an image (mirrors AGENTCORE_GATEWAY_IMAGE above).
+    AGENTCORE_HERMES_IMAGE: str = ""
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
     # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,
@@ -575,6 +587,17 @@ class Settings(BaseSettings):
         if v not in ("audit", "enforce"):
             raise ValueError(f"CLERK_AZP_MODE must be 'audit' or 'enforce'; got {v!r}")
         return v
+
+    @model_validator(mode="after")
+    def _default_owner_state_bucket(self) -> "Settings":
+        """M4-R7: OWNER_STATE_BUCKET falls back to LITESTREAM_BUCKET when unset.
+
+        A later lane renames the CDK env var that feeds this bucket name; until that ships,
+        both names must keep resolving to the same bucket.
+        """
+        if not self.OWNER_STATE_BUCKET:
+            self.OWNER_STATE_BUCKET = self.LITESTREAM_BUCKET
+        return self
 
     @model_validator(mode="after")
     def _validate_deployed_security(self) -> "Settings":

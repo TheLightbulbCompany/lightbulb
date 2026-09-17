@@ -23,7 +23,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import google_accounts_repo, integrations_repo
-from core.services import config_patcher
+from core.services import config_patcher, runtime_transport
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
@@ -32,7 +32,14 @@ from core.services.credentials import (
     oauth_dance,
     registry,
 )
+
+# Bound directly (not via the `apply_connection` module reference above), so
+# `except RuntimeUnsupportedError` keeps working even when a test mocks the
+# whole `routers.connections.apply_connection` module out — the class object
+# itself never changes underneath that patch.
+from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
+from core.services.credentials.mcp_server import reconcile_integrations
 from core.services import shopify_login
 from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.google_identity import seed_agent_google_identity
@@ -528,6 +535,13 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     await integration_secret_store.put(owner_id, provider, credential)
     try:
         await apply_connection.apply_connection(owner_id, provider, credential)
+    except RuntimeUnsupportedError as exc:
+        # M6-R31: a clear, specific answer instead of the generic apply_failed/502 --
+        # this provider has no known Hermes/AgentCore equivalent yet. Same rollback as
+        # the generic failure path: the row must never read connected.
+        await _remove_materialized_artifacts(owner_id, p, credential)
+        await integration_secret_store.delete(owner_id, provider)
+        raise HTTPException(status_code=422, detail=f"RUNTIME_UNSUPPORTED: {exc}") from exc
     except Exception:
         await _remove_materialized_artifacts(owner_id, p, credential)
         await integration_secret_store.delete(owner_id, provider)
@@ -800,7 +814,10 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     tolerate the remover's not-found error (gog exits non-zero for an account it
     can't find) for the case where the keyring drifted from the inventory."""
     accounts = await google_accounts_repo.list_accounts(owner_id)
-    if any(a["email"] == account for a in accounts):
+    # google is a pure CLI-skill materializer (gog_cli) with no Hermes
+    # equivalent — an AgentCore owner has no EFS keyring for the remover to
+    # touch (M6-R24, "same for revoke/disconnect").
+    if any(a["email"] == account for a in accounts) and not await runtime_transport.is_agentcore_owner(owner_id):
         remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None
         if remover:
             try:
@@ -859,10 +876,25 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 
 
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
+    # M6-R24 ("same for revoke/disconnect"): an AgentCore owner has no EFS —
+    # neither a materializer's on-disk artifact nor an openclaw.json to patch.
+    agentcore = await runtime_transport.is_agentcore_owner(owner_id)
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.
-    if p.wiring.materializer:
+    # A pure CLI-skill materializer (gh_cli/xurl_cli/skill_cli/instagram_cli/
+    # gog_cli/aws_cli) has no Hermes equivalent and is skipped outright; an
+    # MCP-shaped one (mcp_oauth/qbo_dotenv) needs no remover call either — its
+    # mcp-tokens/*.json cleanup happens inside reconcile_integrations below,
+    # once the row this function deletes is gone from the connected set.
+    if p.wiring.materializer and agentcore:
+        logger.info(
+            "agentcore: skipping %s materializer teardown for owner=%s — exec runs on the owner's "
+            "Mac, no Hermes equivalent",
+            provider,
+            owner_id,
+        )
+    elif p.wiring.materializer:
         remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
         if remover:
             # Some removers locate the on-disk artifact by a credential field
@@ -915,6 +947,28 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
             # No accounts remain, so re-seeding removes each agent's gog-account
             # block. Best-effort: a seed failure must not fail the disconnect.
             await _seed_identity_best_effort(owner_id, agent_id)
+    if agentcore:
+        # MCP/OAuth-shaped: re-project every REMAINING connected integration into
+        # every Hermes profile in one shot — the row this function just deleted is
+        # already gone from the connected set, so it drops out of the rebuilt
+        # mcp_servers block. A CLI-skill materializer never touched a profile, so
+        # there's nothing to refresh.
+        if apply_connection.is_mcp_shaped(p):
+            try:
+                # agentcore=True: already resolved above -- no second read.
+                await reconcile_integrations(owner_id, agentcore=True)
+            except Exception:  # noqa: BLE001 — a disconnect must never fail because the refresh did
+                logger.exception(
+                    "agentcore: profile refresh after disconnect failed for owner=%s provider=%s",
+                    owner_id,
+                    provider,
+                )
+        elif p.wiring.openclaw_paths:
+            # M6-R31: reconcile_integrations has no fan-out for an openclaw_paths
+            # provider at all (mcp_servers/.env only) — clear this one's own
+            # projection (env value + config.yaml selector) directly instead.
+            await apply_connection.clear_hermes_openclaw_paths_projection(owner_id, provider)
+        return
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
             await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")

@@ -26,7 +26,7 @@ import {
 import { AgentMonogram, AgentStatusDot } from "../../../components/control/AgentMonogram";
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
-import { deriveWorkspace, validateAgentName } from "../../../lib/agentCatalog";
+import { validateAgentName } from "../../../lib/agentCatalog";
 import { useLiveEvents } from "../../../providers/live-events";
 import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 import { isContainerComingUp } from "../../../lib/rosterPresentation";
@@ -69,7 +69,7 @@ function CreateAgentModal({
   visible: boolean;
   existingNames: string[];
   onClose: () => void;
-  onCreate: (params: { name: string; workspace: string; emoji?: string }) => Promise<void>;
+  onCreate: (params: { name: string; emoji?: string }) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
@@ -109,7 +109,8 @@ function CreateAgentModal({
     try {
       await onCreate({
         name: name.trim(),
-        workspace: deriveWorkspace(name),
+        // No `workspace`: the backend fills the layout for the owner's runtime
+        // (an EFS path on ECS, nothing on Hermes/AgentCore).
         ...(trimmedEmoji ? { emoji: trimmedEmoji } : {}),
       });
       reset();

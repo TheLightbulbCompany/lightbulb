@@ -128,6 +128,38 @@ async def get_secret_arn(user_id: str, provider: str) -> Optional[str]:
     return info["ARN"] if info else None
 
 
+def _get_secret_value(user_id: str, provider: str) -> Optional[str]:
+    """The plaintext BYO key VALUE for user_id/provider, or None if absent.
+
+    The SecretString IS the plaintext key — ``_put_user_secret`` stores it directly, no JSON
+    wrapper. Sync (boto3); wrap with ``run_in_thread``.
+    """
+    name = _secret_name(user_id, provider)
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    try:
+        return sm.get_secret_value(SecretId=name)["SecretString"]
+    except sm.exceptions.ResourceNotFoundException:
+        return None
+
+
+async def read_byo_key(owner_id: str, provider: str) -> Optional[str]:
+    """The plaintext BYO LLM key VALUE for ``owner_id``'s ``provider``, or None if unset.
+
+    M4-R32. Unlike ``get_secret_arn`` (the ECS path's own need — a task-definition ``secrets:``
+    reference AWS resolves by ARN, so the backend never reads the plaintext back), the Hermes
+    fresh-provision path (``hermes_provisioning.write_profiles``) has no task-definition
+    mechanism: it bakes the value directly into a per-agent profile ``.env`` uploaded to S3, so it
+    must read the plaintext here.
+
+    Requires ``secretsmanager:GetSecretValue`` on ``lightbulb/{env}/user-keys/*`` for the
+    BACKEND's own task role (not any per-owner role) — already granted twice over in
+    ``service-stack.ts``: the broad ``SecretsAccess`` statement (``lightbulb/{env}/*``) and the
+    more specific ``UserKeysSecretsRW`` statement scoped exactly to this prefix. No CDK change
+    needed.
+    """
+    return await run_in_thread(_get_secret_value, owner_id, provider)
+
+
 class KeyService:
     """Manages user-provided LLM API keys (Secrets Manager-backed)."""
 

@@ -148,14 +148,19 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    # service_token.mint() is sync — patch the module attribute the route
-    # imported at module load time so it returns a deterministic value.
+    # create_agent no longer mints/synthesizes inline -- both now happen inside the shared
+    # paperclip_agent_lifecycle.resolve_agent_adapter (openclaw_gateway branch, since no
+    # container row exists below), so the patches go there.
     mint_mock = MagicMock(return_value="freshly-minted-token")
-    monkeypatch.setattr(agents_mod.service_token, "mint", mint_mock)
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.service_token.mint", mint_mock)
     monkeypatch.setattr(
-        agents_mod,
-        "_gateway_url_for_env",
-        lambda: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
+        "core.services.paperclip_agent_lifecycle._ws_gateway_url",
+        lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
+    )
+    # No container row -> the pre-migration ECS default (openclaw_gateway), same as today.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value=None),
     )
     count_agents = AsyncMock(return_value=11)
     monkeypatch.setattr(
@@ -199,6 +204,44 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     mint_mock.assert_called_once_with("o1")
 
 
+def test_create_agent_on_agentcore_owner_gets_the_http_adapter(client, monkeypatch):
+    """An AgentCore-hosted owner has no gateway for an operator socket to connect to --
+    /teams create must route through resolve_agent_adapter's http branch, not the
+    device-paired openclaw_gateway one."""
+    admin = MagicMock()
+    admin.create_agent = AsyncMock(return_value={"id": "a_new"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"runtime_host": "agentcore", "hook_token": "hook_abc"}),
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_adapter_config.settings.PUBLIC_API_BASE", "https://api-dev.flickmeon.ai"
+    )
+    count_agents = AsyncMock(return_value=11)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    )
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
+
+    r = client.post(
+        "/api/v1/teams/agents",
+        json={"name": "Helper", "role": "engineer"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert r.status_code == 200
+    call = admin.create_agent.await_args
+    assert call.kwargs["adapter_type"] == "http"
+    assert call.kwargs["adapter_config"]["headers"]["Authorization"] == "Bearer hook_abc"
+    assert call.kwargs["adapter_config"]["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/o1"
+
+
 def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
     """The create response MUST NOT leak adapterConfig. Paperclip echoes the
     full config back on create — including the freshly-minted devicePrivateKeyPem
@@ -223,8 +266,12 @@ def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
         }
     )
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(agents_mod.service_token, "mint", MagicMock(return_value="tok"))
-    monkeypatch.setattr(agents_mod, "_gateway_url_for_env", lambda: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws")
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.service_token.mint", MagicMock(return_value="tok"))
+    monkeypatch.setattr(
+        "core.services.paperclip_agent_lifecycle._ws_gateway_url",
+        lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
+    )
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/agents",
@@ -313,15 +360,14 @@ def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeyp
     )
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(
-        agents_mod.service_token,
-        "mint",
+        "core.services.paperclip_agent_lifecycle.service_token.mint",
         MagicMock(return_value="fresh-token"),
     )
     monkeypatch.setattr(
-        agents_mod,
-        "_gateway_url_for_env",
-        lambda: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
+        "core.services.paperclip_agent_lifecycle._ws_gateway_url",
+        lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
     )
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/agents",

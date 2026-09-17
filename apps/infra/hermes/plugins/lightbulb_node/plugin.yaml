@@ -1,0 +1,5 @@
+name: lightbulb_node
+version: 1.0.0
+description: "Run terminal commands on the owner's paired Mac through the Lightbulb node route."
+author: "Lightbulb"
+kind: backend

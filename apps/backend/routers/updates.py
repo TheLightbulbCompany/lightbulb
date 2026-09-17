@@ -17,8 +17,10 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, update_repo
+from core.services import runtime_transport
 from core.services.admin_audit import audit_admin_action
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
+from core.services.runtime_rpc import config_patch_roster
 from core.services.update_service import (
     TASK_DEFINITION_REFRESH_KIND,
     apply_update,
@@ -135,8 +137,8 @@ async def admin_create_update(
         new_image = body.changes.get("new_image", "")
         if not new_image:
             raise HTTPException(status_code=400, detail="changes.new_image is required for fleet image updates")
-        count = await queue_fleet_image_update(new_image, body.description)
-        return {"status": "queued", "count": count}
+        count, skipped_agentcore = await queue_fleet_image_update(new_image, body.description)
+        return {"status": "queued", "count": count, "skipped_agentcore": skipped_agentcore}
 
     if body.owner_id == "all" and body.update_type == TASK_DEFINITION_REFRESH_KIND:
         queued, skipped = await queue_fleet_task_definition_refresh(body.description)
@@ -186,6 +188,14 @@ async def patch_single_config(
     # Platform-admin only: the owner_id comes from the path, so any non-admin
     # caller could otherwise patch an arbitrary tenant's config. Self-service
     # config patching is served by the owner-scoped PATCH /api/v1/config.
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # M6 row #13: same S3-profile fan-out routers/config.py's owner-scoped
+        # door uses -- an AgentCore owner has no openclaw.json for patch_openclaw_config
+        # to find.
+        await config_patch_roster(owner_id, body.patch, None)
+        put_metric("update.config_patch.applied", dimensions={"scope": "single"})
+        return {"status": "patched", "owner_id": owner_id, "keys": list(body.patch.keys())}
+
     try:
         await patch_openclaw_config(owner_id, body.patch)
     except ConfigPatchError as e:
@@ -257,7 +267,14 @@ async def patch_fleet_config(
     failed = 0
     for oid in owners:
         try:
-            await patch_openclaw_config(oid, body.patch)
+            # M6 row #13: an AgentCore owner must be APPLIED to, not silently
+            # skipped like the ConfigPatchError branch below would otherwise do
+            # for a "no config file" owner -- see config_patch_roster's own
+            # per-profile fan-out.
+            if await runtime_transport.is_agentcore_owner(oid):
+                await config_patch_roster(oid, body.patch, None)
+            else:
+                await patch_openclaw_config(oid, body.patch)
             patched += 1
         except ConfigPatchError:
             failed += 1

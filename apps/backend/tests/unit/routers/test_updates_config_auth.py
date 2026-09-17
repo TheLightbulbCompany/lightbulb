@@ -168,6 +168,27 @@ class TestFleetPatchConfirmationHeader:
         assert res.status_code == 403
         mock_patcher.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_agentcore_row_is_applied_via_roster_patch_not_skipped(
+        self, async_client, admin_env, mock_patcher, one_owner_fleet
+    ):
+        """Missing test (fix round 1, item 4): an AgentCore owner is APPLIED to via the
+        roster fan-out and counted in `patched`, never silently skipped like a
+        ConfigPatchError "no config file" owner would be."""
+        with (
+            patch("routers.updates.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=True)),
+            patch(
+                "routers.updates.config_patch_roster", new=AsyncMock(return_value={"config": {}, "hash": "h1"})
+            ) as roster_patcher,
+        ):
+            res = await async_client.patch(FLEET_PATH, json={"patch": {"agents": {"x": 1}}}, headers=CONFIRM)
+        assert res.status_code == 200
+        body = res.json()
+        assert body["patched"] == 1
+        assert body["failed"] == 0
+        roster_patcher.assert_awaited_once_with("o1", {"agents": {"x": 1}}, None)
+        mock_patcher.assert_not_awaited()
+
 
 class TestConfigPatchAuditTrail:
     """Both patch routes append to admin_actions."""

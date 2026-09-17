@@ -86,16 +86,25 @@ def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) ->
     ``chat_available`` from anything else.
 
     Returns:
-      - "provisioning"  container row absent, or ECS task not RUNNING yet
+      - "provisioning"  container row absent, or task not RUNNING yet
                          (PENDING / STOPPED / error).
       - "starting"      ECS task RUNNING but the gateway hasn't completed
                          the OpenClaw handshake + health verification yet.
       - "ready"         gateway is connected -- OpenClaw is responsive to
-                         RPCs, chat is usable.
+                         RPCs, chat is usable. For a running AgentCore row
+                         this is reported WITHOUT a health RPC: AgentCore
+                         parks an idle microVM invisibly and wakes it on
+                         invoke, so a failed probe means "asleep", not
+                         "starting" -- probing here would show "starting"
+                         forever for an idle workspace.
     """
     status = (container or {}).get("status")
     if status != "running":
         return "provisioning"
+    from core.services.runtime_transport import host_for
+
+    if host_for(container or {}) == "agentcore":
+        return "ready"
     if gateway_connected:
         return "ready"
     return "starting"
@@ -238,9 +247,16 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
                 lifecycle = "parked"
                 runtime_phase = "provisioning"
             else:
-                runtime_phase = resolve_runtime_phase(
-                    container, container.get("status") == "running" and await _gateway_reachable(owner_id)
-                )
+                from core.services.runtime_transport import host_for
+
+                # Never probe a running AgentCore row: AgentCore wakes the microVM on ANY
+                # invoke, so a health RPC here would wake a parked box the poll is supposed
+                # to leave alone. resolve_runtime_phase reports "ready" for it unconditionally.
+                if container.get("status") == "running" and host_for(container) != "agentcore":
+                    gateway_connected = await _gateway_reachable(owner_id)
+                else:
+                    gateway_connected = False
+                runtime_phase = resolve_runtime_phase(container, gateway_connected)
                 lifecycle = runtime_phase  # "provisioning" | "starting" | "ready"
 
     chat_available = runtime_phase == "ready"  # INV-6: SOLELY runtime_phase.

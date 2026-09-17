@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 from core.config import settings
-from core.repositories import billing_repo
+from core.repositories import billing_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import container_rpc, service_token
 from core.services.paperclip_admin_client import PaperclipAdminClient
@@ -30,7 +30,9 @@ from core.services.paperclip_agent_idempotency import (
 )
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_adapter_config import (
-    OPENCLAW_GATEWAY_TYPE,
+    HTTP_ADAPTER_TYPE,
+    adapter_type_for,
+    build_http_adapter_config,
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
@@ -40,6 +42,52 @@ from core.services.paperclip_provisioning import _ws_gateway_url
 logger = logging.getLogger(__name__)
 
 _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
+
+
+async def resolve_agent_adapter(
+    owner_id: str, *, agent_label: str, gateway_user_id: str, runtime_host: str | None = None
+) -> tuple[str, dict]:
+    """Which Paperclip adapter type + config carries an agent this door creates.
+
+    Shared by every Paperclip agent-creation call site in the backend (chat-create and
+    marketplace-deploy below; also ``core/services/company_deploy_service.py`` and
+    ``routers/teams/agents.py``'s ``/agents`` endpoint) so the ECS-vs-AgentCore pick lives in
+    exactly one place.
+
+    Hermes/AgentCore has no gateway for an operator socket to connect to, so those
+    owners get the fork's own `http` webhook adapter (paperclip_adapter_config.
+    HTTP_ADAPTER_TYPE) -- no device pairing needed. Everyone else keeps the
+    existing device-paired openclaw_gateway adapter unchanged.
+
+    ``agent_label`` stands in for the Paperclip-assigned agent id, which isn't
+    known until ``create_agent`` returns: the run's own webhook body carries
+    Paperclip's real ``agentId``, so this is a log label on the `http` adapter's
+    config, not a routing key. Wiring the real post-create id back in (the
+    `http`-adapter analogue of ``desired_agent_adapter_fields``'s post-create
+    patch for openclaw_gateway) is provisioning-writer work, out of scope here.
+
+    ``runtime_host``: an optional hint forwarded to ``adapter_type_for`` -- a caller that
+    already read the owner's container row (for any other reason) can pass its
+    ``runtime_host`` straight through and skip a redundant read. Every caller today passes
+    nothing (``None``), which keeps today's behaviour: ``adapter_type_for`` does its own read,
+    and a read failure PROPAGATES rather than being swallowed into a silent ECS fallback (a
+    seed-time DynamoDB blip should surface as a failure, not a mis-wired agent).
+    """
+    adapter_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
+    if adapter_type == HTTP_ADAPTER_TYPE:
+        # Only the http-adapter branch needs the container row (for its hook token) -- the
+        # far more common ECS branch reads nothing beyond what adapter_type_for already did.
+        container = await container_repo.get_by_owner_id(owner_id)
+        return adapter_type, build_http_adapter_config(
+            owner_id, agent_label, hook_token=(container or {}).get("hook_token") or ""
+        )
+    return adapter_type, synthesize_openclaw_adapter(
+        gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
+        service_token=service_token.mint(owner_id),
+        user_id=gateway_user_id,
+    )
+
+
 _ISSUE_PAGE_SIZE = 1000
 _AGENT_DELETE_LOCK_RETRY_DELAYS_S: tuple[float, ...] = (0.25, 1.0)
 _OPENCLAW_FILE_LOCK_TIMEOUT_MARKER = "code=file_lock_timeout"
@@ -338,36 +386,56 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
 
     from core.containers import get_ecs_manager, get_workspace
     from core.containers.workspace import cleanup_deleted_agent
+    from core.dynamodb import run_in_thread
+    from core.services import hermes_profiles
     from core.services.config_patcher import (
         deregister_lightbulb_agent_account,
         remove_from_openclaw_config_list,
     )
+    from core.services.runtime_transport import host_for
 
     preserved = await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
 
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
-    if container is not None and ip:
+    # F4 (predeploy review, M6-R37): the probe (and the delete it might trigger) is an ECS-only
+    # concept -- an AgentCore row has no gateway agents.list RPC to check first (the S3 profile
+    # delete below is this transport's whole story), and probing one anyway paid the 30s
+    # runtime_rpc default against a possibly-parked microVM for an answer this branch never uses.
+    if container is not None and ip and host_for(container) != "agentcore":
         live_agents = _rows(await container_rpc.call(owner_id, "agents.list", {}), "agents")
         if any(agent.get("id") == agent_id for agent in live_agents):
             await delete_runtime_agent_with_lock_retry(owner_id=owner_id, agent_id=agent_id)
 
-    # Belt-and-suspenders persistence cleanup: gateway deletion updates a
-    # running process, while this guarantees a stopped/restarted container
-    # cannot reload the removed entry from openclaw.json.
-    await remove_from_openclaw_config_list(
-        owner_id,
-        ["agents", "list"],
-        lambda entry: isinstance(entry, dict) and entry.get("id") == agent_id,
-    )
-    # Same belt-and-suspenders reasoning as above: the agent's Lightbulb
-    # channel account + binding are Lightbulb-side config OpenClaw's own
-    # agents.delete RPC knows nothing about, so they never self-clean.
-    await deregister_lightbulb_agent_account(owner_id, agent_id)
+    if host_for(container or {}) == "agentcore":
+        # Q9a row #3: no openclaw.json for an AgentCore owner -- every EFS-touching cleanup
+        # below (config-list removal, the Lightbulb channel account, which is an OpenClaw-only
+        # concept) would raise ConfigPatchError on the missing file (task-9-scan.md row #3).
+        # The S3 profile prefix is this transport's equivalent durable record to remove.
+        await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
+    else:
+        # Belt-and-suspenders persistence cleanup: gateway deletion updates a
+        # running process, while this guarantees a stopped/restarted container
+        # cannot reload the removed entry from openclaw.json.
+        await remove_from_openclaw_config_list(
+            owner_id,
+            ["agents", "list"],
+            lambda entry: isinstance(entry, dict) and entry.get("id") == agent_id,
+        )
+        # Same belt-and-suspenders reasoning as above: the agent's Lightbulb
+        # channel account + binding are Lightbulb-side config OpenClaw's own
+        # agents.delete RPC knows nothing about, so they never self-clean.
+        await deregister_lightbulb_agent_account(owner_id, agent_id)
     # cleanup_deleted_agent is intentionally best-effort, but the sidecar is
     # also the marketplace's install record. Remove it strictly before the
     # Paperclip handle disappears so a failed unlink leaves a visible, retryable
     # agent instead of a stale installed marker with no owner-facing handle.
+    #
+    # Both of these run unconditionally for AgentCore too (Q9a fix round 1, item 7): the
+    # sidecar path is `Path.unlink(missing_ok=True)` (ENOENT from a missing PARENT directory
+    # is the same OSError as a missing leaf file, so a never-provisioned EFS tree is a silent
+    # no-op, not a raise), and cleanup_deleted_agent wraps its own EFS walk in a try/except
+    # that only logs -- neither can 500 an AgentCore delete the way the EFS writers above did.
     await asyncio.to_thread(get_workspace().remove_template_sidecar, owner_id, agent_id)
     await cleanup_deleted_agent(owner_id, agent_id)
     await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)
@@ -425,10 +493,8 @@ async def create_paperclip_for_chat(
         # ``user_id=creator_user_id`` is still correct: that field is the
         # adapterConfig.sessionKey fallback (per-creator manual-wake
         # session key), not the auth principal.
-        adapter_config = synthesize_openclaw_adapter(
-            gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
-            service_token=service_token.mint(owner_id),
-            user_id=creator_user_id,
+        adapter_type, adapter_config = await resolve_agent_adapter(
+            owner_id, agent_label=name, gateway_user_id=creator_user_id
         )
         fields = resolve_create_agent_fields(role=role, meta=meta)
         idempotency_key = build_agent_create_idempotency_key(
@@ -436,14 +502,14 @@ async def create_paperclip_for_chat(
             owner_id=owner_id,
             intent=paperclip_agent_intent(
                 name=name,
-                adapter_type=OPENCLAW_GATEWAY_TYPE,
+                adapter_type=adapter_type,
                 **fields,
             ),
         )
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
-            adapter_type=OPENCLAW_GATEWAY_TYPE,
+            adapter_type=adapter_type,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
             idempotency_key=idempotency_key,
@@ -553,16 +619,14 @@ async def create_paperclip_for_marketplace(
     try:
         admin_client = PaperclipAdminClient(http_client=http)
         admin_cookie = await get_admin_session_cookie(http)
-        adapter_config = synthesize_openclaw_adapter(
-            gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
-            service_token=service_token.mint(owner_id),
-            user_id=buyer_user_id,
+        adapter_type, adapter_config = await resolve_agent_adapter(
+            owner_id, agent_label=name, gateway_user_id=buyer_user_id
         )
         fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
-            adapter_type=OPENCLAW_GATEWAY_TYPE,
+            adapter_type=adapter_type,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
             reports_to=reports_to,

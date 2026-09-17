@@ -189,6 +189,17 @@ def smoke_env(mocked_paperclip_transport):
             ],
         )
 
+        # The agent-create door resolves the owner's adapter type from the containers
+        # row (adapter_type_for reads it and RAISES on a failed read — a missing table
+        # is a failed read, not "no row"). An empty table means "no row" → the ECS
+        # default adapter, which is exactly what this smoke test asserts.
+        resource.create_table(
+            TableName="containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
         # Build a real admin client wired to the mocked Paperclip transport.
         http = httpx.AsyncClient(transport=mocked_paperclip_transport, base_url="http://paperclip.test")
         admin = PaperclipAdminClient(http_client=http)

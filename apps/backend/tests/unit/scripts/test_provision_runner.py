@@ -125,6 +125,8 @@ async def test_wait_for_running_fences_on_post_mint_generation(monkeypatch, mana
     against itself and wedge the row in "provisioning"."""
     repo.get_by_owner_id = AsyncMock(
         side_effect=[
+            {"provision_generation": "gen-OLD"},  # minor M6-R39's leading read (an ECS row --
+            # host_for reads "ecs" from the missing runtime_host, so the Hermes leg is untouched)
             {"provision_generation": "gen-OLD"},  # pre-provision read
             {"provision_generation": "gen-MINTED"},  # post-provision re-read
         ]

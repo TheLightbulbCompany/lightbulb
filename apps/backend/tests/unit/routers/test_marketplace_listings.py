@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from core.auth import AuthContext  # noqa: E402
+from core.services.hermes_provisioning import HermesProfileError  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -527,6 +528,49 @@ def test_deploy_free_listing_succeeds(
     assert pair_kwargs["gateway_token"] == "gw-tok"
     assert "idempotency_replay_only" not in mock_create_pc.await_args.kwargs
     count_agents.assert_not_awaited()
+
+
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_threads_the_resolved_container_through_to_deploy_from_artifact(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    _mock_pair,
+    client,
+    monkeypatch,
+):
+    """Fix round 1, item 1: `container` is already resolved by
+    resolve_running_container right above the deploy_from_artifact call --
+    deploy_listing must thread it through so an AgentCore row reaches the
+    S3-profile branch instead of assuming EFS."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
+    agentcore_container = {"gateway_token": "gw-tok", "runtime_host": "agentcore"}
+    mgr = MagicMock()
+    mgr.resolve_running_container = AsyncMock(return_value=(agentcore_container, "agentcore"))
+    mock_get_ecs.return_value = mgr
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {}, "cron_jobs": []})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={"slug": "demo-agent", "version": 1, "agent_id": "agent_abc123", "name": "Demo Agent"}
+    )
+    mock_get_catalog.return_value = catalog
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    kwargs = catalog.deploy_from_artifact.await_args.kwargs
+    assert kwargs["container"] == agentcore_container
 
 
 @patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
@@ -1211,6 +1255,49 @@ def test_deploy_failure_does_not_bump_install_count(
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 500
     _stub_listing_install_counter.assert_not_awaited()
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_maps_a_failed_hermes_profile_to_503_not_500(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+    _stub_listing_install_counter,
+):
+    """Fix round 2, gap 1 (M6-R11) / round 3, M6-R13: _build_and_upload_agent_profile's
+    hard failures (missing BYO key, failed Paperclip mint) must reach the
+    buyer as a retryable 503, not the blanket 500 every other unexpected
+    deploy_from_artifact failure gets -- discriminated by the typed
+    HermesProfileError, not a bare RuntimeError (which also legitimately
+    surfaces from create_paperclip_for_marketplace / deploy_tarball_to_profile /
+    ensure_operator_device_paired in the same try block and must keep
+    mapping to 500 -- see test_deploy_failure_does_not_bump_install_count
+    above, which asserts exactly that with a plain RuntimeError)."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock(
+        side_effect=HermesProfileError("hermes profile for owner=owner_1 agent=agent_abc123: byo api key read failed")
+    )
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 503, resp.text
+    _stub_listing_install_counter.assert_not_awaited()
+    mock_delete_pc.assert_awaited_once()
 
 
 @patch("core.repositories.marketplace_repo._purchases_table")
@@ -2229,7 +2316,9 @@ def test_my_agents_summary_unauthorized(unauth_client):
 
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_blocks_friday(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     authed_client_factory,
@@ -2250,7 +2339,9 @@ def test_artifact_from_agent_blocks_friday(
 
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_503s_when_friday_guard_cannot_reach_paperclip(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     authed_client_factory,
@@ -2282,11 +2373,32 @@ def test_artifact_preview_503s_when_friday_guard_cannot_reach_paperclip(mock_is_
     assert resp.status_code == 503
 
 
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_artifact_preview_503s_when_container_lookup_fails(mock_get_container, mock_is_friday, authed_client_factory):
+    """Fix round 2, gap 2: a transient container-row read failure must
+    surface as a retryable 503, not silently degrade to the EFS route (which
+    then 404s an AgentCore seller as 'agent not found'). ``mock_is_friday`` is
+    asserted un-called: the container lookup is the FIRST line of the
+    handler, so a real fix raises before the Friday guard ever runs --
+    without that assertion this test would pass for the wrong reason (an
+    unmocked Paperclip fetch inside the Friday guard 503s on its own, per
+    ``test_artifact_preview_503s_when_friday_guard_cannot_reach_paperclip``
+    right above)."""
+    mock_get_container.side_effect = RuntimeError("dynamodb blip")
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents/custom-1/artifact-preview")
+    assert resp.status_code == 503
+    mock_is_friday.assert_not_called()
+
+
 @patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_allows_non_friday(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     mock_replace,
@@ -2320,11 +2432,53 @@ def test_artifact_from_agent_allows_non_friday(
     mock_replace.assert_called_once()
 
 
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_threads_the_resolved_container_through(
+    mock_export,
+    mock_is_friday,
+    mock_replace,
+    mock_find_active,
+    mock_get_container,
+    authed_client_factory,
+):
+    """Fix round 1, item 1: the upload-from-agent route fetches the seller's
+    container row up front and must thread it through to
+    export_agent_from_efs so an AgentCore seller reads their Hermes S3
+    profile instead of assuming EFS."""
+    from core.services.catalog_package import CatalogPackage
+
+    mock_find_active.return_value = None
+    mock_is_friday.return_value = False
+    agentcore_container = {"runtime_host": "agentcore"}
+    mock_get_container.return_value = agentcore_container
+    mock_export.return_value = CatalogPackage(
+        format="openclaw",
+        manifest={"name": "x", "agent_id": "custom-1"},
+        openclaw_slice={"agent": {"name": "x"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tarball_bytes=b"fake",
+        tarball_contents=["./openclaw.json"],
+    )
+    mock_replace.return_value = {"listing_id": "lst_42", "version": 1, "manifest_sha256": "abc123"}
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "custom-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert mock_export.call_args.kwargs["container"] == agentcore_container
+
+
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_passes_bundle_selection_through(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     mock_replace,
@@ -2368,7 +2522,9 @@ def test_artifact_from_agent_passes_bundle_selection_through(
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_blocks_duplicate_publish(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     mock_replace,
@@ -2398,7 +2554,9 @@ def test_artifact_from_agent_blocks_duplicate_publish(
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_allows_republish_same_listing(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     mock_replace,
@@ -2438,7 +2596,9 @@ def test_artifact_from_agent_allows_republish_same_listing(
 
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.enumerate_for_preview")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_preview_returns_available_mcps_skills_and_flags(
+    _mock_get_container,
     mock_enumerate,
     mock_is_friday,
     authed_client_factory,
@@ -2481,9 +2641,40 @@ def test_artifact_preview_returns_available_mcps_skills_and_flags(
     assert body["needs_config_patch"] is True
 
 
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.enumerate_for_preview")
+def test_artifact_preview_threads_the_resolved_container_through(
+    mock_enumerate,
+    mock_is_friday,
+    mock_get_container,
+    authed_client_factory,
+):
+    """Fix round 1, item 1: the preview route fetches the seller's container
+    row up front and must thread it through to enumerate_for_preview so an
+    AgentCore seller reads their Hermes S3 profile instead of assuming EFS."""
+    mock_is_friday.return_value = False
+    agentcore_container = {"runtime_host": "agentcore"}
+    mock_get_container.return_value = agentcore_container
+    mock_enumerate.return_value = {
+        "agent_id": "custom-1",
+        "available_mcps": [],
+        "available_skills": [],
+        "auto_ship_skills": [],
+        "persona_files": [],
+        "safety_flags": [],
+    }
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents/custom-1/artifact-preview")
+    assert resp.status_code == 200, resp.text
+    assert mock_enumerate.call_args.kwargs["container"] == agentcore_container
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.enumerate_for_preview")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_preview_needs_config_patch_false_for_pure_workspace_listing(
+    _mock_get_container,
     mock_enumerate,
     mock_is_friday,
     authed_client_factory,
@@ -2506,7 +2697,8 @@ def test_artifact_preview_needs_config_patch_false_for_pure_workspace_listing(
 
 
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
-def test_artifact_preview_blocks_friday(mock_is_friday, authed_client_factory):
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
+def test_artifact_preview_blocks_friday(_mock_get_container, mock_is_friday, authed_client_factory):
     mock_is_friday.return_value = True
     tc = authed_client_factory("u_seller", "seller@example.com")
     resp = tc.get("/api/v1/marketplace/me/agents/friday-uuid/artifact-preview")
@@ -2994,7 +3186,9 @@ def _fake_package(**overrides):
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.run_in_thread", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_exports_off_loop_and_reports_pruned_paths(
+    _mock_get_container,
     mock_run_in_thread,
     mock_is_friday,
     mock_replace,
@@ -3025,7 +3219,9 @@ def test_artifact_from_agent_exports_off_loop_and_reports_pruned_paths(
 @patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_413s_when_workspace_exceeds_cap(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     mock_find_active,
@@ -3047,7 +3243,9 @@ def test_artifact_from_agent_413s_when_workspace_exceeds_cap(
 @patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None)
 def test_artifact_from_agent_400s_on_invalid_paths(
+    _mock_get_container,
     mock_export,
     mock_is_friday,
     mock_find_active,

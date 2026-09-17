@@ -61,10 +61,16 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
 from core.services.company_identity import generate_company_name
-from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
+from core.services.paperclip_adapter_config import (
+    HTTP_ADAPTER_TYPE,
+    adapter_type_for,
+    build_http_adapter_config,
+    synthesize_openclaw_adapter,
+)
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
 logger = logging.getLogger(__name__)
@@ -269,8 +275,17 @@ class PaperclipProvisioning:
         owner_id: str,
         owner_user_id: str,
         owner_email: str,
+        runtime_host: str | None = None,
     ) -> PaperclipCompany:
         """Provision the Paperclip company + Better Auth user for a new owner.
+
+        ``runtime_host``: forwarded verbatim to ``adapter_type_for`` for the
+        starter-seed loop below (M4-R8/M1 Ruling 10). Step 0 seeds Paperclip
+        BEFORE the container row exists — the row's own ``runtime_host`` isn't
+        written until step 1 — so an explicit hint here is the only way a
+        FRESH Hermes/AgentCore provision seeds every starter agent onto the
+        ``http`` adapter instead of the ECS default. ``None`` (every existing
+        caller) preserves the old read-the-row-or-default-ECS behavior.
 
         ``owner_id`` is the container's owner — Clerk's org_id for orgs
         and Clerk's user_id for personal owners. It's the same value
@@ -633,6 +648,22 @@ class PaperclipProvisioning:
             #    for org members.
             svc_token = service_token.mint(owner_id)
 
+            # Which adapter carries these seeded runs. Hermes/AgentCore has no gateway for an
+            # operator socket to connect to, so those owners get the fork's `http` webhook
+            # adapter instead (see paperclip_adapter_config.HTTP_ADAPTER_TYPE). Absent/unknown
+            # `runtime_host` (the pre-migration default, and the common case: a FRESH provision
+            # seeds Paperclip in step 0, before the container row exists at all -- step 1 --
+            # so there is usually nothing to find yet) is ECS. A read that RAISES (a genuine
+            # DynamoDB blip) PROPAGATES rather than being swallowed -- see
+            # paperclip_adapter_config.adapter_type_for's docstring. Only the http-adapter
+            # branch below needs a second, separate read (for the hook token); the far more
+            # common ECS branch reads nothing beyond what adapter_type_for already did.
+            seed_adapter_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
+            seed_hook_token = ""
+            if seed_adapter_type == HTTP_ADAPTER_TYPE:
+                owner_container = await container_repo.get_by_owner_id(owner_id)
+                seed_hook_token = (owner_container or {}).get("hook_token") or ""
+
             starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
             for starter_key, name, role, title, parent_key in STARTER_ROSTER:
                 if starter_agent_ids.get(starter_key):
@@ -641,20 +672,28 @@ class PaperclipProvisioning:
                 if parent_key and not reports_to:
                     continue
                 try:
-                    # Synthesis mints a device key when none is supplied.
-                    # Each starter needs a distinct paired.json identity.
-                    adapter_config = synthesize_openclaw_adapter(
-                        gateway_url=_ws_gateway_url(self._env_name),
-                        service_token=svc_token,
-                        user_id=owner_user_id,
-                    )
+                    if seed_adapter_type == HTTP_ADAPTER_TYPE:
+                        # No device pairing, no gateway URL -- the fork's http adapter just
+                        # posts the run to our own door. `starter_key` stands in for the
+                        # Paperclip-assigned agent id (unknown before create returns); the
+                        # run's own webhook body carries Paperclip's real agentId, so this
+                        # header is a label for our logs, not a routing key.
+                        adapter_config = build_http_adapter_config(owner_id, starter_key, hook_token=seed_hook_token)
+                    else:
+                        # Synthesis mints a device key when none is supplied.
+                        # Each starter needs a distinct paired.json identity.
+                        adapter_config = synthesize_openclaw_adapter(
+                            gateway_url=_ws_gateway_url(self._env_name),
+                            service_token=svc_token,
+                            user_id=owner_user_id,
+                        )
                     agent = await self._admin.create_agent(
                         company_id=company_id,
                         name=name,
                         role=role,
                         title=title,
                         reports_to=reports_to,
-                        adapter_type=OPENCLAW_GATEWAY_TYPE,
+                        adapter_type=seed_adapter_type,
                         adapter_config=adapter_config,
                         session_cookie=new_user_session_cookie,
                         idempotency_key=f"seed:starter:{starter_key}:v1",

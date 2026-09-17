@@ -1,0 +1,56 @@
+from bridge import turn
+
+ROOM, RUN = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+
+
+def publisher():
+    sent = []
+    p = turn.FramePublisher("https://e.invalid", "/ws/c", ROOM, "ceo", RUN, None,
+                            publish=lambda endpoint, channel, event: sent.append(event["payload"]["frame"]) or 200)
+    return p, sent
+
+
+def test_a_completed_run_brackets_with_run_active_and_ends_with_a_full_text_resync():
+    p, sent = publisher()
+    p.started()
+    p.tool_start("call_1", "terminal", {"command": "ls"})
+    p.tool_complete("call_1", "terminal", {"command": "ls"}, "README.md")
+    p.finished("completed", "Here is the listing.", None)
+    assert [f["type"] for f in sent] == [
+        "run_active", "tool_start", "tool_end", "chunk", "done", "run_ended", "run_active"]
+    assert sent[0]["active"] is True and sent[-1]["active"] is False
+    assert sent[3] == {"type": "chunk", "content": "Here is the listing.", "runId": RUN, "agentId": "ceo"}
+    assert sent[5]["outcome"] == "done"
+
+
+def test_a_failing_tool_result_becomes_tool_error():
+    p, sent = publisher()
+    p.tool_complete("call_2", "terminal", {}, {"error": "command not found"})
+    assert sent[0]["type"] == "tool_error" and sent[0]["toolCallId"] == "call_2"
+
+
+def test_an_aborted_run_emits_the_cancelled_error_pair_and_no_done():
+    p, sent = publisher()
+    p.finished("aborted", "partial", None)
+    assert [f["type"] for f in sent] == ["error", "run_ended", "run_active"]
+    assert sent[0]["message"] == "Agent run was cancelled"
+    assert sent[1]["outcome"] == "aborted"
+
+
+def test_a_gate_outcome_skips_the_error_frame_entirely():
+    """Fix round (Important 2, Ruling 18): ignored/gate_error get run_ended + run_active:false
+    and nothing else -- no `error` frame, unlike every other non-"completed" outcome."""
+    for outcome in ("ignored", "gate_error"):
+        p, sent = publisher()
+        p.finished(outcome, "", None)
+        assert [f["type"] for f in sent] == ["run_ended", "run_active"]
+        assert sent[0]["outcome"] == outcome
+
+
+def test_a_non_tool_progress_event_becomes_agent_activity_and_tool_events_are_never_doubled():
+    p, sent = publisher()
+    p.activity("compaction", "_context", "compressing", None)
+    assert sent[0] == {"type": "agent_activity", "activity": "compaction", "title": "_context",
+                       "detail": {"preview": "compressing"}, "runId": RUN, "agentId": "ceo"}
+    p.activity("tool.started", "terminal", "ls", {})
+    assert len(sent) == 1

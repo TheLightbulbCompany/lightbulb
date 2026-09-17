@@ -18,6 +18,7 @@ from pathlib import PurePath
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+import httpx
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -31,6 +32,9 @@ from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
+from core.services import node_broker
+from core.services import task_address
+from core.services.connection_service import ConnectionService
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.push_service import send_push_to_user
 from core.services import run_analytics
@@ -113,6 +117,15 @@ API_ERROR_STATUS = {
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
     "INTERNAL_ERROR": 500,
+    # Task 28 node-invoke (M2-R11): NODE_NOT_ATTACHED covers both "nothing is attached
+    # anywhere" and "a forwarded call found no local session either" -- the caller reacts
+    # to both the same way (no node to run this on). NODE_MOVED is reserved for a future
+    # caller that needs to distinguish "it moved" from "it was never here"; nothing in
+    # Task 28 raises it today, but it is a real, tested status mapping.
+    "NODE_NOT_ATTACHED": 409,
+    "COMMAND_NOT_ALLOWED": 403,
+    "NODE_TIMEOUT": 504,
+    "NODE_MOVED": 409,
 }
 
 ROOM_LIVE_EVENT_TYPES = frozenset(
@@ -521,6 +534,48 @@ class UsageReportRequest(ContractModel):
 class UsageReportResponse(ContractModel):
     run_id: str
     status: Literal["applied", "replayed", "ignored"]
+
+
+class NodeInvokeRequest(ContractModel):
+    """Body the Hermes bridge's ``lightbulb_node`` plugin posts once per command
+    (``apps/infra/hermes/plugins/lightbulb_node/__init__.py::_invoke``, spec §4.4, Task 28).
+    ``paramsJSON`` stays a JSON string end to end -- an object there is a silent no-op on the
+    Rust client and INVALID_REQUEST on the CLI (report 02 R7), same reason ``node_broker``
+    keeps it a string on the wire to the node."""
+
+    command: str = Field(min_length=1, max_length=128)
+    params_json: str = Field(alias="paramsJSON", max_length=1_048_576)
+    timeout_ms: int = Field(alias="timeoutMs", ge=1_000, le=600_000, default=120_000)
+
+
+class NodeInvokeResponse(ContractModel):
+    """Mirrors ``NodeSession.invoke``'s own return shape verbatim -- ``ok``/``payload`` on
+    success, or ``ok: false`` + ``error: {code, message}`` when the NODE ran the command but it
+    failed (a spawn error; a nonzero exit is still ``ok: true``, see the bridge plugin's
+    ``NodeEnvironment.execute``). A transport-level failure (no node attached, timeout, the
+    command isn't declared) never reaches this model -- it is an ``ApiProblem`` instead."""
+
+    ok: bool
+    payload: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+
+
+class PaperclipRunContext(ContractModel):
+    task_id: str | None = None
+    wake_reason: str | None = None
+    comment_id: str | None = None
+
+
+class PaperclipRunRequest(ContractModel):
+    """Body Paperclip's own ``http`` adapter POSTs (fork docs/adapters/http.md):
+    ``{runId, agentId, companyId, context:{taskId, wakeReason, commentId}}``. This is an
+    EXTERNAL shape we don't control, kept as a typed model (rather than a hand-parsed dict)
+    so a malformed body 422s instead of reaching a KeyError/500."""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    company_id: str | None = None
+    context: PaperclipRunContext | None = None
 
 
 class SteerRunRequest(ContractModel):
@@ -2262,6 +2317,141 @@ async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageR
         logger.exception("run analytics scheduling failed")
     put_metric("messaging.usage.callback", dimensions={"outcome": "applied"})
     return UsageReportResponse(run_id=body.run_id, status="applied")
+
+
+# Header marking a node-invoke forward as already-forwarded-once: a task that receives it and
+# finds no local session answers NODE_NOT_ATTACHED rather than bouncing it to a third task
+# (M2-R20 -- forwarding is one hop, never two).
+NODE_FORWARD_HEADER = "X-Lightbulb-Node-Forwarded"
+_NODE_INVOKE_DEFAULT_TIMEOUT_MS = 120_000
+_NODE_INVOKE_MAX_TIMEOUT_MS = 600_000
+# The forward's own httpx read timeout must cover the invoke's own timeout (up to 600s) plus
+# headroom for the peer's request handling -- a flat 10s (the old value) killed a legitimate
+# 30-180s system.run and misreported it as NODE_NOT_ATTACHED (fix round 1, item 1). Connect
+# stays short: a peer task that isn't even accepting connections is not worth 600s to learn.
+_NODE_FORWARD_TIMEOUT_BUFFER_S = 5.0
+_NODE_FORWARD_CONNECT_TIMEOUT_S = 3.0
+
+
+async def invoke_node(owner_id: str, body: dict, *, forwarded: bool) -> dict:
+    """Run one Hermes bridge command on the owner's paired desktop node (spec §4.4, Task 28).
+
+    The desktop's socket is pinned to whichever backend task accepted its WebSocket upgrade --
+    ``routers.gateway_relay.node_sessions`` is process-local (M2-R20). A paired Mac opens TWO
+    node sockets with DISJOINT command sets (the ``openclaw-macos`` device client and the CLI
+    ``node-host``; only the CLI declares e.g. ``system.run``), and with 2-4 backend tasks and no
+    stickiness they routinely land on different tasks -- so "no session declaring this command
+    on THIS task" does not mean "not attached", it can just mean "attached to a different task"
+    (M2-R23). Resolution order: a local session declaring the command wins outright; otherwise
+    every OTHER live presence row's task (excluding this one) is tried in turn, stopping at the
+    first answer that is not itself COMMAND_NOT_ALLOWED/NODE_NOT_ATTACHED; if every candidate --
+    local and remote -- comes up empty, COMMAND_NOT_ALLOWED wins over NODE_NOT_ATTACHED whenever
+    ANY of them was merely the wrong device (a session existed, just not for this command) --
+    otherwise nothing is attached anywhere and it's NODE_NOT_ATTACHED. A forwarded call never
+    forwards again: it answers from what it knows locally only.
+    """
+    from routers.gateway_relay import find_node_session
+
+    command = str(body.get("command") or "")
+    timeout_ms = min(int(body.get("timeoutMs") or _NODE_INVOKE_DEFAULT_TIMEOUT_MS), _NODE_INVOKE_MAX_TIMEOUT_MS)
+
+    session = find_node_session(owner_id, command=command)
+    if session is not None:
+        return await _invoke_local_node(session, command, body, timeout_ms)
+
+    # No local session declares this command. A DIFFERENT local session (wrong device) still
+    # counts as "a session exists somewhere" for the COMMAND_NOT_ALLOWED-vs-NODE_NOT_ATTACHED
+    # split below, even if a remote fanout later finds nothing better.
+    saw_command_not_allowed = find_node_session(owner_id) is not None
+
+    if forwarded:
+        # Never forward again -- answer from what is known locally only.
+        if saw_command_not_allowed:
+            raise ApiProblem("COMMAND_NOT_ALLOWED", "This device did not declare that command.")
+        raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached to this instance.")
+
+    own = task_address.own_address()
+    tried: set[str] = set()
+    for presence in await ConnectionService().find_node_presences(owner_id):
+        address = presence.get("taskAddress")
+        if not address or address == own or address in tried:
+            continue
+        tried.add(address)
+        try:
+            return await _forward_node_invoke(address, owner_id, body, timeout_ms)
+        except ApiProblem as exc:
+            if exc.error.code == "COMMAND_NOT_ALLOWED":
+                saw_command_not_allowed = True
+                continue
+            if exc.error.code == "NODE_NOT_ATTACHED":
+                continue
+            raise
+
+    if saw_command_not_allowed:
+        raise ApiProblem("COMMAND_NOT_ALLOWED", "This device did not declare that command.")
+    raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.")
+
+
+async def _invoke_local_node(session: node_broker.NodeSession, command: str, body: dict, timeout_ms: int) -> dict:
+    try:
+        params = json.loads(body.get("paramsJSON") or "{}")
+    except ValueError:
+        raise ApiProblem("INVALID_REQUEST", "paramsJSON is not JSON.") from None
+    try:
+        return await session.invoke(command, params, timeout_ms)
+    except node_broker.CommandNotAllowed:
+        raise ApiProblem("COMMAND_NOT_ALLOWED", "This device did not declare that command.") from None
+    except node_broker.NodeInvokeTimeout:
+        raise ApiProblem("NODE_TIMEOUT", "The node did not answer in time.", retryable=True) from None
+    except node_broker.NodeDetached:
+        raise ApiProblem("NODE_NOT_ATTACHED", "The node socket closed mid-call.", retryable=True) from None
+
+
+async def _forward_node_invoke(address: str, owner_id: str, body: dict, timeout_ms: int) -> dict:
+    """Single-hop forward to the backend task that actually holds the desktop socket.
+
+    ``timeout_ms`` is the (already clamped) invoke timeout -- the httpx read timeout is set to
+    cover it plus a fixed buffer, so a legitimately long-running command (e.g. a 30-180s
+    ``system.run``) is not killed by the transport before the node itself would time out (fix
+    round 1, item 1). Connect stays short (`_NODE_FORWARD_CONNECT_TIMEOUT_S`): a peer task that
+    isn't even accepting connections is not worth waiting the full read timeout to learn.
+
+    A read timeout specifically means the request DID reach the peer and the peer's own answer
+    (success or its own NODE_TIMEOUT) just didn't arrive in time -- that is itself a timeout,
+    not "no node attached", so it maps to NODE_TIMEOUT rather than the generic transport-failure
+    fallback below. Any OTHER transport failure -- refused connection, a non-JSON body -- is
+    treated as NODE_NOT_ATTACHED: the presence row can be stale (the peer task may have rolled
+    during a deploy), which looks identical to the node itself being gone. A well-formed error
+    response from the peer IS relayed verbatim, so its own NODE_NOT_ATTACHED /
+    COMMAND_NOT_ALLOWED / NODE_TIMEOUT reaches the original caller unchanged (M2-R20).
+    """
+    container = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    read_timeout_s = timeout_ms / 1000 + _NODE_FORWARD_TIMEOUT_BUFFER_S
+    timeout = httpx.Timeout(read_timeout_s, connect=_NODE_FORWARD_CONNECT_TIMEOUT_S)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{address}/api/v1/internal/node/invoke/{owner_id}",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {container.get('hook_token') or ''}",
+                    NODE_FORWARD_HEADER: "1",
+                },
+            )
+    except httpx.ReadTimeout:
+        raise ApiProblem("NODE_TIMEOUT", "The node did not answer in time.", retryable=True) from None
+    except httpx.HTTPError:
+        raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.") from None
+    if response.status_code == 200:
+        return response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    code = payload.get("code")
+    if code in API_ERROR_STATUS:
+        raise ApiProblem(code, payload.get("message") or "", retryable=bool(payload.get("retryable")))
+    raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.")
 
 
 async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsage | None) -> None:

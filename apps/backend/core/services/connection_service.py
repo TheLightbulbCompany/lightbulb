@@ -30,6 +30,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core.dynamodb import utc_now_iso
+from core.services import task_address
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class ConnectionService:
                     ("verified_subject", "verifiedSubject"),
                     ("source_ip", "sourceIp"),
                     ("device_id", "deviceId"),
+                    ("task_address", "taskAddress"),
                 )
                 if field in item
             },
@@ -208,6 +210,15 @@ class ConnectionService:
                 f"Failed to query connections for owner {owner_id}: {e.response['Error']['Message']}"
             ) from e
 
+    @staticmethod
+    def _ttl_is_live(ttl_raw: Optional[str], now: int) -> bool:
+        """Shared freshness rule for a presence row's raw ``ttl`` numeric
+        attribute value: missing counts as live (over-preserve, defensive
+        against an absent attribute or a just-deleted row); expired does not.
+        Used by both `has_live_operator_connection` and `find_node_presence`.
+        """
+        return ttl_raw is None or int(ttl_raw) > now
+
     async def has_live_operator_connection(self, owner_id: str) -> bool:
         """Is a Paperclip run executing against this owner's container right now?
 
@@ -249,7 +260,7 @@ class ConnectionService:
                 ConsistentRead=True,
             )
             ttl_raw = response.get("Item", {}).get("ttl", {}).get("N")
-            if ttl_raw is None or int(ttl_raw) > now:
+            if self._ttl_is_live(ttl_raw, now):
                 return True
         return False
 
@@ -349,6 +360,7 @@ class ConnectionService:
             "clientId": {"S": identity.client_id},
             "connectedAt": {"S": utc_now_iso()},
             "ttl": {"N": str(now + self.RELAY_TTL_SECONDS)},
+            "taskAddress": {"S": task_address.own_address()},
         }
         if identity.device_id:
             item["deviceId"] = {"S": identity.device_id}
@@ -356,16 +368,23 @@ class ConnectionService:
 
     async def refresh_relay_presence(self, connection_id: str) -> bool:
         """Bump the presence row's ttl. False when the row is gone (revoked
-        or expired): the caller must close the socket."""
+        or expired): the caller must close the socket.
+
+        Re-asserts `taskAddress` on every tick (not just at connect) so a row
+        never goes addressless -- the 60s refresh loop keeps running for the
+        life of the node/operator socket (M2-R1)."""
         try:
             await asyncio.to_thread(
                 self._client.update_item,
                 TableName=self.table_name,
                 Key={"connectionId": {"S": connection_id}},
-                UpdateExpression="SET #ttl = :ttl",
+                UpdateExpression="SET #ttl = :ttl, taskAddress = :addr",
                 ConditionExpression="attribute_exists(connectionId)",
                 ExpressionAttributeNames={"#ttl": "ttl"},
-                ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)}},
+                ExpressionAttributeValues={
+                    ":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)},
+                    ":addr": {"S": task_address.own_address()},
+                },
             )
             return True
         except ClientError as exc:
@@ -377,6 +396,65 @@ class ConnectionService:
         """Live `node`-typed relay connections for an owner (desktop node
         hosts), used to edge-trigger the node tool-deny-list patch."""
         return sum(1 for _connection_id, _user_id, kind in await self.query_by_owner(owner_id) if kind == "node")
+
+    async def find_node_presences(self, owner_id: str) -> list[dict]:
+        """Every one of the owner's live desktop-node presence rows (M2-R23).
+
+        A paired Mac opens TWO node sockets with disjoint command sets (the
+        `openclaw-macos` device client and the CLI `node-host`), and with no
+        backend-task stickiness they routinely land on different tasks --
+        `find_node_presence` (singular, below) only ever returns the first one
+        found, which is a blind spot for Task 28's node-invoke route when that
+        first task doesn't hold the device that declares the requested
+        command. This returns all of them so the caller can fan out.
+
+        The `by-owner-id` GSI doesn't project `taskAddress`, so every
+        `node`-typed candidate is fetched in full via `get_connection` -- same
+        shape as `delete_relay_rows_for_device`.
+
+        Freshness-checked with the same rule as `has_live_operator_connection`:
+        DynamoDB's TTL sweep can lag up to 48h, so a candidate whose `ttl` has
+        already expired is skipped rather than handed back as a forwarding
+        target -- a dead task's row must not be forwarded to. A row with no
+        `ttl` at all is treated as live (same over-preserve bias).
+        """
+        now = int(time.time())
+        presences: list[dict] = []
+        for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
+            if kind != "node":
+                continue
+            ttl_response = await asyncio.to_thread(
+                self._client.get_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": connection_id}},
+                ProjectionExpression="#ttl",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ConsistentRead=True,
+            )
+            ttl_raw = ttl_response.get("Item", {}).get("ttl", {}).get("N")
+            if not self._ttl_is_live(ttl_raw, now):
+                continue
+            full = await asyncio.to_thread(self.get_connection, connection_id)
+            if full is None:
+                continue
+            presences.append(
+                {
+                    "connectionId": connection_id,
+                    "taskAddress": full.get("task_address"),
+                    "deviceId": full.get("device_id"),
+                }
+            )
+        return presences
+
+    async def find_node_presence(self, owner_id: str) -> Optional[dict]:
+        """The owner's first live desktop-node presence row, or None.
+
+        Thin wrapper over `find_node_presences` (M2-R23) kept for callers that
+        only need one row -- see that method for the freshness rule and why a
+        single answer is a blind spot for Task 28's node-invoke route.
+        """
+        presences = await self.find_node_presences(owner_id)
+        return presences[0] if presences else None
 
     async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
         """Force-close a revoked device's live relay presence row(s).

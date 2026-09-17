@@ -9,6 +9,16 @@ import pytest
 from core.services import relay_hooks
 
 
+@pytest.fixture(autouse=True)
+def _default_not_agentcore():
+    """Every test in this file exercises the ECS-shaped hook bodies -- default the new
+    AgentCore guard (added for task-26) to False so it never makes a real DynamoDB call.
+    The dedicated AgentCore-path tests live in test_relay_hooks_agentcore.py and override
+    this per-test."""
+    with patch("core.services.relay_hooks._is_agentcore", new_callable=AsyncMock, return_value=False):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_operator_wake_gate_refuses_only_gated_methods():
     with patch(

@@ -4,6 +4,16 @@ from unittest.mock import AsyncMock
 from core.services.credentials.mcp_server import build_mcp_server_block
 
 
+@pytest.fixture(autouse=True)
+def _no_manual_servers_by_default(monkeypatch):
+    """build_connected_integration_servers now also reads the manual-MCP row
+    (a real DynamoDB read when unmocked). Default it to empty for every test
+    in this file; the manual-servers tests below override it per test."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
+
+
 def test_resolve_source_literal_returns_static_string():
     # `literal:` lets a provider set a static env value (e.g. a feature flag)
     # with no dependence on the credential or raw input.
@@ -203,6 +213,8 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
 async def test_reconcile_writes_each_block_per_server(monkeypatch):
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
+
     monkeypatch.setattr(
         m,
         "build_connected_integration_servers",
@@ -227,6 +239,8 @@ async def test_reconcile_writes_each_block_per_server(monkeypatch):
 async def test_reconcile_noops_when_config_missing(monkeypatch):
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
+
     monkeypatch.setattr(
         m,
         "build_connected_integration_servers",
@@ -248,6 +262,7 @@ async def test_reconcile_reapplies_openclaw_paths_provider(monkeypatch):
     entry, so it also pins the parallel YAML wiring."""
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
     monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
     monkeypatch.setattr(
         m.integrations_repo,
@@ -277,6 +292,7 @@ async def test_reconcile_skips_disconnected_openclaw_paths_provider(monkeypatch)
     """A disconnected openclaw_paths row is not re-applied (no stale re-write)."""
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
     monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
     monkeypatch.setattr(
         m.integrations_repo,
@@ -294,3 +310,318 @@ async def test_reconcile_skips_disconnected_openclaw_paths_provider(monkeypatch)
     await m.reconcile_integrations("org_1")
     assert writes == []
     secret_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instead_of_openclaw_json(monkeypatch):
+    """M4-R11: an AgentCore owner has no openclaw.json and no live gateway socket — the
+    equivalent rewrite goes through hermes_profiles.refresh_integrations for every one of the
+    owner's Paperclip-roster agents, and the ECS/openclaw.json path is never touched."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}]),
+    )
+    called = {}
+
+    async def fake_refresh(owner_id, agent_ids, *, pending=None):
+        called.update(owner_id=owner_id, agent_ids=agent_ids)
+
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
+    ecs_calls = []
+    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", lambda *a: ecs_calls.append(a))
+
+    await m.reconcile_integrations("org_a")
+
+    assert called == {"owner_id": "org_a", "agent_ids": ["a1", "a2"]}
+    assert ecs_calls == []  # the ECS/openclaw.json path is never reached
+
+
+# ---------------------------------------------------------------------------
+# Row #6: manual MCP servers (an AgentCore owner's raw-editor entries)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_includes_manual_servers(monkeypatch):
+    """Manual servers (stored on integrations_repo.MANUAL_MCP_KEY for an
+    AgentCore owner -- see routers/integrations.py) are folded into the same
+    merged map connected integrations project into."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "get_manual_mcp_servers",
+        AsyncMock(return_value={"my-custom": {"command": "node", "args": ["x.js"], "env": {}}}),
+    )
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    servers = await m.build_connected_integration_servers("org_1")
+
+    assert servers == {"my-custom": {"command": "node", "args": ["x.js"], "env": {}}}
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_connected_integration_wins_manual_collision(monkeypatch):
+    """A manual server sharing a key with a connected integration must not
+    shadow it -- integration ownership always wins, mirroring the ECS
+    reconcile's own re-assert-after-write rule."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "get_manual_mcp_servers",
+        AsyncMock(return_value={"stripe": {"command": "should-be-overwritten"}, "my-custom": {"command": "keep"}}),
+    )
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+    monkeypatch.setattr(m.integration_secret_store, "get", AsyncMock(return_value=None))
+
+    servers = await m.build_connected_integration_servers("org_1")
+
+    assert servers["stripe"] == {
+        "transport": "streamable-http",
+        "url": "https://mcp.stripe.com",
+        "auth": "oauth",
+        "requestTimeoutMs": 60000,
+    }
+    assert servers["my-custom"] == {"command": "keep"}
+
+
+@pytest.mark.asyncio
+async def test_manual_server_secret_scrubbed_to_env_ref_not_config(monkeypatch):
+    """M6-R24/M4-R17: a manual server's header/env secret rides the same
+    translate_mcp_servers scrub as any registry mcp_server block -- it never
+    lands literally in config.yaml, only as a ${VAR} ref, with the real value
+    moved to the profile .env."""
+    from core.services import hermes_profiles
+    from core.services.credentials import mcp_server as m
+
+    secret = "Bearer sk_live_super_secret"
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "get_manual_mcp_servers",
+        AsyncMock(
+            return_value={
+                "acme": {
+                    "transport": "streamable-http",
+                    "url": "https://acme.example/mcp",
+                    "headers": {"Authorization": secret},
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    connected = await m.build_connected_integration_servers("org_1")
+    config, secrets = hermes_profiles.translate_mcp_servers(connected)
+
+    assert config["acme"]["headers"]["Authorization"] == "${MCP_ACME_AUTHORIZATION}"
+    assert secrets["MCP_ACME_AUTHORIZATION"] == secret
+    assert secret not in repr(config)
+
+
+# ---------------------------------------------------------------------------
+# M6-R26 fix round 1, Critical 1: a provider mid-connect (no `connected` row
+# yet -- routers/connections.py's three connect doors all call
+# apply_connection BEFORE put_status) must still be projected.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_includes_pending_provider_not_yet_recorded(monkeypatch):
+    """A first connect: `list_for_owner` returns [] (the status row isn't
+    written yet) -- `pending` must still make the provider show up, using the
+    real stripe (mcp_remote) registry entry as the brief's own test case."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    servers = await m.build_connected_integration_servers("org_1", pending="stripe")
+
+    assert servers == {
+        "stripe": {
+            "transport": "streamable-http",
+            "url": "https://mcp.stripe.com",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_pending_is_a_noop_when_row_already_exists(monkeypatch):
+    """A reconnect (or any caller passing pending redundantly) must not
+    double-count or otherwise change the outcome for an already-recorded row."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+
+    servers = await m.build_connected_integration_servers("org_1", pending="stripe")
+
+    assert list(servers.keys()) == ["stripe"]
+
+
+@pytest.mark.asyncio
+async def test_build_connected_map_no_pending_is_unaffected(monkeypatch):
+    """Every existing caller (manual-MCP writes, marketplace deploy) passes no
+    `pending` at all -- must behave exactly as before this parameter existed."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    assert await m.build_connected_integration_servers("org_1") == {}
+
+
+@pytest.mark.asyncio
+async def test_reconcile_forwards_pending_to_refresh_integrations(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1"}]))
+    calls = []
+
+    async def fake_refresh(owner_id, agent_ids, *, pending=None):
+        calls.append((owner_id, agent_ids, pending))
+
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
+
+    await m.reconcile_integrations("org_1", agentcore=True, pending="stripe")
+
+    assert calls == [("org_1", ["a1"], "stripe")]
+
+
+# ---------------------------------------------------------------------------
+# M6-R26 fix round 1, Important 3+4: the runtime flag is resolved once per
+# door and threaded down, never re-read inside reconcile_integrations.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_agentcore_flag_skips_second_read(monkeypatch):
+    """The caller already resolved is_agentcore_owner for this request --
+    reconcile_integrations must not read it again."""
+    from core.services.credentials import mcp_server as m
+
+    checked = []
+
+    async def fake_is_agentcore(owner_id):
+        checked.append(owner_id)
+        return True
+
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", AsyncMock())
+
+    await m.reconcile_integrations("org_1", agentcore=True)
+
+    assert checked == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ecs_flag_skips_second_read_too(monkeypatch):
+    """Same guarantee in the other direction: agentcore=False must not
+    trigger a read either, and must take the ECS branch."""
+    from core.services.credentials import mcp_server as m
+
+    checked = []
+
+    async def fake_is_agentcore(owner_id):
+        checked.append(owner_id)
+        return True  # if this fires, the ECS branch below would wrongly be skipped
+
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+    await m.reconcile_integrations("org_1", agentcore=False)
+
+    assert checked == []
+
+
+# ---------------------------------------------------------------------------
+# Ruling M6-R32 — integration_owned_server_keys: the set of mcp.servers keys a
+# manual write must not collide with, without touching Secrets Manager.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_integration_owned_server_keys_covers_all_three_shapes(monkeypatch):
+    """mcp_remote (stripe), mcp_stdio (quickbooks), and wiring.mcp_server all count as
+    'owned' -- and no Secrets Manager read happens for any of them (unlike
+    build_connected_integration_servers, which fetches the mcp_server credential)."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(
+            return_value=[
+                {"provider": "stripe", "status": "connected"},  # mcp_remote
+                {"provider": "quickbooks", "status": "connected"},  # mcp_stdio
+            ]
+        ),
+    )
+    secret_get = AsyncMock(side_effect=AssertionError("must not read Secrets Manager"))
+    monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
+
+    owned = await m.integration_owned_server_keys("org_1")
+
+    assert owned == {"stripe": "stripe", "quickbooks": "quickbooks"}
+
+
+@pytest.mark.asyncio
+async def test_integration_owned_server_keys_covers_mcp_server_wiring(monkeypatch):
+    """No live registry provider uses the mcp_server wiring rail today (MCP providers moved to
+    mcp_remote/mcp_stdio) -- exercise it via a synthetic provider, same convention as
+    test_apply_openclaw_paths_injects_literal."""
+    from core.services.credentials import mcp_server as m
+    from core.services.credentials.registry import McpServer, Provider, Wiring
+
+    synthetic = Provider(
+        key="fakemcp",
+        display_name="Fake MCP",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(mcp_server=McpServer(key="fakemcp", command="npx", args=[], env={})),
+    )
+    monkeypatch.setattr(m.registry, "get_provider", lambda key: synthetic)
+    monkeypatch.setattr(
+        m.integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "fakemcp", "status": "connected"}])
+    )
+
+    owned = await m.integration_owned_server_keys("org_1")
+
+    assert owned == {"fakemcp": "fakemcp"}
+
+
+@pytest.mark.asyncio
+async def test_integration_owned_server_keys_skips_disconnected_and_unknown(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(
+            return_value=[
+                {"provider": "stripe", "status": "revoked"},
+                {"provider": "no-such-provider", "status": "connected"},
+                {"provider": "", "status": "connected"},
+            ]
+        ),
+    )
+
+    owned = await m.integration_owned_server_keys("org_1")
+
+    assert owned == {}

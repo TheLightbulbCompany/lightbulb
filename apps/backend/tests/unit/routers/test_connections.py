@@ -32,6 +32,14 @@ def _owner_lifecycle_guard_efs_scratch(tmp_path, monkeypatch):
     monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default(monkeypatch):
+    """_disconnect_teardown checks runtime_transport.is_agentcore_owner (a real
+    DynamoDB read when unmocked). Default every test in this file to the ECS
+    runtime; the AgentCore-specific tests below override this per test."""
+    monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
+
+
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
     validate ``auth_scheme`` (vercel_cli = ``Bearer <key>``) and sends the
@@ -669,6 +677,44 @@ class TestConnectPaste:
         mock_removers.get.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_connect_paste_returns_422_for_an_openclaw_paths_provider_with_no_hermes_equivalent(
+        self, mock_validate, mock_repo, mock_store, async_client, monkeypatch
+    ):
+        """M6-R31: an openclaw_paths provider absent from HERMES_OPENCLAW_PATHS_PROVIDERS
+        answers a specific 422 RUNTIME_UNSUPPORTED on an AgentCore owner, not the generic
+        apply_failed/502 -- and the row is never marked connected, same rollback as the
+        generic failure path. apply_connection itself runs for real here (not mocked out)
+        so the actual RuntimeUnsupportedError class is what the router catches."""
+        from routers import connections
+        from core.services.credentials.registry import OpenclawPath, Provider, Wiring
+
+        synthetic = Provider(
+            key="synth",
+            display_name="Synthetic",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(openclaw_paths=[OpenclawPath(path="a.b.c", source="input.token")]),
+        )
+        monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
+        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        response = await async_client.post("/api/v1/connections/synth", json={"token": "lin_secret"})
+
+        assert response.status_code == 422
+        assert "RUNTIME_UNSUPPORTED" in response.json()["detail"]
+        mock_store.put.assert_awaited_once()
+        mock_store.delete.assert_awaited_once_with("org_test_456", "synth")
+        mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_connect_non_paste_provider_returns_400(self, async_client):
         # google is direct_oauth, not paste_token, and must be rejected at this
         # paste surface with a 400.
@@ -1142,6 +1188,128 @@ class TestDisconnect:
         response = await async_client.delete("/api/v1/connections/stripe?account=a@x.com")
         assert response.status_code == 400
         mock_accounts.remove_account.assert_not_called()
+
+    # -----------------------------------------------------------------------
+    # M6-R24: AgentCore disconnect ("same for revoke/disconnect" as connect)
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_agentcore_cli_skill_materializer_is_skipped(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client, monkeypatch
+    ):
+        # google (gog_cli) has no mcp_remote/mcp_stdio -- on an AgentCore owner
+        # the materializer remover never runs (no EFS keyring to touch), but the
+        # row is still recorded as disconnected.
+        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=None)
+        mock_accounts.list_accounts = AsyncMock(return_value=[])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+
+        response = await async_client.delete("/api/v1/connections/google")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google"}
+        mock_removers.get.assert_not_called()
+        mock_store.delete.assert_awaited_once_with("org_test_456", "google")
+        mock_repo.delete.assert_awaited_once_with("org_test_456", "google")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_agentcore_mcp_shaped_provider_refreshes_hermes_profiles(
+        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
+    ):
+        # An mcp_server-wiring provider is MCP-shaped: on an AgentCore owner the
+        # teardown re-projects the (now-disconnected) set via reconcile_integrations
+        # instead of patching openclaw.json.
+        from core.services.credentials.registry import Provider
+
+        p = Provider(
+            key="fakemcp",
+            display_name="Fake MCP",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring={"mcp_server": {"key": "fakemcp", "command": "npx", "args": [], "env": {"K": "input.token"}}},
+        )
+        monkeypatch.setattr(connections.registry, "get_provider", lambda key: p)
+        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_patcher.delete_openclaw_config_path = AsyncMock()
+        refreshed = []
+
+        async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
+            refreshed.append(owner_id)
+
+        monkeypatch.setattr(connections, "reconcile_integrations", fake_reconcile)
+
+        response = await async_client.delete("/api/v1/connections/fakemcp")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "fakemcp"}
+        assert refreshed == ["org_test_456"]
+        mock_patcher.delete_openclaw_config_path.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_agentcore_openclaw_paths_provider_clears_hermes_projection(
+        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
+    ):
+        """M6-R31: reconcile_integrations has no fan-out for an openclaw_paths provider at
+        all -- disconnecting one on an AgentCore owner must clear its own Hermes projection
+        (apply_connection.clear_hermes_openclaw_paths_projection) instead of a no-op reconcile
+        call or the ECS-only openclaw.json blank."""
+        from routers import connections
+
+        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        cleared = []
+
+        async def fake_clear(owner_id, provider_key):
+            cleared.append((owner_id, provider_key))
+
+        monkeypatch.setattr(connections.apply_connection, "clear_hermes_openclaw_paths_projection", fake_clear)
+        mock_reconcile = AsyncMock()
+        monkeypatch.setattr(connections, "reconcile_integrations", mock_reconcile)
+
+        response = await async_client.delete("/api/v1/connections/parallel")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "parallel"}
+        assert cleared == [("org_test_456", "parallel")]
+        mock_reconcile.assert_not_awaited()  # openclaw_paths never reaches the MCP reconcile branch
+        mock_patcher.set_openclaw_config_path.assert_not_called()
+        mock_patcher.delete_openclaw_config_path.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    async def test_disconnect_single_google_account_skips_materializer_on_agentcore(
+        self, mock_removers, mock_accounts, async_client, monkeypatch
+    ):
+        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+        mock_accounts.remove_account = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
+        mock_removers.get.assert_not_called()
+        mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
 
 
 class TestAuthorize:
@@ -2827,6 +2995,7 @@ class TestProjectsRailNamespaceIsInvisibleHere:
         connected."""
         from core.services.credentials import mcp_server
 
+        monkeypatch.setattr(mcp_server.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
         monkeypatch.setattr(
             mcp_server.integrations_repo,
             "list_for_owner",

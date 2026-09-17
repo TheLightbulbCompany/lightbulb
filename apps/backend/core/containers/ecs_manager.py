@@ -1420,12 +1420,19 @@ class EcsManager:
         invoke and parks it on idle. Both chokepoints answer "nothing to do", so no door — the
         status poll, chat wake, agent mail, the trial-idle sweep, an admin click — can start a
         second gateway on the workspace's access point or flip its row back to ``stopped``.
-        Rollout scaffolding: deleted with the ECS path once the last workspace has moved."""
-        row = await container_repo.get_by_owner_id(user_id)
+        Rollout scaffolding: deleted with the ECS path once the last workspace has moved.
+
+        Ruling M6-R21: reads with ``consistent=True``. ``scripts/migrate_workspace_to_hermes.py``'s
+        ``rollback`` flips ``runtime_host`` back to "ecs" and then immediately calls
+        ``start_user_service`` — an eventually-consistent read landing in that gap could still
+        return the pre-flip "agentcore" and no-op the restart, silently and forever (nothing else
+        ever calls ``start_user_service`` for a rolled-back owner again).
+        """
+        row = await container_repo.get_by_owner_id(user_id, consistent=True)
         return bool(row) and runtime_transport.host_for(row) == "agentcore"
 
     @serialize_owner_lifecycle
-    async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
+    async def stop_user_service(self, user_id: str, *, reason: str = "manual", force: bool = False) -> None:
         """Scale a user's ECS service to 0 (stopped).
 
         Args:
@@ -1436,6 +1443,17 @@ class EcsManager:
                 reason keeps the status poll's wake/self-heal behavior, so a
                 killswitch or admin stop can never masquerade as a healthy
                 parked box.
+            force: Ruling M6-R15/M6-R17 — skip the ``_hosted_on_agentcore`` no-op guard AND
+                skip the row write below entirely. The ONE sanctioned bypass, for
+                ``scripts/migrate_workspace_to_hermes.py`` scaling down the ECS service a
+                workspace it just moved to AgentCore no longer needs — by the time it calls
+                this, the row's ``runtime_host`` already reads "agentcore" (the migration's
+                own terminal write), which would otherwise make this a no-op forever and
+                leave the retired ECS task running. The row write is skipped rather than
+                reused because ``status="stopped"`` would be false for a workspace that is
+                actually live on AgentCore; the migration job's own fenced stamp is the sole
+                writer of that row's terminal state in this case. Every other caller passes
+                nothing and keeps today's fully guarded behavior (no-op AND row write both).
 
         Raises:
             EcsManagerError: If the ECS update_service call fails. A service
@@ -1446,7 +1464,7 @@ class EcsManager:
                 already-deleted box) all want to proceed, mirroring
                 delete_user_service's not-found handling below.
         """
-        if await self._hosted_on_agentcore(user_id):
+        if not force and await self._hosted_on_agentcore(user_id):
             logger.info("stop_user_service(reason=%s): workspace is on AgentCore, which parks itself; no-op", reason)
             return
         service_name = self._service_name(user_id)
@@ -1487,8 +1505,15 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_owner_id(user_id)
-        if container:
+        # Ruling M6-R17: force=True (the migration job's bypass, above) never writes
+        # status="stopped" -- the row is ALREADY on agentcore at that point (this is the ECS
+        # service the migration is retiring, not the workspace's live host), and stamping
+        # "stopped" onto a workspace that is actually running there is a lie the row would tell
+        # every other reader until something else corrects it. The migration job's own
+        # _stamp_migrated is the sole writer of that row's terminal state in this case. The row
+        # read below is skipped entirely under force -- its result would only ever feed the
+        # write this same condition also skips.
+        if not force and await container_repo.get_by_owner_id(user_id):
             await container_repo.update_status(user_id, "stopped")
             # Separate call because stamp_stop_reason needs a conditional REMOVE
             # of parked_at that a plain field merge cannot express. Order no
@@ -2337,13 +2362,30 @@ class EcsManager:
         }
 
     @serialize_owner_lifecycle
-    async def delete_user_service(self, user_id: str) -> dict | None:
-        """Remove a user's ECS service and per-user resources entirely.
+    async def delete_user_service(self, user_id: str, *, delete_hermes_profiles: bool = False) -> dict | None:
+        """Remove a user's ECS service and per-user resources entirely -- or, for an
+        AgentCore-hosted owner (F5, predeploy review, M6-R38), the runtime/session/bearer/boot
+        secret an account wipe would otherwise orphan (that row never had an ECS service at all).
 
-        1. Scale to 0 and delete ECS service
+        1. AgentCore row: ``hermes_provisioning.teardown_hermes_runtime(delete_profiles=
+           delete_hermes_profiles)`` -- stop session, delete the runtime, revoke the gate-token
+           hash, delete the boot secret ALWAYS; delete every S3 object under
+           ``<owner>/hermes/`` only when ``delete_hermes_profiles=True``. ECS is never touched.
+           Otherwise: scale to 0 and delete the ECS service.
         2. Deregister per-user task definition (if present)
         3. Delete per-user EFS access point (if present)
         4. Delete Container DB record
+
+        ``delete_hermes_profiles`` (M6-R42, predeploy re-review): defaults to False because this
+        function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed/past-due
+        subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a routine
+        reprovision) -- and on ECS neither of those deletes EFS content (only
+        ``account_wipe.py``'s own dedicated step does, right after its own
+        ``delete_user_service`` call). Passing ``delete_hermes_profiles=True`` from every caller
+        (this function's original M6-R38 shape) meant a lapsed card or a debug reprovision
+        destroyed a migrated owner's memory/skills/SOUL.md/auth.json -- content ECS preserves in
+        the exact same situations. Only ``account_wipe`` passes ``True``, beside its own EFS
+        content delete.
 
         Args:
             user_id: Clerk user ID.
@@ -2361,38 +2403,59 @@ class EcsManager:
             EcsManagerError: If the ECS API calls fail.
         """
         service_name = self._service_name(user_id)
+        # Read once, up front: an AgentCore row's teardown needs it (the runtime ARN, the gate
+        # token hash) BEFORE the containers row is deleted below, and the branch on it decides
+        # whether ECS is touched at all. Eventually consistent, same as the read this replaces.
+        container = await container_repo.get_by_owner_id(user_id)
 
-        try:
-            # Scale to 0 before deleting
-            self._ecs.update_service(
-                cluster=self._cluster,
-                service=service_name,
-                desiredCount=0,
-            )
-            self._ecs.delete_service(
-                cluster=self._cluster,
-                service=service_name,
-                force=True,
-            )
-        except ClientError as e:
-            # Service-not-found is idempotent success — the e2e teardown can
-            # legitimately retry against a state where the service was already
-            # deleted (e.g. previous partial run). Treating "doesn't exist" as
-            # an error breaks retry semantics. All other ClientErrors propagate.
-            #
-            # NB: we do NOT early-return here — the per-user resources below
-            # (task-def revision, EFS access point, DDB container row) may
-            # still exist even after the service is gone, and a partial
-            # cleanup that left the access point orphaned can only be
-            # recovered if subsequent retries fall through to this block.
-            code = e.response.get("Error", {}).get("Code", "")
-            if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
-                logger.info(
-                    "delete_user_service: service %s for user %s already gone — continuing per-user cleanup",
-                    service_name,
-                    user_id,
+        if container and runtime_transport.host_for(container) == "agentcore":
+            # THE SEAM's AgentCore twin: this row never had an ECS service, so calling
+            # delete_service would just be a guaranteed ServiceNotFoundException. Tear down the
+            # runtime/secret (+ S3 profiles, only when asked) instead, BEFORE the containers row
+            # (the only handle naming them) is deleted a few lines down.
+            from core.services.hermes_provisioning import teardown_hermes_runtime
+
+            await teardown_hermes_runtime(user_id, container_row=container, delete_profiles=delete_hermes_profiles)
+        else:
+            try:
+                # Scale to 0 before deleting
+                self._ecs.update_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    desiredCount=0,
                 )
-            else:
+                self._ecs.delete_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    force=True,
+                )
+            except ClientError as e:
+                # Service-not-found is idempotent success — the e2e teardown can
+                # legitimately retry against a state where the service was already
+                # deleted (e.g. previous partial run). Treating "doesn't exist" as
+                # an error breaks retry semantics. All other ClientErrors propagate.
+                #
+                # NB: we do NOT early-return here — the per-user resources below
+                # (task-def revision, EFS access point, DDB container row) may
+                # still exist even after the service is gone, and a partial
+                # cleanup that left the access point orphaned can only be
+                # recovered if subsequent retries fall through to this block.
+                code = e.response.get("Error", {}).get("Code", "")
+                if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
+                    logger.info(
+                        "delete_user_service: service %s for user %s already gone — continuing per-user cleanup",
+                        service_name,
+                        user_id,
+                    )
+                else:
+                    logger.error(
+                        "Failed to delete ECS service %s for user %s: %s",
+                        service_name,
+                        user_id,
+                        e,
+                    )
+                    raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
+            except Exception as e:
                 logger.error(
                     "Failed to delete ECS service %s for user %s: %s",
                     service_name,
@@ -2400,17 +2463,8 @@ class EcsManager:
                     e,
                 )
                 raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
-        except Exception as e:
-            logger.error(
-                "Failed to delete ECS service %s for user %s: %s",
-                service_name,
-                user_id,
-                e,
-            )
-            raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
         # Clean up per-user resources and delete container record from DB
-        container = await container_repo.get_by_owner_id(user_id)
         if container:
             # Deregister per-user task definition
             if container.get("task_definition_arn"):

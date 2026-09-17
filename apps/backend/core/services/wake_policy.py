@@ -1,11 +1,19 @@
 """Wake-on-intent policy for parked trial containers — the single predicate.
 
-A container is PARKED iff its row says ``status="stopped"`` AND
-``stop_reason == "trial_idle"`` (stamped only by the trial teardown ladder) AND
-the owner is still ``trial_local`` AND no trial→paid conversion is pending.
-Parked is the ONLY state whose wake the status poll may suppress; every other
-stopped/error shape keeps its poll-driven self-heal exactly as before (crashed
-boxes, killswitch stops, stale provision leases, converting rows).
+For an ECS row, PARKED iff ``status="stopped"`` AND ``stop_reason ==
+"trial_idle"`` (stamped only by the trial teardown ladder) AND the owner is
+still ``trial_local`` AND no trial→paid conversion is pending. Parked is the
+ONLY state whose wake the status poll may suppress; every other stopped/error
+shape keeps its poll-driven self-heal exactly as before (crashed boxes,
+killswitch stops, stale provision leases, converting rows).
+
+For an AgentCore row (``runtime_transport.host_for`` == ``"agentcore"``),
+there is no stopped/stop_reason to read: AWS parks an idle microVM invisibly
+and ``ecs_manager.stop_user_service`` no-ops for this host, so the row stays
+``status="running"`` forever (report 04 risk 2). The only honest signal left
+is elapsed time since ``last_interactive_at`` against the runtime's own idle
+timeout (``agentcore_runtime.IDLE_TIMEOUT_S``) — same trial-only gating,
+different park signal.
 
 Both doors that can wake a container off a passive read — the ``/container/
 status`` auto-retry and the Teams ``resolve_teams_context`` reconcile — MUST
@@ -40,6 +48,43 @@ def _utc_today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+async def _is_trial(owner_id: str, account: Mapping[str, Any] | None) -> bool:
+    """Read (or reuse) the billing row and say whether this owner is on the free trial.
+
+    Fails OPEN (False) on a missing/foreign account or a billing read failure — shared by
+    both the ECS and AgentCore legs of ``is_parked_trial``.
+    """
+    from core.repositories import billing_repo
+
+    try:
+        acct = account if account is not None else await billing_repo.get_by_owner_id(owner_id)
+    except Exception:
+        logger.exception("wake_policy billing read failed owner=%s — treating as not parked", owner_id)
+        return False
+    return bool(acct) and acct.get("subscription_status") == "trial_local"
+
+
+def _last_interactive_epoch(container: Mapping[str, Any]) -> float | None:
+    """Normalize ``last_interactive_at`` to a UTC epoch-seconds float, or None if absent/unparseable.
+
+    Production rows store an epoch int stamped by ``container_repo.touch_last_interactive``
+    (DynamoDB hands numeric attributes back as ``Decimal`` — ``plain()`` is the repo's existing
+    converter). Also accepts an ISO string, mirroring ``durable_activity._activity_epoch``'s
+    same fallback for this same field, so plain-dict test fixtures behave like real reads.
+    """
+    from core.dynamodb import plain
+
+    value = plain(container.get("last_interactive_at"))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 async def is_parked_trial(
     owner_id: str,
     container: Mapping[str, Any] | None,
@@ -52,26 +97,35 @@ async def is_parked_trial(
     Fails OPEN (returns False → legacy wake behavior) on any uncertainty: flag
     off, missing row, non-``stopped`` status, missing/foreign ``stop_reason``,
     a pending conversion (its reprovision owns the row — waking under it is
-    the documented EFS-WAL two-task corruption window), a non-trial owner, or
-    a billing read failure. Self-heal must never depend on this predicate
+    the documented EFS-WAL two-task corruption window), a non-trial owner, a
+    billing read failure, or (AgentCore only) a missing/unparseable
+    ``last_interactive_at``. Self-heal must never depend on this predicate
     being right.
     """
     if not settings.TRIAL_WAKE_GATE_ENABLED:
         return False
-    if not container or container.get("status") != "stopped":
+    if not container:
+        return False
+
+    from core.services.runtime_transport import host_for
+
+    if host_for(container) == "agentcore":
+        if not await _is_trial(owner_id, account):
+            return False
+        last = _last_interactive_epoch(container)
+        if last is None:
+            return False  # fail OPEN: a fresh row must not show "Agents asleep" pre-first-use
+        from core.services.agentcore_runtime import IDLE_TIMEOUT_S
+
+        return (datetime.now(timezone.utc).timestamp() - last) > IDLE_TIMEOUT_S
+
+    if container.get("status") != "stopped":
         return False
     if container.get("stop_reason") != "trial_idle":
         return False
     if container.get("conversion_pending"):
         return False
-    from core.repositories import billing_repo
-
-    try:
-        acct = account if account is not None else await billing_repo.get_by_owner_id(owner_id)
-    except Exception:
-        logger.exception("wake_policy billing read failed owner=%s — treating as not parked", owner_id)
-        return False
-    return bool(acct) and acct.get("subscription_status") == "trial_local"
+    return await _is_trial(owner_id, account)
 
 
 async def legacy_wake_allowed(owner_id: str) -> bool:

@@ -191,3 +191,37 @@ def test_steer_of_an_unknown_run_is_404():
     code, obj = server.handle_plugin(_steer_path(RUN), "POST", AUTH, {"text": "hi"})
     assert code == 404
     assert obj == {"runId": RUN, "state": "not_found"}
+
+
+# ---- Fix round 1 --------------------------------------------------------------------------------
+# Finding 1 (Critical): agent_mail carries no `run` block at all (turn.parse_ingress accepts it,
+# see the MAIL fixture in test_agent_mail.py and turn.py's EVENT_KINDS comment), and lane D's
+# agent_mail_delivery.py posts exactly that body to this door. `body["run"]["runId"]` raised
+# KeyError('run') on it.
+MAIL = {"version": 1, "eventId": "77777777-7777-4777-8777-777777777777",
+        "eventKind": "agent_mail", "targetAgentId": "ceo",
+        "sessionKey": "lightbulb-email:thread-42",
+        "message": {"text": "Can you look at the invoice?", "fromAddress": "a@b.com",
+                    "subject": "Invoice"}}
+
+
+def test_an_agent_mail_ingress_with_no_run_block_is_accepted_with_no_run_started(home, posted, monkeypatch):
+    mod, created = _capturing_threading()
+    monkeypatch.setattr(server, "threading", mod)
+    code, obj = server.handle_plugin(_inbound_path("ceo"), "POST", AUTH, dict(MAIL))
+    assert code == 202
+    assert obj["status"] == "accepted"
+    assert posted == []  # no run block -- nothing to register, nothing to post run.started for
+    assert len(created) == 1
+
+
+def test_a_room_ingress_with_a_run_block_still_posts_run_started_first(home, posted, monkeypatch):
+    mod, created = _capturing_threading()
+    monkeypatch.setattr(server, "threading", mod)
+    body = f.ingress()
+    code, _obj = server.handle_plugin(_inbound_path(body["targetAgentId"]), "POST", AUTH, body)
+    assert code == 202
+    assert len(created) == 1
+    assert len(posted) == 1
+    assert posted[0][1]["type"] == "run.started"
+    assert posted[0][1]["runId"] == body["run"]["runId"]

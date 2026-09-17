@@ -74,17 +74,21 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
                 raise turn.IngressError("targetAgentId does not match the path")
         except turn.IngressError as exc:
             return 400, {"error": "invalid_ingress", "message": exc.message}
-        run_id = body["run"]["runId"]
-        if not turn.register_run(run_id):
-            return 200, {"eventId": body.get("eventId"), "runId": run_id, "status": "replayed"}
-        turn.RUNS[run_id]["started"] = True
-        turn._post_backend(f"runs/{OWNER}/events", {
-            "runId": run_id, "type": "run.started", "at": now(),
-            "sessionKey": turn._resolve_session_key(agent_id, body),
-        })
+        # agent_mail (Task 20) carries no `run` block at all -- lane D's agent_mail_delivery.py
+        # posts that shape to this same door, so the registry/replay/run.started steps below
+        # are skipped entirely for it; run_turn's own has_run=False path handles the rest.
+        run_id = (body.get("run") or {}).get("runId")
+        if run_id:
+            if not turn.register_run(run_id):
+                return 200, {"eventId": body.get("eventId"), "runId": run_id, "status": "replayed"}
+            turn.RUNS[run_id]["started"] = True
+            turn._post_backend(f"runs/{OWNER}/events", {
+                "runId": run_id, "type": "run.started", "at": now(),
+                "sessionKey": turn._resolve_session_key(agent_id, body),
+            })
         local_session_token = _header(headers, "X-Lightbulb-Local-Session-Token")
         threading.Thread(target=turn.run_turn, args=(agent_id, body, local_session_token),
-                         daemon=True, name=f"turn-{run_id}").start()
+                         daemon=True, name=f"turn-{run_id or body.get('eventId')}").start()
         return 202, {"eventId": body.get("eventId"), "runId": run_id, "status": "accepted"}
     if path == "/plugins/lightbulb-channel/rpc" and method == "POST":
         return _rpc(body)

@@ -43,6 +43,30 @@ permissions:
   contents: read
 
 jobs:
+  # The Hermes bridge (apps/infra/hermes) is Python, so the CDK job above never
+  # touches it, and build-hermes-image.yml only BUILDS the image — it runs no
+  # tests. Until this job existed, the bridge's suite (the turn lifecycle, the
+  # frame vocabulary, streaming batches, the plugin tools) ran only on a
+  # developer's machine. No path filter here: the workflow is already filtered
+  # to apps/infra/**, and the suite takes under a second.
+  hermes-bridge-tests:
+    name: Hermes bridge tests
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      # No project/lockfile: the bridge is vendored into the image, not a uv
+      # project, so the suite's three deps are named inline — the same command
+      # the plan docs and every bridge task use locally.
+      - name: Run bridge tests
+        working-directory: apps/infra/hermes
+        run: uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q
+
   test:
     name: Synth & Test
     runs-on: ${{ vars.CI_RUNNER }}

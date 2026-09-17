@@ -10,6 +10,30 @@ and bindings, the hooks ingress) which have no Hermes equivalent and are DROPPED
 Secrets NEVER land here (spec §4.5): ``config.yaml`` carries ``${VAR}`` references only and the
 per-profile ``.env`` is the store. The non-negotiables an agent could otherwise edit out of its own
 config live in the managed overlay (Task 11), which wins at the leaf after env expansion.
+
+Fix round 1, C3 — three places a value can live, and this module owns exactly one of them:
+
+======================  =========================================  =========================
+Scope                   Members                                     Who writes it
+======================  =========================================  =========================
+Runtime environment     AWS_ENDPOINT_URL_BEDROCK_RUNTIME, AWS_REGION,   Task 17, in the AgentCore
+(process-wide, one per  identifiers (LIGHTBULB_SECRET_ID, ISOL8_*)      runtime's environmentVariables
+container)                                                              (already-merged lane D's
+                                                                         ``agentcore_runtime.build_runtime_env``)
+Boot secret             hookToken, gatewayToken, bedrockBearer          The backend, into the ONE
+(process-wide, resolved                                                 Secrets Manager blob
+at bridge startup)                                                      ``LIGHTBULB_SECRET_ID``
+                                                                         points at (M1)
+Profile .env            per-profile secret VALUES only                 THIS module
+(per-agent, from S3)    (``write_agent_profile``/``build_profile_env``)
+======================  =========================================  =========================
+
+``agent/secret_scope.py`` builds the profile scope as a Python dict ONLY — it never touches
+``os.environ`` — and the bridge's direct ``AIAgent`` construction (``run_agent.py``,
+``agent/agent_init.py``) installs no scope at all, so anything this module writes into ``.env``
+that Hermes/botocore expect to find via ``os.environ`` (the runtime-environment row above) would
+silently never be seen. That is why the endpoint URL and region do NOT belong here even though an
+earlier version of this file put them here.
 """
 
 from __future__ import annotations
@@ -176,13 +200,13 @@ _PLAIN_RE = re.compile(r"^[A-Za-z0-9_./:@+=-]*$")
 def build_profile_env(
     *,
     gate_bearer_ref: str,
-    gate_url: str,
-    region: str,
     paperclip_key_ref: str,
     env_vars: dict[str, str],
     byo_key_ref: str | None = None,
 ) -> dict[str, str]:
-    """The profile's ``.env``.
+    """The profile's ``.env`` — per-profile secret VALUES/refs only (see the module docstring's
+    scope table). Never the gate endpoint or region: those are process-wide runtime environment,
+    set once per container by Task 17, not per agent profile here.
 
     Credentials the PLATFORM owns arrive as a Secrets Manager NAME, not a value: AgentCore
     ``environmentVariables`` are plaintext to anyone with ``GetAgentRuntime`` (spec §4.9) and this
@@ -191,8 +215,6 @@ def build_profile_env(
     carried as-is — the same rail ``openclaw.json``'s ``env.vars`` used.
     """
     env = {
-        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": gate_url,
-        "AWS_REGION": region,
         "LIGHTBULB_GATE_BEARER_SECRET": gate_bearer_ref,
         "LIGHTBULB_PAPERCLIP_KEY_SECRET": paperclip_key_ref,
     }
@@ -330,8 +352,6 @@ def write_agent_profile(
     ``build_connected_integration_servers`` emits under ``key``); ``env_vars`` is
     ``provisioning_landing.build_provisioned_env(owner_id)``.
     """
-    from core.billing.bedrock_gate_url import gate_url
-
     servers = {row["key"]: {k: v for k, v in row.items() if k != "key"} for row in integrations or []}
     config = build_profile_config(
         agent_id=agent["id"],
@@ -344,8 +364,6 @@ def write_agent_profile(
     )
     env = build_profile_env(
         gate_bearer_ref=_gate_bearer_ref(owner_id),
-        gate_url=gate_url() or "",
-        region=settings.AWS_REGION,
         paperclip_key_ref=_paperclip_key_ref(owner_id, agent["id"]),
         env_vars=env_vars,
     )

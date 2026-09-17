@@ -124,30 +124,33 @@ def test_plugins_enabled_is_a_flat_list_never_entries():
     assert c["plugins"] == {"enabled": ["lightbulb", "lightbulb_node"]}
 
 
-def test_dotenv_carries_the_per_profile_refs_and_the_provisioned_env():
+def test_dotenv_carries_the_per_profile_secret_refs_and_the_provisioned_env():
     env = hermes_profiles.build_profile_env(
         gate_bearer_ref="lightbulb/dev/gate-bearer/org_a",
-        gate_url="https://gate.lambda-url.us-east-1.on.aws",
-        region="us-east-1",
         paperclip_key_ref="lightbulb/dev/paperclip/org_a/a1",
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
-    assert env["AWS_ENDPOINT_URL_BEDROCK_RUNTIME"] == "https://gate.lambda-url.us-east-1.on.aws"
-    assert env["AWS_REGION"] == "us-east-1"
     assert env["LIGHTBULB_GATE_BEARER_SECRET"] == "lightbulb/dev/gate-bearer/org_a"
     assert env["LIGHTBULB_PAPERCLIP_KEY_SECRET"] == "lightbulb/dev/paperclip/org_a/a1"
     assert env["STRIPE_SECRET_KEY"] == "sk_live_x"
 
 
-def test_dotenv_never_carries_a_plaintext_gate_bearer():
+def test_dotenv_never_carries_the_process_wide_gate_endpoint_region_or_bearer():
+    """C3: AWS_ENDPOINT_URL_BEDROCK_RUNTIME/AWS_REGION never reach ``os.environ`` from a profile's
+    ``.env`` — ``agent/secret_scope.py`` builds a dict-only mapping that is never installed as
+    process env by the bridge's direct ``AIAgent`` construction, so botocore/``bedrock_adapter.py``
+    would read the REAL AWS endpoint instead of the gate. Both belong in Task 17's runtime
+    ``environmentVariables``, set once per container, not per agent profile. The bearer arrives the
+    same way, via the boot secret — never through this function at all."""
     env = hermes_profiles.build_profile_env(
         gate_bearer_ref="lightbulb/dev/gate-bearer/org_a",
-        gate_url="https://gate",
-        region="us-east-1",
         paperclip_key_ref="lightbulb/dev/paperclip/org_a/a1",
         env_vars={},
     )
-    assert "AWS_BEARER_TOKEN_BEDROCK" not in env  # resolved at boot from Secrets Manager (Task 20)
+    assert "AWS_ENDPOINT_URL_BEDROCK_RUNTIME" not in env
+    assert "AWS_REGION" not in env
+    assert "AWS_BEDROCK_FORCE_HTTP1" not in env
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env
 
 
 def test_render_dotenv_quotes_and_escapes():

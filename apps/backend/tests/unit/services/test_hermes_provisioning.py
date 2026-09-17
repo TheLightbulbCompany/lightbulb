@@ -288,3 +288,89 @@ def _noop_async_returns(value):
         return value
 
     return _f
+
+
+# --- BYO key delivery (M4-R32) --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_bakes_the_byo_key_into_the_env_for_a_byo_owner(monkeypatch):
+    async def _fake_roster(owner_id):
+        return [{"id": "11111111-1111-1111-1111-111111111111", "name": "Ada", "role": "ceo"}]
+
+    async def _fake_resolve_provider_choice(owner_id):
+        return "byo_key", "anthropic"
+
+    async def _fake_build_connected_integration_servers(owner_id):
+        return {}
+
+    async def _fake_build_provisioned_env(owner_id):
+        return {}
+
+    async def _fake_ensure_paperclip_api_key(*, owner_id, paperclip_agent_id, admin_client):
+        return "pcp_key"
+
+    async def _fake_read_byo_key(owner_id, provider):
+        assert owner_id == "org_a"
+        assert provider == "anthropic"
+        return "sk-real-byo-key"
+
+    captured = {}
+
+    def _fake_write_agent_profile(owner_id, agent, **kwargs):
+        captured.update(kwargs)
+        return object()  # ProfileFiles stand-in -- upload_profile is a no-op double
+
+    monkeypatch.setattr("core.services.container_provision.resolve_provider_choice", _fake_resolve_provider_choice)
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers",
+        _fake_build_connected_integration_servers,
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", _fake_roster)
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", _fake_ensure_paperclip_api_key)
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr("core.services.key_service.read_byo_key", _fake_read_byo_key)
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", _fake_write_agent_profile)
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", _noop_async)
+
+    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    assert captured["byo_provider"] == "anthropic"
+    assert captured["byo_api_key"] == "sk-real-byo-key"
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypatch):
+    async def _fake_roster(owner_id):
+        return [{"id": "11111111-1111-1111-1111-111111111111", "name": "Ada", "role": "ceo"}]
+
+    async def _fake_resolve_provider_choice(owner_id):
+        return "bedrock_claude", None
+
+    async def _fake_build_connected_integration_servers(owner_id):
+        return {}
+
+    async def _fake_build_provisioned_env(owner_id):
+        return {}
+
+    async def _fake_ensure_paperclip_api_key(*, owner_id, paperclip_agent_id, admin_client):
+        return "pcp_key"
+
+    async def _explodes_if_read(owner_id, provider):
+        raise AssertionError("must not read a BYO key for a non-BYO provider_choice")
+
+    monkeypatch.setattr("core.services.container_provision.resolve_provider_choice", _fake_resolve_provider_choice)
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers",
+        _fake_build_connected_integration_servers,
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", _fake_roster)
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", _fake_ensure_paperclip_api_key)
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr("core.services.key_service.read_byo_key", _explodes_if_read)
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", _noop_async)
+
+    # Real write_agent_profile runs (not mocked) -- proves the non-BYO path produces a normal
+    # profile with byo_api_key=None, with no read ever attempted.
+    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})

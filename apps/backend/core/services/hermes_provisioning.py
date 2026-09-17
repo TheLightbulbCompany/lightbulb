@@ -33,11 +33,10 @@ token generation is therefore OWED WHEREVER an already-Hermes owner's gate token
 (``core.billing.bedrock_gate_tokens.mint_gate_token`` / the revoke-restore paths that call it) — not
 implemented in this task.
 
-BYO key (known gap, not solved here): ``write_agent_profile`` accepts an owner-level ``byo_api_key``
-plaintext value, but Secrets Manager has never stored a BYO key's plaintext for backend retrieval —
-only its ARN, which ECS resolves via a task-definition ``secrets:`` reference the backend never reads
-back. A BYO-provider Hermes owner's profile therefore ships today WITHOUT a baked
-``ANTHROPIC_API_KEY``/``OPENAI_API_KEY`` until a follow-up adds a plaintext-fetch path.
+BYO key (M4-R32): the plaintext value is read from Secrets Manager at provision time via
+``core.services.key_service.read_byo_key`` — the same ``lightbulb/{env}/user-keys/{user}/{provider}``
+secret the ECS path references by ARN, but read back directly here (AgentCore has no task-definition
+``secrets:`` mechanism to resolve it for us). Only read when ``provider_choice == "byo_key"``.
 """
 
 from __future__ import annotations
@@ -205,6 +204,10 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     Roster via ``core.services.messaging.load_agent_roster`` (M4-R10) — the same normalized,
     UUID-validated shape ``write_agent_profile``'s ``agent`` parameter expects.
 
+    BYO key (M4-R32): the plaintext value is read back from Secrets Manager
+    (``key_service.read_byo_key``) only when ``provider_choice == "byo_key"`` — every other
+    provider choice never touches it.
+
     Writer failure handling: ``write_agent_profile`` (via ``render_dotenv``) raises ``ValueError``
     on an illegal dotenv value (a newline, an illegal key). Caught PER AGENT and re-raised as a
     named ``RuntimeError`` — the original message already names the offending key — so one bad
@@ -214,12 +217,14 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     from core.services.container_provision import resolve_provider_choice
     from core.services.credentials.mcp_server import build_connected_integration_servers
     from core.services.hermes_profiles import upload_profile, write_agent_profile
+    from core.services.key_service import read_byo_key
     from core.services.messaging import load_agent_roster
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_api_key import ensure_paperclip_api_key
     from core.services.provisioning_landing import build_provisioned_env
 
     provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+    byo_api_key = await read_byo_key(owner_id, byo_provider or "anthropic") if provider_choice == "byo_key" else None
     integrations = await build_connected_integration_servers(owner_id)
     env_vars = await build_provisioned_env(owner_id)
     admin_client = shared_admin_client()
@@ -239,7 +244,7 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
                 integrations=integrations,
                 env_vars=env_vars,
                 byo_provider=byo_provider,
-                # byo_api_key intentionally omitted — see module docstring's "BYO key" note.
+                byo_api_key=byo_api_key,
             )
         except ValueError as exc:
             raise RuntimeError(

@@ -87,7 +87,9 @@ def device_payload_v3(params: dict, nonce: str) -> str:
             str((params.get("auth") or {}).get("token") or ""),
             nonce,
             _ascii_lower(str(client.get("platform") or "")),
-            _ascii_lower(str(device.get("deviceFamily") or "")),
+            # The CLI node host signs client.deviceFamily ("mac"); the Rust device client sends
+            # none. Reading it off `device` failed every real CLI connect with bad_signature.
+            _ascii_lower(str(client.get("deviceFamily") or device.get("deviceFamily") or "")),
         )
     )
 

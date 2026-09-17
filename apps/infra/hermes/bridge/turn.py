@@ -25,6 +25,71 @@ def _busy_add(n: int) -> None:
         _busy += n
 
 
+# ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
+MAX_TEXT_BYTES = 100_000
+MAX_EVENT_ID_BYTES = 256
+MAX_PARTICIPANTS = 128
+MAX_SESSIONS = 24
+MAX_ATTACHMENTS = 4
+MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+# The backend's own model allows application/pdf (messaging.py:348) while the OpenClaw
+# plugin's parser accepted four image types, so a PDF anywhere in history 400'd every
+# dispatch that message was part of (report 03 §1). Widened deliberately.
+ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
+ROOM_EVENT_KINDS = ("user_request", "room_event")
+EVENT_KINDS = ROOM_EVENT_KINDS
+
+
+class IngressError(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _check(cond: bool, message: str) -> None:
+    if not cond:
+        raise IngressError(message)
+
+
+def _check_message(msg: dict, room_id: str, label: str) -> None:
+    _check(isinstance(msg, dict), f"{label}: not an object")
+    _check(msg.get("roomId") == room_id, f"{label}.roomId does not match room.id")
+    _check(len((msg.get("text") or "").encode()) <= MAX_TEXT_BYTES, f"{label}.text exceeds 100000 bytes")
+    _check(len(msg.get("mentions") or []) <= MAX_PARTICIPANTS, f"{label}.mentions exceeds 128")
+    attachments = msg.get("attachments") or []
+    _check(len(attachments) <= MAX_ATTACHMENTS, f"{label}.attachments exceeds 4")
+    for i, att in enumerate(attachments):
+        _check(att.get("contentType") in ATTACHMENT_TYPES,
+               f"{label}.attachments[{i}].contentType: expected one of {'|'.join(ATTACHMENT_TYPES)}")
+        _check(int(att.get("size") or 0) <= MAX_ATTACHMENT_BYTES, f"{label}.attachments[{i}].size exceeds 5 MiB")
+
+
+def parse_ingress(body: dict) -> dict:
+    """All-or-nothing validation of the version-1 ingress body (spec §5, report 03 §1)."""
+    _check(isinstance(body, dict) and body.get("version") == 1, "body.version must be 1")
+    _check(len(str(body.get("eventId") or "").encode()) <= MAX_EVENT_ID_BYTES, "eventId exceeds 256 bytes")
+    _check(body.get("eventKind") in EVENT_KINDS, f"eventKind must be one of {'|'.join(EVENT_KINDS)}")
+    room = body.get("room") or {}
+    msg = body.get("message") or {}
+    _check(body.get("eventId") == msg.get("messageId"), "eventId must equal message.messageId")
+    _check(body.get("sender") == msg.get("author"), "sender must equal message.author")
+    _check(body.get("mentions") == msg.get("mentions"), "mentions must equal message.mentions")
+    participants = body.get("participants") or []
+    _check(len(participants) <= MAX_PARTICIPANTS, "participants exceeds 128")
+    _check(any(p.get("kind") == "agent" and p.get("id") == body.get("targetAgentId") for p in participants),
+           "targetAgentId must appear in participants as an agent")
+    _check(len(body.get("sessions") or []) <= MAX_SESSIONS, "sessions exceeds 24")
+    _check_message(msg, room.get("id"), "message")
+    previous = -1
+    for i, entry in enumerate(body.get("recentHistory") or []):
+        seq = entry.get("messageSeq")
+        _check(isinstance(seq, int) and seq > previous, f"recentHistory[{i}].messageSeq must strictly increase")
+        _check(seq < msg.get("messageSeq"), f"recentHistory[{i}].messageSeq must be below message.messageSeq")
+        _check_message(entry, room.get("id"), f"recentHistory[{i}]")
+        previous = seq
+    return body
+
+
 # ---- backend callbacks (hook token) -----------------------------------------------------------
 def _post_backend(path: str, body: dict) -> int:
     req = urllib.request.Request(

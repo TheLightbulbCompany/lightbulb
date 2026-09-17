@@ -25,7 +25,6 @@ def test_write_agent_profile_returns_the_four_files():
     assert "STRIPE_SECRET_KEY=sk_live_x" in files.dotenv
     assert "PAPERCLIP_API_KEY=pcp_live_x" in files.dotenv
     assert files.soul_md.startswith("# Ada")
-    assert files.managed_overlay == hermes_profiles.MANAGED_OVERLAY_YAML
 
 
 def test_config_yaml_carries_no_secret_even_though_dotenv_does():
@@ -67,18 +66,24 @@ def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_ro
 
 
 def test_upload_writes_owner_first_under_hermes(monkeypatch):
+    """I5 (fix round 1): no per-profile ``managed/config.yaml`` object any more — the baked
+    ``/etc/hermes/config.yaml`` is the sole enforcement point (``get_managed_dir()`` resolves
+    ``$HERMES_MANAGED_DIR`` or ``/etc/hermes`` only and never reads S3), so uploading a per-profile
+    copy was a harmless write nobody ever reads. Backend-owned files are exactly the four Task 13
+    (this lane's continuation) needs to exclude from the bridge's own ``save_profile``:
+    config.yaml, .env, SOUL.md, .revision."""
     puts = []
     monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.append((bucket, key)))
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
-    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n", "updates: {}\n"))
+    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
     keys = [key for _, key in puts]
-    assert keys[:4] == [
+    assert keys[:3] == [
         "org_a/hermes/a1/config.yaml",
         "org_a/hermes/a1/.env",
         "org_a/hermes/a1/SOUL.md",
-        "org_a/hermes/a1/managed/config.yaml",
     ]
-    assert keys[4] == "org_a/hermes/a1/.revision"  # written LAST — the bridge polls it
+    assert keys[3] == "org_a/hermes/a1/.revision"  # written LAST — the bridge polls it
+    assert len(keys) == 4
     assert {bucket for bucket, _ in puts} == {"lightbulb-dev-openclaw-replicas"}
 
 
@@ -91,7 +96,7 @@ def test_upload_revision_is_a_uuid4_hex_written_after_every_other_file(monkeypat
     puts = []
     monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.append((key, body)))
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
-    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n", "updates: {}\n"))
+    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
     last_key, last_body = puts[-1]
     assert last_key == "org_a/hermes/a1/.revision"
     assert re.fullmatch(r"[0-9a-f]{32}", last_body), last_body
@@ -101,5 +106,5 @@ def test_upload_is_a_no_op_without_a_bucket(monkeypatch):
     puts = []
     monkeypatch.setattr(hermes_profiles, "_s3_put", lambda *a: puts.append(a))
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "")
-    upload_profile("org_a", "a1", ProfileFiles("x", "y", "z", "w"))
+    upload_profile("org_a", "a1", ProfileFiles("x", "y", "z"))
     assert puts == []

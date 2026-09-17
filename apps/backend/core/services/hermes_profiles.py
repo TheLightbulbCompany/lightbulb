@@ -94,8 +94,9 @@ AUXILIARY_TASKS = (
 #: Hard backstop: a match blocks even under ``--yolo``/mode=off (config_defaults.py:1582-1583).
 APPROVALS_DENY = ("rm -rf /", "mkfs*", "dd if=* of=/dev/*", ":(){:|:&};:")
 
-#: The ``TOOL_DENY_BASE`` port. canvas/music_generate have no Hermes toolset; dashboard and cron
-#: are switches, not toolsets (report 01 §2.7).
+#: The ``TOOL_DENY_BASE`` port. canvas/music_generate have no Hermes toolset; cron is a switch
+#: (``cron.allow_agent_scheduling``, below), not a toolset (report 01 §2.7). dashboard has no
+#: equivalent switch this module emits at all — see the ``dashboard`` note below.
 _DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
 
 #: M4-R3: the opt-in is a flat allow-list (``plugins.enabled``), never ``plugins.entries`` —
@@ -176,7 +177,9 @@ def build_profile_config(
             "deny": list(APPROVALS_DENY),
         },
         "cron": {"allow_agent_scheduling": False},
-        "dashboard": {"enabled": False},
+        # I5 (fix round 1): the real "dashboard" block (config_defaults.py:931) has no "enabled"
+        # field and nothing reads one — emitting {"enabled": False} was a false sense of coverage.
+        # Nothing launches the dashboard in the microVM regardless, so no key is emitted at all.
         "memory": {
             "memory_enabled": True,
             "user_profile_enabled": True,
@@ -374,6 +377,11 @@ def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
 #: (managed_scope.py:101-120, docs/design/managed-scope.md §4.1). Only non-negotiables belong
 #: here; anything an owner may legitimately change stays in the per-profile file.
 #: apps/infra/hermes/managed/config.yaml is a byte-identical copy, asserted by the unit test.
+#: I5 (fix round 1): the real key is ``updates.check`` (default True, read at ``banner.py:387`` in
+#: the ``lightbulb/hermes-spike:m1-rc4`` image) — ``updates.check_on_start`` has zero occurrences
+#: anywhere in that image, so the previous pin was a no-op. Re-verify with:
+#:   docker run --rm --entrypoint grep lightbulb/hermes-spike:m1-rc4 -n -B2 -A6 '"updates"' \
+#:     /opt/hermes/hermes_cli/config_defaults.py
 MANAGED_OVERLAY_YAML = """\
 bedrock:
   discovery:
@@ -384,7 +392,7 @@ telemetry:
     enabled: false
     send: false
 updates:
-  check_on_start: false
+  check: false
 approvals:
   # Blocks even under mode=off / --yolo. Belt for the profile's own copy.
   deny:
@@ -397,10 +405,14 @@ approvals:
 
 @dataclass
 class ProfileFiles:
+    """The three backend-owned files (fix round 1, I5). ``MANAGED_OVERLAY_YAML`` is baked into the
+    image at ``/etc/hermes/config.yaml`` and never uploaded per profile: ``get_managed_dir()``
+    resolves ``$HERMES_MANAGED_DIR`` or ``/etc/hermes`` only and never reads S3, so a per-profile
+    copy was a harmless write nobody ever reads."""
+
     config_yaml: str
     dotenv: str
     soul_md: str
-    managed_overlay: str
 
 
 def write_agent_profile(
@@ -452,7 +464,6 @@ def write_agent_profile(
         config_yaml=yaml.safe_dump(config, sort_keys=False),
         dotenv=render_dotenv(env),
         soul_md=build_soul_md(agent),
-        managed_overlay=MANAGED_OVERLAY_YAML,
     )
 
 
@@ -477,10 +488,12 @@ def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> None:
     if not bucket:
         return
     prefix = profile_prefix(owner_id, agent_id)
+    # No per-profile managed/config.yaml (I5, fix round 1): the baked /etc/hermes/config.yaml is
+    # the sole enforcement point and get_managed_dir() never reads S3, so this upload was a
+    # harmless write nobody ever reads.
     _s3_put(bucket, f"{prefix}config.yaml", files.config_yaml)
     _s3_put(bucket, f"{prefix}.env", files.dotenv)
     _s3_put(bucket, f"{prefix}SOUL.md", files.soul_md)
-    _s3_put(bucket, f"{prefix}managed/config.yaml", files.managed_overlay)
     # LAST, always: the bridge re-pulls a profile when this object's value changes (Task 13, this
     # lane's continuation). Writing it before the files it describes would advertise a config that
     # is not there yet. A uuid4 hex, not a timestamp (C4, fix round 1) — two uploads racing within

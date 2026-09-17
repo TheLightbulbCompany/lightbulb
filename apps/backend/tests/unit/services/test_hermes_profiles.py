@@ -85,8 +85,15 @@ def test_approvals_are_off_with_an_unattended_approve_and_a_deny_backstop():
 
 def test_the_tool_deny_list_is_ported_to_disabled_toolsets():
     assert set(cfg()["agent"]["disabled_toolsets"]) == {"cronjob", "tts", "video_gen"}
-    assert cfg()["dashboard"]["enabled"] is False
     assert cfg()["cron"]["allow_agent_scheduling"] is False
+
+
+def test_no_dashboard_key_is_emitted():
+    """I5 (minor): the real ``dashboard`` block (config_defaults.py:931) has no ``enabled`` field
+    and nothing reads one — emitting ``{"enabled": False}`` was a false sense of coverage, not a
+    real pin. Nothing launches the dashboard in the microVM regardless, so the fix is to stop
+    emitting a key that claims a control this module doesn't actually have."""
+    assert "dashboard" not in cfg()
 
 
 def test_limits_memory_skills_and_sessions_are_all_emitted():

@@ -17,10 +17,15 @@ def test_the_overlay_pins_bedrock_discovery_off():
 
 
 def test_the_overlay_pins_shared_telemetry_and_updates_off():
+    """Fix round 1, I5: the real key is ``updates.check`` (default True, read at ``banner.py:387``
+    in the ``lightbulb/hermes-spike:m1-rc4`` image) — ``updates.check_on_start`` has zero
+    occurrences anywhere in that image, so the previous pin was a no-op that only ever asserted
+    the constant against itself."""
     data = parsed()
     assert data["telemetry"]["shared_metrics"]["enabled"] is False
     assert data["telemetry"]["shared_metrics"]["send"] is False
-    assert data["updates"]["check_on_start"] is False
+    assert data["updates"]["check"] is False
+    assert "check_on_start" not in data["updates"]
 
 
 def test_the_overlay_carries_the_approvals_deny_backstop():

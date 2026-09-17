@@ -180,13 +180,13 @@ async def redeploy_container(
 
     if runtime_transport.host_for(container) == "agentcore":
         # Row #18: the AgentCore twin of the ECS wholesale-rewrite below -- rewrite every
-        # roster profile from the row's own aip_arns (the same inputs _write_profiles
+        # roster profile from the row's own aip_arns (the same inputs write_profiles
         # already sources at fresh provision -- resolve_profile_inputs), then stop the
         # runtime session so the NEXT invoke cold-restores instead of a warm microVM
         # serving whatever it cached mid-turn. Never touches ECS for this row.
         from core.services import hermes_provisioning
 
-        await hermes_provisioning._write_profiles(owner_id, container.get("bedrock_aip_arns") or {})
+        await hermes_provisioning.write_profiles(owner_id, container.get("bedrock_aip_arns") or {})
         runtime_arn = container.get("agentcore_runtime_arn")
         if runtime_arn:
             from core.dynamodb import run_in_thread

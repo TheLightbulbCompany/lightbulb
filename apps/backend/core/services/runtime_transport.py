@@ -44,6 +44,16 @@ GATEWAY_PORT = 18789
 #: addresses the runtime by ARN and ignores it.
 AGENTCORE_ADDRESS = "agentcore"
 
+#: F4 (predeploy review, M6-R37): the RPC budget for a call to a possibly-parked AgentCore
+#: workspace -- AgentCore holds an invoke through the microVM start (~35s) and the gateway boot
+#: (measured 54-57s end to end, 2026-09-16), so any shorter caller budget fails on the first
+#: call to a cold workspace and only succeeds on a retry. Hoisted here (not left on
+#: ``openclaw_work``, its original home) so ``container_rpc`` can reuse it without importing
+#: ``openclaw_work`` -- that module itself imports ``runtime_rpc``, which imports
+#: ``container_rpc``, so the reverse import would cycle. ``openclaw_work``/``agent_mail_delivery``
+#: keep their own (private) references pointed at this one value.
+AGENTCORE_INGRESS_TIMEOUT_S = 90.0
+
 #: AgentCore requires a session id of at least 33 characters.
 _MIN_SESSION_ID_LEN = 33
 

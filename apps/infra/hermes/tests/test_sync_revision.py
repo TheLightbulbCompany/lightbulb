@@ -91,6 +91,80 @@ def test_restore_profile_seeds_revisions_from_the_freshly_downloaded_revision_fi
     assert pulls == []
 
 
+def test_pull_new_mcp_token_files_seeds_a_new_token_and_leaves_an_existing_one_untouched(home, monkeypatch):
+    """F2 (predeploy review, M6-R35): a warm re-pull seeds a token file for a server the
+    microVM has never seen, but never overwrites one it already has -- Hermes's own
+    OAuthClientProvider is the sole rotator of an already-seeded file."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    dest = sync._profile_dir("a1") / "mcp-tokens"
+    dest.mkdir(parents=True)
+    (dest / "stripe.json").write_text('{"access_token": "already-rotated"}')
+
+    downloaded = []
+
+    class FakeS3:
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+
+            class Paginator:
+                def paginate(self, Bucket, Prefix):
+                    assert Prefix == f"{sync.S3_PREFIX}/a1/mcp-tokens/"
+                    return [
+                        {
+                            "Contents": [
+                                {"Key": f"{Prefix}stripe.json"},  # already seeded -- must be skipped
+                                {"Key": f"{Prefix}qbo.json"},  # never seen -- must be pulled
+                            ]
+                        }
+                    ]
+
+            return Paginator()
+
+        def download_file(self, bucket, key, target):
+            downloaded.append(key)
+            Path(target).write_text('{"access_token": "fresh"}')
+
+    monkeypatch.setattr(sync, "_s3", lambda: FakeS3())
+    sync._pull_new_mcp_token_files("a1")
+
+    assert downloaded == [f"{sync.S3_PREFIX}/a1/mcp-tokens/qbo.json"]
+    assert (dest / "stripe.json").read_text() == '{"access_token": "already-rotated"}'
+    assert (dest / "qbo.json").read_text() == '{"access_token": "fresh"}'
+
+
+def test_pull_new_mcp_token_files_is_best_effort_on_a_listing_failure(home, monkeypatch):
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+
+    class ExplodingS3:
+        def get_paginator(self, name):
+            raise RuntimeError("S3 unavailable")
+
+    monkeypatch.setattr(sync, "_s3", lambda: ExplodingS3())
+    sync._pull_new_mcp_token_files("a1")  # must not raise
+
+
+def test_download_profile_also_pulls_new_mcp_tokens(home, monkeypatch):
+    """_download_profile (ensure_profile's revision-changed path) triggers the mcp-tokens
+    re-pull, not just the five named backend-owned files."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    calls = []
+
+    class FakeS3:
+        def download_file(self, bucket, key, dest):
+            calls.append(key)
+
+        def get_paginator(self, name):
+            class Paginator:
+                def paginate(self, Bucket, Prefix):
+                    return [{"Contents": [{"Key": f"{Prefix}qbo.json"}]}]
+
+            return Paginator()
+
+    monkeypatch.setattr(sync, "_s3", lambda: FakeS3())
+    sync._download_profile("a1")
+    assert f"{sync.S3_PREFIX}/a1/mcp-tokens/qbo.json" in calls
+
+
 def test_download_profile_survives_one_missing_object(home, monkeypatch):
     """A profile that predates Task 7 (or a fresh one still mid-provision) may not have all
     backend-owned objects yet -- one missing GetObject must not abort the rest."""

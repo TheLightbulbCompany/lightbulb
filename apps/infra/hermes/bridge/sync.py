@@ -233,6 +233,37 @@ def _download_profile(agent_id: str) -> None:
             s3.download_file(S3_BUCKET, f"{S3_PREFIX}/{agent_id}/{name}", str(dest / name))
         except Exception:  # noqa: BLE001 -- one missing object must not abort the other three
             log.warning("ensure_profile: failed to re-pull %s for %s", name, agent_id)
+    _pull_new_mcp_token_files(agent_id)
+
+
+def _pull_new_mcp_token_files(agent_id: str) -> None:
+    """F2 (predeploy review, M6-R35): seed a newly-connected OAuth MCP token file on a revision
+    bump, seeded-only. ``restore_profile`` already pulls ``mcp-tokens/`` once at cold start, but
+    a same-session integration connect (the microVM stays warm) never re-runs it, so
+    ``hermes_profiles._write_mcp_token_files``'s freshly-seeded object never reaches an already-
+    warm profile -- that server's tools stay dead until the session idles out (up to 4h).
+
+    Only downloads a name this microVM has never seen: after the seed, Hermes's own
+    ``OAuthClientProvider`` refreshes the token IN PLACE (report 06 §4.4) -- the container is the
+    sole rotator from then on, so overwriting an existing local file here would clobber an
+    already-rotated live token with a stale copy. One failed listing/download must not abort
+    ``ensure_profile``'s own re-pull of the four/five files above."""
+    dest_dir = _profile_dir(agent_id) / "mcp-tokens"
+    prefix = f"{S3_PREFIX}/{agent_id}/mcp-tokens/"
+    try:
+        s3 = _s3()
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefix):]
+                if not rel:
+                    continue
+                target = dest_dir / rel
+                if target.exists():
+                    continue  # already seeded (or since rotated) -- never overwrite
+                target.parent.mkdir(parents=True, exist_ok=True)
+                s3.download_file(S3_BUCKET, obj["Key"], str(target))
+    except Exception:  # noqa: BLE001 -- a listing/download blip must not abort ensure_profile
+        log.warning("ensure_profile: mcp-tokens re-pull failed for %s", agent_id)
 
 
 def ensure_profile(agent_id: str) -> None:

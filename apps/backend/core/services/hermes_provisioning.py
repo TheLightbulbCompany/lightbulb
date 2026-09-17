@@ -91,6 +91,16 @@ _READY_POLL_INTERVAL_S = 10.0
 _TERMINAL_STATUSES = ("CREATE_FAILED", "UPDATE_FAILED")
 
 
+class AgentCoreRuntimeCreateFailed(RuntimeError):
+    """F1 (predeploy review, M6-R34): the runtime reached a TERMINAL failure status
+    (``CREATE_FAILED``/``UPDATE_FAILED``) -- dead, and AWS will never accept an
+    ``UpdateAgentRuntime`` against it. Distinguished from ``_wait_for_runtime_ready``'s other
+    ``RuntimeError`` (the poll window merely ran out while the runtime was still
+    creating/updating -- it may yet succeed) so ``provision_hermes_runtime`` knows to delete
+    the dead runtime and clear the row's ARN instead of leaving a retry stuck reusing it
+    forever."""
+
+
 def build_hermes_runtime_env(
     *,
     owner_id: str,
@@ -243,9 +253,132 @@ def _wait_for_runtime_ready(runtime_arn: str) -> None:
         if status == "READY":
             return
         if status in _TERMINAL_STATUSES:
-            raise RuntimeError(f"AgentCore runtime {runtime_arn} failed to start: {status}")
+            raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {runtime_arn} failed to start: {status}")
         time.sleep(_READY_POLL_INTERVAL_S)
     raise RuntimeError(f"AgentCore runtime {runtime_arn} did not reach READY within the poll window")
+
+
+def _agentcore_data_client():
+    import boto3
+
+    return boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION)
+
+
+def _delete_runtime(runtime_arn: str) -> None:
+    """``DeleteAgentRuntime``. Sync — call via ``run_in_thread``. Shared by F1's terminal-runtime
+    cleanup (below) and ``teardown_hermes_runtime`` (F5)."""
+    import boto3
+
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client.delete_agent_runtime(agentRuntimeId=runtime_arn.rsplit("/", 1)[-1])
+
+
+def _stop_runtime_session(runtime_arn: str, session_id: str) -> None:
+    """``StopRuntimeSession`` (M4-R16) — must run BEFORE the old bearer generation is revoked: a
+    warm AgentCore session caches the bearer it read from the boot secret at cold-start, so
+    denying/deleting the token row alone leaves an already-warm session presenting a now-dead
+    credential until AWS reaps it on its own. Sync — call via ``run_in_thread``."""
+    _agentcore_data_client().stop_runtime_session(agentRuntimeArn=runtime_arn, runtimeSessionId=session_id)
+
+
+def _delete_boot_secret(owner_id: str) -> None:
+    """Force-delete the owner's Hermes boot secret (no recovery window — a torn-down owner's
+    credentials are dead the moment the runtime they were minted for is gone). Sync — call via
+    ``run_in_thread``."""
+    import boto3
+
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    try:
+        sm.delete_secret(SecretId=boot_secret_name(owner_id), ForceDeleteWithoutRecovery=True)
+    except sm.exceptions.ResourceNotFoundException:
+        pass
+
+
+def _delete_profile_prefix_objects(owner_id: str) -> None:
+    """Delete every S3 object under ``<owner>/hermes/`` -- the whole Hermes home, every agent's
+    profile plus the root ``auth.json``. Only called by ``teardown_hermes_runtime`` when
+    ``delete_profiles=True`` (an account wipe, never a rollback). Paginated (S3's own 1000-key
+    batch cap), sync — call via ``run_in_thread``. Mirrors ``hermes_profiles.delete_profile``'s
+    own pagination shape."""
+    if not settings.OWNER_STATE_BUCKET:
+        return
+    import boto3
+
+    from core.services.hermes_profiles import root_home_prefix
+
+    client = boto3.client("s3")
+    prefix = root_home_prefix(owner_id)
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
+        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if keys:
+            client.delete_objects(Bucket=settings.OWNER_STATE_BUCKET, Delete={"Objects": keys})
+
+
+async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_profiles: bool) -> None:
+    """The AgentCore-side teardown (F5, predeploy review, M6-R38) -- the ONE place that undoes
+    what ``prepare_hermes_workspace``/``provision_hermes_runtime`` created, extracted from
+    ``migrate_workspace_to_hermes.rollback``'s own AgentCore half so every caller that needs to
+    tear an AgentCore workspace down shares it instead of re-deriving the AWS call sequence.
+
+    Steps, each best-effort -- an already-gone runtime/secret/hash/prefix must never stop the
+    caller's own teardown (a rollback flipping the row back to ECS, an account wipe deleting the
+    containers row):
+
+      1. ``StopRuntimeSession`` (M4-R16) -- a warm session caches the bearer it read at
+         cold-start; skipping this can leave it presenting a dead credential until AWS reaps it.
+      2. ``DeleteAgentRuntime``.
+      3. Revoke the row's own ``bedrock_gate_token_hash`` (the live bearer generation).
+      4. Delete the ONE JSON boot secret.
+      5. (``delete_profiles`` only) delete every object under ``<owner>/hermes/`` in S3.
+
+    ``delete_profiles=False`` is ``rollback``'s own choice -- S3 profiles are cheap and the next
+    ``migrate()`` attempt overwrites them anyway. ``delete_profiles=True`` is for a caller after
+    which NOTHING will ever provision this owner's Hermes workspace again (an account wipe /
+    ``ecs_manager.delete_user_service`` on an agentcore row) -- otherwise the whole
+    ``<owner>/hermes/`` prefix (every profile, the root ``auth.json``) orphans indefinitely in
+    S3 with no row left to even name it.
+
+    ``container_row`` supplies ``agentcore_runtime_arn`` (the runtime to stop+delete) and
+    ``bedrock_gate_token_hash`` (the bearer generation to revoke) -- the caller's OWN
+    already-read row, never re-read here (a wipe's caller already holds the authoritative
+    ``ALL_OLD`` image; a rollback's caller already read it strongly consistent).
+    """
+    from core.billing.bedrock_gate_tokens import delete_gate_token_rows
+    from core.services.runtime_transport import session_id_for
+
+    arn = container_row.get("agentcore_runtime_arn")
+    if arn:
+        try:
+            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
+        except Exception:  # noqa: BLE001 — best-effort: an already-cold/gone session is not fatal
+            logger.warning(
+                "hermes teardown: StopRuntimeSession failed for owner=%s arn=%s", owner_id, arn, exc_info=True
+            )
+        try:
+            await run_in_thread(_delete_runtime, arn)
+        except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
+            logger.warning(
+                "hermes teardown: DeleteAgentRuntime failed for owner=%s arn=%s", owner_id, arn, exc_info=True
+            )
+
+    current_hash = container_row.get("bedrock_gate_token_hash")
+    if current_hash:
+        try:
+            await delete_gate_token_rows([current_hash])
+        except Exception:  # noqa: BLE001 — best-effort: a stranded row is a known, accepted risk elsewhere too
+            logger.warning("hermes teardown: could not revoke gate token for owner=%s", owner_id, exc_info=True)
+
+    try:
+        await run_in_thread(_delete_boot_secret, owner_id)
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
+
+    if delete_profiles:
+        try:
+            await run_in_thread(_delete_profile_prefix_objects, owner_id)
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
 
 
 async def prepare_hermes_workspace(
@@ -375,7 +508,7 @@ class ProfileInputs:
     every caller of ``hermes_profiles.write_agent_profile`` (fix round 3,
     M6-R10). Before this, ``catalog_service._build_and_upload_agent_profile``
     hand-rolled its own version of this sourcing that diverged from
-    ``_write_profiles``'s in three ways: it skipped
+    ``write_profiles``'s in three ways: it skipped
     ``provider_choice_from_row``'s ``trial_local`` branch (a card-less trial
     owner's marketplace deploy would land the full paid model ladder instead
     of ``BEDROCK_TRIAL_CHOICE``), it returned ``None`` for an unset
@@ -404,7 +537,7 @@ async def resolve_profile_inputs(owner_id: str, *, container_row: dict) -> Profi
 
     ``container_row`` supplies ``aip_arns`` (the containers table's
     ``bedrock_aip_arns`` field) — the same source ``catalog_service`` always
-    read directly. ``_write_profiles``'s own caller
+    read directly. ``write_profiles``'s own caller
     (``provision_hermes_runtime``) already has a real ``aip_arns`` value from
     its own ``_load_role_and_aips`` call by the time it calls this (that
     call's ``ensure_owner_aips`` is what persists ``bedrock_aip_arns`` onto
@@ -452,14 +585,14 @@ async def write_profile_for_agent(
 
     Moved, unchanged in behaviour, from ``catalog_service._build_and_upload_agent_profile`` --
     this is now the ONE per-agent "write this agent's profile" seam every caller shares: the
-    roster fan-out below (``_write_profiles``), a single marketplace-deploy install
+    roster fan-out below (``write_profiles``), a single marketplace-deploy install
     (``catalog_service._build_and_upload_agent_profile``, now a thin resolve-then-delegate
     wrapper), and ``runtime_rpc``'s ``agents.create`` door for an AgentCore owner (Q9a row #1).
 
     ``agent_row`` is the caller's OWN already-resolved Paperclip roster entry (the shape
     ``write_agent_profile`` documents: ``{"id","name","role","title","capabilities","icon"}``) --
     this function does no roster read of its own, so a caller iterating a roster it already holds
-    (``_write_profiles``, below) never re-reads it per agent.
+    (``write_profiles``, below) never re-reads it per agent.
 
     Raises ``HermesProfileError`` when ``resolve_profile_inputs`` hard-fails (a missing BYO key)
     or this agent's own Paperclip API key mint/read fails (I2/M6-R13) -- a profile that boots but
@@ -473,11 +606,19 @@ async def write_profile_for_agent(
     roster-derived. ``None`` (the default) keeps today's behaviour for every existing caller.
 
     ``inputs``, when given, is used AS-IS instead of calling ``resolve_profile_inputs`` again --
-    Q9a fix round 1, I3: ``_write_profiles``'s six-agent roster fan-out resolves the SAME
+    Q9a fix round 1, I3: ``write_profiles``'s six-agent roster fan-out resolves the SAME
     owner-level inputs ONCE and passes them to every agent, rather than re-reading billing/
     Secrets/integrations/env six times (and risking them diverging mid-fan-out if a value
     changes between agents). Every other caller (a single freshly-created/deployed agent) leaves
     this ``None`` and gets its own fresh resolve, unchanged.
+
+    Minor (predeploy review, M6-R39 housekeeping): also stages ``lightbulb-facts.json`` for
+    THIS agent (via ``_stage_owner_facts``) -- before this fix only the six-agent provision
+    fan-out staged it (as one batched write for the whole roster), so a hired/created agent
+    installed through ``catalog_service``'s single-agent path or ``runtime_rpc``'s
+    ``agents.create`` door had no facts file at all until the next billing event re-wrote it.
+    Best-effort by construction (``_stage_owner_facts`` never raises) -- a facts-file hiccup
+    must never fail a profile write that already succeeded.
     """
     from core.services.hermes_profiles import upload_profile, write_agent_profile
     from core.services.paperclip_admin_client import shared_admin_client
@@ -514,9 +655,10 @@ async def write_profile_for_agent(
     if soul_md_override is not None:
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
+    await _stage_owner_facts(owner_id, [agent_id], inputs)
 
 
-async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
+async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     """Step 1's profile fan-out: one Hermes profile (config.yaml + .env + SOUL.md) per starter
     agent, uploaded to S3.
 
@@ -533,9 +675,12 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     (six billing/Secrets/integrations/env reads for a six-agent starter roster, and a risk that
     the roster diverges on those inputs mid-fan-out).
 
-    Fix round 1, Important 2: after every agent has its profile, ``_stage_owner_facts`` uploads
-    ``lightbulb-facts.json`` to each one too — see its own docstring for why this must happen
-    HERE rather than by simply calling ``owner_facts.write_owner_facts``.
+    Minor (predeploy review, M6-R39 housekeeping): ``lightbulb-facts.json`` staging moved INTO
+    ``write_profile_for_agent`` itself, so every agent gets it from that one shared per-agent
+    call now (not only a roster fan-out's own batched write) — see its docstring. What used to
+    be a single combined ``_stage_owner_facts`` call for the whole roster is now one per agent;
+    see ``owner_facts.write_owner_facts``'s docstring for why this must happen here rather than
+    through that function directly (it has no AgentCore branch of its own).
     """
     from core.services.messaging import load_agent_roster
 
@@ -544,7 +689,6 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     roster = await load_agent_roster(owner_id)
     for agent in roster:
         await write_profile_for_agent(owner_id, agent, container_row=container_row, inputs=inputs)
-    await _stage_owner_facts(owner_id, [agent["id"] for agent in roster], inputs)
 
 
 async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
@@ -553,7 +697,7 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
     today), so it had NO ``lightbulb-facts.json`` at all while the bundled skill tells every
     agent to read it. Stages the SAME facts file directly into every roster profile instead of
     calling ``write_owner_facts`` itself: at this point in provisioning the row's
-    ``runtime_host`` has NOT yet flipped to ``"agentcore"`` (``_write_profiles`` runs BEFORE
+    ``runtime_host`` has NOT yet flipped to ``"agentcore"`` (``write_profiles`` runs BEFORE
     ``CreateAgentRuntime`` records the ARN -- N4/M4-R42, above), so ``write_owner_facts``'s own
     ``is_agentcore_owner`` check would take the wrong (EFS) branch here and write nothing
     anyone will ever read.
@@ -643,13 +787,13 @@ async def provision_hermes_runtime(
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
     if not arn:
-        # N4/M4-R42: _write_profiles runs BEFORE CreateAgentRuntime, so a row that already
+        # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
         # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
         # release-to-error path now produces routinely -- must skip straight to recovering the
         # runtime (poll READY / update on image drift / fenced terminal write) instead of
         # re-running the fan-out and overwriting owner-edited profiles + bumping .revision.
-        await _write_profiles(owner_id, aip_arns)
+        await write_profiles(owner_id, aip_arns)
 
     if not arn:
         # M4-R35: the row has no ARN yet -- but AgentCore itself might, if a prior attempt got
@@ -709,7 +853,34 @@ async def provision_hermes_runtime(
             owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
         )
 
-    await run_in_thread(_wait_for_runtime_ready, arn)
+    try:
+        await run_in_thread(_wait_for_runtime_ready, arn)
+    except AgentCoreRuntimeCreateFailed:
+        # F1 (predeploy review, M6-R34): CREATE_FAILED/UPDATE_FAILED is a DEAD runtime -- AWS
+        # will refuse an UpdateAgentRuntime against it, so every retry that found this ARN on
+        # the row via the `if arn:` branch above would otherwise call Update on a terminal
+        # runtime forever. Delete it (best-effort) and clear the row's ARN with the SAME fenced
+        # write the ARN record used, THEN raise -- a retry after the underlying cause (e.g. an
+        # unpushed image tag) is fixed then takes the CREATE path instead.
+        logger.warning(
+            "hermes provision: runtime create/update failed for owner=%s arn=%s -- deleting and "
+            "clearing the row's ARN so the next attempt creates fresh",
+            owner_id,
+            arn,
+        )
+        try:
+            await run_in_thread(_delete_runtime, arn)
+        except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
+            logger.warning(
+                "hermes provision: could not delete the failed runtime owner=%s arn=%s", owner_id, arn, exc_info=True
+            )
+        # A lost fence here means a concurrent takeover now owns the row -- ProvisionSuperseded
+        # propagates in place of the runtime failure, which matches every other fenced write in
+        # this module (provision_runner.run's existing handler already covers both).
+        await container_repo.update_container_leased(
+            owner_id, claim_id, {"agentcore_runtime_arn": None}, attempt_token=attempt_token, release_lease=False
+        )
+        raise
 
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
     # live workspace, and the ECS manager's start/stop chokepoints already no-op for this row.

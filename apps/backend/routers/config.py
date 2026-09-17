@@ -24,7 +24,7 @@ from core.services.config_patcher import (
     patch_openclaw_config,
 )
 from core.services.provision_gate import has_always_on_entitlement
-from core.services.runtime_rpc import _config_get_roster_map, _config_patch_roster
+from core.services.runtime_rpc import _config_get_roster_map, config_patch_roster
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -163,10 +163,10 @@ async def patch_config(
                 detail="INVALID_REQUEST: channels are not supported on an AgentCore workspace yet",
             )
         # M6 row #12: fan the patch out to every roster profile via the same
-        # _config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
+        # config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
         # router's ConfigPatchRequest carries no baseHash, so CAS is skipped (None),
         # matching this door's own pre-existing no-CAS behaviour on the ECS path.
-        result = await _config_patch_roster(owner_id, body.patch, None)
+        result = await config_patch_roster(owner_id, body.patch, None)
         return {"status": "patched", "owner_id": owner_id, "hash": result["hash"]}
 
     # Always-on entitlement gate on channel fields. Channels are a PAID

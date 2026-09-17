@@ -596,14 +596,21 @@ async def test_chatgpt_oauth_owner_migrates_without_staging_and_removes_the_stal
 
 
 async def test_rollback_order_and_row_flip(monkeypatch):
+    """F5 (predeploy review, M6-R38): the AgentCore-side teardown itself moved to
+    hermes_provisioning.teardown_hermes_runtime (its own dedicated tests cover the AWS call
+    ordering) -- this test now proves rollback's OWN contract: teardown runs with
+    delete_profiles=False and BEFORE the row flips back to ECS and the service restarts."""
     calls: list[str] = []
     row = {"owner_id": OWNER, "agentcore_runtime_arn": "arn:hermes-1", "bedrock_gate_token_hash": "hash-1"}
     monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
-    monkeypatch.setattr(mod, "_stop_runtime_session", lambda *a: calls.append("stop_session"))
-    monkeypatch.setattr(mod, "_delete_runtime", lambda *a: calls.append("delete_runtime"))
-    monkeypatch.setattr(mod, "_delete_boot_secret", lambda *a: calls.append("delete_secret"))
-    delete_hashes = AsyncMock(side_effect=lambda hashes: calls.append("revoke_token"))
-    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", delete_hashes)
+
+    async def _fake_teardown(owner_id, *, container_row, delete_profiles):
+        assert owner_id == OWNER
+        assert container_row == row
+        assert delete_profiles is False
+        calls.append("teardown")
+
+    monkeypatch.setattr(mod, "teardown_hermes_runtime", _fake_teardown)
 
     monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-9"))
     leased = AsyncMock(side_effect=lambda *a, **kw: calls.append("flip_row"))
@@ -616,8 +623,7 @@ async def test_rollback_order_and_row_flip(monkeypatch):
     # Ruling M6-R15: the row flips back to "ecs" BEFORE start_user_service is called, so
     # start_user_service's own _hosted_on_agentcore guard (unforced here) can never bite --
     # the row it reads is already off AgentCore by the time that call happens.
-    assert calls == ["stop_session", "delete_runtime", "revoke_token", "delete_secret", "flip_row", "start_ecs"]
-    delete_hashes.assert_awaited_once_with(["hash-1"])
+    assert calls == ["teardown", "flip_row", "start_ecs"]
     leased.assert_awaited_once()
     _, kwargs_or_fields = leased.await_args.args[0], leased.await_args.args[2]
     assert kwargs_or_fields["runtime_host"] == "ecs"
@@ -628,20 +634,71 @@ async def test_rollback_order_and_row_flip(monkeypatch):
     ecs.start_user_service.assert_awaited_once_with(OWNER, force=True)
 
 
-async def test_rollback_tolerates_a_missing_runtime_and_secret(monkeypatch):
-    """No ARN on the row (e.g. rollback right after prepare, before create) -- nothing to stop
-    or delete on the AgentCore side, but the row still flips back and ECS still restarts."""
-    monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": OWNER}))
-    stop_session = AsyncMock(side_effect=AssertionError("nothing to stop"))
-    monkeypatch.setattr(mod, "_stop_runtime_session", stop_session)
-    monkeypatch.setattr(mod, "_delete_boot_secret", lambda *a: None)
+async def test_rollback_restores_the_surviving_ecs_gate_token_generation(monkeypatch):
+    """Minor (predeploy review, M6-R39 housekeeping): prepare_hermes_workspace's migrate-time
+    mint_gate_token moved the ECS task's own live bearer into bedrock_gate_superseded_hashes
+    (appended last) when it minted the Hermes-only one. Rollback must point
+    bedrock_gate_token_hash back at it -- not leave it on the hash teardown just revoked, with
+    the real live bearer reachable only through the superseded-hash retention drain."""
+    row = {
+        "owner_id": OWNER,
+        "agentcore_runtime_arn": "arn:hermes-1",
+        "bedrock_gate_token_hash": "hash-hermes",
+        "bedrock_gate_superseded_hashes": ["hash-ancient", "hash-ecs-live"],
+    }
+    monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(mod, "teardown_hermes_runtime", AsyncMock())
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-9"))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(start_user_service=AsyncMock()))
+    swap = AsyncMock(return_value=("written", None))
+    monkeypatch.setattr(mod.container_repo, "swap_gate_token_hash", swap)
+
+    assert await mod.rollback(OWNER) == mod.EXIT_OK
+
+    swap.assert_awaited_once_with(
+        OWNER, new_hash="hash-ecs-live", superseded=["hash-ancient"], expected_prior_hash="hash-hermes"
+    )
+
+
+async def test_rollback_gate_token_restore_is_a_noop_with_nothing_superseded(monkeypatch):
+    """No prior mint ever ran for this workspace (e.g. rolled back right after prepare, before
+    a runtime was ever created) -- nothing to restore, and rollback must not call the swap at
+    all (there is no ECS generation to point at)."""
+    row = {"owner_id": OWNER, "bedrock_gate_token_hash": "hash-hermes"}
+    monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(mod, "teardown_hermes_runtime", AsyncMock())
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-9"))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(start_user_service=AsyncMock()))
+    swap = AsyncMock(side_effect=AssertionError("nothing to restore"))
+    monkeypatch.setattr(mod.container_repo, "swap_gate_token_hash", swap)
+
+    assert await mod.rollback(OWNER) == mod.EXIT_OK
+    swap.assert_not_called()
+
+
+async def test_rollback_gate_token_restore_is_best_effort_on_a_conflict(monkeypatch):
+    """A concurrent gate-token mint racing a manual --rollback is a real but rare edge case --
+    it must be logged, not fail the rollback (the row still flips back onto ECS regardless)."""
+    row = {
+        "owner_id": OWNER,
+        "bedrock_gate_token_hash": "hash-hermes",
+        "bedrock_gate_superseded_hashes": ["hash-ecs-live"],
+    }
+    monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(mod, "teardown_hermes_runtime", AsyncMock())
     monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-9"))
     monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())
     ecs = SimpleNamespace(start_user_service=AsyncMock())
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
+    monkeypatch.setattr(
+        mod.container_repo,
+        "swap_gate_token_hash",
+        AsyncMock(return_value=("conflict", {"bedrock_gate_token_hash": "x"})),
+    )
 
-    assert await mod.rollback(OWNER) == mod.EXIT_OK
-    stop_session.assert_not_called()
+    assert await mod.rollback(OWNER) == mod.EXIT_OK  # must not raise
     ecs.start_user_service.assert_awaited_once()
 
 

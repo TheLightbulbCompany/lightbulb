@@ -592,7 +592,7 @@ async def test_apply_claimed_update_config_patch_only_is_not_refused_for_agentco
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service.runtime_transport, "is_agentcore_owner", new=AsyncMock(return_value=True)),
         patch.object(update_service, "patch_openclaw_config", ecs_patcher),
-        patch.object(update_service, "_config_patch_roster", roster_patcher),
+        patch.object(update_service, "config_patch_roster", roster_patcher),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
@@ -619,7 +619,7 @@ async def test_apply_claimed_update_config_patch_only_ecs_owner_unchanged():
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service.runtime_transport, "is_agentcore_owner", new=AsyncMock(return_value=False)),
         patch.object(update_service, "patch_openclaw_config", ecs_patcher),
-        patch.object(update_service, "_config_patch_roster", roster_patcher),
+        patch.object(update_service, "config_patch_roster", roster_patcher),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 

@@ -175,7 +175,7 @@ async def _config_get_roster_map(owner_id: str) -> dict[str, Any]:
     return {"config": config_map, "hash": hashlib.sha256("".join(hashes).encode()).hexdigest()}
 
 
-async def _config_patch_roster(owner_id: str, patch: dict[str, Any], base_hash: str | None) -> dict[str, Any]:
+async def config_patch_roster(owner_id: str, patch: dict[str, Any], base_hash: str | None) -> dict[str, Any]:
     """``config.patch`` with no ``agentId`` (M4-R48, fix round 2 continuation) — BOTH real
     callers (``useConfigPatch.ts``, ``PluginsTab.tsx``) never send one, so there is no single
     profile to CAS against: the patch fans out to EVERY roster profile, gated on the SAME map
@@ -486,7 +486,7 @@ async def execute_sync(
                 raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
             # M4-R48: config.patch with no agentId is BOTH real callers' actual shape
             # (useConfigPatch.ts, PluginsTab.tsx) — roster-wide fan-out, not a 400.
-            result = await _config_patch_roster(owner_id, _config_patch_dict(params), params.get("baseHash"))
+            result = await config_patch_roster(owner_id, _config_patch_dict(params), params.get("baseHash"))
             await _invalidate(owner_id, method)
             return result
         if method == "config.set":

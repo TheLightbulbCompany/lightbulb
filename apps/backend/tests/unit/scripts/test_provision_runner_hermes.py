@@ -93,6 +93,28 @@ async def test_with_the_flag_off_the_ecs_leg_is_unchanged(monkeypatch, runner_en
     await provision_runner.run("org_a", "claim-1")  # the ECS manager double is what runs
 
 
+@pytest.mark.asyncio
+async def test_an_existing_agentcore_row_takes_the_hermes_leg_even_with_the_flag_off(monkeypatch, runner_env):
+    """Minor (predeploy review, M6-R39): the flag is ONE per-environment switch -- a dispatch
+    that reaches an already-migrated owner while HERMES_RUNTIME happens to read False must not
+    start an ECS task beside their live microVM and rotate the bearer it is still presenting."""
+    monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", False)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
+    prepare = AsyncMock()
+    provision = AsyncMock(return_value="arn:r1")
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
+    monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
+
+    import core.repositories.container_repo as _repo_module
+
+    monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value={"runtime_host": "agentcore"}))
+
+    assert await provision_runner.run("org_a", "claim-1") == provision_runner.EXIT_OK
+    prepare.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
+    provision.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
+
+
 # --- M4-R8 / M1 Ruling 10: the runtime_host hint threaded into step 0 -------
 
 

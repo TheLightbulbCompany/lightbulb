@@ -178,7 +178,7 @@ class TestFleetPatchConfirmationHeader:
         with (
             patch("routers.updates.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=True)),
             patch(
-                "routers.updates._config_patch_roster", new=AsyncMock(return_value={"config": {}, "hash": "h1"})
+                "routers.updates.config_patch_roster", new=AsyncMock(return_value={"config": {}, "hash": "h1"})
             ) as roster_patcher,
         ):
             res = await async_client.patch(FLEET_PATH, json={"patch": {"agents": {"x": 1}}}, headers=CONFIRM)

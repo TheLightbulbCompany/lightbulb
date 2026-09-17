@@ -60,14 +60,16 @@ def _uploaded_keys(s3, prefix: str) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_deploy_tarball_to_profile_uploads_content_files_to_s3(s3_hermes_bucket):
-    tar_bytes = _make_tar_gz({"SOUL.md": b"# Soul", "skills/foo.md": b"# Foo"})
+    # AGENTS.md/skills/** are genuine content -- not in BACKEND_OWNED_FILES (F3), so they land
+    # verbatim. SOUL.md is exercised separately below: it IS backend-owned and must be skipped.
+    tar_bytes = _make_tar_gz({"AGENTS.md": b"# Agents", "skills/foo.md": b"# Foo"})
 
     await catalog_service.deploy_tarball_to_profile(
         owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}
     )
 
     keys = _uploaded_keys(s3_hermes_bucket, "owner_1/hermes/agent_new/")
-    assert "owner_1/hermes/agent_new/SOUL.md" in keys
+    assert "owner_1/hermes/agent_new/AGENTS.md" in keys
     assert "owner_1/hermes/agent_new/skills/foo.md" in keys
 
 
@@ -101,7 +103,7 @@ async def test_deploy_tarball_to_profile_writes_revision_marker_last():
     def fake_upload(path, bucket, key):
         uploaded.append(key)
 
-    tar_bytes = _make_tar_gz({"SOUL.md": b"# Soul", "config.yaml": b"model: x"})
+    tar_bytes = _make_tar_gz({"AGENTS.md": b"# Agents", "config.yaml": b"model: x"})
     with (
         patch(
             "core.services.catalog_service._s3_client",
@@ -112,24 +114,38 @@ async def test_deploy_tarball_to_profile_writes_revision_marker_last():
         await catalog_service.deploy_tarball_to_profile(
             owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}
         )
-    assert uploaded[-1] == "owner_1/hermes/agent_new/.revision"
+    # config.yaml is backend-owned (skipped); AGENTS.md is genuine content, so .revision lands
+    # after it -- not merely after nothing, as it would if the tarball held only skipped names.
+    assert uploaded == ["owner_1/hermes/agent_new/AGENTS.md", "owner_1/hermes/agent_new/.revision"]
 
 
 @pytest.mark.asyncio
-async def test_deploy_tarball_to_profile_skips_env_and_config_yaml(s3_hermes_bucket):
-    """The profile writer (Task 17) owns .env/config.yaml for a freshly
-    deployed agent -- a tarball that happens to carry them (e.g. an older
-    export) must not clobber them."""
-    tar_bytes = _make_tar_gz({"SOUL.md": b"# Soul", ".env": b"SECRET=1", "config.yaml": b"model: seller-pinned"})
+async def test_deploy_tarball_to_profile_skips_every_backend_owned_file(s3_hermes_bucket):
+    """F3 (predeploy review, M6-R36): the profile writer (Task 17) owns config.yaml/.env/
+    SOUL.md/.revision/lightbulb-facts.json for a freshly deployed agent -- a tarball that
+    happens to carry any of them (e.g. an older export, or a seller's own persona/facts file)
+    must never clobber the writer's own copy. Before this fix the skip list named only two of
+    the five, so a tarball carrying SOUL.md or lightbulb-facts.json silently overwrote them."""
+    tar_bytes = _make_tar_gz(
+        {
+            "SOUL.md": b"# Soul",
+            ".env": b"SECRET=1",
+            "config.yaml": b"model: seller-pinned",
+            "lightbulb-facts.json": b'{"fake": true}',
+            "skills/foo.md": b"# Foo",
+        }
+    )
 
     await catalog_service.deploy_tarball_to_profile(
         owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}
     )
 
     keys = _uploaded_keys(s3_hermes_bucket, "owner_1/hermes/agent_new/")
-    assert "owner_1/hermes/agent_new/SOUL.md" in keys
+    assert "owner_1/hermes/agent_new/skills/foo.md" in keys
+    assert not any(k.endswith("/SOUL.md") for k in keys)
     assert not any(k.endswith("/.env") for k in keys)
     assert not any(k.endswith("/config.yaml") for k in keys)
+    assert not any(k.endswith("/lightbulb-facts.json") for k in keys)
     assert "owner_1/hermes/agent_new/.revision" in keys
 
 
@@ -167,13 +183,13 @@ async def test_build_and_upload_agent_profile_resolves_the_row_and_delegates():
             owner_id="owner_1", agent_id="agent_new", container=container
         )
 
-    write_profile.assert_awaited_once_with("owner_1", roster[0], container_row=container)
+    write_profile.assert_awaited_once_with("owner_1", roster[0], container_row=container, soul_md_override=None)
 
 
 @pytest.mark.asyncio
 async def test_build_and_upload_agent_profile_raises_when_roster_read_fails():
     """M6-R10: catalog hard-fails on a roster read failure exactly like
-    hermes_provisioning._write_profiles does -- the old manifest-derived
+    hermes_provisioning.write_profiles does -- the old manifest-derived
     fallback agent row is gone."""
     write_profile = AsyncMock()
     with (
@@ -186,6 +202,153 @@ async def test_build_and_upload_agent_profile_raises_when_roster_read_fails():
             )
 
     write_profile.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M6-R41 -- the seller's own SOUL.md becomes the AgentCore profile identity.
+# The ECS install path already ships a marketplace agent's SOUL.md verbatim
+# (via the buyer's EFS extract); F3 widened _DEPLOY_PROFILE_SKIP_NAMES so
+# deploy_tarball_to_profile's own content pass now skips SOUL.md, which would
+# otherwise silently leave the roster-derived default in place instead.
+# ---------------------------------------------------------------------------
+
+
+def test_read_soul_md_from_tar_extracts_the_sellers_text():
+    tar_bytes = _make_tar_gz({"SOUL.md": b"# Ada\n\nI am the seller's own persona.\n", "skills/foo.md": b"# Foo"})
+    assert catalog_service._read_soul_md_from_tar(tar_bytes) == "# Ada\n\nI am the seller's own persona.\n"
+
+
+def test_read_soul_md_from_tar_matches_by_basename_at_any_path():
+    tar_bytes = _make_tar_gz({"workspace/SOUL.md": b"# Nested\n"})
+    assert catalog_service._read_soul_md_from_tar(tar_bytes) == "# Nested\n"
+
+
+def test_read_soul_md_from_tar_returns_none_without_one():
+    tar_bytes = _make_tar_gz({"skills/foo.md": b"# Foo"})
+    assert catalog_service._read_soul_md_from_tar(tar_bytes) is None
+
+
+def test_read_soul_md_from_tar_returns_none_for_empty_bytes():
+    assert catalog_service._read_soul_md_from_tar(b"") is None
+
+
+def _wire_agentcore_profile_writer(monkeypatch, roster):
+    """The real write_agent_profile/upload_profile path, minus the network-touching edges
+    (Paperclip roster read, API key mint, admin client, facts staging) -- mirrors
+    test_hermes_provisioning.py's own write_profile_for_agent integration tests."""
+    from core.services.hermes_provisioning import ProfileInputs
+
+    inputs = ProfileInputs(
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        byo_api_key=None,
+        aip_arns={"sonnet": "arn:aip:sonnet"},
+        integrations={},
+        env_vars={},
+    )
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr("core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr("core.services.hermes_provisioning._stage_owner_facts", AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_agentcore_install_uses_the_sellers_soul_md_config_and_env_untouched(s3_hermes_bucket, monkeypatch):
+    roster = [{"id": "minted_agent_1", "name": "Ada", "role": "general"}]
+    _wire_agentcore_profile_writer(monkeypatch, roster)
+    tar_bytes = _make_tar_gz(
+        {
+            "SOUL.md": b"# Ada\n\nI am the seller's own persona, not the roster default.\n",
+            ".env": b"SECRET=should-never-land",
+            "config.yaml": b"model: seller-pinned",
+            "skills/foo.md": b"# Foo",
+        }
+    )
+    container = {"runtime_host": "agentcore"}
+
+    soul_md = catalog_service._read_soul_md_from_tar(tar_bytes)
+    await catalog_service._build_and_upload_agent_profile(
+        owner_id="owner_1", agent_id="minted_agent_1", container=container, soul_md_override=soul_md
+    )
+    await catalog_service.deploy_tarball_to_profile(
+        owner_id="owner_1", agent_id="minted_agent_1", tar_bytes=tar_bytes, container=container
+    )
+
+    prefix = "owner_1/hermes/minted_agent_1/"
+    uploaded_soul = s3_hermes_bucket.get_object(Bucket="test-replicas", Key=f"{prefix}SOUL.md")["Body"].read()
+    assert uploaded_soul == b"# Ada\n\nI am the seller's own persona, not the roster default.\n"
+    uploaded_env = s3_hermes_bucket.get_object(Bucket="test-replicas", Key=f"{prefix}.env")["Body"].read()
+    assert b"should-never-land" not in uploaded_env  # the writer's own .env survives, not the tarball's
+    uploaded_config = s3_hermes_bucket.get_object(Bucket="test-replicas", Key=f"{prefix}config.yaml")["Body"].read()
+    assert b"seller-pinned" not in uploaded_config  # the writer's own config.yaml survives
+    keys = _uploaded_keys(s3_hermes_bucket, prefix)
+    assert f"{prefix}skills/foo.md" in keys  # genuine content still lands
+
+
+@pytest.mark.asyncio
+async def test_agentcore_install_without_a_seller_soul_md_keeps_the_roster_derived_identity(
+    s3_hermes_bucket, monkeypatch
+):
+    roster = [{"id": "minted_agent_1", "name": "Ada", "role": "general"}]
+    _wire_agentcore_profile_writer(monkeypatch, roster)
+    tar_bytes = _make_tar_gz({"skills/foo.md": b"# Foo"})  # no SOUL.md in the artifact
+    container = {"runtime_host": "agentcore"}
+
+    soul_md = catalog_service._read_soul_md_from_tar(tar_bytes)
+    assert soul_md is None
+    await catalog_service._build_and_upload_agent_profile(
+        owner_id="owner_1", agent_id="minted_agent_1", container=container, soul_md_override=soul_md
+    )
+    await catalog_service.deploy_tarball_to_profile(
+        owner_id="owner_1", agent_id="minted_agent_1", tar_bytes=tar_bytes, container=container
+    )
+
+    prefix = "owner_1/hermes/minted_agent_1/"
+    uploaded_soul = s3_hermes_bucket.get_object(Bucket="test-replicas", Key=f"{prefix}SOUL.md")["Body"].read().decode()
+    assert "Ada" in uploaded_soul  # build_soul_md's own roster-derived identity, unchanged
+    assert "seller" not in uploaded_soul.lower()
+
+
+@pytest.mark.asyncio
+async def test_install_agentcore_deploy_reads_the_tarball_soul_md_before_writing_the_profile():
+    """_install_agentcore_deploy itself: the seller's SOUL.md is read out of the tarball and
+    threaded into _build_and_upload_agent_profile's soul_md_override BEFORE the content pass
+    (deploy_tarball_to_profile) runs -- ordering unchanged from M6-R9."""
+    tar_bytes = _make_tar_gz({"SOUL.md": b"# From the tarball\n"})
+    call_order: list[str] = []
+    captured = {}
+
+    async def _create(**_kwargs):
+        call_order.append("create")
+        return {"id": "minted_agent_1"}
+
+    async def _profile(**kwargs):
+        call_order.append("profile")
+        captured["soul_md_override"] = kwargs.get("soul_md_override")
+
+    async def _content(**_kwargs):
+        call_order.append("content")
+
+    with (
+        patch("core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace", side_effect=_create),
+        patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new=AsyncMock()),
+        patch("core.services.catalog_service._build_and_upload_agent_profile", side_effect=_profile),
+        patch("core.services.catalog_service.deploy_tarball_to_profile", side_effect=_content),
+    ):
+        await catalog_service._install_agentcore_deploy(
+            owner_id="user_buyer",
+            slug="demo",
+            manifest={"name": "Demo", "version": 1},
+            tar_bytes=tar_bytes,
+            container={"runtime_host": "agentcore"},
+            new_agent_id=None,
+            listing_id=None,
+            seller_id=None,
+        )
+
+    assert call_order == ["create", "profile", "content"]
+    assert captured["soul_md_override"] == "# From the tarball\n"
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +418,7 @@ async def test_deploy_from_artifact_mints_profiles_then_content_for_a_fresh_agen
             slug="demo",
             manifest={"name": "Demo", "version": 1},
             slice_={"agent": {"name": "Demo"}},
-            tar_bytes=b"<gz>",
+            tar_bytes=_make_tar_gz({}),
             new_agent_id=None,
             container={"runtime_host": "agentcore"},
         )
@@ -284,7 +447,7 @@ async def test_deploy_from_artifact_does_not_re_mint_a_pre_supplied_agentcore_id
             slug="demo",
             manifest={"name": "Demo", "version": 1},
             slice_={"agent": {"name": "Demo"}},
-            tar_bytes=b"<gz>",
+            tar_bytes=_make_tar_gz({}),
             new_agent_id="agent_abc",
             container={"runtime_host": "agentcore"},
         )
@@ -308,7 +471,7 @@ async def test_deploy_from_artifact_rolls_back_self_minted_agent_on_profile_fail
                 slug="demo",
                 manifest={"name": "Demo", "version": 1},
                 slice_={"agent": {"name": "Demo"}},
-                tar_bytes=b"<gz>",
+                tar_bytes=_make_tar_gz({}),
                 new_agent_id=None,
                 container={"runtime_host": "agentcore"},
             )
@@ -333,7 +496,7 @@ async def test_deploy_from_artifact_never_rolls_back_a_pre_supplied_agentcore_id
                 slug="demo",
                 manifest={"name": "Demo", "version": 1},
                 slice_={"agent": {"name": "Demo"}},
-                tar_bytes=b"<gz>",
+                tar_bytes=_make_tar_gz({}),
                 new_agent_id="agent_abc",
                 container={"runtime_host": "agentcore"},
             )

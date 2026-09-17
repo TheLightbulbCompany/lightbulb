@@ -315,7 +315,7 @@ async def _run_company_deploy(
         workspace = get_workspace()
         # AgentCore (M6-R33): owner-level profile inputs (billing/Secrets/
         # integrations/env) are resolved ONCE for the whole roster, mirroring
-        # hermes_provisioning._write_profiles's own fan-out — never once per
+        # hermes_provisioning.write_profiles's own fan-out — never once per
         # agent, and never on the ECS branch.
         profile_inputs = await resolve_profile_inputs(owner_id, container_row=container) if is_agentcore else None
         skipped_aux: dict[str, int] = defaultdict(int)

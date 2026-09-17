@@ -573,11 +573,11 @@ async def upload_profile_files(owner_id: str, agent_id: str, files: dict[str, by
     every ``put_object`` off the event loop via ``run_in_thread``, ``.revision`` written only
     after every named file has landed so the bridge never re-pulls a half-written profile.
     """
-    # The writer-owned files are never content: a colliding name here would silently overwrite
+    # The backend-owned files are never content: a colliding name here would silently overwrite
     # the provider config / secrets `write_profile_for_agent` just uploaded.
-    reserved = files.keys() & _WRITER_OWNED_FILES
+    reserved = files.keys() & BACKEND_OWNED_FILES
     if reserved:
-        raise ValueError(f"upload_profile_files: writer-owned names not allowed: {sorted(reserved)}")
+        raise ValueError(f"upload_profile_files: backend-owned names not allowed: {sorted(reserved)}")
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
@@ -588,7 +588,19 @@ async def upload_profile_files(owner_id: str, agent_id: str, files: dict[str, by
     await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
 
 
-_WRITER_OWNED_FILES = frozenset({"config.yaml", ".env", "SOUL.md", ".revision"})
+#: Must match ``owner_facts.FACTS_FILENAME`` -- see the note on the (separate, deliberately
+#: duplicated to avoid an import cycle) copy near ``write_facts_to_profiles`` below.
+FACTS_FILENAME = "lightbulb-facts.json"
+
+#: F3 (predeploy review, M6-R36): the ONE backend-owned file set, asserted identical across every
+#: seam that must never let outside content collide with it -- this module's own guard above,
+#: ``catalog_service._DEPLOY_PROFILE_SKIP_NAMES`` (a marketplace tarball must never overwrite a
+#: profile's provider config or the owner's facts file), and (a separate literal, contract-tested
+#: in ``tests/unit/contracts/test_hermes_backend_owned_files_contract.py``) the bridge's own
+#: ``BACKEND_OWNED_FILES`` re-pull list. Before this fix the three disagreed: the writer's raise
+#: set omitted the facts file, and the marketplace deploy skip list omitted SOUL.md/.revision/the
+#: facts file entirely, so a tarball carrying either could silently overwrite it.
+BACKEND_OWNED_FILES = frozenset({"config.yaml", ".env", "SOUL.md", ".revision", FACTS_FILENAME})
 
 
 def delete_profile(owner_id: str, agent_id: str) -> None:
@@ -942,7 +954,7 @@ def patch_profile_env_and_config(owner_id: str, agent_id: str, env_updates: dict
     closes that failure window (the likeliest raise, a not-yet-provisioned profile, now happens
     before any write); an S3 outage strictly between the two PUTs below is the same residual
     "not transactional" risk every other multi-object writer in this module already accepts (see
-    ``_config_patch_roster``'s own ponytail note). Raises (``FileNotFoundError``/``ValueError``/a
+    ``config_patch_roster``'s own ponytail note). Raises (``FileNotFoundError``/``ValueError``/a
     transient ``ClientError``) rather than swallowing -- the caller decides whether that's
     fatal (a connect: yes) or best-effort (a disconnect: it wraps this itself).
 
@@ -962,10 +974,10 @@ def patch_profile_env_and_config(owner_id: str, agent_id: str, env_updates: dict
 
 
 # ---- Row #15 / Ruling M6-R30: owner facts staged into every profile ----------------------------
-#: Must match owner_facts.FACTS_FILENAME. Kept as a literal here (not an import) to avoid a
-#: hermes_profiles <-> owner_facts import cycle -- owner_facts imports THIS module to call
-#: write_facts_to_profiles below, so the reverse import would be circular.
-FACTS_FILENAME = "lightbulb-facts.json"
+# FACTS_FILENAME now lives with BACKEND_OWNED_FILES above (F3) -- it must match
+# owner_facts.FACTS_FILENAME, kept as a literal there (not an import) to avoid a
+# hermes_profiles <-> owner_facts import cycle: owner_facts imports THIS module to call
+# write_facts_to_profiles below, so the reverse import would be circular.
 
 
 def write_facts_to_profiles(owner_id: str, agent_ids: list[str], facts_json: str) -> None:

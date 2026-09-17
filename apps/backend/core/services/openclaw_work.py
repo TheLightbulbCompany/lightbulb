@@ -39,8 +39,10 @@ _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 20
 _VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
-#: Ingress budget on AgentCore: must outlast a cold microVM start (see _post).
-_AGENTCORE_INGRESS_TIMEOUT_S = 90.0
+#: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
+#: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
+#: module attribute here so agent_mail_delivery's existing import keeps working unchanged.
+_AGENTCORE_INGRESS_TIMEOUT_S = runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()

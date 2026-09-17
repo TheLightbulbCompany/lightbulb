@@ -47,6 +47,7 @@ from core.services import agent_export, runtime_transport
 from core.services.agent_roster import roster_entries
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
+from core.services.hermes_profiles import BACKEND_OWNED_FILES
 from core.services.paperclip_credential_rule import (
     PAPERCLIP_CREDENTIAL_PROHIBITION,
     PAPERCLIP_CREDENTIAL_RULE,
@@ -384,11 +385,17 @@ def _s3_client():
 # Names deploy_tarball_to_profile must never write into a buyer's Hermes
 # profile. Task 17's profile/config writer owns creating these for a FRESH
 # agent; overwriting them with whatever rode along in the seller's tarball
-# would clobber the buyer's own provider wiring. ``.env`` should never be in a
-# marketplace tarball in the first place (agent_export's dotfile filter
-# already drops it) — named here defensively so a future export bug can't
-# turn into an overwrite here too.
-_DEPLOY_PROFILE_SKIP_NAMES = frozenset({".env", "config.yaml"})
+# would clobber the buyer's own provider wiring. ``.env``/``config.yaml``
+# should never be in a marketplace tarball in the first place (agent_export's
+# dotfile filter already drops them) -- named here defensively so a future
+# export bug can't turn into an overwrite here too.
+#
+# F3 (predeploy review, M6-R36): the ONE backend-owned file set
+# (hermes_profiles.BACKEND_OWNED_FILES) -- before this fix this list carried
+# only two of the five, so a tarball containing SOUL.md or lightbulb-facts.json
+# (agent_export's filter drops neither) silently overwrote the profile
+# writer's own copy in deploy_tarball_to_profile.
+_DEPLOY_PROFILE_SKIP_NAMES = BACKEND_OWNED_FILES
 
 
 async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: bytes, container: dict) -> None:
@@ -442,7 +449,7 @@ async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str) -> dict:
     """The Paperclip roster entry shape ``write_agent_profile`` wants
     (``{"id","name","role","title","capabilities","icon"}``).
 
-    Fix round 3 (M6-R10): hard-fails like ``hermes_provisioning._write_profiles``
+    Fix round 3 (M6-R10): hard-fails like ``hermes_provisioning.write_profiles``
     does on its own roster read (no try/except there either, and it never
     looks for one specific id — it just iterates whatever the roster returns)
     — the agent was just minted, so a roster read failure, or a roster that
@@ -458,7 +465,9 @@ async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str) -> dict:
     return entry
 
 
-async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, container: dict) -> None:
+async def _build_and_upload_agent_profile(
+    *, owner_id: str, agent_id: str, container: dict, soul_md_override: str | None = None
+) -> None:
     """The Hermes-profile half of an AgentCore install: config.yaml/.env/SOUL.md
     for the freshly-registered agent.
 
@@ -466,22 +475,52 @@ async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, conta
     inputs via ``resolve_profile_inputs``, this agent's Paperclip API key mint,
     ``write_agent_profile``, ``upload_profile``) moved to
     ``hermes_provisioning.write_profile_for_agent`` -- the SAME per-agent seam
-    ``hermes_provisioning._write_profiles`` (provision time, whole starter
+    ``hermes_provisioning.write_profiles`` (provision time, whole starter
     roster) and ``runtime_rpc``'s ``agents.create`` door now share, so there is
     exactly one place that sources those inputs (see that function's docstring
     for the three ways this file used to diverge before the consolidation).
     Only the per-agent roster-row resolution — this agent's own entry, by id —
-    stays here: the caller only has ``agent_id``, unlike ``_write_profiles``
+    stays here: the caller only has ``agent_id``, unlike ``write_profiles``
     (which already holds each row from its own roster iteration).
 
     Uploaded (and its own ``.revision`` written) BEFORE
     ``deploy_tarball_to_profile`` runs, so the newly-minted agent has a
     complete, bootable profile even before its marketplace content lands.
+
+    ``soul_md_override`` (M6-R41): the seller's own SOUL.md text, read out of
+    the marketplace artifact by ``_install_agentcore_deploy`` -- threaded
+    straight through to ``write_profile_for_agent``'s own parameter of the
+    same name. ``None`` (no SOUL.md in the tarball) keeps the roster-derived
+    default.
     """
     from core.services.hermes_provisioning import write_profile_for_agent
 
     agent_row = await _resolve_agent_row_for_profile(owner_id, agent_id)
-    await write_profile_for_agent(owner_id, agent_row, container_row=container)
+    await write_profile_for_agent(owner_id, agent_row, container_row=container, soul_md_override=soul_md_override)
+
+
+def _read_soul_md_from_tar(tar_bytes: bytes) -> str | None:
+    """M6-R41: the seller's own ``SOUL.md``, read out of the marketplace artifact BEFORE the
+    profile writer runs -- the OpenClaw workspace's ``SOUL.md`` IS the agent's identity (the ECS
+    install path already ships it verbatim, untouched, via the buyer's EFS extract), and F3's
+    widened ``_DEPLOY_PROFILE_SKIP_NAMES`` means ``deploy_tarball_to_profile``'s own later
+    content pass now skips it -- without this, an AgentCore install would silently fall back to
+    the roster-derived identity instead of the seller's own persona/instructions.
+
+    ``None`` when the tarball is empty or carries no ``SOUL.md`` -- callers pass that straight
+    through as ``write_profile_for_agent``'s own ``soul_md_override``, whose ``None`` default
+    keeps producing the roster-derived identity, unchanged.
+    """
+    if not tar_bytes:
+        return None
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tf:
+        for member in tf.getmembers():
+            if member.isfile() and Path(member.name).name == "SOUL.md":
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    return None
+                return extracted.read().decode("utf-8", errors="replace")
+    return None
 
 
 async def _install_agentcore_deploy(
@@ -517,6 +556,16 @@ async def _install_agentcore_deploy(
     bootable profile; reversing the order could momentarily advertise
     marketplace content with no profile underneath it.
 
+    M6-R41: the profile's SOUL.md is the SELLER's own, read out of the tarball
+    (``_read_soul_md_from_tar``) and threaded into the profile write as
+    ``soul_md_override`` -- ``deploy_tarball_to_profile``'s later content pass
+    skips SOUL.md (F3/M6-R36), so without this the profile write's own
+    roster-derived default would silently win instead of the seller's actual
+    persona/instructions (the ECS install path already ships this file
+    verbatim via the buyer's EFS extract; this is the AgentCore equivalent).
+    ``None`` when the tarball carries no SOUL.md -- unchanged, roster-derived
+    identity.
+
     Rollback: only the Paperclip agent THIS call minted is torn down on
     failure — a pre-minted agent is the caller's own rollback envelope
     (mirrors every ECS caller's existing ``unwind``/``_rollback_agent``).
@@ -543,7 +592,10 @@ async def _install_agentcore_deploy(
         new_agent_id = paperclip_agent["id"]
 
     try:
-        await _build_and_upload_agent_profile(owner_id=owner_id, agent_id=new_agent_id, container=container)
+        soul_md = _read_soul_md_from_tar(tar_bytes)
+        await _build_and_upload_agent_profile(
+            owner_id=owner_id, agent_id=new_agent_id, container=container, soul_md_override=soul_md
+        )
         await deploy_tarball_to_profile(
             owner_id=owner_id, agent_id=new_agent_id, tar_bytes=tar_bytes, container=container
         )

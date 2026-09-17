@@ -47,7 +47,7 @@ from core.services.account_wipe import (
 from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
-from core.services.runtime_rpc import _config_patch_roster
+from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
 from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision
@@ -738,7 +738,7 @@ async def admin_config_patch(
     owner_id, _ = await resolve_admin_owner_id(user_id)
     if await runtime_transport.is_agentcore_owner(owner_id):
         # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
-        await _config_patch_roster(owner_id, body.patch, None)
+        await config_patch_roster(owner_id, body.patch, None)
         return {"status": "patched"}
     await patch_openclaw_config(owner_id=owner_id, patch=body.patch)
     return {"status": "patched"}

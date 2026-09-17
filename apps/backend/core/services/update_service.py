@@ -32,7 +32,7 @@ from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services import config_schema, runtime_transport
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
-from core.services.runtime_rpc import _config_patch_roster
+from core.services.runtime_rpc import config_patch_roster
 
 logger = logging.getLogger(__name__)
 
@@ -549,7 +549,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
             # (no openclaw.json to find) -- same S3-profile fan-out row #12/#13's config-patch
             # doors already use.
             if is_agentcore:
-                await _config_patch_roster(owner_id, config_patch, None)
+                await config_patch_roster(owner_id, config_patch, None)
             else:
                 await patch_openclaw_config(owner_id, config_patch)
             logger.info("Applied config patch for update %s (owner=%s)", update_id, owner_id)

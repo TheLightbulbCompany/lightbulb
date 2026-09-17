@@ -20,14 +20,16 @@ import logging
 import os
 import re
 import tarfile
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Awaitable, Callable
 
+from core.config import settings
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.observability.metrics import put_metric
-from core.services import marketplace_safety
+from core.services import marketplace_safety, runtime_transport
 from core.services.catalog_package import CatalogPackage
 from core.services.catalog_slice import (
     _agents_list,
@@ -478,6 +480,88 @@ def _resolve_agent_dir(seller_id: str, agent_id: str, *, config: dict | None = N
     return candidate
 
 
+# ---------------------------------------------------------------------------
+# AgentCore (Hermes) sellers: the agent's content lives in an S3 profile
+# prefix, not an EFS workspace-{id}/ dir.
+# ---------------------------------------------------------------------------
+
+# Top-level Hermes-PROFILE dirs that are runtime state / secrets, never
+# seller-authored workspace content -- see bridge/sync.py's EXCLUDE_GLOBS for
+# the bridge's own (narrower) upload exclusions. Deliberately NOT added to
+# ``_SKIP_DIR_NAMES`` above: an EFS seller workspace can legitimately contain
+# its OWN "sessions/" subdir (see
+# test_export_ships_workspace_subdirs_named_sessions_or_agent), so this list
+# only applies to the S3 PROFILE layout, filtered by key prefix before a
+# single byte reaches local disk -- structurally, not via the content-pattern
+# safety scan.
+_S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens"})
+
+
+def _is_excluded_profile_key(rel: str) -> bool:
+    """True for a Hermes-profile-relative key an export must never carry:
+    session transcripts, logs, MCP OAuth tokens, the bridge's own
+    ``.revision`` marker, ``request_dump_*`` crash artifacts (Hermes writes
+    ``sessions/request_dump_*.json`` on every API error), and any dotfile --
+    ``.env`` (the profile's per-profile secret values) chief among them.
+    """
+    parts = PurePosixPath(rel).parts
+    if not parts:
+        return True
+    if parts[0] in _S3_PROFILE_SKIP_TOP_DIRS:
+        return True
+    if any(p.startswith(".") for p in parts):
+        return True
+    if parts[-1].startswith("request_dump_"):
+        return True
+    return False
+
+
+def _download_s3_profile(prefix: str, dest: Path) -> None:
+    """Download an AgentCore seller's Hermes profile (S3 key prefix
+    ``"<owner>/hermes/<agent_id>"``, see ``bridge/sync.py``'s
+    ``default_s3_prefix`` + ``_profile_dir``) into ``dest``, skipping
+    runtime/secret keys per ``_is_excluded_profile_key`` -- they never reach
+    local disk, so the existing EFS-oriented ``_build_tarball`` filter never
+    has to reason about them. Once this returns, every caller treats
+    ``dest`` exactly like a resolved EFS ``agent_dir``.
+    """
+    import boto3
+
+    s3 = boto3.client("s3")
+    # Fix round 1, item 4: OWNER_STATE_BUCKET is the profile writer's single
+    # source of truth for this bucket (hermes_profiles.upload_profile) -- it
+    # falls back to LITESTREAM_BUCKET when unset, so reading it here can never
+    # disagree with what the writer used.
+    bucket = settings.OWNER_STATE_BUCKET
+    key_prefix = f"{prefix}/"
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):
+        for obj in page.get("Contents", []):
+            rel = obj["Key"][len(key_prefix) :]
+            if not rel or _is_excluded_profile_key(rel):
+                continue
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(bucket, obj["Key"], str(target))
+
+
+def _resolve_agent_location(
+    *, seller_id: str, agent_id: str, container: dict | None = None, config: dict | None = None
+) -> tuple[str, Path] | tuple[str, str]:
+    """``("efs", Path)`` or ``("s3", key_prefix)`` depending on the seller's
+    ``runtime_host``.
+
+    During the migration window BOTH kinds of seller exist -- this is the one
+    function export/preview call sites branch on instead of assuming EFS.
+    ``container`` absent/``None`` means ECS (``runtime_transport.host_for``'s
+    own default for a missing/unknown ``runtime_host``), so every call site
+    that doesn't yet have a container row in hand keeps today's EFS behavior
+    byte-for-byte.
+    """
+    if runtime_transport.host_for(container or {}) == "agentcore":
+        return ("s3", f"{seller_id}/hermes/{agent_id}")
+    return ("efs", _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config))
+
+
 def resolve_workspace_agent_id(seller_id: str, agent_id: str) -> str:
     """Resolve a (possibly legacy-slug) ``agent_id`` to its live workspace dir
     name (the UUID), using the same regex + slug fallback as the export path.
@@ -762,6 +846,7 @@ def export_agent_from_efs(
     enable_acp: bool = False,
     requires_desktop: bool = False,
     paths: list[str] | None = None,
+    container: dict | None = None,
 ) -> CatalogPackage:
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
@@ -800,6 +885,9 @@ def export_agent_from_efs(
             desktop app). Nothing on the deploy side can "install" it.
         paths: Workspace-relative files/dirs to ship instead of the whole
             workspace (see ``_build_tarball``).
+        container: The seller's container row, used only to decide EFS vs S3
+            via ``runtime_transport.host_for`` (see ``_resolve_agent_location``).
+            ``None`` (every existing caller, today) means EFS -- unchanged.
 
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
@@ -815,97 +903,117 @@ def export_agent_from_efs(
     except WorkspaceError:
         # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
         config = None
-    agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config)
-    # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
-    # the live workspace UUID. For legacy slug-keyed listings this differs
-    # from the requested agent_id — key the slice, MCP-arg rewrite, cron
-    # filter, and manifest off the resolved UUID so the snapshot self-heals
-    # (replace_artifact then persists the UUID onto the row).
-    resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
-    tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths)
-
-    if not config:
-        raise AgentNotInConfigError(
-            f"seller {seller_id!r} has no openclaw.json — publish the agent from a container that has been provisioned"
-        )
-    workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
+    kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container, config=config)
+    tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
-        slice_ = extract_agent_slice(
-            config,
-            resolved_agent_id,
-            selected_mcps=selected_mcps,
-            selected_skills=selected_skills,
-            workspace_skill_names=workspace_skill_names,
+        if kind == "s3":
+            # AgentCore seller: no EFS workspace-{id}/ dir exists. Download the
+            # Hermes S3 profile into a scratch dir and treat it exactly like a
+            # resolved EFS agent_dir for the rest of this function -- tarball
+            # build, safety scan, requirements scan are all unchanged below.
+            # agent_id IS the canonical id here; there is no legacy-slug layer
+            # for S3 profiles. Fix round 1, item 3: the download itself is
+            # inside this try/finally so a raising downloader still cleans up
+            # the scratch dir instead of leaking it.
+            tmp_dir = tempfile.TemporaryDirectory()
+            agent_dir = Path(tmp_dir.name)
+            _download_s3_profile(location, agent_dir)
+            resolved_agent_id = agent_id
+        else:
+            agent_dir = location
+            # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
+            # the live workspace UUID. For legacy slug-keyed listings this differs
+            # from the requested agent_id — key the slice, MCP-arg rewrite, cron
+            # filter, and manifest off the resolved UUID so the snapshot self-heals
+            # (replace_artifact then persists the UUID onto the row).
+            resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
+        tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths)
+
+        if not config:
+            raise AgentNotInConfigError(
+                f"seller {seller_id!r} has no openclaw.json — publish the agent from a container that has been provisioned"
+            )
+        workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
+        try:
+            slice_ = extract_agent_slice(
+                config,
+                resolved_agent_id,
+                selected_mcps=selected_mcps,
+                selected_skills=selected_skills,
+                workspace_skill_names=workspace_skill_names,
+            )
+        except KeyError as exc:
+            raise AgentNotInConfigError(
+                f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list"
+            ) from exc
+        _rewrite_mcp_args_paths(slice_, seller_agent_id=resolved_agent_id)
+        slice_["cron_jobs"] = filter_cron_jobs_for_agent(workspace.read_cron_jobs(seller_id), resolved_agent_id)
+
+        # Post-scrub credential-leak gate. The slice is a separate S3 artifact
+        # the tarball safety scan never walks, so re-inspect it here: if any
+        # secret-shaped field survived the scrub (the scrub is shallow one-level
+        # — a nested secret slips past) or an OAuth client-secret literal rode
+        # through, BLOCK the publish before the artifact exists. The error names
+        # the leaking field paths but never the secret value.
+        slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
+        if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
+            paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
+            raise CredentialLeakError(
+                f"cannot publish: a credential survived scrubbing in the published slice ({paths}); "
+                "remove the secret from the agent's MCP/skill config and retry"
+            )
+
+        safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
+
+        summary = _summarize_openclaw_config(agent_dir)
+        manifest = {
+            "name": summary["name"],
+            "description": summary["description"],
+            "format": "openclaw",
+            "exported_at": int(time.time()),
+            "agent_id": resolved_agent_id,
+            "file_count": len(contents),
+            "safety_flags": safety_flags,
+            # Seller's per-agent ACP declaration (see ArtifactFromAgentRequest).
+            # The deploy side reads this to decide whether to turn on the buyer
+            # container's ACP coding-harness runtime. Always written as a bool so
+            # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
+            # check; pre-flag listings simply lack the key (→ falsy).
+            "requires_acp": bool(enable_acp),
+            # Publisher-declared "needs the desktop app" flag — disclosure only (we
+            # can't scan or provision it). pre-flag listings lack the key (→ falsy).
+            "requires_desktop": bool(requires_desktop),
+        }
+
+        # Scan the agent for what it actually needs (tools, skills, external APIs,
+        # credentials) so the manifest discloses requirements accurately. The
+        # effective config is the per-workspace openclaw.json when present (what the
+        # agent runs from), else the seller's global config.
+        effective_cfg = load_effective_config(agent_dir, config)
+        reqs, scan_incomplete = requirements_scan(
+            effective_cfg,
+            agent_dir,
+            bundled_mcps=set(selected_mcps or []),
+            bundled_skills=set(selected_skills or []),
+            # Scan EXACTLY the files that ship (the tarball contents) so the ledger
+            # never discloses a dep from a file the export filter dropped.
+            scan_files=contents,
+            workspace_skills=workspace_skill_names,
+            declared_skills=_agent_declared_skills(config, resolved_agent_id),
         )
-    except KeyError as exc:
-        raise AgentNotInConfigError(
-            f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list"
-        ) from exc
-    _rewrite_mcp_args_paths(slice_, seller_agent_id=resolved_agent_id)
-    slice_["cron_jobs"] = filter_cron_jobs_for_agent(workspace.read_cron_jobs(seller_id), resolved_agent_id)
+        manifest.update(build_manifest_requirements(reqs, scan_incomplete))
 
-    # Post-scrub credential-leak gate. The slice is a separate S3 artifact
-    # the tarball safety scan never walks, so re-inspect it here: if any
-    # secret-shaped field survived the scrub (the scrub is shallow one-level
-    # — a nested secret slips past) or an OAuth client-secret literal rode
-    # through, BLOCK the publish before the artifact exists. The error names
-    # the leaking field paths but never the secret value.
-    slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
-    if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
-        paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
-        raise CredentialLeakError(
-            f"cannot publish: a credential survived scrubbing in the published slice ({paths}); "
-            "remove the secret from the agent's MCP/skill config and retry"
+        return CatalogPackage(
+            format="openclaw",
+            manifest=manifest,
+            openclaw_slice=slice_,
+            tarball_bytes=tarball_bytes,
+            tarball_contents=contents,
+            pruned_paths=pruned,
         )
-
-    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
-
-    summary = _summarize_openclaw_config(agent_dir)
-    manifest = {
-        "name": summary["name"],
-        "description": summary["description"],
-        "format": "openclaw",
-        "exported_at": int(time.time()),
-        "agent_id": resolved_agent_id,
-        "file_count": len(contents),
-        "safety_flags": safety_flags,
-        # Seller's per-agent ACP declaration (see ArtifactFromAgentRequest).
-        # The deploy side reads this to decide whether to turn on the buyer
-        # container's ACP coding-harness runtime. Always written as a bool so
-        # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
-        # check; pre-flag listings simply lack the key (→ falsy).
-        "requires_acp": bool(enable_acp),
-        # Publisher-declared "needs the desktop app" flag — disclosure only (we
-        # can't scan or provision it). pre-flag listings lack the key (→ falsy).
-        "requires_desktop": bool(requires_desktop),
-    }
-
-    # Scan the agent for what it actually needs (tools, skills, external APIs,
-    # credentials) so the manifest discloses requirements accurately. The
-    # effective config is the per-workspace openclaw.json when present (what the
-    # agent runs from), else the seller's global config.
-    effective_cfg = load_effective_config(agent_dir, config)
-    reqs, scan_incomplete = requirements_scan(
-        effective_cfg,
-        agent_dir,
-        bundled_mcps=set(selected_mcps or []),
-        bundled_skills=set(selected_skills or []),
-        # Scan EXACTLY the files that ship (the tarball contents) so the ledger
-        # never discloses a dep from a file the export filter dropped.
-        scan_files=contents,
-        workspace_skills=workspace_skill_names,
-        declared_skills=_agent_declared_skills(config, resolved_agent_id),
-    )
-    manifest.update(build_manifest_requirements(reqs, scan_incomplete))
-
-    return CatalogPackage(
-        format="openclaw",
-        manifest=manifest,
-        openclaw_slice=slice_,
-        tarball_bytes=tarball_bytes,
-        tarball_contents=contents,
-        pruned_paths=pruned,
-    )
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -940,6 +1048,7 @@ def export_built_agent_from_staging(
     *,
     selected_mcps: list[str] | None = None,
     selected_skills: list[str] | None = None,
+    container: dict | None = None,
 ) -> CatalogPackage:
     """Snapshot an Atlas-built STAGING agent dir on EFS into a CatalogPackage.
 
@@ -971,6 +1080,9 @@ def export_built_agent_from_staging(
             plays in ``export_agent_from_efs``).
         staging_agent_id: The ``workspace-{token}/`` dir name Atlas built into.
         selected_mcps / selected_skills: forwarded to extract_agent_slice; None (Atlas) keeps the {agent, plugins, tools} shape.
+        container: The owner's container row, used only to decide EFS vs S3 via
+            ``runtime_transport.host_for`` (see ``_resolve_agent_location``).
+            ``None`` (every existing caller, today) means EFS -- unchanged.
 
     Raises:
         InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
@@ -979,120 +1091,136 @@ def export_built_agent_from_staging(
             (or its config carries no ``agents.list[]`` entry).
         CredentialLeakError: a credential survived scrubbing in the built slice.
     """
-    # Resolve the staging workspace dir on EFS. owner_id is the EFS dir owner,
-    # exactly as seller_id is for export_agent_from_efs. Direct-hit resolution
-    # only (config=None) — the staging dir name IS a live workspace dir, so the
-    # legacy slug-forwarding the seller path needs doesn't apply here.
-    staging_dir = _resolve_agent_dir(seller_id=owner_id, agent_id=staging_agent_id, config=None)
-
-    # The shippable files live under workspace/ (see atlas-skeleton-generator.js
-    # draftToFastIo). Tar that subdir so files land at the tarball root; this
-    # also leaves build-manifest.json (staging root) out of the tarball. Fall
-    # back to the staging root if no workspace/ subdir exists (defensive).
-    workspace_subdir = staging_dir / "workspace"
-    tar_root = workspace_subdir if workspace_subdir.is_dir() else staging_dir
-    tarball_bytes, contents, _ = _build_tarball(tar_root)
-
-    # Build the slice from the staging dir's OWN openclaw.json (not the owner's
-    # root config) — agents.list[0] is the built agent. Same extract_agent_slice
-    # logic as the seller path, just a different config source.
-    staging_config = _read_staging_openclaw_config(staging_dir)
-    if not staging_config:
-        raise BuiltAgentConfigError(
-            f"staging agent {staging_agent_id!r} has no parseable openclaw.json — "
-            "the build did not write its config (expected workspace/openclaw.json)"
-        )
-    agents = [a for a in _agents_list(staging_config) if isinstance(a, dict)]
-    if not agents:
-        raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[] entry")
-    if len(agents) > 1:
-        # The skeleton generator always emits a single-agent config. More than
-        # one means a malformed build — fail loud rather than silently snapshot
-        # agents[0] and discard the rest.
-        names = [a.get("name") or a.get("id") for a in agents]
-        raise BuiltAgentConfigError(
-            f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({names}); "
-            "a built agent must be single-agent"
-        )
-    agent_entry = agents[0]
-    # THE BUILD DOES NOT GET TO CHOOSE AN AGENT ID. Whatever the staged entry
-    # carries in ``id`` — a display-name slug, a guessed uuid, nothing at all —
-    # is overwritten here with the staging handle the platform itself resolved,
-    # and the real id is assigned later (the Paperclip uuid pinned by
-    # ``deploy_from_artifact``, which sets ``agent_entry["id"] = new_agent_id``).
-    # The generator emits this same token, so the happy path is a no-op; the
-    # normalization is what makes an improvised id inert rather than adopted.
-    # A ``product-analytics-scorecard``-shaped slug reaching production as a live
-    # agent id is exactly the incident this closes.
-    built_agent_id = staging_agent_id
-    agent_entry["id"] = built_agent_id
-
-    workspace_skill_names = _enumerate_workspace_skill_names(tar_root)
-    try:
-        slice_ = extract_agent_slice(
-            staging_config,
-            built_agent_id,
-            selected_mcps=selected_mcps,
-            selected_skills=selected_skills,
-            workspace_skill_names=workspace_skill_names,
-        )
-    except KeyError as exc:
-        raise BuiltAgentConfigError(
-            f"built agent {built_agent_id!r} is not registered in its own openclaw.json agents.list"
-        ) from exc
-
-    # Rewrite workspace-relative MCP arg paths to the __AGENT_DIR__ sentinel that
-    # deploy_from_artifact substitutes back to the new agent's workspace — same
-    # as the seller path. No-op today (built agents have no MCP servers) but
-    # required once the skeleton generator emits MCP config pointing at the
-    # staging workspace, else those paths would survive pointing at the staging dir.
-    _rewrite_mcp_args_paths(slice_, seller_agent_id=built_agent_id)
-
-    # Same post-scrub credential-leak gate the seller path runs: the slice is a
-    # separate artifact the tarball scan never walks, so block if a secret
-    # survived scrubbing. Names the field path, never the secret value.
-    slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
-    if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
-        paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
-        raise CredentialLeakError(
-            f"cannot register: a credential survived scrubbing in the built agent's slice ({paths}); "
-            "remove the secret from the agent's MCP/skill config and retry"
-        )
-
-    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
-
-    # Display name comes from the built agent's own entry — ``name``, then the
-    # identity block. Deliberately NOT falling back to the entry's id: that is
-    # the build's staging token now, and "atlas-staging-build_042" is a worse
-    # display name than none. The register router passes the caller's ``name``
-    # to the Paperclip mint anyway, and ``deploy_from_artifact`` only reads this
-    # manifest name as its third-choice fallback.
-    identity = agent_entry.get("identity") if isinstance(agent_entry.get("identity"), dict) else {}
-    name = agent_entry.get("name") or identity.get("name") or ""
-    # Entry-level ``description`` is the only schema-legal home for this text
-    # (IdentitySchema is .strict() with name/theme/emoji/avatar only, so the
-    # identity.* fallbacks can only ever match in an unvalidated staging file).
-    description = agent_entry.get("description") or identity.get("description") or identity.get("vibe") or ""
-
-    manifest = {
-        "name": name,
-        "description": description,
-        "format": "openclaw",
-        "exported_at": int(time.time()),
-        # The staging handle, not an agent id — the real one is minted after this
-        # snapshot and pinned by ``deploy_from_artifact``.
-        "agent_id": built_agent_id,
-        "file_count": len(contents),
-        "safety_flags": safety_flags,
-    }
-
-    return CatalogPackage(
-        format="openclaw",
-        manifest=manifest,
-        openclaw_slice=slice_,
-        tarball_bytes=tarball_bytes,
-        tarball_contents=contents,
+    # Resolve the staging workspace location. owner_id is the dir owner,
+    # exactly as seller_id is for export_agent_from_efs. Direct-hit EFS
+    # resolution only (config=None) — the staging dir name IS a live workspace
+    # dir, so the legacy slug-forwarding the seller path needs doesn't apply
+    # here. An AgentCore owner's staging build instead lives under the same
+    # Hermes S3 profile prefix convention (see _resolve_agent_location).
+    kind, location = _resolve_agent_location(
+        seller_id=owner_id, agent_id=staging_agent_id, container=container, config=None
     )
+    tmp_dir: tempfile.TemporaryDirectory | None = None
+    try:
+        # Fix round 1, item 3: the download itself is inside this try/finally
+        # so a raising downloader still cleans up the scratch dir.
+        if kind == "s3":
+            tmp_dir = tempfile.TemporaryDirectory()
+            staging_dir = Path(tmp_dir.name)
+            _download_s3_profile(location, staging_dir)
+        else:
+            staging_dir = location
+        # The shippable files live under workspace/ (see atlas-skeleton-generator.js
+        # draftToFastIo). Tar that subdir so files land at the tarball root; this
+        # also leaves build-manifest.json (staging root) out of the tarball. Fall
+        # back to the staging root if no workspace/ subdir exists (defensive).
+        workspace_subdir = staging_dir / "workspace"
+        tar_root = workspace_subdir if workspace_subdir.is_dir() else staging_dir
+        tarball_bytes, contents, _ = _build_tarball(tar_root)
+
+        # Build the slice from the staging dir's OWN openclaw.json (not the owner's
+        # root config) — agents.list[0] is the built agent. Same extract_agent_slice
+        # logic as the seller path, just a different config source.
+        staging_config = _read_staging_openclaw_config(staging_dir)
+        if not staging_config:
+            raise BuiltAgentConfigError(
+                f"staging agent {staging_agent_id!r} has no parseable openclaw.json — "
+                "the build did not write its config (expected workspace/openclaw.json)"
+            )
+        agents = [a for a in _agents_list(staging_config) if isinstance(a, dict)]
+        if not agents:
+            raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[] entry")
+        if len(agents) > 1:
+            # The skeleton generator always emits a single-agent config. More than
+            # one means a malformed build — fail loud rather than silently snapshot
+            # agents[0] and discard the rest.
+            names = [a.get("name") or a.get("id") for a in agents]
+            raise BuiltAgentConfigError(
+                f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({names}); "
+                "a built agent must be single-agent"
+            )
+        agent_entry = agents[0]
+        # THE BUILD DOES NOT GET TO CHOOSE AN AGENT ID. Whatever the staged entry
+        # carries in ``id`` — a display-name slug, a guessed uuid, nothing at all —
+        # is overwritten here with the staging handle the platform itself resolved,
+        # and the real id is assigned later (the Paperclip uuid pinned by
+        # ``deploy_from_artifact``, which sets ``agent_entry["id"] = new_agent_id``).
+        # The generator emits this same token, so the happy path is a no-op; the
+        # normalization is what makes an improvised id inert rather than adopted.
+        # A ``product-analytics-scorecard``-shaped slug reaching production as a live
+        # agent id is exactly the incident this closes.
+        built_agent_id = staging_agent_id
+        agent_entry["id"] = built_agent_id
+
+        workspace_skill_names = _enumerate_workspace_skill_names(tar_root)
+        try:
+            slice_ = extract_agent_slice(
+                staging_config,
+                built_agent_id,
+                selected_mcps=selected_mcps,
+                selected_skills=selected_skills,
+                workspace_skill_names=workspace_skill_names,
+            )
+        except KeyError as exc:
+            raise BuiltAgentConfigError(
+                f"built agent {built_agent_id!r} is not registered in its own openclaw.json agents.list"
+            ) from exc
+
+        # Rewrite workspace-relative MCP arg paths to the __AGENT_DIR__ sentinel that
+        # deploy_from_artifact substitutes back to the new agent's workspace — same
+        # as the seller path. No-op today (built agents have no MCP servers) but
+        # required once the skeleton generator emits MCP config pointing at the
+        # staging workspace, else those paths would survive pointing at the staging dir.
+        _rewrite_mcp_args_paths(slice_, seller_agent_id=built_agent_id)
+
+        # Same post-scrub credential-leak gate the seller path runs: the slice is a
+        # separate artifact the tarball scan never walks, so block if a secret
+        # survived scrubbing. Names the field path, never the secret value.
+        slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
+        if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
+            paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
+            raise CredentialLeakError(
+                f"cannot register: a credential survived scrubbing in the built agent's slice ({paths}); "
+                "remove the secret from the agent's MCP/skill config and retry"
+            )
+
+        safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
+
+        # Display name comes from the built agent's own entry — ``name``, then the
+        # identity block. Deliberately NOT falling back to the entry's id: that is
+        # the build's staging token now, and "atlas-staging-build_042" is a worse
+        # display name than none. The register router passes the caller's ``name``
+        # to the Paperclip mint anyway, and ``deploy_from_artifact`` only reads this
+        # manifest name as its third-choice fallback.
+        identity = agent_entry.get("identity") if isinstance(agent_entry.get("identity"), dict) else {}
+        name = agent_entry.get("name") or identity.get("name") or ""
+        # Entry-level ``description`` is the only schema-legal home for this text
+        # (IdentitySchema is .strict() with name/theme/emoji/avatar only, so the
+        # identity.* fallbacks can only ever match in an unvalidated staging file).
+        description = agent_entry.get("description") or identity.get("description") or identity.get("vibe") or ""
+
+        manifest = {
+            "name": name,
+            "description": description,
+            "format": "openclaw",
+            "exported_at": int(time.time()),
+            # The staging handle, not an agent id — the real one is minted after this
+            # snapshot and pinned by ``deploy_from_artifact``.
+            "agent_id": built_agent_id,
+            "file_count": len(contents),
+            "safety_flags": safety_flags,
+        }
+
+        return CatalogPackage(
+            format="openclaw",
+            manifest=manifest,
+            openclaw_slice=slice_,
+            tarball_bytes=tarball_bytes,
+            tarball_contents=contents,
+        )
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -1144,13 +1272,17 @@ def _enumerate_persona_files(agent_dir: Path) -> list[str]:
     return sorted(name for name in _PERSONA_FILES if (agent_dir / name).is_file())
 
 
-def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
+def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | None = None) -> dict:
     """Build the dry-run preview the publish wizard renders before submit.
 
     Performs a real snapshot (tar + scan) so ``safety_flags`` reflect the
     seller's actual workspace bytes — selection (which MCPs/skills to
     include) doesn't affect the scan result, so the frontend can cache
     this once and reuse across Bundle/Review steps.
+
+    ``container`` decides EFS vs S3 via ``runtime_transport.host_for`` (see
+    ``_resolve_agent_location``); ``None`` (every existing caller, today)
+    means EFS — unchanged.
 
     Raises the same errors as ``export_agent_from_efs``:
     InvalidAgentIdError / AgentNotFoundError / AgentNotInConfigError.
@@ -1161,103 +1293,120 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     except WorkspaceError:
         # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
         config = {}
-    agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config)
-    # Resolved workspace UUID (dir name minus the ``workspace-`` layout
-    # prefix) — differs from agent_id only for legacy slug listings.
-    resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
-
-    # Validate the agent is registered in the seller's config; the entry
-    # itself is NOT used as a skills source (no per-agent skill scoping
-    # exists at runtime — see the addable-skills note below).
-    agents_list = _agents_list(config)
-    agent_entry = next(
-        (a for a in agents_list if isinstance(a, dict) and a.get("id") == resolved_agent_id),
-        None,
-    )
-    if not isinstance(agent_entry, dict):
-        raise AgentNotInConfigError(f"agent {agent_id!r} is not registered in the seller's openclaw.json roster")
-
-    workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
-
-    # Workspace skills auto-ship via the tarball + buyer-side discovery — they are
-    # informational, NOT a selectable bundle choice.
-    auto_ship_skills = sorted(workspace_skill_names)
-
-    # Addable skills = the container's GLOBAL skills.entries the buyer would not
-    # otherwise have. There is no per-agent skill scoping, so the agent's config
-    # entry is NOT a reliable source; the global skills.entries are. Bundled
-    # skills already ship in the buyer's image, and workspace skills auto-ship
-    # above, so neither belongs in the selectable add-list.
-    skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
-    entries_cfg = skills_cfg.get("entries") if isinstance(skills_cfg.get("entries"), dict) else {}
-    addable_skill_names = sorted(entries_cfg.keys())
-    available_skills = [
-        {
-            "name": name,
-            "bucket": classify_skill(name, config, workspace_skill_names=workspace_skill_names).value,
-        }
-        for name in addable_skill_names
-    ]
-
-    mcp_servers = (config.get("mcp") or {}).get("servers") or {}
-    available_mcps = sorted(mcp_servers.keys()) if isinstance(mcp_servers, dict) else []
-
-    persona_files = _enumerate_persona_files(agent_dir)
-
-    # Build the tarball + scan for safety_flags. We don't return the
-    # tarball itself — just the flags. ``contents`` (the shipped-file list)
-    # scopes the requirements scan below to exactly what ships.
-    tarball_bytes, contents, _ = _build_tarball(agent_dir)
-    # Snippets stay ON here and ONLY here: the preview is an authenticated,
-    # seller-scoped response showing the seller their OWN workspace lines so
-    # they can fix a finding before submit. It is never persisted.
-    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes, include_snippets=True)
-
-    # Surface (but do NOT block on) any credential that would survive the
-    # scrub in the published slice. Preview is informational — the wizard's
-    # Review step renders these inline so the seller fixes them BEFORE
-    # submit, where export_agent_from_efs raises CredentialLeakError. Build a
-    # slice over everything available so the preview flags match what the
-    # actual publish would catch. Best-effort: a slice-build failure here
-    # must never break the preview.
+    kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container, config=config)
+    tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
-        preview_slice = extract_agent_slice(
-            config,
-            resolved_agent_id,
-            selected_mcps=available_mcps,
-            selected_skills=addable_skill_names,
-            workspace_skill_names=workspace_skill_names,
+        # Fix round 1, item 3: the download itself is inside this try/finally
+        # so a raising downloader still cleans up the scratch dir.
+        if kind == "s3":
+            # AgentCore seller: download the Hermes S3 profile into a scratch dir
+            # and treat it exactly like a resolved EFS agent_dir for the rest of
+            # this function. agent_id IS the canonical id -- no legacy-slug layer
+            # for S3 profiles.
+            tmp_dir = tempfile.TemporaryDirectory()
+            agent_dir = Path(tmp_dir.name)
+            _download_s3_profile(location, agent_dir)
+            resolved_agent_id = agent_id
+        else:
+            agent_dir = location
+            # Resolved workspace UUID (dir name minus the ``workspace-`` layout
+            # prefix) — differs from agent_id only for legacy slug listings.
+            resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
+        # Validate the agent is registered in the seller's config; the entry
+        # itself is NOT used as a skills source (no per-agent skill scoping
+        # exists at runtime — see the addable-skills note below).
+        agents_list = _agents_list(config)
+        agent_entry = next(
+            (a for a in agents_list if isinstance(a, dict) and a.get("id") == resolved_agent_id),
+            None,
         )
-        slice_leak_flags = marketplace_safety.assert_slice_scrubbed(preview_slice)
-        safety_flags = safety_flags + [dataclasses.asdict(f) for f in slice_leak_flags]
-    except Exception as exc:  # noqa: BLE001 — preview must not raise
-        logger.warning("agent_export: preview slice-leak scan failed for agent=%s: %s", agent_id, exc)
+        if not isinstance(agent_entry, dict):
+            raise AgentNotInConfigError(f"agent {agent_id!r} is not registered in the seller's openclaw.json roster")
 
-    # Live requirements scan so the wizard's Requirements step renders what the
-    # agent needs. Classify optimistically — assume everything available is
-    # bundled — so the wizard shows the full ledger up front (the frozen manifest
-    # at submit reflects the seller's actual selection). Scoped to shipped files.
-    effective_cfg = load_effective_config(agent_dir, config)
-    reqs, scan_incomplete = requirements_scan(
-        effective_cfg,
-        agent_dir,
-        bundled_mcps=set(available_mcps),
-        bundled_skills=set(addable_skill_names),
-        scan_files=contents,
-        workspace_skills=workspace_skill_names,
-        declared_skills={s for s in (agent_entry.get("skills") or []) if isinstance(s, str)},
-    )
+        workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
 
-    return {
-        "agent_id": resolved_agent_id,
-        "available_mcps": available_mcps,
-        "available_skills": available_skills,
-        "auto_ship_skills": auto_ship_skills,
-        "persona_files": persona_files,
-        "safety_flags": safety_flags,
-        "requirements": [r.to_manifest() for r in reqs],
-        "scan_incomplete": scan_incomplete,
-    }
+        # Workspace skills auto-ship via the tarball + buyer-side discovery — they are
+        # informational, NOT a selectable bundle choice.
+        auto_ship_skills = sorted(workspace_skill_names)
+
+        # Addable skills = the container's GLOBAL skills.entries the buyer would not
+        # otherwise have. There is no per-agent skill scoping, so the agent's config
+        # entry is NOT a reliable source; the global skills.entries are. Bundled
+        # skills already ship in the buyer's image, and workspace skills auto-ship
+        # above, so neither belongs in the selectable add-list.
+        skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
+        entries_cfg = skills_cfg.get("entries") if isinstance(skills_cfg.get("entries"), dict) else {}
+        addable_skill_names = sorted(entries_cfg.keys())
+        available_skills = [
+            {
+                "name": name,
+                "bucket": classify_skill(name, config, workspace_skill_names=workspace_skill_names).value,
+            }
+            for name in addable_skill_names
+        ]
+
+        mcp_servers = (config.get("mcp") or {}).get("servers") or {}
+        available_mcps = sorted(mcp_servers.keys()) if isinstance(mcp_servers, dict) else []
+
+        persona_files = _enumerate_persona_files(agent_dir)
+
+        # Build the tarball + scan for safety_flags. We don't return the
+        # tarball itself — just the flags. ``contents`` (the shipped-file list)
+        # scopes the requirements scan below to exactly what ships.
+        tarball_bytes, contents, _ = _build_tarball(agent_dir)
+        # Snippets stay ON here and ONLY here: the preview is an authenticated,
+        # seller-scoped response showing the seller their OWN workspace lines so
+        # they can fix a finding before submit. It is never persisted.
+        safety_flags = _scan_tarball_for_safety_flags(tarball_bytes, include_snippets=True)
+
+        # Surface (but do NOT block on) any credential that would survive the
+        # scrub in the published slice. Preview is informational — the wizard's
+        # Review step renders these inline so the seller fixes them BEFORE
+        # submit, where export_agent_from_efs raises CredentialLeakError. Build a
+        # slice over everything available so the preview flags match what the
+        # actual publish would catch. Best-effort: a slice-build failure here
+        # must never break the preview.
+        try:
+            preview_slice = extract_agent_slice(
+                config,
+                resolved_agent_id,
+                selected_mcps=available_mcps,
+                selected_skills=addable_skill_names,
+                workspace_skill_names=workspace_skill_names,
+            )
+            slice_leak_flags = marketplace_safety.assert_slice_scrubbed(preview_slice)
+            safety_flags = safety_flags + [dataclasses.asdict(f) for f in slice_leak_flags]
+        except Exception as exc:  # noqa: BLE001 — preview must not raise
+            logger.warning("agent_export: preview slice-leak scan failed for agent=%s: %s", agent_id, exc)
+
+        # Live requirements scan so the wizard's Requirements step renders what the
+        # agent needs. Classify optimistically — assume everything available is
+        # bundled — so the wizard shows the full ledger up front (the frozen manifest
+        # at submit reflects the seller's actual selection). Scoped to shipped files.
+        effective_cfg = load_effective_config(agent_dir, config)
+        reqs, scan_incomplete = requirements_scan(
+            effective_cfg,
+            agent_dir,
+            bundled_mcps=set(available_mcps),
+            bundled_skills=set(addable_skill_names),
+            scan_files=contents,
+            workspace_skills=workspace_skill_names,
+            declared_skills={s for s in (agent_entry.get("skills") or []) if isinstance(s, str)},
+        )
+
+        return {
+            "agent_id": resolved_agent_id,
+            "available_mcps": available_mcps,
+            "available_skills": available_skills,
+            "auto_ship_skills": auto_ship_skills,
+            "persona_files": persona_files,
+            "safety_flags": safety_flags,
+            "requirements": [r.to_manifest() for r in reqs],
+            "scan_incomplete": scan_incomplete,
+        }
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
 
 
 # ---------------------------------------------------------------------------

@@ -62,3 +62,29 @@ def test_pin_profile_defaults_adds_plugins_enabled_and_preserves_disabled(home, 
     assert config["plugins"]["disabled"] == ["bar"]
     assert config["auxiliary"]["vision"] == {"provider": "bedrock", "model": "aip-aux",
                                              "fallback_chain": [], "timeout": 300}
+
+
+# ---- fix round, M4-R2: pin_profile_defaults is FILL-MISSING, not force-pin --------------------
+# M4's config writer (hermes_profiles.build_profile_config) is now the source of truth for a
+# profile's aux/bedrock pins, written at provision and kept current by Task 13's ensure_profile()
+# re-pull on a changed .revision -- the bridge no longer needs to force-overwrite them every turn.
+def test_pin_profile_defaults_never_overwrites_a_task_the_profile_already_pins(home, monkeypatch):
+    """The discriminating case: BOTH sides set every key on ``vision``, so the two merge
+    directions disagree. Existing must win wholesale -- this is what actually distinguishes
+    fill-missing from the old force-pin behaviour (every other case in this file has disjoint
+    keys on the two sides and passes under either direction)."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config(
+        "ceo", {"auxiliary": {"vision": {"provider": "openrouter", "model": "x", "fallback_chain": ["a"]}}}
+    )
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config["auxiliary"]["vision"] == {"provider": "openrouter", "model": "x", "fallback_chain": ["a"]}
+
+
+def test_pin_profile_defaults_still_fills_a_task_the_profile_never_had(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"auxiliary": {"vision": {"provider": "openrouter"}}})
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config["auxiliary"]["compression"] == {"provider": "bedrock", "model": "aip-aux", "fallback_chain": []}

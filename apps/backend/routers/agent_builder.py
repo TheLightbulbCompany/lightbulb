@@ -217,6 +217,11 @@ async def _register_built_agent(
                 agent_export.export_built_agent_from_staging,
                 owner_id=owner_id,
                 staging_agent_id=payload.staging_agent_id,
+                # Fix round 1, item 1: auth_container is already resolved
+                # (the hook-token dependency above) -- thread it through so an
+                # AgentCore owner's staging build reads its Hermes S3 profile
+                # instead of assuming EFS.
+                container=auth_container,
             )
         except agent_export.InvalidAgentIdError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -330,6 +335,8 @@ async def _register_built_agent(
                 slice_=slice_,
                 tar_bytes=package.tarball_bytes,
                 new_agent_id=new_agent_id,
+                # Fix round 1, item 1: auth_container is already resolved.
+                container=auth_container,
             )
 
         # Register the new agent's operator device into the running container's

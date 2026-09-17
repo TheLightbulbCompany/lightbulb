@@ -223,6 +223,58 @@ def _start(c) -> str:
     return c.post("/api/v1/marketplace/import", json={"key": KEY}).json()["import_id"]
 
 
+def _stub_package():
+    from core.services.catalog_package import CatalogPackage
+
+    return CatalogPackage(
+        format="openclaw",
+        manifest={},
+        openclaw_slice={},
+        tarball_bytes=b"fake",
+        tarball_contents=[],
+    )
+
+
+def test_import_threads_the_resolved_container_through_to_export(client):
+    """Fix round 1, item 1: the container row _require_container resolves for
+    start_import must reach export_built_agent_from_staging (via
+    _stage_from_s3 -> _export) so an AgentCore owner's build reads/writes its
+    Hermes S3 profile instead of assuming EFS."""
+    c, _, _, get_row = client
+    agentcore_container = {"owner_id": OWNER, "gateway_token": "gw", "runtime_host": "agentcore"}
+    get_row.return_value = agentcore_container
+    with patch(
+        "routers.marketplace_import.agent_export.export_built_agent_from_staging",
+        return_value=_stub_package(),
+    ) as mock_export:
+        r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 200, r.text
+    assert mock_export.call_args.kwargs["container"] == agentcore_container
+
+
+def test_confirm_threads_the_resolved_container_through_to_export(client):
+    """Same wiring, on the confirm leg (register_staged_agent_under_claim is
+    a separate mocked call -- this only proves _export's own container
+    threading, which register_staged_agent_under_claim's own test in
+    test_agent_builder.py doesn't cover since it isn't reached from here)."""
+    c, _, s3, get_row = client
+    s3.objects[KEY] = _archive(agents_list=[{"id": "main", "default": True}])
+    import_id = _start(c)
+    agentcore_container = {"owner_id": OWNER, "gateway_token": "gw", "runtime_host": "agentcore"}
+    get_row.return_value = agentcore_container
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch(
+            "routers.marketplace_import.agent_export.export_built_agent_from_staging",
+            return_value=_stub_package(),
+        ) as mock_export,
+    ):
+        reg.return_value = {"agent_id": "new-uuid", "name": "main", "warnings": []}
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert r.status_code == 200, r.text
+    assert mock_export.call_args.kwargs["container"] == agentcore_container
+
+
 def test_confirm_registers_each_selected_agent_and_removes_staging(client):
     c, user_root, s3, _ = client
     s3.objects[KEY] = _archive(

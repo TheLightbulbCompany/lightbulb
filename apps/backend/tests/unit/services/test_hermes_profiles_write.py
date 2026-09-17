@@ -8,7 +8,7 @@ from core.services.hermes_profiles import ProfileFiles, upload_profile, write_ag
 AIPS = {"sonnet": "arn:son", "opus": "arn:opu", "haiku": "arn:hai"}
 
 
-def test_write_agent_profile_returns_the_four_files():
+def test_write_agent_profile_returns_the_three_files():
     files = write_agent_profile(
         "org_a",
         {"id": "a1", "name": "Ada", "role": "ceo"},
@@ -163,3 +163,22 @@ async def test_upload_is_a_no_op_without_a_bucket(monkeypatch):
     monkeypatch.setattr(hermes_profiles, "_new_s3_client", _fail)
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "")
     await upload_profile("org_a", "a1", ProfileFiles("x", "y", "z"))
+
+
+async def test_new_s3_client_is_built_off_the_event_loop_via_run_in_thread(monkeypatch):
+    """Minor (re-review): building a boto3 client does file I/O (credentials/config resolution)
+    on first use — calling _new_s3_client() directly on the event loop reopens exactly the
+    blocking-I/O risk I6 fixed for put_object; the constructor itself must go through
+    run_in_thread too, not just the puts."""
+    seen_funcs = []
+    real_run_in_thread = hermes_profiles.run_in_thread
+
+    async def spy_run_in_thread(func, *args, **kwargs):
+        seen_funcs.append(func)
+        return await real_run_in_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_profiles, "run_in_thread", spy_run_in_thread)
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: _FakeS3Client([]))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "b")
+    await upload_profile("org_a", "a1", ProfileFiles("x", "y", "z"))
+    assert hermes_profiles._new_s3_client in seen_funcs

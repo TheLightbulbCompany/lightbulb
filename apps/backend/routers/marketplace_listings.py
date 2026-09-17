@@ -42,6 +42,8 @@ from core.services import (
 from core.services.agent_roster import roster_entries
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.inbound_triggers import automation_requirement
+from core.services.messaging import ApiProblem
+from core.services.hermes_provisioning import HermesProfileError
 from core.services.catalog_service import (
     CatalogService,
     MissingCredentialsError,
@@ -65,6 +67,29 @@ from schemas import marketplace as schemas
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
+
+
+async def _container_for_export_routing(owner_id: str) -> dict | None:
+    """Container-row read for the export/preview S3-vs-EFS branch
+    (agent_export._resolve_agent_location via runtime_transport.host_for).
+
+    Fix round 2, gap 2: a read failure RAISES ``ApiProblem("RUNTIME_UNAVAILABLE")``
+    (503) instead of degrading to ``None`` -- mirrors
+    ``core.services.messaging.load_agent_roster``'s handling of a
+    container-row read failure. Degrading here used to route an AgentCore
+    seller onto the EFS branch on a mere transient blip, which then 404s as
+    "agent not found" instead of surfacing the real, retryable failure.
+    """
+    try:
+        return await container_repo.get_by_owner_id(owner_id)
+    except Exception as exc:
+        logger.exception("marketplace_listings: container lookup failed for owner=%s", owner_id)
+        raise ApiProblem(
+            "RUNTIME_UNAVAILABLE",
+            "Could not resolve your container for this request.",
+            retryable=True,
+            retry_after=3,
+        ) from exc
 
 
 def _count_field(field) -> int:
@@ -1089,6 +1114,11 @@ async def deploy_listing(
                 new_agent_id=new_agent_id,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
+                # Fix round 1, item 1: `container` is already in scope from
+                # resolve_running_container above -- thread it through so an
+                # AgentCore row's deploy reaches the S3-profile branch instead
+                # of assuming EFS.
+                container=container,
             )
 
             # Register the deployed agent's operator device into the running
@@ -1172,6 +1202,23 @@ async def deploy_listing(
                 raise HTTPException(
                     status_code=409,
                     detail={"error": "missing_credentials", "missing": exc.missing},
+                ) from exc
+            # Fix round 2, gap 1 (M6-R11) / round 3, M6-R13: an AgentCore
+            # install's Hermes profile step failed hard (missing BYO key,
+            # failed Paperclip mint) -- retryable, not a generic server
+            # error. Discriminated by the typed HermesProfileError, not a
+            # bare RuntimeError: a plain RuntimeError also legitimately
+            # surfaces from create_paperclip_for_marketplace /
+            # deploy_tarball_to_profile / ensure_operator_device_paired in
+            # this same try block and must keep mapping to the blanket 500
+            # below (HermesProfileError subclasses RuntimeError only to keep
+            # container_repo.classify_provision_error's treatment of the
+            # provisioning-runner path unchanged -- it is not caught here via
+            # its parent type).
+            if isinstance(exc, HermesProfileError):
+                raise HTTPException(
+                    status_code=503,
+                    detail="agentcore profile provisioning unavailable — retry the install in a moment",
                 ) from exc
             raise HTTPException(
                 status_code=500,
@@ -1396,6 +1443,10 @@ async def my_agent_artifact_preview(
     same way as the actual publish endpoint.
     """
     owner_id = resolve_owner_id(auth)
+    # Fix round 1, item 1: AgentCore sellers read their Hermes S3 profile
+    # instead of EFS (agent_export._resolve_agent_location); ECS/unknown rows
+    # (container absent, the pre-migration default) take the unchanged EFS path.
+    container = await _container_for_export_routing(owner_id)
 
     # Resolve a legacy slug → live workspace UUID BEFORE the Friday guard, so a
     # slug like "friday" (which resolves to the CEO's workspace) can't slip past
@@ -1427,6 +1478,7 @@ async def my_agent_artifact_preview(
             agent_export.enumerate_for_preview,
             seller_id=owner_id,
             agent_id=resolved_agent_id,
+            container=container,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1496,6 +1548,10 @@ async def upload_artifact_from_agent(
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # Fix round 1, item 1: AgentCore sellers read their Hermes S3 profile
+    # instead of EFS; ECS/unknown rows (container absent) take the unchanged
+    # EFS path.
+    container = await _container_for_export_routing(owner_id)
 
     # Resolve a legacy slug → live workspace UUID up front so the Friday guard,
     # routine capture, export, and persisted row all key off the same resolved
@@ -1562,6 +1618,7 @@ async def upload_artifact_from_agent(
             enable_acp=payload.enable_acp,
             requires_desktop=payload.requires_desktop,
             paths=payload.paths,
+            container=container,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -129,6 +129,48 @@ def test_register_happy_path(
     count_agents.assert_not_awaited()
 
 
+@patch("routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_register_threads_the_auth_container_through_to_export_and_deploy(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_catalog,
+    mock_resolve_ceo,
+    client,
+    monkeypatch,
+):
+    """Fix round 1, item 1: auth_container (the hook-token dependency's
+    container row) must reach both export_built_agent_from_staging and
+    deploy_from_artifact so an AgentCore owner's build reads/writes its
+    Hermes S3 profile instead of assuming EFS."""
+    auth_container = {"hook_token": TOKEN, "gateway_token": "gw-token", "runtime_host": "agentcore"}
+    mock_get_container.return_value = auth_container
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex the Legal Bot"}
+    mock_resolve_ceo.return_value = "friday-uuid"
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
+    mock_get_catalog.return_value = catalog
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200, resp.text
+    assert mock_export.call_args.kwargs["container"] == auth_container
+    assert catalog.deploy_from_artifact.await_args.kwargs["container"] == auth_container
+
+
 @patch("routers.agent_builder.emit_agent_deployed")
 @patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
 @patch(

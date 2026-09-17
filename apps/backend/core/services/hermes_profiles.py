@@ -38,6 +38,7 @@ earlier version of this file put them here.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -53,12 +54,20 @@ _BEDROCK = "bedrock"
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
 #: -> ... (auxiliary_client.py:3-6); an unpinned task on a platform-billed path is egress to a
 #: vendor we have no account with, and the Nous lane needs no credential of ours (``nous.guest:
-#: true`` in the defaults). ``fallback_chain: []`` is the actual fence (an empty configured chain
-#: skips straight to no-fallback rather than the auto-chain); ``free_only`` is a cost knob ON that
-#: auto-chain, not a second fence — it still lets a ":free" OpenRouter SKU through, and Hermes
-#: falls through to auto-detection even for an explicit ``provider`` the account can't invoke
-#: (auxiliary_client.py's unavailable-provider fallback), which is why ``bedrock.discovery.enabled:
-#: false`` and a present ``AWS_BEARER_TOKEN_BEDROCK`` both have to hold too.
+#: true`` in the defaults). ``fallback_chain: []`` is the actual fence: verified in the image
+#: (``auxiliary_client.py:6820-6837``) — an explicit, PINNED provider (ours) that fails to build a
+#: client tries ONLY its own ``fallback_chain`` and, finding it empty, RAISES
+#: (``RuntimeError("Provider '<x>' is set in config.yaml but no API key was found...")``); the
+#: OpenRouter/Nous auto-chain is walked ONLY when the resolved provider is already "auto" (or
+#: "openrouter"/"custom") — a pinned provider never reaches it. ``free_only`` is a cost knob ON
+#: that auto-chain, not a fence of its own — it still lets a ":free" OpenRouter SKU through, which
+#: only matters for the "auto" case this pin deliberately avoids. One residual: ``vision``
+#: specifically has ITS OWN unconditional "fall back to auto vision backends" branch a few lines
+#: above the general one (``resolve_vision_provider_client(provider="auto", ...)`` whenever the
+#: pinned vision client fails to build), so a failed Bedrock vision call can still reach the auto
+#: chain even with ``fallback_chain: []`` — the other 17 tasks cannot. ``bedrock.discovery.enabled:
+#: false`` and a present ``AWS_BEARER_TOKEN_BEDROCK`` are what keep the pinned client from failing
+#: to build in the first place, which is what actually closes that residual in practice.
 #:
 #: Fix round 1, C1: this is the literal, complete 18-name list of every provider-bearing key in
 #: Hermes 0.21.3's ``hermes_cli.config_defaults.DEFAULT_CONFIG["auxiliary"]`` (every value built
@@ -140,9 +149,16 @@ def _model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict,
         cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
         default = premium if is_ceo else standard
         return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
-    # chatgpt_oauth — flat rate, one tier; aux inherits the main model ("auto"), because the Codex
-    # backend rejects an aux-side summariser override (config.py cheap_model_ref docstring).
-    return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "", "auto"
+    # chatgpt_oauth — flat rate, one tier. Task 15's re-review ruling: aux tasks are pinned to
+    # the "openai-codex" provider (never "auto") — a real, explicit Hermes aux provider (verified
+    # in the image: hermes_cli/auth.py's ProviderConfig, auxiliary_client.py's dedicated
+    # resolution branch for it, and its own "openai-codex has no safe default model; callers set
+    # auxiliary.<task>.model" comment, confirming an explicit model is the intended usage). "auto"
+    # would re-open the OpenRouter/Nous auto-chain (auxiliary_client.py exempts "auto" from the
+    # raise a pinned-but-unavailable provider would otherwise hit). Aux inherits the SAME model
+    # the primary uses (gpt-5.6-sol): there is no cheaper tier to route aux work to on a flat-rate
+    # plan, the same reasoning the model block above already applies.
+    return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "gpt-5.6-sol", "openai-codex"
 
 
 def build_profile_config(
@@ -327,6 +343,10 @@ def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
     """
     config: dict = {}
     secrets: dict[str, str] = {}
+    # Minor (re-review): _mcp_env_key sanitizes to a valid identifier, so two DIFFERENT server
+    # names (e.g. "acme-crm" and "acme_crm") can produce the SAME env key. A silent merge would
+    # let one server's secret value overwrite the other's with no signal; reject instead.
+    env_key_origin: dict[str, tuple[str, str]] = {}
     for name, block in (servers or {}).items():
         entry: dict = {key: block[key] for key in _MCP_DIRECT if key in block}
         for field in _MCP_SECRET_FIELDS:
@@ -335,6 +355,12 @@ def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
                 moved = {}
                 for var_name, value in values.items():
                     env_key = _mcp_env_key(name, var_name)
+                    origin = env_key_origin.setdefault(env_key, (name, var_name))
+                    if origin != (name, var_name):
+                        raise ValueError(
+                            f"MCP server names {origin[0]!r} and {name!r} collide on the same "
+                            f"sanitized secret name {env_key!r} — rename one of the servers."
+                        )
                     secrets[env_key] = value
                     moved[var_name] = f"${{{env_key}}}"
                 entry[field] = moved
@@ -406,6 +432,13 @@ approvals:
     - "mkfs*"
     - "dd if=* of=/dev/*"
     - ":(){:|:&};:"
+nous:
+  # The free/anonymous Nous tier is the one credential-less lane on Hermes's own vision
+  # auto-chain (hermes_cli/anon_auth.py::guest_enabled is its single reader). Belt for the
+  # profile's own copy -- normally inert (guest_enabled also requires
+  # HERMES_GUEST_ONBOARDING=1, which this platform never sets), but the managed overlay wins
+  # after env expansion and cannot be undone from inside a profile's own config.yaml.
+  guest: false
 """
 
 
@@ -434,7 +467,9 @@ def write_agent_profile(
     byo_api_key: str | None = None,
     soul_md_override: str | None = None,
 ) -> ProfileFiles:
-    """The four files that ARE one agent's Hermes profile.
+    """The three files that ARE one agent's Hermes profile (fix round 1, I5 dropped the fourth,
+    ``managed_overlay`` — the baked ``/etc/hermes/config.yaml`` is the sole enforcement point and
+    nothing ever reads a per-profile copy).
 
     ``integrations`` is ``credentials.mcp_server.build_connected_integration_servers(owner_id)``'s
     own return shape (fix round 1, I2) — ``{server_key: mcp block}`` — taken as-is, not a
@@ -504,7 +539,9 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
-    client = _new_s3_client()
+    # Minor (re-review): the client itself, not just each put_object — constructing a boto3
+    # client does file I/O (credentials/config resolution) on first use.
+    client = await run_in_thread(_new_s3_client)
     prefix = profile_prefix(owner_id, agent_id)
     # No per-profile managed/config.yaml (I5, fix round 1): the baked /etc/hermes/config.yaml is
     # the sole enforcement point and get_managed_dir() never reads S3, so this upload was a
@@ -517,3 +554,341 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     # the same millisecond would otherwise write an identical ".revision" value and the bridge's
     # diff-and-repull could miss the second one.
     await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
+
+
+# ---- Task 13a: config.get/config.patch/config.set on an AgentCore row --------------------------
+# Spec §4.5: "Config is read once per AIAgent construction and cached on file mtime, so rewriting
+# profiles/<id>/config.yaml takes effect on the agent's next turn. No watcher, no restart." The
+# backend is the ONLY writer of a Hermes profile, so a hot patch is an S3 rewrite plus a revision
+# bump — never a round trip to a live microVM. This is what deletes config_patcher.py's EFS locks
+# for an AgentCore row (the ECS path is untouched and keeps using them).
+#
+# M4-R49 audit (fix round 2 continuation): every sync-boto3 writer in this module reached from a
+# coroutine, and how it stays off the event loop --
+#   config_snapshot / patch_profile_config / set_profile_config -- one external caller each
+#     (runtime_rpc.execute_sync), every call already wrapped in run_in_thread.
+#   read_profile_config -- no external caller; only used internally by patch_profile_config
+#     above, itself always thread-wrapped by ITS caller.
+#   _upload_config_yaml -- no external caller; only used internally by patch_profile_config/
+#     set_profile_config above, same coverage.
+#   stage_codex_auth -- one external caller (container_auth.push_oauth_credential_to_container),
+#     already wrapped in run_in_thread.
+#   refresh_integrations -- fixed THIS round: awaited directly from routers/integrations.py and
+#     catalog_service.py, but its own per-agent S3 block ran sync boto3 straight on the loop; see
+#     _refresh_one_profile below.
+# None of the other four needed changing — each was already off the loop through its one caller.
+
+
+#: Minors 1+2 (fix round 1 continuation): one boto3 client per module, not one per call —
+#: ``_s3_put``/``_s3_get`` are each called up to several times per agent per reconcile
+#: (``refresh_integrations``), and building a client does file I/O (credentials/config
+#: resolution) on every construction. ``upload_profile`` keeps its own separate one-client-
+#: per-*call* design (via ``_new_s3_client``, reused for that one profile's five PUTs) —
+#: unrelated: that one already amortizes correctly within a single upload and has its own tests
+#: pinning that exact shape.
+_SHARED_S3_CLIENT = None
+
+
+def _shared_s3_client():
+    global _SHARED_S3_CLIENT
+    if _SHARED_S3_CLIENT is None:
+        import boto3
+
+        _SHARED_S3_CLIENT = boto3.client("s3")
+    return _SHARED_S3_CLIENT
+
+
+def _s3_put(bucket: str, key: str, body: str) -> None:
+    """Sync single-object PUT for the small, infrequent settings-mutation paths below
+    (``config.patch``/``config.set``, and Task 14's token-file writes) — each stays a pure sync
+    function (matching its own tests); their one async caller, ``runtime_rpc.execute_sync``,
+    wraps the call in ``core.dynamodb.run_in_thread`` so the blocking I/O here never touches the
+    event loop directly. ``upload_profile`` above is the higher-fanout path (up to five objects
+    per agent) and owns its own one-client-reused async design instead."""
+    _shared_s3_client().put_object(Bucket=bucket, Key=key, Body=body.encode())
+
+
+def _s3_delete(bucket: str, key: str) -> None:
+    _shared_s3_client().delete_object(Bucket=bucket, Key=key)
+
+
+def _s3_get(bucket: str, key: str) -> str | None:
+    """``None`` means ABSENT (``NoSuchKey``/``404`` only) — every other ``ClientError`` (a
+    503/SlowDown, a permissions blip, ...) is re-raised (C4, fix round 1 continuation). Before
+    this fix every S3 failure looked identical to "the object was never written", so a patch or
+    reconcile hitting a transient S3 error silently treated a live profile as freshly
+    unprovisioned and merged onto ``{}``."""
+    import botocore.exceptions
+
+    try:
+        return _shared_s3_client().get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+    except botocore.exceptions.ClientError as exc:
+        code = (exc.response or {}).get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            return None
+        raise
+
+
+def read_profile_config(owner_id: str, agent_id: str, *, required: bool = False) -> dict:
+    """``config.get`` — reads ``config.yaml`` alone. NEVER ``.env``: that file holds secret
+    values (M4-R1), and this is the one path a settings-read RPC can reach.
+
+    ``required=True`` (C4, fix round 1 continuation) raises ``FileNotFoundError`` instead of
+    silently treating an absent profile as ``{}`` — for a WRITER (patch/refresh) a missing
+    config.yaml is a provisioning defect, never a legitimate empty state. Left ``False`` by
+    default for GET, where "nothing provisioned yet" is a real, non-error answer."""
+    body = _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}config.yaml")
+    if body is None:
+        if required:
+            raise FileNotFoundError(f"no config.yaml for {profile_prefix(owner_id, agent_id)}")
+        return {}
+    return yaml.safe_load(body) or {}
+
+
+def config_snapshot(owner_id: str, agent_id: str) -> tuple[dict, str]:
+    """``(config, hash)`` for ``config.get`` — ``hash`` is the sha256 hex of the STORED
+    ``config.yaml`` TEXT (M4-R43), not a re-serialization of the parsed dict, so it changes
+    exactly when the persisted bytes actually change and nothing else. This is what
+    ``useConfigPatch.ts`` gates ``configReady`` on and sends back as ``baseHash``."""
+    text = _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}config.yaml") or ""
+    config = (yaml.safe_load(text) or {}) if text else {}
+    return config, hashlib.sha256(text.encode()).hexdigest()
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _upload_config_yaml(owner_id: str, agent_id: str, config: dict) -> None:
+    prefix = profile_prefix(owner_id, agent_id)
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+    # LAST, always — same reasoning as upload_profile's .revision write above.
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
+
+
+def patch_profile_config(owner_id: str, agent_id: str, patch: dict) -> dict:
+    """``config.patch`` — deep merge onto the stored config, then re-upload.
+
+    C4 (fix round 1 continuation): ``required=True`` — a patch onto a profile that has no
+    ``config.yaml`` yet is a provisioning defect, not something to paper over by merging the
+    patch onto ``{}`` and uploading that as if it were the whole profile."""
+    config = _deep_merge(read_profile_config(owner_id, agent_id, required=True), patch or {})
+    _upload_config_yaml(owner_id, agent_id, config)
+    return config
+
+
+def set_profile_config(owner_id: str, agent_id: str, config: dict) -> dict:
+    """``config.set`` — a full REPLACE, not a merge (unlike ``patch_profile_config``): a key
+    present in the stored config but absent from ``config`` does not survive. The caller is
+    responsible for handing over a complete profile shape."""
+    config = config or {}
+    _upload_config_yaml(owner_id, agent_id, config)
+    return config
+
+
+# ---- Task 14: integration token refresh rewrites the profile -----------------------------------
+def _require_text(bucket: str, key: str, what: str) -> str:
+    """C4 (fix round 1 continuation): raise instead of silently treating an absent object as an
+    empty/unprovisioned one — a WRITER (refresh/patch) landing on a profile that has no
+    ``config.yaml``/``.env`` yet is a provisioning defect, never something to merge onto ``{}``/
+    write a ``.env`` holding only MCP lines."""
+    body = _s3_get(bucket, key)
+    if body is None:
+        raise FileNotFoundError(f"no {what} at {key}")
+    return body
+
+
+def _put_token_file(owner_id: str, agent_id: str, name: str, blob: dict) -> None:
+    import json as _json
+
+    key = f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json"
+    _s3_put(settings.OWNER_STATE_BUCKET, key, _json.dumps(blob))
+
+
+def _write_mcp_token_files(
+    owner_id: str,
+    agent_id: str,
+    servers: dict,
+    credentials: dict[str, dict] | None = None,
+    *,
+    previously_oauth: frozenset[str] = frozenset(),
+) -> None:
+    """Seed ``$HERMES_HOME/mcp-tokens/<server>.json`` for OAuth-remote servers — WRITE ONCE
+    (M4-R47, fix round 1 continuation): only when the object is absent. After the seed, Hermes's
+    own ``OAuthClientProvider`` refreshes the token IN PLACE for the life of the process (report
+    06 §4.4) — the container is the sole rotator from then on, so re-seeding on every reconcile
+    would clobber an already-rotated live token with a stale copy from the credential store.
+
+    ``previously_oauth`` (the OAuth server names the CALLER's stored config.yaml had before this
+    reconcile) names what just disconnected: that server's token file is deleted so a later
+    reconnect seeds a fresh one instead of resurrecting the old grant.
+
+    On-disk shape verified against ``tools/mcp_oauth.py``'s ``HermesTokenStorage`` in the
+    ``lightbulb/hermes-spike:m1-rc4`` image (``set_tokens``/``get_tokens``/``_fixup_loaded_tokens``,
+    :471-499): the file at ``mcp-tokens/<server>.json`` is the JSON dump of the MCP SDK's
+    ``OAuthToken`` model plus an absolute ``expires_at`` ``set_tokens`` derives from ``expires_in``
+    at write time, and an optional ``hermes_issuer`` (only written once Hermes itself has bound an
+    issuer via ``bind_issuer``). We write ``access_token``/``refresh_token`` verbatim from the
+    retained credential.
+    # ponytail: unverified — this repo's credential store does not currently retain
+    # token_type/scope/expiry, so a seeded grant carries no expires_in/expires_at; whether
+    # Hermes's own OAuthToken validation and refresh-on-first-use treat a token with no expiry
+    # field as immediately-refreshable (rather than erroring) was NOT confirmed against the SDK
+    # class itself (only HermesTokenStorage's own file format was read). Confirm in the dev proof
+    # before this ships past the spike.
+    # ponytail: filenames use the raw server name, not tools/mcp_oauth.py's own
+    # _safe_filename(name) sanitizer (strips to [\\w-], 128 chars) — identical for every real
+    # provider name today (stripe, qbo, posthog, ...), so this only diverges for a hypothetical
+    # exotic server key.
+
+    Key-based and stdio servers carry their credential through the profile ``.env`` instead and
+    get no token file.
+    """
+    bucket = settings.OWNER_STATE_BUCKET
+    credentials = credentials or {}
+    now_oauth = {name for name, block in (servers or {}).items() if block.get("auth") == "oauth"}
+    for name in previously_oauth - now_oauth:
+        _s3_delete(bucket, f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json")
+    for name in now_oauth:
+        key = f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json"
+        if _s3_get(bucket, key) is not None:
+            continue  # already seeded once — the container is the sole rotator from here on
+        _put_token_file(owner_id, agent_id, name, credentials.get(name) or {})
+
+
+def _rewrite_mcp_env_lines(dotenv_text: str, new_secrets: dict[str, str]) -> str:
+    """Replace every existing ``MCP_<SERVER>_<VAR>`` line with a freshly rendered set — a
+    disconnected provider's old secret must not survive a refresh — while every other line
+    (``PAPERCLIP_API_KEY``, a BYO key, an owner-provisioned env var) passes through untouched.
+    Line-level surgery, not a full dotenv parse: identifying an ``MCP_``-prefixed KEY only needs
+    the text before the first ``=``, which ``render_dotenv`` always writes verbatim regardless of
+    whether the VALUE side is quoted.
+
+    Minor 5 (fix round 1 continuation): the trailing newline the STORED ``.env`` carried is
+    preserved (``"\n".join`` alone drops it, since ``splitlines()`` never yields a trailing empty
+    element) — an empty starting dotenv (nothing stored yet) carries no trailing newline to
+    preserve, matching a from-scratch write."""
+    trailing_newline = dotenv_text.endswith("\n")
+    kept = [line for line in dotenv_text.splitlines() if not line.split("=", 1)[0].startswith("MCP_")]
+    new_lines = render_dotenv(new_secrets).splitlines() if new_secrets else []
+    out = "\n".join(kept + new_lines)
+    return out + "\n" if out and trailing_newline else out
+
+
+async def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
+    """Re-assert every connected integration into each profile's ``config.yaml``
+    (``mcp_servers``) and ``.env`` (the secret values I1's ``${MCP_<SERVER>_<VAR>}`` refs point
+    at), then bump the revision.
+
+    The ``mcp_servers`` block is REPLACED, not merged: a disconnected provider has to disappear,
+    and a merge would leave its server wired forever (the same reason ``reconcile_integrations``
+    rewrites rather than patches today for the ECS/openclaw.json path). ``.revision`` is written
+    LAST, after both files, for the same reason ``upload_profile``/``_upload_config_yaml`` do:
+    the bridge's ``ensure_profile`` must never see a revision bump before the files it describes
+    have actually landed.
+
+    I1 (fix round 1 continuation, M4-R46/M4-R11): genuinely ``async`` — awaits its two producers
+    directly instead of the old ``asyncio.run()``-based sync wrappers (``_connected_servers``/
+    ``_integration_credential``, both deleted). Those blew up with ``RuntimeError`` the moment a
+    caller (``reconcile_integrations`` is itself ``async``) awaited this from inside a running
+    loop, which is exactly the calling context.
+
+    M4-R49 (fix round 2 continuation): the per-agent S3 block below is plain sync boto3 (five
+    round trips per agent between ``_require_text``/``_s3_put``/``_write_mcp_token_files``'s own
+    ``_s3_get``/``_s3_delete``) and this function is now AWAITED DIRECTLY from FastAPI routes and
+    ``catalog_service`` (``routers/integrations.py``, ``core/services/catalog_service.py``) — the
+    exact class of blocking I/O on the event loop this repo already took a prod backend freeze
+    from (EFS tree walk, 2026-09-12). ``_refresh_one_profile`` isolates that block so it can run
+    off the loop via ``run_in_thread``, one hop per agent (fine — an owner's roster is small).
+    """
+    from core.services.credentials import integration_secret_store
+    from core.services.credentials.mcp_server import build_connected_integration_servers
+
+    connected = await build_connected_integration_servers(owner_id)
+    servers, secrets = translate_mcp_servers(connected)
+    # Minor 8: one Secrets Manager read per OAuth server per reconcile, not per (agent, server)
+    # pair — hoisted out of the per-agent loop below.
+    credentials = {
+        name: (await integration_secret_store.get(owner_id, name)) or {}
+        for name, block in connected.items()
+        if block.get("auth") == "oauth"
+    }
+    for agent_id in agent_ids:
+        await run_in_thread(_refresh_one_profile, owner_id, agent_id, connected, servers, secrets, credentials)
+
+
+def _refresh_one_profile(
+    owner_id: str, agent_id: str, connected: dict, servers: dict, secrets: dict, credentials: dict
+) -> None:
+    """The per-agent S3 work of ``refresh_integrations`` — pure sync boto3 (M4-R49), meant to be
+    called through ``run_in_thread`` and never directly from a coroutine."""
+    bucket = settings.OWNER_STATE_BUCKET
+    prefix = profile_prefix(owner_id, agent_id)
+    config = yaml.safe_load(_require_text(bucket, f"{prefix}config.yaml", "config.yaml")) or {}
+    dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
+    previously_oauth = frozenset(
+        name
+        for name, block in (config.get("mcp_servers") or {}).items()
+        if isinstance(block, dict) and block.get("auth") == "oauth"
+    )
+    config["mcp_servers"] = servers
+    _write_mcp_token_files(owner_id, agent_id, connected, credentials, previously_oauth=previously_oauth)
+    _s3_put(bucket, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+    _s3_put(bucket, f"{prefix}.env", _rewrite_mcp_env_lines(dotenv_text, secrets))
+    _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
+
+
+# ---- Task 15: ChatGPT OAuth staged into the ROOT auth.json --------------------------------------
+def root_home_prefix(owner_id: str) -> str:
+    """``<owner>/hermes/`` — the workspace's Hermes ROOT home; profiles live under it."""
+    return f"{owner_id}/hermes/"
+
+
+def stage_codex_auth(owner_id: str, tokens: dict) -> None:
+    """Write the owner's ChatGPT grant into the ROOT ``auth.json``, once per connect — not into
+    any per-profile ``config.yaml``/``.env``.
+
+    Report 06 §2.2: Hermes's ``openai-codex`` provider implements natively the shape this
+    platform used to hand-roll on OpenClaw — a profile with no ``providers.openai-codex`` block
+    reads the ROOT home's grant through the fallback (``hermes_cli/auth.py``), and a refresh
+    under that profile write-throughs to the ROOT chain (``hermes_cli/auth_codex.py``, "own
+    providers.openai-codex block reads root's grant via the fallback, so a refresh under that
+    profile rotates ROOT's chain"). Six per-profile copies would each independently consume the
+    single-use refresh token and OpenAI would revoke the whole family. This replaces the EFS
+    ``credentials/oauth.json`` + clear-auth-sentinel + boot ``doctor --fix`` choreography
+    entirely for an AgentCore row.
+
+    C3 (fix round 1 continuation, M4-R44) + minor 6: read-modify-write, not an unconditional
+    overwrite — an existing ``auth.json`` can hold OTHER providers' state, and clobbering the
+    whole document would silently drop it. ``<owner>/hermes/auth.revision`` is written LAST,
+    always, for the same reason a profile's own ``.revision`` is: the bridge's
+    ``restore_root_auth`` (per-turn revision compare, same shape as ``ensure_profile``) must
+    never see a revision bump before ``auth.json`` itself has landed.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    if not settings.OWNER_STATE_BUCKET:
+        return
+    prefix = root_home_prefix(owner_id)
+    existing = _s3_get(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json")
+    blob = _json.loads(existing) if existing else {}
+    if not isinstance(blob, dict):
+        blob = {}
+    providers = blob.get("providers")
+    providers = dict(providers) if isinstance(providers, dict) else {}
+    payload = {k: v for k, v in tokens.items() if k in ("access_token", "refresh_token", "id_token") and v}
+    providers["openai-codex"] = {
+        "tokens": payload,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "auth_mode": "chatgpt",
+    }
+    blob["providers"] = providers
+    blob["active_provider"] = "openai-codex"
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json", _json.dumps(blob))
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.revision", uuid.uuid4().hex)

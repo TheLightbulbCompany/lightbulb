@@ -18,7 +18,26 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from vendor.hermes_openclaw_migration import openclaw_to_hermes as _translator
 from vendor.hermes_openclaw_migration.openclaw_to_hermes import Migrator
+
+
+def _verbatim(text: str) -> str:
+    return text
+
+
+# Ruling M6-R52: agent memory is customer data and stays VERBATIM. The vendored tool's own
+# rebrand_text() unconditionally rewrites "OpenClaw"/"ClawdBot"/"MoltBot" -> "Hermes"
+# (case-preserving, so "~/.openclaw/config" -> "~/.hermes/config" too) inside migrate_memory
+# and migrate_daily_memory -- the exact three options this wrapper selects -- with no flag to
+# disable it. That is exactly wrong here: "OpenClaw" is THIS platform's own product name and
+# shows up verbatim in real agent memory (a note like "OpenClaw's memory tool truncates at 2200
+# chars" would otherwise be silently rewritten to talk about "Hermes" instead, misrepresenting
+# the user's own words). Every call site above resolves ``rebrand_text`` unqualified, i.e. a
+# plain module-global lookup made at CALL time, not bound at import/construction time -- so
+# replacing the module attribute here neutralizes it for every option this wrapper drives,
+# without touching the vendored file (which must stay byte-identical to upstream).
+_translator.rebrand_text = _verbatim
 
 #: Only the memory-related options -- see ``MIGRATION_OPTION_METADATA`` in the vendored tool.
 #: Every other option it supports (skills, channel settings, config.yaml sections, secrets, cron,

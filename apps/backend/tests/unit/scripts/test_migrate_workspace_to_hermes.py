@@ -263,7 +263,9 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
         assert any(k.endswith("SOUL.md") for k in keys)
         assert any(k.endswith("AGENTS.md") for k in keys)
         # Ruling M6-R47: MEMORY.md + memory/*.md daily notes are merged into memories/MEMORY.md
-        # (not a verbatim raw-dir copy) -- see test_hermes_memory_import.py for the merge itself.
+        # (not a verbatim raw-dir copy) by the vendored Hermes translator -- see
+        # test_hermes_memory_migration.py for the wrapper that drives it (the merge algorithm
+        # itself is upstream code and is deliberately not re-tested in this repo).
         assert any(k.endswith("memories/MEMORY.md") for k in keys)
         assert any("skills/" in k for k in keys)
     # NEVER carried: OpenClaw runtime state (sessions/transcripts/agent auth).

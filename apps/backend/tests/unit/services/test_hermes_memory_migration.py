@@ -52,3 +52,32 @@ def test_build_memory_files_only_soul_or_agents_present_returns_empty_dict(tmp_p
     _write(agent_dir, "AGENTS.md", "playbook")
     _write(agent_dir, "SOUL.md", "# Ada\n")
     assert build_memory_files(agent_dir) == {}
+
+
+def test_build_memory_files_never_rebrands_openclaw_wording(tmp_path):
+    """Ruling M6-R52: agent memory is customer data and stays VERBATIM. The vendored tool's own
+    rebrand_text() unconditionally rewrites OpenClaw/ClawdBot/MoltBot -> Hermes in
+    migrate_memory/migrate_daily_memory -- exactly the options this wrapper drives -- with no
+    flag to disable it. The wrapper must neutralize that before running the translator."""
+    agent_dir = tmp_path / "workspace-agent1"
+    _write(
+        agent_dir,
+        "MEMORY.md",
+        "The user runs OpenClaw Analytics Inc and prefers short replies about openclaw setup at ~/.openclaw/config.",
+    )
+    _write(agent_dir, "memory/2026-09-01.md", "Remember: the ClawdBot integration details live in the daily note.")
+    _write(agent_dir, "USER.md", "User mentioned MoltBot once but mostly talks about OpenClaw.")
+
+    files = build_memory_files(agent_dir)
+    memory_text = files["memories/MEMORY.md"].decode("utf-8")
+    user_text = files["memories/USER.md"].decode("utf-8")
+
+    assert "OpenClaw Analytics Inc" in memory_text
+    assert "~/.openclaw/config" in memory_text
+    assert "ClawdBot" in memory_text
+    assert "MoltBot" in user_text
+    assert "OpenClaw" in user_text
+    # No "Hermes" substitution anywhere in the produced content -- the failure mode a reverted
+    # fix would reintroduce.
+    assert "hermes" not in memory_text.lower()
+    assert "hermes" not in user_text.lower()

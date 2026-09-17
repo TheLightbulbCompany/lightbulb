@@ -421,7 +421,7 @@ _CEO_LINE = (
 
 
 #: First line of a backend-GENERATED ``SOUL.md`` (M6-R48). It is the ONE signal that tells the
-#: rename branch (``runtime_rpc._refresh_agentcore_soul``) whether it may regenerate this file: the
+#: rename branch (``hermes_provisioning.refresh_agent_soul``) whether it may regenerate this file: the
 #: Instructions-tab PUT strips the marker, so once an owner has saved their agent's identity the
 #: file is theirs and a later rename never overwrites it. Text carried in verbatim from somewhere
 #: else — ``write_agent_profile``'s ``soul_md_override`` (a migrated workspace's own EFS SOUL.md, a

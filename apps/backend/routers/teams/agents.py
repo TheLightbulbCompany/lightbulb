@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager, get_workspace
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
@@ -47,6 +48,7 @@ from core.services.paperclip_agent_lifecycle import (
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
+from core.services.runtime_transport import host_for
 from core.services.user_provision import ensure_user_ready, ensure_workspace_trial_default
 
 from . import deps as deps_mod
@@ -62,6 +64,12 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+#: The ``PatchAgentBody`` fields (camelCase, as ``model_dump(by_alias=True)`` emits them) that
+#: ``hermes_profiles.build_soul_md`` renders — i.e. the ones whose change has to reach an
+#: AgentCore agent's ``SOUL.md``. ``role``/``icon`` are in SOUL too but this door cannot patch
+#: them; ``reportsTo``/``budgetMonthlyCents`` are Paperclip-only and never appear in SOUL.
+_SOUL_FIELDS = frozenset({"name", "title", "capabilities"})
 
 
 # Adapter fields are synthesized server-side and must never reach the
@@ -228,6 +236,51 @@ async def _container_is_reachable(
     if not token:
         return False, None, None
     return True, ip, token
+
+
+async def _write_hermes_profile_or_rollback(ctx, owner_id: str, paperclip_agent: dict, container: dict) -> None:
+    """The AgentCore half of ``create_agent``: this agent's Hermes profile, or no agent at all.
+
+    An AgentCore workspace has no container for ``pair_with_openclaw`` to reach — the S3 profile
+    IS this transport's pairing (config.yaml + .env + SOUL.md + the agent's own Paperclip key),
+    and without one the roster row can never run a turn. Writes it through the SAME seam
+    ``runtime_rpc``'s ``agents.create`` door uses (``hermes_provisioning.write_profile_for_agent``,
+    M6-R23), so there stays exactly one profile writer.
+
+    Unlike the ECS branch, a failure here is FATAL and is rolled back (M6-R59): deferring to "the
+    next provision" is an ECS-only escape hatch — nothing re-walks the roster on AgentCore, so a
+    swallowed failure leaves a permanently dead agent in the roster, which is the bug this fixes.
+    The Paperclip row is deleted and the request answers 502, which also frees the create's
+    idempotency key (Paperclip drops the mapping with the agent), so the client's retry is a real
+    retry rather than a replay of the dead id. A rollback that itself fails is logged and still
+    surfaces as 502 — an agent the client can see and delete beats a silent success.
+    """
+    from core.services.hermes_provisioning import write_profile_for_agent
+
+    agent_id = paperclip_agent.get("id")
+    try:
+        await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
+    except Exception as exc:  # noqa: BLE001 — every failure mode rolls back the same way.
+        logger.warning(
+            "teams.create_agent: hermes profile write failed for owner=%s agent=%s — rolling back",
+            owner_id,
+            agent_id,
+            exc_info=True,
+        )
+        try:
+            if agent_id:
+                await _admin().delete_agent(session_cookie=await _user_session(ctx), agent_id=agent_id)
+        except Exception:  # noqa: BLE001 — best effort; the 502 below is the contract.
+            logger.warning(
+                "teams.create_agent: rollback delete failed for owner=%s agent=%s",
+                owner_id,
+                agent_id,
+                exc_info=True,
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="The agent's runtime profile could not be created, so the agent was not kept. Try again.",
+        ) from exc
 
 
 async def _resolve_user_email(user_id: str) -> str:
@@ -504,13 +557,22 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     using ``synthesize_openclaw_adapter``. The client body never carries
     them — ``CreateAgentBody`` rejects extra keys with 422.
 
-    After Paperclip's create succeeds, we call ``pair_with_openclaw`` to
-    register the new agent in the OWNER's running container (org_id for
-    org members, user_id for personal users) so ``/chat`` sees the same
-    agent. If the container isn't reachable (provisioning in progress
-    or scaled to zero), pairing is silently skipped — the next container
-    provision will pick up the new agent via ``list_agents``. Pairing
+    What happens after Paperclip's create depends on the owner's transport
+    (``runtime_transport.host_for``), exactly as ``runtime_rpc``'s own
+    ``agents.create`` door branches (M6-R59 — this door used to know only the
+    ECS half, so an agent created on a migrated workspace got no Hermes profile
+    and could never run a turn):
+
+    ECS — ``pair_with_openclaw`` registers the new agent in the OWNER's running
+    container (org_id for org members, user_id for personal users) so ``/chat``
+    sees the same agent. If the container isn't reachable (provisioning in
+    progress or scaled to zero), pairing is silently skipped — the next
+    container provision will pick up the new agent via ``list_agents``. Pairing
     failures are non-fatal for the same reason.
+
+    AgentCore — no container exists to pair with; the agent's S3 Hermes profile
+    is what makes it runnable, and a failure to write one is fatal + rolled back
+    (see ``_write_hermes_profile_or_rollback``).
     """
     creator_user_id = _creator_user_id(ctx)
     owner_id = _resolve_owner_id(ctx)
@@ -556,32 +618,37 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
         idempotency_key=idempotency_key,
     )
 
-    # Pair with the owner's OpenClaw container if reachable. Failure is
-    # non-fatal — the next container provision picks the agent up via
-    # ``fetch_paperclip_agents_for_owner``.
-    reachable, ip, token = await _container_is_reachable(owner_id)
-    if reachable and ip and token:
-        try:
-            await pair_with_openclaw(
-                owner_id=owner_id,
-                paperclip_agent=paperclip_agent,
-            )
-            # Register the new agent's operator device into the running
-            # container's paired.json + bind its authToken to the gateway
-            # token, so its first relayed connect isn't rejected NOT_PAIRED.
-            # Provision-time pairing only covers agents that exist at provision.
-            await ensure_operator_device_paired(
-                owner_id=owner_id,
-                paperclip_agent=paperclip_agent,
-                gateway_token=token,
-            )
-        except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
-            logger.warning(
-                "teams.create_agent: pair_with_openclaw failed for owner=%s agent=%s — deferring to next provision: %s",
-                owner_id,
-                paperclip_agent.get("id"),
-                exc,
-            )
+    container = await container_repo.get_by_owner_id(owner_id) or {}
+    if host_for(container) == "agentcore":
+        await _write_hermes_profile_or_rollback(ctx, owner_id, paperclip_agent, container)
+    else:
+        # Pair with the owner's OpenClaw container if reachable. Failure is
+        # non-fatal — the next container provision picks the agent up via
+        # ``fetch_paperclip_agents_for_owner``.
+        reachable, ip, token = await _container_is_reachable(owner_id)
+        if reachable and ip and token:
+            try:
+                await pair_with_openclaw(
+                    owner_id=owner_id,
+                    paperclip_agent=paperclip_agent,
+                )
+                # Register the new agent's operator device into the running
+                # container's paired.json + bind its authToken to the gateway
+                # token, so its first relayed connect isn't rejected NOT_PAIRED.
+                # Provision-time pairing only covers agents that exist at provision.
+                await ensure_operator_device_paired(
+                    owner_id=owner_id,
+                    paperclip_agent=paperclip_agent,
+                    gateway_token=token,
+                )
+            except Exception as exc:  # noqa: BLE001 — pairing failure is deferred.
+                logger.warning(
+                    "teams.create_agent: pair_with_openclaw failed for owner=%s agent=%s"
+                    " — deferring to next provision: %s",
+                    owner_id,
+                    paperclip_agent.get("id"),
+                    exc,
+                )
 
     # Redact adapterConfig/adapterType before returning, exactly like the read
     # paths and the /chat websocket create path. Paperclip echoes the full
@@ -653,6 +720,26 @@ async def patch_agent(
         body=payload,
         session_cookie=ctx.session_cookie,
     )
+    if _SOUL_FIELDS.intersection(payload):
+        # M6-R59: on AgentCore an agent's identity reaches it ONLY through its S3 ``SOUL.md``
+        # (there is no openclaw.json), so a rename/retitle that stops at the Paperclip row
+        # leaves the agent introducing itself by its old name forever. Same shared helper —
+        # and the same generated-marker rule — as ``runtime_rpc``'s ``agents.update`` door.
+        # Non-fatal, unlike create: the Paperclip row (what the UI reads) is already correct.
+        owner_id = _resolve_owner_id(ctx)
+        container = await container_repo.get_by_owner_id(owner_id) or {}
+        if host_for(container) == "agentcore":
+            from core.services.hermes_provisioning import refresh_agent_soul
+
+            try:
+                await refresh_agent_soul(owner_id, agent_id)
+            except Exception:  # noqa: BLE001 — the roster row landed; SOUL is best effort.
+                logger.warning(
+                    "teams.patch_agent: SOUL refresh failed for owner=%s agent=%s",
+                    owner_id,
+                    agent_id,
+                    exc_info=True,
+                )
     # Paperclip may echo the full agent record (including adapterConfig)
     # in PATCH responses; redact for the same reason as the GETs.
     return _redact_agent(upstream)

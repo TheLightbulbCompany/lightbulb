@@ -362,3 +362,209 @@ async def test_teams_create_agent_mints_with_user_id_for_personal_owner(monkeypa
 
     # Personal owner: sub == user_id (no regression).
     mint_mock.assert_called_once_with("user_personal")
+
+
+# ---------------------------------------------------------------------------
+# M6-R59: the Teams create/patch doors on a MIGRATED (AgentCore) workspace.
+#
+# There is no container to pair with there, so the ECS pairing block was simply
+# skipped and nothing wrote the agent's Hermes profile -- the roster row existed
+# and the agent could never run a turn (found live on a migrated dev workspace).
+# ---------------------------------------------------------------------------
+
+_AGENTCORE_ROW = {
+    "owner_id": "org_xyz",
+    "runtime_host": "agentcore",
+    "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x",
+    "hook_token": "hook-tok",
+    "bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"},
+}
+
+
+def _agentcore_ctx():
+    ctx = MagicMock()
+    ctx.auth.user_id = "user_member_b"
+    ctx.auth.org_id = "org_xyz"
+    ctx.company_id = "co_xyz"
+    return ctx
+
+
+def _wire_create_agent(monkeypatch, *, container, paperclip_agent):
+    """Stub the I/O ``create_agent`` does either side of the transport branch."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=container))
+    admin_instance = MagicMock()
+    admin_instance.create_agent = AsyncMock(return_value=paperclip_agent)
+    admin_instance.delete_agent = AsyncMock(return_value={})
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin_instance)
+    monkeypatch.setattr("routers.teams.agents._user_session", AsyncMock(return_value="cookie123"))
+    return admin_instance
+
+
+@pytest.mark.asyncio
+async def test_teams_create_agent_on_agentcore_writes_the_hermes_profile(monkeypatch):
+    """The profile write IS this transport's pairing -- through the same
+    ``hermes_provisioning.write_profile_for_agent`` seam runtime_rpc's agents.create uses,
+    and with no container pairing attempted at all."""
+    paperclip_agent = {"id": "11111111-1111-1111-1111-111111111111", "name": "Helper", "role": "engineer"}
+    _wire_create_agent(monkeypatch, container=_AGENTCORE_ROW, paperclip_agent=paperclip_agent)
+    write_profile = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
+    pair_mock = AsyncMock()
+    monkeypatch.setattr("routers.teams.agents.pair_with_openclaw", pair_mock)
+    paired_mock = AsyncMock()
+    monkeypatch.setattr("routers.teams.agents.ensure_operator_device_paired", paired_mock)
+    reachable = AsyncMock(side_effect=AssertionError("no container probe on an agentcore row"))
+    monkeypatch.setattr("routers.teams.agents._container_is_reachable", reachable)
+
+    from routers.teams.agents import create_agent
+    from routers.teams.schemas import CreateAgentBody
+
+    result = await create_agent(CreateAgentBody(name="Helper", role="engineer"), _agentcore_ctx())
+
+    assert result["id"] == paperclip_agent["id"]
+    write_profile.assert_awaited_once()
+    args, kwargs = write_profile.await_args
+    assert args[0] == "org_xyz"
+    assert args[1]["id"] == paperclip_agent["id"]
+    assert kwargs["container_row"] == _AGENTCORE_ROW
+    pair_mock.assert_not_awaited()
+    paired_mock.assert_not_awaited()
+    reachable.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_teams_create_agent_on_agentcore_rolls_back_when_the_profile_write_fails(monkeypatch):
+    """A failed profile write must never leave a roster row that cannot run: the Paperclip
+    agent is deleted and the request answers 502 instead of a silent 200."""
+    from fastapi import HTTPException
+
+    paperclip_agent = {"id": "22222222-2222-2222-2222-222222222222", "name": "Helper", "role": "engineer"}
+    admin_instance = _wire_create_agent(monkeypatch, container=_AGENTCORE_ROW, paperclip_agent=paperclip_agent)
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning.write_profile_for_agent",
+        AsyncMock(side_effect=RuntimeError("s3 down")),
+    )
+
+    from routers.teams.agents import create_agent
+    from routers.teams.schemas import CreateAgentBody
+
+    with pytest.raises(HTTPException) as excinfo:
+        await create_agent(CreateAgentBody(name="Helper", role="engineer"), _agentcore_ctx())
+
+    assert excinfo.value.status_code == 502
+    admin_instance.delete_agent.assert_awaited_once_with(session_cookie="cookie123", agent_id=paperclip_agent["id"])
+
+
+@pytest.mark.asyncio
+async def test_teams_create_agent_on_ecs_row_never_writes_a_hermes_profile(monkeypatch):
+    """The ECS branch is unchanged: container pairing, no S3 profile."""
+    paperclip_agent = {"id": "33333333-3333-3333-3333-333333333333", "name": "Helper", "role": "engineer"}
+    _wire_create_agent(
+        monkeypatch,
+        container={"owner_id": "org_xyz", "runtime_host": "ecs", "gateway_token": "gw"},
+        paperclip_agent=paperclip_agent,
+    )
+    write_profile = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
+    pair_mock = AsyncMock()
+    monkeypatch.setattr("routers.teams.agents.pair_with_openclaw", pair_mock)
+    monkeypatch.setattr("routers.teams.agents.ensure_operator_device_paired", AsyncMock())
+    monkeypatch.setattr(
+        "routers.teams.agents._container_is_reachable",
+        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
+    )
+
+    from routers.teams.agents import create_agent
+    from routers.teams.schemas import CreateAgentBody
+
+    await create_agent(CreateAgentBody(name="Helper", role="engineer"), _agentcore_ctx())
+
+    write_profile.assert_not_awaited()
+    pair_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("container", "body_kwargs", "expected"),
+    [
+        (_AGENTCORE_ROW, {"name": "Renamed"}, True),
+        (_AGENTCORE_ROW, {"title": "Head of Ops"}, True),
+        # budgetMonthlyCents never appears in SOUL.md -- no S3 round trip for it.
+        (_AGENTCORE_ROW, {"budget_monthly_cents": 500}, False),
+        ({"owner_id": "org_xyz", "runtime_host": "ecs"}, {"name": "Renamed"}, False),
+    ],
+)
+async def test_teams_patch_agent_refreshes_soul_only_on_agentcore_identity_edits(
+    monkeypatch, container, body_kwargs, expected
+):
+    """A rename reaches a Hermes agent ONLY through its SOUL.md -- and only there."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=container))
+    admin_instance = MagicMock()
+    admin_instance.patch_agent = AsyncMock(return_value={"id": "agent-1", "name": "Renamed"})
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin_instance)
+    refresh = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.refresh_agent_soul", refresh)
+
+    from routers.teams.agents import patch_agent
+    from routers.teams.schemas import PatchAgentBody
+
+    await patch_agent("agent-1", PatchAgentBody(**body_kwargs), _agentcore_ctx())
+
+    assert refresh.await_count == (1 if expected else 0)
+    if expected:
+        refresh.assert_awaited_once_with("org_xyz", "agent-1")
+
+
+@pytest.mark.asyncio
+async def test_teams_patch_agent_survives_a_failed_soul_refresh(monkeypatch):
+    """The Paperclip row (what the UI reads) already landed, so a SOUL hiccup is logged,
+    not raised -- unlike create, where the agent would be dead on arrival."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=_AGENTCORE_ROW))
+    admin_instance = MagicMock()
+    admin_instance.patch_agent = AsyncMock(return_value={"id": "agent-1"})
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin_instance)
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning.refresh_agent_soul",
+        AsyncMock(side_effect=RuntimeError("s3 down")),
+    )
+
+    from routers.teams.agents import patch_agent
+    from routers.teams.schemas import PatchAgentBody
+
+    assert await patch_agent("agent-1", PatchAgentBody(name="Renamed"), _agentcore_ctx()) == {"id": "agent-1"}
+
+
+@pytest.mark.asyncio
+async def test_teams_delete_agent_on_agentcore_removes_the_s3_profile(monkeypatch):
+    """Delete already reached the profile through ``delete_agent_everywhere``'s own AgentCore
+    branch -- pinned here at the Teams door so the third route cannot regress with the others."""
+    from unittest.mock import patch
+
+    from core.services import paperclip_agent_lifecycle as lifecycle
+
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(_AGENTCORE_ROW, "agentcore"))
+    delete_profile = MagicMock()
+    workspace = MagicMock()
+
+    from routers.teams.agents import delete_agent
+
+    with (
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=workspace),
+        patch("core.services.hermes_profiles.delete_profile", delete_profile),
+        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock()),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
+    ):
+        result = await delete_agent("agent-1", _agentcore_ctx())
+
+    assert result["deleted"] is True
+    delete_profile.assert_called_once_with("org_xyz", "agent-1")
+    delete_paperclip.assert_awaited_once_with(owner_id="org_xyz", agent_id="agent-1")

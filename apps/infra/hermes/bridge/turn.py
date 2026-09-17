@@ -161,6 +161,67 @@ def publish_frame(endpoint: str, channel: str, event: dict) -> int:
         return 0
 
 
+# ---- frame vocabulary (spec §5 "Run lifecycle"; report 03 §4 transformAgentEvent) ------------
+# runs.ts:277-292 — "completed" is the internal name, "done" is the wire value, and an
+# aborted run's message is ALWAYS this string (there is no "Run stopped by <user>" text
+# anywhere in the product today; attributing the stop is a new field, not parity).
+_WIRE_OUTCOME = {"completed": "done", "error": "error", "aborted": "aborted",
+                 "ignored": "ignored", "gate_error": "gate_error"}
+ABORT_MESSAGE = "Agent run was cancelled"
+DEFAULT_ERROR_MESSAGE = "Agent run failed"
+# tool_progress_callback also fires for tool lifecycle; those are already tool_start /
+# tool_end, so only the other events become agent_activity.
+_TOOL_PROGRESS_EVENTS = frozenset({"tool.started", "tool.completed", "tool.output_risk"})
+
+
+class FramePublisher:
+    """One POST per frame, fire-and-forget. A frame never fails a run."""
+
+    def __init__(self, endpoint, channel, room_id, agent_id, run_id, thread_root, publish=None):
+        self._endpoint, self._channel = endpoint, channel
+        self._room_id, self._agent_id, self._run_id, self._thread_root = room_id, agent_id, run_id, thread_root
+        self._publish = publish or publish_frame
+
+    def emit(self, frame: dict) -> None:
+        if not self._endpoint or not self._channel:
+            return
+        try:
+            self._publish(self._endpoint, self._channel,
+                          frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, frame))
+        except Exception:  # noqa: BLE001
+            log.warning("frame emit failed", exc_info=True)
+
+    def started(self) -> None:
+        self.emit({"type": "run_active", "active": True})
+
+    def tool_start(self, call_id, name, args=None, **_kw) -> None:
+        self.emit({"type": "tool_start", "tool": name, "toolCallId": call_id, "args": args or {}})
+
+    def tool_complete(self, call_id, name, args, result, **_kw) -> None:
+        failed = isinstance(result, dict) and bool(result.get("error"))
+        self.emit({"type": "tool_error" if failed else "tool_end", "tool": name,
+                   "toolCallId": call_id, "result": result})
+
+    def activity(self, event, tool_name=None, preview=None, args=None, **_kw) -> None:
+        if event in _TOOL_PROGRESS_EVENTS:
+            return
+        self.emit({"type": "agent_activity", "activity": event, "title": tool_name or "",
+                   "detail": {"preview": preview}})
+
+    def finished(self, outcome: str, text: str, error: str | None) -> None:
+        """The closing sequence: a client that missed streaming still ends with the whole
+        text (runs.ts:284-288), then done|error, run_ended, run_active:false."""
+        if outcome == "completed":
+            if text:
+                self.emit({"type": "chunk", "content": text})
+            self.emit({"type": "done"})
+        else:
+            message = ABORT_MESSAGE if outcome == "aborted" else (error or DEFAULT_ERROR_MESSAGE)
+            self.emit({"type": "error", "message": message})
+        self.emit({"type": "run_ended", "outcome": _WIRE_OUTCOME.get(outcome, "error")})
+        self.emit({"type": "run_active", "active": False})
+
+
 # ---- structured room context (spec §5 "Context and threading") ------------------------------
 def room_context(body: dict, agent_id: str) -> dict:
     """The structured room payload the agent reasons over — the Hermes home of OpenClaw's
@@ -264,6 +325,10 @@ def _construct_agent(agent_id: str, body: dict, frames):
     from run_agent import AIAgent
 
     room = body.get("room") or {}
+    callbacks = {}
+    if frames is not None:
+        callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
+                     "tool_progress_callback": frames.activity}
     return AIAgent(
         model=MODEL,
         provider="bedrock",
@@ -273,6 +338,7 @@ def _construct_agent(agent_id: str, body: dict, frames):
         user_id=str((body.get("sender") or {}).get("id", "")),
         chat_id=str(room.get("id", "")),
         chat_type="dm" if room.get("kind") == "dm" else "group",
+        **callbacks,
     )
 
 
@@ -311,6 +377,8 @@ def run_turn(agent_id: str, body: dict) -> None:
     msg = body.get("message") or {}
     session_key = f"agent:{agent_id}:lightbulb:{room.get('kind', 'channel')}:{room.get('id')}"
     thread_root = reply_thread_root(room.get("kind", "channel"), msg)
+    frames = FramePublisher(run.get("frameEndpoint", ""), run.get("frameChannel", ""),
+                            room.get("id"), agent_id, run_id, thread_root)
     _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
     t0 = time.time()
@@ -323,6 +391,7 @@ def run_turn(agent_id: str, body: dict) -> None:
     try:
         restore_profile(agent_id)
         _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
+        frames.started()
         threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
         turn_session_id = f"{room.get('id')}:{agent_id}"
         write_turn_context(_profile_dir(agent_id), turn_session_id, {
@@ -332,12 +401,13 @@ def run_turn(agent_id: str, body: dict) -> None:
             "localSessionToken": None,
         })
         try:
-            outcome, error_kind, reply, usage = _run_hermes(agent_id, body, None)
+            outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
         finally:
             clear_turn_context(_profile_dir(agent_id), turn_session_id)
     except Exception as exc:  # noqa: BLE001
         outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE
         log.error("turn %s failed: %s\n%s", run_id, exc, traceback.format_exc())
+    frames.finished(outcome, reply, error_kind)
     done.set()
     took = time.time() - t0
     if reply:

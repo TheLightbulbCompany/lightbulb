@@ -56,6 +56,23 @@ import logging
 import os
 import sys
 
+from core.config import settings
+
+try:
+    # Task 17 lands core.services.hermes_provisioning. Imported eagerly (unlike this
+    # module's other core.* imports, which are lazy inside functions) so tests can
+    # monkeypatch `provision_runner.hermes_provisioning` directly, and so the flag
+    # branch below has something to call even before Task 17 exists.
+    from core.services import hermes_provisioning
+except ImportError:  # pragma: no cover — stand-in until Task 17 lands the real module
+
+    class _HermesProvisioningNotReady:
+        @staticmethod
+        def provision_hermes_runtime(owner_id: str) -> str:
+            raise NotImplementedError("core.services.hermes_provisioning is not implemented yet (Task 17)")
+
+    hermes_provisioning = _HermesProvisioningNotReady()
+
 EXIT_OK = 0
 EXIT_DETERMINISTIC = 10
 EXIT_TRANSIENT = 11
@@ -132,10 +149,17 @@ async def _container_already_healthy(manager, owner_id: str, row: dict | None) -
         return False
 
 
-async def _seed_owner_paperclip(owner_id: str) -> int:
+async def _seed_owner_paperclip(owner_id: str, *, runtime_host: str | None = None) -> int:
     """Step 0: run the OWNER Paperclip seed under the executor's single-flight,
     BEFORE the container work. Returns an exit code from the runner's ABI
     (0 ok / 10 deterministic / 11 transient).
+
+    ``runtime_host``: forwarded to ``_ensure_paperclip_for_org`` only when set
+    (M4-R8) — ``run()`` passes ``"agentcore"`` here when ``settings.HERMES_RUNTIME``
+    is on, so the starter-seed loop wires the ``http`` adapter for every agent
+    BEFORE the containers row exists to read it from (see
+    ``paperclip_adapter_config.adapter_type_for``). ``None`` (the default, and
+    every non-Hermes caller) is unchanged behavior.
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + starter roster) on the poll thread, where load-balanced
@@ -214,12 +238,10 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
         # the company already exists (an idempotent re-run) this same call
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
-        await _ensure_paperclip_for_org(
-            org_id=owner_id,
-            user_id=creator_user_id,
-            email=owner_email,
-            is_admin=True,
-        )
+        ensure_org_kwargs = dict(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
+        if runtime_host is not None:
+            ensure_org_kwargs["runtime_host"] = runtime_host
+        await _ensure_paperclip_for_org(**ensure_org_kwargs)
         await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
@@ -235,7 +257,11 @@ async def run(owner_id: str, claim_id: str) -> int:
     from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
 
     bind_log_context(user_id=owner_id)
-    manager = _get_manager()
+    # Hermes/AgentCore has no ECS service to manage — the manager is purely an ECS
+    # concept, so it is never constructed on that leg (tests rely on this: a manager
+    # double that explodes on any call proves the Hermes leg never touches it).
+    runtime_host = "agentcore" if settings.HERMES_RUNTIME else None
+    manager = None if settings.HERMES_RUNTIME else _get_manager()
     # Attempt-token fencing (hazard 1, spec §7): every attempt -- including
     # attempt 0, where this is a same-value no-op re-assertion -- re-stamps
     # the row's provision_attempt_token BEFORE any other checkpoint. See
@@ -260,7 +286,11 @@ async def run(owner_id: str, claim_id: str) -> int:
         # same release_provision_to_error pattern provision_user_container uses
         # for its own failures — so seed success is tied to the execution rather
         # than silently swallowed.
-        seed_exit = await _seed_owner_paperclip(owner_id)
+        # Omit runtime_host entirely (rather than passing it as None) when the flag is
+        # off, so every existing ECS-leg caller's _seed_owner_paperclip call stays
+        # byte-identical (M4-R8: "ECS callers unchanged").
+        seed_kwargs = {"runtime_host": runtime_host} if runtime_host is not None else {}
+        seed_exit = await _seed_owner_paperclip(owner_id, **seed_kwargs)
         if seed_exit != EXIT_OK:
             try:
                 await container_repo.release_provision_to_error(
@@ -277,6 +307,14 @@ async def run(owner_id: str, claim_id: str) -> int:
             except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
                 logger.exception("seed step 0: error release failed for owner %s", owner_id)
             return seed_exit
+
+        if settings.HERMES_RUNTIME:
+            # CreateAgentRuntime is one synchronous call, so there is no service to poll and
+            # no generation to re-read: provision_hermes_runtime writes the terminal row
+            # itself. Everything below this branch (manager, pre_row/generation fencing,
+            # wait_for_running) is an ECS concept and is skipped wholesale.
+            hermes_provisioning.provision_hermes_runtime(owner_id)
+            return EXIT_OK
 
         # Read the container-incarnation fence off the row (see module
         # docstring for why this is NOT threaded through the SFN input).

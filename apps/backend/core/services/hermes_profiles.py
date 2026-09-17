@@ -512,3 +512,72 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     # the same millisecond would otherwise write an identical ".revision" value and the bridge's
     # diff-and-repull could miss the second one.
     await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
+
+
+# ---- Task 13a: config.get/config.patch/config.set on an AgentCore row --------------------------
+# Spec §4.5: "Config is read once per AIAgent construction and cached on file mtime, so rewriting
+# profiles/<id>/config.yaml takes effect on the agent's next turn. No watcher, no restart." The
+# backend is the ONLY writer of a Hermes profile, so a hot patch is an S3 rewrite plus a revision
+# bump — never a round trip to a live microVM. This is what deletes config_patcher.py's EFS locks
+# for an AgentCore row (the ECS path is untouched and keeps using them).
+
+
+def _s3_put(bucket: str, key: str, body: str) -> None:
+    """Sync single-object PUT for the small, infrequent settings-mutation paths below
+    (``config.patch``/``config.set``, and Task 14's token-file writes) — each stays a pure sync
+    function (matching its own tests); their one async caller, ``runtime_rpc.execute_sync``,
+    wraps the call in ``core.dynamodb.run_in_thread`` so the blocking I/O here never touches the
+    event loop directly. ``upload_profile`` above is the higher-fanout path (up to five objects
+    per agent) and owns its own one-client-reused async design instead."""
+    import boto3
+
+    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=body.encode())
+
+
+def _s3_get(bucket: str, key: str) -> str | None:
+    import boto3
+    import botocore.exceptions
+
+    try:
+        return boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+    except botocore.exceptions.ClientError:
+        return None
+
+
+def read_profile_config(owner_id: str, agent_id: str) -> dict:
+    """``config.get`` — reads ``config.yaml`` alone. NEVER ``.env``: that file holds secret
+    values (M4-R1), and this is the one path a settings-read RPC can reach."""
+    body = _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}config.yaml")
+    return yaml.safe_load(body) if body else {}
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _upload_config_yaml(owner_id: str, agent_id: str, config: dict) -> None:
+    prefix = profile_prefix(owner_id, agent_id)
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+    # LAST, always — same reasoning as upload_profile's .revision write above.
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
+
+
+def patch_profile_config(owner_id: str, agent_id: str, patch: dict) -> dict:
+    """``config.patch`` — deep merge onto the stored config, then re-upload."""
+    config = _deep_merge(read_profile_config(owner_id, agent_id), patch or {})
+    _upload_config_yaml(owner_id, agent_id, config)
+    return config
+
+
+def set_profile_config(owner_id: str, agent_id: str, config: dict) -> dict:
+    """``config.set`` — a full REPLACE, not a merge (unlike ``patch_profile_config``): a key
+    present in the stored config but absent from ``config`` does not survive. The caller is
+    responsible for handing over a complete profile shape."""
+    config = config or {}
+    _upload_config_yaml(owner_id, agent_id, config)
+    return config

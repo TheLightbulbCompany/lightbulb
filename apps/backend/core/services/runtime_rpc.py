@@ -12,15 +12,17 @@ import httpx
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
+from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import container_rpc
+from core.services import container_rpc, hermes_profiles, runtime_transport
 from core.services.live_events import publish_owner_users
 from core.services.messaging import (
     ApiProblem,
     RuntimeOperationAccepted,
     RuntimeRpcRequest,
     RuntimeRpcResponse,
+    load_agent_roster,
     make_live_event,
     runtime_operation,
 )
@@ -128,6 +130,9 @@ _MUTATING_METHODS = frozenset(
 )
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
 _RPC_TIMEOUT_S = 30.0
+#: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster for an AgentCore row,
+#: never forwarded to a live gateway socket. ECS rows are untouched — see _is_agentcore below.
+_HERMES_PROFILE_METHODS = frozenset({"config.get", "config.patch", "config.set", "agents.list"})
 # A mutating method that lands here invalidates the named resource for every
 # open frontend tab (the prior per-connection `*.changed` broadcast is gone).
 _INVALIDATES = {
@@ -140,6 +145,13 @@ _INVALIDATES = {
     "skills.proposals.apply": "skills",
     "skills.proposals.reject": "skills",
 }
+
+
+async def _is_agentcore(owner_id: str) -> bool:
+    """Whether this owner's runtime is AgentCore. Reuses ``runtime_transport``'s own
+    owner-id-only helper (built for exactly this call shape — see its docstring) instead of a
+    second copy of the ``container_repo`` fetch + ``host_for`` check."""
+    return await runtime_transport.is_agentcore_owner(owner_id)
 
 
 async def _invalidate(owner_id: str, method: str) -> None:
@@ -334,6 +346,34 @@ async def execute_sync(
             await _mirror_agent_update(owner_id, params)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
+    if method in _HERMES_PROFILE_METHODS and await _is_agentcore(owner_id):
+        # M4-R1: an AgentCore row's Hermes profile lives in S3, not behind a live gateway
+        # socket — the backend is the ONLY writer of a profile (spec §4.5), so these are
+        # served/rewritten here with no microVM wake for a settings read. config.get NEVER
+        # returns .env content (it reads config.yaml alone). config.set/config.patch bump
+        # .revision on write, and the bridge re-pulls before the agent's next turn (Task 13b).
+        # ECS rows fall straight through to the container_rpc.call below, unchanged.
+        if method == "agents.list":
+            return await load_agent_roster(owner_id)
+        agent_id = params.get("agentId")
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
+        # hermes_profiles.{read,patch,set}_profile_config are plain sync functions that do
+        # blocking S3 I/O directly (see their own module docstring) — run_in_thread here is what
+        # keeps that off the event loop; this repo already took a prod backend freeze from
+        # blocking I/O on the loop (EFS tree walk, 2026-09-12).
+        if method == "config.get":
+            return await run_in_thread(hermes_profiles.read_profile_config, owner_id, agent_id)
+        if method == "config.set":
+            result = await run_in_thread(
+                hermes_profiles.set_profile_config, owner_id, agent_id, params.get("config") or {}
+            )
+        else:
+            result = await run_in_thread(
+                hermes_profiles.patch_profile_config, owner_id, agent_id, params.get("patch") or {}
+            )
+        await _invalidate(owner_id, method)
+        return result
     try:
         result = await container_rpc.call(owner_id, method, params, timeout_s=_RPC_TIMEOUT_S)
     except asyncio.CancelledError:

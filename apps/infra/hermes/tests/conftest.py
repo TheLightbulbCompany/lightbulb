@@ -24,3 +24,17 @@ def posted(monkeypatch):
     calls = []
     monkeypatch.setattr(turn, "_post_backend", lambda path, body: (calls.append((path, body)), 200)[1])
     return calls
+
+
+@pytest.fixture(autouse=True)
+def _clear_run_registry():
+    """turn.RUNS is process-global mutable state, and tests/factories.py's f.ingress() always
+    uses the same fixed runId -- without this, a test that leaves an entry "aborted" (e.g. an
+    abort test) can silently poison a LATER, unrelated test that reuses the same run id via
+    the default factory (surfaced by the review-fix round: test_ambient_gate.py's tests
+    started reporting outcome "aborted" instead of their own outcome once test_abort.py grew
+    more abort-leaving-state tests, purely from alphabetical test-file execution order)."""
+    from bridge import turn
+    turn.RUNS.clear()
+    yield
+    turn.RUNS.clear()

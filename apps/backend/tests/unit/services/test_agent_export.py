@@ -9,8 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import boto3  # noqa: E402
 import pytest  # noqa: E402
+from moto import mock_aws  # noqa: E402
 
+from core.config import settings  # noqa: E402
 from core.services import agent_export  # noqa: E402
 
 
@@ -1986,3 +1989,106 @@ def test_cap_applies_to_explicit_paths_too(fake_efs, monkeypatch):
     monkeypatch.setattr(agent_export, "_MAX_EXPORT_BYTES", 1024)
     with pytest.raises(agent_export.ExportTooLargeError):
         agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["dump.json"])
+
+
+# ---------------------------------------------------------------------------
+# AgentCore (Hermes) sellers: export reads the S3 profile prefix, not EFS.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_agent_location_returns_s3_prefix_for_agentcore_owner():
+    container = {"owner_id": "owner_1", "runtime_host": "agentcore"}
+    with patch("core.services.agent_export.runtime_transport.host_for", return_value="agentcore"):
+        result = agent_export._resolve_agent_location(seller_id="owner_1", agent_id="agent_9", container=container)
+    assert result == ("s3", "owner_1/hermes/agent_9")
+
+
+def test_resolve_agent_location_returns_efs_path_for_ecs_owner():
+    container = {"owner_id": "owner_1", "runtime_host": "ecs"}
+    with patch("core.services.agent_export.runtime_transport.host_for", return_value="ecs"):
+        kind, value = agent_export._resolve_agent_location(seller_id="owner_1", agent_id="agent_9", container=container)
+    assert kind == "efs"
+    assert isinstance(value, Path)
+
+
+def test_resolve_agent_location_defaults_to_efs_when_container_omitted():
+    """No container in hand (every existing call site, today) must keep
+    behaving exactly like EFS-only resolution -- host_for's own default for
+    an absent/unknown runtime_host is "ecs"."""
+    kind, _ = agent_export._resolve_agent_location(seller_id="owner_1", agent_id="agent_9")
+    assert kind == "efs"
+
+
+@pytest.fixture
+def s3_hermes_bucket():
+    """Moto-backed S3 bucket wired in as settings.LITESTREAM_BUCKET -- the
+    same bucket the Hermes bridge's sync.py uploads owner profiles into
+    (<owner>/hermes/<agent_id>/...)."""
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket="test-replicas")
+        with patch.object(settings, "LITESTREAM_BUCKET", "test-replicas"):
+            yield client
+
+
+def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, tmp_path):
+    prefix = "owner_1/hermes/agent_1"
+    keep = {
+        "SOUL.md": b"# Soul",
+        "config.yaml": b"model: ${ANTHROPIC_MODEL}",
+        "skills/foo.md": b"# Foo skill",
+    }
+    drop = {
+        ".env": b"SECRET=1",
+        ".revision": b"abc123",
+        "sessions/session-1.json": b"{}",
+        "sessions/request_dump_20260101.json": b"{}",
+        "logs/app.log": b"boot ok",
+        "mcp-tokens/stripe.json": b'{"token": "x"}',
+    }
+    for key, body in {**keep, **drop}.items():
+        s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/{key}", Body=body)
+
+    dest = tmp_path / "profile"
+    dest.mkdir()
+    agent_export._download_s3_profile(prefix, dest)
+
+    downloaded = {str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file()}
+    assert downloaded == set(keep.keys())
+
+
+def test_export_agent_from_efs_reads_s3_profile_for_agentcore_owner(fake_efs, s3_hermes_bucket):
+    """An AgentCore seller's export must come from their Hermes S3 profile,
+    not the (irrelevant, untouched) EFS workspace-{id}/ dir the fake_efs
+    fixture also builds -- README.md/scripts/run.sh live only on EFS and
+    must NOT ship."""
+    seller_id, agent_id, _agent_dir = fake_efs
+    prefix = f"{seller_id}/hermes/{agent_id}"
+    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/SOUL.md", Body=b"# Soul")
+    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/.env", Body=b"SECRET=1")
+    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/sessions/x.json", Body=b"{}")
+
+    pkg = agent_export.export_agent_from_efs(
+        seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
+    )
+
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert any("SOUL.md" in n for n in names)
+    assert not any("README.md" in n for n in names)
+    assert not any(".env" in n for n in names)
+    assert not any("sessions" in n for n in names)
+    assert pkg.manifest["agent_id"] == agent_id
+
+
+def test_enumerate_for_preview_reads_s3_profile_for_agentcore_owner(fake_efs, s3_hermes_bucket):
+    seller_id, agent_id, _agent_dir = fake_efs
+    prefix = f"{seller_id}/hermes/{agent_id}"
+    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/SOUL.md", Body=b"# Soul")
+    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/.env", Body=b"SECRET=1")
+
+    preview = agent_export.enumerate_for_preview(
+        seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
+    )
+
+    assert preview["agent_id"] == agent_id
+    assert "SOUL.md" in preview["persona_files"]

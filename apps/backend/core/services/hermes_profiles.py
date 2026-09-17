@@ -581,3 +581,105 @@ def set_profile_config(owner_id: str, agent_id: str, config: dict) -> dict:
     config = config or {}
     _upload_config_yaml(owner_id, agent_id, config)
     return config
+
+
+# ---- Task 14: integration token refresh rewrites the profile -----------------------------------
+def _connected_servers(owner_id: str) -> dict:
+    """Sync seam over the async producer — this whole module stays a plain-sync/one-caller-wraps-
+    it design (see upload_profile's own docstring), and ``refresh_integrations``'s one caller
+    (``credentials.mcp_server.reconcile_integrations``) already runs this under ``run_in_thread``."""
+    import asyncio
+
+    from core.services.credentials.mcp_server import build_connected_integration_servers
+
+    return asyncio.run(build_connected_integration_servers(owner_id))
+
+
+def _integration_credential(owner_id: str, provider: str) -> dict:
+    import asyncio
+
+    from core.services.credentials import integration_secret_store
+
+    return asyncio.run(integration_secret_store.get(owner_id, provider)) or {}
+
+
+def _put_token_file(owner_id: str, agent_id: str, name: str, blob: dict) -> None:
+    import json as _json
+
+    key = f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json"
+    _s3_put(settings.OWNER_STATE_BUCKET, key, _json.dumps(blob))
+
+
+def _write_mcp_token_files(owner_id: str, agent_id: str, servers: dict) -> None:
+    """Seed ``$HERMES_HOME/mcp-tokens/<server>.json`` for OAuth-remote servers only.
+
+    On-disk shape verified against ``tools/mcp_oauth.py``'s ``HermesTokenStorage`` in the
+    ``lightbulb/hermes-spike:m1-rc4`` image (``set_tokens``/``get_tokens``/``_fixup_loaded_tokens``,
+    :471-499): the file at ``mcp-tokens/<server>.json`` is the JSON dump of the MCP SDK's
+    ``OAuthToken`` model plus an absolute ``expires_at`` ``set_tokens`` derives from ``expires_in``
+    at write time, and an optional ``hermes_issuer`` (only written once Hermes itself has bound an
+    issuer via ``bind_issuer``). We write ``access_token``/``refresh_token`` verbatim from the
+    retained credential.
+    # ponytail: unverified — this repo's credential store does not currently retain
+    # token_type/scope/expiry, so a seeded grant carries no expires_in/expires_at; whether
+    # Hermes's own OAuthToken validation and refresh-on-first-use treat a token with no expiry
+    # field as immediately-refreshable (rather than erroring) was NOT confirmed against the SDK
+    # class itself (only HermesTokenStorage's own file format was read). Confirm in the dev proof
+    # before this ships past the spike.
+    # ponytail: filenames use the raw server name, not tools/mcp_oauth.py's own
+    # _safe_filename(name) sanitizer (strips to [\\w-], 128 chars) — identical for every real
+    # provider name today (stripe, qbo, posthog, ...), so this only diverges for a hypothetical
+    # exotic server key.
+
+    Key-based and stdio servers carry their credential through the profile ``.env`` instead and
+    get no token file. After the seed, Hermes's own ``OAuthClientProvider`` refreshes in place for
+    the life of the process (report 06 §4.4) — the backend does not re-push per turn.
+    """
+    for name, block in (servers or {}).items():
+        if block.get("auth") != "oauth":
+            continue
+        _put_token_file(owner_id, agent_id, name, _integration_credential(owner_id, name))
+
+
+def _read_dotenv(owner_id: str, agent_id: str) -> str:
+    return _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}.env") or ""
+
+
+def _rewrite_mcp_env_lines(dotenv_text: str, new_secrets: dict[str, str]) -> str:
+    """Replace every existing ``MCP_<SERVER>_<VAR>`` line with a freshly rendered set — a
+    disconnected provider's old secret must not survive a refresh — while every other line
+    (``PAPERCLIP_API_KEY``, a BYO key, an owner-provisioned env var) passes through untouched.
+    Line-level surgery, not a full dotenv parse: identifying an ``MCP_``-prefixed KEY only needs
+    the text before the first ``=``, which ``render_dotenv`` always writes verbatim regardless of
+    whether the VALUE side is quoted."""
+    kept = [line for line in dotenv_text.splitlines() if not line.split("=", 1)[0].startswith("MCP_")]
+    new_lines = render_dotenv(new_secrets).splitlines() if new_secrets else []
+    return "\n".join(kept + new_lines)
+
+
+def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
+    """Re-assert every connected integration into each profile's ``config.yaml``
+    (``mcp_servers``) and ``.env`` (the secret values I1's ``${MCP_<SERVER>_<VAR>}`` refs point
+    at), then bump the revision.
+
+    The ``mcp_servers`` block is REPLACED, not merged: a disconnected provider has to disappear,
+    and a merge would leave its server wired forever (the same reason ``reconcile_integrations``
+    rewrites rather than patches today for the ECS/openclaw.json path). ``.revision`` is written
+    LAST, after both files, for the same reason ``upload_profile``/``_upload_config_yaml`` do:
+    the bridge's ``ensure_profile`` must never see a revision bump before the files it describes
+    have actually landed.
+    """
+    connected = _connected_servers(owner_id)
+    servers, secrets = translate_mcp_servers(connected)
+    for agent_id in agent_ids:
+        prefix = profile_prefix(owner_id, agent_id)
+        config = read_profile_config(owner_id, agent_id)
+        config["mcp_servers"] = servers
+        _write_mcp_token_files(owner_id, agent_id, connected)
+        _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+        _s3_put(
+            settings.OWNER_STATE_BUCKET,
+            f"{prefix}.env",
+            _rewrite_mcp_env_lines(_read_dotenv(owner_id, agent_id), secrets),
+        )
+        _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)

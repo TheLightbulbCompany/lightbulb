@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.repositories import integrations_repo
-from core.services import config_patcher
+from core.services import config_patcher, runtime_transport
 from core.services.credentials import integration_secret_store, registry
 
 
@@ -104,7 +104,21 @@ async def reconcile_integrations(owner_id: str) -> None:
     Materializer providers persist via their own EFS files (not openclaw.json), so
     they survive the overwrite and are not re-applied here. Per-path / per-server
     REPLACE is idempotent (set no-ops when unchanged). No-op if the container has
-    no config yet (ConfigPatchError swallowed — a provision will inject instead)."""
+    no config yet (ConfigPatchError swallowed — a provision will inject instead).
+
+    M4-R11: an AgentCore owner has no openclaw.json and no live gateway socket to patch — the
+    equivalent rewrite goes through hermes_profiles.refresh_integrations, which touches EVERY
+    profile's config.yaml mcp_servers + .env + mcp-tokens/, then bumps each .revision so the
+    bridge's own ensure_profile() re-pull picks it up before the agent's next turn.
+    """
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        from core.dynamodb import run_in_thread
+        from core.services.hermes_profiles import refresh_integrations
+        from core.services.messaging import load_agent_roster
+
+        agents = await load_agent_roster(owner_id)
+        await run_in_thread(refresh_integrations, owner_id, [agent["id"] for agent in agents])
+        return
     for key, block in (await build_connected_integration_servers(owner_id)).items():
         try:
             await config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", key], block)

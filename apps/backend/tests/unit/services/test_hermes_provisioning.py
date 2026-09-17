@@ -892,6 +892,31 @@ async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypa
     await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
 
 
+@pytest.mark.asyncio
+async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six_agent_roster(monkeypatch):
+    """Q9a fix round 1, I3: write_profile_for_agent's own inputs= param lets _write_profiles
+    resolve owner-level inputs (billing/Secrets/integrations/env) ONCE and reuse them across the
+    whole starter roster, instead of paying that cost -- and risking it diverging mid-fan-out --
+    once per agent."""
+    roster = [
+        {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
+    ]
+    _patch_write_profiles_collaborators(monkeypatch)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    real_resolve = hermes_provisioning.resolve_profile_inputs
+    calls: list[str] = []
+
+    async def _counting_resolve(owner_id, *, container_row):
+        calls.append(owner_id)
+        return await real_resolve(owner_id, container_row=container_row)
+
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", _counting_resolve)
+
+    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+    assert calls == ["org_a"]
+
+
 # --- write_profile_for_agent (M6-R23) -----------------------------------------------------------
 # Moved, unchanged in behaviour, from catalog_service._build_and_upload_agent_profile -- the
 # shared per-agent "write this agent's profile" seam _write_profiles (above) now delegates to,

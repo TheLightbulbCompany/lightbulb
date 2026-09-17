@@ -445,6 +445,7 @@ async def write_profile_for_agent(
     *,
     container_row: dict,
     soul_md_override: str | None = None,
+    inputs: ProfileInputs | None = None,
 ) -> None:
     """The per-agent Hermes profile write (M6-R23): owner-level inputs (``resolve_profile_inputs``)
     plus this one agent's own Paperclip API key -> ``write_agent_profile`` -> ``upload_profile``.
@@ -470,13 +471,21 @@ async def write_profile_for_agent(
     ``soul_md_override``, when given, replaces the derived SOUL.md (``write_agent_profile``'s own
     ``build_soul_md(agent_row)``) verbatim -- for a caller staging identity text that isn't purely
     roster-derived. ``None`` (the default) keeps today's behaviour for every existing caller.
+
+    ``inputs``, when given, is used AS-IS instead of calling ``resolve_profile_inputs`` again --
+    Q9a fix round 1, I3: ``_write_profiles``'s six-agent roster fan-out resolves the SAME
+    owner-level inputs ONCE and passes them to every agent, rather than re-reading billing/
+    Secrets/integrations/env six times (and risking them diverging mid-fan-out if a value
+    changes between agents). Every other caller (a single freshly-created/deployed agent) leaves
+    this ``None`` and gets its own fresh resolve, unchanged.
     """
     from core.services.hermes_profiles import upload_profile, write_agent_profile
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_api_key import ensure_paperclip_api_key
 
     agent_id = agent_row["id"]
-    inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
+    if inputs is None:
+        inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
     paperclip_api_key = await ensure_paperclip_api_key(
         owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=shared_admin_client()
     )
@@ -518,11 +527,18 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     function ``catalog_service``'s single-agent install and ``runtime_rpc``'s ``agents.create``
     door for an AgentCore owner call, so there is exactly one place that mints an agent's
     Paperclip key, writes its profile, and uploads it.
+
+    Q9a fix round 1, I3: owner-level inputs are resolved ONCE here and threaded into every
+    agent's ``write_profile_for_agent`` call via its ``inputs`` parameter — not once per agent
+    (six billing/Secrets/integrations/env reads for a six-agent starter roster, and a risk that
+    the roster diverges on those inputs mid-fan-out).
     """
     from core.services.messaging import load_agent_roster
 
+    container_row = {"bedrock_aip_arns": aip_arns}
+    inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
     for agent in await load_agent_roster(owner_id):
-        await write_profile_for_agent(owner_id, agent, container_row={"bedrock_aip_arns": aip_arns})
+        await write_profile_for_agent(owner_id, agent, container_row=container_row, inputs=inputs)
 
 
 async def provision_hermes_runtime(

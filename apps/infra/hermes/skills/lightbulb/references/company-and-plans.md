@@ -72,7 +72,7 @@ one ChatGPT account per container), or **BYO API key** (owner's Anthropic/OpenAI
 key).
 
 **Never state the owner's plan or provider from memory.** Read
-`~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it current:
+`$HERMES_HOME/lightbulb-facts.json` — Lightbulb keeps it current:
 
 ```json
 {

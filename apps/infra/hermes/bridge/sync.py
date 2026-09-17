@@ -55,6 +55,10 @@ EXCLUDE_GLOBS = (
     ".env",
     "SOUL.md",
     ".revision",
+    # Row #15 / Ruling M6-R30: also backend-owned, written by
+    # hermes_profiles.write_facts_to_profiles (owner_facts.write_owner_facts's AgentCore
+    # branch) on every plan/provider change -- same clobber risk as the four above.
+    "lightbulb-facts.json",
 )
 
 
@@ -198,11 +202,12 @@ def write_profile_config(agent_id: str, config: dict) -> None:
 
 
 # ---- Task 13b: hot-patch re-pull -----------------------------------------------------------
-# The backend is the ONLY writer of the four backend-owned files (config.yaml, .env, SOUL.md,
+# The backend is the ONLY writer of these backend-owned files (config.yaml, .env, SOUL.md,
 # .revision -- see hermes_profiles.upload_profile/patch_profile_config/set_profile_config on the
-# backend, and save_profile's EXCLUDE_GLOBS entries above). A patch bumps .revision; this is how
-# the bridge notices without a watcher or a restart.
-BACKEND_OWNED_FILES = ("config.yaml", ".env", "SOUL.md", ".revision")
+# backend, and save_profile's EXCLUDE_GLOBS entries above -- plus lightbulb-facts.json, written by
+# hermes_profiles.write_facts_to_profiles, Row #15 / Ruling M6-R30). A patch bumps .revision; this
+# is how the bridge notices without a watcher or a restart.
+BACKEND_OWNED_FILES = ("config.yaml", ".env", "SOUL.md", ".revision", "lightbulb-facts.json")
 
 _REVISIONS: dict[str, str] = {}
 

@@ -56,7 +56,7 @@ These hold whether or not you open a reference.
   principles.** Your generic priors describe other platforms. The catalogs
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`,
   marketplace listings live with `marketplace_search`, and plan/provider from
-  `~/.openclaw/lightbulb-facts.json`. Never recite any of the three from memory.
+  `$HERMES_HOME/lightbulb-facts.json`. Never recite any of the three from memory.
 - **Never write an `Authorization: Bearer …` header yourself** — not in a curl
   you type, not in a script you write. OpenClaw's transcript redaction masks
   that header *including* a `$OPENCLAW_HOOK_TOKEN` reference, so the copy you
@@ -126,6 +126,6 @@ These hold whether or not you open a reference.
 - **"Can I bring my laptop's Claude Code setup?"** → Yes, through the
   import wizard — `references/marketplace.md`.
 - **"What plan am I on?" / "Which model are you?"** → Read
-  `~/.openclaw/lightbulb-facts.json`, answer from it.
+  `$HERMES_HOME/lightbulb-facts.json`, answer from it.
 - **"Why can't you do X?"** → Check the boundaries table above before
   improvising an explanation.

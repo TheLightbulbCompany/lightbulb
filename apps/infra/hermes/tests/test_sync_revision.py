@@ -40,7 +40,7 @@ def test_ensure_profile_is_a_no_op_without_a_bucket(monkeypatch):
     sync.ensure_profile("a1")  # must not raise
 
 
-def test_download_profile_pulls_exactly_the_four_backend_owned_files(home, monkeypatch):
+def test_download_profile_pulls_exactly_the_backend_owned_files(home, monkeypatch):
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     calls = []
 
@@ -55,6 +55,7 @@ def test_download_profile_pulls_exactly_the_four_backend_owned_files(home, monke
         f"{sync.S3_PREFIX}/a1/.env",
         f"{sync.S3_PREFIX}/a1/SOUL.md",
         f"{sync.S3_PREFIX}/a1/.revision",
+        f"{sync.S3_PREFIX}/a1/lightbulb-facts.json",
     ]
 
 
@@ -92,7 +93,7 @@ def test_restore_profile_seeds_revisions_from_the_freshly_downloaded_revision_fi
 
 def test_download_profile_survives_one_missing_object(home, monkeypatch):
     """A profile that predates Task 7 (or a fresh one still mid-provision) may not have all
-    four objects yet -- one missing GetObject must not abort the other three."""
+    backend-owned objects yet -- one missing GetObject must not abort the rest."""
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     calls = []
 
@@ -108,4 +109,5 @@ def test_download_profile_survives_one_missing_object(home, monkeypatch):
         f"{sync.S3_PREFIX}/a1/config.yaml",
         f"{sync.S3_PREFIX}/a1/.env",
         f"{sync.S3_PREFIX}/a1/.revision",
+        f"{sync.S3_PREFIX}/a1/lightbulb-facts.json",
     ]

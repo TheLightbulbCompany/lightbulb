@@ -19,16 +19,18 @@ def test_the_four_backend_owned_files_never_go_back_up(home, monkeypatch):
     """Task 13 (M4-R20): config.yaml/.env/SOUL.md/.revision are written by
     hermes_profiles.upload_profile/patch_profile_config/set_profile_config and re-pulled by
     ensure_profile on a changed revision -- save_profile must never upload the bridge's own local
-    (possibly stale the instant a hot patch lands) copy back over a backend write."""
+    (possibly stale the instant a hot patch lands) copy back over a backend write. Row #15 /
+    Ruling M6-R30 adds a fifth: lightbulb-facts.json (hermes_profiles.write_facts_to_profiles)."""
     assert sync.is_excluded("config.yaml") is True
     assert sync.is_excluded(".env") is True
     assert sync.is_excluded("SOUL.md") is True
     assert sync.is_excluded(".revision") is True
+    assert sync.is_excluded("lightbulb-facts.json") is True
 
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     profile = sync._profile_dir("ceo")
     profile.mkdir(parents=True, exist_ok=True)
-    for name in ("config.yaml", ".env", "SOUL.md", ".revision", "memory.md"):
+    for name in ("config.yaml", ".env", "SOUL.md", ".revision", "lightbulb-facts.json", "memory.md"):
         (profile / name).write_text("x")
 
     uploaded = []

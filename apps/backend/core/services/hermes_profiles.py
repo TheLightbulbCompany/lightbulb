@@ -847,6 +847,34 @@ def _refresh_one_profile(
     _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
 
 
+# ---- Row #15 / Ruling M6-R30: owner facts staged into every profile ----------------------------
+#: Must match owner_facts.FACTS_FILENAME. Kept as a literal here (not an import) to avoid a
+#: hermes_profiles <-> owner_facts import cycle -- owner_facts imports THIS module to call
+#: write_facts_to_profiles below, so the reverse import would be circular.
+FACTS_FILENAME = "lightbulb-facts.json"
+
+
+def write_facts_to_profiles(owner_id: str, agent_ids: list[str], facts_json: str) -> None:
+    """Upload the rendered ``lightbulb-facts.json`` to EVERY roster profile (M6-R30) -- an
+    AgentCore agent has no EFS path at all (``runtime_rpc.py``'s own comment on why
+    ``agents.list``/``config.*`` are served from S3), so ``owner_facts.write_owner_facts``'s EFS
+    write is meaningless there; this is its per-profile equivalent, one shared boto3 client
+    (``_shared_s3_client``) for the whole roster. Sync -- meant to be called through
+    ``run_in_thread`` (same convention as ``refresh_integrations``'s per-agent S3 work).
+
+    Per agent: the facts file, THEN ``.revision`` -- same "content, then revision LAST"
+    discipline as ``_upload_config_yaml``/``upload_profile``/``_refresh_one_profile``, so the
+    bridge's ``ensure_profile()`` re-pull never sees a bumped revision before the file it
+    describes has actually landed."""
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return
+    for agent_id in agent_ids:
+        prefix = profile_prefix(owner_id, agent_id)
+        _s3_put(bucket, f"{prefix}{FACTS_FILENAME}", facts_json)
+        _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
+
+
 # ---- Task 15: ChatGPT OAuth staged into the ROOT auth.json --------------------------------------
 def root_home_prefix(owner_id: str) -> str:
     """``<owner>/hermes/`` — the workspace's Hermes ROOT home; profiles live under it."""

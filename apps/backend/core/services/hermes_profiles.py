@@ -136,8 +136,15 @@ def _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo):
     return (premium or default) if is_ceo else default, cheap or default
 
 
-def _model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
-    """(model block, aux model id, aux provider)."""
+def model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
+    """(model block, aux model id, aux provider).
+
+    Public (Q9a fix round 1, M6-R28): this is the ONE place that decides an agent's
+    ``config.yaml`` ``model`` key from ``(provider_choice, byo_provider, aip_arns, is_ceo)`` --
+    ``build_profile_config`` uses it for a fresh profile write, and ``runtime_rpc``'s
+    ``agents.update`` door (an AgentCore role/model-tier change) re-derives the same block
+    through this function rather than hand-rolling or trusting a client-supplied ref.
+    """
     if provider_choice in ("bedrock_claude", "bedrock_trial"):
         if not aip_arns:
             raise ValueError(f"{provider_choice} requires aip_arns")
@@ -170,7 +177,7 @@ def build_profile_config(
     mcp_servers: dict | None = None,
     is_ceo: bool = False,
 ) -> dict:
-    model, aux_model, aux_provider = _model_block(provider_choice, byo_provider, aip_arns, is_ceo)
+    model, aux_model, aux_provider = model_block(provider_choice, byo_provider, aip_arns, is_ceo)
     aux: dict = {"free_only": True, "transient_retries": 2}
     for task in AUXILIARY_TASKS:
         aux[task] = {"provider": aux_provider, "model": aux_model, "fallback_chain": []}
@@ -702,6 +709,17 @@ def set_profile_config(owner_id: str, agent_id: str, config: dict) -> dict:
     config = config or {}
     _upload_config_yaml(owner_id, agent_id, config)
     return config
+
+
+def upload_soul_md(owner_id: str, agent_id: str, soul_md: str) -> None:
+    """Rewrite ONLY this agent's ``SOUL.md`` (+ ``.revision``) -- Q9a fix round 1, I2: an
+    identity-only ``agents.update`` (rename/title/capabilities/role) must refresh the file
+    ``build_soul_md`` renders into, but never touch ``config.yaml``/``.env`` alongside it the
+    way a full ``upload_profile`` would. Sync -- call via ``run_in_thread``."""
+    prefix = profile_prefix(owner_id, agent_id)
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}SOUL.md", soul_md)
+    # LAST, always -- same reasoning as upload_profile/_upload_config_yaml's .revision write.
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
 
 
 # ---- Task 14: integration token refresh rewrites the profile -----------------------------------

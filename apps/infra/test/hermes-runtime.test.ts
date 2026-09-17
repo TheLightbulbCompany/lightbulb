@@ -161,12 +161,20 @@ describe("hermes runtime wiring", () => {
   const dev = buildStacks("dev");
   const prod = buildStacks("prod");
 
-  it("gives dev a Hermes image pinned to hermes-version.json's dev.tag, and leaves prod empty (prod.tag is unset) so a promotion is deliberate", () => {
+  // Each env's AGENTCORE_HERMES_IMAGE follows its own pin in hermes-version.json, and an unset
+  // tag yields an EMPTY image rather than a repo with a dangling colon -- provision_hermes_runtime
+  // refuses to run without an image, which is what kept prod inert while prod.tag was "".
+  // prod.tag was set on 2026-09-17 for the founder migration; asserting it is still "" pinned a
+  // moment, not a contract, and failed the day the promotion became real (M6-R58).
+  it("pins each env's Hermes image to its own tag, and yields an empty image when a tag is unset", () => {
+    const image = (tag: string) =>
+      tag ? `877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:${tag}` : "";
     expect(backendContainerEnv(dev.serviceTemplate, "dev").AGENTCORE_HERMES_IMAGE).toBe(
-      `877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:${HERMES_VERSION.dev.tag}`,
+      image(HERMES_VERSION.dev.tag),
     );
-    expect(HERMES_VERSION.prod.tag).toBe("");
-    expect(backendContainerEnv(prod.serviceTemplate, "prod").AGENTCORE_HERMES_IMAGE).toBe("");
+    expect(backendContainerEnv(prod.serviceTemplate, "prod").AGENTCORE_HERMES_IMAGE).toBe(
+      image(HERMES_VERSION.prod.tag),
+    );
   });
 
   it("wires HERMES_RUNTIME off in both envs at this point", () => {

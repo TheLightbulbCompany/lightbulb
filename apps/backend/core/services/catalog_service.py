@@ -47,6 +47,7 @@ from core.services import agent_export, runtime_transport
 from core.services.agent_roster import roster_entries
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
+from core.services.hermes_profiles import BACKEND_OWNED_FILES
 from core.services.paperclip_credential_rule import (
     PAPERCLIP_CREDENTIAL_PROHIBITION,
     PAPERCLIP_CREDENTIAL_RULE,
@@ -384,11 +385,17 @@ def _s3_client():
 # Names deploy_tarball_to_profile must never write into a buyer's Hermes
 # profile. Task 17's profile/config writer owns creating these for a FRESH
 # agent; overwriting them with whatever rode along in the seller's tarball
-# would clobber the buyer's own provider wiring. ``.env`` should never be in a
-# marketplace tarball in the first place (agent_export's dotfile filter
-# already drops it) — named here defensively so a future export bug can't
-# turn into an overwrite here too.
-_DEPLOY_PROFILE_SKIP_NAMES = frozenset({".env", "config.yaml"})
+# would clobber the buyer's own provider wiring. ``.env``/``config.yaml``
+# should never be in a marketplace tarball in the first place (agent_export's
+# dotfile filter already drops them) -- named here defensively so a future
+# export bug can't turn into an overwrite here too.
+#
+# F3 (predeploy review, M6-R36): the ONE backend-owned file set
+# (hermes_profiles.BACKEND_OWNED_FILES) -- before this fix this list carried
+# only two of the five, so a tarball containing SOUL.md or lightbulb-facts.json
+# (agent_export's filter drops neither) silently overwrote the profile
+# writer's own copy in deploy_tarball_to_profile.
+_DEPLOY_PROFILE_SKIP_NAMES = BACKEND_OWNED_FILES
 
 
 async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: bytes, container: dict) -> None:

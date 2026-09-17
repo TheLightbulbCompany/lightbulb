@@ -60,14 +60,16 @@ def _uploaded_keys(s3, prefix: str) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_deploy_tarball_to_profile_uploads_content_files_to_s3(s3_hermes_bucket):
-    tar_bytes = _make_tar_gz({"SOUL.md": b"# Soul", "skills/foo.md": b"# Foo"})
+    # AGENTS.md/skills/** are genuine content -- not in BACKEND_OWNED_FILES (F3), so they land
+    # verbatim. SOUL.md is exercised separately below: it IS backend-owned and must be skipped.
+    tar_bytes = _make_tar_gz({"AGENTS.md": b"# Agents", "skills/foo.md": b"# Foo"})
 
     await catalog_service.deploy_tarball_to_profile(
         owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}
     )
 
     keys = _uploaded_keys(s3_hermes_bucket, "owner_1/hermes/agent_new/")
-    assert "owner_1/hermes/agent_new/SOUL.md" in keys
+    assert "owner_1/hermes/agent_new/AGENTS.md" in keys
     assert "owner_1/hermes/agent_new/skills/foo.md" in keys
 
 
@@ -101,7 +103,7 @@ async def test_deploy_tarball_to_profile_writes_revision_marker_last():
     def fake_upload(path, bucket, key):
         uploaded.append(key)
 
-    tar_bytes = _make_tar_gz({"SOUL.md": b"# Soul", "config.yaml": b"model: x"})
+    tar_bytes = _make_tar_gz({"AGENTS.md": b"# Agents", "config.yaml": b"model: x"})
     with (
         patch(
             "core.services.catalog_service._s3_client",
@@ -112,24 +114,38 @@ async def test_deploy_tarball_to_profile_writes_revision_marker_last():
         await catalog_service.deploy_tarball_to_profile(
             owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}
         )
-    assert uploaded[-1] == "owner_1/hermes/agent_new/.revision"
+    # config.yaml is backend-owned (skipped); AGENTS.md is genuine content, so .revision lands
+    # after it -- not merely after nothing, as it would if the tarball held only skipped names.
+    assert uploaded == ["owner_1/hermes/agent_new/AGENTS.md", "owner_1/hermes/agent_new/.revision"]
 
 
 @pytest.mark.asyncio
-async def test_deploy_tarball_to_profile_skips_env_and_config_yaml(s3_hermes_bucket):
-    """The profile writer (Task 17) owns .env/config.yaml for a freshly
-    deployed agent -- a tarball that happens to carry them (e.g. an older
-    export) must not clobber them."""
-    tar_bytes = _make_tar_gz({"SOUL.md": b"# Soul", ".env": b"SECRET=1", "config.yaml": b"model: seller-pinned"})
+async def test_deploy_tarball_to_profile_skips_every_backend_owned_file(s3_hermes_bucket):
+    """F3 (predeploy review, M6-R36): the profile writer (Task 17) owns config.yaml/.env/
+    SOUL.md/.revision/lightbulb-facts.json for a freshly deployed agent -- a tarball that
+    happens to carry any of them (e.g. an older export, or a seller's own persona/facts file)
+    must never clobber the writer's own copy. Before this fix the skip list named only two of
+    the five, so a tarball carrying SOUL.md or lightbulb-facts.json silently overwrote them."""
+    tar_bytes = _make_tar_gz(
+        {
+            "SOUL.md": b"# Soul",
+            ".env": b"SECRET=1",
+            "config.yaml": b"model: seller-pinned",
+            "lightbulb-facts.json": b'{"fake": true}',
+            "skills/foo.md": b"# Foo",
+        }
+    )
 
     await catalog_service.deploy_tarball_to_profile(
         owner_id="owner_1", agent_id="agent_new", tar_bytes=tar_bytes, container={"runtime_host": "agentcore"}
     )
 
     keys = _uploaded_keys(s3_hermes_bucket, "owner_1/hermes/agent_new/")
-    assert "owner_1/hermes/agent_new/SOUL.md" in keys
+    assert "owner_1/hermes/agent_new/skills/foo.md" in keys
+    assert not any(k.endswith("/SOUL.md") for k in keys)
     assert not any(k.endswith("/.env") for k in keys)
     assert not any(k.endswith("/config.yaml") for k in keys)
+    assert not any(k.endswith("/lightbulb-facts.json") for k in keys)
     assert "owner_1/hermes/agent_new/.revision" in keys
 
 
@@ -173,7 +189,7 @@ async def test_build_and_upload_agent_profile_resolves_the_row_and_delegates():
 @pytest.mark.asyncio
 async def test_build_and_upload_agent_profile_raises_when_roster_read_fails():
     """M6-R10: catalog hard-fails on a roster read failure exactly like
-    hermes_provisioning._write_profiles does -- the old manifest-derived
+    hermes_provisioning.write_profiles does -- the old manifest-derived
     fallback agent row is gone."""
     write_profile = AsyncMock()
     with (

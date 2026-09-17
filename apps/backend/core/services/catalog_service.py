@@ -402,9 +402,10 @@ async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: 
     (M4-R20) — writing it before the content above would let a concurrent
     restore see a bumped revision with only some files present.
 
-    Agent registration (the Hermes equivalent of the ``pair_with_openclaw``
-    RPC in ``deploy_from_artifact`` below) is NOT done here — the bridge has
-    no ``agents.create`` RPC yet (report 04 §18). This only places the files.
+    Agent registration (the Paperclip mint) and the agent's Hermes profile
+    (config.yaml/.env/SOUL.md) are NOT done here — see ``_install_agentcore_deploy``,
+    which calls this function only after both of those exist, so this is
+    purely "place the artifact's content files" (fix round 1, M6-R9).
 
     ``container`` is unused today (every write targets the S3 profile
     unconditionally) but is accepted so the caller doesn't need a second
@@ -432,6 +433,198 @@ async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: 
             s3.upload_file(str(marker), bucket, f"{prefix}/.revision")
 
     await asyncio.to_thread(_write)
+
+
+async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str, manifest: dict) -> dict:
+    """The Paperclip roster entry shape ``write_agent_profile`` wants
+    (``{"id","name","role","title","capabilities","icon"}``). Best-effort:
+    a roster read failure (Paperclip outage, or a fresh mint that hasn't
+    propagated to a list read yet) falls back to a minimal row built from
+    the manifest rather than failing the whole install over a cosmetic field.
+    """
+    from core.services.messaging import load_agent_roster
+
+    try:
+        roster = await load_agent_roster(owner_id)
+    except Exception:
+        roster = []
+    entry = next((a for a in roster if isinstance(a, dict) and a.get("id") == agent_id), None)
+    return entry or {"id": agent_id, "name": manifest.get("name") or agent_id, "role": "general"}
+
+
+async def _resolve_byo_api_key(owner_id: str, byo_provider: str | None) -> str | None:
+    """The owner's BYO LLM key plaintext (Secrets Manager,
+    ``lightbulb/<env>/user-keys/<owner>/<provider>`` -- same deterministic
+    name ``key_service._secret_name`` derives). Best-effort: any read failure
+    degrades to ``None`` (profile ships without the key rather than blocking
+    the whole install on a Secrets Manager blip), matching
+    ``paperclip_api_key._read_existing``'s own posture.
+    """
+    if not byo_provider:
+        return None
+    from core.services.key_service import _secret_name
+
+    def _get() -> str | None:
+        import boto3
+
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        try:
+            return sm.get_secret_value(SecretId=_secret_name(owner_id, byo_provider))["SecretString"]
+        except sm.exceptions.ResourceNotFoundException:
+            return None
+
+    try:
+        return await asyncio.to_thread(_get)
+    except Exception:
+        logger.exception(
+            "agentcore deploy: BYO key read failed owner=%s provider=%s -- profile ships without it",
+            owner_id,
+            byo_provider,
+        )
+        return None
+
+
+async def _resolve_paperclip_api_key(owner_id: str, agent_id: str) -> str:
+    """The agent's own Paperclip API key plaintext, minting it on first
+    request (``ensure_paperclip_api_key``). Returns ``""`` on any failure --
+    same graceful-degrade contract that function already documents; a missing
+    key means the deployed agent's own ``paperclip`` skill can't call back,
+    not a failed install.
+    """
+    from core.services.paperclip_admin_client import shared_admin_client
+    from core.services.paperclip_api_key import ensure_paperclip_api_key
+
+    key = await ensure_paperclip_api_key(
+        owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=shared_admin_client()
+    )
+    return key or ""
+
+
+async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, container: dict, manifest: dict) -> None:
+    """The Hermes-profile half of an AgentCore install: config.yaml/.env/SOUL.md
+    for the freshly-registered agent, sourced the way ``hermes_provisioning``
+    (Task 13/14, not yet on this branch) will -- the owner's billing row for
+    ``provider_choice``/``byo_*``, the containers row for ``aip_arns``, the
+    live Paperclip roster for the agent's role/title/capabilities, and the
+    existing integrations/env-var builders every other provisioning path
+    already uses. Uploaded (and its own ``.revision`` written) BEFORE
+    ``deploy_tarball_to_profile`` runs, so the newly-minted agent has a
+    complete, bootable profile even before its marketplace content lands.
+    """
+    from core.repositories import billing_repo
+    from core.services import hermes_profiles
+    from core.services.credentials.mcp_server import build_connected_integration_servers
+    from core.services.provisioning_landing import build_provisioned_env
+
+    billing = await billing_repo.get_by_owner_id(owner_id) or {}
+    provider_choice = billing.get("provider_choice") or "bedrock_claude"
+    byo_provider = billing.get("byo_provider")
+    byo_api_key = await _resolve_byo_api_key(owner_id, byo_provider) if provider_choice == "byo_key" else None
+    aip_arns = container.get("bedrock_aip_arns") or {}
+    agent_row, integrations, env_vars, paperclip_api_key = (
+        await _resolve_agent_row_for_profile(owner_id, agent_id, manifest),
+        await build_connected_integration_servers(owner_id),
+        await build_provisioned_env(owner_id),
+        await _resolve_paperclip_api_key(owner_id, agent_id),
+    )
+
+    files = hermes_profiles.write_agent_profile(
+        owner_id,
+        agent_row,
+        provider_choice=provider_choice,
+        aip_arns=aip_arns,
+        paperclip_api_key=paperclip_api_key,
+        integrations=integrations,
+        env_vars=env_vars,
+        byo_provider=byo_provider,
+        byo_api_key=byo_api_key,
+    )
+    await hermes_profiles.upload_profile(owner_id, agent_id, files)
+
+
+async def _install_agentcore_deploy(
+    *,
+    owner_id: str,
+    slug: str,
+    manifest: dict,
+    tar_bytes: bytes,
+    container: dict,
+    new_agent_id: str | None,
+    listing_id: str | None,
+    seller_id: str | None,
+) -> dict[str, Any]:
+    """The AgentCore transport's substitute for the ECS branch's end-to-end
+    install (Paperclip mint -> gateway pairing) — fix round 1, M6-R9.
+
+    AgentCore has no gateway for ``pair_with_openclaw`` to register against,
+    so the registration step for a caller that hasn't already minted a
+    Paperclip agent (``new_agent_id is None`` — the same "direct/Custom"
+    contract the ECS branch supports via its own local-uuid fallback) is to
+    mint one through ``create_paperclip_for_marketplace`` — the SAME helper
+    every pre-minting caller (marketplace deploy, hire, agent builder) already
+    uses, whose ``resolve_agent_adapter`` call already picks the ``http``
+    adapter for an AgentCore row. A caller that already minted (every
+    production caller today) is NOT re-minted here — Paperclip assigns its
+    own id at creation, so "creating another one" would just orphan a second
+    agent under a different id than the one this call was asked to deploy.
+
+    Order matters: profile (config.yaml/.env/SOUL.md, ending in the writer's
+    OWN ``.revision``) BEFORE content (the marketplace tarball, ending in ITS
+    ``.revision`` — the actually-authoritative one, since it lands last). A
+    bridge that re-pulls between the two steps still finds a complete,
+    bootable profile; reversing the order could momentarily advertise
+    marketplace content with no profile underneath it.
+
+    Rollback: only the Paperclip agent THIS call minted is torn down on
+    failure — a pre-minted agent is the caller's own rollback envelope
+    (mirrors every ECS caller's existing ``unwind``/``_rollback_agent``).
+    """
+    from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
+    from core.services.paperclip_agent_lifecycle import (
+        create_paperclip_for_marketplace,
+        delete_paperclip_for_marketplace,
+    )
+
+    minted_new_agent = new_agent_id is None
+    if minted_new_agent:
+        paperclip_agent = await create_paperclip_for_marketplace(
+            buyer_user_id=owner_id,
+            owner_id=owner_id,
+            name=manifest.get("name", slug),
+            role=None,
+            idempotency_key=build_agent_create_idempotency_key(
+                operation="marketplace-deploy-agentcore",
+                owner_id=owner_id,
+                intent={"slug": slug, "listingId": listing_id},
+            ),
+        )
+        new_agent_id = paperclip_agent["id"]
+
+    try:
+        await _build_and_upload_agent_profile(
+            owner_id=owner_id, agent_id=new_agent_id, container=container, manifest=manifest
+        )
+        await deploy_tarball_to_profile(
+            owner_id=owner_id, agent_id=new_agent_id, tar_bytes=tar_bytes, container=container
+        )
+    except Exception:
+        if minted_new_agent:
+            try:
+                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+            except Exception:
+                logger.exception(
+                    "agentcore deploy: rollback delete_paperclip_for_marketplace failed for agent %s", new_agent_id
+                )
+        raise
+
+    return {
+        "slug": slug,
+        "version": manifest.get("version", 1),
+        "agent_id": new_agent_id,
+        "name": manifest.get("name", slug),
+        "origin": "Marketplace" if listing_id and seller_id else "Custom",
+        "runtimeHost": "agentcore",
+    }
 
 
 class CatalogService:
@@ -463,10 +656,10 @@ class CatalogService:
         owner's container.
 
         ``container`` (the buyer's container row) decides EFS vs S3 via
-        ``runtime_transport.host_for``: an AgentCore buyer's files land in
-        their Hermes S3 profile prefix via ``deploy_tarball_to_profile`` and
-        this method returns immediately after — agent registration is out of
-        scope (see that function's docstring). ``None`` (every existing
+        ``runtime_transport.host_for``: an AgentCore buyer's install runs
+        entirely through ``_install_agentcore_deploy`` below (Paperclip
+        mint-if-needed, profile write+upload, tarball placement) instead of
+        the EFS/gateway-pairing steps that follow. ``None`` (every existing
         caller, today) means ECS, and everything below runs unchanged.
 
         Steps:
@@ -503,27 +696,27 @@ class CatalogService:
         buyer can cleanly retry. ``new_agent_id`` is the shared handle
         that makes the unwind precise.
         """
+        # AgentCore buyer: an entirely different install (Paperclip mint +
+        # Hermes profile + S3 content) -- checked BEFORE the ECS
+        # new_agent_id-fallback below, since an AgentCore "direct" caller
+        # (new_agent_id=None) mints through Paperclip itself rather than
+        # generating an orphan local string (see _install_agentcore_deploy).
+        # ECS/unknown buyers (container absent, every existing caller today)
+        # fall through to the unchanged path below.
+        if runtime_transport.host_for(container or {}) == "agentcore":
+            return await _install_agentcore_deploy(
+                owner_id=owner_id,
+                slug=slug,
+                manifest=manifest,
+                tar_bytes=tar_bytes,
+                container=container or {},
+                new_agent_id=new_agent_id,
+                listing_id=listing_id,
+                seller_id=seller_id,
+            )
+
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
-
-        # AgentCore buyer: no EFS workspace to extract into. Place the files
-        # in their Hermes S3 profile and stop — the rest of this method
-        # (credential gate, gateway pairing, sidecar, cron jobs) is EFS/ECS
-        # gateway-RPC machinery a Hermes agent has no equivalent for yet (see
-        # deploy_tarball_to_profile's docstring). ECS/unknown buyers
-        # (container absent, every existing caller today) fall through to the
-        # unchanged path below.
-        if runtime_transport.host_for(container or {}) == "agentcore":
-            await deploy_tarball_to_profile(
-                owner_id=owner_id, agent_id=new_agent_id, tar_bytes=tar_bytes, container=container or {}
-            )
-            return {
-                "slug": slug,
-                "version": manifest.get("version", 1),
-                "agent_id": new_agent_id,
-                "name": manifest.get("name", slug),
-                "origin": "Marketplace" if listing_id and seller_id else "Custom",
-            }
 
         # Credential gate — runs before any EFS / gateway side effect so a
         # blocked deploy leaves no partial state. The buyer must have

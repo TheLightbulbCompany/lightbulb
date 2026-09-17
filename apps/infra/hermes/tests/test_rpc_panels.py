@@ -51,30 +51,27 @@ def fake_hermes(monkeypatch):
 
 
 # ---- health ------------------------------------------------------------------------------------
-def test_health_carries_uptime_and_an_unknown_session_count_before_any_restore(home):
+def test_health_carries_uptime_and_an_agent_count(home):
+    (home / "profiles" / "ceo").mkdir(parents=True)
     payload = call("health")[1]["payload"]
     assert payload["ready"] is True and payload["runtime"] == "hermes"
     assert isinstance(payload["uptimeS"], float)
-    assert payload["sessions"] is None  # nothing restored: "not known", never a confident 0
+    assert payload["agents"] == 1
+    # Ruling M6-R54: no session count. It would have been a sqlite read per profile on the
+    # readiness path, for a panel that is hidden on this runtime.
+    assert "sessions" not in payload
 
 
-def test_health_counts_sessions_from_every_local_state_db(home):
-    import sqlite3
-
-    for name, rows in (("ceo", 2), ("finance", 1)):
-        profile = home / "profiles" / name
-        profile.mkdir(parents=True)
-        with sqlite3.connect(profile / "state.db") as conn:
-            conn.execute("CREATE TABLE sessions (id TEXT)")
-            conn.executemany("INSERT INTO sessions VALUES (?)", [(f"s{i}",) for i in range(rows)])
-    assert call("health")[1]["payload"]["sessions"] == 3
-
-
-def test_health_survives_an_unreadable_state_db(home):
-    profile = home / "profiles" / "ceo"
-    profile.mkdir(parents=True)
-    (profile / "state.db").write_text("not a database")
-    assert call("health")[1]["payload"]["sessions"] is None
+# ---- sessions ----------------------------------------------------------------------------------
+@pytest.mark.parametrize("method", ["sessions.list", "sessions.patch", "sessions.delete"])
+def test_sessions_stay_stubbed_because_the_backend_guard_is_a_privacy_rule(home, method):
+    """Ruling M6-R54. Every session this platform creates on Hermes is room- or event-scoped
+    (`agent:<id>:lightbulb:channel:<roomId>`), and the backend's guard admits only a PERSONAL
+    key (`agent:<id>:<userId>`). Serving these would mean widening a privacy rule, so the
+    surface stays stubbed and the panel is hidden instead."""
+    code, obj = call(method, {})
+    assert code == 200 and obj["ok"] is False
+    assert obj["error"]["code"] == "UNAVAILABLE"
 
 
 # ---- roster ------------------------------------------------------------------------------------
@@ -160,87 +157,6 @@ def test_a_failed_install_is_an_error_not_a_green_check(home, fake_hermes, monke
                          ("rich", rich_pkg), ("rich.console", rich)):
         monkeypatch.setitem(sys.modules, name, module)
     assert call("skills.install", {"source": "official/pdf"})[1]["error"]["code"] == "UNAVAILABLE"
-
-
-# ---- sessions ----------------------------------------------------------------------------------
-def _fake_registry(monkeypatch, rows_by_agent, *, deleted=None, titled=None):
-    class _Db:
-        def __init__(self, agent_id):
-            self.agent_id = agent_id
-
-        def list_sessions_rich(self, **_kw):
-            return rows_by_agent.get(self.agent_id, [])
-
-        def get_session(self, session_id):
-            return next((r for r in self.list_sessions_rich() if r["id"] == session_id), None)
-
-        def delete_session(self, session_id):
-            (deleted if deleted is not None else []).append((self.agent_id, session_id))
-            return self.get_session(session_id) is not None
-
-        def set_session_title(self, session_id, title):
-            (titled if titled is not None else []).append((self.agent_id, session_id, title))
-            return True
-
-    registry = types.ModuleType("hermes_state_registry")
-    registry.acquire = lambda path: _Db(path.parent.name)
-    registry.release = lambda _db: True
-    monkeypatch.setitem(sys.modules, "hermes_state_registry", registry)
-
-
-def test_sessions_list_merges_every_profile_newest_first(home, monkeypatch):
-    for name in ("ceo", "finance"):
-        (home / "profiles" / name).mkdir(parents=True)
-    _fake_registry(monkeypatch, {
-        "ceo": [{"id": "s-ceo", "title": "Weekly", "last_active": "2026-09-17T10:00:00Z",
-                 "message_count": 12, "source": "lightbulb"}],
-        "finance": [{"id": "s-fin", "title": None, "last_active": "2026-09-17T11:00:00Z",
-                     "message_count": 3, "source": "lightbulb"}],
-    })
-    rows = call("sessions.list")[1]["payload"]["sessions"]
-    assert [r["id"] for r in rows] == ["s-fin", "s-ceo"]
-    assert rows[1] == {"id": "s-ceo", "key": "s-ceo", "agentId": "ceo", "title": "Weekly",
-                       "updatedAt": 1789639200000, "messageCount": 12, "source": "lightbulb"}
-    assert rows[0]["title"] is None
-
-
-def test_sessions_delete_resolves_the_owning_profile_when_none_is_named(home, monkeypatch):
-    for name in ("ceo", "finance"):
-        (home / "profiles" / name).mkdir(parents=True)
-    deleted = []
-    _fake_registry(monkeypatch, {"finance": [{"id": "s-fin", "last_active": 1_700_000_000}]},
-                   deleted=deleted)
-    payload = call("sessions.delete", {"key": "s-fin"})[1]["payload"]
-    assert payload == {"deleted": True, "id": "s-fin", "agentId": "finance"}
-    assert deleted == [("finance", "s-fin")]
-
-
-def test_deleting_an_unknown_session_is_not_found_not_a_silent_ok(home, monkeypatch):
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    _fake_registry(monkeypatch, {"ceo": []})
-    assert call("sessions.delete", {"key": "ghost"})[1]["error"]["code"] == "NOT_FOUND"
-
-
-def test_sessions_patch_renames_and_refuses_everything_else(home, monkeypatch):
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    titled = []
-    _fake_registry(monkeypatch, {"ceo": [{"id": "s1", "last_active": 1_700_000_000}]}, titled=titled)
-    assert call("sessions.patch", {"key": "s1", "title": "Renamed"})[1]["ok"] is True
-    assert titled == [("ceo", "s1", "Renamed")]
-    refused = call("sessions.patch", {"key": "s1", "thinkingLevel": "high"})[1]
-    assert refused["ok"] is False and refused["error"]["code"] == "UNSUPPORTED"
-
-
-@pytest.mark.parametrize("value,expected", [
-    (1_700_000_000, 1_700_000_000_000),          # epoch seconds
-    (1_700_000_000_000, 1_700_000_000_000),      # already milliseconds
-    ("2026-09-17T10:00:00Z", 1789639200000),     # ISO, explicit UTC
-    ("2026-09-17T10:00:00", 1789639200000),      # ISO, naive -> UTC
-    ("not a date", None),
-    (None, None),
-])
-def test_session_timestamps_normalize_to_epoch_ms(value, expected):
-    assert server._session_ms(value) == expected
 
 
 # ---- models.authStatus -------------------------------------------------------------------------

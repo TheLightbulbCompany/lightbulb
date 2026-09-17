@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { Loader2 } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first open flashes a blank pane. This is
@@ -77,9 +78,19 @@ export function ControlPanelRouter({
   panelParams,
   onConsumeOneShot,
 }: ControlPanelRouterProps) {
+  // Ruling M6-R54: Sessions has no AgentCore shape. The backend's session guard is a PRIVACY
+  // rule — a person sees only their own personal sessions — and every Hermes session here is
+  // room- or event-scoped, so the panel could only ever show an empty table. It is hidden
+  // rather than widened, and `?panel=sessions` falls back to Overview the way any unknown key
+  // already does. Through task 10-D's shared `useHiddenOnAgentCore`, so every deleted-surface
+  // gate reads the same: `"loading"` renders as today, because it means "not known for this
+  // workspace" and hiding on it would blank the panel for an ECS owner on every first paint.
+  const sessionsHidden = useHiddenOnAgentCore() === "hidden";
+  const resolved = panel === "sessions" && sessionsHidden ? "overview" : panel;
+
   // OverviewPanel is the only propless panel that takes the panel-switch
   // callback — its summary cards deep-link into other panels.
-  if (panel === "overview") {
+  if (resolved === "overview") {
     return <OverviewPanel onPanelChange={onPanelChange} />;
   }
 
@@ -106,6 +117,6 @@ export function ControlPanelRouter({
     );
   }
 
-  const Panel = PANELS[panel] || PANELS.overview;
+  const Panel = PANELS[resolved] || PANELS.overview;
   return <Panel />;
 }

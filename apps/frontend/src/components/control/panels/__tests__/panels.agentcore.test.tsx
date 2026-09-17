@@ -1,7 +1,8 @@
 /**
- * M6 task 10-E: what Skills / Skill Proposals / Sessions / Overview show on a migrated
- * (AgentCore + Hermes) workspace. Ruling M6-R50: Hermes's own skills, sessions and providers —
- * nothing OpenClaw-shaped is emulated, and nothing fires before the runtime is known.
+ * M6 task 10-E: what Skills and Skill Proposals show on a migrated (AgentCore + Hermes)
+ * workspace. Ruling M6-R50: Hermes's own skills and providers — nothing OpenClaw-shaped is
+ * emulated, and nothing fires before the runtime is known. Sessions is NOT here: ruling
+ * M6-R54 hides that panel on this runtime (see ControlPanelRouter.agentcore.test.tsx).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -9,7 +10,6 @@ import React from "react";
 
 import { SkillsTab } from "../SkillsTab";
 import { SkillProposalsPanel } from "../SkillProposalsPanel";
-import { SessionsPanel } from "../SessionsPanel";
 
 let runtimeHost: "ecs" | "agentcore" | undefined;
 const rpcMethods: (string | null)[] = [];
@@ -105,45 +105,3 @@ describe("SkillProposalsPanel on an AgentCore workspace", () => {
   });
 });
 
-describe("SessionsPanel on an AgentCore workspace", () => {
-  const session = {
-    id: "s-1",
-    key: "s-1",
-    agentId: "agent_ceo",
-    title: "Weekly review",
-    updatedAt: Date.now(),
-    messageCount: 12,
-  };
-
-  it("holds sessions.list until the runtime is known", () => {
-    runtimeHost = undefined;
-    render(<SessionsPanel />);
-    expect(rpcMethods.every((method) => method === null)).toBe(true);
-  });
-
-  it("renders Hermes's columns and drops the per-session override controls", () => {
-    rpcData.mockReturnValue({ sessions: [session] });
-    render(<SessionsPanel />);
-    expect(screen.getByText("Messages")).toBeInTheDocument();
-    expect(screen.getByText("agent_ceo")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("Weekly review")).toBeInTheDocument();
-    // Hermes has no thinking/verbose/reasoning override and no token ledger.
-    expect(screen.queryByText("Thinking")).toBeNull();
-    expect(screen.queryByText("Tokens")).toBeNull();
-    // Nor the OpenClaw-only filters.
-    expect(screen.queryByText(/include global/i)).toBeNull();
-  });
-
-  it("renames through sessions.patch with the owning agent id", () => {
-    rpcData.mockReturnValue({ sessions: [session] });
-    render(<SessionsPanel />);
-    const input = screen.getByDisplayValue("Weekly review");
-    fireEvent.change(input, { target: { value: "Renamed" } });
-    fireEvent.blur(input);
-    expect(mockCallRpc).toHaveBeenCalledWith("sessions.patch", {
-      key: "s-1",
-      agentId: "agent_ceo",
-      title: "Renamed",
-    });
-  });
-});

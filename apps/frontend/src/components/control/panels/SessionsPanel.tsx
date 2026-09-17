@@ -2,7 +2,6 @@
 
 import { useState, useCallback } from "react";
 import { Loader2, RefreshCw, Trash2 } from "lucide-react";
-import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,10 +11,6 @@ import { cn } from "@/lib/utils";
 
 interface Session {
   key: string;
-  /** Hermes rows are keyed by session id; `key` mirrors it so one table can render both. */
-  id?: string;
-  title?: string;
-  messageCount?: number;
   kind?: "direct" | "group" | "global" | "unknown";
   agentId?: string;
   model?: string;
@@ -40,8 +35,7 @@ interface SessionsResponse {
   ts?: number;
   path?: string;
   count?: number;
-  // `defaults` is gone: its only field was `contextTokens`, nothing here ever read
-  // it, and Hermes has no equivalent (M6 task 10, row 17).
+  defaults?: { model?: string; contextTokens?: number };
   sessions?: Session[];
 }
 
@@ -119,35 +113,26 @@ function formatTokens(row: Session): string {
 /* ── Component ─────────────────────────────────────────── */
 
 export function SessionsPanel() {
-  // Hold every RPC until the runtime is DEFINITE — `undefined` means "not known
-  // for this workspace", and guessing ECS on AgentCore costs a microVM start.
-  const runtimeHost = useRuntimeHost();
-  const onAgentCore = runtimeHost === "agentcore";
-
   // Filter state
   const [activeMinutes, setActiveMinutes] = useState("");
   const [limit, setLimit] = useState("");
   const [includeGlobal, setIncludeGlobal] = useState(true);
   const [includeUnknown, setIncludeUnknown] = useState(true);
 
-  // Build RPC params from filter state. Hermes's session store knows nothing of
-  // OpenClaw's session KINDS (direct/group/global) or its derived-title flags, so
-  // it is sent only the one filter it has: a row limit.
-  const params: Record<string, unknown> = onAgentCore
-    ? {}
-    : {
-        includeGlobal,
-        includeUnknown,
-        includeDerivedTitles: true,
-        includeLastMessage: true,
-      };
+  // Build RPC params from filter state
+  const params: Record<string, unknown> = {
+    includeGlobal,
+    includeUnknown,
+    includeDerivedTitles: true,
+    includeLastMessage: true,
+  };
   const am = parseInt(activeMinutes, 10);
-  if (am > 0 && !onAgentCore) params.activeMinutes = am;
+  if (am > 0) params.activeMinutes = am;
   const lim = parseInt(limit, 10);
   if (lim > 0) params.limit = lim;
 
   const { data: rawData, error, isLoading, mutate } = useRuntimeRpc<SessionsResponse | Session[]>(
-    runtimeHost ? "sessions.list" : null,
+    "sessions.list",
     params,
   );
   const callRpc = useRuntimeRpcMutation();
@@ -165,15 +150,13 @@ export function SessionsPanel() {
       key: string,
       patch: {
         label?: string | null;
-        title?: string | null;
         thinkingLevel?: string | null;
         verboseLevel?: string | null;
         reasoningLevel?: string | null;
       },
-      agentId?: string,
     ) => {
       try {
-        await callRpc("sessions.patch", { key, ...(agentId ? { agentId } : {}), ...patch });
+        await callRpc("sessions.patch", { key, ...patch });
         // Unawaited revalidation: a rejection here must not become an
         // unhandled promise rejection (the patch already persisted).
         void mutate().catch(() => {});
@@ -185,17 +168,13 @@ export function SessionsPanel() {
   );
 
   const handleDelete = useCallback(
-    async (key: string, agentId?: string) => {
+    async (key: string) => {
       const confirmed = window.confirm(
-        `Delete session "${key}"?\n\nDeletes the session entry and its transcript.`,
+        `Delete session "${key}"?\n\nDeletes the session entry and archives its transcript.`,
       );
       if (!confirmed) return;
       try {
-        await callRpc("sessions.delete", {
-          key,
-          ...(agentId ? { agentId } : {}),
-          deleteTranscript: true,
-        });
+        await callRpc("sessions.delete", { key, deleteTranscript: true });
         void mutate().catch(() => {});
       } catch (err) {
         console.error("Failed to delete session:", err);
@@ -206,7 +185,7 @@ export function SessionsPanel() {
 
   /* ── Loading state ─────────────────────────────────── */
 
-  if ((isLoading || !runtimeHost) && !rawData) {
+  if (isLoading && !rawData) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
@@ -223,9 +202,7 @@ export function SessionsPanel() {
         <div>
           <h2 className="font-editorial-serif text-title text-[var(--midnight)]">Sessions</h2>
           <p className="text-xs text-[var(--midnight-muted)]">
-            {onAgentCore
-              ? "Your agents' conversation history. Rename or delete a session."
-              : "Active session keys and per-session overrides."}
+            Active session keys and per-session overrides.
           </p>
         </div>
         <Button
@@ -242,21 +219,18 @@ export function SessionsPanel() {
         </Button>
       </div>
 
-      {/* Filters — the OpenClaw-only ones (session kind, derived titles) have no
-          Hermes equivalent, so only the row limit survives on AgentCore. */}
+      {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
-        {!onAgentCore && (
-          <div className="space-y-1">
-            <label className="text-caption text-[var(--midnight-muted)]">Active within (min)</label>
-            <Input
-              type="number"
-              className="h-8 w-28 text-xs"
-              placeholder="0"
-              value={activeMinutes}
-              onChange={(e) => setActiveMinutes(e.target.value)}
-            />
-          </div>
-        )}
+        <div className="space-y-1">
+          <label className="text-caption text-[var(--midnight-muted)]">Active within (min)</label>
+          <Input
+            type="number"
+            className="h-8 w-28 text-xs"
+            placeholder="0"
+            value={activeMinutes}
+            onChange={(e) => setActiveMinutes(e.target.value)}
+          />
+        </div>
         <div className="space-y-1">
           <label className="text-caption text-[var(--midnight-muted)]">Limit</label>
           <Input
@@ -267,28 +241,24 @@ export function SessionsPanel() {
             onChange={(e) => setLimit(e.target.value)}
           />
         </div>
-        {!onAgentCore && (
-          <>
-            <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] cursor-pointer pb-1">
-              <input
-                type="checkbox"
-                checked={includeGlobal}
-                onChange={(e) => setIncludeGlobal(e.target.checked)}
-                className="accent-[var(--midnight)]"
-              />
-              Include global
-            </label>
-            <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] cursor-pointer pb-1">
-              <input
-                type="checkbox"
-                checked={includeUnknown}
-                onChange={(e) => setIncludeUnknown(e.target.checked)}
-                className="accent-[var(--midnight)]"
-              />
-              Include unknown
-            </label>
-          </>
-        )}
+        <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] cursor-pointer pb-1">
+          <input
+            type="checkbox"
+            checked={includeGlobal}
+            onChange={(e) => setIncludeGlobal(e.target.checked)}
+            className="accent-[var(--midnight)]"
+          />
+          Include global
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] cursor-pointer pb-1">
+          <input
+            type="checkbox"
+            checked={includeUnknown}
+            onChange={(e) => setIncludeUnknown(e.target.checked)}
+            className="accent-[var(--midnight)]"
+          />
+          Include unknown
+        </label>
       </div>
 
       {/* Error */}
@@ -306,35 +276,6 @@ export function SessionsPanel() {
       {/* Table */}
       {sessions.length === 0 ? (
         <p className="text-sm text-[var(--midnight-muted)]">No sessions found.</p>
-      ) : onAgentCore ? (
-        /* Hermes's session store has a title, an agent, a recency and a message
-           count — and no per-session thinking/verbose/reasoning overrides or token
-           ledger to show, so those columns are simply absent rather than blank. */
-        <div className="overflow-x-auto">
-          <table className="w-full text-ui border-collapse">
-            <thead>
-              <tr className="border-b border-[var(--edge)] text-left text-[var(--midnight-muted)]">
-                <th className="py-2 pr-3 label-caps">Title</th>
-                <th className="py-2 pr-3 label-caps">Agent</th>
-                <th className="py-2 pr-3 label-caps">Session</th>
-                <th className="py-2 pr-3 label-caps">Updated</th>
-                <th className="py-2 pr-3 label-caps">Messages</th>
-                <th className="py-2 label-caps">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => (
-                <HermesSessionRow
-                  key={s.key}
-                  session={s}
-                  disabled={isLoading}
-                  onPatch={handlePatch}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-ui border-collapse">
@@ -369,69 +310,6 @@ export function SessionsPanel() {
   );
 }
 
-/* ── Hermes session row ──────────────────────────────── */
-
-function HermesSessionRow({
-  session: s,
-  disabled,
-  onPatch,
-  onDelete,
-}: {
-  session: Session;
-  disabled: boolean;
-  onPatch: (key: string, patch: Record<string, string | null>, agentId?: string) => void;
-  onDelete: (key: string, agentId?: string) => void;
-}) {
-  return (
-    <tr className="border-b border-[var(--edge-soft)] hover:bg-[var(--cream-deep)] transition-colors">
-      {/* Title — the one editable field Hermes has (SessionDB.set_session_title) */}
-      <td className="py-2 pr-3">
-        <input
-          className="bg-transparent border-b border-transparent hover:border-[var(--edge)] text-xs w-48 py-0.5 transition-colors text-[var(--midnight)]"
-          defaultValue={s.title ?? ""}
-          placeholder="(untitled)"
-          disabled={disabled}
-          onBlur={(e) => {
-            const val = e.target.value.trim();
-            if (val && val !== (s.title ?? "").trim()) onPatch(s.key, { title: val }, s.agentId);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          }}
-        />
-      </td>
-
-      <td className="py-2 pr-3 font-mono text-caption text-[var(--midnight-muted)] max-w-[160px]">
-        <div className="truncate">{s.agentId ?? "—"}</div>
-      </td>
-
-      <td className="py-2 pr-3 font-mono text-caption max-w-[180px]">
-        <div className="truncate">{s.key}</div>
-      </td>
-
-      <td className="py-2 pr-3 text-[var(--midnight-muted)] whitespace-nowrap">
-        {formatRelativeTime(s.updatedAt)}
-      </td>
-
-      <td className="py-2 pr-3 font-mono text-[var(--midnight-muted)] whitespace-nowrap">
-        {s.messageCount ?? "—"}
-      </td>
-
-      <td className="py-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-[var(--midnight-muted)] hover:text-err"
-          disabled={disabled}
-          onClick={() => onDelete(s.key, s.agentId)}
-        >
-          <Trash2 size={12} strokeWidth={1.75} />
-        </Button>
-      </td>
-    </tr>
-  );
-}
-
 /* ── Session Row ─────────────────────────────────────── */
 
 function SessionRow({
@@ -442,8 +320,8 @@ function SessionRow({
 }: {
   session: Session;
   disabled: boolean;
-  onPatch: (key: string, patch: Record<string, string | null>, agentId?: string) => void;
-  onDelete: (key: string, agentId?: string) => void;
+  onPatch: (key: string, patch: Record<string, string | null>) => void;
+  onDelete: (key: string) => void;
 }) {
   const isBinary = isBinaryThinkingProvider(s.modelProvider);
   const rawThinking = s.thinkingLevel ?? "";

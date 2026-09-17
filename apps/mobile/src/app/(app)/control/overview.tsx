@@ -34,23 +34,15 @@ import { useLiveEvents } from "../../../providers/live-events";
 // ---------------------------------------------------------------------------
 
 /** `health` RPC payload — may arrive bare or wrapped in an event envelope.
- *  OpenClaw sends a boot `ts` and `sessions: {count}`; the Hermes bridge sends
- *  `uptimeS` and a plain count (`null` = no profile restored yet, so unknown). */
+ *  OpenClaw sends a boot `ts` and an agents ARRAY; the Hermes bridge sends `uptimeS`
+ *  and a plain agent count. It sends no `sessions` at all (ruling M6-R54), so that
+ *  tile reads "—" on AgentCore. */
 interface HealthPayload {
   ok?: boolean;
   ts?: number;
   uptimeS?: number;
-  sessions?: { count?: number } | number | null;
+  sessions?: { count?: number };
   agents?: unknown[] | number;
-}
-
-/** Session count from either runtime's shape; `undefined` stays "not known". */
-export function healthSessionCount(
-  value: HealthPayload["sessions"],
-): number | undefined {
-  if (typeof value === "number") return value;
-  if (value && typeof value === "object") return value.count;
-  return undefined;
 }
 
 /** Subset of `GET /billing/account` used by the Overview tiles. */
@@ -328,7 +320,7 @@ export default function Overview() {
   const health = extractHealth(healthRaw);
 
   const agentCount = agentsSettled ? agents.length : undefined;
-  const sessionCount = healthSessionCount(health?.sessions);
+  const sessionCount = health?.sessions?.count;
 
   let body: ReactNode;
   if (state.kind === "loading") {

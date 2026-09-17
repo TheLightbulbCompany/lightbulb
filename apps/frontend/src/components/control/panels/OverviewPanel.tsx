@@ -54,10 +54,12 @@ interface HealthPayload {
   channels?: Record<string, unknown>;
   heartbeatSeconds?: number;
   defaultAgentId?: string;
-  // OpenClaw sends objects/arrays here; the Hermes bridge sends plain counts (and
-  // `uptimeS` instead of a boot `ts`). Both are accepted — see `healthCount`.
+  // OpenClaw sends an array here; the Hermes bridge sends a plain count (and `uptimeS`
+  // instead of a boot `ts`). Both are accepted — see `healthCount`. `sessions` stays
+  // OpenClaw-only: the bridge sends no count, because the panel it fed is hidden on
+  // AgentCore (ruling M6-R54).
   agents?: HealthAgent[] | number;
-  sessions?: { count?: number; recent?: unknown[] } | number | null;
+  sessions?: { count?: number; recent?: unknown[] };
   uptimeS?: number;
   tickInterval?: number;
   lastChannelsRefresh?: number;
@@ -401,12 +403,16 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
           value={agentCount !== undefined ? String(agentCount) : "\u2014"}
           onClick={onPanelChange ? () => onPanelChange("agents") : undefined}
         />
-        <SummaryCard
-          icon={MessageSquare}
-          label="Sessions"
-          value={sessionCount !== undefined ? String(sessionCount) : "\u2014"}
-          onClick={onPanelChange ? () => onPanelChange("sessions") : undefined}
-        />
+        {/* The Sessions panel is hidden on AgentCore (ruling M6-R54), so this card would be a
+            count Hermes does not report, deep-linking to a panel that is not there. */}
+        {!onAgentCore && (
+          <SummaryCard
+            icon={MessageSquare}
+            label="Sessions"
+            value={sessionCount !== undefined ? String(sessionCount) : "\u2014"}
+            onClick={onPanelChange ? () => onPanelChange("sessions") : undefined}
+          />
+        )}
         <SummaryCard
           icon={Wrench}
           label="Skills"

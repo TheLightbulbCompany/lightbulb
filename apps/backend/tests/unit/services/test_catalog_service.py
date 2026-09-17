@@ -1362,3 +1362,121 @@ async def test_sidecar_survives_a_pair_timeout_so_the_retry_can_see_the_install(
     assert kwargs["content"]["template_version"] == 3
     assert kwargs["content"]["install_state"] == "installing"
     ws.mark_template_install_complete.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# AgentCore Hermes profile sourcing convergence (fix round 3, M6-R10):
+# catalog_service._build_and_upload_agent_profile and
+# hermes_provisioning._write_profiles must source the same six owner-level
+# profile writer inputs identically -- both now delegate to the single
+# hermes_provisioning.resolve_profile_inputs helper. These tests exercise the
+# REAL resolver (only its DB/network-shaped collaborators are mocked) rather
+# than re-testing resolve_profile_inputs's own branch logic, which lives in
+# test_hermes_provisioning.py.
+# ---------------------------------------------------------------------------
+
+
+def _patch_resolve_profile_inputs_collaborators(monkeypatch, *, billing_row=None, byo_key=None):
+    async def _fake_get_billing_row(owner_id):
+        return billing_row
+
+    async def _fake_build_connected_integration_servers(owner_id):
+        return {"paperclip": {"url": "https://paperclip.example"}}
+
+    async def _fake_build_provisioned_env(owner_id):
+        return {"SOME_KEY": "value"}
+
+    async def _fake_read_byo_key(owner_id, provider):
+        return byo_key
+
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", _fake_get_billing_row)
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers",
+        _fake_build_connected_integration_servers,
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
+    monkeypatch.setattr("core.services.key_service.read_byo_key", _fake_read_byo_key)
+
+
+@pytest.mark.asyncio
+async def test_build_and_upload_agent_profile_gets_the_bedrock_trial_choice_for_a_trial_local_owner(monkeypatch):
+    """M6-R10, divergence (1): catalog_service used to skip
+    provider_choice_from_row's trial_local branch entirely, so a card-less
+    trial owner's marketplace AgentCore deploy got the full paid model
+    ladder instead of BEDROCK_TRIAL_CHOICE. Now that it delegates to the
+    shared resolve_profile_inputs, it must not."""
+    from core.containers.config import BEDROCK_TRIAL_CHOICE
+    from core.services import catalog_service
+
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"subscription_status": "trial_local"})
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": "agent_new", "name": "Demo", "role": "general"}]),
+    )
+    monkeypatch.setattr("core.services.catalog_service._resolve_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    written = {}
+
+    def fake_write_agent_profile(owner_id, agent, **kwargs):
+        written["kwargs"] = kwargs
+        return "FILES"
+
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", fake_write_agent_profile)
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock(return_value=None))
+
+    await catalog_service._build_and_upload_agent_profile(
+        owner_id="org_trial", agent_id="agent_new", container={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
+    )
+
+    assert written["kwargs"]["provider_choice"] == BEDROCK_TRIAL_CHOICE
+    assert written["kwargs"]["byo_provider"] is None
+
+
+@pytest.mark.parametrize(
+    "billing_row,byo_key",
+    [
+        ({"provider_choice": "bedrock_claude"}, None),
+        ({"subscription_status": "trial_local"}, None),
+        ({"provider_choice": "byo_key", "byo_provider": "openai"}, "sk-explicit"),
+        ({"provider_choice": "byo_key", "byo_provider": None}, "sk-default-anthropic"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_write_profiles_and_build_and_upload_agent_profile_source_identical_inputs(
+    monkeypatch, billing_row, byo_key
+):
+    """M6-R10: hermes_provisioning._write_profiles and
+    catalog_service._build_and_upload_agent_profile must source the exact
+    same six owner-level inputs for the same owner. Proved by calling the
+    shared resolver directly (the same call _write_profiles makes) and
+    comparing it against what catalog_service's caller actually threads into
+    write_agent_profile, with only the resolver's own DB/network
+    collaborators mocked -- not the resolver itself."""
+    from core.services import catalog_service, hermes_provisioning
+
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row=billing_row, byo_key=byo_key)
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": "agent_new", "name": "Demo", "role": "general"}]),
+    )
+    monkeypatch.setattr("core.services.catalog_service._resolve_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    container = {"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
+
+    expected = await hermes_provisioning.resolve_profile_inputs("org_a", container_row=container)
+
+    written = {}
+
+    def fake_write_agent_profile(owner_id, agent, **kwargs):
+        written["kwargs"] = kwargs
+        return "FILES"
+
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", fake_write_agent_profile)
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock(return_value=None))
+
+    await catalog_service._build_and_upload_agent_profile(owner_id="org_a", agent_id="agent_new", container=container)
+
+    assert written["kwargs"]["provider_choice"] == expected.provider_choice
+    assert written["kwargs"]["byo_provider"] == expected.byo_provider
+    assert written["kwargs"]["byo_api_key"] == expected.byo_api_key
+    assert written["kwargs"]["aip_arns"] == expected.aip_arns
+    assert written["kwargs"]["integrations"] == expected.integrations
+    assert written["kwargs"]["env_vars"] == expected.env_vars

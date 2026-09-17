@@ -889,3 +889,132 @@ async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypa
     # Real write_agent_profile runs (not mocked) -- proves the non-BYO path produces a normal
     # profile with byo_api_key=None, with no read ever attempted.
     await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+
+# --- resolve_profile_inputs (fix round 3, M6-R10/M6-R11/M6-R13) ----------------------------------
+
+
+def _patch_resolve_profile_inputs_collaborators(
+    monkeypatch,
+    *,
+    billing_row=None,
+    read_byo_key=None,
+    integrations=None,
+    env_vars=None,
+):
+    """Patches the underlying collaborators resolve_profile_inputs composes
+    (NOT resolve_provider_choice itself) so provider_choice_from_row's real
+    trial_local/byo_provider logic actually runs -- that logic is exactly
+    what this function's own tests need to exercise."""
+
+    async def _fake_get_billing_row(owner_id):
+        return billing_row
+
+    async def _fake_build_connected_integration_servers(owner_id):
+        return integrations or {}
+
+    async def _fake_build_provisioned_env(owner_id):
+        return env_vars or {}
+
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", _fake_get_billing_row)
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers",
+        _fake_build_connected_integration_servers,
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
+    if read_byo_key is not None:
+        monkeypatch.setattr("core.services.key_service.read_byo_key", read_byo_key)
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_inputs_reads_aip_arns_from_the_container_row(monkeypatch):
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "bedrock_claude"})
+
+    inputs = await hermes_provisioning.resolve_profile_inputs(
+        "org_a", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"}}
+    )
+    assert inputs.aip_arns == {"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_inputs_defaults_aip_arns_to_empty_when_row_has_none(monkeypatch):
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "bedrock_claude"})
+
+    inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+    assert inputs.aip_arns == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_inputs_returns_bedrock_trial_choice_for_a_trial_local_owner(monkeypatch):
+    """M6-R10, divergence (1): catalog_service used to skip
+    provider_choice_from_row's trial_local branch entirely -- a card-less
+    trial owner's marketplace deploy would get the full paid model ladder.
+    resolve_profile_inputs is the one place both callers now go through, so
+    this proves the real provider_choice_from_row logic fires for real."""
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"subscription_status": "trial_local"})
+
+    inputs = await hermes_provisioning.resolve_profile_inputs(
+        "org_trial", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
+    )
+
+    from core.containers.config import BEDROCK_TRIAL_CHOICE
+
+    assert inputs.provider_choice == BEDROCK_TRIAL_CHOICE
+    assert inputs.byo_provider is None
+    assert inputs.aip_arns == {"sonnet": "arn:aip:sonnet"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_inputs_reads_the_anthropic_key_for_an_unset_byo_provider(monkeypatch):
+    """M6-R10, divergence (2): catalog_service used to short-circuit to None
+    for an unset byo_provider instead of reading the "anthropic" default
+    provisioning has always read."""
+
+    async def _fake_read_byo_key(owner_id, provider):
+        assert provider == "anthropic"
+        return "sk-real-byo-key"
+
+    _patch_resolve_profile_inputs_collaborators(
+        monkeypatch,
+        billing_row={"provider_choice": "byo_key", "byo_provider": None},
+        read_byo_key=_fake_read_byo_key,
+    )
+
+    inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+    assert inputs.byo_api_key == "sk-real-byo-key"
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_inputs_raises_when_byo_key_missing(monkeypatch):
+    """M6-R11: a byo_key owner with no readable key must never ship a
+    profile with no LLM credential at all."""
+    _patch_resolve_profile_inputs_collaborators(
+        monkeypatch,
+        billing_row={"provider_choice": "byo_key", "byo_provider": "anthropic"},
+        read_byo_key=_noop_async,  # returns None
+    )
+
+    with pytest.raises(hermes_provisioning.HermesProfileError, match="org_a"):
+        await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_inputs_defaults_to_bedrock_claude_when_billing_row_missing(monkeypatch):
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row=None)
+
+    inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+    assert inputs.provider_choice == "bedrock_claude"
+    assert inputs.byo_api_key is None
+
+
+def test_classify_provision_error_treats_hermes_profile_error_like_runtime_error():
+    """M6-R13: subclassing RuntimeError (not a bare Exception) keeps the
+    provisioning runner's classification unchanged -- none of
+    classify_provision_error's branches single out RuntimeError by exact
+    type, so a HermesProfileError falls into the same "everything else"
+    default as a plain RuntimeError."""
+    from core.repositories.container_repo import classify_provision_error
+
+    _, hermes_retryable = classify_provision_error(hermes_provisioning.HermesProfileError("boom"))
+    _, plain_retryable = classify_provision_error(RuntimeError("boom"))
+    assert hermes_retryable == plain_retryable

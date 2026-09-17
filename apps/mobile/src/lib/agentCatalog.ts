@@ -164,11 +164,3 @@ export function validateAgentName(
   if (RESERVED_AGENT_IDS.includes(id)) return "This name is reserved";
   return null;
 }
-
-/** Derive the explicit create-time workspace path. OpenClaw's agents.create
- *  requires a non-empty `workspace` (it does NOT inherit
- *  agents.defaults.workspace at create time), so we fill the same path the
- *  default resolves to at runtime. */
-export function deriveWorkspace(name: string): string {
-  return `.openclaw/workspaces/${normalizeAgentId(name)}`;
-}

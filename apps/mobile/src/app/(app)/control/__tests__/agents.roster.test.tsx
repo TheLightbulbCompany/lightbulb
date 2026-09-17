@@ -1,5 +1,6 @@
 import { Alert } from "react-native";
 import { fireEvent, render, screen } from "@testing-library/react-native";
+import type { ReactNode } from "react";
 
 // The control Agents tab and the Chat roster answer the same question — "is
 // this a wake or a failure?" — and reviewers caught them diverging twice: once
@@ -9,7 +10,13 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 
 jest.mock("expo-router", () => ({
   router: { push: jest.fn(), back: jest.fn() },
-  Stack: { Screen: () => null },
+  // Real react-navigation renders `options.headerRight` inside the native
+  // header; this mock is the whole navigator here, so it has to do that
+  // itself, or the "New agent" button would never mount at all.
+  Stack: {
+    Screen: ({ options }: { options?: { headerRight?: () => ReactNode } }) =>
+      options?.headerRight ? options.headerRight() : null,
+  },
 }));
 
 jest.mock("../../../../providers/live-events", () => ({
@@ -119,5 +126,20 @@ describe("control Agents tab roster states", () => {
     await render(<AgentsPanel />);
     expect(screen.getByText(/Gateway handshake rejected/)).toBeTruthy();
     expect(screen.queryByText("No agents yet.")).toBeNull();
+  });
+
+  it("creates an agent without baking in an EFS workspace path", async () => {
+    const createAgent = jest.fn().mockResolvedValue(undefined);
+    mockAgents = makeRoster({ createAgent });
+    await render(<AgentsPanel />);
+
+    await fireEvent.press(screen.getByLabelText("New agent"));
+    await fireEvent.changeText(screen.getByPlaceholderText("e.g. Research Assistant"), "Ada");
+    await fireEvent.press(screen.getByLabelText("Create agent"));
+
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.not.objectContaining({ workspace: expect.anything() }),
+    );
+    expect(JSON.stringify(createAgent.mock.calls)).not.toContain(".openclaw");
   });
 });

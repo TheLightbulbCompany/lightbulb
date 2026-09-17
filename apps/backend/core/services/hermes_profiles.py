@@ -38,10 +38,13 @@ earlier version of this file put them here.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import mimetypes
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 import yaml
 
@@ -390,6 +393,30 @@ _CEO_LINE = (
 )
 
 
+#: First line of a backend-GENERATED ``SOUL.md`` (M6-R48). It is the ONE signal that tells the
+#: rename branch (``runtime_rpc._refresh_agentcore_soul``) whether it may regenerate this file: the
+#: Instructions-tab PUT strips the marker, so once an owner has saved their agent's identity the
+#: file is theirs and a later rename never overwrites it. Text carried in verbatim from somewhere
+#: else — ``write_agent_profile``'s ``soul_md_override`` (a migrated workspace's own EFS SOUL.md, a
+#: marketplace seller's) — is owner content by the same rule and deliberately arrives unmarked.
+#: An HTML comment because ``SOUL.md`` is a prompt document: it renders as nothing.
+SOUL_GENERATED_MARKER = "<!-- lightbulb:generated -->"
+
+
+def is_generated_soul(text: str | None) -> bool:
+    """True while ``text`` is still the backend-generated ``SOUL.md`` — see the marker above."""
+    return bool(text) and text.lstrip().startswith(SOUL_GENERATED_MARKER)
+
+
+def strip_generated_marker(text: str) -> str:
+    """Drop the generated marker — what the Instructions-tab PUT does, which is what makes the
+    saved file the owner's. A no-op on text that never carried one."""
+    stripped = text.lstrip()
+    if stripped.startswith(SOUL_GENERATED_MARKER):
+        return stripped[len(SOUL_GENERATED_MARKER) :].lstrip("\n")
+    return text
+
+
 def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
     """The profile's ``SOUL.md`` — the agent's identity, from the Paperclip roster row.
 
@@ -399,7 +426,9 @@ def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
     """
     name = agent.get("name") or agent["id"]
     role = agent.get("role") or "general"
-    lines = [f"# {name}", ""]
+    # The marker owns the first line, then a blank one: a heading butted straight against an HTML
+    # comment is swallowed into the same HTML block by every CommonMark renderer.
+    lines = [SOUL_GENERATED_MARKER, "", f"# {name}", ""]
     if agent.get("title"):
         lines += [f"**{agent['title']}**", ""]
     where = f" at {company_name}" if company_name else ""
@@ -765,6 +794,144 @@ def upload_soul_md(owner_id: str, agent_id: str, soul_md: str) -> None:
     _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}SOUL.md", soul_md)
     # LAST, always -- same reasoning as upload_profile/_upload_config_yaml's .revision write.
     _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
+
+
+def read_soul_md(owner_id: str, agent_id: str) -> str | None:
+    """The profile's stored ``SOUL.md``, or ``None`` when it was never written. Sync -- call via
+    ``run_in_thread``. Its one reader is the rename branch's generated-marker check (M6-R48)."""
+    return _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}SOUL.md")
+
+
+# ---- Task 10-B: the owner-facing file routes on an AgentCore row (M6-R48) ----------------------
+# The migration COPIES the EFS tree into the profile and leaves the original in place
+# (migrate_workspace_to_hermes.py's tail stops the ECS service and never deletes
+# /mnt/efs/users/<owner>/), so routers/workspace_files.py has to read and write the S3 profile on a
+# migrated workspace or the Files panel and the Instructions tab edit a stale copy nobody reads --
+# a green save with no effect. These helpers are the S3 side of that branch; the writes go through
+# upload_profile_files/upload_soul_md, which already bump .revision LAST so the bridge re-pulls the
+# file on the agent's next turn.
+
+#: Never listed, read or written through an owner-facing file route.
+_HIDDEN_PROFILE_DIRS = frozenset({"mcp-tokens"})
+
+
+def is_hidden_profile_path(rel: str) -> bool:
+    """``mcp-tokens/`` (live MCP OAuth tokens) and every dotfile -- ``.env`` (the profile's secret
+    store) and ``.revision`` (the bridge's re-pull marker) chief among them. A hidden path is
+    ABSENT to a read, not forbidden: an owner-facing route must not confirm a token file exists."""
+    parts = PurePosixPath(rel).parts
+    return not parts or parts[0] in _HIDDEN_PROFILE_DIRS or any(p.startswith(".") for p in parts)
+
+
+def normalize_profile_rel(rel_path: str) -> str:
+    """A clean, profile-relative POSIX path, or ``ValueError``.
+
+    Normalizing is not cosmetic on S3, which has no path semantics of its own: ``./SOUL.md`` would
+    otherwise be a DIFFERENT key from ``SOUL.md`` and slip straight past the ``BACKEND_OWNED_FILES``
+    guard in ``write_profile_file``.
+    """
+    if rel_path.startswith(("/", "\\")):
+        raise ValueError("path must be a non-empty relative path")
+    parts = [p for p in PurePosixPath(rel_path.replace("\\", "/")).parts if p not in (".", "")]
+    if any(p == ".." for p in parts):
+        raise ValueError("path must not contain '..' segments")
+    if not parts:
+        raise ValueError("path must be a non-empty relative path")
+    return "/".join(parts)
+
+
+def list_profile_dir(owner_id: str, agent_id: str, rel_path: str = "") -> list[dict]:
+    """ONE level of a Hermes profile, in the entry shape ``Workspace.list_directory`` returns
+    (dirs first, then files, each name-ordered) so the Files panel renders it unchanged.
+
+    S3 has no directories: ``Delimiter="/"`` turns the shared key prefixes into the dir rows, and
+    they carry no mtime -- ``modified_at: 0``, the same value the tree already synthesizes for its
+    ghost entries. Deliberately non-recursive, like the EFS route it mirrors. Sync -- call via
+    ``run_in_thread``.
+    """
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return []
+    sub = f"{normalize_profile_rel(rel_path)}/" if rel_path else ""
+    if sub and is_hidden_profile_path(sub.rstrip("/")):
+        return []
+    prefix = f"{profile_prefix(owner_id, agent_id)}{sub}"
+    dirs: list[dict] = []
+    files: list[dict] = []
+    pages = _shared_s3_client().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix, Delimiter="/")
+    for page in pages:
+        for common in page.get("CommonPrefixes", []):
+            name = common["Prefix"][len(prefix) :].rstrip("/")
+            if not name or is_hidden_profile_path(f"{sub}{name}"):
+                continue
+            dirs.append({"name": name, "path": f"{sub}{name}", "type": "dir", "size": None, "modified_at": 0})
+        for obj in page.get("Contents", []):
+            name = obj["Key"][len(prefix) :]
+            if not name or "/" in name or is_hidden_profile_path(f"{sub}{name}"):
+                continue
+            files.append(
+                {
+                    "name": name,
+                    "path": f"{sub}{name}",
+                    "type": "file",
+                    "size": obj["Size"],
+                    "modified_at": obj["LastModified"].timestamp(),
+                }
+            )
+    dirs.sort(key=lambda e: e["name"])
+    files.sort(key=lambda e: e["name"])
+    return dirs + files
+
+
+def _profile_file_info(rel: str, body: bytes, modified_at: float) -> dict:
+    """``Workspace.read_file_info``'s payload for one profile object -- same keys, same
+    text/base64/None content rule, so ``FileContentViewer`` needs no branch of its own."""
+    name = rel.rsplit("/", 1)[-1]
+    mime_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    info = {"name": name, "path": rel, "size": len(body), "modified_at": modified_at, "mime_type": mime_type}
+    if mime_type.startswith("image/") or mime_type == "application/pdf":
+        return {**info, "binary": True, "content": base64.b64encode(body).decode("ascii")}
+    try:
+        return {**info, "binary": False, "content": body.decode()}
+    except UnicodeDecodeError:
+        # Opaque binary -- metadata only, exactly as the EFS reader answers for one.
+        return {**info, "binary": True, "content": None}
+
+
+def read_profile_file(owner_id: str, agent_id: str, rel_path: str) -> dict:
+    """One profile object in ``read_file_info``'s shape. ``FileNotFoundError`` when it is absent
+    OR hidden (see ``is_hidden_profile_path``), ``ValueError`` for a malformed path. Sync -- call
+    via ``run_in_thread``."""
+    import botocore.exceptions
+
+    rel = normalize_profile_rel(rel_path)
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket or is_hidden_profile_path(rel):
+        raise FileNotFoundError(rel_path)
+    try:
+        obj = _shared_s3_client().get_object(Bucket=bucket, Key=f"{profile_prefix(owner_id, agent_id)}{rel}")
+    except botocore.exceptions.ClientError as exc:
+        # Same split as _s3_get: only a genuine miss is "absent"; a 503/permissions blip propagates.
+        if (exc.response or {}).get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+            raise FileNotFoundError(rel_path) from exc
+        raise
+    return _profile_file_info(rel, obj["Body"].read(), obj["LastModified"].timestamp())
+
+
+async def write_profile_file(owner_id: str, agent_id: str, rel_path: str, content: str) -> str:
+    """Write one owner-editable file into the profile, bumping ``.revision`` LAST -- delegated to
+    ``upload_profile_files``, which already does both in that order.
+
+    ``PermissionError`` for a hidden path or a ``BACKEND_OWNED_FILES`` name: ``config.yaml``/
+    ``.env``/``lightbulb-facts.json`` are the backend's to write, and ``SOUL.md`` has its own
+    writer (``upload_soul_md``, reached from the Instructions tab) that keeps the generated-marker
+    rule. ``ValueError`` for a malformed path.
+    """
+    rel = normalize_profile_rel(rel_path)
+    if is_hidden_profile_path(rel) or rel in BACKEND_OWNED_FILES:
+        raise PermissionError(rel)
+    await upload_profile_files(owner_id, agent_id, {rel: content.encode()})
+    return rel
 
 
 # ---- Task 14: integration token refresh rewrites the profile -----------------------------------

@@ -32,6 +32,15 @@ from core.services.hermes_provisioning import ProfileInputs
 from core.services.messaging import ApiProblem
 
 
+@pytest.fixture(autouse=True)
+def _no_stored_soul_md_by_default(monkeypatch):
+    """``_refresh_agentcore_soul`` now reads the stored ``SOUL.md`` first (M6-R48, the
+    generated-marker check) -- a real S3 GET when unmocked. Default every test in this module to
+    "the profile has none yet", which is the regenerate branch they were all written against; the
+    marker tests below override it."""
+    monkeypatch.setattr(rpc.hermes_profiles, "read_soul_md", MagicMock(return_value=None))
+
+
 def _agentcore(is_agentcore: bool):
     """``_is_agentcore`` is ``async def`` -- the replacement must be a real coroutine
     function, never a bare value (an ``await`` on a non-awaitable raises ``TypeError``)."""
@@ -278,6 +287,54 @@ async def test_mirror_agent_update_rename_on_agentcore_row_refreshes_soul_md_onl
     owner_arg, agent_arg, soul_arg = upload_soul.call_args.args
     assert (owner_arg, agent_arg) == ("org_1", "a1")
     assert "Renamed Ada" in soul_arg
+
+
+def _wire_rename(monkeypatch, *, stored_soul: str | None):
+    """A rename on an AgentCore row, with whatever SOUL.md the profile currently holds."""
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
+    admin.patch_agent = AsyncMock(return_value={})
+    _wire_paperclip_mirror(monkeypatch, admin)
+    monkeypatch.setattr(
+        rpc, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Renamed Ada", "role": "general"}])
+    )
+    monkeypatch.setattr(rpc.hermes_profiles, "read_soul_md", MagicMock(return_value=stored_soul))
+    upload_soul = MagicMock()
+    monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", upload_soul)
+    return upload_soul
+
+
+@pytest.mark.asyncio
+async def test_rename_regenerates_soul_md_while_it_still_carries_the_generated_marker(monkeypatch):
+    """M6-R48: an untouched, backend-generated SOUL.md is ours to rewrite."""
+    generated = rpc.hermes_profiles.build_soul_md({"id": "a1", "name": "Ada", "role": "general"})
+    upload_soul = _wire_rename(monkeypatch, stored_soul=generated)
+
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "name": "Renamed Ada"}, agentcore=True)
+
+    upload_soul.assert_called_once()
+    assert "Renamed Ada" in upload_soul.call_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_rename_leaves_an_owner_edited_soul_md_alone(monkeypatch):
+    """M6-R48: the Instructions-tab PUT strips the marker, so this text is the owner's and a
+    rename must never overwrite it -- the same rule protects a migrated workspace's carried-over
+    SOUL.md, which was never generated here either."""
+    upload_soul = _wire_rename(monkeypatch, stored_soul="# Ada\n\nI wrote this myself.\n")
+
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "name": "Renamed Ada"}, agentcore=True)
+
+    upload_soul.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rename_still_writes_soul_md_when_the_profile_has_none_yet(monkeypatch):
+    upload_soul = _wire_rename(monkeypatch, stored_soul=None)
+
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "name": "Renamed Ada"}, agentcore=True)
+
+    upload_soul.assert_called_once()
 
 
 @pytest.mark.asyncio

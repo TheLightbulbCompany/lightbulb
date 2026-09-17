@@ -690,7 +690,16 @@ async def _refresh_agentcore_soul(owner_id: str, agent_id: str) -> None:
     """Row #2 (Q9a fix round 1, I2): name/title/role/capabilities reach the agent ONLY through
     ``SOUL.md`` (``hermes_profiles.build_soul_md``) -- rebuild it from the live (post-mirror)
     Paperclip roster row and upload ONLY that file. Never ``write_profile_for_agent``/
-    ``upload_profile``, which would also overwrite the owner's own ``config.yaml``/``.env``."""
+    ``upload_profile``, which would also overwrite the owner's own ``config.yaml``/``.env``.
+
+    M6-R48: regenerate ONLY while the stored file is still the backend-generated one -- its first
+    line is ``hermes_profiles.SOUL_GENERATED_MARKER``. The Instructions tab strips that marker when
+    an owner saves ``SOUL.md``, and a migrated/marketplace profile carries text that was never
+    generated here at all, so in both cases the file is the owner's and a rename must leave it
+    alone. A profile with no ``SOUL.md`` yet is still written: there is nothing to preserve."""
+    current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
+    if current is not None and not hermes_profiles.is_generated_soul(current):
+        return
     roster = await load_agent_roster(owner_id)
     agent_row = next((row for row in roster if isinstance(row, dict) and row.get("id") == agent_id), None)
     if agent_row is None:

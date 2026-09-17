@@ -132,7 +132,7 @@ async def test_a_late_or_unknown_result_is_acked_and_dropped_not_raised():
 async def test_a_timeout_clears_the_pending_entry_so_the_map_cannot_grow():
     session = node_broker.NodeSession("dev-1", {"system.run"})
     with pytest.raises(node_broker.NodeInvokeTimeout):
-        await session.invoke("system.run", {"command": ["sleep", "9"]}, 10)
+        await session.invoke("system.run", {"command": ["sleep", "9"]}, 50)
     assert session.pending == {}
 
 

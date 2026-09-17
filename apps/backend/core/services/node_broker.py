@@ -153,7 +153,7 @@ class NodeSession:
         self.pending[invoke_id] = future
         await self.send.put(invoke_request(invoke_id, self.node_id, command, params, timeout_ms))
         try:
-            return await asyncio.wait_for(future, timeout=timeout_ms / 1000 + 5)
+            return await asyncio.wait_for(future, timeout=timeout_ms / 1000)
         except asyncio.TimeoutError as exc:
             raise NodeInvokeTimeout(command) from exc
         finally:

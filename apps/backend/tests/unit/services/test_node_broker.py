@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -133,6 +134,29 @@ async def test_a_timeout_clears_the_pending_entry_so_the_map_cannot_grow():
     with pytest.raises(node_broker.NodeInvokeTimeout):
         await session.invoke("system.run", {"command": ["sleep", "9"]}, 10)
     assert session.pending == {}
+
+
+async def test_timeout_is_exact_and_a_late_result_after_it_is_ignored_not_raised():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    start = time.monotonic()
+    task = asyncio.create_task(session.invoke("system.run", {"command": ["sleep", "9"]}, 10))
+    await asyncio.sleep(0)
+    invoke_id = next(iter(session.pending))
+    with pytest.raises(node_broker.NodeInvokeTimeout):
+        await task
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0  # NodeInvokeTimeout fires at timeout_ms/1000 — no undocumented +5s floor
+    assert session.pending == {}
+    # a result arriving after the deadline must be dropped cleanly, not raise
+    ack = session.resolve(
+        {
+            "type": "req",
+            "id": "late-1",
+            "method": "node.invoke.result",
+            "params": {"id": invoke_id, "ok": True, "payloadJSON": json.dumps({"stdout": "late"})},
+        }
+    )
+    assert ack == {"type": "res", "id": "late-1", "ok": True}
 
 
 async def test_a_command_the_device_never_declared_is_refused_before_it_reaches_the_socket():

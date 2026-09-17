@@ -32,6 +32,17 @@ def test_the_overlay_carries_the_approvals_deny_backstop():
     assert "rm -rf /" in parsed()["approvals"]["deny"]
 
 
+def test_the_overlay_pins_nous_guest_off():
+    """M4-R38(b): the Nous free tier is the one credential-less lane on Hermes's own vision
+    auto-chain (hermes_cli/anon_auth.py::guest_enabled reads nous.guest, default True) --
+    pinned off here since the managed overlay wins AFTER env expansion and cannot be undone
+    from inside a profile's own config.yaml. Verified live against the
+    lightbulb/hermes-spike:m1-rc4 image: hermes_cli.config.load_config_readonly() (DEFAULT_CONFIG
+    + config.yaml + managed scope) reports nous.guest == False once this overlay is on disk at
+    $HERMES_MANAGED_DIR, even with HERMES_GUEST_ONBOARDING=1 set."""
+    assert parsed()["nous"]["guest"] is False
+
+
 def test_the_overlay_holds_no_secret_and_no_env_reference():
     # Managed wins AFTER expansion, so a ${VAR} here would be pinned as a literal.
     assert "${" not in MANAGED_OVERLAY_YAML

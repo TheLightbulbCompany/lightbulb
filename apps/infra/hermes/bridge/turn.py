@@ -652,6 +652,42 @@ def _hermes_home_scope(agent_id: str):
     return _scope()
 
 
+def _secret_scope(agent_id: str):
+    """Hold the profile's secret scope for construction AND the whole run_conversation — the
+    SAME lifetime as ``_hermes_home_scope`` above, and for the same reason: ``${VAR}`` refs in
+    ``config.yaml`` resolve via ``agent.secret_scope.get_secret`` at CALL time
+    (``hermes_cli/config.py``'s ``_env_ref_lookup``), not just once at ``AIAgent`` construction,
+    so anything read during the turn — not only during setup — needs the scope installed.
+
+    Load-bearing (verified in the ``lightbulb/hermes-spike:m1-rc4`` image): a profile's ``.env``
+    values are NOT loaded automatically anywhere in this process. ``run_agent.py`` loads exactly
+    ONE home's ``.env`` into ``os.environ`` at import (the process's own root/launch profile), and
+    Hermes's own multiplex guard (``hermes_cli/env_loader.py``) deliberately SKIPS the
+    process-global dotenv once multiplexing + a home override are active. Without this scope, a
+    secondary profile's ``${PAPERCLIP_API_KEY}``-style ref would resolve against ``os.environ``
+    (wrong value, or none) instead of that profile's own ``.env``.
+
+    No-ops when ``agent.secret_scope`` is unimportable — same convention as
+    ``_hermes_home_scope``, for dev/test environments outside the Hermes image.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        try:
+            from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+        except ImportError:
+            yield
+            return
+        token = set_secret_scope(build_profile_secret_scope(_profile_dir(agent_id)))
+        try:
+            yield
+        finally:
+            reset_secret_scope(token)
+
+    return _scope()
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -668,6 +704,11 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     Hermes session keyed "None:<agent>"."""
     from run_agent import AIAgent
 
+    # Task 13b: a hot patch that landed since this process's last turn must be on disk BEFORE
+    # the fill-missing pin below reads (and re-writes) config.yaml -- otherwise the pin fills
+    # gaps against a stale local copy and immediately re-uploads it, clobbering the fresher
+    # backend write (the same clobber-by-save_profile risk fix round 1's C4 flagged).
+    sync.ensure_profile(agent_id)
     pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or MODEL)
     room = body.get("room") or {}
     callbacks = {}
@@ -704,7 +745,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    with _hermes_home_scope(agent_id):
+    with _hermes_home_scope(agent_id), _secret_scope(agent_id):
         agent = _construct_agent(agent_id, body, frames, session_key)
         attach_agent((body.get("run") or {}).get("runId"), agent)
         result = agent.run_conversation(

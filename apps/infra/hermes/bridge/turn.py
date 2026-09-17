@@ -109,7 +109,25 @@ def _post_backend(path: str, body: dict) -> int:
         return 0
 
 
+# ---- reply threading (spec §5 "Context and threading") --------------------------------------
+def reply_thread_root(room_kind: str, message: dict) -> str | None:
+    """Where this turn's reply hangs.
+
+    Channels and group DMs thread: an in-thread request keeps its root, a top-level one
+    becomes the root of a new thread. A DM is a single linear stream — threading a two-party
+    conversation buys nothing and splits it. The OpenClaw plugin had no such rule to copy
+    (report 03 §2: room.kind is parsed and never read again); spec §5 defines it here.
+    """
+    if room_kind == "dm":
+        return None
+    return message.get("threadRootMessageId") or message.get("messageId")
+
+
 # ---- the turn --------------------------------------------------------------------------------
+ZERO_USAGE = {"model": MODEL, "inputTokens": 0, "outputTokens": 0,
+              "cacheReadTokens": 0, "cacheWriteTokens": 0, "estimatedCostUsd": None}
+
+
 def _history(body: dict, agent_id: str) -> list[dict]:
     """The room's recent messages as Hermes conversation history: this agent's own messages are
     the assistant, everything else is a user turn prefixed with the author's name."""
@@ -127,15 +145,65 @@ def _history(body: dict, agent_id: str) -> list[dict]:
     return out
 
 
+def _construct_agent(agent_id: str, body: dict, frames):
+    from run_agent import AIAgent
+
+    room = body.get("room") or {}
+    return AIAgent(
+        model=MODEL,
+        provider="bedrock",
+        quiet_mode=True,
+        session_id=f"{room.get('id')}:{agent_id}",
+        platform="lightbulb",
+        user_id=str((body.get("sender") or {}).get("id", "")),
+        chat_id=str(room.get("id", "")),
+        chat_type="dm" if room.get("kind") == "dm" else "group",
+    )
+
+
+def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
+    """The one seam every other test replaces instead of constructing a real AIAgent."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    msg = body.get("message") or {}
+    token = set_hermes_home_override(_profile_dir(agent_id))
+    try:
+        agent = _construct_agent(agent_id, body, frames)
+        me = next((p for p in body.get("participants", []) if p.get("id") == agent_id), {})
+        room = body.get("room") or {}
+        system = (
+            f"You are {me.get('displayName') or me.get('name') or 'an agent'} in the Lightbulb room "
+            f"#{room.get('name') or room.get('id')}. Reply as yourself; other participants are humans and agents."
+        )
+        result = agent.run_conversation(
+            user_message=f"{(body.get('sender') or {}).get('id', '?')}: {msg.get('text', '')}",
+            system_message=system,
+            conversation_history=_history(body, agent_id) or None,
+        ) or {}
+        usage = {**ZERO_USAGE,
+                 "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
+                 "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
+                 "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+                 "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
+        reply = result.get("final_response") or ""
+        if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
+            return "error", "model_unavailable", "", usage
+        if not reply:
+            return "error", "empty_response", "", usage
+        return "completed", None, reply, usage
+    finally:
+        reset_hermes_home_override(token)
+
+
 def run_turn(agent_id: str, body: dict) -> None:
     run = body.get("run") or {}
     run_id = run.get("runId")
     room = body.get("room") or {}
     msg = body.get("message") or {}
     session_key = f"agent:{agent_id}:lightbulb:{room.get('kind', 'channel')}:{room.get('id')}"
+    thread_root = reply_thread_root(room.get("kind", "channel"), msg)
     _busy_add(1)
-    outcome, error_kind, reply = "completed", None, ""
-    usage = {"model": MODEL, "inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0}
+    outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
     t0 = time.time()
     done = threading.Event()
 
@@ -147,48 +215,9 @@ def run_turn(agent_id: str, body: dict) -> None:
         restore_profile(agent_id)
         _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
         threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-        token = set_hermes_home_override(_profile_dir(agent_id))
-        try:
-            from run_agent import AIAgent
-
-            sender = body.get("sender") or {}
-            agent = AIAgent(
-                model=MODEL,
-                provider="bedrock",
-                quiet_mode=True,
-                session_id=f"{room.get('id')}:{agent_id}",
-                platform="lightbulb",
-                user_id=str(sender.get("id", "")),
-                chat_id=str(room.get("id", "")),
-                chat_type="group" if room.get("kind") != "dm" else "dm",
-            )
-            me = next((p for p in body.get("participants", []) if p.get("id") == agent_id), {})
-            system = (
-                f"You are {me.get('displayName') or me.get('name') or 'an agent'} in the Lightbulb room "
-                f"#{room.get('name') or room.get('id')}. Reply as yourself; other participants are humans and agents."
-            )
-            result = agent.run_conversation(
-                user_message=f"{(body.get('sender') or {}).get('id', '?')}: {msg.get('text', '')}",
-                system_message=system,
-                conversation_history=_history(body, agent_id) or None,
-            )
-            reply = (result or {}).get("final_response") or ""
-            usage.update(
-                inputTokens=int(getattr(agent, "session_input_tokens", 0) or 0),
-                outputTokens=int(getattr(agent, "session_output_tokens", 0) or 0),
-                cacheReadTokens=int(getattr(agent, "session_cache_read_tokens", 0) or 0),
-                cacheWriteTokens=int(getattr(agent, "session_cache_write_tokens", 0) or 0),
-            )
-            if not (result or {}).get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
-                outcome, error_kind, reply = "error", "model_unavailable", ""
-            elif not reply:
-                outcome, error_kind = "error", "empty_response"
-        finally:
-            reset_hermes_home_override(token)
+        outcome, error_kind, reply, usage = _run_hermes(agent_id, body, None)
     except Exception as exc:  # noqa: BLE001
-        outcome, error_kind = "error", type(exc).__name__
+        outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE
         log.error("turn %s failed: %s\n%s", run_id, exc, traceback.format_exc())
     done.set()
     took = time.time() - t0
@@ -200,8 +229,8 @@ def run_turn(agent_id: str, body: dict) -> None:
                 "roomId": room.get("id"),
                 "agentId": agent_id,
                 "text": reply,
-                "replyToMessageId": None,
-                "threadRootMessageId": None,
+                "replyToMessageId": msg.get("messageId"),
+                "threadRootMessageId": thread_root,
                 "runId": run_id,
             },
         )

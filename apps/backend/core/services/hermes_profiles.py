@@ -15,7 +15,12 @@ config live in the managed overlay (Task 11), which wins at the leaf after env e
 from __future__ import annotations
 
 import re
+import time
+from dataclasses import dataclass
 
+import yaml
+
+from core.config import settings
 from core.containers.config import cheap_model_ref, premium_model_ref
 
 _BEDROCK = "bedrock"
@@ -262,3 +267,91 @@ approvals:
     - "dd if=* of=/dev/*"
     - ":(){:|:&};:"
 """
+
+
+@dataclass
+class ProfileFiles:
+    config_yaml: str
+    dotenv: str
+    soul_md: str
+    managed_overlay: str
+
+
+def _gate_bearer_ref(owner_id: str) -> str:
+    return f"lightbulb/{settings.ENVIRONMENT}/gate-bearer/{owner_id}"
+
+
+def _paperclip_key_ref(owner_id: str, agent_id: str) -> str:
+    return f"lightbulb/{settings.ENVIRONMENT}/paperclip/{owner_id}/{agent_id}"
+
+
+def write_agent_profile(
+    owner_id: str,
+    agent: dict,
+    *,
+    provider_choice: str,
+    aip_arns: dict[str, str],
+    integrations: list[dict],
+    env_vars: dict[str, str],
+) -> ProfileFiles:
+    """The four files that ARE one agent's Hermes profile.
+
+    ``integrations`` is the owner's connected-integration list (each row carries the MCP block
+    ``build_connected_integration_servers`` emits under ``key``); ``env_vars`` is
+    ``provisioning_landing.build_provisioned_env(owner_id)``.
+    """
+    from core.billing.bedrock_gate_url import gate_url
+
+    servers = {row["key"]: {k: v for k, v in row.items() if k != "key"} for row in integrations or []}
+    config = build_profile_config(
+        agent_id=agent["id"],
+        agent_role=agent.get("role") or "general",
+        provider_choice=provider_choice,
+        byo_provider=agent.get("byo_provider"),
+        aip_arns=aip_arns,
+        mcp_servers=translate_mcp_servers(servers),
+        is_ceo=(agent.get("role") == "ceo"),
+    )
+    env = build_profile_env(
+        gate_bearer_ref=_gate_bearer_ref(owner_id),
+        gate_url=gate_url() or "",
+        region=settings.AWS_REGION,
+        paperclip_key_ref=_paperclip_key_ref(owner_id, agent["id"]),
+        env_vars=env_vars,
+    )
+    return ProfileFiles(
+        config_yaml=yaml.safe_dump(config, sort_keys=False),
+        dotenv=render_dotenv(env),
+        soul_md=build_soul_md(agent),
+        managed_overlay=MANAGED_OVERLAY_YAML,
+    )
+
+
+def _s3_put(bucket: str, key: str, body: str) -> None:
+    import boto3
+
+    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=body.encode())
+
+
+def profile_prefix(owner_id: str, agent_id: str) -> str:
+    """``<owner>/hermes/<agentId>/`` — owner FIRST.
+
+    The per-owner IAM grant is ``arn:aws:s3:::<bucket>/<owner>/*``
+    (bedrock_aip.build_owner_litestream_s3_policy). Any other order is outside every owner's
+    grant and AccessDenies on the first restore.
+    """
+    return f"{owner_id}/hermes/{agent_id}/"
+
+
+def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> None:
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return
+    prefix = profile_prefix(owner_id, agent_id)
+    _s3_put(bucket, f"{prefix}config.yaml", files.config_yaml)
+    _s3_put(bucket, f"{prefix}.env", files.dotenv)
+    _s3_put(bucket, f"{prefix}SOUL.md", files.soul_md)
+    _s3_put(bucket, f"{prefix}managed/config.yaml", files.managed_overlay)
+    # LAST, always: the bridge re-pulls a profile when this object's value changes (Task 13).
+    # Writing it before the files it describes would advertise a config that is not there yet.
+    _s3_put(bucket, f"{prefix}.revision", str(int(time.time() * 1000)))

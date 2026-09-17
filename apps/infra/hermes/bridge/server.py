@@ -52,10 +52,14 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
                 raise turn.IngressError("targetAgentId does not match the path")
         except turn.IngressError as exc:
             return 400, {"error": "invalid_ingress", "message": exc.message}
-        run_id = (body.get("run") or {}).get("runId")
-        if run_id in turn._runs:
+        run_id = body["run"]["runId"]
+        if not turn.register_run(run_id):
             return 200, {"eventId": body.get("eventId"), "runId": run_id, "status": "replayed"}
-        turn._runs[run_id] = "running"
+        turn.RUNS[run_id]["started"] = True
+        turn._post_backend(f"runs/{OWNER}/events", {
+            "runId": run_id, "type": "run.started", "at": now(),
+            "sessionKey": turn._resolve_session_key(agent_id, body),
+        })
         threading.Thread(target=turn.run_turn, args=(agent_id, body), daemon=True, name=f"turn-{run_id}").start()
         return 202, {"eventId": body.get("eventId"), "runId": run_id, "status": "accepted"}
     if path == "/plugins/lightbulb-channel/rpc" and method == "POST":
@@ -311,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
         if env.get("diagnostic"):  # bring-up escape hatch, deleted after the spike
             cmd = env.get("cmd")
             out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60).stdout if cmd else ""
-            return self._send(200, {"uptime_s": round(time.time() - STARTED, 1), "busy": turn._busy, "restored": sorted(sync._restored), "runs": turn._runs, "last_turn_s": turn._last_turn, "ws_seen": _ws_seen[-3:], "cmd": out[-6000:]})
+            return self._send(200, {"uptime_s": round(time.time() - STARTED, 1), "busy": turn._busy, "restored": sorted(sync._restored), "runs": {rid: r["state"] for rid, r in turn.RUNS.items()}, "last_turn_s": turn._last_turn, "ws_seen": _ws_seen[-3:], "cmd": out[-6000:]})
         code, obj = handle_plugin(env.get("path") or "", (env.get("method") or "POST").upper(), env.get("headers") or {}, env.get("body"))
         # Same shape the OpenClaw contract server returns: the gateway's status and body inside.
         self._send(200, {"status": code, "headers": {"content-type": "application/json"}, "body": obj})

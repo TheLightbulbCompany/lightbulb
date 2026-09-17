@@ -21,7 +21,6 @@ log = logging.getLogger("bridge")
 
 _busy = 0
 _busy_lock = threading.Lock()
-_runs: dict[str, str] = {}  # runId -> state, for replay detection within this process
 _last_turn: dict[str, float] = {}
 
 
@@ -32,13 +31,11 @@ def _busy_add(n: int) -> None:
 
 
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
-# NOTE (lane A / merge concern, see lane-A-report.md): the legacy `_runs` dict above is what
-# server.py's inbound handler currently uses for replay detection (`if run_id in turn._runs:
-# ... return 200 replayed`). Task 9 says this registry "replaces" it, but server.py is lane
-# B's file, so `_runs` is left in place here and RUNS is added alongside it; run_turn updates
-# both. The controller should retire `_runs` in favour of `register_run`/`RUNS` when server.py
-# is edited to call register_run() before spawning the turn thread (see the report for the
-# exact recommended server.py diff).
+# The sole replay-detection + run-state registry. server.py's inbound handler calls
+# register_run() before spawning the turn thread, marks the entry "started" and posts
+# run.started itself at accept time; run_turn's own run.started post below is skipped when
+# that flag is already set, so a server-dispatched turn posts it exactly once while a direct
+# caller (e.g. a test invoking run_turn without going through the server) still gets one.
 RUNS: dict[str, dict] = {}
 _RUNS_LOCK = threading.Lock()
 
@@ -48,7 +45,7 @@ def register_run(run_id: str) -> bool:
     with _RUNS_LOCK:
         if run_id in RUNS:
             return False
-        RUNS[run_id] = {"state": "queued", "agent": None, "aborted": False, "outcome": None}
+        RUNS[run_id] = {"state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False}
         return True
 
 
@@ -681,7 +678,8 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
         try:
             restore_profile(agent_id)
             if has_run:
-                _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
+                if not RUNS.get(run_id, {}).get("started"):
+                    _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
                 frames.started()
                 threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
             turn_session_id = f"{room.get('id')}:{agent_id}"
@@ -744,8 +742,6 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
         save_profile(agent_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("save_profile failed: %s", exc)
-    if has_run:
-        _runs[run_id] = outcome
     _last_turn[agent_id] = took
     _busy_add(-1)
     log.info("turn %s agent=%s outcome=%s %.1fs reply=%r", run_id, agent_id, outcome, took, reply[:80])

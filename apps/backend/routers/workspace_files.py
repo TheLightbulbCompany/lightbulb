@@ -1,4 +1,13 @@
-"""REST endpoints for browsing agent workspace files on EFS."""
+"""REST endpoints for browsing agent workspace files.
+
+Two homes, one contract. On an ECS row an agent's files are the EFS tree
+``/mnt/efs/users/{owner}/workspace-{agentId}/``; on an AgentCore row they are the agent's Hermes
+profile in S3 (``hermes_profiles.profile_prefix``). The migration COPIES EFS into the profile and
+leaves the EFS tree in place, so without the branch below every one of these routes keeps serving —
+and SAVING to — a stale tree no agent reads: a green save with no effect (M6-R48, scan rows
+11/19/30). The response shapes are identical either side, so the Files panel and the Instructions
+tab need no runtime-host branch of their own.
+"""
 
 import asyncio
 import logging
@@ -10,6 +19,8 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
+from core.dynamodb import run_in_thread
+from core.services import hermes_profiles, runtime_transport
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +209,148 @@ def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# AgentCore rows: the same five routes, over the agent's S3 Hermes profile.
+# ---------------------------------------------------------------------------
+
+#: The config-tab filenames that HAVE a Hermes home, and where it is inside the profile.
+#: ``SOUL.md`` is the agent's identity document (Hermes reads ``$HERMES_HOME/SOUL.md``);
+#: ``USER.md`` is Hermes's own user-profile memory store (``tools/memory_tool.py``), plain text
+#: read and written verbatim; ``AGENTS.md`` sits at the profile root as it does on EFS. The
+#: config tab is also the ONLY door to these three -- the Files panel hides every top-level
+#: CONFIG_ALLOWLIST name from its workspace tree on the grounds that the config tab has them.
+#: TOOLS.md/HEARTBEAT.md have no Hermes reader at all, and MEMORY.md has no settled path yet
+#: (the migration copies it to the profile ROOT, Hermes reads ``memories/MEMORY.md`` -- task-10
+#: scan open question 2); mapping either would mean writing where nothing reads, which is the
+#: very defect this branch exists to kill, so they are refused instead.
+_AGENTCORE_CONFIG_PATHS = {"SOUL.md": "SOUL.md", "USER.md": "memories/USER.md", "AGENTS.md": "AGENTS.md"}
+
+#: IDENTITY.md has no Hermes equivalent at all -- an agent has ONE identity document and it is
+#: SOUL.md. GET serves this read-only note so the tab explains itself; PUT is refused.
+_IDENTITY_STUB = (
+    "This workspace runs on Hermes, where an agent has one identity document: SOUL.md.\n"
+    "\n"
+    "IDENTITY.md is not read here and cannot be saved. Edit SOUL.md instead.\n"
+)
+
+
+def _unsupported(message: str) -> HTTPException:
+    """422 with a code the client can branch on and copy it can show as-is (the shared API client
+    promotes ``detail.message`` into the toast)."""
+    return HTTPException(status_code=422, detail={"code": "unsupported_on_agentcore", "message": message})
+
+
+def _require_agent_id(agent_id: str) -> None:
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+
+
+async def _is_agentcore_row_or_503(owner_id: str) -> bool:
+    """The runtime-host seam for the WRITE route -- fail-closed (fix round 1, I2).
+
+    ``runtime_transport.is_agentcore_owner`` swallows a DynamoDB read failure and answers False
+    (ECS) by M6-R26, which is right for the connect/disconnect doors it was written for. On a
+    write it is wrong in kind: under a throttle the owner's save would land on the EFS tree the
+    migration abandoned, ``workspace.write_file`` would succeed, and the route would answer
+    ``{"status": "ok"}`` -- a green save with no effect, the exact defect this branch removes. So
+    read the row directly (what the seam's own docstring recommends for a caller that can afford
+    it) and 503 instead of guessing. The GET routes keep the forgiving seam: their worst case is
+    stale content, not a lost edit.
+    """
+    from core.repositories import container_repo
+
+    try:
+        container = await container_repo.get_by_owner_id(owner_id)
+    except Exception as exc:  # noqa: BLE001 -- any read failure must fail closed, see docstring
+        logger.warning("workspace write: could not read the runtime host for owner %s", owner_id, exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="Could not determine this workspace's runtime. Try saving again."
+        ) from exc
+    return runtime_transport.host_for(container or {}) == "agentcore"
+
+
+async def _agentcore_tree(owner_id: str, agent_id: str, path: str) -> list[dict]:
+    try:
+        return await run_in_thread(hermes_profiles.list_profile_dir, owner_id, agent_id, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+async def _agentcore_read(owner_id: str, agent_id: str, path: str) -> dict:
+    try:
+        return await run_in_thread(hermes_profiles.read_profile_file, owner_id, agent_id, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {path!r}")
+
+
+async def _agentcore_config_files(owner_id: str, agent_id: str) -> list[dict]:
+    """``config-files`` over the profile: the mapped names that actually exist, each reported
+    under the filename the tab asks for rather than its in-profile path."""
+    entries: dict[str, dict] = {}
+    for sub in ("", "memories"):
+        for entry in await run_in_thread(hermes_profiles.list_profile_dir, owner_id, agent_id, sub):
+            entries[entry["path"]] = entry
+    out = []
+    for name, key in sorted(_AGENTCORE_CONFIG_PATHS.items()):
+        entry = entries.get(key)
+        if entry and entry["type"] == "file":
+            out.append({**entry, "name": name, "path": name})
+    return out
+
+
+async def _agentcore_read_config(owner_id: str, agent_id: str, path: str) -> dict:
+    if path == "IDENTITY.md":
+        return {
+            "name": path,
+            "path": path,
+            "size": len(_IDENTITY_STUB),
+            "modified_at": 0,
+            "mime_type": "text/markdown",
+            "binary": False,
+            "content": _IDENTITY_STUB,
+        }
+    key = _AGENTCORE_CONFIG_PATHS.get(path)
+    if key is None:
+        raise HTTPException(status_code=404, detail=f"File not found: {path!r}")
+    info = await _agentcore_read(owner_id, agent_id, key)
+    return {**info, "name": path, "path": path}
+
+
+async def _agentcore_write(owner_id: str, agent_id: str, path: str, content: str, tab: str) -> str:
+    if len(content.encode("utf-8")) > MAX_WRITE_SIZE:
+        raise HTTPException(status_code=400, detail=f"content exceeds {MAX_WRITE_SIZE // (1024 * 1024)}MB limit")
+    target = path
+    if tab == "config":
+        if path not in CONFIG_ALLOWLIST:
+            raise HTTPException(status_code=400, detail=f"File not in allowlist: {path}")
+        if path == "SOUL.md":
+            # Saving here makes the file the OWNER's: strip the generated marker so the rename
+            # branch (runtime_rpc._refresh_agentcore_soul) never overwrites their text again.
+            soul = hermes_profiles.strip_generated_marker(content)
+            await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul)
+            return path
+        mapped = _AGENTCORE_CONFIG_PATHS.get(path)
+        if mapped is None:
+            raise _unsupported(
+                "Identity lives in SOUL.md on this workspace — IDENTITY.md is not read here."
+                if path == "IDENTITY.md"
+                else f"{path} has no equivalent on this workspace."
+            )
+        target = mapped
+    try:
+        return await hermes_profiles.write_profile_file(owner_id, agent_id, target, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        # A hidden path (.env, .revision, mcp-tokens/, the facts file) answers exactly as the read
+        # route does -- the write route must not confirm what the read route hides.
+        raise HTTPException(status_code=404, detail=f"File not found: {target!r}")
+    except PermissionError:
+        raise _unsupported(f"{target} is managed by Lightbulb and cannot be edited here.")
+
+
 @router.get("/workspace/{agent_id}/tree")
 async def list_workspace_tree(
     agent_id: str,
@@ -210,6 +363,10 @@ async def list_workspace_tree(
     walk costs several round trips per entry (see the note on _collect_recursive).
     """
     owner_id = resolve_owner_id(auth)
+    _require_agent_id(agent_id)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return {"files": await _agentcore_tree(owner_id, agent_id, path)}
+
     workspace = get_workspace()
 
     agent_base = _agent_workspace_path(owner_id, agent_id)
@@ -242,6 +399,10 @@ async def read_workspace_file(
 ):
     """Read a file's content and metadata from an agent's workspace."""
     owner_id = resolve_owner_id(auth)
+    _require_agent_id(agent_id)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return await _agentcore_read(owner_id, agent_id, path)
+
     workspace = get_workspace()
 
     agent_base = _agent_workspace_path(owner_id, agent_id)
@@ -268,9 +429,11 @@ async def list_config_files(
 ):
     """List allowlisted agent config files (SOUL.md, MEMORY.md, etc.)."""
     owner_id = resolve_owner_id(auth)
+    _require_agent_id(agent_id)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return {"files": await _agentcore_config_files(owner_id, agent_id)}
+
     workspace = get_workspace()
-    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
-        raise HTTPException(status_code=400, detail="Invalid agent_id")
     return {"files": _list_config_files(workspace, owner_id, agent_id)}
 
 
@@ -284,8 +447,10 @@ async def read_config_file(
     owner_id = resolve_owner_id(auth)
     if path not in CONFIG_ALLOWLIST:
         raise HTTPException(status_code=400, detail=f"File not in allowlist: {path}")
-    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
-        raise HTTPException(status_code=400, detail="Invalid agent_id")
+    _require_agent_id(agent_id)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return await _agentcore_read_config(owner_id, agent_id, path)
+
     workspace = get_workspace()
     full_path = f"workspace-{agent_id}/{path}"
     try:
@@ -342,10 +507,14 @@ async def write_workspace_file(
 ):
     """Write a file to the agent's workspace or config directory."""
     owner_id = resolve_owner_id(auth)
-    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
-        raise HTTPException(status_code=400, detail="Invalid agent_id")
+    _require_agent_id(agent_id)
     if body.tab not in ("workspace", "config"):
         raise HTTPException(status_code=400, detail="tab must be 'workspace' or 'config'")
+
+    if await _is_agentcore_row_or_503(owner_id):
+        written = await _agentcore_write(owner_id, agent_id, body.path, body.content, body.tab)
+        logger.info("Wrote %s into the Hermes profile for owner %s (tab=%s)", written, owner_id, body.tab)
+        return {"status": "ok", "path": written}
 
     workspace = get_workspace()
     try:

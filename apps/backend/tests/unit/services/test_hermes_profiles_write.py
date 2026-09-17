@@ -4,7 +4,14 @@ import pytest
 import yaml
 
 from core.services import hermes_profiles
-from core.services.hermes_profiles import ProfileFiles, upload_profile, upload_profile_files, write_agent_profile
+from core.services.hermes_profiles import (
+    SOUL_GENERATED_MARKER,
+    ProfileFiles,
+    is_generated_soul,
+    upload_profile,
+    upload_profile_files,
+    write_agent_profile,
+)
 
 AIPS = {"sonnet": "arn:son", "opus": "arn:opu", "haiku": "arn:hai"}
 
@@ -25,7 +32,9 @@ def test_write_agent_profile_returns_the_three_files():
     assert config["mcp_servers"]["stripe"]["auth"] == "oauth"
     assert "STRIPE_SECRET_KEY=sk_live_x" in files.dotenv
     assert "PAPERCLIP_API_KEY=pcp_live_x" in files.dotenv
-    assert files.soul_md.startswith("# Ada")
+    # M6-R48: a GENERATED SOUL.md leads with the marker, then the heading.
+    assert files.soul_md.startswith(SOUL_GENERATED_MARKER)
+    assert "# Ada" in files.soul_md
 
 
 def test_config_yaml_carries_no_secret_even_though_dotenv_does():
@@ -93,7 +102,8 @@ def test_no_soul_md_override_falls_back_to_build_soul_md():
         integrations={},
         env_vars={},
     )
-    assert files.soul_md.startswith("# Ada")
+    assert is_generated_soul(files.soul_md)
+    assert "# Ada" in files.soul_md
     assert "report to you" in files.soul_md
 
 

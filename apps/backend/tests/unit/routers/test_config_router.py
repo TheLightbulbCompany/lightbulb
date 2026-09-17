@@ -373,3 +373,26 @@ def test_patch_config_agentcore_owner_fans_out_via_config_patcher_roster(client)
         mock_ecs_patch.assert_not_awaited()
     finally:
         cleanup()
+
+
+def test_patch_config_agentcore_owner_channels_patch_rejected_before_entitlement_check(client):
+    """Fix round 1, minor: the AgentCore branch runs AHEAD of the channels-entitlement gate --
+    channels have no Hermes equivalent yet, so this must be a flat 400, never a billing read or
+    a roster-profile write of inert `channels.*` junk."""
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with (
+            patch("routers.config.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch("routers.config._config_patch_roster", AsyncMock()) as mock_patch_roster,
+            patch("routers.config.billing_repo.get_by_owner_id", AsyncMock()) as mock_billing,
+        ):
+            resp = client.patch(
+                "/api/v1/config",
+                json={"patch": {"channels": {"telegram": {"enabled": True}}}},
+            )
+        assert resp.status_code == 400
+        assert "INVALID_REQUEST" in resp.json()["detail"]
+        mock_patch_roster.assert_not_awaited()
+        mock_billing.assert_not_awaited()
+    finally:
+        cleanup()

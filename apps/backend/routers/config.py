@@ -151,6 +151,24 @@ async def patch_config(
 
     owner_id = resolve_owner_id(auth)
 
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # Fix round 1, minor: this branch now runs AHEAD of the channels-entitlement gate
+        # below. Channels have no Hermes/AgentCore equivalent yet (task-9-scan.md rows
+        # #10/#11, LATER/M5) -- rejecting outright here means a channels patch never lands
+        # as inert `channels.*` junk in every roster profile's config.yaml, which the ECS
+        # entitlement/token-collision checks below have no reason to run against anyway.
+        if _patch_touches_channels(body.patch):
+            raise HTTPException(
+                status_code=400,
+                detail="INVALID_REQUEST: channels are not supported on an AgentCore workspace yet",
+            )
+        # M6 row #12: fan the patch out to every roster profile via the same
+        # _config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
+        # router's ConfigPatchRequest carries no baseHash, so CAS is skipped (None),
+        # matching this door's own pre-existing no-CAS behaviour on the ECS path.
+        result = await _config_patch_roster(owner_id, body.patch, None)
+        return {"status": "patched", "owner_id": owner_id, "hash": result["hash"]}
+
     # Always-on entitlement gate on channel fields. Channels are a PAID
     # always-on feature — bound bots keep triggering runs while the owner
     # is away, so trial_local owners (who can chat) must not bind them,
@@ -167,14 +185,6 @@ async def patch_config(
 
         # Bot token collision pre-check
         await _check_token_collision(owner_id, body.patch)
-
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        # M6 row #12: fan the patch out to every roster profile via the same
-        # _config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
-        # router's ConfigPatchRequest carries no baseHash, so CAS is skipped (None),
-        # matching this door's own pre-existing no-CAS behaviour on the ECS path.
-        result = await _config_patch_roster(owner_id, body.patch, None)
-        return {"status": "patched", "owner_id": owner_id, "hash": result["hash"]}
 
     try:
         await patch_openclaw_config(owner_id, body.patch)

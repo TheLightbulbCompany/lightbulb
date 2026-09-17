@@ -352,10 +352,13 @@ async def upsert_mcp_server(
         await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
-    # An upsert whose name collides with an integration-owned key (e.g. `stripe`)
-    # would overwrite it with the user's value. Re-assert integration-owned keys
-    # so integration ownership always wins. Best-effort for the same reason as
-    # the PUT path — read AFTER reconcile so the response reflects the final state.
+    # Fix round 1, minor: the stale comment here described re-asserting an
+    # integration-owned key THIS upsert's own name collided with -- that case is
+    # now rejected outright above (_reject_integration_owned_key_collisions,
+    # M6-R32) before any write happens. This reconcile call is the same general
+    # self-heal every other write endpoint here runs (a stale/missed reconcile
+    # elsewhere, a reprovision). Best-effort — read AFTER reconcile so the
+    # response reflects the final state.
     try:
         await reconcile_integrations(owner_id)
     except Exception:

@@ -518,13 +518,16 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
         # when ecs_shaped is already true.
         is_agentcore = (ecs_shaped or config_patch) and await runtime_transport.is_agentcore_owner(owner_id)
         if ecs_shaped and is_agentcore:
-            # Row #14 defensive backstop: the primary control is the enqueue-time
-            # filter (queue_fleet_image_update/queue_task_definition_refresh_for_owner
-            # skip AgentCore owners outright), but this refuses ANY other path that
-            # queued an ECS-shaped change for one (e.g. a single-owner admin POST
-            # /updates that bypassed the fleet filter) -- there is no ECS service for
-            # ecs.resize_user_container/prepare_config_lock_protocol_task_definition
-            # below to find.
+            # Row #14 defensive backstop. queue_fleet_image_update skips AgentCore owners
+            # outright (an explicit is_agentcore_owner check at enqueue time). Fix round 1,
+            # minor: queue_task_definition_refresh_for_owner does NOT -- it has no runtime_host
+            # check at all, and only happens to exclude a NATIVE (never-ECS) AgentCore row
+            # because that row's complete check requires service_name/access_point_id/
+            # task_definition_arn. A MIGRATED row (scripts/migrate_workspace_to_hermes.py)
+            # keeps those stale ECS fields, so it passes `complete` and CAN be queued a
+            # task_definition_refresh row -- this guard, not that door, is what actually
+            # refuses it before ecs.resize_user_container/prepare_config_lock_protocol_
+            # task_definition below would find no ECS service.
             logger.warning(
                 "Refusing ECS-shaped update %s for AgentCore owner=%s -- no ECS service to update",
                 update_id,

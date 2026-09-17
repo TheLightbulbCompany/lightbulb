@@ -30,6 +30,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core.dynamodb import utc_now_iso
+from core.services import task_address
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class ConnectionService:
                     ("verified_subject", "verifiedSubject"),
                     ("source_ip", "sourceIp"),
                     ("device_id", "deviceId"),
+                    ("task_address", "taskAddress"),
                 )
                 if field in item
             },
@@ -349,6 +351,7 @@ class ConnectionService:
             "clientId": {"S": identity.client_id},
             "connectedAt": {"S": utc_now_iso()},
             "ttl": {"N": str(now + self.RELAY_TTL_SECONDS)},
+            "taskAddress": {"S": task_address.own_address()},
         }
         if identity.device_id:
             item["deviceId"] = {"S": identity.device_id}
@@ -356,16 +359,23 @@ class ConnectionService:
 
     async def refresh_relay_presence(self, connection_id: str) -> bool:
         """Bump the presence row's ttl. False when the row is gone (revoked
-        or expired): the caller must close the socket."""
+        or expired): the caller must close the socket.
+
+        Re-asserts `taskAddress` on every tick (not just at connect) so a row
+        never goes addressless -- the 60s refresh loop keeps running for the
+        life of the node/operator socket (M2-R1)."""
         try:
             await asyncio.to_thread(
                 self._client.update_item,
                 TableName=self.table_name,
                 Key={"connectionId": {"S": connection_id}},
-                UpdateExpression="SET #ttl = :ttl",
+                UpdateExpression="SET #ttl = :ttl, taskAddress = :addr",
                 ConditionExpression="attribute_exists(connectionId)",
                 ExpressionAttributeNames={"#ttl": "ttl"},
-                ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)}},
+                ExpressionAttributeValues={
+                    ":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)},
+                    ":addr": {"S": task_address.own_address()},
+                },
             )
             return True
         except ClientError as exc:
@@ -377,6 +387,28 @@ class ConnectionService:
         """Live `node`-typed relay connections for an owner (desktop node
         hosts), used to edge-trigger the node tool-deny-list patch."""
         return sum(1 for _connection_id, _user_id, kind in await self.query_by_owner(owner_id) if kind == "node")
+
+    async def find_node_presence(self, owner_id: str) -> Optional[dict]:
+        """The owner's live desktop-node presence row, or None.
+
+        Task 28's bridge calls this directly to learn which backend task
+        accepted the owner's node socket, so it knows where to forward a
+        node-invoke HTTP call (M2-R3). The `by-owner-id` GSI doesn't project
+        `taskAddress`, so the first `node`-typed candidate is fetched in full
+        via `get_connection` -- same shape as `delete_relay_rows_for_device`.
+        """
+        for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
+            if kind != "node":
+                continue
+            full = await asyncio.to_thread(self.get_connection, connection_id)
+            if full is None:
+                continue
+            return {
+                "connectionId": connection_id,
+                "taskAddress": full.get("task_address"),
+                "deviceId": full.get("device_id"),
+            }
+        return None
 
     async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
         """Force-close a revoked device's live relay presence row(s).

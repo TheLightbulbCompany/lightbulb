@@ -395,12 +395,17 @@ async def test_delete_everywhere_allows_starter_specialist():
 
 @pytest.mark.asyncio
 async def test_delete_everywhere_on_agentcore_row_deletes_s3_profile_not_efs():
+    """F4 (predeploy review, M6-R37): the agents.list probe (and the gateway delete it might
+    trigger) is an ECS-only concept -- an AgentCore row has no gateway RPC to check first, and
+    probing one anyway paid runtime_rpc's 30s default against a possibly-parked microVM for an
+    answer this branch never used. The S3 profile delete below is this transport's whole
+    story, so container_rpc.call must never be reached at all here."""
     events: list[str] = []
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(
         return_value=({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}, "agentcore")
     )
-    gw_call = AsyncMock(return_value={"agents": []})
+    gw_call = AsyncMock(side_effect=AssertionError("agents.list must never be probed on an agentcore row"))
     delete_profile = MagicMock(side_effect=lambda *_: events.append("s3"))
     remove_config = AsyncMock(side_effect=lambda *_a, **_k: events.append("config"))
     deregister = AsyncMock(side_effect=lambda *_a, **_k: events.append("deregister"))
@@ -432,8 +437,7 @@ async def test_delete_everywhere_on_agentcore_row_deletes_s3_profile_not_efs():
     delete_profile.assert_called_once_with("owner", "retiring")
     remove_config.assert_not_awaited()
     deregister.assert_not_awaited()
-    assert gw_call.await_count == 1
-    assert gw_call.await_args.args[1] == "agents.list"
+    gw_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,14 @@ async def call(
     outcome = "unavailable"
     try:
         container, ip = target if target is not None else await running_container(owner_id, wake=wake)
+        # F4 (predeploy review, M6-R37): a parked AgentCore workspace holds an invoke through
+        # the microVM start + gateway boot (54-57s measured) -- a caller's shorter default
+        # (30s in runtime_rpc, 10s/5s/2s in narrower probes) fails on the first call to a cold
+        # workspace and only succeeds on a retry. Floor, never lower: a caller that already
+        # asked for a longer budget than the AgentCore floor keeps it.
+        effective_timeout_s = timeout_s
+        if runtime_transport.host_for(container) == "agentcore":
+            effective_timeout_s = max(timeout_s, runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S)
         # margin bounds the HTTP-transport ceiling just above the plugin's own
         # timeoutMs (== timeout_s): the plugin's own 504 must fire first on a
         # slow RPC, not httpx aborting the connection out from under it.
@@ -84,9 +92,9 @@ async def call(
                 RPC_PATH,
                 ip=ip,
                 method="POST",
-                json_body={"method": method, "params": params or {}, "timeoutMs": int(timeout_s * 1000)},
+                json_body={"method": method, "params": params or {}, "timeoutMs": int(effective_timeout_s * 1000)},
                 headers={"Authorization": f"Bearer {container['gateway_token']}"},
-                timeout_s=timeout_s,
+                timeout_s=effective_timeout_s,
             )
         except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
             raise _unavailable() from exc

@@ -398,7 +398,11 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
 
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
-    if container is not None and ip:
+    # F4 (predeploy review, M6-R37): the probe (and the delete it might trigger) is an ECS-only
+    # concept -- an AgentCore row has no gateway agents.list RPC to check first (the S3 profile
+    # delete below is this transport's whole story), and probing one anyway paid the 30s
+    # runtime_rpc default against a possibly-parked microVM for an answer this branch never uses.
+    if container is not None and ip and host_for(container) != "agentcore":
         live_agents = _rows(await container_rpc.call(owner_id, "agents.list", {}), "agents")
         if any(agent.get("id") == agent_id for agent in live_agents):
             await delete_runtime_agent_with_lock_retry(owner_id=owner_id, agent_id=agent_id)

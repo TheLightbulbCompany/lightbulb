@@ -142,6 +142,91 @@ async def test_no_running_container_still_emits_the_unavailable_metric():
 
 
 @pytest.mark.asyncio
+async def test_agentcore_owner_gets_at_least_the_ingress_floor_even_with_a_shorter_caller_timeout():
+    """F4 (predeploy review, M6-R37): a parked AgentCore workspace can take 54-57s to boot --
+    the caller's shorter default (e.g. runtime_rpc's 30s) must not fail the first call to a
+    cold workspace."""
+    from core.services import runtime_transport
+
+    container = {
+        "gateway_token": "gw",
+        "status": "running",
+        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:x",
+        "owner_id": "owner_1",
+    }
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(container, runtime_transport.AGENTCORE_ADDRESS))
+    seen = {}
+
+    async def _fake_request(container_arg, path, **kwargs):
+        seen.update(kwargs)
+        return runtime_transport.RuntimeResponse(status_code=200, text='{"ok": true, "payload": null}')
+
+    with (
+        patch("core.services.container_rpc.get_ecs_manager", return_value=manager),
+        patch("core.services.container_rpc.runtime_transport.request", _fake_request),
+    ):
+        await container_rpc.call("owner_1", "sessions.list", {}, timeout_s=30.0)
+
+    assert seen["timeout_s"] == runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S
+    assert seen["json_body"]["timeoutMs"] == int(runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S * 1000)
+
+
+@pytest.mark.asyncio
+async def test_agentcore_owner_keeps_a_caller_timeout_already_longer_than_the_floor():
+    """The floor is a minimum, not an override -- room ingress already passes a longer budget
+    on its own (90s), and any future caller with a longer one still gets it."""
+    from core.services import runtime_transport
+
+    container = {
+        "gateway_token": "gw",
+        "status": "running",
+        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:x",
+        "owner_id": "owner_1",
+    }
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(container, runtime_transport.AGENTCORE_ADDRESS))
+    seen = {}
+
+    async def _fake_request(container_arg, path, **kwargs):
+        seen.update(kwargs)
+        return runtime_transport.RuntimeResponse(status_code=200, text='{"ok": true, "payload": null}')
+
+    with (
+        patch("core.services.container_rpc.get_ecs_manager", return_value=manager),
+        patch("core.services.container_rpc.runtime_transport.request", _fake_request),
+    ):
+        await container_rpc.call("owner_1", "sessions.list", {}, timeout_s=120.0)
+
+    assert seen["timeout_s"] == 120.0
+
+
+@pytest.mark.asyncio
+async def test_ecs_owner_timeout_is_unaffected_by_the_agentcore_floor():
+    """ECS branch stays byte-identical: a short caller timeout is never bumped for an ECS row."""
+
+    def handler(request):
+        return httpx.Response(200, json={"ok": True, "payload": None})
+
+    seen = {}
+
+    def factory(**kw):
+        seen["timeout"] = kw["timeout"]
+        return _RealAsyncClient(transport=httpx.MockTransport(handler), **kw)
+
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(CONTAINER, "10.0.0.9"))
+    with (
+        patch("core.services.container_rpc.get_ecs_manager", return_value=manager),
+        patch("core.services.container_rpc.httpx.AsyncClient", factory),
+    ):
+        await container_rpc.call("owner_1", "sessions.list", {}, timeout_s=5.0)
+    assert seen["timeout"] == httpx.Timeout(10.0, connect=5.0)  # unchanged margin math, no AgentCore floor
+
+
+@pytest.mark.asyncio
 async def test_http_timeout_ceiling_is_bounded_above_the_plugin_timeout():
     """A short probe (timeout_s=2.0) must not carry the old flat 5s margin --
     margin = min(5.0, timeout_s), so a 2s probe gets a 4s ceiling, not 7s."""

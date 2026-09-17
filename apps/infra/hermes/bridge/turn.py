@@ -342,18 +342,26 @@ def frame_event(room_id: str, agent_id: str, run_id: str, thread_root: str | Non
 
 MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is the only frame
 # that can reach anywhere near this (a full-text resync of the near-100 KB text cap, plus
-# envelope overhead).
+# envelope overhead). A streaming batch is five token-sized frames, nowhere near it.
+
+# Streaming batch shape, verbatim from the OpenClaw plugin's appsync.ts:9-10 — AppSync Events
+# accepts at most 5 events per publish, and 100 ms is the staleness the browser already lives
+# with today.
+FRAME_BATCH = 5
+FRAME_FLUSH_MS = 100
 
 
-def publish_frame(endpoint: str, channel: str, event: dict) -> int:
-    """One POST per frame. The events array is double-encoded (each event is itself a JSON
-    STRING) — AppSync's own wire shape; the backend's live_events._publish does the same."""
+def publish_frame(endpoint: str, channel: str, *events: dict) -> int:
+    """One POST per publish, carrying 1..FRAME_BATCH events. The events array is
+    double-encoded (each event is itself a JSON STRING) — AppSync's own wire shape; the
+    backend's live_events._publish does the same. Varargs rather than a list so the
+    lifecycle path (and every existing caller/fake) keeps its one-event signature."""
     from botocore.auth import SigV4Auth
     from botocore.awsrequest import AWSRequest
     from botocore.credentials import Credentials as BotoCredentials
 
     body = json.dumps(
-        {"channel": channel, "events": [json.dumps(event, separators=(",", ":"))]},
+        {"channel": channel, "events": [json.dumps(e, separators=(",", ":")) for e in events]},
         separators=(",", ":"),
     ).encode()
     if len(body) > MAX_FRAME_BYTES:
@@ -386,21 +394,96 @@ _TOOL_PROGRESS_EVENTS = frozenset({"tool.started", "tool.completed", "tool.outpu
 
 
 class FramePublisher:
-    """One POST per frame, fire-and-forget. A frame never fails a run."""
+    """One POST per lifecycle frame, fire-and-forget; streaming text deltas are batched.
+    A frame never fails a run.
+
+    Threading: the turn owns this object, but Hermes fires the Bedrock stream callbacks from
+    its own daemon worker thread (chat_completion_helpers._poll), so `delta`/`thinking` can
+    land on a different thread than `tool_start`/`finished`. The lock covers only the queue
+    mutation — never the POST — so a lifecycle frame overtaking an in-flight streaming batch
+    stays theoretically possible; in practice deltas only arrive while the model is streaming,
+    which is exactly when no lifecycle frame is being emitted, and the final replace `chunk`
+    resyncs the client either way. abort/steer never touch this object (they take _RUNS_LOCK)."""
 
     def __init__(self, endpoint, channel, room_id, agent_id, run_id, thread_root, publish=None):
         self._endpoint, self._channel = endpoint, channel
         self._room_id, self._agent_id, self._run_id, self._thread_root = room_id, agent_id, run_id, thread_root
         self._publish = publish or publish_frame
+        self._lock = threading.Lock()
+        self._queue: list[dict] = []
+        self._queued_at = 0.0
+        self._streamed: list[str] = []  # everything delta() has appended this run (echo dedupe)
+        self._streamed_len = 0
+
+    def _send(self, events: list[dict]) -> None:
+        try:
+            self._publish(self._endpoint, self._channel, *events)
+        except Exception:  # noqa: BLE001
+            log.warning("frame emit failed", exc_info=True)
+
+    def _flush(self) -> None:
+        """Ship whatever is queued. A failed batch DROPS its streaming frames (runs.ts does
+        the same: text catch-up rides the final full-text chunk, so deltas are the first
+        thing to give up on)."""
+        with self._lock:
+            batch, self._queue = self._queue, []
+        if batch:
+            self._send(batch)
 
     def emit(self, frame: dict) -> None:
         if not self._endpoint or not self._channel:
             return
-        try:
-            self._publish(self._endpoint, self._channel,
-                          frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, frame))
-        except Exception:  # noqa: BLE001
-            log.warning("frame emit failed", exc_info=True)
+        self._flush()  # ordering: queued deltas go out before the lifecycle frame they precede
+        self._send([frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, frame)])
+
+    def _stream(self, frame: dict) -> None:
+        """Queue a streaming frame; ship the batch once it is full or has aged out. No timer
+        thread: deltas only arrive while the model is streaming, so the worst staleness is one
+        inter-token gap or the next lifecycle frame (which flushes first)."""
+        if not self._endpoint or not self._channel:
+            return
+        event = frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, frame)
+        now_s = time.monotonic()
+        with self._lock:
+            if not self._queue:
+                self._queued_at = now_s
+            self._queue.append(event)
+            full = len(self._queue) >= FRAME_BATCH or (now_s - self._queued_at) * 1000 >= FRAME_FLUSH_MS
+        if full:
+            self._flush()
+
+    def delta(self, text: str | None) -> None:
+        """Hermes's `stream_delta_callback`. `None` is its end-of-box marker (it closes the
+        display box before tools and at the end of a turn) — flush, never emit.
+
+        The echo guard: on the pinned tag (v2026.9.14 == package 0.21.3) the only place that
+        hands this callback a whole response is agent/turn_tool_round.py:170-175, the tool-
+        guardrail halt, and that text is freshly generated halt prose that was never streamed
+        — so appending it is correct and this guard is inert there. (The other whole-text
+        replay, chat_completion_helpers._adopt_final_response:2852-2868, fires only when the
+        provider returned a complete response INSTEAD of a stream, i.e. with nothing streamed
+        yet.) It stays as cheap insurance for any provider path that replays what it already
+        streamed: appending the whole reply twice is the one streaming bug the final replace
+        `chunk` cannot hide, because it lands before it."""
+        if text is None:
+            self._flush()
+            return
+        if not text:
+            return
+        if len(text) == self._streamed_len and text == "".join(self._streamed):
+            return
+        self._streamed.append(text)
+        self._streamed_len += len(text)
+        self._stream({"type": "chunk", "content": text, "append": True})
+
+    def thinking(self, text: str | None) -> None:
+        """Hermes's `reasoning_callback` — the per-token reasoning stream. (`thinking_callback`
+        is NOT this: it is a spinner status string, turn_iteration_prep.py:269-272.)"""
+        if text is None:
+            self._flush()
+            return
+        if text:
+            self._stream({"type": "thinking", "content": text, "append": True})
 
     def started(self) -> None:
         self.emit({"type": "run_active", "active": True})
@@ -713,8 +796,11 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     room = body.get("room") or {}
     callbacks = {}
     if frames is not None:
+        # stream_delta_callback / reasoning_callback are the per-token text streams (Task 11).
+        # NOT thinking_callback: that one is a spinner status string, not the reasoning stream.
         callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
-                     "tool_progress_callback": frames.activity}
+                     "tool_progress_callback": frames.activity,
+                     "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     return AIAgent(
         model=MODEL,
         provider="bedrock",

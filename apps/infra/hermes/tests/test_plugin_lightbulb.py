@@ -8,6 +8,9 @@ import lightbulb  # noqa: E402
 from lightbulb import turn_context  # noqa: E402
 
 SESSION = "room:ceo"
+# Ruling M6-R45 refuses a send into the turn's OWN room+thread, so every test about the send
+# path itself (defaulting, normalizing) has to target a room the turn is not answering.
+OTHER_ROOM = "99999999-9999-4999-8999-999999999999"
 
 
 def ctx(tmp_path, **over):
@@ -37,11 +40,11 @@ def test_send_room_message_defaults_to_the_turns_thread_root(tmp_path, monkeypat
         url=url, token=token, body=body) or {"messageId": "m1", "roomId": expected["roomId"],
                                              "createdAt": "2026-09-16T10:00:00Z"})
     out = lightbulb._send_room_message(
-        {"roomId": f"lightbulb:{expected['roomId']}", "text": "following up"}, session_id=SESSION)
+        {"roomId": f"lightbulb:{OTHER_ROOM}", "text": "following up"}, session_id=SESSION)
     assert sent["url"] == "https://api.invalid/api/v1/internal/messaging/agent-messages/org_test"
     assert sent["token"] == "h"
     assert sent["body"]["threadRootMessageId"] == expected["threadRootMessageId"]
-    assert sent["body"]["roomId"] == expected["roomId"] and sent["body"]["runId"] == expected["runId"]
+    assert sent["body"]["roomId"] == OTHER_ROOM and sent["body"]["runId"] == expected["runId"]
     assert json.loads(out)["messageId"] == "m1"
 
 
@@ -72,10 +75,8 @@ def test_send_room_message_normalizes_room_id(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: (
         seen.update(body=body), {})[1])
-    lightbulb._send_room_message(
-        {"roomId": "11111111-1111-4111-8111-111111111111".upper(), "text": "test"},
-        session_id=SESSION)
-    assert seen["body"]["roomId"] == "11111111-1111-4111-8111-111111111111"
+    lightbulb._send_room_message({"roomId": OTHER_ROOM.upper(), "text": "test"}, session_id=SESSION)
+    assert seen["body"]["roomId"] == OTHER_ROOM
 
 
 def test_send_room_message_requires_text(tmp_path, monkeypatch):
@@ -84,3 +85,37 @@ def test_send_room_message_requires_text(tmp_path, monkeypatch):
     result = lightbulb._send_room_message({"roomId": "11111111-1111-4111-8111-111111111111", "text": ""},
                                           session_id=SESSION)
     assert "text is required" in result
+
+
+# ---- Ruling M6-R45: the turn's own room+thread is answered by the turn itself ----------------
+def _no_post(monkeypatch):
+    monkeypatch.setattr(lightbulb, "_post", lambda *a: (_ for _ in ()).throw(AssertionError("no call")))
+
+
+def test_posting_into_this_turns_own_thread_is_refused_without_a_network_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    own = ctx(tmp_path)
+    _no_post(monkeypatch)
+    for args in ({"roomId": own["roomId"], "text": "hi"},                                    # omitted thread
+                 {"roomId": own["roomId"], "text": "hi", "threadRootMessageId": own["threadRootMessageId"]},
+                 {"roomId": f"lightbulb:{own['roomId'].upper()}", "text": "hi"}):            # prefixed/uppercased
+        assert lightbulb._send_room_message(args, session_id=SESSION) == lightbulb.OWN_THREAD_REFUSAL
+
+
+def test_a_dm_turn_with_no_thread_root_still_refuses_its_own_room(tmp_path, monkeypatch):
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    own = ctx(tmp_path, threadRootMessageId=None)
+    _no_post(monkeypatch)
+    assert lightbulb._send_room_message({"roomId": own["roomId"], "text": "hi"},
+                                        session_id=SESSION) == lightbulb.OWN_THREAD_REFUSAL
+
+
+def test_another_thread_in_the_same_room_and_another_room_still_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    own = ctx(tmp_path)
+    sent = []
+    monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: sent.append(body) or {"messageId": "m"})
+    lightbulb._send_room_message({"roomId": own["roomId"], "text": "x",
+                                  "threadRootMessageId": "another-thread"}, session_id=SESSION)
+    lightbulb._send_room_message({"roomId": OTHER_ROOM, "text": "x"}, session_id=SESSION)
+    assert [b["roomId"] for b in sent] == [own["roomId"], OTHER_ROOM]

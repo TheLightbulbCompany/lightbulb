@@ -11,12 +11,20 @@ from . import turn_context
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _counter = itertools.count(1)
 NO_TURN = "Lightbulb tools are unavailable: no active Lightbulb turn for this session."
+# Ruling M6-R45: the turn's own reply is posted for the agent when the turn ends, so a send
+# into the room+thread it is answering posts the answer TWICE (observed on the fresh dev org:
+# the CEO posted its introduction with this tool, then "Message sent! I've introduced myself..."
+# landed as a second message).
+OWN_THREAD_REFUSAL = ("Your reply to this thread is delivered automatically when the turn ends "
+                      "-- write it as your answer. Use send_room_message only for other rooms "
+                      "or threads.")
 
 # Task 11: send_room_message tool
 SEND_SCHEMA = {
     "name": "send_room_message",
-    "description": "Post a message to a Lightbulb room. Use this for a follow-up after the "
-                   "turn that answered the request, or to speak in another room you belong to.",
+    "description": "Post a message to ANOTHER Lightbulb room, or another thread in this one — "
+                   "your reply to the thread you are answering is posted for you when the turn "
+                   "ends, so never send that here.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -53,6 +61,9 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     text = str(args.get("text") or "").strip()
     if not text:
         return "text is required."
+    thread = str(args.get("threadRootMessageId") or "").strip() or None
+    if room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, ctx.get("threadRootMessageId")):
+        return OWN_THREAD_REFUSAL
     body = {
         "eventId": f"{ctx['runId']}:{ctx['agentId']}:tool:{next(_counter)}",
         "roomId": room, "agentId": ctx["agentId"], "text": text, "replyToMessageId": None,

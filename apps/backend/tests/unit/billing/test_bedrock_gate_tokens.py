@@ -7,6 +7,7 @@ be deleted, and the deny kill-switch toggle.
 """
 
 import hashlib
+import json
 
 import boto3
 import pytest
@@ -1554,3 +1555,102 @@ def test_tokens_table_name_env_override_still_wins(monkeypatch):
 
     monkeypatch.setenv("BEDROCK_GATE_TOKENS_TABLE", "explicit-table")
     assert bedrock_gate_tokens._tokens_table_name() == "explicit-table"
+
+
+class TestAgentCoreDrain:
+    """Task 21: for an AgentCore owner the drain reads ``GetAgentRuntime`` instead of the
+    ECS task-definition/task enumeration (report 04 risk 3) -- one runtime per workspace,
+    so one call and no per-task enumeration.
+
+    The runtime's ``environmentVariables`` name the boot secret (``LIGHTBULB_SECRET_ID``),
+    not the bearer plaintext -- there is exactly ONE boot-secret mechanism, M1's, already
+    shipped in ``apps/infra/hermes/bridge/__init__.py`` / ``bridge/sync.load_boot_secrets``:
+    one JSON secret ``lightbulb/{env}/hermes/{owner_id}/boot`` =
+    ``{"hookToken","gatewayToken","bedrockBearer"}`` (M4-R4/R5 ruling). So the live bearer
+    is resolved by fetching that secret and reading its ``bedrockBearer`` key.
+    """
+
+    @staticmethod
+    def _row(overrides: dict):
+        async def fake(_owner_id):
+            return overrides
+
+        return fake
+
+    @staticmethod
+    async def _explodes_if_called(*_args, **_kwargs):
+        raise AssertionError("must not be called for an agentcore owner")
+
+    @pytest.mark.asyncio
+    async def test_an_agentcore_owner_presents_the_bearer_named_by_its_boot_secret(self, monkeypatch):
+        monkeypatch.setattr(
+            mod,
+            "_container_row",
+            self._row({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:aws:x:1:runtime/r1"}),
+        )
+        monkeypatch.setattr(
+            mod,
+            "_describe_agent_runtime",
+            lambda arn: {"environmentVariables": {"LIGHTBULB_SECRET_ID": "lightbulb/dev/hermes/org_a/boot"}},
+        )
+        monkeypatch.setattr(
+            mod,
+            "_secret_value",
+            lambda name: json.dumps({"hookToken": "h", "gatewayToken": "g", "bedrockBearer": "live-token"}),
+        )
+
+        presentable = await mod._presentable_gate_token_hashes("org_a")
+
+        assert presentable == {
+            mod.hash_token("live-token"): "agentcore runtime r1 boot secret lightbulb/dev/hermes/org_a/boot"
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_agentcore_owner_never_touches_the_ecs_apis(self, monkeypatch):
+        monkeypatch.setattr(
+            mod, "_container_row", self._row({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:r1"})
+        )
+        monkeypatch.setattr(mod, "_describe_agent_runtime", lambda arn: {"environmentVariables": {}})
+        monkeypatch.setattr(mod, "_owner_service_view", self._explodes_if_called)
+
+        assert await mod._presentable_gate_token_hashes("org_a") == {}
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_runtime_raises_so_the_caller_keeps_the_rows(self, monkeypatch):
+        monkeypatch.setattr(
+            mod, "_container_row", self._row({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:r1"})
+        )
+
+        def boom(_arn):
+            raise RuntimeError("throttled")
+
+        monkeypatch.setattr(mod, "_describe_agent_runtime", boom)
+
+        with pytest.raises(RuntimeError):
+            await mod._presentable_gate_token_hashes("org_a")
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_boot_secret_raises_rather_than_reading_as_no_bearer(self, monkeypatch):
+        """The convention is a fixed {hookToken, gatewayToken, bedrockBearer} shape. Anything
+        else is incomplete data, not proof the runtime holds no bearer -- see _INCOMPLETE_NOTE."""
+        monkeypatch.setattr(
+            mod, "_container_row", self._row({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:r1"})
+        )
+        monkeypatch.setattr(
+            mod,
+            "_describe_agent_runtime",
+            lambda arn: {"environmentVariables": {"LIGHTBULB_SECRET_ID": "lightbulb/dev/hermes/org_a/boot"}},
+        )
+        monkeypatch.setattr(mod, "_secret_value", lambda name: "not-json")
+
+        with pytest.raises(RuntimeError):
+            await mod._presentable_gate_token_hashes("org_a")
+
+    @pytest.mark.asyncio
+    async def test_an_ecs_owner_still_reads_task_definitions(self, fake_ecs, monkeypatch):
+        monkeypatch.setattr(mod, "_container_row", self._row({"runtime_host": "ecs"}))
+        monkeypatch.setattr(mod, "_describe_agent_runtime", self._explodes_if_called)
+
+        # No token in any task definition (FakeEcs default) -> a real, empty answer.
+        assert await mod._presentable_gate_token_hashes("org_abc") == {}
+        assert "describe_services" in fake_ecs.calls

@@ -55,6 +55,7 @@ holds; a deleted live row is a customer with zero inference.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -66,6 +67,7 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import container_repo
+from core.services.runtime_transport import host_for
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +116,15 @@ _INCOMPLETE_NOTE = " — incomplete ECS data, keeping the rows"
 # stopped-task history far below this; blowing through it means the enumeration
 # is not terminating, which is unknown, not empty.
 _MAX_TASK_PAGES = 50
+
+# The AgentCore runtime env var naming the boot secret -- NOT the bearer plaintext.
+# M4-R4/R5 ruling: there is exactly ONE boot-secret mechanism (M1's, already shipped
+# in apps/infra/hermes/bridge/__init__.py / bridge/sync.load_boot_secrets): one JSON
+# secret `lightbulb/{env}/hermes/{owner_id}/boot` = {"hookToken","gatewayToken",
+# "bedrockBearer"}, named by this one env var. A per-credential secret-name scheme
+# was considered and explicitly rejected as a second, incompatible convention.
+_BOOT_SECRET_ENV = "LIGHTBULB_SECRET_ID"
+_BEARER_SECRET_KEY = "bedrockBearer"
 
 
 def _tokens_table_name() -> str:
@@ -256,10 +267,66 @@ async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) 
     return arns
 
 
+def _describe_agent_runtime(runtime_arn: str) -> dict:
+    """``GetAgentRuntime`` for one workspace's runtime. Sync -- run off ``run_in_thread``."""
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    return client.get_agent_runtime(agentRuntimeId=runtime_arn.rsplit("/", 1)[-1])
+
+
+def _secret_value(name: str) -> str | None:
+    """Raw ``SecretString`` for a Secrets Manager secret name."""
+    client = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    return client.get_secret_value(SecretId=name).get("SecretString")
+
+
+async def _container_row(owner_id: str) -> dict | None:
+    return await container_repo.get_by_owner_id(owner_id, consistent=True)
+
+
+async def _agentcore_presentable_hashes(owner_id: str, runtime_arn: str) -> dict[str, str]:
+    """Hashes an AgentCore runtime can still present, mapped to why.
+
+    One runtime per workspace (report 04 risk 3), so this is one ``GetAgentRuntime`` call and
+    no per-task enumeration -- simpler than the ECS half below.
+
+    The runtime's ``environmentVariables`` carry ONLY the boot secret's NAME
+    (``LIGHTBULB_SECRET_ID``), never the bearer plaintext -- see ``_BOOT_SECRET_ENV``'s
+    comment for the M4-R4/R5 ruling. So the live bearer is resolved by fetching that secret
+    and reading its ``bedrockBearer`` key, not by reading the env var's value directly.
+
+    Exceptions from ``GetAgentRuntime`` or ``GetSecretValue`` propagate on purpose -- an
+    unreadable runtime or secret is UNKNOWN, not empty, and reading either as empty is the
+    deletion decision (see ``_INCOMPLETE_NOTE``). A secret body that is not the expected
+    ``{hookToken, gatewayToken, bedrockBearer}`` shape is the same kind of incomplete data
+    and raises too, rather than being read as "no live bearer".
+    """
+    runtime = await run_in_thread(_describe_agent_runtime, runtime_arn)
+    secret_id = (runtime.get("environmentVariables") or {}).get(_BOOT_SECRET_ENV)
+    if not secret_id:
+        # A positive finding: this runtime names no boot secret at all, so it cannot
+        # present any bearer -- not "we couldn't tell".
+        return {}
+    raw = await run_in_thread(_secret_value, secret_id)
+    if not raw:
+        return {}
+    try:
+        boot = json.loads(raw)
+        bearer = boot[_BEARER_SECRET_KEY] if isinstance(boot, dict) else None
+    except ValueError as e:
+        raise RuntimeError(f"boot secret {secret_id} for {owner_id} is not valid JSON{_INCOMPLETE_NOTE}") from e
+    if not bearer:
+        raise RuntimeError(f"boot secret {secret_id} for {owner_id} carries no {_BEARER_SECRET_KEY}{_INCOMPLETE_NOTE}")
+    runtime_id = runtime_arn.rsplit("/", 1)[-1]
+    return {hash_token(bearer): f"agentcore runtime {runtime_id} boot secret {secret_id}"}
+
+
 async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     """Hashes of every gate token the owner's container can still present,
     mapped to WHY -- which half of the predicate holds it alive. That reason
     is what makes the expiry decision log a diagnosis instead of a verdict.
+
+    An AgentCore owner (``containers.runtime_host == "agentcore"``) never reaches the ECS
+    half below -- see ``_agentcore_presentable_hashes``.
 
     THE PREDICATE. Two sources, and in this fleet only the first one decides
     anything:
@@ -305,6 +372,10 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     credential the running container is using — ``UnrecognizedClientException``
     on its next inference call, the incident this module exists to prevent.
     """
+    row = await _container_row(owner_id) or {}
+    if host_for(row) == "agentcore" and row.get("agentcore_runtime_arn"):
+        return await _agentcore_presentable_hashes(owner_id, row["agentcore_runtime_arn"])
+
     ecs, cluster, service_name = _owner_service_view(owner_id)
 
     resp = await run_in_thread(ecs.describe_services, cluster=cluster, services=[service_name])

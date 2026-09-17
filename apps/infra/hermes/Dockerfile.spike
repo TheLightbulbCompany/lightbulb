@@ -20,3 +20,11 @@ ENV HERMES_HOME=/opt/data HERMES_HEADLESS=1 PYTHONUNBUFFERED=1 AGENTCORE_PORT=80
 EXPOSE 8080
 ENTRYPOINT []
 CMD ["python3", "-m", "bridge.server"]
+
+# Managed overlay (Task 11) — non-negotiables an agent's own profile config cannot undo. The
+# chown/chmod need root privileges the uid-1000 runtime user above doesn't have, so switch back
+# to root for this one step and return to 1000 afterward — the container must still run unprivileged.
+USER root
+COPY managed/config.yaml /etc/hermes/config.yaml
+RUN chown root:root /etc/hermes/config.yaml && chmod 0444 /etc/hermes/config.yaml
+USER 1000

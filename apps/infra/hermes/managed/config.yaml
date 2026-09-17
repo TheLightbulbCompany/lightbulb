@@ -1,0 +1,17 @@
+bedrock:
+  discovery:
+    # Default is TRUE and calls ListFoundationModels hourly; the per-owner role denies it.
+    enabled: false
+telemetry:
+  shared_metrics:
+    enabled: false
+    send: false
+updates:
+  check_on_start: false
+approvals:
+  # Blocks even under mode=off / --yolo. Belt for the profile's own copy.
+  deny:
+    - "rm -rf /"
+    - "mkfs*"
+    - "dd if=* of=/dev/*"
+    - ":(){:|:&};:"

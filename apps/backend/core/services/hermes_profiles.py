@@ -236,3 +236,29 @@ def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
     if agent.get("capabilities"):
         lines += ["", "## What you do", "", agent["capabilities"]]
     return "\n".join(lines) + "\n"
+
+
+#: The managed scope (/etc/hermes/config.yaml). Hermes merges it AFTER env expansion and it wins at
+#: the leaf, so an agent that rewrites its own profile config.yaml cannot undo anything here
+#: (managed_scope.py:101-120, docs/design/managed-scope.md §4.1). Only non-negotiables belong
+#: here; anything an owner may legitimately change stays in the per-profile file.
+#: apps/infra/hermes/managed/config.yaml is a byte-identical copy, asserted by the unit test.
+MANAGED_OVERLAY_YAML = """\
+bedrock:
+  discovery:
+    # Default is TRUE and calls ListFoundationModels hourly; the per-owner role denies it.
+    enabled: false
+telemetry:
+  shared_metrics:
+    enabled: false
+    send: false
+updates:
+  check_on_start: false
+approvals:
+  # Blocks even under mode=off / --yolo. Belt for the profile's own copy.
+  deny:
+    - "rm -rf /"
+    - "mkfs*"
+    - "dd if=* of=/dev/*"
+    - ":(){:|:&};:"
+"""

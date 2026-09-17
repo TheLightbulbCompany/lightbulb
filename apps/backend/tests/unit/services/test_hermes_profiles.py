@@ -1,0 +1,90 @@
+from core.services import hermes_profiles
+
+AIPS = {
+    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/son",
+    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/opu",
+    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/hai",
+}
+
+
+def cfg(**kw):
+    base = dict(agent_id="a1", agent_role="engineering", provider_choice="bedrock_claude", aip_arns=AIPS)
+    return hermes_profiles.build_profile_config(**(base | kw))
+
+
+def test_model_is_written_as_a_dict_with_default_never_a_bare_string():
+    assert cfg()["model"] == {"default": AIPS["sonnet"], "provider": "bedrock"}
+
+
+def test_the_ceo_profile_is_pinned_to_the_premium_tier():
+    assert cfg(agent_role="ceo", is_ceo=True)["model"]["default"] == AIPS["opus"]
+
+
+def test_a_trial_owner_with_one_aip_keeps_every_tier_on_that_one_profile():
+    trial = cfg(provider_choice="bedrock_trial", aip_arns={"sonnet": AIPS["sonnet"]}, is_ceo=True)
+    assert trial["model"]["default"] == AIPS["sonnet"]
+    assert trial["auxiliary"]["compression"]["model"] == AIPS["sonnet"]
+
+
+def test_bedrock_discovery_is_pinned_off():
+    assert cfg()["bedrock"]["discovery"]["enabled"] is False
+    assert cfg()["bedrock"]["region"] == "us-east-1"
+
+
+def test_every_auxiliary_task_is_pinned_to_bedrock_with_an_empty_fallback_chain():
+    aux = cfg()["auxiliary"]
+    assert aux["free_only"] is True
+    for task in hermes_profiles.AUXILIARY_TASKS:
+        assert aux[task]["provider"] == "bedrock", task
+        assert aux[task]["fallback_chain"] == [], task
+        assert aux[task]["model"] == AIPS["haiku"], task
+
+
+def test_approvals_are_off_with_an_unattended_approve_and_a_deny_backstop():
+    approvals = cfg()["approvals"]
+    assert approvals["mode"] == "off"
+    assert approvals["unattended_mode"] == "approve"
+    assert approvals["deny"] == list(hermes_profiles.APPROVALS_DENY)
+
+
+def test_the_tool_deny_list_is_ported_to_disabled_toolsets():
+    assert set(cfg()["agent"]["disabled_toolsets"]) == {"cronjob", "tts", "video_gen"}
+    assert cfg()["dashboard"]["enabled"] is False
+    assert cfg()["cron"]["allow_agent_scheduling"] is False
+
+
+def test_limits_memory_skills_and_sessions_are_all_emitted():
+    c = cfg()
+    assert c["agent"]["run_budget_seconds"] == 1800
+    assert c["max_concurrent_sessions"] == 3
+    assert c["memory"]["memory_enabled"] is True and c["memory"]["provider"] == ""
+    assert c["sessions"]["retention_days"] == 90 and c["sessions"]["vacuum_after_prune"] is True
+    assert c["skills"]["write_approval"] is False
+
+
+def test_no_secret_ever_lands_in_config_yaml():
+    import json
+
+    c = cfg(
+        mcp_servers={"stripe": {"url": "https://mcp.stripe.com", "headers": {"Authorization": "${STRIPE_MCP_TOKEN}"}}}
+    )
+    blob = json.dumps(c)
+    assert "sk-" not in blob and "pcp_" not in blob and "Bearer " not in blob
+    assert c["mcp_servers"]["stripe"]["headers"]["Authorization"] == "${STRIPE_MCP_TOKEN}"
+
+
+def test_byo_key_selects_the_direct_provider_and_its_model_ids():
+    c = cfg(provider_choice="byo_key", byo_provider="anthropic", aip_arns=None)
+    assert c["model"] == {"default": "claude-sonnet-5", "provider": "anthropic"}
+    assert "bedrock" not in c
+
+
+def test_chatgpt_oauth_selects_the_codex_provider_with_no_tier_split():
+    c = cfg(provider_choice="chatgpt_oauth", aip_arns=None, is_ceo=True)
+    assert c["model"]["provider"] == "openai-codex"
+    assert c["auxiliary"]["compression"]["provider"] == "auto"
+
+
+def test_plugins_enabled_is_a_flat_list_never_entries():
+    c = cfg()
+    assert c["plugins"] == {"enabled": ["lightbulb", "lightbulb_node"]}

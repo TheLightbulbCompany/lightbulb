@@ -115,6 +115,19 @@ def test_byo_key_selects_the_direct_provider_and_its_model_ids():
     assert "bedrock" not in c
 
 
+def test_byo_key_premium_and_cheap_tiers_come_from_the_shared_catalog_not_a_local_copy(monkeypatch):
+    """I4: premium_model_ref/cheap_model_ref (core.containers.config) are the single source of
+    truth for these ids elsewhere in the codebase — their own docstrings record two catalog
+    rotations that already broke a hardcoded ref ("fails every Friday run until discovery
+    refreshes"). Monkeypatching the shared functions and seeing the change reflected here proves
+    this module holds no second copy of its own."""
+    monkeypatch.setattr(hermes_profiles, "premium_model_ref", lambda *a, **k: "anthropic/PATCHED-PREMIUM")
+    monkeypatch.setattr(hermes_profiles, "cheap_model_ref", lambda *a, **k: "anthropic/PATCHED-CHEAP")
+    c = cfg(provider_choice="byo_key", byo_provider="anthropic", aip_arns=None, agent_role="ceo", is_ceo=True)
+    assert c["model"]["default"] == "PATCHED-PREMIUM"
+    assert c["auxiliary"]["compression"]["model"] == "PATCHED-CHEAP"
+
+
 def test_chatgpt_oauth_selects_the_codex_provider_with_no_tier_split():
     c = cfg(provider_choice="chatgpt_oauth", aip_arns=None, is_ceo=True)
     assert c["model"]["provider"] == "openai-codex"

@@ -102,17 +102,26 @@ _DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.
 _LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
 
-_BYO_MODELS = {
-    "anthropic": ("anthropic", "claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5"),
-    "openai": ("openai-api", "gpt-5.4", "gpt-5.6-sol", "gpt-5.4-mini"),
-}
+#: Fix round 1, I4: ONLY the Hermes provider NAME (a namespace this module alone owns — Hermes's
+#: own "openai-api" differs from the openclaw-style "openai" ref prefix ``core.containers.config``
+#: uses) and the "standard" (non-premium, non-cheap) default-tier id, which has no standalone
+#: function anywhere — it only lives inline inside ``build_provider_block``'s ``byo_key`` branch.
+#: The premium/cheap ids themselves are NOT duplicated here any more: they come straight from
+#: ``premium_model_ref``/``cheap_model_ref`` below, the same functions the Bedrock branch already
+#: calls — those two have already broken a hardcoded ref across two catalog rotations (see their
+#: own docstrings), and a second local copy is exactly the class of bug that causes.
+_BYO_HERMES_PROVIDER = {"anthropic": ("anthropic", "claude-sonnet-5"), "openai": ("openai-api", "gpt-5.4")}
+
+
+def _strip_provider_prefix(ref: str | None) -> str | None:
+    """``"<provider>/<id>"`` -> ``"<id>"``; ``None`` stays ``None``."""
+    return ref.split("/", 1)[1] if ref else None
 
 
 def _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo):
     default = aip_arns["sonnet"]
-    strip = lambda ref: ref.split("/", 1)[1] if ref else None  # noqa: E731 — "amazon-bedrock/<arn>"
-    premium = strip(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
-    cheap = strip(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
+    premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
+    cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
     return (premium or default) if is_ceo else default, cheap or default
 
 
@@ -124,8 +133,11 @@ def _model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict,
         default, cheap = _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo)
         return {"default": default, "provider": _BEDROCK}, cheap, _BEDROCK
     if provider_choice == "byo_key":
-        provider, standard, premium, cheap = _BYO_MODELS[byo_provider or "anthropic"]
-        return {"default": premium if is_ceo else standard, "provider": provider}, cheap, provider
+        hermes_provider, standard = _BYO_HERMES_PROVIDER[byo_provider or "anthropic"]
+        premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
+        cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
+        default = premium if is_ceo else standard
+        return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
     # chatgpt_oauth — flat rate, one tier; aux inherits the main model ("auto"), because the Codex
     # backend rejects an aux-side summariser override (config.py cheap_model_ref docstring).
     return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "", "auto"

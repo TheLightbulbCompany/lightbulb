@@ -563,6 +563,26 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
 
 
+async def upload_profile_files(owner_id: str, agent_id: str, files: dict[str, bytes]) -> None:
+    """Write named files into an agent's Hermes profile prefix, then bump ``.revision`` LAST.
+
+    The non-tarball sibling of ``catalog_service.deploy_tarball_to_profile`` (M6-R33): content
+    that already exists as a ``{relpath: bytes}`` map rather than a tar archive -- today, the
+    company-deploy per-agent loop's rendered ``AGENTS.md`` (``company_agent_materializer.
+    render_agent_identity_md``). Same posture as ``upload_profile`` above: one boto3 client,
+    every ``put_object`` off the event loop via ``run_in_thread``, ``.revision`` written only
+    after every named file has landed so the bridge never re-pulls a half-written profile.
+    """
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return
+    client = await run_in_thread(_new_s3_client)
+    prefix = profile_prefix(owner_id, agent_id)
+    for name, data in files.items():
+        await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}{name}", Body=data)
+    await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())
+
+
 def delete_profile(owner_id: str, agent_id: str) -> None:
     """``agents.delete`` on an AgentCore row (Q9a row #3): there is no ``openclaw.json`` entry to
     remove, so this agent's own S3 profile prefix -- config.yaml/.env/SOUL.md/mcp-tokens/.revision

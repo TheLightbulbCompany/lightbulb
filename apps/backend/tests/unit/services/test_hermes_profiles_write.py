@@ -3,7 +3,7 @@ import re
 import yaml
 
 from core.services import hermes_profiles
-from core.services.hermes_profiles import ProfileFiles, upload_profile, write_agent_profile
+from core.services.hermes_profiles import ProfileFiles, upload_profile, upload_profile_files, write_agent_profile
 
 AIPS = {"sonnet": "arn:son", "opus": "arn:opu", "haiku": "arn:hai"}
 
@@ -182,3 +182,48 @@ async def test_new_s3_client_is_built_off_the_event_loop_via_run_in_thread(monke
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "b")
     await upload_profile("org_a", "a1", ProfileFiles("x", "y", "z"))
     assert hermes_profiles._new_s3_client in seen_funcs
+
+
+# ---------------------------------------------------------------------------
+# upload_profile_files — the non-tarball sibling of deploy_tarball_to_profile
+# (M6-R33: company deploy's per-agent AGENTS.md upload).
+# ---------------------------------------------------------------------------
+
+
+async def test_upload_profile_files_writes_named_files_then_revision_last(monkeypatch):
+    puts = []
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: _FakeS3Client(puts))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
+
+    await upload_profile_files("org_a", "a1", {"AGENTS.md": b"# Ada\nBody.\n"})
+
+    keys = [key for _, key, _ in puts]
+    assert keys[0] == "org_a/hermes/a1/AGENTS.md"
+    assert keys[-1] == "org_a/hermes/a1/.revision"
+    assert len(keys) == 2
+    bodies = {key: body for _, key, body in puts}
+    assert bodies["org_a/hermes/a1/AGENTS.md"] == "# Ada\nBody.\n"
+    assert re.fullmatch(r"[0-9a-f]{32}", bodies["org_a/hermes/a1/.revision"])
+
+
+async def test_upload_profile_files_writes_every_named_file(monkeypatch):
+    puts = []
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: _FakeS3Client(puts))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
+
+    await upload_profile_files("org_a", "a1", {"AGENTS.md": b"x", "skills/foo.md": b"y"})
+
+    keys = [key for _, key, _ in puts]
+    assert "org_a/hermes/a1/AGENTS.md" in keys
+    assert "org_a/hermes/a1/skills/foo.md" in keys
+    assert keys[-1] == "org_a/hermes/a1/.revision"
+    assert len(keys) == 3
+
+
+async def test_upload_profile_files_is_a_no_op_without_a_bucket(monkeypatch):
+    def _fail():
+        raise AssertionError("no S3 client should be built without a bucket")
+
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", _fail)
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "")
+    await upload_profile_files("org_a", "a1", {"AGENTS.md": b"x"})

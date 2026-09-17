@@ -1647,6 +1647,28 @@ class TestAgentCoreDrain:
             await mod._presentable_gate_token_hashes("org_a")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("secret_string", ["", None])
+    async def test_an_empty_or_absent_secret_string_raises_rather_than_reading_as_no_bearer(
+        self, monkeypatch, secret_string
+    ):
+        """A named boot secret with no body (empty ``SecretString``, or the key entirely
+        absent from the GetSecretValue response) is the SAME incomplete-data class as
+        malformed JSON -- the secret exists (``secret_id`` resolved), so an empty read is
+        unknown, not a positive finding that the runtime holds no bearer."""
+        monkeypatch.setattr(
+            mod, "_container_row", self._row({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:r1"})
+        )
+        monkeypatch.setattr(
+            mod,
+            "_describe_agent_runtime",
+            lambda arn: {"environmentVariables": {"LIGHTBULB_SECRET_ID": "lightbulb/dev/hermes/org_a/boot"}},
+        )
+        monkeypatch.setattr(mod, "_secret_value", lambda name: secret_string)
+
+        with pytest.raises(RuntimeError):
+            await mod._presentable_gate_token_hashes("org_a")
+
+    @pytest.mark.asyncio
     async def test_an_ecs_owner_still_reads_task_definitions(self, fake_ecs, monkeypatch):
         monkeypatch.setattr(mod, "_container_row", self._row({"runtime_host": "ecs"}))
         monkeypatch.setattr(mod, "_describe_agent_runtime", self._explodes_if_called)

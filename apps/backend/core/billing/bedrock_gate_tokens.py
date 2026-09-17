@@ -50,6 +50,17 @@ so the live container kept presenting a credential that DynamoDB reaped out from
 under it an hour later. Every evaluation here therefore fails toward
 AVAILABILITY: any error leaves the row alone. A stale row is a token nobody
 holds; a deleted live row is a customer with zero inference.
+
+KNOWN CONSTRAINT — AgentCore rotation (Ruling M4-R16). A warm AgentCore session
+caches the bearer it read from the boot secret at cold-start; there is no API to
+enumerate an owner's warm sessions, so writing a new value to the boot secret does
+not, by itself, make a running session start presenting it. A rotation on an
+AgentCore workspace must therefore ALSO call ``StopRuntimeSession`` for the
+owner's session (forcing the next invoke to cold-start and read the new value)
+BEFORE the old token generation is revoked — this module's liveness predicate has
+no way to see a warm session's cached credential at all. Task 17's rotation path
+owes that call; this module only drains what ``GetAgentRuntime`` can already tell
+it.
 """
 
 from __future__ import annotations
@@ -308,7 +319,10 @@ async def _agentcore_presentable_hashes(owner_id: str, runtime_arn: str) -> dict
         return {}
     raw = await run_in_thread(_secret_value, secret_id)
     if not raw:
-        return {}
+        # secret_id resolved -- a named secret with an empty or absent SecretString is
+        # incomplete data, not proof the runtime holds no bearer. Same class as malformed
+        # JSON below; raise rather than reading it as positive absence.
+        raise RuntimeError(f"boot secret {secret_id} for {owner_id} has no SecretString{_INCOMPLETE_NOTE}")
     try:
         boot = json.loads(raw)
         bearer = boot[_BEARER_SECRET_KEY] if isinstance(boot, dict) else None

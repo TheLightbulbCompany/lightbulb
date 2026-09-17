@@ -32,6 +32,12 @@ from core.services.credentials import (
     oauth_dance,
     registry,
 )
+
+# Bound directly (not via the `apply_connection` module reference above), so
+# `except RuntimeUnsupportedError` keeps working even when a test mocks the
+# whole `routers.connections.apply_connection` module out — the class object
+# itself never changes underneath that patch.
+from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 from core.services.credentials.mcp_server import reconcile_integrations
 from core.services import shopify_login
@@ -529,6 +535,13 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     await integration_secret_store.put(owner_id, provider, credential)
     try:
         await apply_connection.apply_connection(owner_id, provider, credential)
+    except RuntimeUnsupportedError as exc:
+        # M6-R31: a clear, specific answer instead of the generic apply_failed/502 --
+        # this provider has no known Hermes/AgentCore equivalent yet. Same rollback as
+        # the generic failure path: the row must never read connected.
+        await _remove_materialized_artifacts(owner_id, p, credential)
+        await integration_secret_store.delete(owner_id, provider)
+        raise HTTPException(status_code=422, detail=f"RUNTIME_UNSUPPORTED: {exc}") from exc
     except Exception:
         await _remove_materialized_artifacts(owner_id, p, credential)
         await integration_secret_store.delete(owner_id, provider)
@@ -935,12 +948,12 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
             # block. Best-effort: a seed failure must not fail the disconnect.
             await _seed_identity_best_effort(owner_id, agent_id)
     if agentcore:
-        # MCP/OAuth-shaped or openclaw_paths-shaped: re-project every REMAINING
-        # connected integration into every Hermes profile in one shot — the
-        # row this function just deleted is already gone from the connected
-        # set, so it drops out of the rebuilt mcp_servers block. A CLI-skill
-        # materializer never touched a profile, so there's nothing to refresh.
-        if apply_connection.is_mcp_shaped(p) or p.wiring.openclaw_paths:
+        # MCP/OAuth-shaped: re-project every REMAINING connected integration into
+        # every Hermes profile in one shot — the row this function just deleted is
+        # already gone from the connected set, so it drops out of the rebuilt
+        # mcp_servers block. A CLI-skill materializer never touched a profile, so
+        # there's nothing to refresh.
+        if apply_connection.is_mcp_shaped(p):
             try:
                 # agentcore=True: already resolved above -- no second read.
                 await reconcile_integrations(owner_id, agentcore=True)
@@ -950,6 +963,11 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
                     owner_id,
                     provider,
                 )
+        elif p.wiring.openclaw_paths:
+            # M6-R31: reconcile_integrations has no fan-out for an openclaw_paths
+            # provider at all (mcp_servers/.env only) — clear this one's own
+            # projection (env value + config.yaml selector) directly instead.
+            await apply_connection.clear_hermes_openclaw_paths_projection(owner_id, provider)
         return
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:

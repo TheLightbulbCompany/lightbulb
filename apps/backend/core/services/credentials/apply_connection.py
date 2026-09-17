@@ -27,6 +27,34 @@ def _resolve_source(source: str, credential: dict[str, Any], raw_input: dict[str
     return cur
 
 
+class RuntimeUnsupportedError(RuntimeError):
+    """Ruling M6-R31: an owner tried to connect an ``openclaw_paths``-wiring provider that has
+    no known Hermes/AgentCore equivalent. Raised (unlike the silent CLI-skill materializer skip
+    in ``_apply_connection_agentcore``, which the row still records as connected) so the row is
+    NEVER marked connected and the caller can answer a specific, actionable error instead of the
+    generic ``apply_failed``/502."""
+
+
+#: openclaw_paths-wiring providers this bridge can actually project onto a Hermes profile
+#: (M6-R31). ``parallel`` is the only live example (task-9-scan.md) -- verified directly against
+#: the image: Hermes reads its key straight off the environment (``tools/web_tools.py``'s
+#: ``_has_env("PARALLEL_API_KEY")``/``_env_value``, ``hermes_cli/tools_config_providers.py``'s own
+#: provider->env-var map), never via a config.yaml field of its own, so ``env_key`` is the whole
+#: credential delivery. ``config_patch`` additionally selects this backend deterministically
+#: (``web.backend`` -- "strict, no probe" per that module's own docstring) instead of leaving
+#: Hermes's keyless ring to pick among whichever vendor happens to have a key, matching parity
+#: with OpenClaw's explicit ``tools.web.search.provider`` selection; ``clear_patch`` reverts that
+#: selector on disconnect. A provider not listed here has no known Hermes equivalent yet -- see
+#: RuntimeUnsupportedError above.
+HERMES_OPENCLAW_PATHS_PROVIDERS: dict[str, dict[str, Any]] = {
+    "parallel": {
+        "env_key": "PARALLEL_API_KEY",
+        "config_patch": {"web": {"backend": "parallel"}},
+        "clear_patch": {"web": {"backend": ""}},
+    },
+}
+
+
 def is_mcp_shaped(p: registry.Provider) -> bool:
     """Whether connecting ``p`` produces an entry in
     ``credentials.mcp_server.build_connected_integration_servers`` — the set
@@ -44,21 +72,72 @@ def is_mcp_shaped(p: registry.Provider) -> bool:
     return bool(p.mcp_remote or p.mcp_stdio or p.wiring.mcp_server)
 
 
-async def _apply_connection_agentcore(owner_id: str, provider_key: str, p: registry.Provider) -> None:
+async def _apply_hermes_openclaw_paths_patch(
+    owner_id: str, provider_key: str, env_key: str, env_value: str, config_patch: dict[str, Any]
+) -> None:
+    """M6-R31: fan one named .env value + one config.yaml patch out to every roster profile --
+    .env first, then config.yaml (whose own write bumps .revision LAST, after both files have
+    landed). Shared by connect (a real value + the selector patch) and disconnect (an empty
+    value + the selector's clear_patch). Best-effort, matching _apply_connection_agentcore's own
+    "a connect must never fail because the profile projection did" invariant."""
+    from core.services import hermes_profiles
+    from core.services.messaging import load_agent_roster
+
+    try:
+        for agent in await load_agent_roster(owner_id):
+            agent_id = agent["id"]
+            await run_in_thread(hermes_profiles.patch_profile_env, owner_id, agent_id, {env_key: env_value})
+            await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, config_patch)
+    except Exception:  # noqa: BLE001 — never fail a connect/disconnect because the projection did
+        logger.exception(
+            "agentcore: hermes openclaw_paths projection failed for owner=%s provider=%s", owner_id, provider_key
+        )
+
+
+async def _project_hermes_openclaw_paths(owner_id: str, provider_key: str, value: str) -> None:
+    spec = HERMES_OPENCLAW_PATHS_PROVIDERS[provider_key]
+    await _apply_hermes_openclaw_paths_patch(owner_id, provider_key, spec["env_key"], value, spec["config_patch"])
+
+
+async def clear_hermes_openclaw_paths_projection(owner_id: str, provider_key: str) -> None:
+    """Disconnect twin of ``_project_hermes_openclaw_paths`` -- clears the .env value and
+    reverts the config.yaml selector (``clear_patch``) on every roster profile. A no-op for a
+    provider ``_apply_connection_agentcore`` never projected in the first place (no entry in
+    ``HERMES_OPENCLAW_PATHS_PROVIDERS`` -- that connect always raised ``RuntimeUnsupportedError``
+    and never wrote anything to clear)."""
+    spec = HERMES_OPENCLAW_PATHS_PROVIDERS.get(provider_key)
+    if spec is None:
+        return
+    await _apply_hermes_openclaw_paths_patch(owner_id, provider_key, spec["env_key"], "", spec["clear_patch"])
+
+
+async def _apply_connection_agentcore(
+    owner_id: str, provider_key: str, p: registry.Provider, credential: dict[str, Any]
+) -> None:
     """M6-R24: the AgentCore projection step for a connect/reconnect.
 
-    Never raises and never touches EFS. A pure CLI-skill materializer has no
-    Hermes equivalent and is skipped with an INFO log naming the provider and
-    the reason; every other rail (mcp_server/mcp_remote/mcp_stdio/
-    openclaw_paths) gets every one of the owner's connected integrations
-    re-projected into every Hermes profile in ONE shot via the existing
-    ``reconcile_integrations`` AgentCore branch — not a per-provider write."""
+    Never raises for a provider this function knows how to handle, and never touches EFS. A pure
+    CLI-skill materializer has no Hermes equivalent and is skipped with an INFO log naming the
+    provider and the reason; every mcp_server/mcp_remote/mcp_stdio rail gets every one of the
+    owner's connected integrations re-projected into every Hermes profile in ONE shot via the
+    existing ``reconcile_integrations`` AgentCore branch — not a per-provider write.
+
+    M6-R31: an ``openclaw_paths``-wiring provider (never MCP-shaped) is NOT covered by
+    ``reconcile_integrations`` at all (it only projects ``mcp_servers``/``.env`` secrets) — one
+    with a known Hermes equivalent (``HERMES_OPENCLAW_PATHS_PROVIDERS``) is projected directly;
+    one without raises ``RuntimeUnsupportedError`` so the caller never marks the row connected."""
     if p.wiring.materializer and not is_mcp_shaped(p):
         logger.info(
             "agentcore: skipping %s materializer for owner=%s — exec runs on the owner's Mac, no Hermes equivalent",
             provider_key,
             owner_id,
         )
+        return None
+    if p.wiring.openclaw_paths and not is_mcp_shaped(p):
+        spec = HERMES_OPENCLAW_PATHS_PROVIDERS.get(provider_key)
+        if spec is None:
+            raise RuntimeUnsupportedError(f"{provider_key}: no Hermes/AgentCore equivalent for this provider yet")
+        await _project_hermes_openclaw_paths(owner_id, provider_key, credential.get("token", ""))
         return None
     from core.services.credentials.mcp_server import reconcile_integrations
 
@@ -93,7 +172,7 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
         # Secrets Manager, written by the caller via `_retains_secret`.
         return None
     if await runtime_transport.is_agentcore_owner(owner_id):
-        return await _apply_connection_agentcore(owner_id, provider_key, p)
+        return await _apply_connection_agentcore(owner_id, provider_key, p, credential)
     if w.openclaw_paths:
         for op in w.openclaw_paths:
             value = _resolve_source(op.source, credential, credential)

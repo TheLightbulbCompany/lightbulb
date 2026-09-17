@@ -227,9 +227,11 @@ async def test_apply_agentcore_mcp_shaped_provider_calls_reconcile_once(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_apply_agentcore_openclaw_paths_provider_calls_reconcile_once(monkeypatch):
-    """An openclaw_paths (env-var-shaped) provider gets the same one-shot
-    reconcile treatment on AgentCore -- no per-path EFS write."""
+async def test_apply_agentcore_openclaw_paths_provider_with_no_hermes_equivalent_raises(monkeypatch):
+    """M6-R31: reconcile_integrations has NO fan-out for an arbitrary openclaw_paths provider
+    (it only projects mcp_servers/.env) -- an unlisted one (not in
+    HERMES_OPENCLAW_PATHS_PROVIDERS) must raise RuntimeUnsupportedError, not silently no-op via
+    reconcile as the pre-M6-R31 behaviour did, so the caller never marks the row connected."""
     from core.services.credentials import apply_connection as ac
     from core.services.credentials import mcp_server as mcp_server_mod
     from core.services.credentials.registry import OpenclawPath, Provider, Wiring
@@ -251,18 +253,83 @@ async def test_apply_agentcore_openclaw_paths_provider_calls_reconcile_once(monk
         calls.append(owner_id)
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
-    set_calls = []
 
-    async def fake_set(owner, path, value):
-        set_calls.append((owner, path, value))
+    with pytest.raises(ac.RuntimeUnsupportedError):
+        await ac.apply_connection("org_1", "synth", {"token": "lin_secret"})
 
-    monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", fake_set)
+    assert calls == []  # never reached -- the unsupported check comes first
 
-    result = await ac.apply_connection("org_1", "synth", {"token": "lin_secret"})
+
+@pytest.mark.asyncio
+async def test_apply_agentcore_parallel_projects_env_and_config_per_roster_agent(monkeypatch):
+    """M6-R31: parallel IS in HERMES_OPENCLAW_PATHS_PROVIDERS -- its key lands in every roster
+    agent's .env as PARALLEL_API_KEY, and web.backend is selected deterministically so Hermes's
+    keyless ring doesn't pick a different vendor at random."""
+    from core.services import messaging as messaging_mod
+    from core.services import hermes_profiles as hp_mod
+    from core.services.credentials import apply_connection as ac
+
+    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr(messaging_mod, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}, {"id": "eng"}]))
+
+    env_calls = []
+    config_calls = []
+    monkeypatch.setattr(
+        hp_mod, "patch_profile_env", lambda owner, agent, updates: env_calls.append((owner, agent, updates))
+    )
+    monkeypatch.setattr(
+        hp_mod, "patch_profile_config", lambda owner, agent, patch: config_calls.append((owner, agent, patch))
+    )
+
+    result = await ac.apply_connection("org_1", "parallel", {"token": "par-live-key"})
 
     assert result is None
-    assert calls == ["org_1"]
-    assert set_calls == []
+    assert env_calls == [
+        ("org_1", "ceo", {"PARALLEL_API_KEY": "par-live-key"}),
+        ("org_1", "eng", {"PARALLEL_API_KEY": "par-live-key"}),
+    ]
+    assert config_calls == [
+        ("org_1", "ceo", {"web": {"backend": "parallel"}}),
+        ("org_1", "eng", {"web": {"backend": "parallel"}}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clear_hermes_openclaw_paths_projection_reverts_env_and_config(monkeypatch):
+    """The disconnect twin: clears the .env value and reverts web.backend on every profile."""
+    from core.services import messaging as messaging_mod
+    from core.services import hermes_profiles as hp_mod
+    from core.services.credentials import apply_connection as ac
+
+    monkeypatch.setattr(messaging_mod, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
+    env_calls = []
+    config_calls = []
+    monkeypatch.setattr(
+        hp_mod, "patch_profile_env", lambda owner, agent, updates: env_calls.append((owner, agent, updates))
+    )
+    monkeypatch.setattr(
+        hp_mod, "patch_profile_config", lambda owner, agent, patch: config_calls.append((owner, agent, patch))
+    )
+
+    await ac.clear_hermes_openclaw_paths_projection("org_1", "parallel")
+
+    assert env_calls == [("org_1", "ceo", {"PARALLEL_API_KEY": ""})]
+    assert config_calls == [("org_1", "ceo", {"web": {"backend": ""}})]
+
+
+@pytest.mark.asyncio
+async def test_clear_hermes_openclaw_paths_projection_no_ops_for_an_unlisted_provider(monkeypatch):
+    """A provider _apply_connection_agentcore never projected (RuntimeUnsupportedError on
+    connect) has nothing to clear on disconnect -- must not touch any profile."""
+    from core.services import messaging as messaging_mod
+    from core.services.credentials import apply_connection as ac
+
+    roster = AsyncMock()
+    monkeypatch.setattr(messaging_mod, "load_agent_roster", roster)
+
+    await ac.clear_hermes_openclaw_paths_projection("org_1", "some_unlisted_provider")
+
+    roster.assert_not_awaited()
 
 
 @pytest.mark.asyncio

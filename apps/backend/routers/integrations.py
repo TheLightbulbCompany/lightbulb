@@ -212,6 +212,14 @@ async def list_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # M6-R26 fix round 1, Critical 2: an AgentCore owner has no openclaw.json,
+    # so _read_mcp_servers (EFS) always answered {} here -- and the frontend's
+    # McpServersTab merges {...previousServers, ...newlyWritten} on every add,
+    # so a GET that always reads back empty made every write's "success" state
+    # silently drop everything that came before it. Same merged shape the
+    # write endpoints already return.
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return {"servers": await build_connected_integration_servers(owner_id)}
     servers = await _read_mcp_servers(owner_id)
     return {"servers": servers}
 

@@ -739,3 +739,56 @@ class TestIntegrationsRouter:
         set_path.assert_not_called()
         stored_servers = set_manual.await_args.args[1]
         assert stored_servers["acme"]["headers"]["Authorization"] == "Bearer sk_live_x"
+
+    @pytest.mark.asyncio
+    async def test_get_agentcore_owner_reflects_state_across_two_puts(self, app, auth_override):
+        """M6-R26 fix round 1, Critical 2: list_mcp_servers used to read EFS
+        (always {} for AgentCore) and the frontend's McpServersTab merges
+        {...previousServers, ...newlyWritten} on every write -- so a GET that
+        always answered empty wiped every server that came before it. GET must
+        reflect real, cumulative state across writes."""
+        app.dependency_overrides[get_current_user] = auth_override
+        store: dict = {}
+
+        async def fake_get_manual(owner_id):
+            return dict(store)
+
+        async def fake_set_manual(owner_id, servers):
+            store.clear()
+            store.update(servers)
+
+        with (
+            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch("routers.integrations.integrations_repo.get_manual_mcp_servers", fake_get_manual),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", fake_set_manual),
+            patch(
+                "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+                AsyncMock(return_value=[]),
+            ),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp1 = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"github": {"command": "npx", "args": [], "env": {}}}},
+                )
+                assert resp1.status_code == 200
+                assert "github" in resp1.json()["servers"]
+
+                resp2 = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={
+                        "servers": {
+                            "github": {"command": "npx", "args": [], "env": {}},
+                            "linear": {"command": "npx", "args": ["-y", "@linear/mcp"], "env": {}},
+                        }
+                    },
+                )
+                assert resp2.status_code == 200
+
+                get_resp = await client.get("/api/v1/integrations/mcp/servers")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert get_resp.status_code == 200
+        servers = get_resp.json()["servers"]
+        assert "github" in servers, "the FIRST write must survive a later GET"
+        assert "linear" in servers

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -161,6 +163,52 @@ def _config_set(params: dict) -> dict:
 
 
 RPC_METHODS.update({"config.get": _config_get, "config.patch": _config_patch, "config.set": _config_set})
+
+
+def _agent_id_param(params: dict) -> str:
+    # Callers are split: admin.py sends agent_id, the Paperclip pairing path sends agentId.
+    return str(params.get("agent_id") or params.get("agentId") or "")
+
+
+def _agents_list(_params: dict) -> dict:
+    agents = []
+    for name in _profiles():
+        config = sync.read_profile_config(name)
+        agents.append({"id": name, "name": (config.get("agent") or {}).get("name") or name,
+                       "model": (config.get("model") or {}).get("default") or "", "enabled": True})
+    return {"ok": True, "payload": {"agents": agents}}
+
+
+def _agents_update(params: dict) -> dict:
+    agent_id = _require_profile({"agentId": _agent_id_param(params)})
+    patch = {k: v for k, v in params.items() if k not in ("agent_id", "agentId")}
+    merged = sync.deep_merge(sync.read_profile_config(agent_id), {"agent": patch} if patch else {})
+    sync.write_profile_config(agent_id, merged)
+    return {"ok": True, "payload": {"agent": {"id": agent_id, **(merged.get("agent") or {})}}}
+
+
+def _agents_delete(params: dict) -> dict:
+    agent_id = _require_profile({"agentId": _agent_id_param(params)})
+    shutil.rmtree(sync.HOME / "profiles" / agent_id, ignore_errors=True)
+    sync.delete_profile_objects(agent_id)   # otherwise the next restore resurrects the profile
+    return {"ok": True, "payload": {"deleted": True}}
+
+
+def _channels_status(params: dict) -> dict:
+    # The BRIDGE owns channel ingress on Hermes, and Slack/Discord enter through the backend,
+    # so there is no per-container channel account to report. Empty is the true answer.
+    return {"ok": True, "payload": {"channels": [], "probe": bool(params.get("probe"))}}
+
+
+def _models_auth_status(_params: dict) -> dict:
+    ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
+    return {"ok": True, "payload": {"providers": [
+        {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}
+
+
+RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update,
+                    "agents.delete": _agents_delete, "channels.status": _channels_status,
+                    "models.authStatus": _models_auth_status})
 
 
 # ---- /ws door probe (throwaway: M2 replaces this echo with the node protocol) ----------------

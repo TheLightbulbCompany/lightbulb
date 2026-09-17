@@ -104,6 +104,15 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // SELLER
   });
 
+  it("renders Desktop as an icon-bearing action rather than a section label", () => {
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    const desktopRow = within(navEl).getByText("Desktop").closest("li");
+
+    expect(desktopRow).not.toBeNull();
+    expect(desktopRow?.querySelector("svg")).toBeInTheDocument();
+  });
+
   // --- Usage (admin-gated, BILLING & USAGE) ---
   it("shows the admin-gated Usage row for an admin owner", () => {
     clerk.membership = null; // personal owner = admin

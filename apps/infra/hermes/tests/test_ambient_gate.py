@@ -72,11 +72,10 @@ def test_an_ignored_room_event_never_reaches__run_hermes_and_emits_no_usage_or_e
     ended = next(b for _p, b in posted if b.get("type") == "run.ended")
     assert ended["outcome"] == "ignored" and "usage" not in ended
     assert not any(p.startswith("agent-messages/") for p, _b in posted)
-    # Controller ruling: spec §5 has no gate exception on the frame side -- ignored/gate_error
-    # flow through the SAME error/run_ended/run_active:false sequence as any other
-    # non-"completed" outcome (an earlier pass on this branch suppressed run_ended here,
-    # reading Task 24's "no frames beyond run_active true/false" too literally).
-    assert [f["type"] for f in sent] == ["run_active", "error", "run_ended", "run_active"]
+    # Fix round (Important 2, Ruling 18): a gate outcome publishes run_ended + run_active:false
+    # and NOTHING else -- no `error` frame. The client maps any `error` frame to a red "run
+    # failed" state, so an agent quietly declining to respond must not look like a crash.
+    assert [f["type"] for f in sent] == ["run_active", "run_ended", "run_active"]
     assert sent[-2]["outcome"] == "ignored"
     assert sent[-1]["active"] is False
 
@@ -89,5 +88,5 @@ def test_a_gate_error_room_event_ends_gate_error_with_no_usage(home, posted, mon
     turn.run_turn("ceo", f.ingress(eventKind="room_event"))
     ended = next(b for _p, b in posted if b.get("type") == "run.ended")
     assert ended["outcome"] == "gate_error" and "usage" not in ended
-    assert [f["type"] for f in sent] == ["run_active", "error", "run_ended", "run_active"]
+    assert [f["type"] for f in sent] == ["run_active", "run_ended", "run_active"]
     assert sent[-2]["outcome"] == "gate_error"

@@ -386,16 +386,19 @@ class FramePublisher:
         """The closing sequence: a client that missed streaming still ends with the whole
         text (runs.ts:284-288), then done|error, run_ended, run_active:false.
 
-        Gate outcomes (ignored/gate_error) are NOT special-cased here (controller ruling:
-        spec §5 has no gate exception on the frame side) — they flow through the same
-        error/run_ended/run_active:false sequence as any other non-"completed" outcome. An
-        earlier pass on this branch suppressed run_ended for them, reading Task 24's "no
-        frames beyond run_active true/false" too literally; that reading is reverted."""
+        Fix round (Important 2, Ruling 18): gate outcomes (ignored/gate_error) skip the
+        `error` frame entirely -- they still get run_ended (Ruling 11) and run_active:false,
+        but nothing beyond that. An `ignored` turn is the ambient gate working as designed,
+        not a failure; the client maps ANY `error` frame to a red "run failed" state
+        (RoomPanel.tsx), so publishing one here made every quiet decision look like a crash.
+        An earlier pass on this branch suppressed run_ended too, reading Task 24's "no frames
+        beyond run_active true/false" too literally -- that part stays reverted; only the
+        error frame is skipped now."""
         if outcome == "completed":
             if text:
                 self.emit({"type": "chunk", "content": text})
             self.emit({"type": "done"})
-        else:
+        elif outcome not in GATE_OUTCOMES:
             message = ABORT_MESSAGE if outcome == "aborted" else (error or DEFAULT_ERROR_MESSAGE)
             self.emit({"type": "error", "message": message})
         self.emit({"type": "run_ended", "outcome": _WIRE_OUTCOME.get(outcome, "error")})

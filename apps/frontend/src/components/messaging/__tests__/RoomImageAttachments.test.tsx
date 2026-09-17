@@ -96,7 +96,7 @@ describe("RoomImageAttachments", () => {
     render(<RoomImageAttachments roomId="room-1" attachments={[zip]} download={authenticatedDownload} />);
 
     const card = screen.getByRole("button", { name: "Download bundle.zip" });
-    expect(screen.getByText("ZIP · 8 KB")).toBeInTheDocument();
+    expect(screen.getByText("ZIP · 8.0 KB")).toBeInTheDocument();
     expect(authenticatedDownload).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 

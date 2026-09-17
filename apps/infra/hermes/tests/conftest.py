@@ -14,6 +14,10 @@ def home(tmp_path, monkeypatch):
     from bridge import sync
     (tmp_path / "profiles").mkdir(parents=True)
     monkeypatch.setattr(sync, "HOME", tmp_path)
+    # M6-R51's per-agent sync state is keyed by agent id, not by HOME, so it would otherwise
+    # leak a previous test's tmp_path mtimes onto the same agent id here.
+    sync._SYNCED.clear()
+    sync._MTIMES.clear()
     return tmp_path
 
 

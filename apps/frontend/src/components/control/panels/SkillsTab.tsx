@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { useRuntimeHost } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import {
   Loader2,
@@ -18,9 +19,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { SKILL_INTEGRATIONS } from "./skill-integrations";
-import { ClawHubSearch } from "./ClawHubSearch";
+import { SkillHubSearch } from "./SkillHubSearch";
 
-// --- Types matching OpenClaw skills.status response ---
+// --- Types matching the skills.status response ---
+// Both runtimes answer this shape. Hermes has no per-skill dependency manifest,
+// so on AgentCore `missing`/`install` are always empty and no skill is ever
+// "unsupported" — the dependency machinery below simply never renders.
 
 interface SkillInstallSpec {
   id: string;
@@ -178,9 +182,14 @@ function hasViableInstallSpec(skill: SkillStatusEntry): boolean {
 // --- Skills Tab ---
 
 export function SkillsTab({ agentId }: { agentId?: string }) {
+  // `undefined` is "not known for this workspace yet", never "this is ECS": firing
+  // on a guess costs a microVM start on AgentCore, so the RPC waits for a definite
+  // answer (same hold as AgentToolsTab).
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
   const params = agentId ? { agentId } : {};
   const { data: raw, error, isLoading, mutate } = useRuntimeRpc<SkillStatusReport | SkillStatusEntry[]>(
-    "skills.status",
+    runtimeHost ? "skills.status" : null,
     params,
   );
   const callRpc = useRuntimeRpcMutation();
@@ -213,7 +222,28 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   const availableSkills = filtered.filter((s) => getSkillState(s) === "available");
   const unsupportedSkills = filtered.filter((s) => getSkillState(s) === "unsupported");
 
-  if (isLoading) {
+  // On Hermes a skill's enabled state is `skills.disabled` in the profile's
+  // config.yaml, and the ONLY durable writer of a profile is the backend — the
+  // bridge's own write would never reach S3, so it refuses `skills.update`. The
+  // roster-wide `config.patch` (no agentId) is the door, and because a deep merge
+  // replaces a list wholesale the patch has to carry every name that stays off.
+  const toggleSkill = async (skill: SkillStatusEntry) => {
+    if (!onAgentCore) {
+      await callRpc("skills.update", {
+        skillKey: skill.skillKey || skill.name,
+        enabled: skill.disabled,
+      });
+      return;
+    }
+    const disabled = new Set(skills.filter((s) => s.disabled).map((s) => s.name));
+    if (skill.disabled) disabled.delete(skill.name);
+    else disabled.add(skill.name);
+    await callRpc("config.patch", {
+      patch: { skills: { disabled: [...disabled].sort() } },
+    });
+  };
+
+  if (isLoading || !runtimeHost) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
@@ -299,7 +329,12 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         </div>
 
         {/* ClawHub registry search — in-app browse + one-click install */}
-        <ClawHubSearch query={filter} callRpc={callRpc} onInstalled={mutate} />
+        <SkillHubSearch
+          query={filter}
+          callRpc={callRpc}
+          onInstalled={mutate}
+          hub={onAgentCore ? "hermes" : "clawhub"}
+        />
 
         {/* Category pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
@@ -342,6 +377,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   key={skill.skillKey || skill.name}
                   skill={skill}
                   callRpc={callRpc}
+                  onToggle={toggleSkill}
                   onRefresh={mutate}
                   variant="installed"
                 />
@@ -358,6 +394,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 key={skill.skillKey || skill.name}
                 skill={skill}
                 callRpc={callRpc}
+                onToggle={toggleSkill}
                 onRefresh={mutate}
                 variant="installed"
               />
@@ -380,6 +417,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   key={skill.skillKey || skill.name}
                   skill={skill}
                   callRpc={callRpc}
+                  onToggle={toggleSkill}
                   onRefresh={mutate}
                   variant="available"
                 />
@@ -481,11 +519,15 @@ function SkillCard({
   skill,
   callRpc,
   onRefresh,
+  onToggle,
   variant,
 }: {
   skill: SkillStatusEntry;
   callRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
   onRefresh: () => void;
+  // Enabling a skill is runtime-specific (see `toggleSkill`), so the card is
+  // handed the operation rather than deciding which RPC to send.
+  onToggle: (skill: SkillStatusEntry) => Promise<void>;
   variant: "installed" | "available";
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
@@ -504,10 +546,7 @@ function SkillCard({
     setToggleLoading(true);
     setActionError(null);
     try {
-      await callRpc("skills.update", {
-        skillKey: skill.skillKey || skill.name,
-        enabled: skill.disabled,
-      });
+      await onToggle(skill);
       capture("skill_toggled", { skill: skill.name, enabled: skill.disabled });
       onRefresh();
     } catch (err) {

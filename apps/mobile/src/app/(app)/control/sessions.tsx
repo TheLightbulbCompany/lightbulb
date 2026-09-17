@@ -13,6 +13,7 @@ import {
 import {
   agentDisplayName,
   useAgents,
+  useRuntimeHost,
   useRuntimeRpc,
   useRuntimeRpcMutation,
   type Agent,
@@ -150,9 +151,12 @@ export default function SessionsPanel() {
   const live = useLiveEvents();
   const callRpc = useRuntimeRpcMutation(live);
 
+  // `undefined` is "runtime not known for this workspace yet", never "this is
+  // ECS" — firing on a guess costs a microVM start on AgentCore (M6 task 10-E).
+  const runtimeHost = useRuntimeHost();
   const { data, error, isLoading, mutate } = useRuntimeRpc<unknown>(
     live,
-    "sessions.list",
+    runtimeHost ? "sessions.list" : null,
     SESSIONS_LIST_PARAMS,
   );
   const { agents } = useAgents(live);
@@ -193,6 +197,10 @@ export default function SessionsPanel() {
               setDeletingKey(session.key);
               void callRpc("sessions.delete", {
                 key: session.key,
+                // Session ids are unique per agent's state.db, not globally, so
+                // the Hermes bridge needs the owning agent — without it, it has
+                // to open every profile to find the row.
+                ...(session.agentId ? { agentId: session.agentId } : {}),
                 deleteTranscript: true,
               })
                 .then(() => mutate())
@@ -316,7 +324,9 @@ export default function SessionsPanel() {
           ) : null
         }
         ListEmptyComponent={
-          isLoading ? (
+          // `!runtimeHost` counts as loading: the RPC is held until the runtime
+          // is known, and without it the held state reads as "unreachable".
+          isLoading || !runtimeHost ? (
             <SkeletonRows />
           ) : !data ? (
             // Connected but the RPC resolved to undefined ("No container" →

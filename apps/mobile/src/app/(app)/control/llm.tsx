@@ -16,7 +16,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { ApiError, createApiClient, useRuntimeRpc } from "@lightbulb/shared";
+import {
+  ApiError,
+  createApiClient,
+  useRuntimeHost,
+  useRuntimeRpc,
+} from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";
@@ -316,13 +321,21 @@ export default function LlmPanel() {
     organization != null && membership != null && membership.role !== "org:admin";
   const { state, retry } = useLlmBilling(orgRestricted);
 
+  // Both reads are held until the runtime is DEFINITE — `undefined` is "not
+  // known for this workspace", and guessing costs a microVM start on AgentCore.
+  // The dot needs no runtime branch: the Hermes bridge reports the same provider
+  // ids `providerAuthStatus` already resolves (M6 task 10, row 22).
+  const runtimeHost = useRuntimeHost();
   // Provider auth dot — refreshed from canonical runtime invalidation events.
   const { data: authStatus } = useRuntimeRpc<AuthStatusResult>(
     live,
-    "models.authStatus",
+    runtimeHost ? "models.authStatus" : null,
   );
   // Model catalog + owner default, from the runtime config snapshot.
-  const { data: configSnapshot } = useRuntimeRpc<unknown>(live, "config.get");
+  const { data: configSnapshot } = useRuntimeRpc<unknown>(
+    live,
+    runtimeHost ? "config.get" : null,
+  );
   const config = useMemo(() => extractConfig(configSnapshot), [configSnapshot]);
   const groups = useMemo(() => listGroupedModels(config), [config]);
   const defaultRef = useMemo(() => readDefaultModelRef(config), [config]);

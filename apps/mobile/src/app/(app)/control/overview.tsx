@@ -20,6 +20,7 @@ import {
   createApiClient,
   fetchJsonWithStatus,
   useAgents,
+  useRuntimeHost,
   useRuntimeRpc,
 } from "@lightbulb/shared";
 
@@ -32,12 +33,24 @@ import { useLiveEvents } from "../../../providers/live-events";
 // Contract shapes (w3-control-contract §1 Overview)
 // ---------------------------------------------------------------------------
 
-/** `health` RPC payload — may arrive bare or wrapped in an event envelope. */
+/** `health` RPC payload — may arrive bare or wrapped in an event envelope.
+ *  OpenClaw sends a boot `ts` and `sessions: {count}`; the Hermes bridge sends
+ *  `uptimeS` and a plain count (`null` = no profile restored yet, so unknown). */
 interface HealthPayload {
   ok?: boolean;
   ts?: number;
-  sessions?: { count?: number };
-  agents?: unknown[];
+  uptimeS?: number;
+  sessions?: { count?: number } | number | null;
+  agents?: unknown[] | number;
+}
+
+/** Session count from either runtime's shape; `undefined` stays "not known". */
+export function healthSessionCount(
+  value: HealthPayload["sessions"],
+): number | undefined {
+  if (typeof value === "number") return value;
+  if (value && typeof value === "object") return value.count;
+  return undefined;
 }
 
 /** Subset of `GET /billing/account` used by the Overview tiles. */
@@ -132,9 +145,15 @@ function deriveStatus(
   if (health.ok === false) {
     return { tone: "down", label: "Gateway degraded", detail: "Agent runtime not ready" };
   }
-  const uptime =
-    health?.ts != null ? `Up ${formatUptime(Date.now() - health.ts)}` : null;
-  return { tone: "connected", label: "Healthy", detail: uptime };
+  const uptimeMs =
+    health?.uptimeS != null ? health.uptimeS * 1000
+    : health?.ts != null ? Date.now() - health.ts
+    : null;
+  return {
+    tone: "connected",
+    label: "Healthy",
+    detail: uptimeMs != null ? `Up ${formatUptime(uptimeMs)}` : null,
+  };
 }
 
 function dotColor(tone: Tone): string {
@@ -297,16 +316,19 @@ export default function Overview() {
 
   // Runtime counts use canonical HTTP RPC and AppSync invalidations.
   const { agents, isSettled: agentsSettled } = useAgents(live);
+  // Held until the runtime is DEFINITE — `undefined` is "not known for this
+  // workspace", and guessing costs a microVM start on AgentCore.
+  const runtimeHost = useRuntimeHost();
   const { data: healthRaw } = useRuntimeRpc<unknown>(
     live,
-    "health",
+    runtimeHost ? "health" : null,
     undefined,
     { refreshInterval: 10_000 },
   );
   const health = extractHealth(healthRaw);
 
   const agentCount = agentsSettled ? agents.length : undefined;
-  const sessionCount = health?.sessions?.count;
+  const sessionCount = healthSessionCount(health?.sessions);
 
   let body: ReactNode;
   if (state.kind === "loading") {

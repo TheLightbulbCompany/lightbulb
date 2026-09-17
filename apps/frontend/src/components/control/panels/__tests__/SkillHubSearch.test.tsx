@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import React from "react";
-import { ClawHubSearch } from "../ClawHubSearch";
+import { SkillHubSearch } from "../SkillHubSearch";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
@@ -12,19 +12,19 @@ const RESULT = {
   version: "1.2.0",
 };
 
-describe("ClawHubSearch", () => {
+describe("SkillHubSearch", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("renders nothing until there is a query", () => {
     const { container } = render(
-      <ClawHubSearch query="   " callRpc={vi.fn()} onInstalled={vi.fn()} />,
+      <SkillHubSearch query="   " callRpc={vi.fn()} onInstalled={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
 
   it("searches ClawHub and renders results", async () => {
     const callRpc = vi.fn().mockResolvedValue({ results: [RESULT] });
-    render(<ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />);
+    render(<SkillHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
 
@@ -39,7 +39,7 @@ describe("ClawHubSearch", () => {
       .mockResolvedValueOnce({ results: [RESULT] }) // search
       .mockResolvedValueOnce({ ok: true }); // install
     const onInstalled = vi.fn();
-    render(<ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={onInstalled} />);
+    render(<SkillHubSearch query="pdf" callRpc={callRpc} onInstalled={onInstalled} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^Install$/i }));
@@ -58,13 +58,13 @@ describe("ClawHubSearch", () => {
   it("drops stale results when the query changes", async () => {
     const callRpc = vi.fn().mockResolvedValue({ results: [RESULT] });
     const { rerender } = render(
-      <ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />,
+      <SkillHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
     expect(await screen.findByText("PDF Tools")).toBeInTheDocument();
 
-    rerender(<ClawHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
+    rerender(<SkillHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
 
     // Old results gone; the button reflects the new query, not the stale one.
     expect(screen.queryByText("PDF Tools")).not.toBeInTheDocument();
@@ -77,12 +77,12 @@ describe("ClawHubSearch", () => {
       () => new Promise((res) => { resolveSearch = res as (v: unknown) => void; }),
     );
     const { rerender } = render(
-      <ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />,
+      <SkillHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
     // Query changes while the "pdf" search is still in flight.
-    rerender(<ClawHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
+    rerender(<SkillHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
     // The stale search now resolves — its results must be dropped.
     await act(async () => {
       resolveSearch({ results: [RESULT] });
@@ -92,13 +92,47 @@ describe("ClawHubSearch", () => {
     expect(screen.getByRole("button", { name: /Search ClawHub for “calendar”/i })).toBeInTheDocument();
   });
 
+  it("searches and installs from HERMES's hub when that is the runtime", async () => {
+    const hermesRow = {
+      name: "pdf",
+      description: "Read PDFs",
+      identifier: "official/pdf",
+      source: "official",
+      trust: "builtin",
+    };
+    const callRpc = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [hermesRow] })
+      .mockResolvedValueOnce({ ok: true });
+    render(
+      <SkillHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} hub="hermes" />,
+    );
+
+    // Copy names the Hermes hub, and nothing links out to clawhub.ai.
+    fireEvent.click(screen.getByRole("button", { name: /Search Hermes skills hub for/i }));
+    expect(callRpc).toHaveBeenCalledWith("skills.search", { query: "pdf", limit: 20 });
+    expect(await screen.findByText("pdf")).toBeInTheDocument();
+    expect(screen.getByText("official/pdf")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /ClawHub/i })).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Install$/i }));
+    // The hub identifier IS the source; there is no registry name and no risk flag.
+    await waitFor(() =>
+      expect(callRpc).toHaveBeenLastCalledWith(
+        "skills.install",
+        { source: "official/pdf" },
+        120_000,
+      ),
+    );
+  });
+
   it("offers an explicit override when the install is blocked on trust, and acknowledges the risk", async () => {
     const callRpc = vi
       .fn()
       .mockResolvedValueOnce({ results: [RESULT] }) // search
       .mockRejectedValueOnce(new Error("ClawHub trust check failed — acknowledge the risk to proceed"))
       .mockResolvedValueOnce({ ok: true }); // install anyway
-    render(<ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />);
+    render(<SkillHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^Install$/i }));

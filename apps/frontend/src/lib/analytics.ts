@@ -156,7 +156,9 @@ export type AnalyticsEvent =
   | "skill_api_key_saved"
   | "skill_installed"
   | "skill_toggled"
-  | "clawhub_searched"
+  // Was "clawhub_searched"; the panel now searches whichever hub the runtime has
+  // (ClawHub on OpenClaw, Hermes's own), and the hub is a property on the event.
+  | "skill_hub_searched"
   // Support
   | "support_ticket_submitted"
   | "support_contact_clicked"

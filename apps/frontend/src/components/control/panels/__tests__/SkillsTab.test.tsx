@@ -6,6 +6,9 @@ import { SkillsTab } from "../SkillsTab";
 const mockData = vi.fn();
 const mockMutate = vi.fn();
 const mockMutation = vi.fn();
+// The panel holds its RPC until the runtime is DEFINITE, so every test here has to
+// say which one it is on; AgentCore's own behaviour lives in SkillsTab.agentcore.
+vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => "ecs" }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: () => ({ data: mockData(), error: undefined, isLoading: false, mutate: mockMutate }),
   useRuntimeRpcMutation: () => mockMutation,

@@ -21,6 +21,9 @@ export interface SkillProposalManifestEntry {
 export interface SkillProposalManifest {
   updatedAt: string;
   proposals: SkillProposalManifestEntry[];
+  /** Why the queue is structurally empty, when it is. The Hermes bridge sends
+   *  `write_approval_disabled`; OpenClaw sends nothing. */
+  reason?: string;
 }
 
 export interface SkillProposalRecord {

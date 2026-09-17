@@ -63,13 +63,22 @@ vi.mock("@/hooks/useChatGPTOAuth", () => ({
 const mockAuthStatusData = vi.fn();
 const mockRpcMutation = vi.fn();
 const mockReadMutate = vi.fn();
+// The read is held until the runtime is DEFINITE, so these tests declare one.
+// The panel does NOT branch on it beyond that: the Hermes bridge reports the same
+// provider ids llm-auth-status.ts already resolves (M6 task 10, row 22).
+let runtimeHost: "ecs" | "agentcore" | undefined = "ecs";
+const authStatusMethods: (string | null)[] = [];
+vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
-  useRuntimeRpc: () => ({
-    data: mockAuthStatusData(),
-    error: undefined,
-    isLoading: false,
-    mutate: mockReadMutate,
-  }),
+  useRuntimeRpc: (method: string | null) => {
+    authStatusMethods.push(method);
+    return {
+      data: method === null ? undefined : mockAuthStatusData(),
+      error: undefined,
+      isLoading: false,
+      mutate: mockReadMutate,
+    };
+  },
   useRuntimeRpcMutation: () => mockRpcMutation,
 }));
 
@@ -343,6 +352,36 @@ describe("LLMPanel", () => {
     mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
     render(<LLMPanel />);
     expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
+  });
+
+  it("holds models.authStatus while the runtime is unknown, and a neutral dot with it", () => {
+    runtimeHost = undefined;
+    authStatusMethods.length = 0;
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockAuthStatusData.mockReturnValue({
+      ts: 1,
+      providers: [{ provider: "bedrock", displayName: "Bedrock", status: "ok" }],
+    });
+    render(<LLMPanel />);
+    // Only this panel's own read is asserted — a child card fires `config.get`,
+    // which belongs to a different lane.
+    expect(authStatusMethods).not.toContain("models.authStatus");
+    expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
+    runtimeHost = "ecs";
+  });
+
+  it("resolves a BYO-key dot from the Hermes provider id (openai-api)", () => {
+    runtimeHost = "agentcore";
+    mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "openai" });
+    // What the bridge reports for a BYO-OpenAI profile — `llm-auth-status.ts` matches it
+    // through its `openai-` prefix rule with no AgentCore branch of its own.
+    mockAuthStatusData.mockReturnValue({
+      ts: 1,
+      providers: [{ provider: "openai-api", displayName: "OpenAI", status: "ok" }],
+    });
+    render(<LLMPanel />);
+    expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "green");
+    runtimeHost = "ecs";
   });
 
   it("opens the change-provider modal from the initialAction prop", () => {

@@ -1,14 +1,17 @@
 "use client";
 
-// In-app ClawHub registry search + one-click install. Rides the same gateway
-// RPCs the container already exposes (`skills.search` → ClawHub, `skills.install`
-// with `{source:"clawhub"}`), so no backend proxy is involved — the whole flow
-// goes over the operator WebSocket like the rest of the Skill Store.
+// In-app skill-registry search + one-click install over `skills.search` /
+// `skills.install`. WHICH registry depends on the runtime: OpenClaw answers from
+// ClawHub, Hermes from its own skills hub (`hermes skills search`) — a different
+// registry with a different row shape, so the `hub` prop picks both the wire
+// shape and the copy. Was `ClawHubSearch`; the name was only true on ECS.
 
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Download, Search, AlertTriangle, ExternalLink, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
+
+export type SkillHub = "clawhub" | "hermes";
 
 // Mirrors OpenClaw ClawHubSkillSearchResult (src/infra/clawhub.ts).
 interface ClawHubResult {
@@ -17,6 +20,50 @@ interface ClawHubResult {
   summary?: string;
   version?: string;
 }
+
+// Hermes's hub row (bridge `skills.search` → tools.skills_hub_search.unified_search).
+interface HermesHubResult {
+  name: string;
+  description?: string;
+  identifier: string;
+  source?: string;
+  trust?: string;
+}
+
+// One row shape for the list whichever registry produced it. `id` is both the
+// React key and what `skills.install` is handed back.
+interface HubRow {
+  id: string;
+  title: string;
+  summary?: string;
+  badge?: string;
+}
+
+export function toHubRows(hub: SkillHub, results: unknown[]): HubRow[] {
+  if (hub === "hermes") {
+    return (results as HermesHubResult[])
+      .filter((r) => r?.identifier)
+      .map((r) => ({
+        id: r.identifier,
+        title: r.name || r.identifier,
+        summary: r.description,
+        badge: r.trust || r.source,
+      }));
+  }
+  return (results as ClawHubResult[])
+    .filter((r) => r?.slug)
+    .map((r) => ({
+      id: r.slug,
+      title: r.displayName || r.slug,
+      summary: r.summary,
+      badge: r.version ? `v${r.version}` : undefined,
+    }));
+}
+
+const HUB_LABEL: Record<SkillHub, string> = {
+  clawhub: "ClawHub",
+  hermes: "Hermes skills hub",
+};
 
 type CallRpc = <T = unknown>(
   method: string,
@@ -34,16 +81,18 @@ const TRUST_ERROR = /risk|trust|moderat|scan|blocked|acknowledge|verdict/i;
 // running install surfaces as a false failure.
 const INSTALL_TIMEOUT_MS = 120_000;
 
-export function ClawHubSearch({
+export function SkillHubSearch({
   query,
   callRpc,
   onInstalled,
+  hub = "clawhub",
 }: {
   query: string;
   callRpc: CallRpc;
   onInstalled: () => void;
+  hub?: SkillHub;
 }) {
-  const [results, setResults] = useState<ClawHubResult[] | null>(null);
+  const [results, setResults] = useState<HubRow[] | null>(null);
   const [searchedFor, setSearchedFor] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,14 +131,14 @@ export function ClawHubSearch({
     setRiskySlug(null);
     setMsg(null);
     try {
-      const res = await callRpc<{ results?: ClawHubResult[] }>("skills.search", {
+      const res = await callRpc<{ results?: unknown[] }>("skills.search", {
         query: trimmed,
         limit: 20,
       });
       if (requestIdRef.current !== reqId) return; // superseded by a newer search / query change
-      setResults(res?.results ?? []);
+      setResults(toHubRows(hub, res?.results ?? []));
       setSearchedFor(trimmed);
-      capture("clawhub_searched", { query: trimmed });
+      capture("skill_hub_searched", { query: trimmed, hub });
     } catch (e) {
       if (requestIdRef.current !== reqId) return;
       setError(e instanceof Error ? e.message : String(e));
@@ -104,14 +153,18 @@ export function ClawHubSearch({
     try {
       await callRpc(
         "skills.install",
-        {
-          source: "clawhub",
-          slug,
-          ...(acknowledgeRisk ? { acknowledgeClawHubRisk: true } : {}),
-        },
+        // Hermes takes the hub identifier as `source` (one registry, and its own
+        // scanner gates the install); OpenClaw takes a registry name plus a slug.
+        hub === "hermes"
+          ? { source: slug }
+          : {
+              source: "clawhub",
+              slug,
+              ...(acknowledgeRisk ? { acknowledgeClawHubRisk: true } : {}),
+            },
         INSTALL_TIMEOUT_MS,
       );
-      capture("skill_installed", { skill: slug, source: "clawhub" });
+      capture("skill_installed", { skill: slug, source: hub });
       setInstalled((prev) => new Set(prev).add(slug));
       setRiskySlug(null);
       setMsg({ slug, text: "Installed — it'll appear in your skills shortly.", kind: "ok" });
@@ -137,7 +190,7 @@ export function ClawHubSearch({
           className="text-sm text-[var(--midnight-soft)]"
         >
           Not in your list? Search the{" "}
-          <strong className="text-[var(--midnight)]">ClawHub</strong> registry.
+          <strong className="text-[var(--midnight)]">{HUB_LABEL[hub]}</strong>.
         </p>
         <Button
           size="sm"
@@ -150,32 +203,32 @@ export function ClawHubSearch({
           ) : (
             <Search size={16} className="mr-1.5" />
           )}
-          Search ClawHub for &ldquo;{trimmed}&rdquo;
+          Search {HUB_LABEL[hub]} for &ldquo;{trimmed}&rdquo;
         </Button>
       </div>
 
       {error && (
         <p className="text-xs text-destructive" role="alert">
-          Couldn&apos;t reach ClawHub: {error}
+          Couldn&apos;t reach {HUB_LABEL[hub]}: {error}
         </p>
       )}
 
       {results && results.length === 0 && (
         <p className="text-xs text-[var(--midnight-muted)]">
-          No skills on ClawHub match &ldquo;{searchedFor}&rdquo;.
+          No skills on {HUB_LABEL[hub]} match &ldquo;{searchedFor}&rdquo;.
         </p>
       )}
 
       {results && results.length > 0 && (
         <div className="grid gap-2">
           {results.map((r) => {
-            const isInstalled = installed.has(r.slug);
-            const isBusy = installing === r.slug;
-            const showRisk = riskySlug === r.slug;
-            const rowMsg = msg?.slug === r.slug ? msg : null;
+            const isInstalled = installed.has(r.id);
+            const isBusy = installing === r.id;
+            const showRisk = riskySlug === r.id;
+            const rowMsg = msg?.slug === r.id ? msg : null;
             return (
               <div
-                key={r.slug}
+                key={r.id}
                 className="rounded-lg border border-[var(--edge)] bg-[var(--cream)] p-3 space-y-2"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -184,11 +237,11 @@ export function ClawHubSearch({
                       <h4
                         className="text-sm font-semibold text-[var(--midnight)] truncate"
                       >
-                        {r.displayName || r.slug}
+                        {r.title}
                       </h4>
-                      <span className="text-caption text-[var(--midnight-muted)] font-mono shrink-0">{r.slug}</span>
-                      {r.version && (
-                        <span className="text-2xs text-[var(--midnight-muted)] shrink-0">v{r.version}</span>
+                      <span className="text-caption text-[var(--midnight-muted)] font-mono shrink-0">{r.id}</span>
+                      {r.badge && (
+                        <span className="text-2xs text-[var(--midnight-muted)] shrink-0">{r.badge}</span>
                       )}
                     </div>
                     {r.summary && (
@@ -199,7 +252,7 @@ export function ClawHubSearch({
                     size="sm"
                     variant={isInstalled ? "outline" : "default"}
                     disabled={isBusy || isInstalled}
-                    onClick={() => install(r.slug, false)}
+                    onClick={() => install(r.id, false)}
                     className={
                       isInstalled
                         ? "text-xs border-[var(--edge)] text-ok shrink-0"
@@ -241,7 +294,7 @@ export function ClawHubSearch({
                     size="sm"
                     variant="outline"
                     disabled={isBusy}
-                    onClick={() => install(r.slug, true)}
+                    onClick={() => install(r.id, true)}
                     className="text-ui border-warn text-warn hover:bg-cream-deep"
                   >
                     <AlertTriangle size={16} className="mr-1.5" /> Install anyway — I understand the risk
@@ -253,15 +306,19 @@ export function ClawHubSearch({
         </div>
       )}
 
-      <a
-        href="https://clawhub.ai/skills?sort=downloads&nonSuspicious=true"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
-      >
-        Browse the full registry on ClawHub
-        <ExternalLink size={12} strokeWidth={1.75} />
-      </a>
+      {/* Hermes's hub has no public web index to link to — only the CLI/API this
+          panel already calls, so there is nothing to send the owner off to. */}
+      {hub === "clawhub" && (
+        <a
+          href="https://clawhub.ai/skills?sort=downloads&nonSuspicious=true"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
+        >
+          Browse the full registry on ClawHub
+          <ExternalLink size={12} strokeWidth={1.75} />
+        </a>
+      )}
     </div>
   );
 }

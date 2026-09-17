@@ -18,6 +18,7 @@ import {
   Wrench,
   FileText,
 } from "lucide-react";
+import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
@@ -53,8 +54,11 @@ interface HealthPayload {
   channels?: Record<string, unknown>;
   heartbeatSeconds?: number;
   defaultAgentId?: string;
-  agents?: HealthAgent[];
-  sessions?: { count?: number; recent?: unknown[] };
+  // OpenClaw sends objects/arrays here; the Hermes bridge sends plain counts (and
+  // `uptimeS` instead of a boot `ts`). Both are accepted — see `healthCount`.
+  agents?: HealthAgent[] | number;
+  sessions?: { count?: number; recent?: unknown[] } | number | null;
+  uptimeS?: number;
   tickInterval?: number;
   lastChannelsRefresh?: number;
   [key: string]: unknown;
@@ -97,6 +101,26 @@ function extractHealth(data: HealthResponse): HealthPayload {
   return data as HealthPayload;
 }
 
+/** A count that arrives either as a number (Hermes) or as a list/`{count}` (OpenClaw).
+ *  `undefined`/`null` stays unknown \u2014 the card renders an em dash rather than a 0. */
+export function healthCount(
+  value: HealthAgent[] | { count?: number } | number | null | undefined,
+): number | undefined {
+  if (typeof value === "number") return value;
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === "object") return value.count;
+  return undefined;
+}
+
+function formatUptimeSeconds(seconds: number | undefined): string {
+  if (seconds == null || seconds < 0) return "\u2014";
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours > 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  return `${minutes}m`;
+}
+
 function formatUptime(ts: number | undefined): string {
   if (!ts) return "\u2014";
   const uptimeMs = Date.now() - ts;
@@ -132,6 +156,8 @@ interface OverviewPanelProps {
 
 export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   const api = useApi();
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
   const [configOpen, setConfigOpen] = useState(false);
 
   const {
@@ -139,7 +165,9 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     error: healthError,
     isLoading: healthLoading,
     mutate: refreshHealth,
-  } = useRuntimeRpc<HealthResponse>("health", undefined, { refreshInterval: 10000 });
+  } = useRuntimeRpc<HealthResponse>(runtimeHost ? "health" : null, undefined, {
+    refreshInterval: 10000,
+  });
 
   const { container, isLoading: statusLoading, error: statusError } = useProvisioningState();
   const { account } = useBilling();
@@ -154,9 +182,10 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   // Skills count comes from the same RPC SkillsTab uses; pass no agentId
   // to get the global skills inventory. Response can be either an array or
-  // {skills: [...]} depending on OpenClaw version (see SkillsTab.tsx).
+  // {skills: [...]} (see SkillsTab.tsx). Held until the runtime is DEFINITE —
+  // `undefined` is "not known", and guessing costs a microVM start on AgentCore.
   const { data: skillsRaw } = useRuntimeRpc<SkillStatus | SkillEntry[]>(
-    "skills.status",
+    runtimeHost ? "skills.status" : null,
   );
 
   // MCP server count via the integrations REST endpoint. The endpoint
@@ -189,7 +218,10 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   const { state: healthState, reason: healthReason, canRecover, actionLabel, recover, isRecovering } = useSystemHealth();
 
-  const isLoading = healthLoading && statusLoading;
+  // `!runtimeHost` counts as still-loading: the health RPC is held until the
+  // runtime is known, and without this the panel would fall through to
+  // "No container available" in the gap before the first status body lands.
+  const isLoading = (healthLoading || !runtimeHost) && statusLoading;
   const error = healthError || statusError;
 
   const handleRefresh = () => {
@@ -223,8 +255,8 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   const health = rawHealth ? extractHealth(rawHealth) : ({} as HealthPayload);
   const isOnline = health.ok === true;
-  const sessionCount = health.sessions?.count;
-  const agentCount = health.agents?.length;
+  const sessionCount = healthCount(health.sessions);
+  const agentCount = healthCount(health.agents);
   // Normalize the skills.status response shape — same trick SkillsTab uses.
   const skillsList: SkillEntry[] = Array.isArray(skillsRaw)
     ? skillsRaw
@@ -326,24 +358,35 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
             <InfoRow
               icon={<Clock size={16} />}
               label="Uptime"
-              value={formatUptime(health.ts)}
-            />
-            <InfoRow
-              icon={<Timer size={16} />}
-              label="Tick Interval"
               value={
-                health.heartbeatSeconds
-                  ? `${health.heartbeatSeconds}s`
-                  : health.tickInterval
-                    ? `${health.tickInterval}s`
-                    : "\u2014"
+                health.uptimeS != null
+                  ? formatUptimeSeconds(health.uptimeS)
+                  : formatUptime(health.ts)
               }
             />
-            <InfoRow
-              icon={<RefreshCw size={16} />}
-              label="Last Channels"
-              value={formatTimeAgo(health.lastChannelsRefresh)}
-            />
+            {/* Hermes has neither a heartbeat tick nor container-side channel
+                accounts (channels enter through the backend), so both rows are
+                dropped on AgentCore rather than left reading "\u2014" forever. */}
+            {!onAgentCore && (
+              <>
+                <InfoRow
+                  icon={<Timer size={16} />}
+                  label="Tick Interval"
+                  value={
+                    health.heartbeatSeconds
+                      ? `${health.heartbeatSeconds}s`
+                      : health.tickInterval
+                        ? `${health.tickInterval}s`
+                        : "\u2014"
+                  }
+                />
+                <InfoRow
+                  icon={<RefreshCw size={16} />}
+                  label="Last Channels"
+                  value={formatTimeAgo(health.lastChannelsRefresh)}
+                />
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -222,7 +222,10 @@ def parse_ingress(body: dict) -> dict:
     _check(len(str(body.get("eventId") or "").encode()) <= MAX_EVENT_ID_BYTES, "eventId exceeds 256 bytes")
     _check(body.get("eventKind") in EVENT_KINDS, f"eventKind must be one of {'|'.join(EVENT_KINDS)}")
     if body.get("eventKind") in NON_ROOM_KINDS:
-        _check(bool(body.get("sessionKey")), "sessionKey is required for an agent_mail event")
+        # sessionKey is OPTIONAL here (fix round I1): agent_mail with no derivable
+        # Message-ID omits it entirely (thread_session_key returns None -- ses_inbound.py),
+        # and _resolve_session_key derives a per-event fallback below, matching the ECS
+        # behaviour of a throwaway per-message session.
         _check(bool(body.get("targetAgentId")), "targetAgentId is required")
         return body
     room = body.get("room") or {}
@@ -535,14 +538,22 @@ def lightbulb_session_key(agent_id: str, room_id: str) -> str:
 
 
 def _resolve_session_key(agent_id: str, body: dict) -> str:
-    """The mail sessionKey when the ingress carried one (lightbulb-email:<thread>), the
-    room's derived lightbulb session key otherwise. Shared by run_turn (the run-lifecycle
-    callbacks) and _construct_agent (the Hermes session identity itself) so a mail turn and
-    a room turn agree on what session they're in — a mail turn used to fall back to
-    f"{room.get('id')}:{agent_id}" == "None:<agent>" for every thread, colliding them all
-    into one Hermes session."""
+    """The ingress's own sessionKey when it carried one (lightbulb-email:<thread>,
+    agent:<id>:paperclip:<runId>), the room's derived lightbulb session key for a room event,
+    or (fix round I1) a per-event fallback for a non-room event with no derivable key -- mail
+    with no usable Message-ID gets a per-message throwaway session, matching the ECS
+    behaviour, instead of 400ing the whole ingress.
+
+    Shared by run_turn (the run-lifecycle callbacks) and _construct_agent (the Hermes session
+    identity itself) so a mail/paperclip turn and a room turn all agree on what session
+    they're in — a mail turn used to fall back to f"{room.get('id')}:{agent_id}" ==
+    "None:<agent>" for every thread, colliding them all into one Hermes session."""
+    if body.get("sessionKey"):
+        return body["sessionKey"]
+    if body.get("eventKind") in NON_ROOM_KINDS:
+        return f"agent:{agent_id}:lightbulb:{body.get('eventKind')}:{body.get('eventId')}"
     room = body.get("room") or {}
-    return body.get("sessionKey") or lightbulb_session_key(agent_id, room.get("id"))
+    return lightbulb_session_key(agent_id, room.get("id"))
 
 
 def _display_name(entity: dict) -> str:

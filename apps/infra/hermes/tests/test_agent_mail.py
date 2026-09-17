@@ -14,9 +14,14 @@ def test_a_mail_event_needs_no_room_participants_or_run_block():
     assert turn.parse_ingress(dict(MAIL))["eventKind"] == "agent_mail"
 
 
-def test_a_mail_event_still_needs_a_session_key_and_a_target():
-    with pytest.raises(turn.IngressError, match="sessionKey"):
-        turn.parse_ingress({**MAIL, "sessionKey": ""})
+def test_a_mail_event_with_no_session_key_derives_one_from_the_agent_and_event_id():
+    """Fix round (Important 1): no derivable Message-ID -> agent_mail_delivery.py omits
+    sessionKey entirely (it is `None` when thread_session_key finds nothing usable). The
+    bridge used to hard-require it and 400 the whole ingress; now it derives a per-event
+    session, matching the ECS behaviour of a throwaway per-message session."""
+    body = {**MAIL, "sessionKey": ""}
+    assert turn.parse_ingress(dict(body))["eventKind"] == "agent_mail"
+    assert turn._resolve_session_key("ceo", body) == f"agent:ceo:lightbulb:agent_mail:{MAIL['eventId']}"
 
 
 def test_a_mail_event_still_needs_a_target_agent():

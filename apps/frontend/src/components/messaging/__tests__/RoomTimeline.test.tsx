@@ -162,17 +162,20 @@ it("starts a newly selected room at its latest content", () => {
   expect(region.scrollTop).toBe(region.scrollHeight);
 });
 
-it("resumes follow mode after a successful send token", () => {
+it("resumes follow mode and clears stale new-content state after a successful send token", () => {
   const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} followToken={0} renderMessage={renderMessage} empty={null} />);
   const region = screen.getByRole("region", { name: "Messages" });
   scrollable(region, { top: 0 });
   fireEvent.scroll(region);
+  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={null} followToken={0} renderMessage={renderMessage} empty={null} />);
+  expect(screen.getByRole("button", { name: "Jump to latest, 1 new message" })).toBeInTheDocument();
 
-  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} followToken={1} renderMessage={renderMessage} empty={null}>
+  rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={null} followToken={1} renderMessage={renderMessage} empty={null}>
     <p>Sending…</p>
   </RoomTimeline>);
 
   expect(region.scrollTop).toBe(region.scrollHeight);
+  expect(screen.queryByRole("button", { name: /jump to latest/i })).not.toBeInTheDocument();
 });
 
 it("follows asynchronous image and layout growth without a message update", () => {

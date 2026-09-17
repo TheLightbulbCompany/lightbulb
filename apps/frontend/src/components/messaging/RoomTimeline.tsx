@@ -56,7 +56,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
   const newest = messages.reduce((max, message) => Math.max(max, message.messageSeq), 0);
   const oldest = messages.length > 0 ? messages.reduce((min, message) => Math.min(min, message.messageSeq), Number.POSITIVE_INFINITY) : null;
 
-  const pinToBottom = useCallback((smooth = false) => {
+  const scrollToBottom = useCallback((smooth = false) => {
     const node = region.current;
     if (!node) return;
     const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -66,14 +66,12 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
     else node.scrollTop = node.scrollHeight;
     // Do not wait for the browser's asynchronous scroll event: streaming can
     // commit another chunk first and would otherwise detach follow mode again.
+    // Clear the signal synchronously too: the programmatic scroll event may not
+    // arrive before paint (or at all in a test/non-browser scrollport).
     atBottom.current = true;
-  }, []);
-
-  const scrollToBottom = useCallback((smooth = false) => {
-    pinToBottom(smooth);
     setUnseen(0);
     setHasNewContent(false);
-  }, [pinToBottom]);
+  }, []);
 
   const markNewContent = useCallback((addedMessages = 0) => {
     if (addedMessages > 0) setUnseen((count) => count + addedMessages);
@@ -92,9 +90,12 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
       && oldest < previous.oldestSeq && newest <= previous.newestSeq;
 
     if (roomChanged) {
-      pinToBottom();
+      // Pre-paint reset prevents a stale pill from flashing across room changes.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      scrollToBottom();
     } else if (sent) {
-      pinToBottom();
+      // Successful sends must clear detached state in the same commit.
+      scrollToBottom();
     } else if (prepended) {
       // Compensate for inserted history so the same message stays under the
       // reader's eyes. This also prevents ResizeObserver from treating older
@@ -103,14 +104,17 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
     } else if (newest > previous.newestSeq) {
       const added = messages.filter((message) => message.messageSeq > previous.newestSeq).length;
       if (atBottom.current || (ownLastSentSeq !== null && ownLastSentSeq > previous.newestSeq)) {
-        pinToBottom();
+        // Keep caught-up state and its signal synchronized before paint.
+        scrollToBottom();
       } else {
         markNewContent(added);
       }
     } else if (node.scrollHeight > previous.scrollHeight) {
       // Streaming text/tool blocks can grow without adding a RoomMessage.
-      if (atBottom.current) pinToBottom();
-      else markNewContent();
+      if (atBottom.current) {
+        // Geometry and detached-state signals must update atomically.
+        scrollToBottom();
+      } else markNewContent();
     }
 
     layout.current = {
@@ -121,7 +125,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
       clientHeight: node.clientHeight,
       followToken,
     };
-  }, [contentVersion, followToken, markNewContent, messages, newest, oldest, ownLastSentSeq, pinToBottom, roomId]);
+  }, [contentVersion, followToken, markNewContent, messages, newest, oldest, ownLastSentSeq, roomId, scrollToBottom]);
 
   // Images, attachments, expanded tool output, and composer/viewport resizing
   // can change geometry without a React render. Observe both the scrollport
@@ -135,7 +139,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
       if (!previous || previous.roomId !== roomId) return;
       const grew = node.scrollHeight > previous.scrollHeight;
       const viewportChanged = node.clientHeight !== previous.clientHeight;
-      if (atBottom.current && (grew || viewportChanged)) pinToBottom();
+      if (atBottom.current && (grew || viewportChanged)) scrollToBottom();
       else if (grew) markNewContent();
       layout.current = {
         ...previous,
@@ -146,7 +150,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, follow
     observer.observe(node);
     observer.observe(body);
     return () => observer.disconnect();
-  }, [markNewContent, pinToBottom, roomId]);
+  }, [markNewContent, roomId, scrollToBottom]);
 
   useEffect(() => {
     if (!targetMessageId) return;

@@ -259,10 +259,13 @@ function RoomContent({
   const [searchTarget, setSearchTarget] = useState<(Pick<RoomMessage, "messageId" | "threadRootMessageId"> & { token: number }) | null>(null);
   // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
   const [sentSinceOpen, setSentSinceOpen] = useState(false);
-  // Only suppress the "New" line once a send actually succeeds -- a rejected send must leave sentSinceOpen false.
+  const [sendFollowToken, setSendFollowToken] = useState(0);
+  // Only suppress the "New" line and resume follow mode once a send actually
+  // succeeds -- a rejected send must do neither.
   const markSent = (callback: RoomComposerProps["onSubmit"]) => async (request: CreateMessageRequest) => {
     await callback(request);
     setSentSinceOpen(true);
+    setSendFollowToken((token) => token + 1);
   };
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -580,6 +583,7 @@ function RoomContent({
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+          followToken={sendFollowToken}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}

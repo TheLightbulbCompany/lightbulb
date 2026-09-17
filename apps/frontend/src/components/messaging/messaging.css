@@ -26,8 +26,8 @@
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .room-facepile { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 6px; }
 .room-facepile > :not(:first-child) { margin-left: -8px; }
-.room-history { --room-gutter: 24px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); }
-.room-history > :first-child { margin-top: auto; }
+.room-history { --room-gutter: 24px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); overflow-anchor: none; }
+.room-history-content { display: flex; flex-direction: column; margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
 .room-timeline-item[data-highlight="true"] { background: var(--accent); }

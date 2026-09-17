@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildTimeline } from "@lightbulb/shared";
@@ -12,6 +12,8 @@ interface RoomTimelineProps {
   messages: readonly RoomMessage[];
   readSeq: number | null;
   ownLastSentSeq: number | null;
+  /** Changes after a successful send, including while the optimistic row is still pending. */
+  followToken?: number;
   targetMessageId?: string | null;
   /** Bump this (e.g. a monotonically increasing counter) to force a re-scroll/
    *  re-highlight of the same targetMessageId — otherwise re-selecting the same
@@ -29,57 +31,132 @@ const HIGHLIGHT_MS = 2000;
 
 const escapeSelector = (value: string) => typeof CSS !== "undefined" && "escape" in CSS ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 
-export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading }: RoomTimelineProps): ReactElement {
-  const region = useRef<HTMLDivElement>(null);
-  const atBottom = useRef(true);
-  const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
-  const handled = useRef<string | null>(null);
-  const [unseen, setUnseen] = useState(0);
-  const [highlighted, setHighlighted] = useState<string | null>(null);
-  const items = useMemo(() => buildTimeline(messages, { readSeq }), [messages, readSeq]);
+interface LayoutSnapshot {
+  roomId: string;
+  oldestSeq: number | null;
+  newestSeq: number;
+  scrollHeight: number;
+  clientHeight: number;
+  followToken: number | undefined;
+}
 
-  function scrollToBottom() {
+export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, followToken, targetMessageId, targetToken, renderMessage, children, empty, leading }: RoomTimelineProps): ReactElement {
+  const region = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const atBottom = useRef(true);
+  const layout = useRef<LayoutSnapshot | null>(null);
+  const [unseen, setUnseen] = useState(0);
+  const [hasNewContent, setHasNewContent] = useState(false);
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const handled = useRef<string | null>(null);
+  const items = useMemo(() => buildTimeline(messages, { readSeq }), [messages, readSeq]);
+  const newest = messages.reduce((max, message) => Math.max(max, message.messageSeq), 0);
+  const oldest = messages.length > 0 ? messages.reduce((min, message) => Math.min(min, message.messageSeq), Number.POSITIVE_INFINITY) : null;
+
+  const pinToBottom = useCallback((smooth = false) => {
     const node = region.current;
     if (!node) return;
-    node.scrollTop = node.scrollHeight;
+    const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const behavior: ScrollBehavior = smooth && !reduceMotion ? "smooth" : "auto";
+    if (typeof node.scrollTo === "function") node.scrollTo({ top: node.scrollHeight, behavior });
+    else node.scrollTop = node.scrollHeight;
+    // Do not wait for the browser's asynchronous scroll event: streaming can
+    // commit another chunk first and would otherwise detach follow mode again.
     atBottom.current = true;
+  }, []);
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    pinToBottom(smooth);
     setUnseen(0);
-  }
+    setHasNewContent(false);
+  }, [pinToBottom]);
 
-  // Room change: newest message on open.
+  const markNewContent = useCallback((addedMessages = 0) => {
+    if (addedMessages > 0) setUnseen((count) => count + addedMessages);
+    setHasNewContent(true);
+  }, []);
+
+  // Message arrivals, history prepends, room changes, optimistic sends, and
+  // synchronous live-run growth are all resolved before paint.
   useLayoutEffect(() => {
-    scrollToBottom();
-    lastSeq.current = messages.at(-1)?.messageSeq ?? 0;
-    handled.current = null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId]);
+    const node = region.current;
+    if (!node) return;
+    const previous = layout.current;
+    const roomChanged = !previous || previous.roomId !== roomId;
+    const sent = !!previous && followToken !== previous.followToken;
+    const prepended = !!previous && oldest !== null && previous.oldestSeq !== null
+      && oldest < previous.oldestSeq && newest <= previous.newestSeq;
 
-  // Growth: stick to the bottom, or count unseen and show the pill.
-  useLayoutEffect(() => {
-    const newest = messages.at(-1)?.messageSeq ?? 0;
-    if (newest <= lastSeq.current) return;
-    const added = messages.filter((message) => message.messageSeq > lastSeq.current).length;
-    lastSeq.current = newest;
-    if (atBottom.current || (ownLastSentSeq !== null && newest === ownLastSentSeq)) scrollToBottom();
-    else setUnseen((current) => current + added);
-  }, [messages, ownLastSentSeq]);
+    if (roomChanged) {
+      pinToBottom();
+    } else if (sent) {
+      pinToBottom();
+    } else if (prepended) {
+      // Compensate for inserted history so the same message stays under the
+      // reader's eyes. This also prevents ResizeObserver from treating older
+      // history as unread content.
+      node.scrollTop += node.scrollHeight - previous.scrollHeight;
+    } else if (newest > previous.newestSeq) {
+      const added = messages.filter((message) => message.messageSeq > previous.newestSeq).length;
+      if (atBottom.current || (ownLastSentSeq !== null && ownLastSentSeq > previous.newestSeq)) {
+        pinToBottom();
+      } else {
+        markNewContent(added);
+      }
+    } else if (node.scrollHeight > previous.scrollHeight) {
+      // Streaming text/tool blocks can grow without adding a RoomMessage.
+      if (atBottom.current) pinToBottom();
+      else markNewContent();
+    }
 
-  // Target message: scroll/focus/highlight once per target, so an unrelated
-  // message arriving later doesn't re-trigger the same target. Keyed on
-  // targetToken too so re-selecting the same message (e.g. the same search
-  // result twice) still re-scrolls. Kept in the deps only so a target that
-  // isn't rendered yet (history still loading) is retried as more messages
-  // come in.
+    layout.current = {
+      roomId,
+      oldestSeq: oldest,
+      newestSeq: newest,
+      scrollHeight: node.scrollHeight,
+      clientHeight: node.clientHeight,
+      followToken,
+    };
+  }, [children, followToken, markNewContent, messages, newest, oldest, ownLastSentSeq, pinToBottom, roomId]);
+
+  // Images, attachments, expanded tool output, and composer/viewport resizing
+  // can change geometry without a React render. Observe both the scrollport
+  // and its content so follow mode tracks those changes without polling.
   useEffect(() => {
-    const key = `${targetToken ?? 0}:${targetMessageId}`;
-    if (!targetMessageId || handled.current === key) return;
+    const node = region.current;
+    const body = content.current;
+    if (!node || !body || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      const previous = layout.current;
+      if (!previous || previous.roomId !== roomId) return;
+      const grew = node.scrollHeight > previous.scrollHeight;
+      const viewportChanged = node.clientHeight !== previous.clientHeight;
+      if (atBottom.current && (grew || viewportChanged)) pinToBottom();
+      else if (grew) markNewContent();
+      layout.current = {
+        ...previous,
+        scrollHeight: node.scrollHeight,
+        clientHeight: node.clientHeight,
+      };
+    });
+    observer.observe(node);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [markNewContent, pinToBottom, roomId]);
+
+  useEffect(() => {
+    if (!targetMessageId) return;
+    const key = `${targetMessageId}:${targetToken ?? 0}`;
+    if (handled.current === key) return;
     const node = region.current?.querySelector<HTMLElement>(`[data-message-id="${escapeSelector(targetMessageId)}"]`);
     if (!node) return;
+    handled.current = key;
     node.scrollIntoView({ block: "center" });
     node.focus({ preventScroll: true });
-    handled.current = key;
+    // The highlight is deliberately coupled to this imperative focus effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHighlighted(targetMessageId);
-    const timer = setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
+    const timer = window.setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
     return () => clearTimeout(timer);
   }, [targetMessageId, targetToken, messages.length]);
 
@@ -87,23 +164,39 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     const node = region.current;
     if (!node) return;
     atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD_PX;
-    if (atBottom.current) setUnseen(0);
+    if (layout.current) {
+      layout.current = { ...layout.current, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight };
+    }
+    if (atBottom.current) {
+      setUnseen(0);
+      setHasNewContent(false);
+    }
   }
+
+  const showJump = unseen > 0 || hasNewContent;
+  const jumpLabel = unseen > 0
+    ? `Jump to latest, ${unseen} new ${unseen === 1 ? "message" : "messages"}`
+    : "Jump to latest";
 
   return <div className="room-timeline">
     <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
-      {leading}
-      {items.length === 0 ? empty : items.map((item) => {
-        if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
-        if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;
-        return <div key={item.key} data-message-id={item.message.messageId} data-highlight={highlighted === item.message.messageId ? "true" : undefined} tabIndex={-1} className="room-timeline-item">
-          {renderMessage(item.message, item.collapsed)}
-        </div>;
-      })}
-      {children}
+      <div ref={content} className="room-history-content">
+        {leading}
+        {items.length === 0 ? empty : items.map((item) => {
+          if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
+          if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;
+          return <div key={item.key} data-message-id={item.message.messageId} data-highlight={highlighted === item.message.messageId ? "true" : undefined} tabIndex={-1} className="room-timeline-item">
+            {renderMessage(item.message, item.collapsed)}
+          </div>;
+        })}
+        {children}
+      </div>
     </div>
-    {unseen > 0 && <Button type="button" variant="outline" className="room-new-pill" onClick={scrollToBottom} aria-label={`${unseen} new ${unseen === 1 ? "message" : "messages"}`}>
-      <ArrowDown size={14} aria-hidden="true" />{unseen} new {unseen === 1 ? "message" : "messages"}
+    <span className="sr-only" role="status" aria-live="polite">
+      {showJump ? (unseen > 0 ? `${unseen} new ${unseen === 1 ? "message" : "messages"}` : "New content available") : ""}
+    </span>
+    {showJump && <Button type="button" variant="outline" className="room-new-pill" onClick={() => scrollToBottom(true)} aria-label={jumpLabel}>
+      <ArrowDown size={14} aria-hidden="true" />{unseen > 0 ? `${unseen} new ${unseen === 1 ? "message" : "messages"}` : "Jump to latest"}
     </Button>}
   </div>;
 }

@@ -28,6 +28,36 @@ def _agentcore(is_agentcore: bool):
     return fake
 
 
+def _fake_roster(monkeypatch, rows):
+    async def fake(owner_id):
+        return rows
+
+    monkeypatch.setattr(runtime_rpc, "load_agent_roster", fake)
+
+
+def _fake_profile_store(monkeypatch, initial: dict):
+    """A minimal, STATEFUL stand-in for the S3-backed config_snapshot/patch_profile_config --
+    proves the round-trip (a patch is visible on the next get, with the hash the patch returned
+    matching the next get's hash) instead of a call recorder that always answers a canned value."""
+    import hashlib
+
+    store = {agent_id: dict(cfg) for agent_id, cfg in initial.items()}
+
+    def _hash(agent_id):
+        return hashlib.sha256(repr(sorted(store[agent_id].items())).encode()).hexdigest()
+
+    def config_snapshot(owner_id, agent_id):
+        return dict(store[agent_id]), _hash(agent_id)
+
+    def patch_profile_config(owner_id, agent_id, patch):
+        store[agent_id] = {**store[agent_id], **patch}
+        return dict(store[agent_id])
+
+    monkeypatch.setattr(runtime_rpc.hermes_profiles, "config_snapshot", config_snapshot)
+    monkeypatch.setattr(runtime_rpc.hermes_profiles, "patch_profile_config", patch_profile_config)
+    return store
+
+
 async def test_config_get_with_an_agent_id_returns_the_snapshot_shape_useconfigpatch_reads(monkeypatch):
     """``useConfigPatch.ts``'s ``ConfigGetSnapshot`` type is ``{config, hash, valid?}`` --
     ``snapshot?.config``/``snapshot?.hash`` are the two fields every real reader touches."""
@@ -65,18 +95,21 @@ async def test_config_get_with_no_agent_id_never_400s_and_serves_a_roster_map(mo
     assert out["hash"] == hashlib.sha256(b"hash1hash2").hexdigest()  # roster order, per M4-R43
 
 
-async def test_config_patch_accepts_the_raw_baseHash_shape_useconfigpatch_sends(monkeypatch):
-    """The ONLY real web caller (useConfigPatch.ts:41-43, PluginsTab.tsx:90-96) sends
-    ``{raw: JSON.stringify(patch), baseHash}`` -- never a ``patch`` dict."""
+async def test_config_patch_with_no_agent_id_fans_out_to_every_roster_profile_and_the_hash_round_trips(monkeypatch):
+    """M4-R48 (fix round 2): BOTH real callers (useConfigPatch.ts:41-43, PluginsTab.tsx:90-96)
+    send config.patch with NO agentId at all -- {raw: JSON.stringify(patch), baseHash}. There is
+    no single profile to target, so the patch applies to EVERY roster profile, CAS'd against the
+    SAME map hash config.get (no agentId) returns. Asserts exactly the three things the brief
+    names: (a) visible on every profile via the next config.get, (b) the returned hash equals
+    that next config.get's hash, (c) covered by the sibling stale-baseHash test below."""
     monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
-    monkeypatch.setattr(runtime_rpc.hermes_profiles, "config_snapshot", lambda owner_id, agent_id: ({}, "hash-before"))
-    patched = {}
-    monkeypatch.setattr(
-        runtime_rpc.hermes_profiles,
-        "patch_profile_config",
-        lambda owner_id, agent_id, patch: (
-            patched.update(owner_id=owner_id, agent_id=agent_id, patch=patch) or {"ok": True}
-        ),
+    _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}])
+    store = _fake_profile_store(
+        monkeypatch, {"a1": {"model": {"default": "arn:opu"}}, "a2": {"model": {"default": "arn:son"}}}
+    )
+
+    before = await runtime_rpc.execute_sync(
+        owner_id="org_a", user_id="u1", request_id="r1", method="config.get", params={}
     )
     out = await runtime_rpc.execute_sync(
         owner_id="org_a",
@@ -84,54 +117,59 @@ async def test_config_patch_accepts_the_raw_baseHash_shape_useconfigpatch_sends(
         request_id="r1",
         method="config.patch",
         params={
-            "agentId": "a1",
             "raw": json.dumps({"plugins": {"entries": {"stripe": {"enabled": False}}}}),
-            "baseHash": "hash-before",
+            "baseHash": before["hash"],
         },
     )
-    assert out == {"ok": True}
-    assert patched["patch"] == {"plugins": {"entries": {"stripe": {"enabled": False}}}}
-    assert patched["agent_id"] == "a1"
+    after = await runtime_rpc.execute_sync(
+        owner_id="org_a", user_id="u1", request_id="r1", method="config.get", params={}
+    )
+
+    assert store["a1"]["plugins"] == {"entries": {"stripe": {"enabled": False}}}  # (a)
+    assert store["a2"]["plugins"] == {"entries": {"stripe": {"enabled": False}}}  # (a)
+    assert out["hash"] == after["hash"]  # (b)
+    assert out["config"] == after["config"]
 
 
-async def test_config_patch_with_a_stale_baseHash_errors_and_uploads_nothing(monkeypatch):
+async def test_config_patch_with_no_agent_id_and_a_stale_baseHash_errors_and_writes_nothing(monkeypatch):
+    """(c): a baseHash that doesn't match the current map hash -- the stale-config error, no
+    profile touched."""
     import pytest
 
     from core.services.messaging import ApiProblem
 
     monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
-    monkeypatch.setattr(runtime_rpc.hermes_profiles, "config_snapshot", lambda owner_id, agent_id: ({}, "hash-current"))
+    _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}])
+    store = _fake_profile_store(monkeypatch, {"a1": {"model": {"default": "arn:opu"}}})
 
-    def _must_not_upload(*a, **k):
-        raise AssertionError("a stale baseHash must not upload")
-
-    monkeypatch.setattr(runtime_rpc.hermes_profiles, "patch_profile_config", _must_not_upload)
     with pytest.raises(ApiProblem):
         await runtime_rpc.execute_sync(
             owner_id="org_a",
             user_id="u1",
             request_id="r1",
             method="config.patch",
-            params={"agentId": "a1", "raw": json.dumps({"memory": {"memory_enabled": False}}), "baseHash": "stale"},
+            params={"raw": json.dumps({"memory": {"memory_enabled": False}}), "baseHash": "stale-hash"},
         )
+    assert store["a1"] == {"model": {"default": "arn:opu"}}  # untouched
 
 
-async def test_config_patch_with_an_empty_patch_uploads_nothing_and_still_reports_ok(monkeypatch):
+async def test_config_patch_with_no_agent_id_and_an_empty_patch_writes_nothing(monkeypatch):
     monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
-    monkeypatch.setattr(runtime_rpc.hermes_profiles, "config_snapshot", lambda owner_id, agent_id: ({}, "hash-current"))
+    _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}])
+    store = _fake_profile_store(monkeypatch, {"a1": {"model": {"default": "arn:opu"}}})
 
-    def _must_not_upload(*a, **k):
-        raise AssertionError("an empty patch must not upload or bump the revision")
-
-    monkeypatch.setattr(runtime_rpc.hermes_profiles, "patch_profile_config", _must_not_upload)
+    before = await runtime_rpc.execute_sync(
+        owner_id="org_a", user_id="u1", request_id="r1", method="config.get", params={}
+    )
     out = await runtime_rpc.execute_sync(
         owner_id="org_a",
         user_id="u1",
         request_id="r1",
         method="config.patch",
-        params={"agentId": "a1", "raw": json.dumps({}), "baseHash": "hash-current"},
+        params={"raw": json.dumps({}), "baseHash": before["hash"]},
     )
-    assert out == {"ok": True}
+    assert out["hash"] == before["hash"]
+    assert store["a1"] == {"model": {"default": "arn:opu"}}  # untouched
 
 
 async def test_config_patch_still_accepts_a_plain_patch_dict_for_non_web_callers(monkeypatch):

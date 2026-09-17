@@ -172,6 +172,36 @@ async def _config_get_roster_map(owner_id: str) -> dict[str, Any]:
     return {"config": config_map, "hash": hashlib.sha256("".join(hashes).encode()).hexdigest()}
 
 
+async def _config_patch_roster(owner_id: str, patch: dict[str, Any], base_hash: str | None) -> dict[str, Any]:
+    """``config.patch`` with no ``agentId`` (M4-R48, fix round 2 continuation) — BOTH real
+    callers (``useConfigPatch.ts``, ``PluginsTab.tsx``) never send one, so there is no single
+    profile to CAS against: the patch fans out to EVERY roster profile, gated on the SAME map
+    hash ``config.get`` (no ``agentId``) returns. A single-profile hash could never match what
+    these clients actually hold as their ``baseHash`` — they only ever read it from the
+    no-``agentId`` ``config.get``. ``config.set`` has no such fan-out (see the caller): zero real
+    callers, and a whole-document replace across N profiles would clobber per-profile
+    differences.
+
+    # ponytail: not transactional — one profile's PUT failing mid-loop leaves a partial write.
+    Unhandled here per the controller's own ruling (parked): unlike ``refresh_integrations``,
+    this isn't a reconcile invoked on a timer, but the SAME patch dict re-sent is itself
+    idempotent per profile, and the next ``config.get`` map hash reflects exactly what landed —
+    a client can always detect and retry a partial apply.
+    """
+    current = await _config_get_roster_map(owner_id)
+    if base_hash is not None and base_hash != current["hash"]:
+        raise ApiProblem(
+            "INVALID_REQUEST",
+            "The config changed since you last loaded it. Refresh and try again.",
+            details={"method": "config.patch", "upstreamCode": "CONFIG_STALE"},
+        )
+    if not patch:
+        return current
+    for agent_id in current["config"]:
+        await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, patch)
+    return await _config_get_roster_map(owner_id)
+
+
 def _config_patch_dict(params: dict[str, Any]) -> dict[str, Any]:
     """Accepts the RFC7386 JSON-merge-patch ``raw`` STRING the only real web caller sends
     (``useConfigPatch.ts:41-43``, ``PluginsTab.tsx:90-96``) or a plain ``patch`` dict (other/
@@ -414,9 +444,15 @@ async def execute_sync(
             config, config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
             return {"config": config, "hash": config_hash}
         if not has_agent_id:
-            # Unlike config.get, a WRITE inherently targets one profile — there is no roster-map
-            # equivalent for config.set/config.patch, and no real caller omits agentId here.
-            raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
+            if method == "config.set":
+                # Zero real callers send config.set with no agentId, and a whole-document
+                # replace fanned out over N profiles would clobber per-profile differences.
+                raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
+            # M4-R48: config.patch with no agentId is BOTH real callers' actual shape
+            # (useConfigPatch.ts, PluginsTab.tsx) — roster-wide fan-out, not a 400.
+            result = await _config_patch_roster(owner_id, _config_patch_dict(params), params.get("baseHash"))
+            await _invalidate(owner_id, method)
+            return result
         if method == "config.set":
             result = await run_in_thread(
                 hermes_profiles.set_profile_config, owner_id, agent_id, params.get("config") or {}

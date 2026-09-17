@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { AtSign, Bold, CaseSensitive, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import { activeTrigger, applyCompletion, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MemberRef, type RoomKind } from "@lightbulb/shared";
+import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
+import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
@@ -26,7 +27,7 @@ export interface RoomComposerProps {
   disabled?: boolean;
   label?: string;
   onTypingChange?: (typing: boolean) => void;
-  onUploadAttachment?: (image: File) => Promise<MessageAttachment>;
+  onUploadAttachment?: (file: File) => Promise<MessageAttachment>;
   onEditLast?: () => void;
   dropTargetRef?: RefObject<HTMLElement | null>;
   roomKind?: RoomKind;
@@ -122,14 +123,16 @@ function ComposerAttempt({
   const composing = useRef(false);
   const locked = useRef(sendState !== "idle");
   const retryLocked = useRef(false);
-  const imageInput = useRef<HTMLInputElement>(null);
+  const attachmentInput = useRef<HTMLInputElement>(null);
   const previews = useRef(new Set<string>());
-  const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: MessageAttachment; error?: string }>>([]);
+  const nextAttachmentKey = useRef(0);
+  const [attachments, setAttachments] = useState<Array<{ key: number; file: File; preview?: string; attachment?: MessageAttachment; error?: string }>>([]);
+  const [attachmentError, setAttachmentError] = useState("");
   const evidenceVersion = useRef(0);
   const [dropping, setDropping] = useState(false);
   const dragDepthRef = useRef(0);
   const externalDragDepthRef = useRef(0);
-  const addImagesRef = useRef<(files: File[]) => void>(() => {});
+  const addAttachmentsRef = useRef<(files: File[]) => void>(() => {});
   const [toolbarIndex, setToolbarIndex] = useState(0);
   // The formatting bar shows by default (compact, at the top of the box) and
   // the Aa button collapses it; the keyboard shortcuts work either way.
@@ -214,9 +217,9 @@ function ComposerAttempt({
   const effectiveState = sendState === "idle" ? lastEvidence : sendState;
   const uncertain = effectiveState === "uncertain" || callbackUncertain;
   const pending = effectiveState === "sending" || (effectiveState === "idle" && submitted && !uncertain);
-  const uploading = images.some((image) => !image.attachment && !image.error);
-  const uploadFailed = images.some((image) => image.error);
-  const hasContent = text.trim().length > 0 || images.some((image) => image.attachment);
+  const uploading = attachments.some((item) => !item.attachment && !item.error);
+  const uploadFailed = attachments.some((item) => item.error);
+  const hasContent = text.trim().length > 0 || attachments.some((item) => item.attachment);
   const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain
@@ -230,36 +233,78 @@ function ComposerAttempt({
           : "";
 
   function request(): CreateMessageRequest {
-    return { clientMessageId, text, mentions, replyToMessageId, threadRootMessageId, attachmentIds: images.flatMap((image) => image.attachment ? [image.attachment.id] : []) };
+    return { clientMessageId, text, mentions, replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
   }
 
-  function addImages(files: File[]) {
+  function supportedType(file: File): MessageAttachmentContentType | undefined {
+    return resolveMessageAttachmentContentType(file.name, file.type);
+  }
+
+  function validationError(file: File): string | undefined {
+    const type = supportedType(file);
+    if (!type) return "Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, or ZIP files.";
+    if (file.size > MESSAGE_ATTACHMENT_MAX_BYTES[type]) {
+      const kind = type === "application/pdf" ? "PDFs" : type === "application/zip" ? "ZIP files" : "Images";
+      return `${kind} must be ${type.startsWith("image/") ? "5" : "20"} MiB or smaller.`;
+    }
+    if (!file.size) return "This file is empty.";
+  }
+
+  function uploadError(reason: unknown): string {
+    if (reason instanceof ApiError && reason.status === 400) {
+      return "The server rejected this file. Check that its contents match its type and the file is within the size limit.";
+    }
+    if (!(reason instanceof Error)) return "Upload failed. Try again.";
+    return reason.message || "Upload failed. Try again.";
+  }
+
+  function uploadItem(key: number, file: File) {
+    if (!onUploadAttachment) return;
+    setAttachments((current) => current.map((item) => item.key === key ? { ...item, attachment: undefined, error: undefined } : item));
+    void onUploadAttachment(file).then(
+      (attachment) => {
+        const type = supportedType(file);
+        const mismatch = attachment.contentType !== type || attachment.size !== file.size;
+        setAttachments((current) => current.map((item) => item.key === key
+          ? mismatch ? { ...item, error: "The server returned different file metadata. Remove this file and try again." } : { ...item, attachment }
+          : item));
+      },
+      (reason) => setAttachments((current) => current.map((item) => item.key === key ? { ...item, error: uploadError(reason) } : item)),
+    );
+  }
+
+  function addAttachments(files: File[]) {
     if (!onUploadAttachment || !editable) return;
-    const room = Math.max(0, 4 - images.length);
+    setAttachmentError("");
+    const room = Math.max(0, MESSAGE_ATTACHMENT_MAX_COUNT - attachments.length);
+    if (files.length > room) setAttachmentError(`Attach at most ${MESSAGE_ATTACHMENT_MAX_COUNT} files per message.`);
     for (const file of files.slice(0, room)) {
-      const preview = URL.createObjectURL(file);
-      previews.current.add(preview);
-      setImages((current) => [...current, { file, preview }]);
-      void onUploadAttachment(file).then(
-        (attachment) => setImages((current) => current.map((image) => image.preview === preview ? { ...image, attachment } : image)),
-        (reason) => setImages((current) => current.map((image) => image.preview === preview ? { ...image, error: reason instanceof Error ? reason.message : "Upload failed" } : image)),
-      );
+      const key = nextAttachmentKey.current++;
+      const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
+      if (preview) previews.current.add(preview);
+      const error = validationError(file);
+      setAttachments((current) => [...current, { key, file, preview, error }]);
+      if (!error) uploadItem(key, file);
     }
   }
 
-  function removeImage(preview: string) {
+  function removeAttachment(key: number) {
     if (!editable) return;
-    URL.revokeObjectURL(preview);
-    previews.current.delete(preview);
-    setImages((current) => current.filter((image) => image.preview !== preview));
+    const preview = attachments.find((item) => item.key === key)?.preview;
+    if (preview) {
+      URL.revokeObjectURL(preview);
+      previews.current.delete(preview);
+    }
+    setAttachments((current) => current.filter((item) => item.key !== key));
+    setAttachmentError("");
   }
 
   // Refs can't be written during render (React may call render without
   // committing) — keep the ref current after every commit instead, so the
   // dropTargetRef listener effect below (bound once) always calls the latest
-  // addImages via the ref rather than a stale closure.
+  // addAttachments via the ref rather than a stale closure.
   useEffect(() => {
-    addImagesRef.current = addImages;
+    addAttachmentsRef.current = addAttachments;
   });
 
   const carriesFiles = (transfer: DataTransfer | null) => !!transfer && [...transfer.types].includes("Files");
@@ -282,8 +327,8 @@ function ComposerAttempt({
     dragDepthRef.current = 0;
     externalDragDepthRef.current = 0;
     setDropping(false);
-    const files = [...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
-    if (files.length) addImages(files);
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (files.length) addAttachments(files);
   };
 
   useEffect(() => {
@@ -306,8 +351,8 @@ function ComposerAttempt({
       dragDepthRef.current = 0;
       externalDragDepthRef.current = 0;
       setDropping(false);
-      const files = [...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
-      if (files.length) addImagesRef.current(files);
+      const files = [...(event.dataTransfer?.files ?? [])];
+      if (files.length) addAttachmentsRef.current(files);
     };
     const windowDragEnd = () => {
       dragDepthRef.current = 0;
@@ -333,7 +378,7 @@ function ComposerAttempt({
       window.removeEventListener("dragend", windowDragEnd);
       window.removeEventListener("drop", windowDrop);
     };
-    // addImages is read through a ref so the listeners bind once and never see stale state
+    // addAttachments is read through a ref so the listeners bind once and never see stale state
   }, [dropTargetRef]);
 
   function syncTrigger(value: string, caret: number | null) {
@@ -441,7 +486,7 @@ function ComposerAttempt({
         aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
         onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
     </div>}
-    {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop images to attach</p>}
+    {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop files to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label="Mention a room member" items={options} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
@@ -461,8 +506,8 @@ function ComposerAttempt({
       onClick={(event) => syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart)}
       onKeyUp={(event) => { if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
       onPaste={(event) => {
-        const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
-        if (files.length) { event.preventDefault(); addImages(files); }
+        const files = [...event.clipboardData.files];
+        if (files.length) { event.preventDefault(); addAttachments(files); }
       }}
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={(event) => { composing.current = false; syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
@@ -515,15 +560,26 @@ function ComposerAttempt({
       const member = members.find((candidate) => sameMember(candidate, mention));
       return member ? member.mentionHandle ? `@${member.mentionHandle}` : member.displayName : "Unavailable member";
     }).join(", ")}</p>}
-    {images.length > 0 && <div className="room-image-previews">{images.map((image) => <div key={image.preview} className="room-image-preview">
-      {/* eslint-disable-next-line @next/next/no-img-element */}<img src={image.preview} alt={image.file.name} />
-      <Button type="button" variant="ghost" aria-label={`Remove ${image.file.name}`} disabled={!editable} onClick={() => removeImage(image.preview)}><X aria-hidden="true" /></Button>
-      <span className={image.error ? "text-err" : "text-muted-foreground"}>{image.error ?? (image.attachment ? "Ready" : "Uploading…")}</span>
-    </div>)}</div>}
+    {attachments.length > 0 && <div className="room-attachment-previews">{attachments.map((item) => item.preview
+      ? <div key={item.key} className="room-image-preview">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={item.preview} alt={item.file.name} />
+        <Button type="button" variant="ghost" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>
+        <span className={item.error ? "text-err" : "text-muted-foreground"}>{item.error ?? (item.attachment ? "Ready" : "Uploading…")}</span>
+      </div>
+      : <div key={item.key} className="room-file-preview">
+        <FileText aria-hidden="true" />
+        <span className="min-w-0 flex-1"><strong className="block truncate" title={item.file.name}>{item.file.name}</strong>
+          <span className="block text-sm text-muted-foreground">{supportedType(item.file) ?? (item.file.type || "Unknown type")} · {formatBytes(item.file.size)}</span>
+          <span role="status" className={item.error ? "block text-sm text-err" : "block text-sm text-muted-foreground"}>{item.error ?? (item.attachment ? "Ready" : "Uploading…")}</span></span>
+        {item.error && !validationError(item.file) && <Button type="button" variant="ghost" size="icon-sm" aria-label={`Retry ${item.file.name}`} disabled={!editable} onClick={() => uploadItem(item.key, item.file)}><RotateCcw aria-hidden="true" /></Button>}
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>
+      </div>)}</div>}
+    {attachmentError && <p role="alert" className="text-sm text-err">{attachmentError}</p>}
     <div className="room-composer-actions">
-      {onUploadAttachment && <><input ref={imageInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple
-        onChange={(event) => { addImages([...event.target.files ?? []]); event.target.value = ""; }} />
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
+      {onUploadAttachment && <><input ref={attachmentInput} className="sr-only" type="file" accept={MESSAGE_ATTACHMENT_ACCEPT} multiple
+        onChange={(event) => { addAttachments([...event.target.files ?? []]); event.target.value = ""; }} />
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Attach files" disabled={!editable || attachments.length >= MESSAGE_ATTACHMENT_MAX_COUNT} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" /></Button></>}
       <Button type="button" variant="ghost" size="icon-sm" aria-label={formatOpen ? "Hide formatting" : "Show formatting"} aria-pressed={formatOpen}
         aria-controls={formatOpen ? `${fieldId}-format` : undefined} onClick={() => setFormatOpen(!formatOpen)}><CaseSensitive aria-hidden="true" /></Button>
       <EmojiPicker triggerLabel="Insert emoji" disabled={!editable} onPick={insertAtCaret} />
@@ -544,6 +600,6 @@ function ComposerAttempt({
     <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "sr-only"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}
-    {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || uploading || (!text.trim() && !images.some((image) => image.attachment)) || retryPending} onClick={() => submit(true)}>Retry message</Button>}
+    {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || uploading || (!text.trim() && !attachments.some((item) => item.attachment)) || retryPending} onClick={() => submit(true)}>Retry message</Button>}
   </form>;
 }

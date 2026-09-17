@@ -79,6 +79,8 @@ const PRESS_SCALE = 0.96;
 /** Five lines of the input's own 22pt leading (scaled by the reader's text
  * size), then it scrolls. */
 const INPUT_MAX_LINES = 5;
+/** Two lines of the input's leading at rest. */
+const INPUT_MIN_LINES = 2;
 
 const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
 
@@ -176,6 +178,9 @@ export function RoomComposer({
 }) {
   const insets = useSafeAreaInsets();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
+  // Room for two lines at rest, so the field reads as somewhere to write rather
+  // than a single slot pinned under the hairline.
+  const inputMinHeight = useScaledHeight(22 * INPUT_MIN_LINES);
   const draft = useComposerDraft({ key: draftKey, uploadAttachment: onUploadAttachment });
   const { text, setText } = draft;
   // The text as of RIGHT NOW, not as of the last render: `applyEdit` writes it
@@ -194,6 +199,8 @@ export function RoomComposer({
     null,
   );
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // Formatting is hidden until the reader asks for it (Slack's Aa).
+  const [formatOpen, setFormatOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -417,6 +424,8 @@ export function RoomComposer({
     };
     draft.clear();
     setCaret(null);
+    // A sent message ends the formatting session; the next one starts clean.
+    setFormatOpen(false);
     try {
       await onSend(message);
     } finally {
@@ -487,7 +496,7 @@ export function RoomComposer({
         />
         <View style={styles.inputZone}>
           <TextInput
-            style={[styles.input, { maxHeight: inputMaxHeight }]}
+            style={[styles.input, { minHeight: inputMinHeight, maxHeight: inputMaxHeight }]}
             placeholder={placeholder}
             placeholderTextColor={colors.placeholder}
             value={text}
@@ -508,34 +517,58 @@ export function RoomComposer({
             }}
           />
         </View>
-        {/* Formatting, above the send rail: the selection is right there, and
-            the row scrolls rather than wrapping when the text size grows. */}
-        <ScrollView
-          horizontal
-          keyboardShouldPersistTaps="always"
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.formatRow}
-        >
-          {FORMAT_CONTROLS.map((control) => (
-            <Pressable
-              key={control.style}
-              style={styles.formatButton}
-              onPress={() => format(control.style)}
-              disabled={disabled || sending}
-              hitSlop={4}
-              accessibilityRole="button"
-              accessibilityLabel={control.label}
-            >
-              <SymbolView
-                accessibilityElementsHidden
-                name={control.icon}
-                size={16}
-                tintColor={colors.mute}
-              />
-            </Pressable>
-          ))}
-        </ScrollView>
+        {/* Formatting stays out of the way until asked for, the way Slack's Aa
+            does. Always on, it took a full row from the one thing the composer
+            is for: on a phone with the keyboard up, the message got a single
+            line while three rows of controls sat under it. The row scrolls
+            rather than wrapping when the text size grows. */}
+        {formatOpen && (
+          <ScrollView
+            horizontal
+            keyboardShouldPersistTaps="always"
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.formatRow}
+          >
+            {FORMAT_CONTROLS.map((control) => (
+              <Pressable
+                key={control.style}
+                style={styles.formatButton}
+                onPress={() => format(control.style)}
+                disabled={disabled || sending}
+                hitSlop={4}
+                accessibilityRole="button"
+                accessibilityLabel={control.label}
+              >
+                <SymbolView
+                  accessibilityElementsHidden
+                  name={control.icon}
+                  size={16}
+                  tintColor={colors.mute}
+                />
+              </Pressable>
+            ))}
+          </ScrollView>
+        )}
         <View style={styles.rail}>
+          <Pressable
+            style={[styles.railButton, formatOpen && styles.railButtonActive]}
+            onPress={() => {
+              hapticSelection();
+              setFormatOpen((open) => !open);
+            }}
+            disabled={disabled || sending}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Formatting"
+            accessibilityState={{ expanded: formatOpen }}
+          >
+            <SymbolView
+              accessibilityElementsHidden
+              name="textformat"
+              size={18}
+              tintColor={formatOpen ? colors.ink : colors.mute}
+            />
+          </Pressable>
           <Pressable
             style={styles.railButton}
             onPress={() => setEmojiOpen(true)}
@@ -560,6 +593,12 @@ export function RoomComposer({
               <SymbolView accessibilityElementsHidden name="photo" size={18} tintColor={colors.mute} />
             )}
           </Pressable>
+          {/* Who will answer, in the rail's empty middle rather than a row of
+              its own — the last thing read before sending, without costing the
+              message any height. */}
+          <Text style={styles.hint} maxFontSizeMultiplier={1.4} numberOfLines={1}>
+            {hint}
+          </Text>
           {onAbort && !hasContent ? (
             <Pressable
               style={styles.sendButton}
@@ -598,12 +637,6 @@ export function RoomComposer({
           )}
         </View>
       </View>
-      {/* Who will answer, under the bar — the last thing read before sending. */}
-      {hint !== "" && (
-        <Text style={styles.hint} maxFontSizeMultiplier={1.6} numberOfLines={2}>
-          {hint}
-        </Text>
-      )}
       <EmojiPickerSheet
         visible={emojiOpen}
         onClose={() => setEmojiOpen(false)}
@@ -634,13 +667,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radii.md,
   },
+  // Takes the rail's empty middle and gives way first when it gets tight.
   hint: {
+    flex: 1,
     fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 16,
     color: colors.mute,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xs,
+    textAlign: "right",
+    paddingHorizontal: spacing.xs,
   },
   // A flat bar on the page ground, delineated by one hairline against the
   // timeline above it — not a card floating over it. `borderTopColor` is left
@@ -694,7 +729,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-  inputZone: { paddingHorizontal: spacing.sm },
+  // Breathing room above and below the text, so a message is not written
+  // flush against the bar's hairline.
+  inputZone: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   input: {
     fontFamily: fonts.sans,
     fontSize: 16,
@@ -717,9 +754,10 @@ const styles = StyleSheet.create({
     height: 32,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: radii.md,
   },
+  railButtonActive: { backgroundColor: colors.chip },
   sendButton: {
-    marginLeft: "auto",
     width: 32,
     height: 32,
     borderRadius: 16,

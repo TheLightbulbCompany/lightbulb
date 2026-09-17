@@ -41,6 +41,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/platform-primitives.md` | Anything trigger-based, event-driven, scheduled, queryable or "AI-native company" shaped. **Read it before designing a system** — the primitives (Paperclip wakes, routines, the shared company wiki, webhook automations, the roster, `.run/`) already exist and a greenfield design duplicates them. |
 | `references/surfaces.md` | Where a UI surface lives and what to tell the owner to click — Home, Chat, Control Panel tabs, Teams, Brain, Library, Marketplace, Settings, Browser panel, Docs/Blog, the desktop app. Also the `ask_user` / `secrets` cards and your `progressCard`. Also the Launch Competition. |
 | `references/surfaces.md` § Shared local-session workspace notices | The room context lists a `sessions` entry for a participant — a live Claude Code or Codex terminal. **Read its recent tail before planning or editing code in that repository** (`lightbulb_local_sessions` `read`, `afterSeq: max(0, latestEventSeq - 40)`), never redo what the session is already doing, and name the session when you report. |
+| `references/follow-ups.md` | You are about to tell a human you will follow up, check back, track, or post later. A promise is a Paperclip task carrying the message permalink; the run that finishes it replies in the thread; waiting on an external thing is a monitor. |
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
 | `references/email.md` | Sending or reading mail: your address, the inbox, verification codes, who can wake you, the three `send` forms, and the limits. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
@@ -79,6 +80,14 @@ These hold whether or not you open a reference.
 - **Paperclip routines are the only scheduler.** Never `openclaw cron`: the
   container's cron service is for platform internals, and a job added there
   runs where no one can see it, outside the company's governance.
+- **A promise is a task.** Never say you will follow up, track, check back, or
+  post later unless you have filed the Paperclip task with the message permalink
+  in that same turn (`references/follow-ups.md`). If you cannot, say what you did
+  instead.
+- **Outcomes and changed plans go in the thread; nothing else does.** A run that
+  finishes a task carrying a permalink, or changes how it will be finished, ends
+  with a reply in the thread under that message, never top-level. A wake that
+  changed nothing, and anything "Needs you" already shows, stays off the thread.
 - **Teams is a panel, not a URL.** `flickmeon.ai/teams` is a 404 — never send
   the owner there. Its API (`/api/v1/teams/*`) is owner-only and never takes
   your container token; `lightbulb-api.sh` refuses those routes before sending.

@@ -1425,7 +1425,7 @@ export class ServiceStack extends cdk.Stack {
       // workspace until the image is promoted deliberately.
       AGENTCORE_GATEWAY_IMAGE:
         env === "dev"
-          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v5`
+          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v7`
           : "",
       // The Hermes bridge image a workspace's AgentCore runtime runs. DEV ONLY: empty in
       // prod makes provision_hermes_runtime refuse, so nothing moves a prod workspace

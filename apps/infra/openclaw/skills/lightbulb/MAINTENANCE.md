@@ -109,6 +109,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  /app/skills/lightbulb/scripts/lightbulb-connect.sh (the mint door — never an inline header, see the redaction note)
   - Connections door ........ references/integrations.md + references/surfaces.md + SKILL.md boundaries table
                               <- apps/frontend/src/components/control/panels/ConnectionsPanel.tsx (rail panel); apps/frontend/src/components/workspace/WorkspaceHeader.tsx (rail label)
+  - Shopify (CLI login) ..... references/integrations.md
+                              <- apps/infra/openclaw/skills/shopify/SKILL.md (the agent-side connect + query recipe);
+                                 apps/infra/openclaw/Dockerfile (the @shopify/cli bake + shopify/shopify wrapper);
+                                 apps/infra/openclaw/plugins/lightbulb-channel/src/shopify.ts (the /shopify/{login,status,logout}
+                                 gateway-auth routes the Connect button drives); apps/backend/routers/connections.py
+                                 (container_login + login/status routes) + core/services/shopify_login.py; providers.yaml `shopify:`
+                                 is `acquisition: container_login` — the paste-token row was removed 2026-09-16 and must not return
   - Paperclip org model ..... references/company-and-plans.md
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                                  services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
@@ -119,3 +126,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Hook-token calls ........ SKILL.md (the non-negotiable) + references/money.md (the status tables)
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk; OpenClaw's
                                  transcript redaction masks that header including $VAR refs, so an agent-typed curl poisons its own next turn (401 loop)
+  - Follow-ups ............... references/follow-ups.md + SKILL.md (routing row + two non-negotiables)
+                              <- apps/infra/openclaw/plugins/lightbulb-channel/src/channel.ts (ChannelStructuredContext
+                                 payload.message {id, threadRootMessageId}); the message tool's threadId -> channel.ts
+                                 buildOutboundBody threadRootMessageId; paperclip skill references/monitors.md;
+                                 spec docs/superpowers/specs/2026-09-16-proactive-agents-design.md (delete when shipped).

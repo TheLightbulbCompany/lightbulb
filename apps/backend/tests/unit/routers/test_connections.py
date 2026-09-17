@@ -124,6 +124,32 @@ class TestValidateToken:
             ),
         )
 
+    def _host_pattern_provider(self):
+        # A two-value paste provider ("<host>|<token>") whose validate URL is a
+        # per-account template. Synthetic on purpose: no registry provider packs
+        # two values any more (Shopify left the rail 2026-09-16), but the
+        # host_pattern fence is still live code and stays covered.
+        from core.services.credentials.registry import Provider, ValidateSpec, Wiring
+
+        return Provider(
+            key="hosted",
+            display_name="Hosted",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring=Wiring(mcp_server={"key": "hosted", "command": "npx", "env": {"TOKEN": "input.token"}}),
+            validate=ValidateSpec(
+                method="POST",
+                url="https://{host}/admin/api/2026-07/graphql.json",
+                host_pattern=r"[a-z0-9][a-z0-9-]{0,59}\.myshopify\.com",
+                auth_header="X-Shopify-Access-Token",
+                auth_scheme="",
+                token_prefix="shpat_",
+                body={"query": "{ shop { name } }"},
+                success_json_field="data.shop.name",
+            ),
+        )
+
     def _xoxp_provider(self):
         # A provider whose validate spec pins a token_prefix — checked pre-flight
         # (before any HTTP call). Self-contained, independent of the registry.
@@ -239,7 +265,7 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|shpat_abc")
+        ok = await connections._validate_token(self._host_pattern_provider(), "mystore.myshopify.com|shpat_abc")
         assert ok is True
         assert captured["url"] == "https://mystore.myshopify.com/admin/api/2026-07/graphql.json"
         assert captured["headers"]["X-Shopify-Access-Token"] == "shpat_abc"
@@ -254,7 +280,7 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        p = registry.get_provider("shopify")
+        p = self._host_pattern_provider()
         assert await connections._validate_token(p, "169.254.169.254|shpat_abc") is False
         assert await connections._validate_token(p, "evil.com|shpat_abc") is False
         assert await connections._validate_token(p, "shpat_abc") is False
@@ -270,7 +296,7 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|not-a-token")
+        ok = await connections._validate_token(self._host_pattern_provider(), "mystore.myshopify.com|not-a-token")
         assert ok is False
 
 
@@ -553,19 +579,6 @@ class TestByoRequiredGate:
 
 class TestConnectPaste:
     """POST /api/v1/connections/{provider} — paste-key connect."""
-
-    @pytest.mark.asyncio
-    async def test_two_value_provider_names_the_shape_it_wants(self, async_client):
-        # Pasting only the token is right for every other integration, so it is
-        # the mistake a Shopify owner will make. Answering it with the generic
-        # "token failed validation" blames the token; this 422 names the shape.
-        response = await async_client.post("/api/v1/connections/shopify", json={"token": "shpat_abc"})
-        assert response.status_code == 422
-        detail = response.json()["detail"]
-        assert "Shopify needs two values in one box" in detail
-        # The hint is the single source of the format — the copy quotes it rather
-        # than spelling out a second version that can drift.
-        assert registry.get_provider("shopify").token_paste_hint in detail
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
@@ -2821,3 +2834,126 @@ class TestProjectsRailNamespaceIsInvisibleHere:
         )
         monkeypatch.setattr(mcp_server.integration_secret_store, "get", AsyncMock(return_value={"token": "leaked"}))
         assert await mcp_server.build_connected_integration_servers("org_a") == {}
+
+
+class TestContainerLogin:
+    """POST /connections/{provider}/login + GET …/login/status — the Shopify row."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
+    async def test_login_normalizes_the_store_and_starts_the_container_flow(self, start, async_client):
+        start.return_value = "https://mystore.myshopify.com/admin/oauth/authorize?x"
+        response = await async_client.post(
+            "/api/v1/connections/shopify/login", json={"store": "https://admin.shopify.com/store/mystore/orders"}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"status": "awaiting_login", "provider": "shopify", "store": "mystore.myshopify.com"}
+        assert start.await_args.args[1] == "mystore.myshopify.com"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
+    async def test_login_422s_anything_but_the_shop_host_before_touching_the_container(self, start, async_client):
+        response = await async_client.post("/api/v1/connections/shopify/login", json={"store": "shop.example.com"})
+        assert response.status_code == 422
+        assert "myshopify.com" in response.json()["detail"]
+        start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_login_400s_a_provider_that_does_not_sign_in_from_the_container(self, async_client):
+        response = await async_client.post("/api/v1/connections/google/login", json={"store": "mystore.myshopify.com"})
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
+    async def test_status_marks_the_row_connected_with_the_store_as_identity(self, status, mock_repo, async_client):
+        status.return_value = {
+            "connected": True,
+            "pending": False,
+            "error": None,
+            "session": {"store": "mystore.myshopify.com"},
+        }
+        mock_repo.put_status = AsyncMock()
+        response = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
+        assert response.status_code == 200
+        assert response.json() == {"status": "connected", "provider": "shopify", "store": "mystore.myshopify.com"}
+        assert mock_repo.put_status.await_args.args[1:] == ("shopify", "connected")
+        assert mock_repo.put_status.await_args.kwargs == {"identity": "mystore.myshopify.com"}
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
+    async def test_status_reports_pending_and_failed_without_writing_the_row(self, status, mock_repo, async_client):
+        mock_repo.put_status = AsyncMock()
+        status.return_value = {"connected": False, "pending": True, "error": None, "session": None}
+        pending = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
+        assert pending.json()["status"] == "pending"
+        status.return_value = {
+            "connected": False,
+            "pending": False,
+            "error": "Timed out waiting for OAuth callback.",
+            "session": None,
+        }
+        failed = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
+        assert failed.json() == {
+            "status": "failed",
+            "provider": "shopify",
+            "store": "mystore.myshopify.com",
+            "error": "Timed out waiting for OAuth callback.",
+        }
+        mock_repo.put_status.assert_not_awaited()
+
+
+class TestDisconnectContainerLogin:
+    """DELETE /api/v1/connections/shopify — the CLI session goes before the row."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.logout", new_callable=AsyncMock)
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_drops_the_cli_session_for_the_row_s_store_before_deleting_the_row(
+        self, mock_repo, mock_store, mock_patcher, logout, async_client
+    ):
+        # The store is the row's identity, so the plugin must be asked to drop the
+        # CLI session BEFORE the row goes — afterwards nothing remembers which
+        # store to log out.
+        order: list[str] = []
+        mock_repo.get = AsyncMock(
+            return_value={
+                "owner_id": "o",
+                "provider": "shopify",
+                "status": "connected",
+                "identity": "mystore.myshopify.com",
+            }
+        )
+        mock_repo.delete = AsyncMock(side_effect=lambda *a, **k: order.append("delete"))
+        mock_store.delete = AsyncMock()
+        logout.side_effect = lambda *a, **k: order.append("logout")
+
+        response = await async_client.delete("/api/v1/connections/shopify")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "disconnected", "provider": "shopify"}
+        assert logout.await_args.args[1] == "mystore.myshopify.com"
+        assert order == ["logout", "delete"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.shopify_login.logout", new_callable=AsyncMock)
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_without_a_store_identity_skips_the_plugin(
+        self, mock_repo, mock_store, mock_patcher, logout, async_client
+    ):
+        # A row written before identities existed (or never connected) has no
+        # store to log out; the disconnect still clears the row.
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/shopify")
+
+        assert response.status_code == 200
+        logout.assert_not_awaited()
+        mock_repo.delete.assert_awaited_once()

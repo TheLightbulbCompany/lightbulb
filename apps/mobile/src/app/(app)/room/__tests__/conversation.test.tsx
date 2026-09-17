@@ -325,7 +325,7 @@ describe("conversation screen", () => {
     mockSendMessage.mockRejectedValueOnce(new Error("offline"));
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    await fireEvent.changeText(screen.getByPlaceholderText("Message"), "will fail");
+    await fireEvent.changeText(screen.getByPlaceholderText(/^Message/), "will fail");
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() => expect(screen.getByText("Not sent · tap to retry")).toBeTruthy());
     // The text the user typed must survive the failure — the input is already cleared.
@@ -464,7 +464,7 @@ describe("conversation screen", () => {
       await render(<Conversation />);
       expect(screen.getByText("Loading conversation…")).toBeTruthy();
       expect(screen.queryByTestId("room-timeline")).toBeNull();
-      expect(screen.queryByPlaceholderText("Message")).toBeNull();
+      expect(screen.queryByPlaceholderText(/^Message/)).toBeNull();
     });
 
     it("shows the access-removed state with no composer and no retry once access was rotated away", async () => {
@@ -477,7 +477,7 @@ describe("conversation screen", () => {
         ).toBeTruthy(),
       );
       expect(screen.queryByTestId("room-timeline")).toBeNull();
-      expect(screen.queryByPlaceholderText("Message")).toBeNull();
+      expect(screen.queryByPlaceholderText(/^Message/)).toBeNull();
       expect(screen.queryByText("Try again")).toBeNull();
     });
 
@@ -489,22 +489,22 @@ describe("conversation screen", () => {
         expect(screen.getByText("This conversation is unavailable.")).toBeTruthy(),
       );
       expect(screen.queryByTestId("room-timeline")).toBeNull();
-      expect(screen.queryByPlaceholderText("Message")).toBeNull();
+      expect(screen.queryByPlaceholderText(/^Message/)).toBeNull();
       await fireEvent.press(screen.getByText("Try again"));
       await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-      expect(screen.getByPlaceholderText("Message")).toBeTruthy();
+      expect(screen.getByPlaceholderText(/^Message/)).toBeTruthy();
     });
   });
 
   it("reports typing to the room as the draft changes, and stops on blur", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    await fireEvent.changeText(screen.getByPlaceholderText("Message"), "typing now");
+    await fireEvent.changeText(screen.getByPlaceholderText(/^Message/), "typing now");
     await waitFor(() =>
       expect(mockSetTyping).toHaveBeenCalledWith({ roomId: "room-1", isTyping: true }),
     );
     mockSetTyping.mockClear();
-    await fireEvent(screen.getByPlaceholderText("Message"), "blur");
+    await fireEvent(screen.getByPlaceholderText(/^Message/), "blur");
     await waitFor(() =>
       expect(mockSetTyping).toHaveBeenCalledWith({ roomId: "room-1", isTyping: false }),
     );

@@ -25,9 +25,13 @@ owner's agents, files and connected accounts. So:
   hash space is not a threat model anyone can reach through a GetItem-per-guess
   endpoint, which is why this module adds no rate limiter (the repo has no
   rate-limiting primitive to reuse; see the router's note).
-* Stored SHA-256-hashed, never in plaintext — so a join link, once minted, can
-  never be REDISPLAYED. ``describe_join_link`` returns metadata only. The UI
-  shows the plaintext exactly once, at mint, and offers regenerate after that.
+* Stored as a SHA-256 hash (what redeem compares against) PLUS a Fernet
+  ciphertext under the platform ``ENCRYPTION_KEY``, so ``describe_join_link``
+  can hand the admin the SAME link again. Hash-only was the first design, and
+  it made every re-share a regenerate — which invalidates the link for everyone
+  who received it earlier and has not clicked yet (a classroom workspace hit
+  seven mints and nine stale-link rejections in two days). A leaked table row
+  is still not a usable link without the key.
 * Compared with ``hmac.compare_digest`` — the hashes are not secret-equal-length
   comparisons that leak much, but a constant-time compare costs nothing.
 * Never logged. The token is not an argument to any ``logger`` call here, and
@@ -44,6 +48,7 @@ import secrets
 
 from fastapi import HTTPException
 
+from core import encryption
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import workspace_join_repo
@@ -85,14 +90,14 @@ def build_join_url(org_id: str, token: str) -> str:
 async def mint_join_link(org_id: str, *, created_by: str) -> dict:
     """Create (or replace) the org's join link.
 
-    Returns ``{join_url, created_at, created_by}``. This is the ONLY time the
-    plaintext token exists after generation — the caller must hand it straight
-    to the admin and keep it out of logs.
+    Returns ``{join_url, created_at, created_by}``. Keep the plaintext out of
+    logs; ``describe_join_link`` can re-derive it from the stored ciphertext.
     """
     token = secrets.token_urlsafe(_TOKEN_BYTES)
     row = await workspace_join_repo.put_link(
         org_id,
         token_hash=_hash_token(token),
+        token_enc=encryption.encrypt(token),
         created_by=created_by,
     )
     put_metric("orgs.join_link.minted")
@@ -105,15 +110,26 @@ async def mint_join_link(org_id: str, *, created_by: str) -> dict:
 
 
 async def describe_join_link(org_id: str) -> dict | None:
-    """Metadata for the org's live link, or None when there is none.
+    """The org's live link — its URL plus metadata — or None when there is none.
 
-    Never includes the token or its hash: the hash is a credential verifier and
-    has no business leaving the backend.
+    ``join_url`` is None for a row the hash-only code wrote (no ciphertext) or
+    one the current key cannot decrypt; the UI reads that as "regenerate once
+    to get a copyable link". Never includes the hash or the ciphertext.
     """
     row = await workspace_join_repo.get_link(org_id)
     if not row:
         return None
+    join_url = None
+    if row.get("token_enc"):
+        try:
+            join_url = build_join_url(org_id, encryption.decrypt(row["token_enc"]))
+        except (ValueError, RuntimeError):
+            # ValueError: rotated key or corrupt row. RuntimeError: no key
+            # configured at all. Either way the link still redeems; it just
+            # cannot be shown.
+            logger.warning("orgs.join_link.undecryptable org_id=%s", org_id)
     return {
+        "join_url": join_url,
         "created_at": row.get("created_at"),
         "created_by": row.get("created_by"),
     }

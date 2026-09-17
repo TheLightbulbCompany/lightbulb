@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ApiError } from "@lightbulb/shared";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 
@@ -90,10 +91,57 @@ it("uploads and sends an image without text", async () => {
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ text: "", attachmentIds: ["22222222-2222-4222-8222-222222222222"] }));
 });
 
+it("labels the picker for files and sends mixed image and PDF attachments", async () => {
+  const onSubmit = vi.fn();
+  const image = new File(["png"], "proof.png", { type: "image/png" });
+  const pdf = new File(["%PDF-1.7"], "brief.pdf", { type: "application/pdf" });
+  const onUploadAttachment = vi.fn(async (file: File) => ({
+    id: file.name === "proof.png" ? "image-id" : "pdf-id",
+    fileName: file.name,
+    contentType: file.type as "image/png" | "application/pdf",
+    size: file.size,
+  }));
+  render(<RoomComposer {...baseProps} onSubmit={onSubmit} onUploadAttachment={onUploadAttachment} />);
+
+  expect(screen.getByRole("button", { name: "Attach files" })).toBeEnabled();
+  const picker = document.querySelector('input[type="file"]')!;
+  expect(picker).toHaveAttribute("accept", "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/zip,application/x-zip-compressed,.zip");
+  fireEvent.change(picker, { target: { files: [image, pdf] } });
+
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+  expect(screen.getByText("application/pdf · 8 B")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["image-id", "pdf-id"] }));
+});
+
+it("removes a document before send", async () => {
+  const pdf = new File(["%PDF"], "brief.pdf", { type: "application/pdf" });
+  const upload = vi.fn(async () => ({ id: "pdf-id", fileName: pdf.name, contentType: "application/pdf" as const, size: pdf.size }));
+  render(<RoomComposer {...baseProps} text="Keep the text" onUploadAttachment={upload} />);
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [pdf] } });
+  await screen.findByText("Ready");
+
+  fireEvent.click(screen.getByRole("button", { name: "Remove brief.pdf" }));
+
+  expect(screen.queryByText("brief.pdf")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+});
+
+it("blocks send when server attachment metadata disagrees with the selected file", async () => {
+  const pdf = new File(["%PDF"], "brief.pdf", { type: "application/pdf" });
+  render(<RoomComposer {...baseProps} text="Do not lose this" onUploadAttachment={vi.fn(async () => ({
+    id: "bad-id", fileName: pdf.name, contentType: "image/png" as const, size: pdf.size,
+  }))} />);
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [pdf] } });
+
+  expect(await screen.findByText("The server returned different file metadata. Remove this file and try again.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+});
+
 it("retries an attachment-only rejected send", async () => {
   const onRetry = vi.fn();
   const onUploadAttachment = vi.fn().mockResolvedValue({
-    id: "22222222-2222-4222-8222-222222222222", fileName: "proof.png", contentType: "image/png", size: 8,
+    id: "22222222-2222-4222-8222-222222222222", fileName: "proof.png", contentType: "image/png", size: 3,
   });
   render(<RoomComposer {...baseProps} sendState="rejected" onRetry={onRetry} onUploadAttachment={onUploadAttachment} />);
   fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(["png"], "proof.png", { type: "image/png" })] } });
@@ -107,4 +155,14 @@ it("does not silently discard a failed upload when text is present", async () =>
   fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(["png"], "proof.png", { type: "image/png" })] } });
   await screen.findByText("Upload failed");
   expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+});
+
+it("replaces an API 400 upload failure with an actionable reason", async () => {
+  render(<RoomComposer {...baseProps} onUploadAttachment={vi.fn().mockRejectedValue(new ApiError(400, { code: "INVALID_REQUEST" }, "Upload rejected"))} />);
+  const pdf = new File(["%PDF"], "brief.pdf", { type: "application/pdf" });
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [pdf] } });
+
+  expect(await screen.findByText("The server rejected this file. Check that its contents match its type and the file is within the size limit.")).toBeInTheDocument();
+  expect(screen.queryByText("Upload rejected")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Retry brief.pdf" })).toBeEnabled();
 });

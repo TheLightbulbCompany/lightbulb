@@ -131,11 +131,13 @@ export type {
   CreateRoomRequest,
   UpdateMessageRequest,
   MessageAttachment,
+  MessageAttachmentContentType,
   ListenMode,
   LiveConfig,
   MemberPrefsRequest,
   MemberRef,
   MessagePage,
+  ActiveRoomRun,
   RoomDetail,
   RoomKind,
   RoomListResponse,
@@ -144,7 +146,13 @@ export type {
   RoomSummary,
   RunStatusResponse,
 } from "./messaging/types";
-export { MESSAGE_ATTACHMENT_MAX_BYTES } from "./messaging/types";
+export {
+  MESSAGE_ATTACHMENT_ACCEPT,
+  MESSAGE_ATTACHMENT_CONTENT_TYPES,
+  MESSAGE_ATTACHMENT_MAX_BYTES,
+  MESSAGE_ATTACHMENT_MAX_COUNT,
+  resolveMessageAttachmentContentType,
+} from "./messaging/types";
 export { createRuntimeClient, RuntimeRpcError } from "./runtime/client";
 
 export {

@@ -930,6 +930,31 @@ async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
 
 
 @pytest.mark.asyncio
+async def test_open_runs_for_a_room_are_the_unended_ones_in_that_room(table):
+    # What a client that opened the room mid-run needs: the run ledger, scoped
+    # to one room, without the ended rows still sitting in the partition.
+    mine, _ = await _dispatched(agent="a1", message="m1")
+    other_room = repo.run_id_for("a2", "m2")
+    await repo.create_run(
+        "owner_1",
+        other_room,
+        room_id="33333333-3333-4333-8333-333333333333",
+        agent_id="a2",
+        workspace_id="ws",
+        trigger_message_id="m2",
+        event_kind="user_request",
+    )
+    ended, _ = await _dispatched(agent="a3", message="m3")
+    await repo.end_run("owner_1", ended, outcome="completed", usage=USAGE)
+    await repo.start_run("owner_1", mine, session_key="agent:a1:lightbulb:channel:x")
+
+    open_runs = await repo.list_open_runs_for_room("owner_1", RUN_ROOM)
+    assert [row["runId"] for row in open_runs] == [mine]
+    assert open_runs[0]["agentId"] == "a1" and open_runs[0]["startedAt"]
+    assert await repo.list_open_runs_for_room("owner_2", RUN_ROOM) == []
+
+
+@pytest.mark.asyncio
 async def test_has_open_runs_follows_the_sweep_marker(table):
     assert not await repo.has_open_runs("owner_1")
     run_id, _ = await _dispatched()

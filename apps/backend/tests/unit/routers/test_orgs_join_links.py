@@ -29,10 +29,11 @@ class FakeJoinRepo:
     async def get_link(self, org_id: str):
         return self.rows.get(org_id)
 
-    async def put_link(self, org_id: str, *, token_hash: str, created_by: str) -> dict:
+    async def put_link(self, org_id: str, *, token_hash: str, token_enc: str, created_by: str) -> dict:
         row = {
             "org_id": org_id,
             "token_hash": token_hash,
+            "token_enc": token_enc,
             "created_by": created_by,
             "created_at": "2026-09-14T00:00:00+00:00",
         }
@@ -125,22 +126,66 @@ def test_mint_returns_a_link_and_stores_only_its_hash(app, admin_auth, repo):
     assert row["created_by"] == "user_admin"
 
 
-def test_status_never_leaks_the_token_or_its_hash(app, admin_auth, repo):
+def test_status_shows_the_current_link_but_never_the_hash(app, admin_auth, repo):
+    """An admin can re-copy the live link any time — re-sharing must not require
+    a regenerate (MKT385: seven mints in two days, nine stale-link 404s)."""
     _override_auth(app, admin_auth)
     client = TestClient(app)
 
     before = client.get("/api/v1/orgs/org_test/join-link")
     assert before.status_code == 200
     assert before.json()["exists"] is False
+    assert before.json().get("join_url") is None
 
     minted = client.post("/api/v1/orgs/org_test/join-link").json()
     after = client.get("/api/v1/orgs/org_test/join-link").json()
 
     assert after["exists"] is True
     assert after["created_by"] == "user_admin"
-    assert "join_url" not in after
+    assert after["join_url"] == minted["join_url"]
     assert "token_hash" not in after
-    assert _token_from(minted["join_url"]) not in str(after)
+    assert "token_enc" not in after
+
+
+def test_stored_row_holds_ciphertext_not_the_token(app, admin_auth, repo):
+    """A leaked table row must still not be a usable link on its own."""
+    _override_auth(app, admin_auth)
+    token = _token_from(TestClient(app).post("/api/v1/orgs/org_test/join-link").json()["join_url"])
+
+    row = repo.rows["org_test"]
+    assert row["token_enc"]
+    assert row["token_enc"] != token
+    assert token not in str(row)
+
+
+def test_status_of_a_link_minted_before_redisplay_has_no_url(app, admin_auth, repo):
+    """Rows written by the hash-only code have no ciphertext: exists, not copyable."""
+    _override_auth(app, admin_auth)
+    repo.rows["org_test"] = {
+        "org_id": "org_test",
+        "token_hash": workspace_join._hash_token("legacy-token"),
+        "created_by": "user_admin",
+        "created_at": "2026-09-01T00:00:00+00:00",
+    }
+    after = TestClient(app).get("/api/v1/orgs/org_test/join-link").json()
+    assert after["exists"] is True
+    assert after.get("join_url") is None
+
+
+def test_status_survives_an_undecryptable_row(app, admin_auth, repo):
+    """A rotated ENCRYPTION_KEY must degrade to "regenerate once", not a 500."""
+    _override_auth(app, admin_auth)
+    repo.rows["org_test"] = {
+        "org_id": "org_test",
+        "token_hash": workspace_join._hash_token("t"),
+        "token_enc": "bm90LWEtZmVybmV0LXRva2Vu",
+        "created_by": "user_admin",
+        "created_at": "2026-09-01T00:00:00+00:00",
+    }
+    resp = TestClient(app).get("/api/v1/orgs/org_test/join-link")
+    assert resp.status_code == 200
+    assert resp.json()["exists"] is True
+    assert resp.json().get("join_url") is None
 
 
 def test_regenerating_invalidates_the_previous_link(app, admin_auth, repo, clerk):
@@ -175,6 +220,25 @@ def test_revoke_kills_the_link(app, admin_auth, repo, clerk):
 
     _override_auth(app, AuthContext(user_id="user_joiner"))
     assert client.post("/api/v1/orgs/org_test/join", json={"token": token}).status_code == 404
+
+
+def test_status_survives_a_missing_encryption_key(app, admin_auth, repo):
+    """No key at all (a partial local config) is a misconfiguration, not a 500 on read."""
+    from core import encryption
+
+    _override_auth(app, admin_auth)
+    repo.rows["org_test"] = {
+        "org_id": "org_test",
+        "token_hash": workspace_join._hash_token("t"),
+        "token_enc": "bm90LWEtZmVybmV0LXRva2Vu",
+        "created_by": "user_admin",
+        "created_at": "2026-09-01T00:00:00+00:00",
+    }
+    with patch.object(encryption.settings, "ENCRYPTION_KEY", ""):
+        resp = TestClient(app).get("/api/v1/orgs/org_test/join-link")
+    assert resp.status_code == 200
+    assert resp.json()["exists"] is True
+    assert resp.json().get("join_url") is None
 
 
 # --- Admin gating ------------------------------------------------------------

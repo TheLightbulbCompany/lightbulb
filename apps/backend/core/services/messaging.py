@@ -54,12 +54,16 @@ IMAGE_MAX_BYTES = 5 * 1024 * 1024
 # this route reads the whole file off EFS and serves it back through the API
 # on every read, so it is deliberately not "generous" beyond that.
 PDF_MAX_BYTES = 20 * 1024 * 1024
+# ZIPs are opaque downloads. The service only checks their container signature;
+# it never extracts, previews, or executes their contents.
+ZIP_MAX_BYTES = 20 * 1024 * 1024
 ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "image/png": IMAGE_MAX_BYTES,
     "image/jpeg": IMAGE_MAX_BYTES,
     "image/webp": IMAGE_MAX_BYTES,
     "image/gif": IMAGE_MAX_BYTES,
     "application/pdf": PDF_MAX_BYTES,
+    "application/zip": ZIP_MAX_BYTES,
 }
 ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
 ATTACHMENT_MAX_COUNT = 4
@@ -197,6 +201,16 @@ class RoomSummary(ContractModel):
     shared: bool = False
 
 
+class ActiveRun(ContractModel):
+    """One in-progress run, so a client that opens the room mid-turn can render
+    it: the live ``run_active`` frame is published once, at turn start."""
+
+    run_id: str
+    agent_id: str
+    started_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+
+
 class RoomDetail(RoomSummary):
     # Re-declared as required: the list tolerates their absence for a client
     # holding a response from before they existed, the detail never does.
@@ -205,6 +219,7 @@ class RoomDetail(RoomSummary):
     delivery_key: uuid.UUID
     created_at: datetime
     pinned_message_ids: list[str] = []
+    active_runs: list[ActiveRun] = []
 
 
 class RoomSection(ContractModel):
@@ -345,7 +360,7 @@ class CanonicalMessage(ContractModel):
 class MessageAttachment(ContractModel):
     id: uuid.UUID
     file_name: str = Field(min_length=1, max_length=256)
-    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"]
+    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf", "application/zip"]
     size: int = Field(gt=0)
 
     @field_validator("file_name")
@@ -852,7 +867,24 @@ _ATTACHMENT_SIGNATURES = {
     "image/gif": ((b"GIF87a", b"GIF89a"), ".gif"),
     "image/webp": (b"RIFF", ".webp"),
     "application/pdf": (b"%PDF-", ".pdf"),
+    # Local file, empty archive, and spanned archive signatures. No archive
+    # parsing follows this bounded signature check.
+    "application/zip": ((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"), ".zip"),
 }
+
+
+def canonical_attachment_content_type(file_name: str, content_type: str) -> str:
+    declared = content_type.lower().split(";", 1)[0].strip()
+    zip_name = PurePath(file_name).suffix.lower() == ".zip"
+    if declared in {"application/zip", "application/x-zip-compressed"}:
+        if not zip_name:
+            raise ValueError("ZIP attachments must use a .zip filename")
+        return "application/zip"
+    if zip_name:
+        if declared in {"", "application/octet-stream"}:
+            return "application/zip"
+        raise ValueError("attachment filename extension does not match the declared content type")
+    return declared
 
 
 def validate_attachment_bytes(content_type: str, data: bytes) -> str:
@@ -860,7 +892,7 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
     cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type)
     if not expected or not cap or not data or len(data) > cap:
         raise ValueError(
-            "attachment must be PNG, JPEG, WebP, GIF, or PDF, and at most 5 MiB for images or 20 MiB for PDF"
+            "attachment must be PNG, JPEG, WebP, GIF, PDF, or ZIP, and at most 5 MiB for images or 20 MiB for PDF/ZIP"
         )
     signature, suffix = expected
     signatures = signature if isinstance(signature, tuple) else (signature,)
@@ -877,6 +909,7 @@ def attachment_dir(room_id: str) -> str:
 
 
 def store_attachment(owner_id: str, room_id: str, file_name: str, content_type: str, data: bytes) -> MessageAttachment:
+    content_type = canonical_attachment_content_type(file_name, content_type)
     suffix = validate_attachment_bytes(content_type, data)
     attachment_id = uuid.uuid4()
     safe_name = "".join(
@@ -1139,11 +1172,15 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     member = member or await messaging_repo.get_member(meta["roomId"], "human", user_id)
     if member is None:
         raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.")
-    members, last_read = await asyncio.gather(
+    members, last_read, open_runs = await asyncio.gather(
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_cursor(meta["roomId"], user_id),
+        # The run ledger is partitioned by the ROOM's owner — the customer org
+        # even on a room shared with the vendor workspace.
+        messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
     )
     emails = await human_emails(members)
+    agent_ids = {row["id"] for row in members if row["kind"] == "agent"}
     return RoomDetail(
         **_room_summary_fields(meta, member, last_read),
         delivery_key=meta["deliveryKey"],
@@ -1151,6 +1188,18 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         last_read_seq=last_read,
         created_at=meta["createdAt"],
         pinned_message_ids=[str(value) for value in meta.get("pinnedMessageIds", [])],
+        # A run whose agent has left the room is as over as one that never
+        # existed — the rule GET /messaging/runs/{id} already applies.
+        active_runs=[
+            ActiveRun(
+                run_id=row["runId"],
+                agent_id=row["agentId"],
+                started_at=row.get("startedAt"),
+                last_heartbeat_at=row.get("lastHeartbeatAt"),
+            )
+            for row in open_runs
+            if row["agentId"] in agent_ids
+        ],
     )
 
 

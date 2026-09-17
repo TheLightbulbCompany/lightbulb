@@ -12,22 +12,21 @@ from pydantic import BaseModel, Field
 
 
 class JoinLinkStatus(BaseModel):
-    """Metadata for a workspace's live join link — never the link itself.
+    """A workspace's live join link, so an admin can re-copy it any time.
 
-    The token is stored hashed, so a minted link can never be redisplayed:
-    ``join_url`` is populated ONLY by the mint response
-    (``CreateJoinLinkResponse``). ``exists=True`` with no URL is the normal
-    steady state, and the UI reads it as "there is a live link; regenerate to
-    get a copyable one".
+    ``exists=True`` with ``join_url=None`` is a link minted before the token was
+    stored encrypted (or one the current key cannot decrypt); the UI reads it
+    as "regenerate once to get a copyable link".
     """
 
     exists: bool
+    join_url: str | None = None
     created_at: str | None = None
     created_by: str | None = None
 
 
 class CreateJoinLinkResponse(BaseModel):
-    """The one and only time a join link's plaintext crosses the wire."""
+    """The freshly minted link; ``JoinLinkStatus`` returns the same URL later."""
 
     join_url: str
     created_at: str

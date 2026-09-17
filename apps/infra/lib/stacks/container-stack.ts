@@ -398,6 +398,33 @@ export class ContainerStack extends cdk.Stack {
           actions: ["secretsmanager:GetSecretValue"],
           resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/*`],
         }),
+        // AgentCore validates the execution role can describe the filesystem it is asked to
+        // mount at CreateAgentRuntime / session start.
+        new iam.PolicyStatement({
+          sid: "AgentCoreEfsDescribe",
+          actions: [
+            "elasticfilesystem:DescribeAccessPoints",
+            "elasticfilesystem:DescribeMountTargets",
+            "elasticfilesystem:DescribeFileSystems",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "AgentCoreTelemetry",
+          actions: [
+            "xray:PutTraceSegments",
+            "xray:PutTelemetryRecords",
+            "xray:GetSamplingRules",
+            "xray:GetSamplingTargets",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "AgentCoreMetrics",
+          actions: ["cloudwatch:PutMetricData"],
+          resources: ["*"],
+          conditions: { StringEquals: { "cloudwatch:namespace": "bedrock-agentcore" } },
+        }),
       ],
     });
 
@@ -454,6 +481,56 @@ export class ContainerStack extends cdk.Stack {
           sid: "BoundaryAppSyncWsPublish",
           actions: ["appsync:EventPublish"],
           resources: [`arn:aws:appsync:${this.region}:${this.account}:apis/*/channelNamespace/ws`],
+        }),
+        // Boundary twins of the base policy's AgentCore statements (#2688 added the base grants
+        // without these, which made them no-ops -- a grant the boundary does not also allow is
+        // inert; effective permissions are inline/base ∩ boundary).
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreEcrPull",
+          actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+          resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/openclaw-gateway-arm64`],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreEcrToken",
+          actions: ["ecr:GetAuthorizationToken"],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreWorkloadToken",
+          actions: [
+            "bedrock-agentcore:GetWorkloadAccessToken",
+            "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+            "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+          ],
+          resources: [
+            `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
+            `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/*`,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreEfsDescribe",
+          actions: [
+            "elasticfilesystem:DescribeAccessPoints",
+            "elasticfilesystem:DescribeMountTargets",
+            "elasticfilesystem:DescribeFileSystems",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreTelemetry",
+          actions: [
+            "xray:PutTraceSegments",
+            "xray:PutTelemetryRecords",
+            "xray:GetSamplingRules",
+            "xray:GetSamplingTargets",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreMetrics",
+          actions: ["cloudwatch:PutMetricData"],
+          resources: ["*"],
+          conditions: { StringEquals: { "cloudwatch:namespace": "bedrock-agentcore" } },
         }),
         // local-sqlite layout: the boundary must CAP (not grant) S3 access
         // to the Litestream replica bucket, or the per-owner inline

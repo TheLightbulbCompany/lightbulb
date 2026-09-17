@@ -414,6 +414,18 @@ it("collapses a finished run with no reply into a muted status line", () => {
   expect(screen.queryByRole("article", { name: "Live run from Friday" })).not.toBeInTheDocument();
 });
 
+// What a client that opened the room mid-run holds: a run seeded from the room
+// detail's `activeRuns`, with no frame text yet. The no-text collapse must not
+// swallow it — that is the "Forge is working" bubble and its Stop/Steer.
+it("renders a running run that has no text yet as a working bubble with Stop", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "running", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} onAbortRun={vi.fn()} onSteerRun={vi.fn()} />);
+  const article = screen.getByRole("article", { name: "Live run from Friday" });
+  expect(within(article).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+  expect(within(article).getByRole("button", { name: "Steer" })).toBeInTheDocument();
+  expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
+});
+
 it("keeps rendering a finished run's text instead of collapsing it", () => {
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "Partial answer", thinking: "", state: "completed", tools: [] };
   render(<RoomPanel {...props} runs={[run]} />);

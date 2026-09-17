@@ -124,7 +124,7 @@ describe("WorkspaceMembersSection", () => {
 
   // --- The join link ------------------------------------------------------
 
-  it("mints a link, shows it once, and copies it", async () => {
+  it("mints the first link and copies it", async () => {
     asAdmin();
     const user = userEvent.setup();
     // userEvent.setup() installs its own navigator.clipboard stub, so the spy
@@ -145,7 +145,49 @@ describe("WorkspaceMembersSection", () => {
     expect(await screen.findByRole("button", { name: /copied/i })).toBeInTheDocument();
   });
 
-  it("never shows an existing link, only the offer to regenerate", async () => {
+  it("shows the current link from GET so re-sharing never needs a regenerate", async () => {
+    asAdmin();
+    get.mockResolvedValue({
+      exists: true,
+      join_url: "https://dev.flickmeon.ai/join/org_1#curr3nt",
+      created_at: "2026-09-01T00:00:00+00:00",
+      created_by: "user_admin",
+    });
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    render(<WorkspaceMembersSection />);
+
+    const field = await screen.findByLabelText(/your join link/i);
+    expect(field).toHaveValue("https://dev.flickmeon.ai/join/org_1#curr3nt");
+    await user.click(screen.getByRole("button", { name: /copy link/i }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("https://dev.flickmeon.ai/join/org_1#curr3nt"),
+    );
+    // Nothing was minted: showing the link must not rotate it.
+    expect(post).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /regenerate link/i })).toBeInTheDocument();
+  });
+
+  it("regenerating replaces the shown link with the new one", async () => {
+    asAdmin();
+    get.mockResolvedValue({
+      exists: true,
+      join_url: "https://dev.flickmeon.ai/join/org_1#curr3nt",
+      created_at: "2026-09-01T00:00:00+00:00",
+    });
+    const user = userEvent.setup();
+    render(<WorkspaceMembersSection />);
+
+    await screen.findByLabelText(/your join link/i);
+    await user.click(screen.getByRole("button", { name: /regenerate link/i }));
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/orgs/org_1/join-link", {}));
+    expect(await screen.findByLabelText(/your join link/i)).toHaveValue(
+      "https://dev.flickmeon.ai/join/org_1/s3cr3t-token",
+    );
+  });
+
+  it("offers a one-time regenerate for a link minted before links could be shown", async () => {
     asAdmin();
     get.mockResolvedValue({
       exists: true,
@@ -154,7 +196,7 @@ describe("WorkspaceMembersSection", () => {
     });
     render(<WorkspaceMembersSection />);
 
-    expect(await screen.findByTestId("join-link-active")).toHaveTextContent(/only shown\s+once/i);
+    expect(await screen.findByTestId("join-link-active")).toHaveTextContent(/regenerate/i);
     expect(screen.queryByLabelText(/your join link/i)).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /regenerate link/i })).toBeInTheDocument();
   });

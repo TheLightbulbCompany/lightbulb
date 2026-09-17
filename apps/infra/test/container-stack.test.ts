@@ -810,6 +810,33 @@ describe("ContainerStack — dev", () => {
     ).toBe(true);
   });
 
+  test("every AgentCore* Sid in the base policy has a BoundaryAgentCore* twin with the same actions", () => {
+    // #2688 added AgentCoreEcrPull/EcrToken/WorkloadToken to the base policy only, so the
+    // boundary silently made them no-ops (effective perms = base ∩ boundary). This guards the
+    // invariant that broke: every AgentCore* grant in the base must also be in the boundary.
+    const policies = template.findResources("AWS::IAM::ManagedPolicy");
+    const base = Object.values(policies).find(
+      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-base",
+    ) as any;
+    const boundary = Object.values(policies).find(
+      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-boundary",
+    ) as any;
+    expect(base).toBeDefined();
+    expect(boundary).toBeDefined();
+
+    const baseStatements = base.Properties.PolicyDocument.Statement as any[];
+    const boundaryStatements = boundary.Properties.PolicyDocument.Statement as any[];
+    const agentCoreBaseStatements = baseStatements.filter((s) => typeof s.Sid === "string" && s.Sid.startsWith("AgentCore"));
+    expect(agentCoreBaseStatements.length).toBeGreaterThan(0);
+
+    for (const baseStatement of agentCoreBaseStatements) {
+      const twinSid = `Boundary${baseStatement.Sid}`;
+      const twin = boundaryStatements.find((s) => s.Sid === twinSid);
+      expect(twin, `missing boundary twin ${twinSid}`).toBeDefined();
+      expect(twin.Action).toEqual(baseStatement.Action);
+    }
+  });
+
   test("boundary denies assume-into-our-account unconditionally and grants no sts:AssumeRole", () => {
     // The per-owner container role has no AWS-rail job anymore: the backend
     // vends connector credentials itself. The Deny must be unconditional

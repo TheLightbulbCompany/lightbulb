@@ -57,7 +57,7 @@ const KIND_LABELS: Record<string, string> = {
  * freshly-connected provider flips to green without a reload.
  */
 export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListProps) {
-  const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
+  const { connections, isLoading, error, mutate, connectPaste, startContainerLogin, startOAuth, disconnect } =
     useConnections();
   // The second facet. Its providers are NOT the OAuth registry's: this rail
   // provisions neon/supabase/resend, which have no Connections row at all, so
@@ -212,6 +212,7 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
                 canManage={canManage}
                 connectPaste={connectPaste}
                 startOAuth={startOAuth}
+                startContainerLogin={startContainerLogin}
                 disconnect={disconnect}
                 refreshConnections={mutate}
               />

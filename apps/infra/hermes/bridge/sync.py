@@ -205,8 +205,23 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
             "bedrock": {"discovery": {"enabled": False}}}
 
 
+LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
+
+
+def plugins_pin(existing: dict) -> dict:
+    """Opt the Lightbulb directory plugins in. Hermes loads a non-backend plugin only when
+    plugins.enabled names it (hermes_cli/plugins_discovery.py gate_manifest); bundled
+    backends/platforms auto-load, so this allow-list touches nothing else. deep_merge
+    replaces lists wholesale, so the union is computed from the existing config here."""
+    current = (existing.get("plugins") or {}).get("enabled") or []
+    enabled = list(dict.fromkeys([*current, *LIGHTBULB_PLUGINS]))
+    return {"plugins": {"enabled": enabled}}
+
+
 def pin_profile_defaults(agent_id: str, model: str) -> dict:
-    config = deep_merge(read_profile_config(agent_id), auxiliary_pin(_aux_defaults(), model))
+    existing = read_profile_config(agent_id)
+    config = deep_merge(existing, auxiliary_pin(_aux_defaults(), model))
+    config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config
 

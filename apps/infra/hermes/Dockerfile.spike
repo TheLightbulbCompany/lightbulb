@@ -10,6 +10,7 @@ RUN uv pip install --python "$(command -v python3)" --upgrade "anthropic>=1.0" \
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/lightbulb /opt/hermes/plugins/lightbulb
+COPY plugins/lightbulb_node /opt/hermes/plugins/lightbulb_node
 
 # AgentCore runs the container as uid 1000; Hermes state lives under HERMES_HOME.
 RUN mkdir -p /opt/data /opt/bridge && chown -R 1000:1000 /opt/data /opt/bridge

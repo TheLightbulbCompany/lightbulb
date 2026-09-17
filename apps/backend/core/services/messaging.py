@@ -33,6 +33,7 @@ from core.repositories import billing_repo, container_repo, messaging_repo
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.services import node_broker
+from core.services import task_address
 from core.services.connection_service import ConnectionService
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.push_service import send_push_to_user
@@ -2287,12 +2288,18 @@ async def invoke_node(owner_id: str, body: dict, *, forwarded: bool) -> dict:
     """Run one Hermes bridge command on the owner's paired desktop node (spec §4.4, Task 28).
 
     The desktop's socket is pinned to whichever backend task accepted its WebSocket upgrade --
-    ``routers.gateway_relay.node_sessions`` is process-local (M2-R20) -- so this has three
-    possible outcomes: the session lives on THIS task (invoke it directly), it lives on
-    another task (forward once, to the address the relay presence row recorded), or it is
-    nowhere (409 NODE_NOT_ATTACHED). A forwarded call never forwards again: the peer either
-    has the session or answers NODE_NOT_ATTACHED itself, which this task relays verbatim
-    instead of attempting a third hop.
+    ``routers.gateway_relay.node_sessions`` is process-local (M2-R20). A paired Mac opens TWO
+    node sockets with DISJOINT command sets (the ``openclaw-macos`` device client and the CLI
+    ``node-host``; only the CLI declares e.g. ``system.run``), and with 2-4 backend tasks and no
+    stickiness they routinely land on different tasks -- so "no session declaring this command
+    on THIS task" does not mean "not attached", it can just mean "attached to a different task"
+    (M2-R23). Resolution order: a local session declaring the command wins outright; otherwise
+    every OTHER live presence row's task (excluding this one) is tried in turn, stopping at the
+    first answer that is not itself COMMAND_NOT_ALLOWED/NODE_NOT_ATTACHED; if every candidate --
+    local and remote -- comes up empty, COMMAND_NOT_ALLOWED wins over NODE_NOT_ATTACHED whenever
+    ANY of them was merely the wrong device (a session existed, just not for this command) --
+    otherwise nothing is attached anywhere and it's NODE_NOT_ATTACHED. A forwarded call never
+    forwards again: it answers from what it knows locally only.
     """
     from routers.gateway_relay import find_node_session
 
@@ -2300,21 +2307,40 @@ async def invoke_node(owner_id: str, body: dict, *, forwarded: bool) -> dict:
     timeout_ms = min(int(body.get("timeoutMs") or _NODE_INVOKE_DEFAULT_TIMEOUT_MS), _NODE_INVOKE_MAX_TIMEOUT_MS)
 
     session = find_node_session(owner_id, command=command)
-    if session is None and find_node_session(owner_id) is not None:
-        # A device IS attached right here on this task -- it just never declared this
-        # command. Surfaced without a round trip through the socket (M2-R11).
-        raise ApiProblem("COMMAND_NOT_ALLOWED", "This device did not declare that command.")
     if session is not None:
         return await _invoke_local_node(session, command, body, timeout_ms)
 
+    # No local session declares this command. A DIFFERENT local session (wrong device) still
+    # counts as "a session exists somewhere" for the COMMAND_NOT_ALLOWED-vs-NODE_NOT_ATTACHED
+    # split below, even if a remote fanout later finds nothing better.
+    saw_command_not_allowed = find_node_session(owner_id) is not None
+
     if forwarded:
+        # Never forward again -- answer from what is known locally only.
+        if saw_command_not_allowed:
+            raise ApiProblem("COMMAND_NOT_ALLOWED", "This device did not declare that command.")
         raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached to this instance.")
 
-    presence = await ConnectionService().find_node_presence(owner_id)
-    address = presence.get("taskAddress") if presence else None
-    if not address:
-        raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.")
-    return await _forward_node_invoke(address, owner_id, body, timeout_ms)
+    own = task_address.own_address()
+    tried: set[str] = set()
+    for presence in await ConnectionService().find_node_presences(owner_id):
+        address = presence.get("taskAddress")
+        if not address or address == own or address in tried:
+            continue
+        tried.add(address)
+        try:
+            return await _forward_node_invoke(address, owner_id, body, timeout_ms)
+        except ApiProblem as exc:
+            if exc.error.code == "COMMAND_NOT_ALLOWED":
+                saw_command_not_allowed = True
+                continue
+            if exc.error.code == "NODE_NOT_ATTACHED":
+                continue
+            raise
+
+    if saw_command_not_allowed:
+        raise ApiProblem("COMMAND_NOT_ALLOWED", "This device did not declare that command.")
+    raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.")
 
 
 async def _invoke_local_node(session: node_broker.NodeSession, command: str, body: dict, timeout_ms: int) -> dict:

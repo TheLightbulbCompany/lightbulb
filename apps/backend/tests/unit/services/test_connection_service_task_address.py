@@ -185,3 +185,62 @@ async def test_find_node_presence_treats_a_missing_ttl_as_live(ddb_table_with_ow
     _admit_node(ddb_table_with_owner_gsi, "relay#1", "org_1", "dev-1", "http://10.0.1.7:8000", ttl=None)
 
     assert await svc.find_node_presence("org_1") is not None
+
+
+# ---------------------------------------------------------------------------
+# ConnectionService.find_node_presences (M2-R23) — a paired Mac opens TWO node
+# sockets (openclaw-macos device client + the CLI node-host) with disjoint
+# command sets, and with no backend-task stickiness they routinely land on
+# different tasks. find_node_presence (singular) only ever returns the first
+# one found, which is a blind spot for Task 28's node-invoke route when the
+# local/first task doesn't hold the device that declares the requested
+# command. find_node_presences returns every live row so the caller can fan
+# out to all of them.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_node_presences_returns_every_live_node_row(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit_node(ddb_table_with_owner_gsi, "relay#1", "org_1", "mac-1", "http://10.0.1.7:8000")
+    _admit_node(ddb_table_with_owner_gsi, "relay#2", "org_1", "cli-1", "http://10.0.1.8:8000")
+
+    result = await svc.find_node_presences("org_1")
+
+    assert {r["connectionId"] for r in result} == {"relay#1", "relay#2"}
+    assert {r["taskAddress"] for r in result} == {"http://10.0.1.7:8000", "http://10.0.1.8:8000"}
+    assert {r["deviceId"] for r in result} == {"mac-1", "cli-1"}
+
+
+@pytest.mark.asyncio
+async def test_find_node_presences_returns_empty_list_when_owner_has_no_node_row(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+
+    assert await svc.find_node_presences("org_1") == []
+
+
+@pytest.mark.asyncio
+async def test_find_node_presences_skips_expired_rows_but_keeps_fresh_ones(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit_node(
+        ddb_table_with_owner_gsi, "relay#1", "org_1", "mac-1", "http://10.0.1.7:8000", ttl=int(time.time()) - 10
+    )
+    _admit_node(
+        ddb_table_with_owner_gsi, "relay#2", "org_1", "cli-1", "http://10.0.1.8:8000", ttl=int(time.time()) + 120
+    )
+
+    result = await svc.find_node_presences("org_1")
+
+    assert [r["connectionId"] for r in result] == ["relay#2"]
+
+
+@pytest.mark.asyncio
+async def test_find_node_presence_is_a_thin_wrapper_over_find_node_presences(ddb_table_with_owner_gsi):
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    _admit_node(ddb_table_with_owner_gsi, "relay#1", "org_1", "mac-1", "http://10.0.1.7:8000")
+    _admit_node(ddb_table_with_owner_gsi, "relay#2", "org_1", "cli-1", "http://10.0.1.8:8000")
+
+    plural = await svc.find_node_presences("org_1")
+    singular = await svc.find_node_presence("org_1")
+
+    assert singular == plural[0]

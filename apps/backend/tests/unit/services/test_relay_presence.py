@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from core.services import task_address
 from core.services.connection_service import ConnectionService
 from core.services.machine_auth import MachineIdentity
 
@@ -24,6 +25,14 @@ def _svc():
     svc = ConnectionService(table_name="t")
     svc._client = MagicMock()
     return svc
+
+
+@pytest.fixture(autouse=True)
+def _stub_task_address(monkeypatch):
+    """put_relay_presence / refresh_relay_presence resolve task_address.own_address(),
+    which shells out to the OS resolver -- stub it so no test in this file
+    touches the real socket.gethostbyname/gethostname."""
+    monkeypatch.setattr(task_address, "own_address", lambda: "http://10.0.9.9:8000")
 
 
 @pytest.mark.asyncio
@@ -49,6 +58,22 @@ async def test_refresh_reports_a_deleted_row():
         {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
     )
     assert await svc.refresh_relay_presence("relay#1") is False
+
+
+@pytest.mark.asyncio
+async def test_put_never_touches_the_real_os_resolver(monkeypatch):
+    """put_relay_presence resolves task_address.own_address(), which shells
+    out to socket.gethostbyname/gethostname -- the autouse fixture above must
+    stub it so no test in this file depends on (or blocks on) the sandbox's
+    real hostname resolution. If own_address were NOT stubbed, this would
+    call the resolver and raise."""
+
+    def _boom(host):
+        raise AssertionError("real DNS resolver was called")
+
+    monkeypatch.setattr(task_address.socket, "gethostbyname", _boom)
+    svc = _svc()
+    await svc.put_relay_presence(connection_id="relay#1", identity=IDENT)
 
 
 @pytest.mark.asyncio

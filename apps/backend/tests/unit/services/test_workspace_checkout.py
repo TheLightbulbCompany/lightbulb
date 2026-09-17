@@ -64,6 +64,38 @@ async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_co
 
 
 @pytest.mark.asyncio
+async def test_workspace_checkout_requests_the_ach_payment_method_permission(monkeypatch):
+    """ACH/`us_bank_account` needs the Financial Connections `payment_method`
+    permission or the bank-linking dialog finishes with nothing usable.
+
+    Stripe's own ACH-in-Checkout guide lists exactly two required steps:
+    enable US bank account in the Dashboard, and "set the ``permissions``
+    parameter to include ``payment_method``". Without the second, the customer
+    completes the whole bank picker and the widget closes having produced no
+    PaymentMethod — the subscription is never created and the attempt is
+    silently forgotten.
+    """
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    create = MagicMock(return_value={"id": "cs_1", "url": "https://checkout.test/cs_1"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    options = create.call_args.kwargs["payment_method_options"]
+    assert options["us_bank_account"]["financial_connections"]["permissions"] == ["payment_method"]
+    # `payment_method_types` stays UNSET so the Dashboard's dynamic payment
+    # methods keep choosing what to show; pinning it here would drop every
+    # method the owner enables later.
+    assert "payment_method_types" not in create.call_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")

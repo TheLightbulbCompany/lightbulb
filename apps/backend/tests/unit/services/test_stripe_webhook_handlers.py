@@ -1709,6 +1709,18 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
         status flipped — that is when the coupon is genuinely consumed."""
         assert await self._stamped_for("paid", "checkout.session.async_payment_succeeded") is True
 
+    async def test_a_delayed_payment_failure_is_a_handled_event(self):
+        """ACH settles days later and can FAIL. Without a route for
+        ``async_payment_failed`` the webhook returns ``{"status": "ok"}`` from
+        the unknown-event branch and the only record that an owner's bank debit
+        bounced is the `stripe.webhook.received` counter."""
+        assert "checkout.session.async_payment_failed" in handlers.STRIPE_WEBHOOK_HANDLERS
+
+    async def test_a_delayed_payment_failure_never_stamps_the_coupon(self):
+        """It routes to the same handler, and an `unpaid` session there must
+        still leave the winner's free month unspent."""
+        assert await self._stamped_for("unpaid", "checkout.session.async_payment_failed") is False
+
 
 # --- Company Stripe: the platform ASKS on entering_live ---------------------
 #

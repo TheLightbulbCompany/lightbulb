@@ -1299,6 +1299,21 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
         from core.services.launch_close import mark_winner_coupon_consumed
 
         await mark_winner_coupon_consumed(session_metadata["owner_id"])
+    if event["type"] == "checkout.session.async_payment_failed":
+        # A bank debit that bounced days after the owner finished Checkout.
+        # Nothing to undo here — the subscription's own lifecycle events carry
+        # the entitlement, and `invoice.payment_failed` drives dunning — but
+        # without a named route this event fell into the webhook's
+        # unknown-event branch, so the only trace a customer's bank debit
+        # bounced was a `stripe.webhook.received` tick. Support needs the
+        # session and owner to act on it.
+        put_metric("stripe.checkout", dimensions={"event": "async_payment_failed"})
+        logger.warning(
+            "Delayed Checkout payment failed session=%s customer=%s owner_id=%s",
+            session.get("id"),
+            session.get("customer"),
+            session_metadata.get("owner_id"),
+        )
     return Response(status_code=200)
 
 
@@ -1316,4 +1331,8 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "invoice.payment_failed": handle_invoice_payment_failed,
     "checkout.session.completed": handle_checkout_session,
     "checkout.session.async_payment_succeeded": handle_checkout_session,
+    # ACH settles days after Checkout finishes, so the delayed outcome — either
+    # one — arrives here long after the owner has left. Both are routed, so
+    # neither falls into the router's unknown-event branch.
+    "checkout.session.async_payment_failed": handle_checkout_session,
 }

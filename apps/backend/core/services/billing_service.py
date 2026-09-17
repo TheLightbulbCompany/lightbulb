@@ -37,7 +37,7 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Bump whenever the shared Checkout body changes; Stripe idempotency compares
 # the complete request body for a reused key.
-_CHECKOUT_BODY_VERSION = 6
+_CHECKOUT_BODY_VERSION = 7
 
 
 class BillingServiceError(Exception):
@@ -391,6 +391,24 @@ async def _build_subscription_checkout(
         cancel_url=cancel_url,
         allow_promotion_codes=allow_promotion_codes,
         payment_method_collection="always",
+        # ACH Direct Debit (`us_bank_account`) is one of the two required
+        # steps for bank payments in Checkout — the other being "enable US
+        # bank account" in the Dashboard, which is not code. Stripe collects a
+        # bank account through Financial Connections, and the linked account
+        # only yields a usable PaymentMethod when the session ASKS for the
+        # `payment_method` permission. Without it the customer walks the whole
+        # bank picker, the dialog closes on the final step, and Checkout is
+        # left with nothing to charge: no subscription, no error, no webhook —
+        # the attempt is simply forgotten. Card is unaffected either way,
+        # which is exactly why this stayed invisible.
+        #
+        # `payment_method_types` is deliberately NOT set: leaving it unset
+        # keeps dynamic payment methods, so what Checkout offers stays owned
+        # by the Dashboard. Pinning a list here would silently drop every
+        # method enabled later — including the bank option this fixes.
+        payment_method_options={
+            "us_bank_account": {"financial_connections": {"permissions": ["payment_method"]}},
+        },
         # The SAME dict on BOTH, because Stripe puts them on different objects
         # and two different webhooks read them:
         #   subscription_data.metadata → the created Subscription, which is

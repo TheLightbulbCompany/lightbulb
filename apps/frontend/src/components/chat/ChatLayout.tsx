@@ -498,9 +498,8 @@ export function ChatLayout({
             .filter((n): n is string => !!n)}
           onCancel={() => setCreateFormOpen(false)}
           onCreate={async (name) => {
-            // OpenClaw's agents.create requires a non-empty `workspace` —
-            // see useAgents.createAgent, which fills in the default path
-            // (.openclaw/workspace-{id}) when omitted.
+            // No `workspace`: the backend fills the layout for the owner's
+            // runtime — see useAgents.createAgent / _sanitize_agent_create.
             await createAgent({ name });
             setCreateFormOpen(false);
           }}

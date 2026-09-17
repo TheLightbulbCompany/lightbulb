@@ -30,4 +30,23 @@ describe("AgentCreateForm", () => {
     await waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
     expect(screen.queryByRole("button", { name: /upgrade to ultra/i })).not.toBeInTheDocument();
   });
+
+  it("does not send a workspace path — the backend owns the layout", async () => {
+    callRpc.mockResolvedValue({});
+    render(
+      <AgentCreateForm existingNames={[]} onCreated={() => {}} onCancel={() => {}} />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("e.g. Research Assistant"), {
+      target: { value: "Ada" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+    expect(callRpc).toHaveBeenCalledWith(
+      "agents.create",
+      expect.not.objectContaining({ workspace: expect.anything() }),
+    );
+    expect(JSON.stringify(callRpc.mock.calls)).not.toContain(".openclaw");
+  });
 });

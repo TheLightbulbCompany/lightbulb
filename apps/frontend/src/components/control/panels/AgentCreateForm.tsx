@@ -5,7 +5,7 @@ import { Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 import { capture } from "@/lib/analytics";
-import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
+import { validateAgentName } from "@/lib/agentIdentity";
 import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import type { PaperclipMeta } from "@/lib/paperclipMeta";
@@ -23,7 +23,6 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   const [creating, setCreating] = useState(false);
   const callRpc = useRuntimeRpcMutation();
 
-  const normalizedId = normalizeAgentId(name);
   const clientError = validateAgentName(name, existingNames);
   const canCreate = name.trim() !== "" && clientError === null && !creating;
 
@@ -45,13 +44,9 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
         "agents.create",
         {
           name: name.trim(),
-          // OpenClaw's agents.create requires a non-empty `workspace` string —
-          // it does NOT inherit agents.defaults.workspace at create time
-          // (only at runtime via resolveAgentWorkspaceDir). Pass the same
-          // path the default would resolve to, so the agent lands at
-          // .openclaw/workspace-{id}/ on EFS — matching main's explicit
-          // workspace-main override.
-          workspace: ".openclaw/workspace-" + normalizedId,
+          // No `workspace`: the backend fills the layout for the owner's runtime (an EFS path on
+          // ECS, nothing on Hermes, where a profile dir IS the state root). A client that names a
+          // path bakes one runtime's filesystem into every client release.
           reasoningDefault: "stream",
           params: { paperclip: paperclipBlock },
         },
@@ -63,7 +58,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
     } finally {
       setCreating(false);
     }
-  }, [canCreate, callRpc, name, normalizedId, meta, onCreated]);
+  }, [canCreate, callRpc, name, meta, onCreated]);
 
   return (
     <div className="rounded-lg border border-border bg-cream-deep p-4 space-y-3">

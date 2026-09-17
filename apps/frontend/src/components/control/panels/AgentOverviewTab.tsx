@@ -295,7 +295,11 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         )}
       </div>
 
-      {heartbeatVisibility !== "hidden" && <AgentHeartbeatCard agentId={agentId} />}
+      {/* Fix round 1 (review M1): held for "loading" too, not just "shown" —
+          the card's Save writes agents.list[{id,heartbeat}] into every roster
+          profile, and a click inside the brief pre-resolution window would
+          still pollute an AgentCore workspace's profiles. */}
+      {heartbeatVisibility === "shown" && <AgentHeartbeatCard agentId={agentId} />}
 
       <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
         <h3 className="text-sm font-medium text-[var(--midnight)]">Role &amp; description</h3>

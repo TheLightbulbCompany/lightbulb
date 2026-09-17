@@ -90,4 +90,25 @@ describe("ConnectionsList — Shopify container_login on AgentCore", () => {
     expect(screen.queryByText("Not available on this runtime")).toBeNull();
     expect(screen.getByText(/not connected/i)).toBeInTheDocument();
   });
+
+  // Fix round 1 (review C1): an owner who connected Shopify before migrating to
+  // AgentCore must still be able to clear the row — hiding Connect must never
+  // take Disconnect with it.
+  it("keeps Disconnect reachable for an already-connected row once AgentCore is confirmed", () => {
+    gate = "hidden";
+    connections = [
+      { provider: "shopify", display_name: "Shopify", acquisition: "container_login", status: "connected" },
+    ];
+    render(<ConnectionsList canManage />);
+    expect(screen.queryByText("Not available on this runtime")).toBeNull();
+    expect(screen.getByRole("button", { name: /disconnect shopify/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^connect shopify$/i })).toBeNull();
+  });
+
+  it("still hides Connect (not Disconnect, which is absent) for a disconnected row on AgentCore", () => {
+    gate = "hidden";
+    render(<ConnectionsList canManage />);
+    expect(screen.queryByRole("button", { name: /connect shopify/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /disconnect shopify/i })).toBeNull();
+  });
 });

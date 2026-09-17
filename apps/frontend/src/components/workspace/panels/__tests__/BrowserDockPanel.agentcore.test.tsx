@@ -44,6 +44,19 @@ describe("BrowserDockPanel on an AgentCore workspace", () => {
     expect(rpcMock).not.toHaveBeenCalled();
   });
 
+  // Fix round 1 (review I1): the host isn't known yet for this workspace —
+  // firing the start-probe (or opening a VNC socket) on a guess is exactly the
+  // ~55s cold-start-to-fail this task exists to remove, so both must be held
+  // exactly as they are for the confirmed-"hidden" case.
+  it("holds the RPC and the VNC connect while the host isn't known yet, rather than guessing ECS", async () => {
+    gate = "loading";
+    render(<BrowserDockPanel {...props} />);
+    expect(screen.queryByText(/isn.t available on this runtime/i)).toBeNull();
+    expect(screen.getByText(/connecting to your agents/i)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rpcMock).not.toHaveBeenCalled();
+  });
+
   it("still starts the container browser on ECS", async () => {
     gate = "shown";
     render(<BrowserDockPanel {...props} />);

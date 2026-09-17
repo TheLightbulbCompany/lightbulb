@@ -127,8 +127,16 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
         // they can click to change it, so the row must not read as one step away
         // — and must not promise capabilities we cannot deliver to them yet.
         const unavailable = connection.status === "unavailable";
+        // Fix round 1 (review C1): a row connected before migrating to AgentCore
+        // must keep its Disconnect action — only a NEW connection attempt is
+        // unavailable here. `ConnectButton` checks `status === "connected"`
+        // before it ever looks at `acquisition`, so rendering it unchanged for a
+        // connected row shows Disconnect only, never the container_login
+        // store-input UI.
         const unavailableOnRuntime =
-          connection.acquisition === "container_login" && runtimeGate === "hidden";
+          connection.acquisition === "container_login" &&
+          runtimeGate === "hidden" &&
+          !connected;
         const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div

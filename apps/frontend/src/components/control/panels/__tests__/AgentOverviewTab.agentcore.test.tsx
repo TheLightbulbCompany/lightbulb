@@ -5,9 +5,11 @@
  * four em-dashes. Both now come from what the runtime really has: `models.list` and the roster
  * row `agents.list` already returned.
  *
- * M6 task 10-D, rows 3/10. Heartbeats have no Hermes equivalent — the card is dropped outright
- * on a confirmed AgentCore workspace, held while the host isn't known yet, and mounts unchanged
- * on ECS.
+ * M6 task 10-D, rows 3/10. Heartbeats have no Hermes equivalent — the card is
+ * dropped both once AgentCore is confirmed AND while the host isn't known yet
+ * (fix round 1, review M1: Save writes into every roster profile, so a click
+ * inside the pre-resolution window must not be possible either), and mounts
+ * unchanged on ECS.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -128,10 +130,10 @@ describe("AgentOverviewTab — Heartbeat card on AgentCore", () => {
     expect(screen.getByText("Heartbeat")).toBeInTheDocument();
   });
 
-  it("still mounts the Heartbeat card while the host isn't known yet", () => {
+  it("holds the Heartbeat card while the host isn't known yet, rather than guessing ECS", () => {
     runtimeHost = undefined;
     render(<AgentOverviewTab agentId="a1" />);
-    expect(screen.getByText("Heartbeat")).toBeInTheDocument();
+    expect(screen.queryByText("Heartbeat")).toBeNull();
   });
 
   it("drops the Heartbeat card outright once AgentCore is confirmed", () => {

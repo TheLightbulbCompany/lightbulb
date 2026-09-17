@@ -8,7 +8,7 @@
     "tag": "h-2026.9.17-8329661"
   },
   "prod": {
-    "tag": ""
+    "tag": "h-2026.9.17-8329661"
   },
   "notes": "M4-R34: dev.tag/prod.tag are the per-env promotion gate, exactly like openclaw-version.json's fields of the same name. .github/workflows/build-hermes-image.yml pushes ONE uniquely-tagged candidate per build (h-<YYYY.M.D>-<sha7>, e.g. h-2026.9.17-abc1234) and never writes to this file -- a human lands a PR flipping dev.tag (then prod.tag, after dev validation) to an already-pushed tag; service-stack.ts reads HERMES_VERSION.dev.tag / HERMES_VERSION.prod.tag straight into AGENTCORE_HERMES_IMAGE, empty -> \"\" env var. prod.tag stays \"\" until M6. dev.tag was first flipped to h-2026.9.17-9fb1352 on 2026-09-17 (the first real build-hermes-image run on main, after the dev deploy added that workflow to the builder role's OIDC trust); before that the spike runtime ran the manually pushed `spike-m1-rc4` tag and dev.tag held a placeholder that never existed in ECR. Also note: the Dockerfile's `RUN uv pip install --upgrade \"anthropic>=1.0\"` is an unpinned floating lower-bound (mirrors Dockerfile.spike as-is) -- it re-resolves to whatever the latest anthropic release is at build time, so two builds on the same base digest can still pick up different anthropic versions. Left unpinned deliberately for this task (matches the proven spike); a follow-up should pin an exact version once the SDK's bearer-mode API stabilizes."
 }

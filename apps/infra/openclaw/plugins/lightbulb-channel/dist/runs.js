@@ -303,7 +303,7 @@ export function createRunSupervisor(deps) {
          */
         async start(spec, turn) {
             unsubscribe ??= deps.sdk.onAgentEvent(onEvent);
-            const run = { ...spec, started: false, text: { done: "", current: "" } };
+            const run = { ...spec, started: false, text: { done: "", current: "" }, acceptedSteerKeys: new Set() };
             runs.set(spec.runId, run);
             // Accepted is started: the host serializes a second turn on this session behind the
             // first, and a run that reported nothing until its first agent event is closed by the
@@ -338,9 +338,16 @@ export function createRunSupervisor(deps) {
         },
         // ponytail: queueAgentHarnessMessage is deprecated upstream; if it stops queuing,
         // dispatch the steer text as a second inbound turn on the same session instead.
-        steer(runId, text) {
+        steer(runId, text, idempotencyKey) {
+            const run = runs.get(runId);
+            if (run && idempotencyKey && run.acceptedSteerKeys.has(idempotencyKey))
+                return "accepted";
             const sessionId = sessionIdFor(runId);
-            return sessionId && deps.sdk.queueAgentHarnessMessage(sessionId, text) ? "accepted" : "not_found";
+            if (!sessionId || !deps.sdk.queueAgentHarnessMessage(sessionId, text))
+                return "not_found";
+            if (idempotencyKey)
+                run?.acceptedSteerKeys.add(idempotencyKey);
+            return "accepted";
         },
         runIdForSession(sessionKey) {
             return bySession.get(sessionKey);

@@ -877,7 +877,11 @@ export function createRunControlHandler(deps) {
         if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text, "utf8") > MAX_TEXT_BYTES) {
             return json(res, 400, { error: "invalid_steer", message: "text is required" });
         }
-        const state = deps.runs.steer(runId, text);
+        const idempotencyKey = body.value?.idempotencyKey;
+        if (idempotencyKey !== undefined && (typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 128)) {
+            return json(res, 400, { error: "invalid_steer", message: "idempotencyKey is invalid" });
+        }
+        const state = deps.runs.steer(runId, text, idempotencyKey);
         return json(res, state === "accepted" ? 202 : 404, { runId, state });
     };
 }

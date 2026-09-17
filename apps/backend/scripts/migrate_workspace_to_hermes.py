@@ -26,9 +26,14 @@ EFS -> Hermes profile mapping (spec §4.8), applied per roster agent:
     SOUL.md                            SOUL.md (via ``write_agent_profile``'s
                                         ``soul_md_override`` — verbatim, not regenerated)
     AGENTS.md                          AGENTS.md (verbatim copy)
-    MEMORY.md                          MEMORY.md (verbatim copy)
-    memory/**                          memory/** (verbatim copy, same relative paths)
     skills/**                          skills/** (verbatim copy, same relative paths)
+    MEMORY.md + memory/**              memories/MEMORY.md (Ruling M6-R47: extracted into
+                                        entries and merged under a char budget by
+                                        ``core.services.hermes_memory_import.build_memory_files``
+                                        — a verbatim copy lands somewhere Hermes never reads,
+                                        see ``tools/memory_tool.py::get_memory_dir`` in the
+                                        pinned Hermes source)
+    USER.md                            memories/USER.md (same module, own char budget)
     (nothing else)                     config.yaml, .env — generated fresh by the writer,
                                         never read from EFS (spec §4.5: profiles carry no
                                         inherited secrets)
@@ -117,6 +122,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.services import runtime_transport
 from core.services.container_provision import resolve_provider_choice
+from core.services.hermes_memory_import import build_memory_files
 from core.services.hermes_profiles import profile_prefix, upload_profile, write_agent_profile
 from core.services.hermes_provisioning import (
     prepare_hermes_workspace,
@@ -149,9 +155,10 @@ _MODE_TAIL = "tail"
 _PAPERCLIP_TABLE = "paperclip-companies"
 _SOUL_FILE = "SOUL.md"
 #: The exact EFS -> Hermes profile carry list (see the module docstring's mapping table). NEVER
-#: sessions/transcripts/``agent/`` runtime state or auth tokens.
-_CARRY_TOP_LEVEL_FILES = ("AGENTS.md", "MEMORY.md")
-_CARRY_DIRS = ("memory", "skills")
+#: sessions/transcripts/``agent/`` runtime state or auth tokens. MEMORY.md/memory/**/USER.md are
+#: NOT here -- they go through ``build_memory_files`` (Ruling M6-R47) instead of a verbatim copy.
+_CARRY_TOP_LEVEL_FILES = ("AGENTS.md",)
+_CARRY_DIRS = ("skills",)
 
 
 def _s3_client():
@@ -193,10 +200,13 @@ def _read_text_if_present(path: Path) -> str | None:
     return path.read_text() if path.is_file() else None
 
 
-def _collect_carry_files(agent_dir: Path) -> dict[str, Path]:
-    """workspace-relative path -> absolute path for everything (besides ``SOUL.md``, carried
-    separately as the writer's ``soul_md_override``) this job copies into the Hermes profile."""
-    out: dict[str, Path] = {}
+def _collect_carry_files(agent_dir: Path) -> dict[str, Path | bytes]:
+    """workspace-relative profile path -> content for everything (besides ``SOUL.md``, carried
+    separately as the writer's ``soul_md_override``) this job writes into the Hermes profile. A
+    ``Path`` value is an EFS file to copy verbatim; a ``bytes`` value is content built in-process
+    (Ruling M6-R47's ``memories/*.md`` -- there is no single EFS file to point at, since it is a
+    merge of ``MEMORY.md`` and every ``memory/*.md`` daily note)."""
+    out: dict[str, Path | bytes] = {}
     for name in _CARRY_TOP_LEVEL_FILES:
         candidate = agent_dir / name
         if candidate.is_file():
@@ -208,10 +218,11 @@ def _collect_carry_files(agent_dir: Path) -> dict[str, Path]:
         for f in base.rglob("*"):
             if f.is_file():
                 out[str(f.relative_to(agent_dir))] = f
+    out.update(build_memory_files(agent_dir))
     return out
 
 
-async def _build_plan(owner_id: str, roster: list[dict]) -> list[tuple[dict, str | None, dict[str, Path]]]:
+async def _build_plan(owner_id: str, roster: list[dict]) -> list[tuple[dict, str | None, dict[str, Path | bytes]]]:
     plan = []
     for agent in roster:
         agent_dir = _agent_workspace_dir(owner_id, agent["id"])
@@ -353,7 +364,7 @@ async def _release_pre_flip_failure(owner_id: str, claim_id: str, attempt_token:
     return exit_code
 
 
-async def _apply_efs_overrides(owner_id: str, plan: list[tuple[dict, str | None, dict[str, Path]]]) -> None:
+async def _apply_efs_overrides(owner_id: str, plan: list[tuple[dict, str | None, dict[str, Path | bytes]]]) -> None:
     """Layer the EFS-sourced identity/content on top of the vanilla profiles
     ``provision_hermes_runtime`` just wrote for every roster agent (see the module docstring's
     ordering note). Owner-level inputs via ``hermes_provisioning.resolve_profile_inputs`` (Ruling
@@ -397,7 +408,8 @@ async def _apply_efs_overrides(owner_id: str, plan: list[tuple[dict, str | None,
         if s3 is not None:
             prefix = profile_prefix(owner_id, agent_id)
             for rel_path, src in files.items():
-                await run_in_thread(s3.put_object, Bucket=bucket, Key=f"{prefix}{rel_path}", Body=src.read_bytes())
+                body = src.read_bytes() if isinstance(src, Path) else src
+                await run_in_thread(s3.put_object, Bucket=bucket, Key=f"{prefix}{rel_path}", Body=body)
         # LAST: upload_profile itself writes config.yaml/.env/SOUL.md then bumps .revision last,
         # so the extra carry files above are always in place before the bridge's re-pull signal.
         await upload_profile(owner_id, agent_id, profile)

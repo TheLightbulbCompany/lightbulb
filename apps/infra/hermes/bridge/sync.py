@@ -5,6 +5,7 @@ import fnmatch
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +14,18 @@ from bridge import HOME, S3_BUCKET, S3_PREFIX
 log = logging.getLogger("bridge")
 
 _restored: set[str] = set()
+
+# Fix round (minor 12): two turns for the SAME agent in different rooms run concurrently in
+# one process (the FIFO group is room+agent), and both call save_profile on the one profile
+# dir at the end. Without a lock, two concurrent uploads interleave and the last writer wins
+# on S3 -- one turn's session rows can be lost on the next cold start.
+_save_locks: dict[str, threading.Lock] = {}
+_save_locks_guard = threading.Lock()
+
+
+def _save_lock(agent_id: str) -> threading.Lock:
+    with _save_locks_guard:
+        return _save_locks.setdefault(agent_id, threading.Lock())
 
 # Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch
 # (report 01 §1). The body is redacted but the file must never reach S3; logs/ likewise;
@@ -88,31 +101,37 @@ def restore_profile(agent_id: str) -> float:
 
 def save_profile(agent_id: str) -> float:
     """Upload the agent's profile dir. SQLite files go through the backup API; excluded
-    paths (request dumps, logs, per-turn context, WAL/SHM) never leave the microVM."""
+    paths (request dumps, logs, per-turn context, WAL/SHM) never leave the microVM.
+
+    Serialized per agent (see _save_lock) -- two turns for the same agent in different rooms
+    can finish concurrently, and an interleaved pair of uploads would let the later-finishing
+    one silently clobber files the earlier one already wrote for a different room's session
+    rows."""
     if not S3_BUCKET:
         return 0.0
-    t0 = time.time()
-    src = _profile_dir(agent_id)
-    prefix = f"{S3_PREFIX}/{agent_id}/"
-    s3 = _s3()
-    n = 0
-    for path in src.rglob("*"):
-        rel = path.relative_to(src).as_posix()
-        if not path.is_file() or is_excluded(rel):
-            continue
-        upload = path
-        if path.suffix in (".db", ".sqlite"):
-            snap = path.with_name(path.name + ".s3snap")
-            with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
-                conn.backup(out)
-            upload = snap
-        s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
-        if upload is not path:
-            upload.unlink(missing_ok=True)
-        n += 1
-    took = time.time() - t0
-    log.info("saved profile %s: %d objects in %.1fs", agent_id, n, took)
-    return took
+    with _save_lock(agent_id):
+        t0 = time.time()
+        src = _profile_dir(agent_id)
+        prefix = f"{S3_PREFIX}/{agent_id}/"
+        s3 = _s3()
+        n = 0
+        for path in src.rglob("*"):
+            rel = path.relative_to(src).as_posix()
+            if not path.is_file() or is_excluded(rel):
+                continue
+            upload = path
+            if path.suffix in (".db", ".sqlite"):
+                snap = path.with_name(path.name + ".s3snap")
+                with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
+                    conn.backup(out)
+                upload = snap
+            s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
+            if upload is not path:
+                upload.unlink(missing_ok=True)
+            n += 1
+        took = time.time() - t0
+        log.info("saved profile %s: %d objects in %.1fs", agent_id, n, took)
+        return took
 
 
 # --- lane B: config RPC helpers (Task 17) -------------------------------------------------------

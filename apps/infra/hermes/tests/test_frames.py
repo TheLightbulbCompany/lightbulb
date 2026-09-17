@@ -17,6 +17,15 @@ def test_a_dm_frame_omits_the_thread_root_key_entirely():
     assert "threadRootMessageId" not in turn.frame_event(ROOM, "ceo", RUN, None, {"type": "done"})["payload"]
 
 
+# ---- fix round (minor 10): AppSync refuses ~230 KiB; skip rather than let it 4xx silently -----
+def test_an_oversized_frame_is_skipped_not_sent(monkeypatch):
+    called = []
+    monkeypatch.setattr(turn.urllib.request, "urlopen", lambda *a, **k: called.append(1))
+    event = turn.frame_event(ROOM, "ceo", RUN, None, {"type": "chunk", "content": "x" * 250_000})
+    assert turn.publish_frame("https://events.example.invalid/event", f"/ws/{ROOM}/rooms/{ROOM}/k", event) == 0
+    assert called == []  # never even reached signing/urlopen
+
+
 def test_the_publish_body_double_encodes_the_event(monkeypatch):
     seen = {}
 

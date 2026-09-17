@@ -340,6 +340,11 @@ def frame_event(room_id: str, agent_id: str, run_id: str, thread_root: str | Non
             "occurredAt": now(), "roomId": room_id, "payload": payload}
 
 
+MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is the only frame
+# that can reach anywhere near this (a full-text resync of the near-100 KB text cap, plus
+# envelope overhead).
+
+
 def publish_frame(endpoint: str, channel: str, event: dict) -> int:
     """One POST per frame. The events array is double-encoded (each event is itself a JSON
     STRING) — AppSync's own wire shape; the backend's live_events._publish does the same."""
@@ -351,6 +356,9 @@ def publish_frame(endpoint: str, channel: str, event: dict) -> int:
         {"channel": channel, "events": [json.dumps(event, separators=(",", ":"))]},
         separators=(",", ":"),
     ).encode()
+    if len(body) > MAX_FRAME_BYTES:
+        log.warning("frame publish skipped: %d bytes exceeds %d cap", len(body), MAX_FRAME_BYTES)
+        return 0
     creds = _frame_credentials()
     signable = AWSRequest(method="POST", url=endpoint, data=body,
                           headers={"content-type": "application/json"})
@@ -740,12 +748,18 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
 
     try:
         try:
-            restore_profile(agent_id)
+            # Fix round (minor 5/13): run_active:true is published BEFORE restore_profile, not
+            # after -- restore_profile can raise (a bad S3 object, a network blip), and the
+            # except branch below always ends a turn with error/run_ended/run_active:false. If
+            # run_active:true was never published first, that closing sequence starts from a
+            # frame the client never saw open, i.e. it fabricates a run entry from a terminal
+            # frame.
             if has_run:
                 if not RUNS.get(run_id, {}).get("started"):
                     _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
                 frames.started()
                 threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
+            restore_profile(agent_id)
             # Fix round (Critical 1): must equal the session_id _construct_agent hands the
             # AIAgent (both derived from the same `session_key` this function already
             # computed above) -- the plugin's tool handler reads this file back by the
@@ -788,29 +802,38 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
             frames.finished(outcome, reply, error_kind)
     finally:
         done.set()  # always stop the heartbeat thread, even if finish_run/frames.finished blow up
-    took = time.time() - t0
-    if reply and has_run:  # a mail turn's reply has no room to post into
-        _post_backend(
-            f"agent-messages/{OWNER}",
-            {
-                "eventId": f"{body.get('eventId')}:{agent_id}:reply",  # one ingress eventId fans out to N agents
-                "roomId": room.get("id"),
-                "agentId": agent_id,
-                "text": reply,
-                "replyToMessageId": msg.get("messageId"),
-                "threadRootMessageId": thread_root,
-                "runId": run_id,
-            },
-        )
-    if has_run:
-        _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
-    # A run-shaped turn correlates on its runId; agent_mail (Task 20) carries no run block at
-    # all, so its own eventId is the closest thing to a correlation id for the usage report.
-    report_usage(session_key, agent_id, run_id or body.get("eventId"), outcome == "completed", int(took * 1000), usage)
+    # Fix round (minor 9): _busy_add(-1) moves into this finally so an escape anywhere in the
+    # tail (either _post_backend call, report_usage, _last_turn) cannot leave `/ping` reporting
+    # HealthyBusy for the life of the microVM. _post_backend/report_usage are designed to never
+    # throw, but "designed to" is not a guarantee worth betting liveness reporting on.
     try:
-        save_profile(agent_id)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("save_profile failed: %s", exc)
-    _last_turn[agent_id] = took
-    _busy_add(-1)
-    log.info("turn %s agent=%s outcome=%s %.1fs reply=%r", run_id, agent_id, outcome, took, reply[:80])
+        took = time.time() - t0
+        if reply and has_run:  # a mail turn's reply has no room to post into
+            _post_backend(
+                f"agent-messages/{OWNER}",
+                {
+                    "eventId": f"{body.get('eventId')}:{agent_id}:reply",  # one ingress eventId fans out to N agents
+                    "roomId": room.get("id"),
+                    "agentId": agent_id,
+                    "text": reply,
+                    "replyToMessageId": msg.get("messageId"),
+                    "threadRootMessageId": thread_root,
+                    "runId": run_id,
+                },
+            )
+        if has_run:
+            _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
+        # A run-shaped turn correlates on its runId; agent_mail (Task 20) carries no run block
+        # at all, so its own eventId is the closest thing to a correlation id for the usage
+        # report.
+        report_usage(session_key, agent_id, run_id or body.get("eventId"), outcome == "completed", int(took * 1000), usage)
+        try:
+            save_profile(agent_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("save_profile failed: %s", exc)
+        _last_turn[agent_id] = took
+        # Fix round (minor 11): log the reply LENGTH, never the reply text -- room content has
+        # no business in CloudWatch, and this line used to truncate-and-print it.
+        log.info("turn %s agent=%s outcome=%s %.1fs reply_len=%d", run_id, agent_id, outcome, took, len(reply))
+    finally:
+        _busy_add(-1)

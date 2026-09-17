@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from bridge import sync
 
 
@@ -54,6 +56,38 @@ def test_download_profile_pulls_exactly_the_four_backend_owned_files(home, monke
         f"{sync.S3_PREFIX}/a1/SOUL.md",
         f"{sync.S3_PREFIX}/a1/.revision",
     ]
+
+
+def test_restore_profile_seeds_revisions_from_the_freshly_downloaded_revision_file(home, monkeypatch):
+    """Minor 12 (fix round 1 continuation): the full tree walk restore_profile just did already
+    downloaded .revision (if the profile has one) along with everything else -- seed _REVISIONS
+    from that local copy so ensure_profile's very next call doesn't immediately think a hot
+    patch landed and re-pull the same four files it just restored."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+
+    class FakeS3:
+        def get_paginator(self, name):
+            class Paginator:
+                def paginate(self, Bucket, Prefix):
+                    return [{"Contents": [{"Key": f"{Prefix}config.yaml"}, {"Key": f"{Prefix}.revision"}]}]
+
+            return Paginator()
+
+        def download_file(self, bucket, key, dest):
+            (sync._profile_dir("a1") / Path(key).name).write_text("r5" if key.endswith(".revision") else "x")
+
+    monkeypatch.setattr(sync, "_s3", lambda: FakeS3())
+    sync._restored.discard("a1")
+    sync._REVISIONS.pop("a1", None)
+    sync.restore_profile("a1")
+    assert sync._REVISIONS["a1"] == "r5"
+
+    # And ensure_profile's very next call, still seeing revision "r5", must not re-pull.
+    pulls = []
+    monkeypatch.setattr(sync, "_read_revision", lambda agent_id: "r5")
+    monkeypatch.setattr(sync, "_download_profile", lambda agent_id: pulls.append(agent_id))
+    sync.ensure_profile("a1")
+    assert pulls == []
 
 
 def test_download_profile_survives_one_missing_object(home, monkeypatch):

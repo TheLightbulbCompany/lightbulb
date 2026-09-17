@@ -107,6 +107,13 @@ def restore_profile(agent_id: str) -> float:
     _restored.add(agent_id)
     took = time.time() - t0
     log.info("restored profile %s: %d objects in %.1fs", agent_id, n, took)
+    # Minor 12 (fix round 1 continuation): the tree walk above just downloaded .revision (if the
+    # profile has one) along with everything else -- seed _REVISIONS from that local copy so
+    # ensure_profile's very next call doesn't immediately think a hot patch landed and re-pull
+    # the same four files this just restored.
+    revision_file = dest / ".revision"
+    if revision_file.is_file():
+        _REVISIONS[agent_id] = revision_file.read_text(encoding="utf-8").strip()
     return took
 
 

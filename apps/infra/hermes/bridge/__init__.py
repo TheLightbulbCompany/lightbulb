@@ -57,6 +57,10 @@ if _secret_id:
 # get_secret() then fails CLOSED (raises) for any direct caller that reads a credential with no
 # per-turn scope installed (turn._secret_scope, see turn.py), instead of silently serving another
 # profile's os.environ value. No-op outside the real Hermes image (dev/test environments).
+# Minor 9 (fix round 1 continuation): this also means any FUTURE process-wide credential this
+# module starts injecting into os.environ (like the boot secrets just above) is invisible to a
+# multiplexed turn's ${VAR} refs -- a value a secondary profile's config.yaml needs to resolve
+# must land in that profile's own .env (hermes_profiles.build_profile_env), not os.environ.
 try:
     from agent.secret_scope import set_multiplex_active as _set_multiplex_active
 

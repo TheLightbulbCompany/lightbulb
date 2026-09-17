@@ -67,6 +67,42 @@ def test_the_secret_scope_stays_active_through_run_conversation_and_is_reset_aft
     assert state["scope"] is None  # reset after the turn, not leaked into the next one
 
 
+def test_the_secret_scope_is_installed_before_construct_agent_runs(monkeypatch):
+    """Minor 10 (fix round 1 continuation): the scope must wrap CONSTRUCTION too, not only
+    run_conversation -- report 01 §3's own words are "config is read once per AIAgent
+    construction", and a ${VAR} ref resolved at that moment needs the scope already installed."""
+    state = {"scope": None}
+    fake_agent_pkg = types.ModuleType("agent")
+    fake_ss = types.ModuleType("agent.secret_scope")
+    fake_ss.build_profile_secret_scope = lambda home: {"PAPERCLIP_API_KEY": "pcp_x"}
+    fake_ss.set_secret_scope = lambda secrets: state.update(scope=secrets) or "TOKEN"
+    fake_ss.reset_secret_scope = lambda token: state.update(scope=None)
+    monkeypatch.setitem(sys.modules, "agent", fake_agent_pkg)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
+
+    seen = {}
+
+    def fake_construct_agent(agent_id, body, frames, session_key):
+        # The scope must already be installed HERE -- at construction time, before any turn runs.
+        seen["scope_during_construction"] = dict(state["scope"] or {})
+
+        class _FakeAgent:
+            session_input_tokens = session_output_tokens = 0
+            session_cache_read_tokens = session_cache_write_tokens = 0
+
+            def run_conversation(self, **_kw):
+                return {"api_calls": 1, "final_response": "ok"}
+
+        return _FakeAgent()
+
+    monkeypatch.setattr(turn, "_construct_agent", fake_construct_agent)
+    from tests import factories as f
+
+    turn._run_hermes("ceo", f.ingress(), None)
+
+    assert seen["scope_during_construction"] == {"PAPERCLIP_API_KEY": "pcp_x"}
+
+
 def test_the_secret_scope_is_a_no_op_when_agent_secret_scope_is_unimportable(monkeypatch):
     """Same convention as _hermes_home_scope: dev/test environments outside the Hermes image
     have no agent.secret_scope module, and every other test in this suite (that doesn't stub it

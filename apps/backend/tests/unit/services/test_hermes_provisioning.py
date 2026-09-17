@@ -521,6 +521,7 @@ async def test_a_create_failed_runtime_is_deleted_arn_cleared_and_the_failure_ra
     otherwise call Update on a terminal runtime forever. The terminal branch must delete it and
     clear the row's ARN (same fenced write the ARN record used) before re-raising."""
     _configure_hermes_settings(monkeypatch)
+    _no_runtime_found_by_name(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
         hermes_provisioning,
@@ -561,6 +562,7 @@ async def test_a_create_failed_runtime_delete_is_best_effort(monkeypatch):
     delete) -- a failed DeleteAgentRuntime must not stop the row's ARN from being cleared or
     the original failure from being raised."""
     _configure_hermes_settings(monkeypatch)
+    _no_runtime_found_by_name(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
         hermes_provisioning,

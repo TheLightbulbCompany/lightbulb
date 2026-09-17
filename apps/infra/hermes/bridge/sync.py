@@ -109,3 +109,53 @@ def save_profile(agent_id: str) -> float:
     took = time.time() - t0
     log.info("saved profile %s: %d objects in %.1fs", agent_id, n, took)
     return took
+
+
+# --- lane B: config RPC helpers (Task 17) -------------------------------------------------------
+CONFIG_NAME = "config.yaml"
+
+
+def deep_merge(base: dict, patch: dict) -> dict:
+    """Dict-into-dict recursion; a list or scalar replaces wholesale. Same semantics as the
+    EFS config patcher, so relay/provisioning patches behave identically on Hermes — which
+    is also why a deny-list patch must carry every entry that stays denied."""
+    out = dict(base)
+    for key, value in (patch or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def read_profile_config(agent_id: str) -> dict:
+    import yaml
+
+    path = _profile_dir(agent_id) / CONFIG_NAME
+    if not path.is_file():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def write_profile_config(agent_id: str, config: dict) -> None:
+    import yaml
+
+    directory = _profile_dir(agent_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    tmp = directory / f"{CONFIG_NAME}.tmp"
+    tmp.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    tmp.replace(directory / CONFIG_NAME)  # atomic: a torn config.yaml bricks the agent's next turn
+
+
+def delete_profile_objects(agent_id: str) -> int:
+    """Drop the profile's S3 prefix. Without this a deleted agent comes back on the next
+    cold start, because restore reads the prefix, not the local dir."""
+    if not S3_BUCKET:
+        return 0
+    s3, prefix, removed = _s3(), f"{S3_PREFIX}/{agent_id}/", 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if keys:
+            s3.delete_objects(Bucket=S3_BUCKET, Delete={"Objects": keys})
+            removed += len(keys)
+    return removed

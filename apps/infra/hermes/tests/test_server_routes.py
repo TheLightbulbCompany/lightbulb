@@ -7,7 +7,11 @@ def test_rpc_requires_the_gateway_bearer():
     assert server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", {}, {"method": "health"})[0] == 401
 
 
-def test_health_answers_ready():
+def test_health_answers_ready(home):
+    # Needs the `home` fixture now that health answers {ok:false, NOT_READY} instead of
+    # {ok:true, payload:{ready:false}} when boot isn't ready (see test_rpc_transport.py for
+    # the not-ready case) -- container_rpc.call only raises on {ok:false}, so a bridge with
+    # no profiles dir must not claim ok:true here.
     code, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert code == 200 and obj["ok"] is True and obj["payload"]["runtime"] == "hermes"
 

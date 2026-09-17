@@ -20,6 +20,7 @@ import {
   agentDisplayName,
   getAgentModelString,
   useAgents,
+  useRuntimeHost,
   useRuntimeRpc,
   useRuntimeRpcMutation,
   type Agent,
@@ -52,7 +53,8 @@ interface ConfigAgentEntry {
 
 /** config.get returns `{path, exists, raw, config, hash?, valid}` — the real
  *  config object is under `.config` (fall back to the snapshot itself for
- *  deployments that inline it). */
+ *  deployments that inline it). `models.list` (AgentCore) has no envelope, so
+ *  its `{models: [...], defaultId}` payload falls through unchanged. */
 function extractConfig(snapshot: unknown): unknown {
   if (snapshot && typeof snapshot === "object" && "config" in snapshot) {
     const inner = (snapshot as { config?: unknown }).config;
@@ -79,17 +81,22 @@ function ModelPickerModal({
   visible,
   models,
   currentRef,
+  allowDefault,
   onClose,
   onSelect,
 }: {
   visible: boolean;
   models: CatalogModel[];
   currentRef: string | undefined;
+  /** "Use default" (and the free-text ref box) exist only where a gateway default to inherit
+   *  does: on AgentCore each agent's own profile IS the setting, `{model: null}` writes
+   *  nothing, and a typed ref the backend never offered is refused (M6 task 10-C, row 31). */
+  allowDefault: boolean;
   onClose: () => void;
   onSelect: (ref: string | null) => void;
 }) {
   const [manual, setManual] = useState("");
-  const catalogEmpty = models.length === 0;
+  const catalogEmpty = models.length === 0 && allowDefault;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -147,21 +154,23 @@ function ModelPickerModal({
               keyExtractor={(m) => m.ref}
               style={styles.pickerList}
               ListHeaderComponent={
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.pickerRow,
-                    pressed && styles.pickerRowPressed,
-                  ]}
-                  onPress={() => onSelect(null)}
-                >
-                  <View style={styles.pickerRowText}>
-                    <Text style={styles.pickerName}>Use default</Text>
-                    <Text style={styles.pickerRef}>Inherit the gateway default</Text>
-                  </View>
-                  {currentRef == null && (
-                    <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
-                  )}
-                </Pressable>
+                allowDefault ? (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.pickerRow,
+                      pressed && styles.pickerRowPressed,
+                    ]}
+                    onPress={() => onSelect(null)}
+                  >
+                    <View style={styles.pickerRowText}>
+                      <Text style={styles.pickerName}>Use default</Text>
+                      <Text style={styles.pickerRef}>Inherit the gateway default</Text>
+                    </View>
+                    {currentRef == null && (
+                      <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
+                    )}
+                  </Pressable>
+                ) : null
               }
               renderItem={({ item }) => {
                 const selected = item.ref === currentRef;
@@ -264,9 +273,15 @@ export default function AgentDetail() {
   const callRpc = useRuntimeRpcMutation(live);
 
   const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(live);
+  // M6 task 10-C (scan row 31): the model list comes from `models.list` on AgentCore — the
+  // owner's own Bedrock inference profiles, or Hermes's catalog via the bridge — and from the
+  // gateway config's providers catalog on ECS. Held while the runtime host is unknown
+  // (`undefined` never means "assume ECS": guessing costs a ~55s microVM cold start).
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
   const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<unknown>(
     live,
-    "config.get",
+    runtimeHost === "agentcore" ? "models.list" : runtimeHost === "ecs" ? "config.get" : null,
   );
 
   const agent: Agent | undefined = useMemo(
@@ -546,6 +561,7 @@ export default function AgentDetail() {
         visible={pickerOpen}
         models={selectorModels}
         currentRef={currentModelRef}
+        allowDefault={!onAgentCore}
         onClose={() => setPickerOpen(false)}
         onSelect={(ref) => void selectModel(ref)}
       />

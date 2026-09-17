@@ -22,10 +22,28 @@ export interface CatalogModel {
   name: string;
 }
 
-/** Walk `config.models.providers` and map every model id (bare AND
- *  provider-prefixed) to its display name. */
+/** The `models.list` entries, when `source` is that payload rather than a gateway config. */
+function runtimeModelList(source: unknown): { id: string; name?: string }[] | null {
+  const models = (source as { models?: unknown } | null | undefined)?.models;
+  return Array.isArray(models)
+    ? (models.filter(
+        (entry) => typeof (entry as { id?: unknown } | null)?.id === "string" && (entry as { id: string }).id,
+      ) as { id: string; name?: string }[])
+    : null;
+}
+
+/** Map every model id (bare AND provider-prefixed) to its display name. Takes EITHER source
+ *  (M6 task 10-C): the `models.list` payload `{models: [{id, name}]}` on AgentCore, or the
+ *  gateway config's `{models: {providers: …}}` catalog on ECS. */
 export function buildModelNameMap(config: unknown): Record<string, string> {
   const names: Record<string, string> = {};
+  const runtimeModels = runtimeModelList(config);
+  if (runtimeModels) {
+    for (const entry of runtimeModels) {
+      if (typeof entry.name === "string" && entry.name) names[entry.id] = entry.name;
+    }
+    return names;
+  }
   const models = (config as { models?: unknown } | null | undefined)?.models;
   const providers = (models as { providers?: unknown } | null | undefined)
     ?.providers;
@@ -47,11 +65,17 @@ export function buildModelNameMap(config: unknown): Record<string, string> {
   return names;
 }
 
-/** Flatten `config.models.providers` into selectable models. The catalog is
- *  the ONLY legitimate option source — per-owner IAM scopes Bedrock invokes
- *  to exactly these profiles, so anything outside would fail closed. */
+/** Flatten either source into selectable models. The list is the ONLY legitimate option
+ *  source — per-owner IAM scopes Bedrock invokes to exactly these profiles, so anything
+ *  outside would fail closed (and on AgentCore the backend refuses an id it did not offer). */
 export function listCatalogModels(config: unknown): CatalogModel[] {
   const out: CatalogModel[] = [];
+  const runtimeModels = runtimeModelList(config);
+  if (runtimeModels) {
+    // `models.list` ids are already the exact ref the picker sends back — a Hermes profile
+    // stores `model.default` bare, with `model.provider` beside it, so there is no prefix.
+    return runtimeModels.map((entry) => ({ ref: entry.id, name: entry.name || entry.id }));
+  }
   const models = (config as { models?: unknown } | null | undefined)?.models;
   const providers = (models as { providers?: unknown } | null | undefined)
     ?.providers;

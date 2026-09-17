@@ -119,7 +119,7 @@ RPC_MAX_TIMEOUT_MS = 120_000
 # exists. The SHAPE is the contract — container_rpc unwraps {ok:false} into a RuntimeError
 # carrying this exact JSON, so it must never wobble.
 UI_ONLY_METHODS = frozenset({
-    "tools.catalog", "commands.list", "models.list", "chat.history", "agent.identity.get",
+    "tools.catalog", "commands.list", "chat.history", "agent.identity.get",
     "skills.install", "skills.search", "skills.status", "skills.update",
     "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.list",
     "skills.proposals.reject",
@@ -261,6 +261,46 @@ def _channels_status(params: dict, **_kwargs) -> dict:
     return {"ok": True, "payload": {"channels": [], "probe": bool(params.get("probe"))}}
 
 
+def _provider_catalog(provider: str) -> list[str]:
+    """Hermes's own curated model list for one provider (``hermes_cli.models``, the same source
+    its `/model` picker uses). Empty outside the Hermes image (dev/tests) or when the catalog
+    cannot be built -- the picker then shows the profile's current model alone, which is worse
+    than a full list but never wrong."""
+    try:
+        from hermes_cli.models import curated_models_for_provider
+
+        return [mid for mid, _desc in curated_models_for_provider(provider) if isinstance(mid, str) and mid]
+    except Exception:  # noqa: BLE001 -- a missing/failed catalog is a degraded picker, not an error
+        log.warning("model catalog unavailable for provider %s", provider, exc_info=True)
+        return []
+
+
+def _models_list(params: dict, **_kwargs) -> dict:
+    """The models this workspace can pick from (M6 task 10-C).
+
+    A BEDROCK profile answers an EMPTY list on purpose: the only models the bedrock-gate admits
+    are the owner's own application inference profiles, which live in DynamoDB, not here -- the
+    backend serves that list itself and never forwards. So this is the BYO-key / ChatGPT-OAuth
+    answer, and it is Hermes's own catalog for whatever provider the profile pins. ``name`` is
+    the id: Hermes's catalog carries descriptions ("recommended", "free"), not display names,
+    and inventing one here would be a second naming authority."""
+    names = _profiles()
+    agent_id = str(params.get("agentId") or "")
+    if agent_id not in names:
+        # Every profile on a workspace shares its provider (the backend writes them together),
+        # so any one answers the owner-level question a no-agentId call is asking.
+        agent_id = names[0] if names else ""
+    if not agent_id:
+        return {"ok": True, "payload": {"models": [], "defaultId": ""}}
+    model, provider = turn.profile_model(sync.read_profile_config(agent_id))
+    if provider == "bedrock":
+        return {"ok": True, "payload": {"models": [], "defaultId": model}}
+    return {"ok": True, "payload": {
+        "models": [{"id": mid, "name": mid, "provider": provider} for mid in _provider_catalog(provider)],
+        "defaultId": model,
+    }}
+
+
 def _models_auth_status(_params: dict, **_kwargs) -> dict:
     ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
     return {"ok": True, "payload": {"providers": [
@@ -269,7 +309,7 @@ def _models_auth_status(_params: dict, **_kwargs) -> dict:
 
 RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update,
                     "agents.delete": _agents_delete, "channels.status": _channels_status,
-                    "models.authStatus": _models_auth_status})
+                    "models.list": _models_list, "models.authStatus": _models_auth_status})
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -240,7 +240,8 @@ interface AgentRosterProps {
   publishedAgentIds: ReadonlySet<string>;
   /** Marketplace hire that just landed — plays the `slideIn` arrival animation. */
   freshlyInstalledAgentId?: string | null;
-  /** `config.get` snapshot, for resolving Bedrock AIP ARNs to display names. */
+  /** The owner's model list, for resolving Bedrock AIP ARNs to display names — either source
+   *  `buildModelNameMap` takes (`models.list` on AgentCore, a `config.get` snapshot on ECS). */
   configSnapshot?: unknown;
   onSelect: (agentId: string) => void;
   onOpenWork: (agentId: string) => void;
@@ -356,7 +357,11 @@ export function AgentRoster({
         const name = agentDisplayName(agent);
         const isActive = activeAgentId === agent.id;
         const displayAgent = fromInstalledAgent(agent);
-        const model = displayModelName(getAgentModelString(agent), modelNames);
+        // `modelName` is the runtime's own label, carried on the roster row when it is free
+        // (AgentCore — see `Agent.modelName`); the catalog map is the ECS source. Never a
+        // `models.list` dial from here: on BYO/OAuth that is a microVM cold start for a label
+        // (M6-R53).
+        const model = agent.modelName || displayModelName(getAgentModelString(agent), modelNames);
         const stateLabel =
           state === "idle"
             ? null

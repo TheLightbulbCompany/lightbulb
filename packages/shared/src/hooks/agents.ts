@@ -24,6 +24,17 @@ export interface Agent {
   name?: string;
   identity?: { name?: string; emoji?: string; avatar?: string };
   model?: AgentModelRef;
+  /** The display name for `model`, when the runtime can give it away for free. AgentCore fills
+   *  it in (`agents.list` already reads every profile), so a roster surface never has to dial
+   *  `models.list` — which on a BYO/OAuth workspace is a ~55s microVM cold start — for a label
+   *  (M6-R53). Absent on ECS, where the gateway config's catalog is already in hand. */
+  modelName?: string;
+  /** Paperclip roster fields an AgentCore `agents.list` row carries (the roster IS the row
+   *  there — there is no `agent.identity.get` on this runtime). */
+  role?: string;
+  title?: string;
+  capabilities?: string;
+  icon?: string;
 }
 
 export interface AgentsListResponse {
@@ -31,19 +42,20 @@ export interface AgentsListResponse {
   agents?: Agent[];
 }
 
-/**
- * On an AgentCore (Hermes) workspace there are no model refs on the wire at all: the roster
- * intercept reports a closed TIER vocabulary, and `agents.update {model}` accepts only those
- * two values (`runtime_rpc._AGENTCORE_MODEL_TIERS`). A raw ref could point outside the owner's
- * own Bedrock grant, so one is never stored. These are the display labels for them — no ECS
- * model ref collides, since every ECS ref is `provider/model`-shaped.
- */
-const MODEL_TIER_LABELS: Readonly<Record<string, string>> = {
-  standard: "Standard",
-  premium: "Premium",
-};
+// No `models.list` response type lives here: every client walks that payload with the local
+// shape-detection in `modelDisplay.ts`/`agentCatalog.ts`, so a shared interface would be a
+// public API with zero importers.
 
-/** Normalize an `Agent.model` field to a plain string (or undefined). */
+/**
+ * Normalize an `Agent.model` field to a plain string (or undefined).
+ *
+ * Every runtime now reports a real model ID here — on AgentCore it is the profile's own
+ * `model.default` (a Bedrock application-inference-profile ARN, or a Hermes catalog id on
+ * BYO/OAuth). The transitional `"standard"`/`"premium"` tier words this used to translate are
+ * gone (M6 task 10-C, M6-R50): a tier word named no model the owner could look up, and the
+ * picker now sends the same ids `models.list` offers. Resolve the ID to a display name through
+ * that list (`buildModelNameMap`), not here.
+ */
 export function getAgentModelString(agent: Pick<Agent, "model"> | undefined): string | undefined {
   const model = agent?.model;
   const ref =
@@ -52,8 +64,7 @@ export function getAgentModelString(agent: Pick<Agent, "model"> | undefined): st
       : model && typeof model === "object"
         ? model.primary?.trim()
         : undefined;
-  if (!ref) return undefined;
-  return MODEL_TIER_LABELS[ref] ?? ref;
+  return ref || undefined;
 }
 
 /** Resolve the human-readable label for an agent. Prefers ``identity.name``

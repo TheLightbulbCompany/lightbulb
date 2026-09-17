@@ -65,6 +65,37 @@ def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_ro
     assert "ANTHROPIC_API_KEY" not in files.dotenv
 
 
+def test_soul_md_override_replaces_the_generated_identity():
+    """M6 lane R1: the workspace migration job carries an agent's EFS ``SOUL.md`` verbatim
+    into its Hermes profile instead of the generic ``build_soul_md`` identity — the only
+    reason a caller outside this module ever wants a raw string in ``ProfileFiles.soul_md``."""
+    files = write_agent_profile(
+        "org_a",
+        {"id": "a1", "name": "Ada", "role": "ceo"},
+        provider_choice="bedrock_claude",
+        aip_arns=AIPS,
+        paperclip_api_key="pcp_live_x",
+        integrations={},
+        env_vars={},
+        soul_md_override="# Ada\n\nI am the CEO, carried over from ECS.\n",
+    )
+    assert files.soul_md == "# Ada\n\nI am the CEO, carried over from ECS.\n"
+
+
+def test_no_soul_md_override_falls_back_to_build_soul_md():
+    files = write_agent_profile(
+        "org_a",
+        {"id": "a1", "name": "Ada", "role": "ceo"},
+        provider_choice="bedrock_claude",
+        aip_arns=AIPS,
+        paperclip_api_key="pcp_live_x",
+        integrations={},
+        env_vars={},
+    )
+    assert files.soul_md.startswith("# Ada")
+    assert "report to you" in files.soul_md
+
+
 class _FakeS3Client:
     """Records every ``put_object`` call as ``(bucket, key, decoded body)``."""
 

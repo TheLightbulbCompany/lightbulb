@@ -174,3 +174,99 @@ async def test_with_the_flag_on_hook_token_exists_before_step_0_seeds_the_roster
 
     await provision_runner.run("org_a", "claim-1")
     assert hook_token_seen_at_seed_time["value"] == "minted-hook-token"
+
+
+# --- C2/M4-R36: the Hermes leg releases the lease to error on failure -----------------------
+
+
+@pytest.mark.asyncio
+async def test_a_provision_hermes_runtime_failure_releases_the_lease_to_error(monkeypatch, runner_env):
+    monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", True)
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
+    monkeypatch.setattr(
+        provision_runner.hermes_provisioning,
+        "provision_hermes_runtime",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
+
+    released = {}
+
+    async def _fake_release(
+        owner_id, claim_id, *, last_error=None, retryable=True, attempt_token=None, generation=None
+    ):
+        released.update(
+            owner_id=owner_id,
+            claim_id=claim_id,
+            last_error=last_error,
+            retryable=retryable,
+            attempt_token=attempt_token,
+        )
+
+    import core.repositories.container_repo as repo_mod
+
+    monkeypatch.setattr(repo_mod, "release_provision_to_error", _fake_release)
+
+    exit_code = await provision_runner.run("org_a", "claim-1")
+    assert exit_code != provision_runner.EXIT_OK
+    assert released["owner_id"] == "org_a"
+    assert released["claim_id"] == "claim-1"
+    assert released["attempt_token"] == "claim-1"
+    assert "boom" in released["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_prepare_hermes_workspace_failure_releases_the_lease_to_error(monkeypatch, runner_env):
+    monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", True)
+    monkeypatch.setattr(
+        provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock(side_effect=RuntimeError("boom"))
+    )
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _explodes_if_called)  # must never be reached
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
+    monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
+
+    released = {}
+
+    async def _fake_release(
+        owner_id, claim_id, *, last_error=None, retryable=True, attempt_token=None, generation=None
+    ):
+        released.update(owner_id=owner_id, claim_id=claim_id, last_error=last_error)
+
+    import core.repositories.container_repo as repo_mod
+
+    monkeypatch.setattr(repo_mod, "release_provision_to_error", _fake_release)
+
+    exit_code = await provision_runner.run("org_a", "claim-1")
+    assert exit_code != provision_runner.EXIT_OK
+    assert released["owner_id"] == "org_a"
+    assert "boom" in released["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_hermes_leg_stands_down_quietly_not_as_an_error(monkeypatch, runner_env):
+    """ProvisionSuperseded must never be treated as a failure to release -- a takeover already
+    owns the row."""
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", True)
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
+    monkeypatch.setattr(
+        provision_runner.hermes_provisioning,
+        "provision_hermes_runtime",
+        AsyncMock(side_effect=ProvisionSuperseded("stale")),
+    )
+    monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
+
+    import core.repositories.container_repo as repo_mod
+
+    release = AsyncMock()
+    monkeypatch.setattr(repo_mod, "release_provision_to_error", release)
+    # _stand_down_superseded re-reads the row to verify who owns it -- absent row (the
+    # runner_env default) is the "gone/real successor" branch, which exits quietly.
+    monkeypatch.setattr(repo_mod, "get_by_owner_id", AsyncMock(return_value=None))
+
+    exit_code = await provision_runner.run("org_a", "claim-1")
+    assert exit_code == provision_runner.EXIT_SUPERSEDED
+    release.assert_not_awaited()

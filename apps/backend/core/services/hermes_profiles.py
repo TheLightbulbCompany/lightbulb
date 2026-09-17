@@ -465,6 +465,7 @@ def write_agent_profile(
     env_vars: dict[str, str],
     byo_provider: str | None = None,
     byo_api_key: str | None = None,
+    soul_md_override: str | None = None,
 ) -> ProfileFiles:
     """The three files that ARE one agent's Hermes profile (fix round 1, I5 dropped the fourth,
     ``managed_overlay`` — the baked ``/etc/hermes/config.yaml`` is the sole enforcement point and
@@ -482,6 +483,10 @@ def write_agent_profile(
     choice is threaded next to ``provider_choice`` everywhere else in the codebase
     (``ecs_manager.py``); reading it from the roster row silently pinned every BYO owner to
     Anthropic with no key delivered anywhere.
+
+    ``soul_md_override`` (M6 lane R1): when given, replaces the generated ``build_soul_md``
+    identity outright — the one hook the ECS-to-Hermes workspace migration job needs to carry
+    an agent's existing EFS ``SOUL.md`` verbatim instead of a freshly generated identity.
     """
     mcp_config, mcp_secrets = translate_mcp_servers(integrations)
     config = build_profile_config(
@@ -503,7 +508,7 @@ def write_agent_profile(
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),
         dotenv=render_dotenv(env),
-        soul_md=build_soul_md(agent),
+        soul_md=soul_md_override if soul_md_override is not None else build_soul_md(agent),
     )
 
 

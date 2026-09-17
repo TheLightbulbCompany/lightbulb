@@ -947,6 +947,44 @@ class TestStopUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
             mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
 
+    @pytest.mark.asyncio
+    async def test_stop_on_an_agentcore_row_without_force_is_still_a_noop(self, manager, mock_ecs_client):
+        """Ruling M6-R15: the pre-existing _hosted_on_agentcore no-op guard is unchanged for
+        every ordinary caller -- force defaults to False."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value={**_make_container_dict(status="running"), "runtime_host": "agentcore"}
+            )
+            await manager.stop_user_service("user_test_123")
+            mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_on_an_agentcore_row_with_force_scales_to_zero(self, manager, mock_ecs_client):
+        """Ruling M6-R15/M6-R17: force=True is the ONE sanctioned bypass of the AgentCore guard,
+        for the M6 migration job scaling down the ECS service it is retiring -- same scale-to-zero
+        ECS call, but NO row write: the row is on agentcore and status="stopped" would be a lie
+        about a workspace that is actually live there. The migration job's own _stamp_migrated
+        is the only writer of this row's terminal state in that case."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value={**_make_container_dict(status="running"), "runtime_host": "agentcore"}
+            )
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.stamp_stop_reason = AsyncMock()
+
+            await manager.stop_user_service("user_test_123", reason="hermes_migration", force=True)
+
+            mock_ecs_client.update_service.assert_called_once_with(
+                cluster=manager._cluster,
+                service="openclaw-user_test_123-f4ae64abb2db",
+                desiredCount=0,
+            )
+            mock_repo.update_status.assert_not_called()
+            mock_repo.stamp_stop_reason.assert_not_called()
+            # Fix round 2, item 4 nit: force=True never reads the row either -- the result was
+            # only ever used by the (skipped) write above.
+            mock_repo.get_by_owner_id.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # start_user_service
@@ -1000,6 +1038,26 @@ class TestStartUserService:
                 "still-running tasks during the stop -> start race"
             )
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
+
+    @pytest.mark.asyncio
+    async def test_start_after_a_flip_reads_the_agentcore_guard_consistently(self, manager, mock_ecs_client):
+        """Ruling M6-R21: _hosted_on_agentcore (the guard both start_user_service and
+        stop_user_service check first) must read the row with consistent=True. rollback's row
+        flip back to runtime_host="ecs" and this restart happen back to back, and an
+        eventually-consistent read could still return the pre-flip runtime_host="agentcore" --
+        silently no-opping the restart forever."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.start_user_service("user_test_123", force=True)
+
+            first_call = mock_repo.get_by_owner_id.call_args_list[0]
+            assert first_call == call("user_test_123", consistent=True)
+        mock_ecs_client.update_service.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_start_fires_running_transition_poller(self, manager, mock_ecs_client):
@@ -3381,7 +3439,9 @@ class TestProvisionUserContainer:
 
         row_state = {"gen": "gen-OLD"}
 
-        async def _get(owner_id):
+        async def _get(owner_id, *, consistent=False):
+            # consistent=True is Ruling M6-R21's _hosted_on_agentcore read, reached via this
+            # provision's own trailing start_user_service call -- same row either way here.
             row = _make_container_dict(status="stopped")
             row["provision_generation"] = row_state["gen"]
             return row

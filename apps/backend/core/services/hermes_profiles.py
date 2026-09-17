@@ -147,14 +147,12 @@ def _model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict,
 
 def build_profile_config(
     *,
-    agent_id: str,
     agent_role: str,
     provider_choice: str,
     byo_provider: str | None = None,
     aip_arns: dict[str, str] | None = None,
     mcp_servers: dict | None = None,
     is_ceo: bool = False,
-    listening_paid: bool = True,
 ) -> dict:
     model, aux_model, aux_provider = _model_block(provider_choice, byo_provider, aip_arns, is_ceo)
     aux: dict = {"free_only": True, "transient_retries": 2}
@@ -189,9 +187,12 @@ def build_profile_config(
             "memory_char_limit": 2200,
             "user_char_limit": 1375,
         },
+        # No "guard_agent_created" (fix round 1, minor): it is a real key (config_defaults.py:1373,
+        # default False, gates skill_manager_tool's terminal() execution path), but the platform
+        # has no signal that belongs there — "listening" is a per-room chat mode the backend
+        # enforces, unrelated to skill-creation gating. Leaving it unset keeps Hermes's own default.
         "skills": {
             "write_approval": False,
-            "guard_agent_created": not listening_paid,
             "external_dirs": ["/opt/hermes-skills"],
         },
         "sessions": {
@@ -205,7 +206,9 @@ def build_profile_config(
         "plugins": {"enabled": list(_LIGHTBULB_PLUGINS)},
     }
     if model["provider"] == _BEDROCK:
-        config["bedrock"] = {"region": "us-east-1", "discovery": {"enabled": False}}
+        # One source for the region (fix round 1, minor): settings.AWS_REGION, same as .env's
+        # AWS_REGION used to read before C3 moved that var to Task 17's runtime environment.
+        config["bedrock"] = {"region": settings.AWS_REGION, "discovery": {"enabled": False}}
     return config
 
 
@@ -284,8 +287,10 @@ def render_dotenv(env: dict[str, str]) -> str:
 
 #: OpenClaw spelling -> Hermes spelling. camelCase -> snake_case is the trap (report 01 §2.8).
 #: An unrecognised key is DROPPED rather than passed through: Hermes's mcp config is a closed
-#: shape and a stray key is a spawn-time error, not a warning.
-_MCP_DIRECT = ("command", "args", "env", "cwd", "url", "headers", "auth", "oauth", "enabled")
+#: shape and a stray key is a spawn-time error, not a warning. No "oauth" (fix round 1, minor): no
+#: producer here ever sets it (the real mcp_remote shape carries auth: "oauth" instead) and
+#: Hermes's own OpenClaw->Hermes converter never emits it either.
+_MCP_DIRECT = ("command", "args", "env", "cwd", "url", "headers", "auth", "enabled")
 _MCP_MS_TO_S = {"requestTimeoutMs": "timeout", "connectionTimeoutMs": "connect_timeout"}
 _MCP_SAMPLING = {
     "enabled": "enabled",
@@ -445,7 +450,6 @@ def write_agent_profile(
     """
     mcp_config, mcp_secrets = translate_mcp_servers(integrations)
     config = build_profile_config(
-        agent_id=agent["id"],
         agent_role=agent.get("role") or "general",
         provider_choice=provider_choice,
         byo_provider=byo_provider,

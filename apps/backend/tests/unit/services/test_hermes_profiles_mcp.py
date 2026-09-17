@@ -83,3 +83,11 @@ def test_an_unknown_key_is_dropped_not_passed_through():
 def test_empty_input_is_an_empty_map_and_no_secrets():
     assert translate_mcp_servers({}) == ({}, {})
     assert translate_mcp_servers(None) == ({}, {})
+
+
+def test_oauth_field_is_dropped_no_producer_sets_it_and_hermes_never_emits_it():
+    """Fix round 1, minor: no producer of this repo's ``mcp_server`` blocks sets ``oauth`` (the
+    real ``mcp_remote`` shape carries ``auth: "oauth"`` instead — see the ``auth`` test above), and
+    Hermes's own OpenClaw->Hermes converter (``openclaw_to_hermes.py``) never emits it either."""
+    config, _ = translate_mcp_servers({"s": {"url": "https://x", "oauth": {"token": "abc"}}})
+    assert "oauth" not in config["s"]

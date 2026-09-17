@@ -10,7 +10,7 @@ AIPS = {
 
 
 def cfg(**kw):
-    base = dict(agent_id="a1", agent_role="engineering", provider_choice="bedrock_claude", aip_arns=AIPS)
+    base = dict(agent_role="engineering", provider_choice="bedrock_claude", aip_arns=AIPS)
     return hermes_profiles.build_profile_config(**(base | kw))
 
 
@@ -302,3 +302,29 @@ def test_render_dotenv_rejects_a_value_containing_a_carriage_return():
 
     with pytest.raises(ValueError):
         hermes_profiles.render_dotenv({"X": "line1\rline2"})
+
+
+# Fix round 1, minors.
+
+
+def test_build_profile_config_takes_no_agent_id_parameter():
+    import inspect
+
+    assert "agent_id" not in inspect.signature(hermes_profiles.build_profile_config).parameters
+
+
+def test_build_profile_config_takes_no_listening_paid_parameter_and_emits_no_guard_agent_created():
+    """``listening_paid`` mapped to ``skills.guard_agent_created`` (a real Hermes key,
+    ``config_defaults.py:1373``, default False — gates ``skill_manager_tool``'s ``terminal()``
+    execution path) — but listening is a per-ROOM chat mode enforced by the backend, unrelated to
+    skill-creation gating. write_agent_profile never even passed the parameter, so the mapping was
+    dead weight pretending to be a control it wasn't."""
+    import inspect
+
+    assert "listening_paid" not in inspect.signature(hermes_profiles.build_profile_config).parameters
+    assert "guard_agent_created" not in cfg()["skills"]
+
+
+def test_bedrock_region_is_sourced_from_settings_not_hardcoded(monkeypatch):
+    monkeypatch.setattr(hermes_profiles.settings, "AWS_REGION", "eu-west-1")
+    assert cfg()["bedrock"]["region"] == "eu-west-1"

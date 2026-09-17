@@ -50,6 +50,11 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         assert turn.HOOK_TOKEN == "boot-hook", "turn.py captured a stale value, not the boot fetch"
         assert server.GATEWAY_TOKEN == "boot-gw", "server.py captured a stale value, not the boot fetch"
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "boot-bearer"
+        # M2-R12: lightbulb_node reads OPENCLAW_HOOK_TOKEN off the process env directly (it has
+        # no per-turn context file -- exec isn't turn-scoped), so the boot fetch must reach that
+        # env var too, not just the `bridge.HOOK_TOKEN` module attribute.
+        assert os.environ["OPENCLAW_HOOK_TOKEN"] == "boot-hook"
+        assert os.environ["GATEWAY_TOKEN"] == "boot-gw"
     finally:
         # Leave every other test's already-imported bridge modules exactly as they were.
         for name in _BRIDGE_MODULES:
@@ -58,3 +63,5 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
             if mod is not None:
                 sys.modules[name] = mod
         os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+        os.environ.pop("OPENCLAW_HOOK_TOKEN", None)
+        os.environ.pop("GATEWAY_TOKEN", None)

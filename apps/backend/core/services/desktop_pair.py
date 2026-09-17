@@ -245,6 +245,27 @@ class DesktopPermissionGrant:
         return caps
 
 
+async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
+    """The AgentCore node broker's command allowlist for one paired device.
+
+    Reads the same backend-written ``nodes/paired.json`` record
+    ``desktop_pair_live.approve_pending_node_surface`` uses for the (ECS-only) live RPC
+    push -- the record stays where pairing writes it today; this is a new reader, not a new
+    writer. A missing pairing directory/file or an unpaired device id reads as an empty
+    set and never raises: the relay intersects a connecting client's declared commands with
+    this set, so an unreadable or not-yet-paired record simply grants nothing rather than
+    failing the connect.
+    """
+    from core.services.desktop_pair_live import _read_backend_pairing_file
+
+    nodes = await asyncio.to_thread(_read_backend_pairing_file, owner_id, "nodes")
+    entry = nodes.get(device_id)
+    if not isinstance(entry, dict):
+        return set()
+    commands = entry.get("commands")
+    return set(commands) if isinstance(commands, list) else set()
+
+
 def _public_key_raw_bytes(pubkey_pem: str) -> bytes:
     """Parse PEM-encoded Ed25519 SPKI and return the 32 raw key bytes.
 

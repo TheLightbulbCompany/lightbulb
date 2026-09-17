@@ -85,6 +85,17 @@ def host_for(container: dict) -> str:
     return host if host in ("ecs", "agentcore") else "ecs"
 
 
+async def is_agentcore_owner(owner_id: str) -> bool:
+    """``host_for`` for a call site that only has an owner id (the relay hooks, which fire
+    from ``owner_id``/``user_id``/``device_id`` alone). A caller that already has the
+    container row in hand — the relay's own transport branch — should call
+    ``host_for(container)`` directly instead of paying for this extra read."""
+    from core.repositories import container_repo
+
+    container = await container_repo.get_by_owner_id(owner_id)
+    return bool(container) and host_for(container) == "agentcore"
+
+
 async def request(
     container: dict,
     path: str,

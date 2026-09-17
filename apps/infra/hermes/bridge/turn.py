@@ -29,6 +29,58 @@ def _busy_add(n: int) -> None:
         _busy += n
 
 
+# ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
+# NOTE (lane A / merge concern, see lane-A-report.md): the legacy `_runs` dict above is what
+# server.py's inbound handler currently uses for replay detection (`if run_id in turn._runs:
+# ... return 200 replayed`). Task 9 says this registry "replaces" it, but server.py is lane
+# B's file, so `_runs` is left in place here and RUNS is added alongside it; run_turn updates
+# both. The controller should retire `_runs` in favour of `register_run`/`RUNS` when server.py
+# is edited to call register_run() before spawning the turn thread (see the report for the
+# exact recommended server.py diff).
+RUNS: dict[str, dict] = {}
+_RUNS_LOCK = threading.Lock()
+
+
+def register_run(run_id: str) -> bool:
+    """False when this runId was already seen in this process — the ingress replies 'replayed'."""
+    with _RUNS_LOCK:
+        if run_id in RUNS:
+            return False
+        RUNS[run_id] = {"state": "queued", "agent": None, "aborted": False, "outcome": None}
+        return True
+
+
+def attach_agent(run_id: str, agent) -> None:
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is not None:
+            entry["agent"], entry["state"] = agent, "running"
+
+
+def finish_run(run_id: str, outcome: str) -> None:
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is not None:
+            entry.update(state="ended", outcome=outcome, agent=None)
+
+
+def abort_run(run_id: str) -> bool:
+    """A queued turn is dropped before it launches (ZERO_USAGE, opts.neverLaunched in the
+    OpenClaw supervisor); a running one is hard-interrupted through Hermes's own primitive."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is None or entry["state"] == "ended":
+            return False
+        entry["aborted"] = True
+        agent = entry["agent"]
+    if agent is not None:
+        try:
+            agent.interrupt(hard_cancel=True, tool_reason="explicit stop requested")
+        except Exception:  # noqa: BLE001
+            log.warning("abort: interrupt failed run=%s", run_id, exc_info=True)
+    return True
+
+
 # ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
 MAX_TEXT_BYTES = 100_000
 MAX_EVENT_ID_BYTES = 256
@@ -375,6 +427,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
     """The one seam every other test replaces instead of constructing a real AIAgent."""
     msg = body.get("message") or {}
     agent = _construct_agent(agent_id, body, frames)
+    attach_agent((body.get("run") or {}).get("runId"), agent)
     result = agent.run_conversation(
         user_message=f"{(body.get('sender') or {}).get('id', '?')}: {msg.get('text', '')}",
         system_message=system_prompt(body, agent_id),
@@ -402,6 +455,7 @@ def run_turn(agent_id: str, body: dict) -> None:
     thread_root = reply_thread_root(room.get("kind", "channel"), msg)
     frames = FramePublisher(run.get("frameEndpoint", ""), run.get("frameChannel", ""),
                             room.get("id"), agent_id, run_id, thread_root)
+    register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
     _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
     t0 = time.time()
@@ -424,12 +478,16 @@ def run_turn(agent_id: str, body: dict) -> None:
             "localSessionToken": None,
         })
         try:
-            outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
+            if RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched: never call _run_hermes
+                outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
+            else:
+                outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
         finally:
             clear_turn_context(_profile_dir(agent_id), turn_session_id)
     except Exception as exc:  # noqa: BLE001
         outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE
         log.error("turn %s failed: %s\n%s", run_id, exc, traceback.format_exc())
+    finish_run(run_id, outcome)
     frames.finished(outcome, reply, error_kind)
     done.set()
     took = time.time() - t0

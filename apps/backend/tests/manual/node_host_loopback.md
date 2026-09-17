@@ -96,6 +96,7 @@ async def pipe(src, dst):
         await dst.send(msg)
 async def handler(ws):
     async with websockets.connect(UPSTREAM, max_size=26_214_400) as up:
+        print("[proxy] upstream WS open", flush=True)
         tasks = [asyncio.create_task(pipe(ws, up)), asyncio.create_task(pipe(up, ws))]
         _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending: t.cancel()

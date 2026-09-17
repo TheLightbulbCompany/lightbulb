@@ -696,13 +696,21 @@ async def _refresh_agentcore_soul(owner_id: str, agent_id: str) -> None:
     line is ``hermes_profiles.SOUL_GENERATED_MARKER``. The Instructions tab strips that marker when
     an owner saves ``SOUL.md``, and a migrated/marketplace profile carries text that was never
     generated here at all, so in both cases the file is the owner's and a rename must leave it
-    alone. A profile with no ``SOUL.md`` yet is still written: there is nothing to preserve."""
-    current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
-    if current is not None and not hermes_profiles.is_generated_soul(current):
-        return
+    alone. An absent or EMPTY ``SOUL.md`` is still written: there is nothing to preserve (fix
+    round 1, m5 -- ``is_generated_soul("")`` is False, so treating "" as owner content would
+    permanently freeze regeneration for an agent whose write was half-finished).
+
+    The marker is read as late as possible -- AFTER the roster fetch, immediately before the
+    upload (fix round 1, m1) -- so the window in which a concurrent Instructions-tab save can be
+    overwritten is one S3 round trip rather than the seconds ``load_agent_roster``'s HTTP call
+    takes. It is a narrower race, not a closed one: closing it needs a conditional PUT
+    (``IfMatch`` on the ETag this read saw), which ``upload_soul_md`` does not carry today."""
     roster = await load_agent_roster(owner_id)
     agent_row = next((row for row in roster if isinstance(row, dict) and row.get("id") == agent_id), None)
     if agent_row is None:
+        return
+    current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
+    if current and not hermes_profiles.is_generated_soul(current):
         return
     soul_md = hermes_profiles.build_soul_md(agent_row)
     await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)

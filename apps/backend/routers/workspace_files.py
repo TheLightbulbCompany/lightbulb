@@ -245,6 +245,30 @@ def _require_agent_id(agent_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid agent_id")
 
 
+async def _is_agentcore_row_or_503(owner_id: str) -> bool:
+    """The runtime-host seam for the WRITE route -- fail-closed (fix round 1, I2).
+
+    ``runtime_transport.is_agentcore_owner`` swallows a DynamoDB read failure and answers False
+    (ECS) by M6-R26, which is right for the connect/disconnect doors it was written for. On a
+    write it is wrong in kind: under a throttle the owner's save would land on the EFS tree the
+    migration abandoned, ``workspace.write_file`` would succeed, and the route would answer
+    ``{"status": "ok"}`` -- a green save with no effect, the exact defect this branch removes. So
+    read the row directly (what the seam's own docstring recommends for a caller that can afford
+    it) and 503 instead of guessing. The GET routes keep the forgiving seam: their worst case is
+    stale content, not a lost edit.
+    """
+    from core.repositories import container_repo
+
+    try:
+        container = await container_repo.get_by_owner_id(owner_id)
+    except Exception as exc:  # noqa: BLE001 -- any read failure must fail closed, see docstring
+        logger.warning("workspace write: could not read the runtime host for owner %s", owner_id, exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="Could not determine this workspace's runtime. Try saving again."
+        ) from exc
+    return runtime_transport.host_for(container or {}) == "agentcore"
+
+
 async def _agentcore_tree(owner_id: str, agent_id: str, path: str) -> list[dict]:
     try:
         return await run_in_thread(hermes_profiles.list_profile_dir, owner_id, agent_id, path)
@@ -319,6 +343,10 @@ async def _agentcore_write(owner_id: str, agent_id: str, path: str, content: str
         return await hermes_profiles.write_profile_file(owner_id, agent_id, target, content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        # A hidden path (.env, .revision, mcp-tokens/, the facts file) answers exactly as the read
+        # route does -- the write route must not confirm what the read route hides.
+        raise HTTPException(status_code=404, detail=f"File not found: {target!r}")
     except PermissionError:
         raise _unsupported(f"{target} is managed by Lightbulb and cannot be edited here.")
 
@@ -483,7 +511,7 @@ async def write_workspace_file(
     if body.tab not in ("workspace", "config"):
         raise HTTPException(status_code=400, detail="tab must be 'workspace' or 'config'")
 
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await _is_agentcore_row_or_503(owner_id):
         written = await _agentcore_write(owner_id, agent_id, body.path, body.content, body.tab)
         logger.info("Wrote %s into the Hermes profile for owner %s (tab=%s)", written, owner_id, body.tab)
         return {"status": "ok", "path": written}

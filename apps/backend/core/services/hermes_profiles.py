@@ -814,13 +814,23 @@ def read_soul_md(owner_id: str, agent_id: str) -> str | None:
 #: Never listed, read or written through an owner-facing file route.
 _HIDDEN_PROFILE_DIRS = frozenset({"mcp-tokens"})
 
+#: Fix round 1, I1: ``lightbulb-facts.json`` is backend-owned (the owner's plan, subscription
+#: status, provider choice and agent e-mail) and is NOT a dotfile, so it slipped the filter that
+#: hides ``.env``/``.revision``. On EFS it lives at the user root, outside the ``workspace-{id}/``
+#: subtree the Files panel is scoped to, so no owner-facing route has ever served it -- hiding it
+#: here keeps that true rather than inventing a new exposure on the profile layout.
+_HIDDEN_PROFILE_FILES = frozenset({FACTS_FILENAME})
+
 
 def is_hidden_profile_path(rel: str) -> bool:
-    """``mcp-tokens/`` (live MCP OAuth tokens) and every dotfile -- ``.env`` (the profile's secret
-    store) and ``.revision`` (the bridge's re-pull marker) chief among them. A hidden path is
-    ABSENT to a read, not forbidden: an owner-facing route must not confirm a token file exists."""
+    """``mcp-tokens/`` (live MCP OAuth tokens), ``lightbulb-facts.json``, and every dotfile --
+    ``.env`` (the profile's secret store) and ``.revision`` (the bridge's re-pull marker) chief
+    among them. A hidden path is ABSENT to every owner-facing route, read AND write: 404, never a
+    403/422, so the write route cannot confirm what the read route refuses to."""
     parts = PurePosixPath(rel).parts
-    return not parts or parts[0] in _HIDDEN_PROFILE_DIRS or any(p.startswith(".") for p in parts)
+    if not parts or parts[0] in _HIDDEN_PROFILE_DIRS or parts[-1] in _HIDDEN_PROFILE_FILES:
+        return True
+    return any(p.startswith(".") for p in parts)
 
 
 def normalize_profile_rel(rel_path: str) -> str:
@@ -922,14 +932,22 @@ async def write_profile_file(owner_id: str, agent_id: str, rel_path: str, conten
     """Write one owner-editable file into the profile, bumping ``.revision`` LAST -- delegated to
     ``upload_profile_files``, which already does both in that order.
 
-    ``PermissionError`` for a hidden path or a ``BACKEND_OWNED_FILES`` name: ``config.yaml``/
-    ``.env``/``lightbulb-facts.json`` are the backend's to write, and ``SOUL.md`` has its own
-    writer (``upload_soul_md``, reached from the Instructions tab) that keeps the generated-marker
-    rule. ``ValueError`` for a malformed path.
+    ``FileNotFoundError`` for a hidden path (fix round 1, m3: a write must not confirm what
+    ``read_profile_file`` hides behind a 404) and ``PermissionError`` for a visible but
+    ``BACKEND_OWNED_FILES`` name -- ``config.yaml`` is listable and readable, and ``SOUL.md`` has
+    its own writer (``upload_soul_md``, reached from the Instructions tab) that keeps the
+    generated-marker rule. ``ValueError`` for a malformed path.
     """
     rel = normalize_profile_rel(rel_path)
-    if is_hidden_profile_path(rel) or rel in BACKEND_OWNED_FILES:
+    if is_hidden_profile_path(rel):
+        raise FileNotFoundError(rel)
+    if rel in BACKEND_OWNED_FILES:
         raise PermissionError(rel)
+    if not settings.OWNER_STATE_BUCKET:
+        # Fix round 1, m2: upload_profile_files no-ops on an empty bucket name, so without this
+        # the route would answer {"status": "ok"} having written nothing -- the same green-save
+        # shape this whole branch exists to remove, for a misconfigured environment.
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured; refusing to report a write that did not happen")
     await upload_profile_files(owner_id, agent_id, {rel: content.encode()})
     return rel
 

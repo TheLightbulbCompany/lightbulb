@@ -53,8 +53,12 @@ def test_normalize_collapses_dot_segments_so_they_cannot_dodge_the_backend_owned
     assert hermes_profiles.normalize_profile_rel("memories//USER.md") == "memories/USER.md"
 
 
-@pytest.mark.parametrize("rel", [".env", ".revision", "mcp-tokens/github.json", "skills/.secret"])
-def test_hidden_paths_cover_the_secret_store_and_the_token_files(rel):
+@pytest.mark.parametrize(
+    "rel", [".env", ".revision", "mcp-tokens/github.json", "skills/.secret", "lightbulb-facts.json"]
+)
+def test_hidden_paths_cover_the_secret_store_the_token_files_and_the_facts_file(rel):
+    """Fix round 1, I1: the facts file is backend-owned (plan, subscription, provider, agent
+    e-mail) and is not a dotfile, so it needs its own row in the hidden set."""
     assert hermes_profiles.is_hidden_profile_path(rel)
 
 
@@ -68,11 +72,12 @@ def test_ordinary_profile_paths_are_not_hidden(rel):
 # ---------------------------------------------------------------------------
 
 
-def test_list_profile_dir_never_lists_the_env_file_or_mcp_tokens(s3_hermes_bucket):
+def test_list_profile_dir_never_lists_the_env_file_the_facts_file_or_mcp_tokens(s3_hermes_bucket):
     _put(s3_hermes_bucket, "SOUL.md", b"# Ada\n")
     _put(s3_hermes_bucket, "config.yaml", b"model: {}\n")
     _put(s3_hermes_bucket, ".env", b"ANTHROPIC_API_KEY=sk-live\n")
     _put(s3_hermes_bucket, ".revision", b"deadbeef")
+    _put(s3_hermes_bucket, "lightbulb-facts.json", b'{"plan": "ultra_pro"}')
     _put(s3_hermes_bucket, "mcp-tokens/github.json", b"{}")
     _put(s3_hermes_bucket, "memories/USER.md", b"# User\n")
 
@@ -130,10 +135,13 @@ def test_read_profile_file_base64s_an_image_like_the_efs_reader(s3_hermes_bucket
 
 def test_read_profile_file_hides_the_secret_store_behind_a_plain_miss(s3_hermes_bucket):
     _put(s3_hermes_bucket, ".env", b"ANTHROPIC_API_KEY=sk-live\n")
+    _put(s3_hermes_bucket, "lightbulb-facts.json", b'{"plan": "ultra_pro"}')
     with pytest.raises(FileNotFoundError):
         hermes_profiles.read_profile_file(OWNER, AGENT, ".env")
     with pytest.raises(FileNotFoundError):
         hermes_profiles.read_profile_file(OWNER, AGENT, "mcp-tokens/github.json")
+    with pytest.raises(FileNotFoundError):  # I1
+        hermes_profiles.read_profile_file(OWNER, AGENT, "lightbulb-facts.json")
 
 
 def test_read_profile_file_raises_file_not_found_for_an_absent_object(s3_hermes_bucket):
@@ -175,10 +183,29 @@ async def test_write_profile_file_lands_the_content_and_bumps_the_revision(s3_he
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rel", ["config.yaml", "SOUL.md", ".env", "lightbulb-facts.json", "mcp-tokens/github.json"])
-async def test_write_profile_file_refuses_backend_owned_and_hidden_files(s3_hermes_bucket, rel):
+@pytest.mark.parametrize("rel", ["config.yaml", "SOUL.md"])
+async def test_write_profile_file_refuses_a_visible_backend_owned_file(s3_hermes_bucket, rel):
+    """config.yaml and SOUL.md are listable and readable, so a 422 confirms nothing new."""
     with pytest.raises(PermissionError):
         await hermes_profiles.write_profile_file(OWNER, AGENT, rel, "pwned")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rel", [".env", ".revision", "lightbulb-facts.json", "mcp-tokens/github.json"])
+async def test_write_profile_file_answers_a_hidden_path_exactly_as_the_read_does(s3_hermes_bucket, rel):
+    """Fix round 1, m3: the write route must not confirm the existence of what the read route
+    hides behind a 404."""
+    with pytest.raises(FileNotFoundError):
+        await hermes_profiles.write_profile_file(OWNER, AGENT, rel, "pwned")
+
+
+@pytest.mark.asyncio
+async def test_write_profile_file_refuses_to_report_a_write_with_no_bucket_configured(monkeypatch):
+    """Fix round 1, m2: upload_profile_files no-ops on an empty bucket name, so returning here
+    would answer {"status": "ok"} having written nothing."""
+    monkeypatch.setattr(settings, "OWNER_STATE_BUCKET", "")
+    with pytest.raises(RuntimeError):
+        await hermes_profiles.write_profile_file(OWNER, AGENT, "notes/plan.md", "# Plan\n")
 
 
 @pytest.mark.asyncio

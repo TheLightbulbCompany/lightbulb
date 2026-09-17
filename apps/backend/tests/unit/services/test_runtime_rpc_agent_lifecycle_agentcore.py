@@ -329,8 +329,11 @@ async def test_rename_leaves_an_owner_edited_soul_md_alone(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rename_still_writes_soul_md_when_the_profile_has_none_yet(monkeypatch):
-    upload_soul = _wire_rename(monkeypatch, stored_soul=None)
+@pytest.mark.parametrize("stored", [None, ""])
+async def test_rename_still_writes_soul_md_when_there_is_nothing_to_preserve(monkeypatch, stored):
+    """Fix round 1, m5: an EMPTY SOUL.md (a half-finished write) must not freeze regeneration for
+    that agent forever -- ``is_generated_soul("")`` is False, so "" needs the absent branch."""
+    upload_soul = _wire_rename(monkeypatch, stored_soul=stored)
 
     await rpc._mirror_agent_update("org_1", {"agentId": "a1", "name": "Renamed Ada"}, agentcore=True)
 

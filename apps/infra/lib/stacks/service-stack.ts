@@ -875,6 +875,41 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Hermes-on-AgentCore boot secrets: provisioning/migration writes ONE JSON secret per
+    // workspace (lightbulb/{env}/hermes/{owner}/boot = hook + gateway tokens + gate bearer)
+    // and account wipe / rollback delete it; the runtime role only READS it (container-stack
+    // boundary grant). Found by the first dev migration run: the task role could read but
+    // not create. Same tight prefix scoping as the statements above.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "HermesBootSecretsRW",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/hermes/*`],
+      }),
+    );
+
+    // Hermes profiles: the backend is the writer of every agent's S3 profile
+    // (<owner>/hermes/<agent>/{config.yaml,.env,SOUL.md,lightbulb-facts.json,.revision,
+    // mcp-tokens/...}, plus the root <owner>/hermes/auth.json), the reader behind the
+    // config.get/agents.list intercept, and the deleter on agent delete / account wipe.
+    // Scoped to the hermes/ sub-prefix: the litestream replica statements above deliberately
+    // keep the backend out of the OpenClaw session/state databases.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "HermesProfilesRW",
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`],
+      }),
+    );
+
     // DynamoDB tables
     // Local handle for the Step Functions DynamoDB tasks below. fromTableName
     // resolves a NAME into an ITable without touching the database stack's

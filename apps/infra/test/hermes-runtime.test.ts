@@ -220,4 +220,25 @@ describe("hermes runtime wiring", () => {
       expect(flatten(secretsStatement!.Resource)).toEqual([hermesSecretArn]);
     }
   });
+
+  it("lets the BACKEND task role write the per-workspace boot secret and read/write the S3 profiles (the first dev migration run failed on both)", () => {
+    // Every inline policy statement on the service stack, by Sid.
+    const statements: Array<{ Sid?: string; Action: string | string[]; Resource: string | string[] }> = Object.values(
+      dev.serviceTemplate.findResources("AWS::IAM::Policy"),
+    ).flatMap((policy: any) => policy.Properties.PolicyDocument.Statement);
+    const bySid = (sid: string) => statements.find((s) => s.Sid === sid);
+
+    const boot = bySid("HermesBootSecretsRW");
+    expect(boot).toBeDefined();
+    expect(flatten(boot!.Action)).toEqual(
+      expect.arrayContaining(["secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:DeleteSecret"]),
+    );
+    expect(flatten(boot!.Resource)).toEqual(["arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/*"]);
+
+    const profiles = bySid("HermesProfilesRW");
+    expect(profiles).toBeDefined();
+    expect(flatten(profiles!.Action)).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
+    // Scoped to the hermes/ sub-prefix only: the backend must stay out of the litestream replicas.
+    expect(flatten(profiles!.Resource)).toEqual(["arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*"]);
+  });
 });

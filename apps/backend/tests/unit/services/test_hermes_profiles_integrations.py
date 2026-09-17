@@ -143,6 +143,33 @@ async def test_refresh_runs_from_inside_a_running_event_loop(monkeypatch):
     await hermes_profiles.refresh_integrations("org_a", ["a1"])  # must not raise RuntimeError
 
 
+async def test_refresh_never_calls_boto3_on_the_event_loop_thread(monkeypatch):
+    """M4-R49 (fix round 2): refresh_integrations is awaited directly from routers/services now
+    (routers/integrations.py, catalog_service.py) -- every sync boto3 call inside its per-agent
+    block must run off the loop (the 2026-09-12 prod-freeze class), not just the async producers
+    it already awaits directly."""
+    import threading
+
+    loop_thread_id = threading.get_ident()
+    seen_thread_ids = []
+
+    def fake_s3_get(bucket, key):
+        seen_thread_ids.append(threading.get_ident())
+        if key.endswith("config.yaml"):
+            return yaml.safe_dump({"mcp_servers": {}})
+        return ""  # .env absent-but-empty is fine here -- only the thread id matters
+
+    def fake_s3_put(bucket, key, body):
+        seen_thread_ids.append(threading.get_ident())
+
+    _setup(monkeypatch, stored_config={"mcp_servers": {}}, connected={})
+    monkeypatch.setattr(hermes_profiles, "_s3_get", fake_s3_get)
+    monkeypatch.setattr(hermes_profiles, "_s3_put", fake_s3_put)
+    await hermes_profiles.refresh_integrations("org_a", ["a1"])
+    assert seen_thread_ids  # the stub was actually exercised
+    assert loop_thread_id not in seen_thread_ids
+
+
 async def test_refresh_reads_one_credential_per_server_not_per_agent(monkeypatch):
     """Minor 8: hoisted out of the per-agent loop -- one Secrets Manager read per OAuth server
     per reconcile, regardless of how many agents share the profile."""

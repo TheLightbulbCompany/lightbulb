@@ -557,6 +557,21 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
 # backend is the ONLY writer of a Hermes profile, so a hot patch is an S3 rewrite plus a revision
 # bump — never a round trip to a live microVM. This is what deletes config_patcher.py's EFS locks
 # for an AgentCore row (the ECS path is untouched and keeps using them).
+#
+# M4-R49 audit (fix round 2 continuation): every sync-boto3 writer in this module reached from a
+# coroutine, and how it stays off the event loop --
+#   config_snapshot / patch_profile_config / set_profile_config -- one external caller each
+#     (runtime_rpc.execute_sync), every call already wrapped in run_in_thread.
+#   read_profile_config -- no external caller; only used internally by patch_profile_config
+#     above, itself always thread-wrapped by ITS caller.
+#   _upload_config_yaml -- no external caller; only used internally by patch_profile_config/
+#     set_profile_config above, same coverage.
+#   stage_codex_auth -- one external caller (container_auth.push_oauth_credential_to_container),
+#     already wrapped in run_in_thread.
+#   refresh_integrations -- fixed THIS round: awaited directly from routers/integrations.py and
+#     catalog_service.py, but its own per-agent S3 block ran sync boto3 straight on the loop; see
+#     _refresh_one_profile below.
+# None of the other four needed changing — each was already off the loop through its one caller.
 
 
 #: Minors 1+2 (fix round 1 continuation): one boto3 client per module, not one per call —
@@ -776,13 +791,19 @@ async def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
     directly instead of the old ``asyncio.run()``-based sync wrappers (``_connected_servers``/
     ``_integration_credential``, both deleted). Those blew up with ``RuntimeError`` the moment a
     caller (``reconcile_integrations`` is itself ``async``) awaited this from inside a running
-    loop, which is exactly the calling context — the ``run_in_thread`` hop that used to paper
-    over it bought nothing this module's S3 PUTs actually needed.
+    loop, which is exactly the calling context.
+
+    M4-R49 (fix round 2 continuation): the per-agent S3 block below is plain sync boto3 (five
+    round trips per agent between ``_require_text``/``_s3_put``/``_write_mcp_token_files``'s own
+    ``_s3_get``/``_s3_delete``) and this function is now AWAITED DIRECTLY from FastAPI routes and
+    ``catalog_service`` (``routers/integrations.py``, ``core/services/catalog_service.py``) — the
+    exact class of blocking I/O on the event loop this repo already took a prod backend freeze
+    from (EFS tree walk, 2026-09-12). ``_refresh_one_profile`` isolates that block so it can run
+    off the loop via ``run_in_thread``, one hop per agent (fine — an owner's roster is small).
     """
     from core.services.credentials import integration_secret_store
     from core.services.credentials.mcp_server import build_connected_integration_servers
 
-    bucket = settings.OWNER_STATE_BUCKET
     connected = await build_connected_integration_servers(owner_id)
     servers, secrets = translate_mcp_servers(connected)
     # Minor 8: one Secrets Manager read per OAuth server per reconcile, not per (agent, server)
@@ -793,19 +814,28 @@ async def refresh_integrations(owner_id: str, agent_ids: list[str]) -> None:
         if block.get("auth") == "oauth"
     }
     for agent_id in agent_ids:
-        prefix = profile_prefix(owner_id, agent_id)
-        config = yaml.safe_load(_require_text(bucket, f"{prefix}config.yaml", "config.yaml")) or {}
-        dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
-        previously_oauth = frozenset(
-            name
-            for name, block in (config.get("mcp_servers") or {}).items()
-            if isinstance(block, dict) and block.get("auth") == "oauth"
-        )
-        config["mcp_servers"] = servers
-        _write_mcp_token_files(owner_id, agent_id, connected, credentials, previously_oauth=previously_oauth)
-        _s3_put(bucket, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
-        _s3_put(bucket, f"{prefix}.env", _rewrite_mcp_env_lines(dotenv_text, secrets))
-        _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
+        await run_in_thread(_refresh_one_profile, owner_id, agent_id, connected, servers, secrets, credentials)
+
+
+def _refresh_one_profile(
+    owner_id: str, agent_id: str, connected: dict, servers: dict, secrets: dict, credentials: dict
+) -> None:
+    """The per-agent S3 work of ``refresh_integrations`` — pure sync boto3 (M4-R49), meant to be
+    called through ``run_in_thread`` and never directly from a coroutine."""
+    bucket = settings.OWNER_STATE_BUCKET
+    prefix = profile_prefix(owner_id, agent_id)
+    config = yaml.safe_load(_require_text(bucket, f"{prefix}config.yaml", "config.yaml")) or {}
+    dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
+    previously_oauth = frozenset(
+        name
+        for name, block in (config.get("mcp_servers") or {}).items()
+        if isinstance(block, dict) and block.get("auth") == "oauth"
+    )
+    config["mcp_servers"] = servers
+    _write_mcp_token_files(owner_id, agent_id, connected, credentials, previously_oauth=previously_oauth)
+    _s3_put(bucket, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
+    _s3_put(bucket, f"{prefix}.env", _rewrite_mcp_env_lines(dotenv_text, secrets))
+    _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
 
 
 # ---- Task 15: ChatGPT OAuth staged into the ROOT auth.json --------------------------------------

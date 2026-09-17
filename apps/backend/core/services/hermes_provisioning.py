@@ -176,12 +176,33 @@ def build_hermes_runtime_request(
     }
 
 
+#: M6-R44: ``ensure_agentcore_trust`` updates the owner role's trust policy seconds before
+#: CreateAgentRuntime, and IAM propagates trust changes with a delay, so AgentCore's role
+#: validation rejects a freshly trusted role on the first call (seen on the first fresh-org dev
+#: migration: "Role validation failed ... verify that the role exists and its trust policy
+#: allows assumption by this service"; the retry a minute later succeeded). Bounded retry of
+#: that ONE ValidationException; every other error raises at once.
+_ROLE_PROPAGATION_ATTEMPTS = 12
+_ROLE_PROPAGATION_INTERVAL_S = 5.0
+
+
 def _create_runtime(request: dict) -> str:
+    """Sync — call via ``run_in_thread``. Retries only the IAM trust-propagation rejection
+    (M6-R44, see the constants above)."""
+    import time
+
     import boto3
 
-    return boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION).create_agent_runtime(**request)[
-        "agentRuntimeArn"
-    ]
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
+        try:
+            return client.create_agent_runtime(**request)["agentRuntimeArn"]
+        except client.exceptions.ValidationException as exc:
+            if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
+                raise
+            logger.info("hermes provision: role not yet visible to AgentCore (attempt %d) -- retrying", attempt)
+            time.sleep(_ROLE_PROPAGATION_INTERVAL_S)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _find_existing_runtime_arn(name: str) -> str | None:
@@ -206,15 +227,50 @@ def _find_existing_runtime_arn(name: str) -> str | None:
     return None
 
 
+class _RuntimeGone(Exception):
+    """The runtime an ARN names no longer exists, or is being deleted (M6-R43)."""
+
+
 def _runtime_image_uri(runtime_arn: str) -> str | None:
     """The image URI an existing runtime is currently configured with. Sync — call via
-    ``run_in_thread``."""
+    ``run_in_thread``.
+
+    M6-R43: raises ``_RuntimeGone`` when the runtime is DELETING or already gone. A rollback
+    (``teardown_hermes_runtime``) deletes the runtime, but a re-migration can still meet its
+    ARN -- stamped on the row by an earlier attempt, or returned by the name lookup while the
+    delete is in flight (``list_agent_runtimes`` lists DELETING runtimes). Neither is a runtime
+    to reuse: reusing it 404s on the READY poll the moment the delete completes.
+    """
     import boto3
 
     client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
-    desc = client.get_agent_runtime(agentRuntimeId=runtime_id)
+    try:
+        desc = client.get_agent_runtime(agentRuntimeId=runtime_id)
+    except client.exceptions.ResourceNotFoundException:
+        raise _RuntimeGone(runtime_arn) from None
+    if desc.get("status") == "DELETING":
+        raise _RuntimeGone(runtime_arn)
     return (desc.get("agentRuntimeArtifact") or {}).get("containerConfiguration", {}).get("containerUri")
+
+
+def _wait_for_runtime_gone(runtime_arn: str) -> None:
+    """Poll ``GetAgentRuntime`` until it 404s. Sync — call via ``run_in_thread``. Runtime names
+    are unique per account, so ``CreateAgentRuntime`` under the same name conflicts until a
+    DELETING predecessor is fully gone (M6-R43). Same bound as the READY poll."""
+    import time
+
+    import boto3
+
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    runtime_id = runtime_arn.rsplit("/", 1)[-1]
+    for _ in range(_READY_POLL_ATTEMPTS):
+        try:
+            client.get_agent_runtime(agentRuntimeId=runtime_id)
+        except client.exceptions.ResourceNotFoundException:
+            return
+        time.sleep(_READY_POLL_INTERVAL_S)
+    raise RuntimeError(f"AgentCore runtime {runtime_arn} was still deleting at the end of the poll window")
 
 
 def _update_runtime_image(runtime_arn: str, request: dict) -> None:
@@ -466,6 +522,60 @@ async def prepare_hermes_workspace(
         attempt_token=attempt_token,
         release_lease=False,
     )
+
+
+def build_runtime_request_for_owner(owner_id: str, role_arn: str, aip_arns: dict[str, str]) -> dict:
+    """The CreateAgentRuntime/UpdateAgentRuntime spec for ``owner_id`` on the CURRENTLY configured
+    image (N2/M4-R40's one spec-building path, lifted out of ``provision_hermes_runtime`` so
+    ``roll_runtime_image`` reuses it verbatim). Calls ``gate_url()`` -- a real (cached) SSM read."""
+    from core.billing.bedrock_gate_url import gate_url
+
+    return build_hermes_runtime_request(
+        owner_id=owner_id,
+        image_uri=settings.AGENTCORE_HERMES_IMAGE,
+        role_arn=role_arn,
+        subnets=[s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()],
+        security_groups=[settings.ECS_SECURITY_GROUP_ID] if settings.ECS_SECURITY_GROUP_ID else [],
+        environment=build_hermes_runtime_env(
+            owner_id=owner_id,
+            api_base=settings.PUBLIC_API_BASE,
+            bucket=settings.OWNER_STATE_BUCKET,
+            boot_secret_id=boot_secret_name(owner_id),
+            gate_endpoint=gate_url(),
+            sonnet_aip_arn=aip_arns["sonnet"],
+        ),
+    )
+
+
+async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
+    """Bring an AgentCore owner's runtime onto ``settings.AGENTCORE_HERMES_IMAGE`` after a
+    ``hermes-version.json`` tag flip (M6 Task 3 flip tooling): ``UpdateAgentRuntime`` on drift,
+    wait for READY, then stop the warm session so the NEXT invoke boots the new image (an
+    in-flight session keeps the old version until it ends). Returns ``"current"`` (nothing to
+    do), ``"would-update"`` (dry run) or ``"updated"``. Raises ``ValueError`` for a row that is
+    not an AgentCore workspace -- ECS rows roll through the container image pin, not here."""
+    from core.services import runtime_transport
+
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    arn = row.get("agentcore_runtime_arn")
+    if not arn or runtime_transport.host_for(row) != "agentcore":
+        raise ValueError(f"roll_runtime_image: owner={owner_id} is not an AgentCore workspace")
+    if not settings.AGENTCORE_HERMES_IMAGE:
+        raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
+    current = await run_in_thread(_runtime_image_uri, arn)
+    if current == settings.AGENTCORE_HERMES_IMAGE:
+        return "current"
+    if dry_run:
+        return "would-update"
+    role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    await run_in_thread(_update_runtime_image, arn, build_runtime_request_for_owner(owner_id, role_arn, aip_arns))
+    await run_in_thread(_wait_for_runtime_ready, arn)
+    try:
+        await run_in_thread(_stop_runtime_session, arn, runtime_transport.session_id_for(owner_id))
+    except Exception as exc:  # noqa: BLE001 -- no warm session is the common case
+        logger.info("roll_runtime_image: no live session to stop for owner=%s (%s)", owner_id, type(exc).__name__)
+    logger.info("roll_runtime_image: owner=%s %s -> %s", owner_id, current, settings.AGENTCORE_HERMES_IMAGE)
+    return "updated"
 
 
 async def _load_role_and_aips(owner_id: str) -> tuple[str, dict[str, str]]:
@@ -810,38 +920,31 @@ async def provision_hermes_runtime(
         # partial replace. Only called from the two branches that actually need it (create, or
         # update-on-drift) -- gate_url() is a real (cached) SSM read, not free to call on every
         # idempotent poll-and-reuse pass.
-        from core.billing.bedrock_gate_url import gate_url
-
-        return build_hermes_runtime_request(
-            owner_id=owner_id,
-            image_uri=settings.AGENTCORE_HERMES_IMAGE,
-            role_arn=role_arn,
-            subnets=[s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()],
-            security_groups=[settings.ECS_SECURITY_GROUP_ID] if settings.ECS_SECURITY_GROUP_ID else [],
-            environment=build_hermes_runtime_env(
-                owner_id=owner_id,
-                api_base=settings.PUBLIC_API_BASE,
-                bucket=settings.OWNER_STATE_BUCKET,
-                boot_secret_id=boot_secret_name(owner_id),
-                gate_endpoint=gate_url(),
-                sonnet_aip_arn=aip_arns["sonnet"],
-            ),
-        )
+        return build_runtime_request_for_owner(owner_id, role_arn, aip_arns)
 
     if arn:
         # Reusing an already-created runtime (recorded on the row, or found by name). Bring it
         # onto the currently configured image if it drifted (e.g. a broken tag fixed between
         # retries); otherwise just poll it below.
-        current_image = await run_in_thread(_runtime_image_uri, arn)
-        if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
-            await run_in_thread(_update_runtime_image, arn, _build_request())
-        if not row.get("agentcore_runtime_arn"):
-            # Found by name lookup only -- the row never got it. Record now, before polling,
-            # for the same reason the freshly-created branch below does.
-            await container_repo.update_container_leased(
-                owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
-            )
-    else:
+        try:
+            current_image = await run_in_thread(_runtime_image_uri, arn)
+        except _RuntimeGone:
+            # M6-R43: a rolled-back (deleted / DELETING) runtime is not one to reuse. Wait out
+            # the delete -- the name is unique, so a create would conflict until it finishes --
+            # then take the create path, whose row write replaces the stale ARN.
+            logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
+            await run_in_thread(_wait_for_runtime_gone, arn)
+            arn = None
+        else:
+            if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
+                await run_in_thread(_update_runtime_image, arn, _build_request())
+            if not row.get("agentcore_runtime_arn"):
+                # Found by name lookup only -- the row never got it. Record now, before polling,
+                # for the same reason the freshly-created branch below does.
+                await container_repo.update_container_leased(
+                    owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
+                )
+    if not arn:
         arn = await run_in_thread(_create_runtime, _build_request())
         # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal, fenced -- BEFORE the READY
         # poll. Without this, a CREATE_FAILED, a poll-window timeout, or a lost fence on the

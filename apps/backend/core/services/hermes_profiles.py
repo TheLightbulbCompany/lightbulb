@@ -50,6 +50,7 @@ from core.containers.config import cheap_model_ref, premium_model_ref
 from core.dynamodb import run_in_thread
 
 _BEDROCK = "bedrock"
+_BEDROCK_CLAUDE_CONTEXT = 200_000  # Claude 4.x on Bedrock
 
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
 #: -> ... (auxiliary_client.py:3-6); an unpinned task on a platform-billed path is egress to a
@@ -149,7 +150,12 @@ def model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, 
         if not aip_arns:
             raise ValueError(f"{provider_choice} requires aip_arns")
         default, cheap = _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo)
-        return {"default": default, "provider": _BEDROCK}, cheap, _BEDROCK
+        # context_length pinned (dev soak 2026-09-17): Bedrock exposes no context window, the
+        # owner role denies ListFoundationModels, and Hermes only caches a SUCCESSFUL probe --
+        # so every agent's first turn per process (= every cold start) spent ~16 s in two
+        # failing probes (agent/model_metadata.get_model_context_length). A configured
+        # model.context_length is step 0 of that resolution and skips them all.
+        return {"default": default, "provider": _BEDROCK, "context_length": _BEDROCK_CLAUDE_CONTEXT}, cheap, _BEDROCK
     if provider_choice == "byo_key":
         hermes_provider, standard = _BYO_HERMES_PROVIDER[byo_provider or "anthropic"]
         premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))

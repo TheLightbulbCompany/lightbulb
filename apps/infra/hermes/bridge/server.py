@@ -18,6 +18,7 @@ Spike scope. Not here: the local-session relay.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -119,11 +120,10 @@ RPC_MAX_TIMEOUT_MS = 120_000
 # exists. The SHAPE is the contract — container_rpc unwraps {ok:false} into a RuntimeError
 # carrying this exact JSON, so it must never wobble.
 UI_ONLY_METHODS = frozenset({
+    # `models.list` is served for real by task 10-C's `_models_list` below.
     "tools.catalog", "commands.list", "chat.history", "agent.identity.get",
-    "skills.install", "skills.search", "skills.status", "skills.update",
-    "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.list",
-    "skills.proposals.reject",
-    "sessions.list", "sessions.patch", "sessions.delete", "sessions.rewind", "sessions.search",
+    "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.reject",
+    "sessions.rewind", "sessions.search",
     "sessions.branches.list", "sessions.branches.switch",
     "doctor.memory.status", "doctor.memory.dreamDiary", "doctor.memory.resetDreamDiary",
     "doctor.memory.backfillDreamDiary", "doctor.memory.dedupeDreamDiary",
@@ -135,6 +135,37 @@ UI_ONLY_METHODS = frozenset({
 
 def _profiles() -> list[str]:
     return sorted(p.name for p in (sync.HOME / "profiles").glob("*") if p.is_dir())
+
+
+#: (expires_at, ids) for _roster's S3 listing. A settings panel can land on a microVM that has
+#: never run a turn, where `profiles/` is EMPTY -- answering "no agents / no skills / no
+#: sessions" from that would be an empty answer that reads as fact. One delimited LIST of the
+#: owner's prefix is the cheap truth; cached because `health` polls every 60 s.
+_ROSTER_TTL_S = 60.0
+_roster_cache: tuple[float, tuple[str, ...]] = (0.0, ())
+
+
+def _roster() -> list[str]:
+    """Every agent id this owner has, local dirs UNION the S3 prefix. Falls back to the local
+    dirs alone when S3 is unreachable -- a listing blip must not empty a panel."""
+    global _roster_cache
+    names = set(_profiles())
+    if not sync.S3_BUCKET:
+        return sorted(names)
+    expires, cached = _roster_cache
+    if time.time() >= expires:
+        try:
+            prefix = f"{sync.S3_PREFIX}/"
+            pages = sync._s3().get_paginator("list_objects_v2").paginate(
+                Bucket=sync.S3_BUCKET, Prefix=prefix, Delimiter="/")
+            cached = tuple(sorted(
+                p["Prefix"][len(prefix):].strip("/")
+                for page in pages for p in page.get("CommonPrefixes", [])
+            ))
+            _roster_cache = (time.time() + _ROSTER_TTL_S, cached)
+        except Exception:  # noqa: BLE001 -- keep serving the local view on an S3 blip
+            log.warning("roster listing failed", exc_info=True)
+    return sorted(names | set(cached))
 
 
 def _boot_ready() -> bool:
@@ -154,8 +185,35 @@ def _health(_params: dict, **_kwargs) -> dict:
     return {"ok": True, "payload": {
         "ready": True, "runtime": "hermes",
         "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
-        "agents": len(_profiles()),
+        "agents": len(_roster()),
+        # Sessions are counted only from the state.db files THIS microVM already holds --
+        # health is also the readiness probe, so it must never pull a profile from S3. `None`
+        # (nothing restored yet) means "not known", which the panel renders as an em dash;
+        # reporting 0 there would be a number that reads as fact.
+        "sessions": _local_session_count(),
     }}
+
+
+def _local_session_count() -> int | None:
+    """Rows in `sessions` across every locally-restored profile, or None when none is on disk.
+
+    Opened read-only with plain sqlite3 rather than Hermes's SessionDB: this runs on the
+    readiness path, and SessionDB's constructor does schema repair, WAL setup and writability
+    preflight -- none of which a counter is allowed to trigger."""
+    import sqlite3
+
+    total, seen = 0, False
+    for name in _profiles():
+        path = sync.HOME / "profiles" / name / "state.db"
+        if not path.is_file():
+            continue
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                total += conn.execute("SELECT count(*) FROM sessions").fetchone()[0]
+            seen = True
+        except Exception:  # noqa: BLE001 -- a mid-write/absent-table db is not a health failure
+            log.debug("session count skipped for %s", name, exc_info=True)
+    return total if seen else None
 
 
 RPC_METHODS: dict = {"health": _health}
@@ -301,15 +359,304 @@ def _models_list(params: dict, **_kwargs) -> dict:
     }}
 
 
-def _models_auth_status(_params: dict, **_kwargs) -> dict:
-    ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
-    return {"ok": True, "payload": {"providers": [
-        {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}
+def _dotenv_has(agent_id: str, key: str) -> bool:
+    """Is `key` set to a non-empty value in the profile's own `.env`? Presence only -- the value
+    is a credential and is never read out of this function."""
+    path = sync.HOME / "profiles" / agent_id / ".env"
+    if not path.is_file():
+        return False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == key:
+            return bool(value.strip().strip("'\""))
+    return False
+
+
+#: Hermes provider name -> (where the credential lives, how to check it). The provider names are
+#: the ones `hermes_profiles.model_block` writes into `config.yaml` -- `bedrock`, `anthropic`,
+#: `openai-api`, `openai-codex` -- and they are what the frontend's `llm-auth-status.ts` already
+#: matches on (exactly, or by its `openai-` prefix rule), so no id is translated here.
+def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
+    if provider == "bedrock":
+        return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "bedrock-gate"
+    if provider == "anthropic":
+        return _dotenv_has(agent_id, "ANTHROPIC_API_KEY"), "byo-key"
+    if provider == "openai-api":
+        return _dotenv_has(agent_id, "OPENAI_API_KEY"), "byo-key"
+    if provider == "openai-codex":
+        # The grant is the ROOT home's auth.json, staged by hermes_profiles.stage_codex_auth and
+        # pulled per turn. A settings read can arrive before this process has run any turn, so
+        # pull it here too -- restore_root_auth is a cheap revision check after the first call.
+        with contextlib.suppress(Exception):
+            sync.restore_root_auth()
+        return (sync.HOME / "auth.json").is_file(), "chatgpt-oauth"
+    return False, "unknown"
+
+
+def _models_auth_status(params: dict, **_kwargs) -> dict:
+    """One entry per provider this owner's profiles actually name, with whether its credential
+    is present. The old answer was hardcoded `bedrock` + the gate bearer, so a BYO-key or
+    ChatGPT-OAuth owner got a permanently wrong dot (scan row 22)."""
+    agents = [params["agentId"]] if params.get("agentId") else _roster()
+    providers: dict[str, dict] = {}
+    for agent_id in agents:
+        with contextlib.suppress(Exception):
+            sync.ensure_profile(agent_id)  # cheap: the five backend-owned files only
+        provider = ((sync.read_profile_config(agent_id).get("model") or {}).get("provider") or "").strip()
+        if not provider or provider in providers:
+            continue
+        ok, via = _provider_credential(agent_id, provider)
+        providers[provider] = {"provider": provider, "status": "ok" if ok else "missing", "via": via}
+    if not providers:  # no profile readable yet -- the gate bearer is still the runtime's own truth
+        ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
+        providers["bedrock"] = {"provider": "bedrock", "status": "ok" if ok else "missing",
+                                "via": "bedrock-gate"}
+    return {"ok": True, "payload": {"providers": list(providers.values())}}
 
 
 RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update,
                     "agents.delete": _agents_delete, "channels.status": _channels_status,
                     "models.list": _models_list, "models.authStatus": _models_auth_status})
+
+
+# ---- Hermes-native skills + sessions (M6 task 10-E, ruling M6-R50) ------------------------------
+# Every read below goes through HERMES'S OWN loaders -- `tools.skills_tool._find_all_skills`,
+# `hermes_cli.skills_hub`, `hermes_state_registry` -- never a parser of our own, because the
+# formats (SKILL.md front matter, the session schema) are Hermes's to change. Those imports only
+# resolve inside the real image, so each entry point degrades to UNAVAILABLE outside it; that is
+# also what lets this suite run without Hermes installed.
+
+
+def _unsupported(message: str) -> dict:
+    return {"ok": False, "error": {"code": "UNSUPPORTED", "message": message}}
+
+
+def _profile_scope(agent_id: str):
+    """Restore the profile (once per process) and hold Hermes's HERMES_HOME override on it.
+
+    Hermes resolves the home at CALL time (`get_hermes_home()` is a ContextVar), so every loader
+    below has to run inside this scope or it reads the root home instead of the agent's profile.
+
+    # ponytail: a cold microVM pays a full `restore_profile` for a settings read -- the same
+    # download a turn pays, and once per process. Restoring just `skills/` (or just `state.db`)
+    # would need a second partial-restore path in sync.py; add it only if a cold settings read
+    # is measured over the 90 s ingress budget.
+    """
+    sync.restore_profile(agent_id)
+    sync.ensure_profile(agent_id)
+    return turn._hermes_home_scope(agent_id)
+
+
+def _disabled_names(config: dict) -> set[str]:
+    raw = (config.get("skills") or {}).get("disabled")
+    if isinstance(raw, str):
+        raw = [raw]
+    return {str(v).strip() for v in (raw or []) if str(v).strip()}
+
+
+def _skills_status(params: dict, **_kwargs) -> dict:
+    """Hermes's installed skills, in the shape the Skills panel already reads.
+
+    Scanned from ONE profile when the caller names none: the skills a workspace has are the
+    image's `/opt/hermes-skills` external dir plus what the migration copied into each profile,
+    and `skills.disabled` is written by the roster-wide `config.patch` fan-out -- so every
+    profile answers the same, and restoring all six for a read would not.
+    """
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    from tools.skills_tool import _find_all_skills
+
+    roster = _roster()
+    agent_id = params.get("agentId") or (roster[0] if roster else "")
+    if not agent_id:
+        return {"ok": True, "payload": {"skills": []}}
+    with _profile_scope(agent_id):
+        found = _find_all_skills(skip_disabled=True)
+        skills_dir = str(sync.HOME / "profiles" / agent_id / "skills")
+    disabled = _disabled_names(sync.read_profile_config(agent_id))
+    empty = {"bins": [], "env": [], "config": [], "os": []}
+    return {"ok": True, "payload": {
+        "managedSkillsDir": skills_dir,
+        "skills": [{
+            "name": s["name"], "description": s.get("description") or "",
+            "skillKey": s["name"], "source": s.get("category") or "hermes",
+            # Hermes has no per-skill dependency manifest: a skill is a SKILL.md, and anything
+            # it shells out to is the image's business. So nothing is ever "missing" or
+            # "unsupported" here -- the panel's install/dependency machinery stays empty.
+            "always": s["name"] in ESSENTIAL_SKILLS,
+            "disabled": s["name"] in disabled,
+            "blockedByAllowlist": False, "eligible": True,
+            "requirements": dict(empty), "missing": dict(empty), "install": [],
+        } for s in found],
+    }}
+
+
+def _skills_update(_params: dict, **_kwargs) -> dict:
+    """Enabling/disabling a skill is a `config.yaml` write, and `config.yaml` is backend-owned
+    (`sync.EXCLUDE_GLOBS`): a write from here never reaches S3 and is reverted by the next
+    `.revision` re-pull or cold start. Refusing is the honest answer -- the durable door is the
+    backend's own `config.patch {skills:{disabled:[...]}}`, which the Skills panel now uses."""
+    return _unsupported("Skills are enabled through config.patch skills.disabled, not here.")
+
+
+def _skills_search(params: dict, **_kwargs) -> dict:
+    """Hermes's OWN skills hub (`hermes skills search`), not ClawHub."""
+    query = str(params.get("query") or params.get("q") or "").strip()
+    if not query:
+        return {"ok": True, "payload": {"results": []}}
+    from hermes_cli.skills_hub import _sources
+    from tools.skills_hub_search import unified_search
+
+    limit = params.get("limit")
+    limit = limit if isinstance(limit, int) and 0 < limit <= 50 else 10
+    results = unified_search(query, _sources(), limit=limit)
+    return {"ok": True, "payload": {"results": [{
+        "name": r.name, "description": r.description, "id": r.identifier,
+        "identifier": r.identifier, "source": r.source, "trust": r.trust_level,
+    } for r in results]}}
+
+
+def _skills_install(params: dict, **_kwargs) -> dict:
+    """`hermes skills install <identifier>` into the agent's own profile, then push the profile
+    so the install survives this microVM (an RPC is outside a turn, and only a turn saves)."""
+    from hermes_cli.skills_hub import do_install
+    from rich.console import Console
+    from tools.skills_tool import _find_all_skills
+
+    identifier = str(params.get("source") or params.get("identifier") or params.get("name") or "").strip()
+    if not identifier:
+        return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "source is required"}}
+    roster = _roster()
+    agent_id = params.get("agentId") or (roster[0] if roster else "")
+    if not agent_id:
+        return _unsupported("This workspace has no agent profile to install into.")
+    with _profile_scope(agent_id):
+        do_install(identifier, console=Console(quiet=True), skip_confirm=True)
+        # do_install reports through its console, so "did it land" is read back off disk.
+        installed = any(s["name"] == identifier.rsplit("/", 1)[-1] for s in _find_all_skills(skip_disabled=True))
+    if not installed:
+        return {"ok": False, "error": {"code": "UNAVAILABLE",
+                                       "message": f"{identifier} could not be installed"}}
+    sync.save_profile(agent_id)
+    return {"ok": True, "payload": {"installed": True, "agentId": agent_id, "source": identifier}}
+
+
+def _skills_proposals_list(_params: dict, **_kwargs) -> dict:
+    """Hermes's nearest equivalent to skill proposals is the staged-write approval queue, and it
+    only exists when `skills.write_approval` is on. Every profile pins it OFF
+    (`hermes_profiles.build_profile_config`), so the queue is structurally empty -- say so
+    rather than leaving the panel to guess."""
+    return {"ok": True, "payload": {"proposals": [], "reason": "write_approval_disabled"}}
+
+
+def _session_ms(value) -> int | None:
+    """Hermes session timestamps -> epoch ms. The column is a SQLite timestamp: numeric on some
+    rows, ISO-8601 text on others, so both are accepted and anything else reads as unknown."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value if value > 1e11 else value * 1000)  # seconds vs already-ms
+    if isinstance(value, str) and value.strip():
+        from datetime import datetime
+
+        try:
+            text = value.strip().replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                from datetime import timezone as _tz
+
+                parsed = parsed.replace(tzinfo=_tz.utc)
+            return int(parsed.timestamp() * 1000)
+        except ValueError:
+            return None
+    return None
+
+
+@contextlib.contextmanager
+def _session_db(agent_id: str):
+    """The SHARED SessionDB for a profile's `state.db` -- acquired through Hermes's own registry
+    so a settings read borrows the handle a concurrent turn is already writing through instead
+    of opening a second writer on one WAL."""
+    import hermes_state_registry
+
+    with _profile_scope(agent_id):
+        db = hermes_state_registry.acquire(sync.HOME / "profiles" / agent_id / "state.db")
+        try:
+            yield db
+        finally:
+            hermes_state_registry.release(db)
+
+
+def _sessions_list(params: dict, **_kwargs) -> dict:
+    limit = params.get("limit")
+    limit = limit if isinstance(limit, int) and 0 < limit <= 200 else 50
+    agents = [params["agentId"]] if params.get("agentId") else _roster()
+    rows = []
+    for agent_id in agents:
+        with _session_db(agent_id) as db:
+            for row in db.list_sessions_rich(limit=limit):
+                rows.append({
+                    "id": row.get("id"), "key": row.get("id"), "agentId": agent_id,
+                    "title": row.get("title") or None,
+                    "updatedAt": _session_ms(row.get("last_active") or row.get("started_at")),
+                    "messageCount": row.get("message_count"),
+                    "source": row.get("source"),
+                })
+    rows.sort(key=lambda r: (r["updatedAt"] or 0), reverse=True)
+    return {"ok": True, "payload": {"sessions": rows[:limit], "count": len(rows[:limit])}}
+
+
+def _session_target(params: dict) -> tuple[str, str] | None:
+    session_id = str(params.get("id") or params.get("key") or "").strip()
+    agent_id = params.get("agentId")
+    if not session_id:
+        return None
+    if agent_id:
+        return str(agent_id), session_id
+    # The panel is workspace-wide and its rows carry agentId, but a caller that omits it still
+    # has to resolve to exactly one profile -- session ids are unique per state.db, not globally.
+    for candidate in _roster():
+        with _session_db(candidate) as db:
+            if db.get_session(session_id):
+                return candidate, session_id
+    return None
+
+
+def _sessions_delete(params: dict, **_kwargs) -> dict:
+    target = _session_target(params)
+    if target is None:
+        return {"ok": False, "error": {"code": "NOT_FOUND", "message": "session not found"}}
+    agent_id, session_id = target
+    with _session_db(agent_id) as db:
+        deleted = db.delete_session(session_id)
+    if deleted:
+        sync.save_profile(agent_id)  # an RPC runs outside a turn; nothing else pushes state.db
+    return {"ok": True, "payload": {"deleted": bool(deleted), "id": session_id, "agentId": agent_id}}
+
+
+def _sessions_patch(params: dict, **_kwargs) -> dict:
+    """Hermes exposes exactly one editable session field: the title. OpenClaw's per-session
+    thinking/verbose/reasoning overrides have no Hermes equivalent, so they are refused."""
+    title = params.get("title", params.get("label"))
+    if not isinstance(title, str) or not title.strip():
+        return _unsupported("Only a session title can be changed on the Hermes runtime.")
+    target = _session_target(params)
+    if target is None:
+        return {"ok": False, "error": {"code": "NOT_FOUND", "message": "session not found"}}
+    agent_id, session_id = target
+    with _session_db(agent_id) as db:
+        renamed = db.set_session_title(session_id, title.strip())
+    if renamed:
+        sync.save_profile(agent_id)
+    return {"ok": True, "payload": {"id": session_id, "agentId": agent_id, "title": title.strip()}}
+
+
+RPC_METHODS.update({
+    "skills.status": _skills_status, "skills.update": _skills_update,
+    "skills.search": _skills_search, "skills.install": _skills_install,
+    "skills.proposals.list": _skills_proposals_list,
+    "sessions.list": _sessions_list, "sessions.delete": _sessions_delete,
+    "sessions.patch": _sessions_patch,
+})
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -326,3 +326,95 @@ async def test_rollback_tolerates_a_missing_runtime_and_secret(monkeypatch):
     assert await mod.rollback(OWNER) == mod.EXIT_OK
     stop_session.assert_not_called()
     ecs.start_user_service.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — --all
+# ---------------------------------------------------------------------------
+
+
+async def test_all_flag_migrates_every_non_agentcore_non_reference_row(monkeypatch):
+    rows = [
+        {"owner_id": "a", "runtime_host": "ecs"},
+        {"owner_id": "b", "runtime_host": "agentcore"},  # already migrated -- skipped
+        {"owner_id": mod.REFERENCE_ORG_ID, "runtime_host": "ecs"},  # reference org -- skipped
+    ]
+    migrated: list[str] = []
+
+    async def fake_migrate(owner_id, *, dry_run):
+        migrated.append(owner_id)
+        return mod.EXIT_OK
+
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", fake_migrate)
+
+    assert await mod.migrate_all(dry_run=False) == mod.EXIT_OK
+    assert migrated == ["a"]
+
+
+async def test_all_flag_skips_pass_admission_rows(monkeypatch):
+    rows = [{"owner_id": f"{mod.PASS_KEY_PREFIX}nightly-sweep"}, {"owner_id": "a", "runtime_host": "ecs"}]
+    migrated: list[str] = []
+
+    async def fake_migrate(owner_id, *, dry_run):
+        migrated.append(owner_id)
+        return mod.EXIT_OK
+
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", fake_migrate)
+
+    await mod.migrate_all(dry_run=False)
+    assert migrated == ["a"]
+
+
+async def test_all_flag_skips_rows_with_no_active_paperclip_company(monkeypatch):
+    rows = [{"owner_id": "no-company", "runtime_host": "ecs"}, {"owner_id": "a", "runtime_host": "ecs"}]
+    migrated: list[str] = []
+
+    async def fake_migrate(owner_id, *, dry_run):
+        migrated.append(owner_id)
+        return mod.EXIT_OK
+
+    async def fake_company(owner_id):
+        return SimpleNamespace(status="active") if owner_id == "a" else None
+
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", fake_company)
+    monkeypatch.setattr(mod, "migrate", fake_migrate)
+
+    await mod.migrate_all(dry_run=False)
+    assert migrated == ["a"]
+
+
+async def test_all_flag_retries_a_transient_exit_exactly_once(monkeypatch):
+    rows = [{"owner_id": "a", "runtime_host": "ecs"}]
+    attempts: list[str] = []
+
+    async def flaky_then_ok(owner_id, *, dry_run):
+        attempts.append(owner_id)
+        return mod.EXIT_TRANSIENT if len(attempts) == 1 else mod.EXIT_OK
+
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", flaky_then_ok)
+
+    assert await mod.migrate_all(dry_run=False) == mod.EXIT_OK
+    assert attempts == ["a", "a"]
+
+
+async def test_all_flag_reports_a_persistent_transient_failure(monkeypatch):
+    rows = [{"owner_id": "a", "runtime_host": "ecs"}]
+    attempts: list[str] = []
+
+    async def always_transient(owner_id, *, dry_run):
+        attempts.append(owner_id)
+        return mod.EXIT_TRANSIENT
+
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", always_transient)
+
+    assert await mod.migrate_all(dry_run=False) == mod.EXIT_TRANSIENT
+    assert attempts == ["a", "a"]  # retried exactly once, not looped forever

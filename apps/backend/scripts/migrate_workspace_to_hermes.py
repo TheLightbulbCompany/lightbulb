@@ -99,7 +99,7 @@ from pathlib import Path
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
-from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
+from core.repositories.container_repo import PASS_KEY_PREFIX, ProvisionSuperseded, classify_provision_error
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.dynamodb import run_in_thread
 from core.services import runtime_transport
@@ -444,16 +444,54 @@ async def rollback(owner_id: str) -> int:
     return EXIT_OK
 
 
+async def migrate_all(*, dry_run: bool) -> int:
+    """Task 3 — fleet-wide flip for the per-workspace-flip phase, once prod carries the Hermes
+    image (see the module docstring's prod-dispatch precondition). Sequential: a fleet-wide
+    migration is an operator-watched event, not a background job, and nothing here has load-
+    tested AgentCore's per-account ``CreateAgentRuntime`` rate. The founder/reference org is
+    never included (Ruling M6-R2) — Task 2 runs it explicitly via ``--owner-id`` first.
+    """
+    rows = await container_repo.scan_all()
+    results: list[tuple[str, int]] = []
+    for row in rows:
+        owner_id = row.get("owner_id")
+        if not owner_id or owner_id.startswith(PASS_KEY_PREFIX) or owner_id == REFERENCE_ORG_ID:
+            continue
+        if runtime_transport.host_for(row) == "agentcore":
+            continue
+        company = await _load_company(owner_id)
+        if not company or company.status != "active":
+            logger.info("migrate_all: skipping owner=%s — no active Paperclip company", owner_id)
+            continue
+        code = await migrate(owner_id, dry_run=dry_run)
+        if code == EXIT_TRANSIENT:
+            logger.warning("migrate_all: owner=%s exited transient — retrying once", owner_id)
+            code = await migrate(owner_id, dry_run=dry_run)
+        results.append((owner_id, code))
+
+    tag = "DRY RUN " if dry_run else ""
+    print(f"{tag}migrate_all summary:")
+    for owner_id, code in results:
+        print(f"  {owner_id}: exit={code}")
+    return max((code for _, code in results), default=EXIT_OK)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--owner-id", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--owner-id")
+    target.add_argument("--all", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rollback", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
     if args.rollback:
+        if not args.owner_id:
+            parser.error("--rollback requires --owner-id")
         return asyncio.run(rollback(args.owner_id))
+    if args.all:
+        return asyncio.run(migrate_all(dry_run=args.dry_run))
     return asyncio.run(migrate(args.owner_id, dry_run=args.dry_run))
 
 

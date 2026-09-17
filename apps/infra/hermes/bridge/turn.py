@@ -129,7 +129,9 @@ MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 # dispatch that message was part of (report 03 §1). Widened deliberately.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
 ROOM_EVENT_KINDS = ("user_request", "room_event")
-EVENT_KINDS = ROOM_EVENT_KINDS
+# agent_mail (Task 20) carries no room: no participants, no frame channel, no thread — only
+# a sessionKey (threading the mail conversation) and a target agent.
+EVENT_KINDS = ROOM_EVENT_KINDS + ("agent_mail",)
 
 
 class IngressError(Exception):
@@ -161,6 +163,10 @@ def parse_ingress(body: dict) -> dict:
     _check(isinstance(body, dict) and body.get("version") == 1, "body.version must be 1")
     _check(len(str(body.get("eventId") or "").encode()) <= MAX_EVENT_ID_BYTES, "eventId exceeds 256 bytes")
     _check(body.get("eventKind") in EVENT_KINDS, f"eventKind must be one of {'|'.join(EVENT_KINDS)}")
+    if body.get("eventKind") == "agent_mail":
+        _check(bool(body.get("sessionKey")), "sessionKey is required for an agent_mail event")
+        _check(bool(body.get("targetAgentId")), "targetAgentId is required")
+        return body
     room = body.get("room") or {}
     msg = body.get("message") or {}
     _check(body.get("eventId") == msg.get("messageId"), "eventId must equal message.messageId")
@@ -490,13 +496,15 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
 def run_turn(agent_id: str, body: dict) -> None:
     run = body.get("run") or {}
     run_id = run.get("runId")
+    has_run = bool(run_id)  # agent_mail (Task 20) carries no run block: no callbacks, no frames
     room = body.get("room") or {}
     msg = body.get("message") or {}
-    session_key = f"agent:{agent_id}:lightbulb:{room.get('kind', 'channel')}:{room.get('id')}"
+    session_key = body.get("sessionKey") or lightbulb_session_key(agent_id, room.get("id"))
     thread_root = reply_thread_root(room.get("kind", "channel"), msg)
     frames = FramePublisher(run.get("frameEndpoint", ""), run.get("frameChannel", ""),
                             room.get("id"), agent_id, run_id, thread_root)
-    register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
+    if has_run:
+        register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
     _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
     t0 = time.time()
@@ -508,9 +516,10 @@ def run_turn(agent_id: str, body: dict) -> None:
 
     try:
         restore_profile(agent_id)
-        _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
-        frames.started()
-        threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
+        if has_run:
+            _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
+            frames.started()
+            threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
         turn_session_id = f"{room.get('id')}:{agent_id}"
         write_turn_context(_profile_dir(agent_id), turn_session_id, {
             "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
@@ -519,7 +528,7 @@ def run_turn(agent_id: str, body: dict) -> None:
             "localSessionToken": None,
         })
         try:
-            if RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched: never call _run_hermes
+            if has_run and RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched
                 outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
             else:
                 outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
@@ -528,11 +537,12 @@ def run_turn(agent_id: str, body: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE
         log.error("turn %s failed: %s\n%s", run_id, exc, traceback.format_exc())
-    finish_run(run_id, outcome)
-    frames.finished(outcome, reply, error_kind)
+    if has_run:
+        finish_run(run_id, outcome)
+        frames.finished(outcome, reply, error_kind)
     done.set()
     took = time.time() - t0
-    if reply:
+    if reply and has_run:  # a mail turn's reply has no room to post into
         _post_backend(
             f"agent-messages/{OWNER}",
             {
@@ -545,13 +555,17 @@ def run_turn(agent_id: str, body: dict) -> None:
                 "runId": run_id,
             },
         )
-    _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
-    report_usage(session_key, agent_id, run_id, outcome == "completed", int(took * 1000), usage)
+    if has_run:
+        _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
+    # A run-shaped turn correlates on its runId; agent_mail (Task 20) carries no run block at
+    # all, so its own eventId is the closest thing to a correlation id for the usage report.
+    report_usage(session_key, agent_id, run_id or body.get("eventId"), outcome == "completed", int(took * 1000), usage)
     try:
         save_profile(agent_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("save_profile failed: %s", exc)
-    _runs[run_id] = outcome
+    if has_run:
+        _runs[run_id] = outcome
     _last_turn[agent_id] = took
     _busy_add(-1)
     log.info("turn %s agent=%s outcome=%s %.1fs reply=%r", run_id, agent_id, outcome, took, reply[:80])

@@ -8,12 +8,12 @@ AgentCore guard; that guard is covered separately in test_relay_hooks_agentcore.
 """
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from core.services import node_broker
+from core.services import node_broker, runtime_transport
 from core.services.machine_auth import MachineIdentity
 from routers import gateway_relay
 
@@ -77,6 +77,41 @@ def _connect_frame(req_id: str, commands: list[str]) -> str:
     )
 
 
+class _CountingRouterSocket:
+    """Fake used to call `gateway_relay_ws` directly (the real router coroutine, not
+    `_serve_node_protocol`) -- models the one behavior fix round 1 item 1 is about:
+    starlette's real `WebSocket.accept()` raises `RuntimeError` on a SECOND call once the
+    connection is already CONNECTED (verified against `starlette.websockets.WebSocket.send`'s
+    state machine -- a second `websocket.accept` message is not a legal ASGI send once
+    `application_state` is already CONNECTED)."""
+
+    def __init__(self, received: list[str]):
+        self.query_params = {"token": "x", "clientId": "node-host"}
+        self._received = list(received)
+        self.sent: list[str] = []
+        self.accept_calls = 0
+        self._accepted = False
+
+    async def accept(self) -> None:
+        self.accept_calls += 1
+        if self._accepted:
+            raise RuntimeError(
+                'Expected ASGI message "websocket.send" or "websocket.close", but got \'websocket.accept\''
+            )
+        self._accepted = True
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    async def receive_text(self) -> str:
+        if not self._received:
+            raise WebSocketDisconnect(code=1000)
+        return self._received.pop(0)
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        return None
+
+
 @pytest.fixture(autouse=True)
 def _hooks_are_noise_here():
     """relay_hooks.on_node_ready/on_node_closed are relay_hooks' own concern (and, for an
@@ -87,6 +122,31 @@ def _hooks_are_noise_here():
         patch("routers.gateway_relay.relay_hooks.on_node_closed", new_callable=AsyncMock),
     ):
         yield
+
+
+@pytest.mark.asyncio
+async def test_router_accepts_the_socket_exactly_once_for_an_agentcore_node():
+    """Fix round 1, item 1 (critical): the router used to `accept()` the socket itself
+    AND call into `_serve_node_protocol`, which also accepts -- the second accept raised
+    RuntimeError before the challenge frame ever went out, closing 1011 and leaving the
+    Mac to reconnect forever."""
+    fake = _CountingRouterSocket([])
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(
+        return_value=({"runtime_host": "agentcore"}, runtime_transport.AGENTCORE_ADDRESS)
+    )
+    svc = MagicMock()
+    svc.put_relay_presence = AsyncMock()
+    svc.delete_connection = MagicMock()
+    with (
+        patch("routers.gateway_relay.machine_auth.verify_upgrade", new_callable=AsyncMock, return_value=_identity()),
+        patch("routers.gateway_relay.get_ecs_manager", return_value=manager),
+        patch("routers.gateway_relay.ConnectionService", return_value=svc),
+    ):
+        await gateway_relay.gateway_relay_ws(fake)
+
+    assert fake.accept_calls == 1
+    assert json.loads(fake.sent[0])["event"] == "connect.challenge"
 
 
 @pytest.mark.asyncio

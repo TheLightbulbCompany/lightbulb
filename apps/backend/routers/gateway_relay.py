@@ -157,10 +157,13 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
             # No second socket: the BACKEND is the gateway for this workspace, terminating
             # the node protocol itself (spec §4.4) instead of dialling a container that does
             # not exist. `_serve_node_protocol` owns the connection end to end (including its
-            # own presence-refresh leg and its own on_node_ready/on_node_closed calls), so
+            # own accept(), presence-refresh leg, and on_node_ready/on_node_closed calls), so
             # none of `node_ready`/`legs`/`refresher` below ever get set on this path — the
             # shared `finally` skips the ECS-shaped on_node_closed dispatch as a result.
-            await websocket.accept()
+            #
+            # Fix round 1, item 1 (critical): do NOT `await websocket.accept()` here too --
+            # starlette raises RuntimeError on a second accept() once the socket is already
+            # CONNECTED, which used to close 1011 before the challenge frame ever went out.
             put_metric("relay.connect", dimensions={"kind": kind, "outcome": "ok"})
             close_code = await _serve_node_protocol(
                 websocket, identity, container, connections=connections, connection_id=connection_id

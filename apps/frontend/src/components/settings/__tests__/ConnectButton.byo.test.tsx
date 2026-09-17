@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 
 import { ConnectButton } from "../ConnectButton";
+import { BACKEND_URL } from "@/lib/api";
 import { type Connection } from "@/hooks/useConnections";
 
 // Render next/link as a plain anchor so no router context is needed.
@@ -118,16 +119,120 @@ describe("ConnectButton BYO branch", () => {
       screen.getByRole("button", { name: /use your own google workspace app/i }),
     );
 
-    // Setup-URL link.
-    expect(screen.getByRole("link", { name: /register an oauth app/i })).toHaveAttribute(
-      "href",
-      "https://console.cloud.google.com/apis/credentials",
-    );
+    // Google gets the numbered Google Cloud walkthrough instead of the generic
+    // "Register an OAuth app →" shortcut: that shortcut dropped owners straight
+    // on the Credentials page of a project that did not exist yet, which is the
+    // confusion this panel exists to remove.
+    expect(
+      screen.queryByRole("link", { name: /register an oauth app/i }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("link", { name: /create a google cloud project/i }),
+    ).toBeInTheDocument();
     // Derived redirect URI (mirrors backend _redirect_uri).
     expect(screen.getByText(/\/oauth\/google\/callback$/)).toBeInTheDocument();
     // Credential inputs.
     expect(screen.getByLabelText(/client id/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument();
+  });
+
+  describe("Google Cloud instructions", () => {
+    // The connect copy is the product surface for a setup that happens entirely
+    // in someone else's console. These assert the instruction content itself,
+    // because the failure mode is silent: the panel still renders, the owner
+    // just cannot follow it. Support's #1 complaint was that nothing told them a
+    // Google Cloud PROJECT has to exist first.
+    const openPanel = () => {
+      renderByo();
+      fireEvent.click(
+        screen.getByRole("button", { name: /use your own google workspace app/i }),
+      );
+    };
+
+    it("leads with creating a Google Cloud project, linked", () => {
+      openPanel();
+      const step1 = screen.getByRole("link", { name: /create a google cloud project/i });
+      expect(step1).toHaveAttribute("href", "https://console.cloud.google.com/projectcreate");
+      // It is the FIRST instruction, not a footnote further down.
+      const steps = screen.getAllByRole("listitem");
+      expect(steps[0]).toHaveTextContent(/create a google cloud project/i);
+    });
+
+    it("names each console screen in order, with a link for each", () => {
+      openPanel();
+      const screens: [RegExp, string][] = [
+        [/apis & services → library/i, "https://console.cloud.google.com/apis/library"],
+        [/oauth consent screen/i, "https://console.cloud.google.com/auth/overview"],
+        [/^audience$/i, "https://console.cloud.google.com/auth/audience"],
+        [
+          /credentials → create credentials → oauth client id/i,
+          "https://console.cloud.google.com/apis/credentials",
+        ],
+      ];
+      for (const [name, href] of screens) {
+        // Some screens are linked twice (a step plus the troubleshooting note);
+        // every occurrence must point at the same console page.
+        const links = screen.getAllByRole("link", { name });
+        expect(links.length).toBeGreaterThan(0);
+        for (const link of links) expect(link).toHaveAttribute("href", href);
+      }
+    });
+
+    it("tells the owner which APIs to enable and which client type to pick", () => {
+      openPanel();
+      expect(screen.getByText(/Gmail API/)).toBeInTheDocument();
+      expect(screen.getByText(/Google Calendar API/)).toBeInTheDocument();
+      expect(screen.getByText(/Google Drive API/)).toBeInTheDocument();
+      // Web application is load-bearing: the other types get no client secret.
+      expect(screen.getByText(/never issued the client secret/i)).toBeInTheDocument();
+    });
+
+    it("shows the environment's own redirect URI, not a hardcoded host", () => {
+      openPanel();
+      // Derived from BACKEND_URL (NEXT_PUBLIC_API_URL), so dev and prod each
+      // render their own callback — mirrors the backend's _redirect_uri.
+      expect(
+        screen.getByText(`${BACKEND_URL}/oauth/google/callback`),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/no\s*trailing slash/i)).toBeInTheDocument();
+    });
+
+    it("calls out the unverified-consent-screen failure and its fix", () => {
+      openPanel();
+      expect(
+        screen.getByText(/has not completed the Google verification process/i),
+      ).toBeInTheDocument();
+      expect(screen.getAllByText(/Test users/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/redirect_uri_mismatch/i)).toBeInTheDocument();
+      // And the post-connect failure: an API that was never enabled.
+      expect(screen.getByText(/API has not been used in project/i)).toBeInTheDocument();
+    });
+
+    it("lists the exact scopes the connection requests", () => {
+      openPanel();
+      for (const scope of [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/drive",
+      ]) {
+        expect(screen.getByText(scope)).toBeInTheDocument();
+      }
+    });
+
+    it("does not leak the Google steps onto another BYO provider", () => {
+      renderByo({
+        connection: {
+          ...googleByoRow,
+          provider: "x",
+          display_name: "X",
+          byo_setup_url: "https://developer.x.com/en/portal/dashboard",
+        },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /use your own x app/i }));
+      expect(screen.queryByText(/google cloud project/i)).toBeNull();
+      // X keeps its own confidential-client guidance.
+      expect(screen.getByText(/Automated App/)).toBeInTheDocument();
+    });
   });
 
   it("PUTs the byo-app then proceeds to OAuth on Save", async () => {

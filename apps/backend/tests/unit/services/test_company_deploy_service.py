@@ -832,11 +832,12 @@ async def test_agentcore_skipped_aux_mutations_logged_and_counted(monkeypatch, c
 
 
 @pytest.mark.asyncio
-async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(monkeypatch):
+async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(monkeypatch, caplog):
     """A HermesProfileError partway through the AgentCore loop rolls back exactly the agents
     created so far via a straight Paperclip delete -- never catalog.unwind_partial_deploy
     (there is no EFS/openclaw.json/.template sidecar state on this transport to unwind). S3
-    profile objects are left in place; a re-run overwrites them."""
+    profile objects are left in place; a re-run overwrites them. The deploy reports the
+    failure (logged), never raises to its fire-and-forget caller."""
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
@@ -854,8 +855,11 @@ async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(mo
     monkeypatch.setattr(svc, "write_profile_for_agent", boom)
 
     # Must NOT raise.
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+    with caplog.at_level("ERROR"):
+        await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
+    # The deploy reports the failure...
+    assert f"company_deploy: owner={OWNER} failed" in caplog.text
     # CEO + CTO created before the crash; the Worker was never reached.
     assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO"]
     ceo_id = h.admin.name_to_id["CEO"]

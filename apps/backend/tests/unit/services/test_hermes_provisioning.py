@@ -90,6 +90,25 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
     assert "GATEWAY_TOKEN" not in env
 
 
+def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
+    """M4-R38: Hermes's vision auxiliary task falls through to its auto chain (OpenRouter ->
+    Nous -> DeepInfra) even with fallback_chain: [], and is unreachable in our runtime ONLY
+    because no OPENROUTER_API_KEY/DEEPINFRA_API_KEY exists AND Nous's free tier is gated on
+    HERMES_GUEST_ONBOARDING=1 (hermes_cli/anon_auth.py::guest_enabled). None of these three keys
+    must ever appear here -- this is the egress fence for that aux task."""
+    env = hermes_provisioning.build_hermes_runtime_env(
+        owner_id="org_a",
+        api_base="https://api-dev.flickmeon.ai",
+        bucket="lightbulb-dev-openclaw-replicas",
+        boot_secret_id="lightbulb/dev/hermes/org_a/boot",
+        gate_endpoint="https://gate.example/invoke",
+        sonnet_aip_arn="arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/abc",
+    )
+    assert "HERMES_GUEST_ONBOARDING" not in env
+    assert "OPENROUTER_API_KEY" not in env
+    assert "DEEPINFRA_API_KEY" not in env
+
+
 # --- I5: _wait_for_runtime_ready ------------------------------------------------------------
 
 

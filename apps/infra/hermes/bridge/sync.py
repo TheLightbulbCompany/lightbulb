@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import logging
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from bridge import HOME, S3_BUCKET, S3_PREFIX
@@ -44,6 +46,15 @@ EXCLUDE_GLOBS = (
     # are re-fetched from the backend on the next process, not synced to S3.
     "media/messaging/*",
     "media/messaging/**/*",
+    # Task 13 (M4-R20): backend-owned. Written by hermes_profiles.upload_profile /
+    # patch_profile_config / set_profile_config, re-pulled by ensure_profile() on a changed
+    # .revision. A warm microVM's local copy can go stale the instant a hot patch lands, and
+    # save_profile racing that patch would silently revert it -- fix round 1's C4 flagged this
+    # exact clobber before this exclusion existed.
+    "config.yaml",
+    ".env",
+    "SOUL.md",
+    ".revision",
 )
 
 
@@ -62,10 +73,19 @@ def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
     return json.loads(client.get_secret_value(SecretId=secret_id)["SecretString"])
 
 
-def _s3():
-    import boto3
+#: Minor 2 (fix round 2 continuation): one lazily-built boto3 client per process, not one per
+#: call -- restore_root_auth/save_root_auth alone now cost 2-3 of these per turn
+#: (_root_auth_revision on both restore and save, plus the actual get/put).
+_S3_CLIENT = None
 
-    return boto3.client("s3")
+
+def _s3():
+    global _S3_CLIENT
+    if _S3_CLIENT is None:
+        import boto3
+
+        _S3_CLIENT = boto3.client("s3")
+    return _S3_CLIENT
 
 
 def _profile_dir(agent_id: str) -> Path:
@@ -96,6 +116,13 @@ def restore_profile(agent_id: str) -> float:
     _restored.add(agent_id)
     took = time.time() - t0
     log.info("restored profile %s: %d objects in %.1fs", agent_id, n, took)
+    # Minor 12 (fix round 1 continuation): the tree walk above just downloaded .revision (if the
+    # profile has one) along with everything else -- seed _REVISIONS from that local copy so
+    # ensure_profile's very next call doesn't immediately think a hot patch landed and re-pull
+    # the same four files this just restored.
+    revision_file = dest / ".revision"
+    if revision_file.is_file():
+        _REVISIONS[agent_id] = revision_file.read_text(encoding="utf-8").strip()
     return took
 
 
@@ -170,6 +197,168 @@ def write_profile_config(agent_id: str, config: dict) -> None:
     tmp.replace(directory / CONFIG_NAME)  # atomic: a torn config.yaml bricks the agent's next turn
 
 
+# ---- Task 13b: hot-patch re-pull -----------------------------------------------------------
+# The backend is the ONLY writer of the four backend-owned files (config.yaml, .env, SOUL.md,
+# .revision -- see hermes_profiles.upload_profile/patch_profile_config/set_profile_config on the
+# backend, and save_profile's EXCLUDE_GLOBS entries above). A patch bumps .revision; this is how
+# the bridge notices without a watcher or a restart.
+BACKEND_OWNED_FILES = ("config.yaml", ".env", "SOUL.md", ".revision")
+
+_REVISIONS: dict[str, str] = {}
+
+
+def _read_revision(agent_id: str) -> str | None:
+    """The profile's ``.revision`` marker in S3, or None when it cannot be read."""
+    try:
+        key = f"{S3_PREFIX}/{agent_id}/.revision"
+        return _s3().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read().decode().strip()
+    except Exception:  # noqa: BLE001 -- a transient S3 blip must not tear down a warm profile
+        return None
+
+
+def _download_profile(agent_id: str) -> None:
+    """Re-pull exactly the backend-owned files -- NOT a full restore_profile-style tree walk.
+    One object missing (a profile mid-provision, or one that predates Task 7) must not abort
+    the rest."""
+    dest = _profile_dir(agent_id)
+    dest.mkdir(parents=True, exist_ok=True)
+    s3 = _s3()
+    for name in BACKEND_OWNED_FILES:
+        try:
+            s3.download_file(S3_BUCKET, f"{S3_PREFIX}/{agent_id}/{name}", str(dest / name))
+        except Exception:  # noqa: BLE001 -- one missing object must not abort the other three
+            log.warning("ensure_profile: failed to re-pull %s for %s", name, agent_id)
+
+
+def ensure_profile(agent_id: str) -> None:
+    """Pull the backend-owned files if we have never seen this agent, or if the backend bumped
+    the revision since our last look.
+
+    One GetObject-sized read per turn buys hot config patches (Task 13a) with no watcher, no
+    lock, no restart. An unreadable revision leaves a WARM profile alone: a transient S3 error
+    must not re-download (and momentarily blank) a profile that is already working mid-turn.
+    """
+    if not S3_BUCKET:
+        return
+    revision = _read_revision(agent_id)
+    known = _REVISIONS.get(agent_id)
+    if known is not None and (revision is None or revision == known):
+        return
+    _download_profile(agent_id)
+    if revision is not None:
+        _REVISIONS[agent_id] = revision
+
+
+# ---- Task 15b: ChatGPT OAuth — the root auth.json's own save/restore leg -----------------------
+# Report 06 §2.2 / hermes_cli/auth_codex.py: a profile with no providers.openai-codex block reads
+# the ROOT home's grant via the fallback, and a refresh under that profile write-throughs to
+# ROOT's chain. So the root auth.json needs the SAME restore-once / save-after-turn treatment as
+# a profile dir, keyed at S3_PREFIX directly (no per-agent segment) to match
+# hermes_profiles.root_home_prefix on the backend side.
+def _download_object(key: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _s3().download_file(S3_BUCKET, f"{S3_PREFIX}/{key}", str(dest))
+
+
+def _upload_object(src: Path, key: str) -> None:
+    _s3().upload_file(str(src), S3_BUCKET, f"{S3_PREFIX}/{key}")
+
+
+def _root_auth_revision() -> str | None:
+    """The owner's ``<owner>/hermes/auth.revision`` marker in S3, or ``None`` when it cannot be
+    read (no root auth.json ever staged is not an error — same convention as a profile's own
+    ``_read_revision``)."""
+    try:
+        key = f"{S3_PREFIX}/auth.revision"
+        return _s3().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read().decode().strip()
+    except Exception:  # noqa: BLE001 -- a transient S3 blip must not tear down a warm profile
+        return None
+
+
+def _local_auth_hash() -> str | None:
+    path = HOME / "auth.json"
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+#: C3 (fix round 1 continuation, M4-R44): the root auth.json gets the SAME per-turn revision
+#: treatment a profile's config.yaml already has (Task 13a/13b) instead of a restore-ONCE-per-
+#: process flag, which could never see a grant hermes_profiles.stage_codex_auth staged after
+#: this microVM's first turn.
+_ROOT_AUTH_REVISION: str | None = None
+#: The sha256 of the local auth.json as of the last restore/save -- lets save_root_auth tell
+#: "Hermes rotated the token this turn" apart from "nothing touched it".
+_ROOT_AUTH_HASH: str | None = None
+
+
+#: Sentinel _ROOT_AUTH_REVISION value meaning "checked once, found absent" -- distinct from the
+#: real `None` starting value so the short-circuit below can tell "never checked" (must try the
+#: download once) apart from "checked and there is nothing there" (must stop trying).
+_ROOT_AUTH_ABSENT = ""
+
+
+def restore_root_auth() -> None:
+    """Pull ``<owner>/hermes/auth.json`` into the root home when the backend's
+    ``auth.revision`` marker has moved since our last restore — per-turn, the same shape as
+    ``ensure_profile``'s hot-patch re-pull (Task 13a).
+
+    NEW minor (fix round 2 continuation): almost every owner never connects ChatGPT OAuth, so
+    ``auth.revision`` never exists. Recording the sentinel ``_ROOT_AUTH_ABSENT`` after the first
+    check (instead of leaving ``_ROOT_AUTH_REVISION`` at ``None``) lets the guard below
+    short-circuit on turn 2 onward instead of attempting a doomed download forever; a revision
+    that later appears (the owner's first-ever ChatGPT connect) still differs from the sentinel
+    and triggers the download. One ``get_object`` of ``auth.revision`` per turn remains
+    (accepted cost, same as a profile's own ``.revision`` poll) — only the download attempt is
+    what gets skipped.
+    """
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
+    if not S3_BUCKET:
+        return
+    revision = _root_auth_revision()
+    if _ROOT_AUTH_REVISION is not None and (revision is None or revision == _ROOT_AUTH_REVISION):
+        return
+    try:
+        _download_object("auth.json", HOME / "auth.json")
+    except Exception as exc:  # noqa: BLE001 -- no root auth.json yet (never connected) is not an error
+        log.debug("restore_root_auth: no root auth.json to restore: %s", exc)
+    _ROOT_AUTH_REVISION = revision if revision is not None else _ROOT_AUTH_ABSENT
+    _ROOT_AUTH_HASH = _local_auth_hash()
+
+
+def save_root_auth() -> None:
+    """Push the root ``auth.json`` back only when THIS turn actually changed it locally
+    (Hermes rotates the refresh token in place via ``hermes_cli/auth_codex.py``'s write-through)
+    AND the backend hasn't staged a newer grant since our last restore — uploading over a
+    fresher staged grant would silently discard it (C3).
+
+    Silently a no-op (minor 4) when there is no local ``auth.json`` at all (an owner who has
+    never connected ChatGPT OAuth) or when this turn never touched it — neither is worth a
+    warning-level log; only the caller's own best-effort try/except (``turn.py``, same pattern
+    as ``save_profile``) is left for a genuine S3 failure.
+
+    # ponytail: read-then-write race — a stage_codex_auth landing between the revision check
+    # below and the upload can still be clobbered by this upload. S3 PutObject ``IfMatch``
+    # (conditional write, keyed on the object's ETag) is the real fix; skipped because the
+    # lost write here is a ChatGPT refresh token and the next login/refresh re-stages it.
+    """
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
+    if not S3_BUCKET:
+        return
+    local_hash = _local_auth_hash()
+    if local_hash is None or local_hash == _ROOT_AUTH_HASH:
+        return  # no local auth.json, or this turn never touched it
+    current_revision = _root_auth_revision()
+    if _ROOT_AUTH_REVISION is not None and current_revision != _ROOT_AUTH_REVISION:
+        log.info("save_root_auth: a newer grant was staged mid-turn — skipping upload")
+        return
+    _upload_object(HOME / "auth.json", "auth.json")
+    new_revision = uuid.uuid4().hex
+    _s3().put_object(Bucket=S3_BUCKET, Key=f"{S3_PREFIX}/auth.revision", Body=new_revision.encode())
+    _ROOT_AUTH_REVISION = new_revision
+    _ROOT_AUTH_HASH = local_hash
+
+
 def delete_profile_objects(agent_id: str) -> int:
     """Drop the profile's S3 prefix. Without this a deleted agent comes back on the next
     cold start, because restore reads the prefix, not the local dir."""
@@ -219,8 +408,29 @@ def plugins_pin(existing: dict) -> dict:
 
 
 def pin_profile_defaults(agent_id: str, model: str) -> dict:
+    """Fill-missing, not force-pin (fix round, M4-R2).
+
+    M4's config writer (``hermes_profiles.build_profile_config``) is now the source of truth for
+    a profile's aux/bedrock pins, written once at provision and kept current by Task 13's
+    ``ensure_profile()`` re-pull on a changed ``.revision`` -- this no longer needs to
+    force-overwrite them on every turn the way it did before that writer existed (see this
+    function's own history: "Until M4's config writer exists, the bridge writes this before
+    every turn"). ``deep_merge(defaults, existing)`` makes EXISTING win on any actual conflict
+    (an agent-edited or legacy value survives untouched), with the defaults only filling
+    whatever the profile's own config.yaml is missing -- e.g. a profile M4 never wrote, or one
+    written before Task 7 shipped.
+
+    This is a deliberate authority handoff, not a fence removal: ``bedrock.discovery.enabled``
+    stays enforced regardless, via the MANAGED overlay (Task 11's baked ``/etc/hermes/config.yaml``,
+    which wins AFTER env expansion and cannot be undone from inside a profile's own config.yaml).
+    The per-task auxiliary provider pin has no such backstop -- an already-pinned task's own
+    value, correct or not, is trusted once M4 has written it.
+
+    ``plugins.enabled`` stays a UNION regardless of merge direction: ``plugins_pin`` already
+    computes it from whatever ``existing`` holds, and this second merge line is unchanged.
+    """
     existing = read_profile_config(agent_id)
-    config = deep_merge(existing, auxiliary_pin(_aux_defaults(), model))
+    config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config

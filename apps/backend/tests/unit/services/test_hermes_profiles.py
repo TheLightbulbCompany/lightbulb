@@ -138,7 +138,23 @@ def test_byo_key_premium_and_cheap_tiers_come_from_the_shared_catalog_not_a_loca
 def test_chatgpt_oauth_selects_the_codex_provider_with_no_tier_split():
     c = cfg(provider_choice="chatgpt_oauth", aip_arns=None, is_ceo=True)
     assert c["model"]["provider"] == "openai-codex"
-    assert c["auxiliary"]["compression"]["provider"] == "auto"
+
+
+def test_chatgpt_oauth_pins_every_aux_task_to_the_codex_provider_not_auto():
+    """Task 15, new ruling from the re-review: provider: auto on the aux tasks re-opens the
+    OpenRouter/Nous auto-chain (auxiliary_client.py exempts "auto" from the raise a pinned,
+    unavailable provider would otherwise hit). openai-codex is a real, explicit aux provider —
+    verified in the image: hermes_cli/auth.py's ProviderConfig("openai-codex", ...),
+    auxiliary_client.py's dedicated resolution branch for it, and its own comment "openai-codex
+    has no safe default model; callers set auxiliary.<task>.model" (confirming an explicit model
+    is the supported, intended usage — not a guess). Pinned to the SAME model the primary uses
+    (gpt-5.6-sol): chatgpt_oauth is flat-rate with no cheaper tier to route aux work to, the same
+    reasoning the main model block already uses."""
+    c = cfg(provider_choice="chatgpt_oauth", aip_arns=None, is_ceo=True)
+    for task in hermes_profiles.AUXILIARY_TASKS:
+        assert c["auxiliary"][task]["provider"] == "openai-codex", task
+        assert c["auxiliary"][task]["model"] == "gpt-5.6-sol", task
+        assert c["auxiliary"][task]["fallback_chain"] == [], task
 
 
 def test_plugins_enabled_is_a_flat_list_never_entries():

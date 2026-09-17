@@ -91,3 +91,18 @@ def test_oauth_field_is_dropped_no_producer_sets_it_and_hermes_never_emits_it():
     Hermes's own OpenClaw->Hermes converter (``openclaw_to_hermes.py``) never emits it either."""
     config, _ = translate_mcp_servers({"s": {"url": "https://x", "oauth": {"token": "abc"}}})
     assert "oauth" not in config["s"]
+
+
+def test_a_sanitized_server_name_collision_is_rejected_not_silently_merged():
+    """Minor (re-review): "acme-crm" and "acme_crm" both sanitize to MCP_ACME_CRM_TOKEN — a
+    silent merge would let one server's secret name collide with (and possibly overwrite) the
+    other's, which is worse than a loud, clear failure at translate time."""
+    import pytest
+
+    with pytest.raises(ValueError, match="collide"):
+        translate_mcp_servers(
+            {
+                "acme-crm": {"command": "npx", "env": {"TOKEN": "a"}},
+                "acme_crm": {"command": "npx", "env": {"TOKEN": "b"}},
+            }
+        )

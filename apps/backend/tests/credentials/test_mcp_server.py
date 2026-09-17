@@ -203,6 +203,8 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
 async def test_reconcile_writes_each_block_per_server(monkeypatch):
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
+
     monkeypatch.setattr(
         m,
         "build_connected_integration_servers",
@@ -227,6 +229,8 @@ async def test_reconcile_writes_each_block_per_server(monkeypatch):
 async def test_reconcile_noops_when_config_missing(monkeypatch):
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
+
     monkeypatch.setattr(
         m,
         "build_connected_integration_servers",
@@ -248,6 +252,7 @@ async def test_reconcile_reapplies_openclaw_paths_provider(monkeypatch):
     entry, so it also pins the parallel YAML wiring."""
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
     monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
     monkeypatch.setattr(
         m.integrations_repo,
@@ -277,6 +282,7 @@ async def test_reconcile_skips_disconnected_openclaw_paths_provider(monkeypatch)
     """A disconnected openclaw_paths row is not re-applied (no stale re-write)."""
     from core.services.credentials import mcp_server as m
 
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
     monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
     monkeypatch.setattr(
         m.integrations_repo,
@@ -294,3 +300,31 @@ async def test_reconcile_skips_disconnected_openclaw_paths_provider(monkeypatch)
     await m.reconcile_integrations("org_1")
     assert writes == []
     secret_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instead_of_openclaw_json(monkeypatch):
+    """M4-R11: an AgentCore owner has no openclaw.json and no live gateway socket — the
+    equivalent rewrite goes through hermes_profiles.refresh_integrations for every one of the
+    owner's Paperclip-roster agents, and the ECS/openclaw.json path is never touched."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}]),
+    )
+    called = {}
+
+    async def fake_refresh(owner_id, agent_ids):
+        called.update(owner_id=owner_id, agent_ids=agent_ids)
+
+    monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
+    ecs_calls = []
+    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", lambda *a: ecs_calls.append(a))
+
+    await m.reconcile_integrations("org_a")
+
+    assert called == {"owner_id": "org_a", "agent_ids": ["a1", "a2"]}
+    assert ecs_calls == []  # the ECS/openclaw.json path is never reached

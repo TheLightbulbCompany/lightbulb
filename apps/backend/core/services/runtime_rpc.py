@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -12,15 +13,17 @@ import httpx
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
+from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import container_rpc
+from core.services import container_rpc, hermes_profiles, runtime_transport
 from core.services.live_events import publish_owner_users
 from core.services.messaging import (
     ApiProblem,
     RuntimeOperationAccepted,
     RuntimeRpcRequest,
     RuntimeRpcResponse,
+    load_agent_roster,
     make_live_event,
     runtime_operation,
 )
@@ -128,6 +131,9 @@ _MUTATING_METHODS = frozenset(
 )
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
 _RPC_TIMEOUT_S = 30.0
+#: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster for an AgentCore row,
+#: never forwarded to a live gateway socket. ECS rows are untouched — see _is_agentcore below.
+_HERMES_PROFILE_METHODS = frozenset({"config.get", "config.patch", "config.set", "agents.list"})
 # A mutating method that lands here invalidates the named resource for every
 # open frontend tab (the prior per-connection `*.changed` broadcast is gone).
 _INVALIDATES = {
@@ -140,6 +146,82 @@ _INVALIDATES = {
     "skills.proposals.apply": "skills",
     "skills.proposals.reject": "skills",
 }
+
+
+def _default_agent_id(roster: list[dict[str, Any]]) -> str | None:
+    """The CEO row, or the first roster row when nobody is CEO — packages/shared's
+    ``useAgents.ts`` reads this as ``data.defaultId`` (M4-R43, fix round 1 continuation)."""
+    for row in roster:
+        if row.get("role") == "ceo":
+            return row.get("id")
+    return roster[0].get("id") if roster else None
+
+
+async def _config_get_roster_map(owner_id: str) -> dict[str, Any]:
+    """``config.get`` with no ``agentId`` — the shape the real browser client actually sends
+    (``useConfigPatch.ts``/``PluginsTab.tsx`` never pass one). ``hash`` is the sha256 of the
+    per-profile hashes concatenated in roster order (M4-R43): stable for an unchanged roster,
+    and changes if any one profile's config.yaml does."""
+    roster = await load_agent_roster(owner_id)
+    config_map: dict[str, Any] = {}
+    hashes: list[str] = []
+    for row in roster:
+        config, config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, row["id"])
+        config_map[row["id"]] = config
+        hashes.append(config_hash)
+    return {"config": config_map, "hash": hashlib.sha256("".join(hashes).encode()).hexdigest()}
+
+
+async def _config_patch_roster(owner_id: str, patch: dict[str, Any], base_hash: str | None) -> dict[str, Any]:
+    """``config.patch`` with no ``agentId`` (M4-R48, fix round 2 continuation) — BOTH real
+    callers (``useConfigPatch.ts``, ``PluginsTab.tsx``) never send one, so there is no single
+    profile to CAS against: the patch fans out to EVERY roster profile, gated on the SAME map
+    hash ``config.get`` (no ``agentId``) returns. A single-profile hash could never match what
+    these clients actually hold as their ``baseHash`` — they only ever read it from the
+    no-``agentId`` ``config.get``. ``config.set`` has no such fan-out (see the caller): zero real
+    callers, and a whole-document replace across N profiles would clobber per-profile
+    differences.
+
+    # ponytail: not transactional — one profile's PUT failing mid-loop leaves a partial write.
+    Unhandled here per the controller's own ruling (parked): unlike ``refresh_integrations``,
+    this isn't a reconcile invoked on a timer, but the SAME patch dict re-sent is itself
+    idempotent per profile, and the next ``config.get`` map hash reflects exactly what landed —
+    a client can always detect and retry a partial apply.
+    """
+    current = await _config_get_roster_map(owner_id)
+    if base_hash is not None and base_hash != current["hash"]:
+        raise ApiProblem(
+            "INVALID_REQUEST",
+            "The config changed since you last loaded it. Refresh and try again.",
+            details={"method": "config.patch", "upstreamCode": "CONFIG_STALE"},
+        )
+    if not patch:
+        return current
+    for agent_id in current["config"]:
+        await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, patch)
+    return await _config_get_roster_map(owner_id)
+
+
+def _config_patch_dict(params: dict[str, Any]) -> dict[str, Any]:
+    """Accepts the RFC7386 JSON-merge-patch ``raw`` STRING the only real web caller sends
+    (``useConfigPatch.ts:41-43``, ``PluginsTab.tsx:90-96``) or a plain ``patch`` dict (other/
+    internal callers, e.g. the pre-existing test suite)."""
+    raw = params.get("raw")
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ApiProblem("INVALID_REQUEST", "config.patch raw must be valid JSON.") from exc
+        return decoded if isinstance(decoded, dict) else {}
+    patch = params.get("patch")
+    return patch if isinstance(patch, dict) else {}
+
+
+async def _is_agentcore(owner_id: str) -> bool:
+    """Whether this owner's runtime is AgentCore. Reuses ``runtime_transport``'s own
+    owner-id-only helper (built for exactly this call shape — see its docstring) instead of a
+    second copy of the ``container_repo`` fetch + ``host_for`` check."""
+    return await runtime_transport.is_agentcore_owner(owner_id)
 
 
 async def _invalidate(owner_id: str, method: str) -> None:
@@ -334,6 +416,66 @@ async def execute_sync(
             await _mirror_agent_update(owner_id, params)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
+    if method in _HERMES_PROFILE_METHODS and await _is_agentcore(owner_id):
+        # M4-R1/M4-R43 (fix round 1 continuation): an AgentCore row's Hermes profile lives in
+        # S3, not behind a live gateway socket — the backend is the ONLY writer of a profile
+        # (spec §4.5), so these are served/rewritten here with no microVM wake for a settings
+        # read. config.get NEVER returns .env content (it reads config.yaml alone).
+        # config.set/config.patch bump .revision on write, and the bridge re-pulls before the
+        # agent's next turn (Task 13b). ECS rows fall straight through to container_rpc.call.
+        #
+        # The wire shape below is NOT bridge/server.py's own config.get/config.patch/agents.list
+        # (that spike stand-in requires an agentId and returns no hash at all) — it is what the
+        # REAL browser clients already call and read: useConfigPatch.ts/PluginsTab.tsx never
+        # send an agentId and read snapshot.config/snapshot.hash, and packages/shared's
+        # useAgents.ts reads data.agents/data.defaultId.
+        if method == "agents.list":
+            roster = await load_agent_roster(owner_id)
+            return {"defaultId": _default_agent_id(roster), "agents": roster}
+        agent_id = params.get("agentId")
+        has_agent_id = isinstance(agent_id, str) and bool(agent_id)
+        # hermes_profiles.{config_snapshot,patch,set}_profile_config are plain sync functions
+        # that do blocking S3 I/O directly (see their own module docstring) — run_in_thread here
+        # is what keeps that off the event loop; this repo already took a prod backend freeze
+        # from blocking I/O on the loop (EFS tree walk, 2026-09-12).
+        if method == "config.get":
+            if not has_agent_id:  # C1: never 400 — the real client never sends one.
+                return await _config_get_roster_map(owner_id)
+            config, config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
+            return {"config": config, "hash": config_hash}
+        if not has_agent_id:
+            if method == "config.set":
+                # Zero real callers send config.set with no agentId, and a whole-document
+                # replace fanned out over N profiles would clobber per-profile differences.
+                raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
+            # M4-R48: config.patch with no agentId is BOTH real callers' actual shape
+            # (useConfigPatch.ts, PluginsTab.tsx) — roster-wide fan-out, not a 400.
+            result = await _config_patch_roster(owner_id, _config_patch_dict(params), params.get("baseHash"))
+            await _invalidate(owner_id, method)
+            return result
+        if method == "config.set":
+            result = await run_in_thread(
+                hermes_profiles.set_profile_config, owner_id, agent_id, params.get("config") or {}
+            )
+        else:
+            patch = _config_patch_dict(params)
+            base_hash = params.get("baseHash")
+            if base_hash is not None:
+                _current, current_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
+                if base_hash != current_hash:
+                    # C2: same stale-config shape the ECS path answers via
+                    # _normalize_gateway_error — an upstreamCode plus a message, INVALID_REQUEST.
+                    raise ApiProblem(
+                        "INVALID_REQUEST",
+                        "The config changed since you last loaded it. Refresh and try again.",
+                        details={"method": method, "upstreamCode": "CONFIG_STALE"},
+                    )
+            if not patch:
+                # Nothing to write — no upload, no .revision bump (M4-R43).
+                return {"ok": True}
+            result = await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, patch)
+        await _invalidate(owner_id, method)
+        return result
     try:
         result = await container_rpc.call(owner_id, method, params, timeout_s=_RPC_TIMEOUT_S)
     except asyncio.CancelledError:

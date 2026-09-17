@@ -18,6 +18,7 @@ Spike scope. Not here: the local-session relay.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -119,11 +120,22 @@ RPC_MAX_TIMEOUT_MS = 120_000
 # exists. The SHAPE is the contract — container_rpc unwraps {ok:false} into a RuntimeError
 # carrying this exact JSON, so it must never wobble.
 UI_ONLY_METHODS = frozenset({
+    # `models.list` is served for real by task 10-C's `_models_list` below.
     "tools.catalog", "commands.list", "chat.history", "agent.identity.get",
-    "skills.install", "skills.search", "skills.status", "skills.update",
-    "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.list",
-    "skills.proposals.reject",
-    "sessions.list", "sessions.patch", "sessions.delete", "sessions.rewind", "sessions.search",
+    "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.reject",
+    # Ruling M6-R56: hub search + install are cut. Both ran Hermes's hub machinery inside one
+    # turn-free RPC, and that machinery does not fit here: `tools/skills_hub.py` resolves its
+    # HUB_DIR from the LIVE hermes home, so the index cache (tens of MB) lands inside the
+    # profile and syncs to S3; the GitHub adapter reads GITHUB_TOKEN through the secret scope,
+    # which a settings RPC has no business installing; and a cold fetch + scan + upload cannot
+    # fit the 90 s AgentCore ingress cap the brief set. The Skills panel is a READ on Hermes.
+    "skills.install", "skills.search",
+    # Ruling M6-R54: sessions stay stubbed. The backend's session guard is a PRIVACY rule
+    # (a person sees only their own personal sessions) and Hermes has no personal session --
+    # every one of ours is room- or event-scoped -- so there is no AgentCore shape for this
+    # surface that does not widen that rule. The panel is hidden instead.
+    "sessions.list", "sessions.patch", "sessions.delete",
+    "sessions.rewind", "sessions.search",
     "sessions.branches.list", "sessions.branches.switch",
     "doctor.memory.status", "doctor.memory.dreamDiary", "doctor.memory.resetDreamDiary",
     "doctor.memory.backfillDreamDiary", "doctor.memory.dedupeDreamDiary",
@@ -135,6 +147,52 @@ UI_ONLY_METHODS = frozenset({
 
 def _profiles() -> list[str]:
     return sorted(p.name for p in (sync.HOME / "profiles").glob("*") if p.is_dir())
+
+
+#: (expires_at, ids) for _roster's S3 listing. A settings panel can land on a microVM that has
+#: never run a turn, where `profiles/` is EMPTY -- answering "no agents" or "no skills" from
+#: that would be an empty answer that reads as fact. One delimited LIST of the owner's prefix
+#: is the cheap truth; cached because `health` polls every 60 s.
+_ROSTER_TTL_S = 60.0
+_roster_cache: tuple[float, tuple[str, ...]] = (0.0, ())
+
+
+def _roster_listing() -> tuple[list[str], bool]:
+    """(every agent id this owner has, whether that list is AUTHORITATIVE).
+
+    Local dirs UNION the S3 prefix. A listing blip must not empty a panel, so the fallback is
+    still the local view -- but a short roster is only safe to DISPLAY, never to write back
+    from, so the second element says which one this is (review N5). With no bucket configured
+    the local dirs are the whole truth, so that answer is complete.
+    """
+    global _roster_cache
+    names = set(_profiles())
+    if not sync.S3_BUCKET:
+        return sorted(names), True
+    expires, cached = _roster_cache
+    # A cached listing that has not expired was obtained successfully, so it is authoritative.
+    # A failed refresh deliberately does NOT advance `expires`, so it stays incomplete and
+    # retries rather than serving a stale list as fact for the rest of the TTL.
+    complete = time.time() < expires
+    if not complete:
+        try:
+            prefix = f"{sync.S3_PREFIX}/"
+            pages = sync._s3().get_paginator("list_objects_v2").paginate(
+                Bucket=sync.S3_BUCKET, Prefix=prefix, Delimiter="/")
+            cached = tuple(sorted(
+                p["Prefix"][len(prefix):].strip("/")
+                for page in pages for p in page.get("CommonPrefixes", [])
+            ))
+            _roster_cache = (time.time() + _ROSTER_TTL_S, cached)
+            complete = True
+        except Exception:  # noqa: BLE001 -- keep serving the local view on an S3 blip
+            log.warning("roster listing failed", exc_info=True)
+    return sorted(names | set(cached)), complete
+
+
+def _roster() -> list[str]:
+    """The agent ids alone, for readers that only display them."""
+    return _roster_listing()[0]
 
 
 def _boot_ready() -> bool:
@@ -151,10 +209,13 @@ def _health(_params: dict, **_kwargs) -> dict:
     # ok:false here, or a booting container reads as ready fleet-wide.
     if not _boot_ready():
         return {"ok": False, "error": {"code": "NOT_READY", "message": "ingress cannot be accepted yet"}}
+    # No session count (ruling M6-R54): it would have been one sqlite read per locally-restored
+    # profile on the READINESS path, and with the Sessions panel hidden on AgentCore there is
+    # nobody left to read it.
     return {"ok": True, "payload": {
         "ready": True, "runtime": "hermes",
         "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
-        "agents": len(_profiles()),
+        "agents": len(_roster()),
     }}
 
 
@@ -301,15 +362,261 @@ def _models_list(params: dict, **_kwargs) -> dict:
     }}
 
 
-def _models_auth_status(_params: dict, **_kwargs) -> dict:
-    ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
+def _dotenv_has(agent_id: str, key: str) -> bool:
+    """Is `key` set to a non-empty value in the profile's own `.env`? Presence only -- the value
+    is a credential and is never read out of this function.
+
+    Deliberately NOT `agent.secret_scope.load_env_file` (review M3), which exists and would
+    parse the same grammar: that one MATERIALIZES every value into a dict, and a credential
+    this function never needs cannot leak from a boolean. The grammar it has to match is our
+    own writer's, `hermes_profiles.render_dotenv` -- `KEY=value` / `KEY="escaped"`, no
+    `export`, no interpolation."""
+    path = sync.HOME / "profiles" / agent_id / ".env"
+    if not path.is_file():
+        return False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == key:
+            return bool(value.strip().strip("'\""))
+    return False
+
+
+#: Hermes provider name -> (where the credential lives, how to check it). The provider names are
+#: the ones `hermes_profiles.model_block` writes into `config.yaml` -- `bedrock`, `anthropic`,
+#: `openai-api`, `openai-codex` -- and they are what the frontend's `llm-auth-status.ts` already
+#: matches on (exactly, or by its `openai-` prefix rule), so no id is translated here.
+def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
+    if provider == "bedrock":
+        return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "bedrock-gate"
+    if provider == "anthropic":
+        return _dotenv_has(agent_id, "ANTHROPIC_API_KEY"), "byo-key"
+    if provider == "openai-api":
+        return _dotenv_has(agent_id, "OPENAI_API_KEY"), "byo-key"
+    if provider == "openai-codex":
+        # The grant is the ROOT home's auth.json, staged by hermes_profiles.stage_codex_auth and
+        # pulled per turn. A settings read can arrive before this process has run any turn, so
+        # pull it here too -- restore_root_auth is a cheap revision check after the first call.
+        with contextlib.suppress(Exception):
+            sync.restore_root_auth()
+        return (sync.HOME / "auth.json").is_file(), "chatgpt-oauth"
+    return False, "unknown"
+
+
+def _models_auth_status(params: dict, **_kwargs) -> dict:
+    """The owner's provider and whether its credential is present. The old answer was hardcoded
+    `bedrock` + the gate bearer, so a BYO-key or ChatGPT-OAuth owner got a permanently wrong dot
+    (scan row 22).
+
+    ONE profile, not the roster (review I2). The provider is an OWNER-level choice: every
+    profile's `model.provider` is derived by `hermes_profiles.model_block` from
+    `(provider_choice, byo_provider, …)`, which has no per-agent input -- only the model ID
+    differs (the CEO's premium tier). So a second read cannot produce a second answer, and
+    looping the roster cost one `ensure_profile` per agent, which on a cold microVM is NOT the
+    "five backend-owned files" the old comment claimed: `ensure_profile` falls through to
+    `_download_profile`, a full prefix LIST plus a recency pull of nearly every object.
+    """
+    roster = _roster()
+    agent_id = params.get("agentId") or (roster[0] if roster else "")
+    provider = ""
+    if agent_id:
+        with contextlib.suppress(Exception):
+            # One profile's worth. Still not free on a cold microVM -- see the docstring.
+            sync.ensure_profile(agent_id)
+        provider = ((sync.read_profile_config(agent_id).get("model") or {}).get("provider") or "").strip()
+    if not provider:  # no profile readable yet -- the gate bearer is still the runtime's own truth
+        ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
+        return {"ok": True, "payload": {"providers": [
+            {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}
+    ok, via = _provider_credential(agent_id, provider)
     return {"ok": True, "payload": {"providers": [
-        {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}
+        {"provider": provider, "status": "ok" if ok else "missing", "via": via}]}}
 
 
 RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update,
                     "agents.delete": _agents_delete, "channels.status": _channels_status,
                     "models.list": _models_list, "models.authStatus": _models_auth_status})
+
+
+# ---- Hermes-native skills (M6 task 10-E, rulings M6-R50 / M6-R54) ------------------------------
+# Every read below goes through HERMES'S OWN loaders -- `tools.skills_tool._find_all_skills`,
+# `hermes_cli.skills_hub` -- never a parser of our own, because the format (SKILL.md front
+# matter) is Hermes's to change. Those imports only resolve inside the real image, so each entry
+# point degrades to UNAVAILABLE outside it; that is also what lets this suite run without Hermes
+# installed. Sessions are deliberately NOT here -- see UI_ONLY_METHODS (M6-R54).
+
+
+def _unsupported(message: str) -> dict:
+    return {"ok": False, "error": {"code": "UNSUPPORTED", "message": message}}
+
+
+def _profile_scope(agent_id: str):
+    """Restore the profile (once per process) and hold Hermes's HERMES_HOME override on it.
+
+    Hermes resolves the home at CALL time (`get_hermes_home()` is a ContextVar), so every loader
+    below has to run inside this scope or it reads the root home instead of the agent's profile.
+
+    # ponytail: a cold microVM pays a full `restore_profile` for a settings read -- the same
+    # download a turn pays, and once per process. Restoring just `skills/` (or just `state.db`)
+    # would need a second partial-restore path in sync.py; add it only if a cold settings read
+    # is measured over the 90 s ingress budget.
+    """
+    sync.restore_profile(agent_id)
+    sync.ensure_profile(agent_id)
+    return turn._hermes_home_scope(agent_id)
+
+
+def _disabled_names(config: dict) -> set[str]:
+    """One profile's STORED `skills.disabled`, normalized by Hermes's own
+    `parse_config_string_list` -- `hermes config set` writes a list as a quoted JSON/Python
+    literal STRING, and reading that as one skill literally named `["pdf","shopify"]` would
+    show every skill enabled and let the next toggle wipe the real list (review I6.1).
+    That helper is pure (no home scope, no session context), so it is safe to call here.
+
+    Deliberately NOT `agent.skill_utils.get_disabled_skill_names`, whose extra behaviours are
+    wrong for a list we hand back to be re-written: it unions `skills.platform_disabled[…]`
+    (promoting a platform-scoped disable to a global one on the next write) and subtracts
+    `ESSENTIAL_SKILLS` (silently deleting a stored name). Both would corrupt the round trip.
+    Recorded in the task report as review I6.2/I6.3.
+    """
+    from agent.skill_utils import parse_config_string_list
+
+    raw = (config.get("skills") or {}).get("disabled")
+    return {v.strip() for v in parse_config_string_list(raw) if v.strip()}
+
+
+def _config_yaml_from_s3(agent_id: str) -> tuple[dict, bool]:
+    """(one profile's `config.yaml`, whether that read is TRUSTWORTHY), read by KEY.
+
+    Not `ensure_profile`, which falls through to `_download_profile` -- a full prefix LIST plus
+    a recency pull of nearly every object (the cost review I2 removed from
+    `models.authStatus`). This is one small GetObject.
+
+    A 404 is complete: a profile mid-provision legitimately has no `config.yaml` yet, and it
+    contributes nothing to the union either way. Any OTHER error (throttle, timeout, denied)
+    falls back to the local copy -- which for a profile this process never restored is `{}` --
+    and reports `False`, because a silently SHORTENED union is a wrong write waiting to happen
+    (review N5), not a cosmetic gap.
+    """
+    if not sync.S3_BUCKET:
+        return sync.read_profile_config(agent_id), True
+    try:
+        import yaml
+
+        key = f"{sync.S3_PREFIX}/{agent_id}/{sync.CONFIG_NAME}"
+        body = sync._s3().get_object(Bucket=sync.S3_BUCKET, Key=key)["Body"].read()
+        return (yaml.safe_load(body.decode("utf-8")) or {}), True
+    except Exception as exc:  # noqa: BLE001 -- classified below, never re-raised into a panel
+        absent = sync._is_absent(exc)
+        log.log(logging.DEBUG if absent else logging.WARNING,
+                "config.yaml read %s for %s", "found nothing" if absent else "failed", agent_id,
+                exc_info=not absent)
+        return sync.read_profile_config(agent_id), absent
+
+
+def _roster_disabled_names(scanned_agent_id: str) -> tuple[list[str], bool]:
+    """(the UNION of `skills.disabled` across every profile in the roster, whether it is
+    COMPLETE) -- ruling M6-R57.
+
+    The panel is workspace-level and its patch fans out to every profile, replacing the list
+    wholesale -- so whatever this returns IS the next write for all of them, and a name missing
+    from it is not merely unchanged, it is DELETED. Reading one profile was wrong because
+    profiles genuinely diverge: `agents.create` -> `hermes_profiles.write_agent_profile` ->
+    `build_profile_config` emits a FRESH `skills` block with no `disabled` key and never reads
+    the owner's current list, so a newly created agent has an empty one. `_roster()` sorts UUIDs,
+    so that agent can land first -- and the next toggle would then re-enable every skill the
+    owner had turned off, everywhere (review N2).
+
+    A union can only over-disable, never under-disable -- **but only when the read is
+    complete** (review N5). Both sources can fail soft: a failed roster LIST serves the local
+    dirs alone, and a throttled per-profile GetObject falls back to a local copy that may not
+    exist. Either produces a SHORT list that is indistinguishable from the truth, and the next
+    toggle would write it to every profile, deleting the entries it never saw. So the caller is
+    told, and omits the list rather than shipping a plausible lie.
+    """
+    roster, complete = _roster_listing()
+    names = _disabled_names(sync.read_profile_config(scanned_agent_id))
+    for agent_id in roster:
+        if agent_id == scanned_agent_id:
+            continue
+        config, trusted = _config_yaml_from_s3(agent_id)
+        names |= _disabled_names(config)
+        complete = complete and trusted
+    return sorted(names), complete
+
+
+def _skills_status(params: dict, **_kwargs) -> dict:
+    """Hermes's installed skills, in the shape the Skills panel already reads.
+
+    The skill ROWS are scanned from one profile when the caller names none: the skills a
+    workspace has are the image's `/opt/hermes-skills` external dir plus what the migration
+    copied into each profile, so restoring all six to list them would buy nothing.
+
+    The DISABLED list is the roster-wide union instead (`_roster_disabled_names`), because
+    unlike the rows it is written back.
+    """
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    from tools.skills_tool import _find_all_skills
+
+    roster = _roster()
+    agent_id = params.get("agentId") or (roster[0] if roster else "")
+    if not agent_id:
+        return {"ok": True, "payload": {"skills": [], "disabledNames": []}}
+    with _profile_scope(agent_id):
+        found = _find_all_skills(skip_disabled=True)
+        skills_dir = str(sync.HOME / "profiles" / agent_id / "skills")
+    disabled_names, complete = _roster_disabled_names(agent_id)
+    disabled = set(disabled_names)
+    empty = {"bins": [], "env": [], "config": [], "os": []}
+    payload = {
+        "managedSkillsDir": skills_dir,
+        # Reviews I3 + N2: the STORED names, unioned across the roster -- never "which rendered
+        # rows are off", and never one profile's list. A disabled name whose skill is not on the
+        # scanned profile's disk appears in no row, and a profile written by `agents.create`
+        # carries no `disabled` key at all; either omission would ride the panel's wholesale
+        # list replace straight into a silent RE-ENABLE on every profile. The panel patches
+        # this list, not its own rows.
+        #
+        # OMITTED when the read was partial (review N5): an S3 blip in either source yields a
+        # SHORT union that looks exactly like the truth, and the panel would write it to every
+        # profile. Absent, the panel refuses the toggle with a readable error -- the rows still
+        # render, so the surface degrades to read-only rather than to a wrong write.
+        "skills": [{
+            "name": s["name"], "description": s.get("description") or "",
+            "skillKey": s["name"], "source": s.get("category") or "hermes",
+            # Hermes has no per-skill dependency manifest: a skill is a SKILL.md, and anything
+            # it shells out to is the image's business. So nothing is ever "missing" or
+            # "unsupported" here -- the panel's install/dependency machinery stays empty.
+            "always": s["name"] in ESSENTIAL_SKILLS,
+            "disabled": s["name"] in disabled,
+            "blockedByAllowlist": False, "eligible": True,
+            "requirements": dict(empty), "missing": dict(empty), "install": [],
+        } for s in found],
+    }
+    if complete:
+        payload["disabledNames"] = sorted(disabled)
+    return {"ok": True, "payload": payload}
+
+
+def _skills_update(_params: dict, **_kwargs) -> dict:
+    """Enabling/disabling a skill is a `config.yaml` write, and `config.yaml` is backend-owned
+    (`sync.EXCLUDE_GLOBS`): a write from here never reaches S3 and is reverted by the next
+    `.revision` re-pull or cold start. Refusing is the honest answer -- the durable door is the
+    backend's own `config.patch {skills:{disabled:[...]}}`, which the Skills panel now uses."""
+    return _unsupported("Skills are enabled through config.patch skills.disabled, not here.")
+
+
+def _skills_proposals_list(_params: dict, **_kwargs) -> dict:
+    """Hermes's nearest equivalent to skill proposals is the staged-write approval queue, and it
+    only exists when `skills.write_approval` is on. Every profile pins it OFF
+    (`hermes_profiles.build_profile_config`), so the queue is structurally empty -- say so
+    rather than leaving the panel to guess."""
+    return {"ok": True, "payload": {"proposals": [], "reason": "write_approval_disabled"}}
+
+
+RPC_METHODS.update({
+    "skills.status": _skills_status, "skills.update": _skills_update,
+    "skills.proposals.list": _skills_proposals_list,
+})
 
 
 class Handler(BaseHTTPRequestHandler):

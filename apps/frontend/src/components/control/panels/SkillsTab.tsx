@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { useRuntimeHost } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import {
   Loader2,
@@ -20,7 +21,10 @@ import { cn } from "@/lib/utils";
 import { SKILL_INTEGRATIONS } from "./skill-integrations";
 import { ClawHubSearch } from "./ClawHubSearch";
 
-// --- Types matching OpenClaw skills.status response ---
+// --- Types matching the skills.status response ---
+// Both runtimes answer this shape. Hermes has no per-skill dependency manifest,
+// so on AgentCore `missing`/`install` are always empty and no skill is ever
+// "unsupported" — the dependency machinery below simply never renders.
 
 interface SkillInstallSpec {
   id: string;
@@ -51,6 +55,8 @@ interface SkillStatusReport {
   workspaceDir?: string;
   managedSkillsDir?: string;
   skills: SkillStatusEntry[];
+  /** AgentCore only: the profile's STORED `skills.disabled`. See `toggleSkill`. */
+  disabledNames?: string[];
 }
 
 // --- Category mapping ---
@@ -178,9 +184,14 @@ function hasViableInstallSpec(skill: SkillStatusEntry): boolean {
 // --- Skills Tab ---
 
 export function SkillsTab({ agentId }: { agentId?: string }) {
+  // `undefined` is "not known for this workspace yet", never "this is ECS": firing
+  // on a guess costs a microVM start on AgentCore, so the RPC waits for a definite
+  // answer (same hold as AgentToolsTab).
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
   const params = agentId ? { agentId } : {};
   const { data: raw, error, isLoading, mutate } = useRuntimeRpc<SkillStatusReport | SkillStatusEntry[]>(
-    "skills.status",
+    runtimeHost ? "skills.status" : null,
     params,
   );
   const callRpc = useRuntimeRpcMutation();
@@ -213,7 +224,47 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   const availableSkills = filtered.filter((s) => getSkillState(s) === "available");
   const unsupportedSkills = filtered.filter((s) => getSkillState(s) === "unsupported");
 
-  if (isLoading) {
+  // On Hermes a skill's enabled state is `skills.disabled` in the profile's
+  // config.yaml, and the ONLY durable writer of a profile is the backend — the
+  // bridge's own write would never reach S3, so it refuses `skills.update`. The
+  // roster-wide `config.patch` (no agentId) is the door, and because a deep merge
+  // replaces a list wholesale the patch has to carry every name that stays off.
+  //
+  // That list is `disabledNames` — the STORED names the bridge read out of config.yaml,
+  // unioned across the roster — never "which rendered rows are off" (reviews I3/N2). A
+  // disabled skill that is not on the profile the bridge scanned renders in no row at all,
+  // and a profile written by `agents.create` carries no `disabled` key; either omission
+  // would ride this wholesale list replace into a silent RE-ENABLE of a skill somebody
+  // deliberately turned off.
+  //
+  // No fallback to the rows (review N3): that IS the truncating path, so guessing with it
+  // would write the wrong list on the one image where it could fire. Refusing is safer —
+  // and no shippable image can reach it, since every older bridge stubs `skills.status`
+  // and the panel renders an error with no toggle at all.
+  const storedDisabled = Array.isArray(raw) ? undefined : raw?.disabledNames;
+  const toggleSkill = async (skill: SkillStatusEntry) => {
+    if (!onAgentCore) {
+      await callRpc("skills.update", {
+        skillKey: skill.skillKey || skill.name,
+        enabled: skill.disabled,
+      });
+      return;
+    }
+    if (!storedDisabled) {
+      throw new Error(
+        "This runtime did not report which skills are off, so changing one could silently " +
+          "re-enable another. Reload, and update the agent runtime if it persists.",
+      );
+    }
+    const disabled = new Set(storedDisabled);
+    if (skill.disabled) disabled.delete(skill.name);
+    else disabled.add(skill.name);
+    await callRpc("config.patch", {
+      patch: { skills: { disabled: [...disabled].sort() } },
+    });
+  };
+
+  if (isLoading || !runtimeHost) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
@@ -242,7 +293,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               Skill Store
             </h2>
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
-              Discover and install skills for your agent
+              {onAgentCore
+                ? "Your agents' skills. Turn one off, or ask an agent to write a new one."
+                : "Discover and install skills for your agent"}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -298,8 +351,14 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           />
         </div>
 
-        {/* ClawHub registry search — in-app browse + one-click install */}
-        <ClawHubSearch query={filter} callRpc={callRpc} onInstalled={mutate} />
+        {/* ClawHub registry search — in-app browse + one-click install. OpenClaw only
+            (ruling M6-R56): Hermes's hub runs inside the agent's own home, so browsing it
+            from a settings RPC dragged its multi-MB index cache into the profile, wanted a
+            secret scope, and could not fit the ingress budget. On Hermes the panel is a
+            READ, and the agent writes its own skills through skill-creator (above). */}
+        {!onAgentCore && (
+          <ClawHubSearch query={filter} callRpc={callRpc} onInstalled={mutate} />
+        )}
 
         {/* Category pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
@@ -342,6 +401,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   key={skill.skillKey || skill.name}
                   skill={skill}
                   callRpc={callRpc}
+                  onToggle={toggleSkill}
                   onRefresh={mutate}
                   variant="installed"
                 />
@@ -358,6 +418,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 key={skill.skillKey || skill.name}
                 skill={skill}
                 callRpc={callRpc}
+                onToggle={toggleSkill}
                 onRefresh={mutate}
                 variant="installed"
               />
@@ -380,6 +441,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   key={skill.skillKey || skill.name}
                   skill={skill}
                   callRpc={callRpc}
+                  onToggle={toggleSkill}
                   onRefresh={mutate}
                   variant="available"
                 />
@@ -481,11 +543,15 @@ function SkillCard({
   skill,
   callRpc,
   onRefresh,
+  onToggle,
   variant,
 }: {
   skill: SkillStatusEntry;
   callRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
   onRefresh: () => void;
+  // Enabling a skill is runtime-specific (see `toggleSkill`), so the card is
+  // handed the operation rather than deciding which RPC to send.
+  onToggle: (skill: SkillStatusEntry) => Promise<void>;
   variant: "installed" | "available";
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
@@ -504,10 +570,7 @@ function SkillCard({
     setToggleLoading(true);
     setActionError(null);
     try {
-      await callRpc("skills.update", {
-        skillKey: skill.skillKey || skill.name,
-        enabled: skill.disabled,
-      });
+      await onToggle(skill);
       capture("skill_toggled", { skill: skill.name, enabled: skill.disabled });
       onRefresh();
     } catch (err) {

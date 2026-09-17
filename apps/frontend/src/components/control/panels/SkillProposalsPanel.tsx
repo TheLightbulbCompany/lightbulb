@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import { Loader2, RefreshCw, FileCheck, Check, X } from "lucide-react";
+import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,11 +12,13 @@ import {
 } from "./skill-proposals-types";
 
 export function SkillProposalsPanel() {
-  const { data, error, isLoading, mutate } =
-    useRuntimeRpc<SkillProposalManifest>("skills.proposals.list");
+  const runtimeHost = useRuntimeHost();
+  const { data, error, isLoading, mutate } = useRuntimeRpc<SkillProposalManifest>(
+    runtimeHost ? "skills.proposals.list" : null,
+  );
   const [selected, setSelected] = useState<string | null>(null);
 
-  if (isLoading && !data) {
+  if ((isLoading || !runtimeHost) && !data) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
@@ -48,7 +51,14 @@ export function SkillProposalsPanel() {
       </div>
 
       {proposals.length === 0 ? (
-        <p className="text-sm text-[var(--midnight-muted)]">No skill proposals. Agents create these via the skill_workshop tool.</p>
+        <p className="text-sm text-[var(--midnight-muted)]">
+          {/* Hermes's equivalent queue is the staged-write approval flow, and every
+              profile pins `skills.write_approval: false` — so nothing can ever be
+              proposed here. Saying which is true beats "no proposals yet". */}
+          {data?.reason === "write_approval_disabled"
+            ? "Nothing to review — your agents write skills directly, so no change waits for approval."
+            : "No skill proposals. Agents create these via the skill_workshop tool."}
+        </p>
       ) : (
         <div className="space-y-2">
           {proposals.map((p) => (

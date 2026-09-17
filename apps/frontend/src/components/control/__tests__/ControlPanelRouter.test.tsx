@@ -3,13 +3,18 @@ import { render, screen } from "@testing-library/react";
 import React from "react";
 import { ControlPanelRouter } from "../ControlPanelRouter";
 
+let gate: "loading" | "hidden" | "shown" = "loading";
+vi.mock("@lightbulb/shared", () => ({ useHiddenOnAgentCore: () => gate }));
+
 // Stub every panel the router imports so we can assert which one mounts
 // without dragging their full deps into the test sandbox.
 vi.mock("../panels/LLMPanel", () => ({ LLMPanel: () => <div data-testid="llm-panel" /> }));
 vi.mock("../panels/OverviewPanel", () => ({
   OverviewPanel: () => <div data-testid="overview-panel" />,
 }));
-vi.mock("../panels/SessionsPanel", () => ({ SessionsPanel: () => <div /> }));
+vi.mock("../panels/SessionsPanel", () => ({
+  SessionsPanel: () => <div data-testid="sessions-panel" />,
+}));
 vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => <div /> }));
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
 vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
@@ -68,5 +73,30 @@ describe("ControlPanelRouter routing", () => {
       <ControlPanelRouter panel="sessions" onPanelChange={vi.fn()} />,
     );
     expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+  });
+});
+
+// Ruling M6-R54. Sessions has no AgentCore shape: the backend's session guard is a PRIVACY
+// rule (a person sees only their own personal sessions) and every Hermes session here is
+// room- or event-scoped, so the panel could only ever show an empty table. It is hidden
+// rather than widened.
+describe("ControlPanelRouter on an AgentCore workspace", () => {
+  it("falls the sessions key back to Overview", async () => {
+    gate = "hidden";
+    render(<ControlPanelRouter panel="sessions" onPanelChange={vi.fn()} />);
+    expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("sessions-panel")).toBeNull();
+  });
+
+  it("still mounts the panel on ECS", async () => {
+    gate = "shown";
+    render(<ControlPanelRouter panel="sessions" onPanelChange={vi.fn()} />);
+    expect(await screen.findByTestId("sessions-panel")).toBeInTheDocument();
+  });
+
+  it("mounts it while the runtime is UNKNOWN — hiding on 'loading' would blank it for ECS", async () => {
+    gate = "loading";
+    render(<ControlPanelRouter panel="sessions" onPanelChange={vi.fn()} />);
+    expect(await screen.findByTestId("sessions-panel")).toBeInTheDocument();
   });
 });

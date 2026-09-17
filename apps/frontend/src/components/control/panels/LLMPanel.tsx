@@ -8,6 +8,7 @@ import { useApi } from "@/lib/api";
 import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
+import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
 import { ModelRoutingCard } from "./ModelRoutingCard";
@@ -483,13 +484,18 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
     onActionConsumed?.();
   }, [initialAction, onActionConsumed]);
 
-  // Live container auth health for the provider dot. The panel mounts under the
+  // Live runtime auth health for the provider dot. The panel mounts under the
   // control surface's GatewayProvider, so the RPC resolves. These hooks sit
   // above the early return below so hook order stays stable across renders.
+  // Held while the runtime is unknown (`undefined`), which on AgentCore is the
+  // difference between a settings read and a microVM start. Provider IDS are not
+  // branched: the Hermes bridge reports the same names `llm-auth-status.ts`
+  // already matches (`bedrock`, `anthropic`, `openai-api`, `openai-codex`).
+  const runtimeHost = useRuntimeHost();
   const { data: authStatus, mutate: revalidateAuthStatus } = useRuntimeRpc<{
     ts: number;
     providers: AuthStatusProvider[];
-  }>("models.authStatus");
+  }>(runtimeHost ? "models.authStatus" : null);
   const refreshAuthStatus = useRuntimeRpcMutation();
   const providerStatus = resolveProviderStatus(
     user?.provider_choice ?? null,

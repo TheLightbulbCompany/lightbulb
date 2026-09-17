@@ -122,6 +122,46 @@ def test_skills_search_needs_a_query_before_it_touches_the_hub(home):
     assert call("skills.search", {"query": "  "})[1]["payload"]["results"] == []
 
 
+def test_installing_a_skill_lands_it_in_every_profile(home, fake_hermes, monkeypatch):
+    for name in ("ceo", "growth"):
+        (home / "profiles" / name).mkdir(parents=True)
+    hub = types.ModuleType("hermes_cli.skills_hub")
+
+    def _install(identifier, **_kw):
+        skill = home / "profiles" / "ceo" / "skills" / identifier.rsplit("/", 1)[-1]
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: pdf\n---\n")
+
+    hub.do_install = _install
+    rich = types.ModuleType("rich.console")
+    rich.Console = lambda **_kw: None
+    hermes_cli = sys.modules.get("hermes_cli") or types.ModuleType("hermes_cli")
+    rich_pkg = sys.modules.get("rich") or types.ModuleType("rich")
+    for name, module in (("hermes_cli", hermes_cli), ("hermes_cli.skills_hub", hub),
+                         ("rich", rich_pkg), ("rich.console", rich)):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    payload = call("skills.install", {"source": "official/pdf"})[1]["payload"]
+    assert payload["installed"] is True and payload["agents"] == ["ceo", "growth"]
+    # The fetch/scan ran once, and the files were copied to the other profile —
+    # the Skills panel is workspace-level, so an install for one agent would be a lie.
+    assert (home / "profiles" / "growth" / "skills" / "pdf" / "SKILL.md").is_file()
+
+
+def test_a_failed_install_is_an_error_not_a_green_check(home, fake_hermes, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    hub = types.ModuleType("hermes_cli.skills_hub")
+    hub.do_install = lambda *_a, **_kw: None  # writes nothing
+    rich = types.ModuleType("rich.console")
+    rich.Console = lambda **_kw: None
+    hermes_cli = sys.modules.get("hermes_cli") or types.ModuleType("hermes_cli")
+    rich_pkg = sys.modules.get("rich") or types.ModuleType("rich")
+    for name, module in (("hermes_cli", hermes_cli), ("hermes_cli.skills_hub", hub),
+                         ("rich", rich_pkg), ("rich.console", rich)):
+        monkeypatch.setitem(sys.modules, name, module)
+    assert call("skills.install", {"source": "official/pdf"})[1]["error"]["code"] == "UNAVAILABLE"
+
+
 # ---- sessions ----------------------------------------------------------------------------------
 def _fake_registry(monkeypatch, rows_by_agent, *, deleted=None, titled=None):
     class _Db:

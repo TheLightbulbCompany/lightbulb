@@ -515,9 +515,26 @@ def _skills_search(params: dict, **_kwargs) -> dict:
     } for r in results]}}
 
 
+def _skills_dir(agent_id: str):
+    return sync.HOME / "profiles" / agent_id / "skills"
+
+
+def _skill_files(agent_id: str) -> set[str]:
+    root = _skills_dir(agent_id)
+    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} if root.is_dir() else set()
+
+
 def _skills_install(params: dict, **_kwargs) -> dict:
-    """`hermes skills install <identifier>` into the agent's own profile, then push the profile
-    so the install survives this microVM (an RPC is outside a turn, and only a turn saves)."""
+    """`hermes skills install <identifier>`, then push it so it survives this microVM (an RPC
+    runs outside a turn, and only a turn saves a profile).
+
+    The Skills panel is WORKSPACE-level, so the install has to land for every agent, not just
+    one. The fetch/scan runs ONCE in the first profile and the resulting files are copied into
+    the rest -- installing per profile would pay the hub fetch and the security scan N times
+    inside one 120 s RPC. The copy targets do not need restoring first: ``save_profile`` uploads
+    only what is locally present and never deletes, so a profile this process has never pulled
+    gets exactly these new files added to its S3 prefix.
+    """
     from hermes_cli.skills_hub import do_install
     from rich.console import Console
     from tools.skills_tool import _find_all_skills
@@ -530,14 +547,25 @@ def _skills_install(params: dict, **_kwargs) -> dict:
     if not agent_id:
         return _unsupported("This workspace has no agent profile to install into.")
     with _profile_scope(agent_id):
+        before = _skill_files(agent_id)
         do_install(identifier, console=Console(quiet=True), skip_confirm=True)
         # do_install reports through its console, so "did it land" is read back off disk.
         installed = any(s["name"] == identifier.rsplit("/", 1)[-1] for s in _find_all_skills(skip_disabled=True))
-    if not installed:
+        added = sorted(_skill_files(agent_id) - before)
+    if not installed or not added:
         return {"ok": False, "error": {"code": "UNAVAILABLE",
                                        "message": f"{identifier} could not be installed"}}
     sync.save_profile(agent_id)
-    return {"ok": True, "payload": {"installed": True, "agentId": agent_id, "source": identifier}}
+    targets = [agent_id] if params.get("agentId") else roster
+    for other in targets:
+        if other == agent_id:
+            continue
+        for rel in added:
+            dest = _skills_dir(other) / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_skills_dir(agent_id) / rel, dest)
+        sync.save_profile(other)
+    return {"ok": True, "payload": {"installed": True, "agents": targets, "source": identifier}}
 
 
 def _skills_proposals_list(_params: dict, **_kwargs) -> dict:

@@ -14,7 +14,7 @@ skills_patch), so these are pure unit tests with no disk / container.
 
 import pytest
 
-from core.services.company_agent_materializer import materialize_agent
+from core.services.company_agent_materializer import materialize_agent, render_agent_identity_md
 from core.services.company_package import PlannedAgent
 
 OWNER = "user_owner123"
@@ -113,6 +113,29 @@ async def test_writes_agents_md_to_agent_workspace():
     body = writes[0][2]
     assert body.startswith(planned.body_md.rstrip("\n"))
     assert PAPERCLIP_CREDENTIAL_PROHIBITION in body
+
+
+@pytest.mark.asyncio
+async def test_render_agent_identity_md_matches_what_materialize_agent_writes():
+    """M6-R33: ``render_agent_identity_md`` is the single source the AgentCore per-agent loop
+    (``company_deploy_service``, S3 profile upload) also calls — it must produce exactly the
+    same text ``materialize_agent`` writes to EFS, so the two transports can never diverge on
+    what "this agent's identity content" is."""
+    ws = FakeWorkspace()
+    aux = FakeApplyAux()
+    planned = _planned()
+
+    await materialize_agent(
+        owner_id=OWNER,
+        new_agent_id=AGENT_ID,
+        planned=planned,
+        skill_assets=None,
+        workspace=ws,
+        apply_aux=aux,
+    )
+
+    written = next(w[2] for w in ws.missing_writes if w[1] == f"workspace-{AGENT_ID}/AGENTS.md")
+    assert written == render_agent_identity_md(planned)
 
 
 @pytest.mark.asyncio

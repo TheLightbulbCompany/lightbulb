@@ -47,7 +47,7 @@ async def test_create_agent_registers_lightbulb_channel_account(monkeypatch):
     register_mock = AsyncMock()
     monkeypatch.setattr("core.services.config_patcher.register_lightbulb_agent_account", register_mock)
 
-    result = await rpc._create_agent("owner_1", "user_1", {"name": "Bob"}, "10.0.0.1", "tok")
+    result = await rpc._create_agent("owner_1", "user_1", {"name": "Bob"}, {"gateway_token": "tok"})
 
     assert result["agentId"] == "agent_123"
     assert call.await_count == 2

@@ -81,6 +81,23 @@ def abort_run(run_id: str) -> bool:
     return True
 
 
+def steer_run(run_id: str, text: str) -> bool:
+    """Only the CURRENT running turn can be steered — a queued one has no agent yet, which
+    is the same 404 the OpenClaw supervisor returns. Hermes queues the text as its own user
+    row after the current tool batch; if that primitive ever stops queuing, the fallback is
+    dispatching the text as a second inbound turn on the same session."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        agent = entry["agent"] if entry and entry["state"] == "running" else None
+    if agent is None:
+        return False
+    try:
+        return bool(agent.steer(text))
+    except Exception:  # noqa: BLE001
+        log.warning("steer failed run=%s", run_id, exc_info=True)
+        return False
+
+
 # ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
 MAX_TEXT_BYTES = 100_000
 MAX_EVENT_ID_BYTES = 256

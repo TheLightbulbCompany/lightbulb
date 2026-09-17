@@ -1413,7 +1413,8 @@ async def test_build_and_upload_agent_profile_gets_the_bedrock_trial_choice_for_
         "core.services.messaging.load_agent_roster",
         AsyncMock(return_value=[{"id": "agent_new", "name": "Demo", "role": "general"}]),
     )
-    monkeypatch.setattr("core.services.catalog_service._resolve_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     written = {}
 
     def fake_write_agent_profile(owner_id, agent, **kwargs):
@@ -1458,7 +1459,8 @@ async def test_write_profiles_and_build_and_upload_agent_profile_source_identica
         "core.services.messaging.load_agent_roster",
         AsyncMock(return_value=[{"id": "agent_new", "name": "Demo", "role": "general"}]),
     )
-    monkeypatch.setattr("core.services.catalog_service._resolve_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     container = {"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
 
     expected = await hermes_provisioning.resolve_profile_inputs("org_a", container_row=container)

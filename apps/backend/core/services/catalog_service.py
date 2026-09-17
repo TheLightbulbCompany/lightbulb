@@ -458,68 +458,30 @@ async def _resolve_agent_row_for_profile(owner_id: str, agent_id: str) -> dict:
     return entry
 
 
-async def _resolve_paperclip_api_key(owner_id: str, agent_id: str) -> str:
-    """The agent's own Paperclip API key plaintext, minting it on first
-    request (``ensure_paperclip_api_key``).
-
-    Raises ``HermesProfileError`` when the mint/read fails (M6-R11/M6-R13),
-    mirroring ``hermes_provisioning._write_profiles``'s identical
-    ``ensure_paperclip_api_key`` None-on-any-failure handling -- a profile
-    that can't authenticate to Paperclip is a failed install, not a degrade:
-    every Paperclip call would silently 401 while the seeded playbook tells
-    the agent its key is already set.
-    """
-    from core.services.hermes_provisioning import HermesProfileError
-    from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_api_key import ensure_paperclip_api_key
-
-    key = await ensure_paperclip_api_key(
-        owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=shared_admin_client()
-    )
-    if not key:
-        raise HermesProfileError(
-            f"hermes profile for owner={owner_id} agent={agent_id}: paperclip API key mint/read failed"
-        )
-    return key
-
-
 async def _build_and_upload_agent_profile(*, owner_id: str, agent_id: str, container: dict) -> None:
     """The Hermes-profile half of an AgentCore install: config.yaml/.env/SOUL.md
     for the freshly-registered agent.
 
-    Fix round 3 (M6-R10): the six owner-level inputs come from
-    ``hermes_provisioning.resolve_profile_inputs`` -- the SAME function
+    M6-R23: a thin resolve-then-delegate wrapper. The actual write (owner-level
+    inputs via ``resolve_profile_inputs``, this agent's Paperclip API key mint,
+    ``write_agent_profile``, ``upload_profile``) moved to
+    ``hermes_provisioning.write_profile_for_agent`` -- the SAME per-agent seam
     ``hermes_provisioning._write_profiles`` (provision time, whole starter
-    roster) calls, so this caller can never source them differently again
-    (see that function's docstring for the three ways this file used to
-    diverge before the consolidation). Only the per-agent inputs — the
-    agent's own roster row and its Paperclip API key — are resolved here.
+    roster) and ``runtime_rpc``'s ``agents.create`` door now share, so there is
+    exactly one place that sources those inputs (see that function's docstring
+    for the three ways this file used to diverge before the consolidation).
+    Only the per-agent roster-row resolution — this agent's own entry, by id —
+    stays here: the caller only has ``agent_id``, unlike ``_write_profiles``
+    (which already holds each row from its own roster iteration).
 
     Uploaded (and its own ``.revision`` written) BEFORE
     ``deploy_tarball_to_profile`` runs, so the newly-minted agent has a
     complete, bootable profile even before its marketplace content lands.
     """
-    from core.services import hermes_profiles
-    from core.services.hermes_provisioning import resolve_profile_inputs
+    from core.services.hermes_provisioning import write_profile_for_agent
 
-    inputs = await resolve_profile_inputs(owner_id, container_row=container)
-    agent_row, paperclip_api_key = (
-        await _resolve_agent_row_for_profile(owner_id, agent_id),
-        await _resolve_paperclip_api_key(owner_id, agent_id),
-    )
-
-    files = hermes_profiles.write_agent_profile(
-        owner_id,
-        agent_row,
-        provider_choice=inputs.provider_choice,
-        aip_arns=inputs.aip_arns,
-        paperclip_api_key=paperclip_api_key,
-        integrations=inputs.integrations,
-        env_vars=inputs.env_vars,
-        byo_provider=inputs.byo_provider,
-        byo_api_key=inputs.byo_api_key,
-    )
-    await hermes_profiles.upload_profile(owner_id, agent_id, files)
+    agent_row = await _resolve_agent_row_for_profile(owner_id, agent_id)
+    await write_profile_for_agent(owner_id, agent_row, container_row=container)
 
 
 async def _install_agentcore_deploy(

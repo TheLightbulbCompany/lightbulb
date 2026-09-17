@@ -128,6 +128,39 @@ class PatchServerRequest(ServerEntry):
     pass
 
 
+def _check_no_sanitized_name_collisions(servers: dict[str, dict]) -> None:
+    """M6-R26 fix round 1, minor: two server names that sanitize to the same
+    ``MCP_<SERVER>_<VAR>`` prefix (e.g. ``acme-crm`` vs ``acme_crm``) would
+    otherwise only be caught much later, inside
+    ``hermes_profiles.translate_mcp_servers`` -- which raises a ``ValueError``
+    deep inside an AgentCore write's best-effort profile refresh (swallowed
+    there so a hiccup can't fail a committed write), silently landing a
+    profile whose Hermes env vars never actually updated behind a 200 OK.
+    Reject the collision here instead, at submission time, using the exact
+    same sanitizer so the two can never disagree. Scoped to the payload being
+    submitted -- checking against already-connected integrations is Q9c's
+    manual-vs-integration shadowing work."""
+    from core.services.hermes_profiles import _mcp_env_key
+
+    seen: dict[str, str] = {}
+    for name, entry in servers.items():
+        for field in ("env", "headers"):
+            values = entry.get(field)
+            if not isinstance(values, dict):
+                continue
+            for var_name in values:
+                key = _mcp_env_key(name, var_name)
+                origin = seen.setdefault(key, name)
+                if origin != name:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Server names {origin!r} and {name!r} collide once sanitized to the "
+                            f"same env var ({key!r}) -- rename one of them."
+                        ),
+                    )
+
+
 def _validate_servers(servers: dict) -> dict:
     """Validate each server entry and return the normalized dict to store.
 
@@ -156,6 +189,7 @@ def _validate_servers(servers: dict) -> dict:
                 detail=f"Server '{name}' is invalid: {exc.errors()}",
             ) from exc
         normalized[name] = _normalize_entry(model)
+    _check_no_sanitized_name_collisions(normalized)
     return normalized
 
 

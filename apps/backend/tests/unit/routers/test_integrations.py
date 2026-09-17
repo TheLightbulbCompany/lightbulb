@@ -306,6 +306,28 @@ class TestIntegrationsRouter:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_put_rejects_sanitized_name_collision(self, app, patched_router, auth_override):
+        """M6-R26 fix round 1, minor: 'acme-crm' and 'acme_crm' both sanitize
+        to MCP_ACME_CRM_* -- today that only raises much later, deep inside
+        hermes_profiles.translate_mcp_servers, swallowed by an AgentCore
+        write's best-effort profile refresh (a silent no-op behind a 200 OK).
+        Reject it here instead, at submission time."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "acme-crm": {"command": "npx", "args": [], "env": {"TOKEN": "a"}},
+                        "acme_crm": {"command": "npx", "args": [], "env": {"TOKEN": "b"}},
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+        assert "acme-crm" in resp.json()["detail"] or "acme_crm" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_unauthenticated_request_rejected(self, app, patched_router):
         """Requests without auth are rejected."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

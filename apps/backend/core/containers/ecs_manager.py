@@ -1425,7 +1425,7 @@ class EcsManager:
         return bool(row) and runtime_transport.host_for(row) == "agentcore"
 
     @serialize_owner_lifecycle
-    async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
+    async def stop_user_service(self, user_id: str, *, reason: str = "manual", force: bool = False) -> None:
         """Scale a user's ECS service to 0 (stopped).
 
         Args:
@@ -1436,6 +1436,13 @@ class EcsManager:
                 reason keeps the status poll's wake/self-heal behavior, so a
                 killswitch or admin stop can never masquerade as a healthy
                 parked box.
+            force: Ruling M6-R15 — skip the ``_hosted_on_agentcore`` no-op guard.
+                The ONE sanctioned bypass, for ``scripts/migrate_workspace_to_hermes.py``
+                scaling down the ECS service a workspace it just moved to AgentCore no
+                longer needs — by the time it calls this, the row's ``runtime_host`` already
+                reads "agentcore" (the migration's own terminal write), which would
+                otherwise make this a no-op forever and leave the retired ECS task running.
+                Every other caller passes nothing and keeps today's guarded behavior.
 
         Raises:
             EcsManagerError: If the ECS update_service call fails. A service
@@ -1446,7 +1453,7 @@ class EcsManager:
                 already-deleted box) all want to proceed, mirroring
                 delete_user_service's not-found handling below.
         """
-        if await self._hosted_on_agentcore(user_id):
+        if not force and await self._hosted_on_agentcore(user_id):
             logger.info("stop_user_service(reason=%s): workspace is on AgentCore, which parks itself; no-op", reason)
             return
         service_name = self._service_name(user_id)

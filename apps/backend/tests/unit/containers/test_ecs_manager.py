@@ -947,6 +947,39 @@ class TestStopUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
             mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
 
+    @pytest.mark.asyncio
+    async def test_stop_on_an_agentcore_row_without_force_is_still_a_noop(self, manager, mock_ecs_client):
+        """Ruling M6-R15: the pre-existing _hosted_on_agentcore no-op guard is unchanged for
+        every ordinary caller -- force defaults to False."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value={**_make_container_dict(status="running"), "runtime_host": "agentcore"}
+            )
+            await manager.stop_user_service("user_test_123")
+            mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_on_an_agentcore_row_with_force_scales_to_zero(self, manager, mock_ecs_client):
+        """Ruling M6-R15: force=True is the ONE sanctioned bypass of the AgentCore guard, for the
+        M6 migration job scaling down the ECS service it is retiring -- same scale-to-zero path
+        and same row writes as an ordinary ECS stop, nothing else changes."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value={**_make_container_dict(status="running"), "runtime_host": "agentcore"}
+            )
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.stamp_stop_reason = AsyncMock()
+
+            await manager.stop_user_service("user_test_123", reason="hermes_migration", force=True)
+
+            mock_ecs_client.update_service.assert_called_once_with(
+                cluster=manager._cluster,
+                service="openclaw-user_test_123-f4ae64abb2db",
+                desiredCount=0,
+            )
+            mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
+            mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "hermes_migration")
+
 
 # ---------------------------------------------------------------------------
 # start_user_service

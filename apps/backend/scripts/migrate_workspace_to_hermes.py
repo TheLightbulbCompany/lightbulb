@@ -386,8 +386,10 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
         if reconnect_chatgpt:
             await _reconcile_chatgpt_oauth(owner_id)
         # Order matters (Ruling M6-R1): the ECS service is stopped only now that the AgentCore
-        # runtime is confirmed READY, so two runtimes never serve one owner at once.
-        await get_ecs_manager().stop_user_service(owner_id, reason="hermes_migration")
+        # runtime is confirmed READY, so two runtimes never serve one owner at once. force=True
+        # (Ruling M6-R15) bypasses the AgentCore no-op guard -- by now the row already reads
+        # runtime_host=agentcore, which would otherwise make this call a no-op forever.
+        await get_ecs_manager().stop_user_service(owner_id, reason="hermes_migration", force=True)
     except Exception as exc:  # noqa: BLE001 — the runtime is already live; safe for --all to retry
         logger.exception("migrate: post-provision step failed for owner=%s (runtime is already live)", owner_id)
         _, retryable = classify_provision_error(exc)

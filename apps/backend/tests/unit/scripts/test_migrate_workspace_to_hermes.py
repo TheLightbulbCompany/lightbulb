@@ -151,7 +151,9 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     assert calls == ["prepare", "provision", "stop"]
     prepare.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
     provision.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
-    ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration")
+    # force=True (Ruling M6-R15): bypasses the AgentCore no-op guard -- the row already reads
+    # runtime_host=agentcore by the time this call happens.
+    ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
 
     # Every agent got a profile prefix, the SOUL.md override, and the carried EFS content --
     # each agent's .revision write is the LAST key for that agent.
@@ -302,6 +304,9 @@ async def test_rollback_order_and_row_flip(monkeypatch):
 
     assert await mod.rollback(OWNER) == mod.EXIT_OK
 
+    # Ruling M6-R15: the row flips back to "ecs" BEFORE start_user_service is called, so
+    # start_user_service's own _hosted_on_agentcore guard (unforced here) can never bite --
+    # the row it reads is already off AgentCore by the time that call happens.
     assert calls == ["stop_session", "delete_runtime", "revoke_token", "delete_secret", "flip_row", "start_ecs"]
     delete_hashes.assert_awaited_once_with(["hash-1"])
     leased.assert_awaited_once()

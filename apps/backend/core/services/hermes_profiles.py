@@ -46,6 +46,7 @@ import yaml
 
 from core.config import settings
 from core.containers.config import cheap_model_ref, premium_model_ref
+from core.dynamodb import run_in_thread
 
 _BEDROCK = "bedrock"
 
@@ -467,10 +468,10 @@ def write_agent_profile(
     )
 
 
-def _s3_put(bucket: str, key: str, body: str) -> None:
+def _new_s3_client():
     import boto3
 
-    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=body.encode())
+    return boto3.client("s3")
 
 
 def profile_prefix(owner_id: str, agent_id: str) -> str:
@@ -483,20 +484,27 @@ def profile_prefix(owner_id: str, agent_id: str) -> str:
     return f"{owner_id}/hermes/{agent_id}/"
 
 
-def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> None:
+async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> None:
+    """Fix round 1, I6: async, ONE S3 client, every ``put_object`` off the event loop via
+    ``core.dynamodb.run_in_thread``. The previous sync version built a fresh ``boto3.client("s3")``
+    per file — 30 client constructions and 30 blocking round trips for a six-agent roster, on
+    whatever thread called it; this repo has already taken a prod backend freeze from blocking I/O
+    on the event loop (EFS tree walk, 2026-09-12). ``write_agent_profile`` itself stays pure/sync —
+    only the network I/O here needs to move.
+    """
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
+    client = _new_s3_client()
     prefix = profile_prefix(owner_id, agent_id)
     # No per-profile managed/config.yaml (I5, fix round 1): the baked /etc/hermes/config.yaml is
     # the sole enforcement point and get_managed_dir() never reads S3, so this upload was a
     # harmless write nobody ever reads.
-    _s3_put(bucket, f"{prefix}config.yaml", files.config_yaml)
-    _s3_put(bucket, f"{prefix}.env", files.dotenv)
-    _s3_put(bucket, f"{prefix}SOUL.md", files.soul_md)
+    for name, body in (("config.yaml", files.config_yaml), (".env", files.dotenv), ("SOUL.md", files.soul_md)):
+        await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}{name}", Body=body.encode())
     # LAST, always: the bridge re-pulls a profile when this object's value changes (Task 13, this
     # lane's continuation). Writing it before the files it describes would advertise a config that
     # is not there yet. A uuid4 hex, not a timestamp (C4, fix round 1) — two uploads racing within
     # the same millisecond would otherwise write an identical ".revision" value and the bridge's
     # diff-and-repull could miss the second one.
-    _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
+    await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}.revision", Body=uuid.uuid4().hex.encode())

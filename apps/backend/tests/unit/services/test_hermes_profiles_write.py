@@ -65,7 +65,17 @@ def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_ro
     assert "ANTHROPIC_API_KEY" not in files.dotenv
 
 
-def test_upload_writes_owner_first_under_hermes(monkeypatch):
+class _FakeS3Client:
+    """Records every ``put_object`` call as ``(bucket, key, decoded body)``."""
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def put_object(self, *, Bucket, Key, Body):
+        self._sink.append((Bucket, Key, Body.decode() if isinstance(Body, bytes) else Body))
+
+
+async def test_upload_writes_owner_first_under_hermes(monkeypatch):
     """I5 (fix round 1): no per-profile ``managed/config.yaml`` object any more — the baked
     ``/etc/hermes/config.yaml`` is the sole enforcement point (``get_managed_dir()`` resolves
     ``$HERMES_MANAGED_DIR`` or ``/etc/hermes`` only and never reads S3), so uploading a per-profile
@@ -73,10 +83,10 @@ def test_upload_writes_owner_first_under_hermes(monkeypatch):
     (this lane's continuation) needs to exclude from the bridge's own ``save_profile``:
     config.yaml, .env, SOUL.md, .revision."""
     puts = []
-    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.append((bucket, key)))
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: _FakeS3Client(puts))
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
-    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
-    keys = [key for _, key in puts]
+    await upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
+    keys = [key for _, key, _ in puts]
     assert keys[:3] == [
         "org_a/hermes/a1/config.yaml",
         "org_a/hermes/a1/.env",
@@ -84,27 +94,41 @@ def test_upload_writes_owner_first_under_hermes(monkeypatch):
     ]
     assert keys[3] == "org_a/hermes/a1/.revision"  # written LAST — the bridge polls it
     assert len(keys) == 4
-    assert {bucket for bucket, _ in puts} == {"lightbulb-dev-openclaw-replicas"}
+    assert {bucket for bucket, _, _ in puts} == {"lightbulb-dev-openclaw-replicas"}
 
 
-def test_upload_revision_is_a_uuid4_hex_written_after_every_other_file(monkeypatch):
+async def test_upload_builds_exactly_one_s3_client_for_the_whole_profile(monkeypatch):
+    """I6 (fix round 1): the old implementation built a fresh boto3 client per file — 30 client
+    constructions and 30 blocking round trips for a six-agent roster. One client, reused for
+    every ``put_object`` in the profile."""
+    puts = []
+    client_builds = []
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: (client_builds.append(1), _FakeS3Client(puts))[1])
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
+    await upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
+    assert len(client_builds) == 1
+    assert len(puts) == 4
+
+
+async def test_upload_revision_is_a_uuid4_hex_written_after_every_other_file(monkeypatch):
     """C4: the backend and the container's own ``sync.save_profile`` are two uncoordinated writers
     on the same S3 objects. ``.revision`` is the ONLY signal the bridge (Task 13, this lane's
     continuation) can poll to notice a backend-authored hot patch, so it must be unconditionally
     last and must change on every write (a uuid4 hex, not a timestamp that a clock skew or two
     writes within the same millisecond could collide on)."""
     puts = []
-    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.append((key, body)))
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", lambda: _FakeS3Client(puts))
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
-    upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
-    last_key, last_body = puts[-1]
+    await upload_profile("org_a", "a1", ProfileFiles("model: {}\n", "A=1", "# Ada\n"))
+    last_bucket, last_key, last_body = puts[-1]
     assert last_key == "org_a/hermes/a1/.revision"
     assert re.fullmatch(r"[0-9a-f]{32}", last_body), last_body
 
 
-def test_upload_is_a_no_op_without_a_bucket(monkeypatch):
-    puts = []
-    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda *a: puts.append(a))
+async def test_upload_is_a_no_op_without_a_bucket(monkeypatch):
+    def _fail():
+        raise AssertionError("no S3 client should be built without a bucket")
+
+    monkeypatch.setattr(hermes_profiles, "_new_s3_client", _fail)
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "")
-    upload_profile("org_a", "a1", ProfileFiles("x", "y", "z"))
-    assert puts == []
+    await upload_profile("org_a", "a1", ProfileFiles("x", "y", "z"))

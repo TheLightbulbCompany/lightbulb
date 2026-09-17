@@ -150,6 +150,7 @@ export {
   MESSAGE_ATTACHMENT_CONTENT_TYPES,
   MESSAGE_ATTACHMENT_MAX_BYTES,
   MESSAGE_ATTACHMENT_MAX_COUNT,
+  resolveMessageAttachmentContentType,
 } from "./messaging/types";
 export { createRuntimeClient, RuntimeRpcError } from "./runtime/client";
 

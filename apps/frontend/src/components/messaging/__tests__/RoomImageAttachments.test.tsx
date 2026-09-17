@@ -88,6 +88,26 @@ describe("RoomImageAttachments", () => {
     expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   });
 
+  it("renders ZIP as an explicit opaque download without prefetching or previewing it", async () => {
+    const user = userEvent.setup();
+    const zip: MessageAttachment = { id: "zip-1", fileName: "bundle.zip", contentType: "application/zip", size: 8192 };
+    const authenticatedDownload = vi.fn(async () => new Blob(["PK\u0003\u0004"], { type: "application/zip" }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    render(<RoomImageAttachments roomId="room-1" attachments={[zip]} download={authenticatedDownload} />);
+
+    const card = screen.getByRole("button", { name: "Download bundle.zip" });
+    expect(screen.getByText("ZIP · 8 KB")).toBeInTheDocument();
+    expect(authenticatedDownload).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(card);
+
+    expect(authenticatedDownload).toHaveBeenCalledWith("room-1", "zip-1");
+    expect(click).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    click.mockRestore();
+  });
+
   it("offers an actionable retry when an authenticated file download fails", async () => {
     const user = userEvent.setup();
     const pdf: MessageAttachment = { id: "pdf-1", fileName: "brief.pdf", contentType: "application/pdf", size: 5000 };

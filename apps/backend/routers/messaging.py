@@ -401,7 +401,9 @@ async def get_room_attachment(
         headers={
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": f"inline; filename*=UTF-8''{quote(attachment.file_name)}",
+            # ZIPs are opaque downloads only: never invite a browser/plugin to
+            # render them inline. Images/PDF retain the existing viewer flow.
+            "Content-Disposition": f"{'attachment' if attachment.content_type == 'application/zip' else 'inline'}; filename*=UTF-8''{quote(attachment.file_name, safe='')}",
         },
     )
 

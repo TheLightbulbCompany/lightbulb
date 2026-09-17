@@ -214,6 +214,25 @@ def test_pdf_validation_accepts_valid_bytes_rejects_spoofed_and_oversized():
         validate_attachment_bytes("application/pdf", oversized)
 
 
+def test_zip_validation_accepts_container_signatures_without_extracting_and_rejects_spoofing():
+    for signature in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
+        assert validate_attachment_bytes("application/zip", signature + b"opaque") == ".zip"
+    with pytest.raises(ValueError):
+        validate_attachment_bytes("application/zip", b"MZ executable")
+    oversized = b"PK\x03\x04" + b"0" * (messaging.ZIP_MAX_BYTES + 1)
+    with pytest.raises(ValueError):
+        validate_attachment_bytes("application/zip", oversized)
+
+
+def test_zip_mime_aliases_and_safe_extension_fallback_canonicalize_but_mismatches_fail():
+    for declared in ("application/zip", "application/x-zip-compressed", "application/octet-stream", ""):
+        assert messaging.canonical_attachment_content_type("bundle.ZIP", declared) == "application/zip"
+    with pytest.raises(ValueError, match="extension"):
+        messaging.canonical_attachment_content_type("bundle.zip", "application/pdf")
+    with pytest.raises(ValueError, match=".zip filename"):
+        messaging.canonical_attachment_content_type("setup.exe", "application/zip")
+
+
 @pytest.mark.asyncio
 async def test_text_file_upload_reproduces_clear_api_400_at_attachment_validation(monkeypatch):
     auth = AuthContext(user_id="user", org_id="owner")
@@ -229,7 +248,7 @@ async def test_text_file_upload_reproduces_clear_api_400_at_attachment_validatio
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.error.code == "INVALID_REQUEST"
-    assert "PNG, JPEG, WebP, GIF, or PDF" in exc_info.value.error.message
+    assert "PNG, JPEG, WebP, GIF, PDF, or ZIP" in exc_info.value.error.message
 
 
 def test_message_attachment_enforces_per_type_size_cap():
@@ -298,6 +317,21 @@ def test_pdf_attachment_round_trips_through_store_and_load(tmp_path, monkeypatch
     assert loaded.file_name == "contract.pdf"
 
 
+def test_zip_attachment_round_trips_with_canonical_persisted_mime(tmp_path, monkeypatch):
+    workspace = Workspace(str(tmp_path))
+    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
+    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+    room_id = str(uuid.uuid4())
+    zip_bytes = b"PK\x03\x04" + b"opaque archive bytes"
+    stored = messaging.store_attachment("owner", room_id, "bundle.zip", "application/x-zip-compressed", zip_bytes)
+    assert stored.content_type == "application/zip"
+
+    loaded, data = messaging.load_attachment("owner", room_id, str(stored.id))
+    assert loaded.content_type == "application/zip"
+    assert loaded.file_name == "bundle.zip"
+    assert data == zip_bytes
+
+
 def test_pdf_attachment_store_rejects_oversized_upload(tmp_path, monkeypatch):
     workspace = Workspace(str(tmp_path))
     monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
@@ -322,6 +356,25 @@ async def test_attachment_download_checks_current_room_membership(monkeypatch):
     with pytest.raises(ApiProblem):
         await get_room_attachment(str(uuid.uuid4()), str(uuid.uuid4()), AuthContext(user_id="user", org_id="owner"))
     assert checked
+
+
+@pytest.mark.asyncio
+async def test_zip_download_is_authorized_and_forced_to_safe_attachment_disposition(monkeypatch):
+    room_id = str(uuid.uuid4())
+    attachment_id = uuid.uuid4()
+    attachment = MessageAttachment(
+        id=attachment_id, file_name="quarterly report.zip", content_type="application/zip", size=8
+    )
+    require_member = AsyncMock(return_value=({"ownerId": "owner"}, {"kind": "human", "id": "user"}))
+    monkeypatch.setattr(messaging, "require_room_member", require_member)
+    monkeypatch.setattr(messaging, "load_attachment", lambda *_: (attachment, b"PK\x03\x04data"))
+
+    response = await get_room_attachment(room_id, str(attachment_id), AuthContext(user_id="user", org_id="owner"))
+
+    require_member.assert_awaited_once()
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"] == "attachment; filename*=UTF-8''quarterly%20report.zip"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.asyncio

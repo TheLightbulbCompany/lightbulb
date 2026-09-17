@@ -138,22 +138,38 @@ export const MESSAGE_ATTACHMENT_CONTENT_TYPES = [
   "image/webp",
   "image/gif",
   "application/pdf",
+  "application/zip",
 ] as const;
 
 export type MessageAttachmentContentType = typeof MESSAGE_ATTACHMENT_CONTENT_TYPES[number];
 
-export const MESSAGE_ATTACHMENT_ACCEPT = MESSAGE_ATTACHMENT_CONTENT_TYPES.join(",");
+// Some browsers/OSes report ZIPs with the legacy alias or only a generic MIME.
+// The extension is included so the native picker still offers those files.
+export const MESSAGE_ATTACHMENT_ACCEPT = [...MESSAGE_ATTACHMENT_CONTENT_TYPES, "application/x-zip-compressed", ".zip"].join(",");
 export const MESSAGE_ATTACHMENT_MAX_COUNT = 4;
 
+/** Return the canonical persisted type for an allowed browser File.
+ * Generic/empty MIME fallback is ZIP-only and requires a `.zip` filename;
+ * contradictory declared types/extensions are rejected instead of guessed. */
+export function resolveMessageAttachmentContentType(fileName: string, contentType: string): MessageAttachmentContentType | undefined {
+  const type = contentType.toLowerCase().split(";", 1)[0].trim();
+  const zipName = fileName.toLowerCase().endsWith(".zip");
+  if (type === "application/zip" || type === "application/x-zip-compressed") return zipName ? "application/zip" : undefined;
+  if (zipName) return !type || type === "application/octet-stream" ? "application/zip" : undefined;
+  return MESSAGE_ATTACHMENT_CONTENT_TYPES.find((candidate) => candidate === type);
+}
+
 /** Mirrors the backend's per-content-type cap (`ATTACHMENT_MAX_BYTES_BY_TYPE`
- *  in `core/services/messaging.py`) -- images keep the original 5 MiB limit,
- *  a PDF gets a larger 20 MiB one. */
+ *  in `core/services/messaging.py`) -- images keep the original 5 MiB limit;
+ *  PDFs and opaque ZIP downloads get a bounded 20 MiB limit. ZIP contents are
+ *  never extracted or previewed. */
 export const MESSAGE_ATTACHMENT_MAX_BYTES: Record<MessageAttachmentContentType, number> = {
   "image/png": 5 * 1024 * 1024,
   "image/jpeg": 5 * 1024 * 1024,
   "image/webp": 5 * 1024 * 1024,
   "image/gif": 5 * 1024 * 1024,
   "application/pdf": 20 * 1024 * 1024,
+  "application/zip": 20 * 1024 * 1024,
 };
 
 export interface CreateMessageRequest {

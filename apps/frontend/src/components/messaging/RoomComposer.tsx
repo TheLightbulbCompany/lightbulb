@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_CONTENT_TYPES, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -237,13 +237,16 @@ function ComposerAttempt({
   }
 
   function supportedType(file: File): MessageAttachmentContentType | undefined {
-    return MESSAGE_ATTACHMENT_CONTENT_TYPES.find((type) => type === file.type);
+    return resolveMessageAttachmentContentType(file.name, file.type);
   }
 
   function validationError(file: File): string | undefined {
     const type = supportedType(file);
-    if (!type) return "Unsupported file type. Attach PNG, JPEG, WebP, GIF, or PDF files.";
-    if (file.size > MESSAGE_ATTACHMENT_MAX_BYTES[type]) return `${type === "application/pdf" ? "PDFs" : "Images"} must be ${type === "application/pdf" ? "20" : "5"} MiB or smaller.`;
+    if (!type) return "Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, or ZIP files.";
+    if (file.size > MESSAGE_ATTACHMENT_MAX_BYTES[type]) {
+      const kind = type === "application/pdf" ? "PDFs" : type === "application/zip" ? "ZIP files" : "Images";
+      return `${kind} must be ${type.startsWith("image/") ? "5" : "20"} MiB or smaller.`;
+    }
     if (!file.size) return "This file is empty.";
   }
 
@@ -567,7 +570,7 @@ function ComposerAttempt({
       : <div key={item.key} className="room-file-preview">
         <FileText aria-hidden="true" />
         <span className="min-w-0 flex-1"><strong className="block truncate" title={item.file.name}>{item.file.name}</strong>
-          <span className="block text-sm text-muted-foreground">{item.file.type || "Unknown type"} · {formatBytes(item.file.size)}</span>
+          <span className="block text-sm text-muted-foreground">{supportedType(item.file) ?? (item.file.type || "Unknown type")} · {formatBytes(item.file.size)}</span>
           <span role="status" className={item.error ? "block text-sm text-err" : "block text-sm text-muted-foreground"}>{item.error ?? (item.attachment ? "Ready" : "Uploading…")}</span></span>
         {item.error && !validationError(item.file) && <Button type="button" variant="ghost" size="icon-sm" aria-label={`Retry ${item.file.name}`} disabled={!editable} onClick={() => uploadItem(item.key, item.file)}><RotateCcw aria-hidden="true" /></Button>}
         <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>

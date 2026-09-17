@@ -85,17 +85,50 @@ it("uploads a supported PDF dropped on the composer", async () => {
   expect(await screen.findByText("Ready")).toBeInTheDocument();
 });
 
-it("keeps an unsupported dropped file as an actionable error without uploading it", () => {
+it.each([
+  ["canonical MIME", "application/zip"],
+  ["browser alias", "application/x-zip-compressed"],
+  ["extension fallback", "application/octet-stream"],
+])("uploads a ZIP dropped with %s and canonicalizes returned metadata", async (_label, mime) => {
+  const upload = vi.fn(async (file: File): Promise<MessageAttachment> => ({ id: "att-zip", fileName: file.name, contentType: "application/zip", size: file.size }));
+  render(<Harness onUploadAttachment={upload} />);
+  const form = screen.getByRole("form", { name: "Message composer" });
+  const zip = new File(["PK\u0003\u0004x"], "bundle.zip", { type: mime });
+
+  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [zip] } });
+
+  await waitFor(() => expect(upload).toHaveBeenCalledWith(zip));
+  expect(screen.getByText(`application/zip · ${zip.size} B`)).toBeInTheDocument();
+  expect(await screen.findByText("Ready")).toBeInTheDocument();
+});
+
+it("rejects an oversized ZIP before upload with the documented 20 MiB limit", () => {
+  const upload = vi.fn(async () => attachment);
+  render(<Harness onUploadAttachment={upload} />);
+  const zip = new File(["PK\u0003\u0004"], "large.zip", { type: "application/zip" });
+  Object.defineProperty(zip, "size", { value: 20 * 1024 * 1024 + 1 });
+
+  fireEvent.drop(screen.getByRole("form", { name: "Message composer" }), { dataTransfer: { types: ["Files"], files: [zip] } });
+
+  expect(upload).not.toHaveBeenCalled();
+  expect(screen.getByText("ZIP files must be 20 MiB or smaller.")).toBeInTheDocument();
+});
+
+it.each([
+  ["setup.exe", "application/x-msdownload"],
+  ["bundle.tar", "application/x-tar"],
+  ["setup.exe", "application/zip"],
+])("keeps unsupported or mismatched dropped file %s as an actionable error", (name, mime) => {
   const upload = vi.fn(async () => attachment);
   render(<Harness onUploadAttachment={upload} />);
   const form = screen.getByRole("form", { name: "Message composer" });
-  const executable = new File(["bin"], "setup.exe", { type: "application/x-msdownload" });
+  const unsupported = new File(["bin"], name, { type: mime });
 
-  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [executable] } });
+  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [unsupported] } });
 
   expect(upload).not.toHaveBeenCalled();
-  expect(screen.getByText("Unsupported file type. Attach PNG, JPEG, WebP, GIF, or PDF files.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Remove setup.exe" })).toBeEnabled();
+  expect(screen.getByText("Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, or ZIP files.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: `Remove ${name}` })).toBeEnabled();
 });
 
 it("external drop target handler uses current onUploadAttachment after re-render", async () => {

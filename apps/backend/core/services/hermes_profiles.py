@@ -178,3 +178,34 @@ def render_dotenv(env: dict[str, str]) -> str:
         else:
             lines.append(f'{key}="' + text.replace('"', '\\"') + '"')
     return "\n".join(lines)
+
+
+#: OpenClaw spelling -> Hermes spelling. camelCase -> snake_case is the trap (report 01 §2.8).
+#: An unrecognised key is DROPPED rather than passed through: Hermes's mcp config is a closed
+#: shape and a stray key is a spawn-time error, not a warning.
+_MCP_DIRECT = ("command", "args", "env", "cwd", "url", "headers", "auth", "oauth", "enabled")
+_MCP_MS_TO_S = {"requestTimeoutMs": "timeout", "connectionTimeoutMs": "connect_timeout"}
+_MCP_SAMPLING = {
+    "enabled": "enabled",
+    "model": "model",
+    "maxTokensCap": "max_tokens_cap",
+    "timeout": "timeout",
+    "maxRpm": "max_rpm",
+}
+
+
+def translate_mcp_servers(servers: dict | None) -> dict:
+    out: dict = {}
+    for name, block in (servers or {}).items():
+        entry: dict = {key: block[key] for key in _MCP_DIRECT if key in block}
+        for ms_key, s_key in _MCP_MS_TO_S.items():
+            if isinstance(block.get(ms_key), int):
+                entry[s_key] = block[ms_key] // 1000
+        tools = block.get("tools")
+        if isinstance(tools, dict):
+            entry["tools"] = {k: tools[k] for k in ("include", "exclude") if k in tools}
+        sampling = block.get("sampling")
+        if isinstance(sampling, dict):
+            entry["sampling"] = {v: sampling[k] for k, v in _MCP_SAMPLING.items() if k in sampling}
+        out[name] = entry
+    return out

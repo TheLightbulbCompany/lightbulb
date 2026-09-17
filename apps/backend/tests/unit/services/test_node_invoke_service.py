@@ -49,7 +49,7 @@ async def test_invoke_node_no_local_session_forwards_to_the_presence_address(mon
     )
     seen = {}
 
-    async def _forward(address, owner_id, body):
+    async def _forward(address, owner_id, body, timeout_ms):
         seen["address"], seen["owner_id"] = address, owner_id
         return {"ok": True, "payload": None}
 
@@ -123,7 +123,7 @@ async def test_invoke_node_invalid_params_json_is_400(monkeypatch):
     assert exc.value.error.code == "INVALID_REQUEST"
 
 
-def _fake_client(response=None, raises=None, sent=None):
+def _fake_client(response=None, raises=None, sent=None, client_kwargs=None):
     class _Resp:
         def __init__(self, status_code, body):
             self.status_code = status_code
@@ -134,7 +134,8 @@ def _fake_client(response=None, raises=None, sent=None):
 
     class _Client:
         def __init__(self, *a, **kw):
-            pass
+            if client_kwargs is not None:
+                client_kwargs.update(kw)
 
         async def __aenter__(self):
             return self
@@ -159,7 +160,7 @@ async def test_forward_relays_a_peer_error_verbatim(monkeypatch):
         service.httpx, "AsyncClient", _fake_client(response=(409, {"code": "NODE_NOT_ATTACHED", "message": "gone"}))
     )
     with pytest.raises(service.ApiProblem) as exc:
-        await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY)
+        await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY, 120_000)
     assert exc.value.status_code == 409
     assert exc.value.error.code == "NODE_NOT_ATTACHED"
 
@@ -170,7 +171,7 @@ async def test_forward_success_returns_the_peer_body_verbatim(monkeypatch):
     monkeypatch.setattr(
         service.httpx, "AsyncClient", _fake_client(response=(200, {"ok": True, "payload": {"stdout": "x"}}))
     )
-    result = await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY)
+    result = await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY, 120_000)
     assert result == {"ok": True, "payload": {"stdout": "x"}}
 
 
@@ -179,7 +180,7 @@ async def test_forward_transport_failure_becomes_node_not_attached(monkeypatch):
     monkeypatch.setattr(service.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"}))
     monkeypatch.setattr(service.httpx, "AsyncClient", _fake_client(raises=httpx.ConnectError("refused")))
     with pytest.raises(service.ApiProblem) as exc:
-        await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY)
+        await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY, 120_000)
     assert exc.value.status_code == 409
     assert exc.value.error.code == "NODE_NOT_ATTACHED"
 
@@ -191,8 +192,35 @@ async def test_forward_sends_the_hook_token_and_forwarded_header(monkeypatch):
     monkeypatch.setattr(
         service.httpx, "AsyncClient", _fake_client(response=(200, {"ok": True, "payload": None}), sent=sent)
     )
-    await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY)
+    await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY, 120_000)
     assert sent["url"] == f"http://10.0.1.7:8000/api/v1/internal/node/invoke/{OWNER}"
     assert sent["json"] == BODY
     assert sent["headers"]["Authorization"] == "Bearer tok"
     assert sent["headers"][service.NODE_FORWARD_HEADER] == "1"
+
+
+@pytest.mark.asyncio
+async def test_forward_read_timeout_covers_the_clamped_invoke_timeout(monkeypatch):
+    """A forwarded system.run can legitimately run 30-180s -- the forward's own httpx
+    timeout must not be a flat value shorter than that (fix round 1, item 1)."""
+    monkeypatch.setattr(service.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"}))
+    client_kwargs: dict = {}
+    monkeypatch.setattr(
+        service.httpx,
+        "AsyncClient",
+        _fake_client(response=(200, {"ok": True, "payload": None}), client_kwargs=client_kwargs),
+    )
+    await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY, 30_000)
+    timeout = client_kwargs["timeout"]
+    assert timeout.read >= 35.0
+    assert timeout.connect <= 5.0
+
+
+@pytest.mark.asyncio
+async def test_forward_read_timeout_maps_to_node_timeout_not_node_not_attached(monkeypatch):
+    monkeypatch.setattr(service.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"}))
+    monkeypatch.setattr(service.httpx, "AsyncClient", _fake_client(raises=httpx.ReadTimeout("timed out")))
+    with pytest.raises(service.ApiProblem) as exc:
+        await service._forward_node_invoke("http://10.0.1.7:8000", OWNER, BODY, 30_000)
+    assert exc.value.status_code == 504
+    assert exc.value.error.code == "NODE_TIMEOUT"

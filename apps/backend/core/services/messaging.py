@@ -2275,7 +2275,12 @@ async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageR
 NODE_FORWARD_HEADER = "X-Lightbulb-Node-Forwarded"
 _NODE_INVOKE_DEFAULT_TIMEOUT_MS = 120_000
 _NODE_INVOKE_MAX_TIMEOUT_MS = 600_000
-_NODE_FORWARD_TIMEOUT_S = 10.0
+# The forward's own httpx read timeout must cover the invoke's own timeout (up to 600s) plus
+# headroom for the peer's request handling -- a flat 10s (the old value) killed a legitimate
+# 30-180s system.run and misreported it as NODE_NOT_ATTACHED (fix round 1, item 1). Connect
+# stays short: a peer task that isn't even accepting connections is not worth 600s to learn.
+_NODE_FORWARD_TIMEOUT_BUFFER_S = 5.0
+_NODE_FORWARD_CONNECT_TIMEOUT_S = 3.0
 
 
 async def invoke_node(owner_id: str, body: dict, *, forwarded: bool) -> dict:
@@ -2309,7 +2314,7 @@ async def invoke_node(owner_id: str, body: dict, *, forwarded: bool) -> dict:
     address = presence.get("taskAddress") if presence else None
     if not address:
         raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.")
-    return await _forward_node_invoke(address, owner_id, body)
+    return await _forward_node_invoke(address, owner_id, body, timeout_ms)
 
 
 async def _invoke_local_node(session: node_broker.NodeSession, command: str, body: dict, timeout_ms: int) -> dict:
@@ -2327,19 +2332,29 @@ async def _invoke_local_node(session: node_broker.NodeSession, command: str, bod
         raise ApiProblem("NODE_NOT_ATTACHED", "The node socket closed mid-call.", retryable=True) from None
 
 
-async def _forward_node_invoke(address: str, owner_id: str, body: dict) -> dict:
+async def _forward_node_invoke(address: str, owner_id: str, body: dict, timeout_ms: int) -> dict:
     """Single-hop forward to the backend task that actually holds the desktop socket.
 
-    Any transport failure -- refused connection, timeout, a non-JSON body -- is treated as
-    NODE_NOT_ATTACHED rather than surfaced as-is: the presence row can be stale (the peer task
-    may have rolled during a deploy), which looks identical to the node itself being gone. A
-    well-formed error response from the peer IS relayed verbatim, so its own
-    NODE_NOT_ATTACHED / COMMAND_NOT_ALLOWED / NODE_TIMEOUT reaches the original caller
-    unchanged (M2-R20).
+    ``timeout_ms`` is the (already clamped) invoke timeout -- the httpx read timeout is set to
+    cover it plus a fixed buffer, so a legitimately long-running command (e.g. a 30-180s
+    ``system.run``) is not killed by the transport before the node itself would time out (fix
+    round 1, item 1). Connect stays short (`_NODE_FORWARD_CONNECT_TIMEOUT_S`): a peer task that
+    isn't even accepting connections is not worth waiting the full read timeout to learn.
+
+    A read timeout specifically means the request DID reach the peer and the peer's own answer
+    (success or its own NODE_TIMEOUT) just didn't arrive in time -- that is itself a timeout,
+    not "no node attached", so it maps to NODE_TIMEOUT rather than the generic transport-failure
+    fallback below. Any OTHER transport failure -- refused connection, a non-JSON body -- is
+    treated as NODE_NOT_ATTACHED: the presence row can be stale (the peer task may have rolled
+    during a deploy), which looks identical to the node itself being gone. A well-formed error
+    response from the peer IS relayed verbatim, so its own NODE_NOT_ATTACHED /
+    COMMAND_NOT_ALLOWED / NODE_TIMEOUT reaches the original caller unchanged (M2-R20).
     """
     container = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    read_timeout_s = timeout_ms / 1000 + _NODE_FORWARD_TIMEOUT_BUFFER_S
+    timeout = httpx.Timeout(read_timeout_s, connect=_NODE_FORWARD_CONNECT_TIMEOUT_S)
     try:
-        async with httpx.AsyncClient(timeout=_NODE_FORWARD_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{address}/api/v1/internal/node/invoke/{owner_id}",
                 json=body,
@@ -2348,6 +2363,8 @@ async def _forward_node_invoke(address: str, owner_id: str, body: dict) -> dict:
                     NODE_FORWARD_HEADER: "1",
                 },
             )
+    except httpx.ReadTimeout:
+        raise ApiProblem("NODE_TIMEOUT", "The node did not answer in time.", retryable=True) from None
     except httpx.HTTPError:
         raise ApiProblem("NODE_NOT_ATTACHED", "No desktop node is attached.") from None
     if response.status_code == 200:

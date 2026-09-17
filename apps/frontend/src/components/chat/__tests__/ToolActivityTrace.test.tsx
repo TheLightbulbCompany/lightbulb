@@ -18,8 +18,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** Opens a folded trace so the per-row assertions below have rows to read. */
+async function expandTrace() {
+  await userEvent.click(screen.getByRole("button", { expanded: false }));
+}
+
 describe("ToolActivityTrace", () => {
-  it("renders one trace for consecutive calls, never the raw tool name", () => {
+  it("renders one trace for consecutive calls, never the raw tool name", async () => {
     render(
       <ToolActivityTrace
         calls={[
@@ -28,6 +33,7 @@ describe("ToolActivityTrace", () => {
         ]}
       />,
     );
+    await expandTrace();
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
     expect(screen.getByText("src/connection_pool.py")).toBeInTheDocument();
     expect(screen.getByText("npm test")).toBeInTheDocument();
@@ -78,27 +84,60 @@ describe("ToolActivityTrace", () => {
     expect(screen.getByText("Read")).toBeInTheDocument();
   });
 
-  it("folds past three calls when settled, stays open at three or fewer", () => {
+  it("folds any multi-step turn to one line, leaving a lone call as its own line", () => {
     // `call()` defaults to status "done" — settled is derived from that, so
-    // a settled trace needs no explicit prop.
-    const three = [1, 2, 3].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
-    const { rerender } = render(<ToolActivityTrace calls={three} />);
-    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    // a settled trace needs no explicit prop. A single call is already one
+    // quiet line and says more than "Read 1 file", so it is left alone.
+    const one = [call({ id: "1", args: { path: "f1.ts" } })];
+    const { rerender } = render(<ToolActivityTrace calls={one} />);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
 
-    const four = [1, 2, 3, 4].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
-    rerender(<ToolActivityTrace calls={four} />);
+    const two = [1, 2].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
+    rerender(<ToolActivityTrace calls={two} />);
     expect(screen.queryAllByRole("listitem")).toHaveLength(0);
-    expect(screen.getByText(/Read 4 files/)).toBeInTheDocument();
+    expect(screen.getByText(/Read 2 files/)).toBeInTheDocument();
   });
 
-  it("does not fold while the turn is still running", () => {
-    // Settled is derived from call status — mark the last call still
-    // running so `calls.every(status !== "running")` reads false.
+  it("folds a still-running turn to one live line naming the current step", () => {
     const calls = [1, 2, 3, 4, 5].map((i) =>
-      call({ id: `${i}`, args: { path: `f${i}.ts` }, ...(i === 5 ? { status: "running" as const } : {}) }),
+      call({
+        id: `${i}`,
+        args: { path: `f${i}.ts` },
+        ...(i === 5 ? { status: "running" as const, result: null } : {}),
+      }),
     );
     render(<ToolActivityTrace calls={calls} />);
-    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    // Live activity, present tense — not a settled count of what happened.
+    const folded = screen.getByRole("button", { expanded: false });
+    expect(folded).toHaveAccessibleName(/Reading f5\.ts/);
+    expect(folded).toHaveTextContent("5 steps");
+  });
+
+  it("keeps a running turn's failures in the folded summary", () => {
+    const calls = [
+      call({ id: "1", name: "bash", args: { command: "npm test" }, status: "error", result: "boom" }),
+      call({ id: "2", args: { path: "f2.ts" }, status: "running", result: null }),
+    ];
+    render(<ToolActivityTrace calls={calls} />);
+    expect(screen.getByRole("button", { expanded: false })).toHaveAccessibleName(/1 failed/);
+  });
+
+  it("a trace the user opened while running stays open once it settles", async () => {
+    const running = [1, 2].map((i) =>
+      call({
+        id: `${i}`,
+        args: { path: `f${i}.ts` },
+        ...(i === 2 ? { status: "running" as const, result: null } : {}),
+      }),
+    );
+    const { rerender } = render(<ToolActivityTrace calls={running} />);
+    await userEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+
+    const settled = [1, 2].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
+    rerender(<ToolActivityTrace calls={settled} />);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 
   it("folding is a default, not an override — expanding survives, and re-collapses on request", async () => {
@@ -114,7 +153,7 @@ describe("ToolActivityTrace", () => {
     expect(screen.getByText(/Read 4 files/)).toBeInTheDocument();
   });
 
-  it("keeps a failure visible, in place, with its error inline", () => {
+  it("keeps a failure visible, in place, with its error inline", async () => {
     render(
       <ToolActivityTrace
         calls={[
@@ -130,6 +169,7 @@ describe("ToolActivityTrace", () => {
         ]}
       />,
     );
+    await expandTrace();
     const rows = screen.getAllByRole("listitem");
     expect(rows).toHaveLength(3);
     // Position preserved — a failure does not get hoisted or dropped.
@@ -142,7 +182,7 @@ describe("ToolActivityTrace", () => {
     expect(errorOutput).toHaveClass("max-h-48", "overflow-auto");
   });
 
-  it("hides sub-2s durations and shows longer ones", () => {
+  it("hides sub-2s durations and shows longer ones", async () => {
     render(
       <ToolActivityTrace
         calls={[
@@ -151,6 +191,7 @@ describe("ToolActivityTrace", () => {
         ]}
       />,
     );
+    await expandTrace();
     expect(screen.queryByText("0.0s")).not.toBeInTheDocument();
     expect(screen.getByText("3.1s")).toBeInTheDocument();
   });

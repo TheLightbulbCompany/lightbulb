@@ -22,6 +22,63 @@ function scrollable(region: HTMLElement, { height = 400, content = 1000, top }: 
 
 const renderMessage = (message: RoomMessage, collapsed: boolean) => <p data-collapsed={collapsed}>{message.text}</p>;
 
+/**
+ * tests/setup.ts installs a no-op ResizeObserver, so a component that reacts to
+ * one can't be driven at all. Swap in a capturing one whose callback the test
+ * fires by hand, then put the stub back.
+ */
+function captureResizeObserver() {
+  const original = global.ResizeObserver;
+  const callbacks: ResizeObserverCallback[] = [];
+  class Capturing {
+    constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  global.ResizeObserver = Capturing as unknown as typeof ResizeObserver;
+  return {
+    resizeTo(region: HTMLElement, content: number) {
+      Object.defineProperty(region, "scrollHeight", { configurable: true, value: content });
+      act(() => { callbacks.forEach((callback) => callback([], {} as ResizeObserver)); });
+    },
+    restore() { global.ResizeObserver = original; },
+  };
+}
+
+// A streaming run grows the timeline as tool rows arrive and shrinks it again
+// when the trace folds on settle — all inside one message, so no seq changes and
+// the growth effect never fires. Without height tracking the reader is left
+// staring above the reply they were waiting for.
+it("stays pinned to the bottom when live content grows and then shrinks", () => {
+  const observer = captureResizeObserver();
+  try {
+    render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}><p>live run</p></RoomTimeline>);
+    const region = screen.getByRole("region", { name: "Messages" });
+    scrollable(region, { top: 600 });
+    observer.resizeTo(region, 2000);
+    expect(region.scrollTop).toBe(2000);
+    observer.resizeTo(region, 1200);
+    expect(region.scrollTop).toBe(1200);
+  } finally {
+    observer.restore();
+  }
+});
+
+it("never yanks a viewer who scrolled up when live content resizes", () => {
+  const observer = captureResizeObserver();
+  try {
+    render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}><p>live run</p></RoomTimeline>);
+    const region = screen.getByRole("region", { name: "Messages" });
+    scrollable(region, { top: 0 });
+    fireEvent.scroll(region);
+    observer.resizeTo(region, 2000);
+    expect(region.scrollTop).toBe(0);
+  } finally {
+    observer.restore();
+  }
+});
+
 it("renders separators for dates and the New line, and collapsed flags", () => {
   render(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={1} ownLastSentSeq={null} renderMessage={renderMessage} empty={<p>Empty</p>} />);
   expect(screen.getByRole("separator", { name: "Today" })).toBeInTheDocument();

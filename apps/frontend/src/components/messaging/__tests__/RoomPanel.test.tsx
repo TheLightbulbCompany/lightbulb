@@ -426,6 +426,32 @@ it("renders a running run that has no text yet as a working bubble with Stop", (
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
 });
 
+// The browser's native <details>/<summary> marker — a large unstyled triangle
+// that ignored the design system — was the loudest thing in the transcript.
+// Thinking is now the same quiet chevron button the tool trace uses.
+it("puts a run's thinking behind a quiet chevron button, not a native disclosure", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "Weighing two options", state: "running", tools: [] };
+  const { container } = render(<RoomPanel {...props} runs={[run]} />);
+  expect(container.querySelector("details")).toBeNull();
+  const toggle = screen.getByRole("button", { name: "Thinking" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByText("Weighing two options")).not.toBeInTheDocument();
+  await userEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("Weighing two options")).toBeInTheDocument();
+});
+
+// The trace folds itself now, so wrapping it in a second "What it did"
+// disclosure buried one summary line behind two clicks.
+it("shows a finished no-reply run's tool activity as one folded line, not a nested disclosure", () => {
+  const tools = [1, 2, 3].map((i) => ({ id: `t${i}`, name: "read", args: { path: `f${i}.ts` }, result: "ok", status: "done" as const }));
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "completed", tools };
+  const { container } = render(<RoomPanel {...props} runs={[run]} />);
+  expect(container.querySelector("details")).toBeNull();
+  expect(screen.queryByText("What it did")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Read 3 files/ })).toBeInTheDocument();
+});
+
 it("keeps rendering a finished run's text instead of collapsing it", () => {
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "Partial answer", thinking: "", state: "completed", tools: [] };
   render(<RoomPanel {...props} runs={[run]} />);

@@ -61,6 +61,24 @@ def test_own_address_is_the_tasks_own_eni_ip(monkeypatch):
     assert task_address.own_address() == "http://10.0.2.9:8000"
 
 
+def test_own_address_propagates_a_resolution_failure_instead_of_a_bogus_address(monkeypatch):
+    """Ruling: keep it loud -- a wrong address is worse than a failed connect,
+    so a resolver failure must raise rather than being swallowed into some
+    placeholder. lru_cache never caches a raised call, so a later successful
+    resolution must still work."""
+    task_address.own_address.cache_clear()
+
+    def _boom(host):
+        raise OSError("no such host")
+
+    monkeypatch.setattr(task_address.socket, "gethostbyname", _boom)
+    with pytest.raises(OSError):
+        task_address.own_address()
+
+    monkeypatch.setattr(task_address.socket, "gethostbyname", lambda host: "10.0.3.3")
+    assert task_address.own_address() == "http://10.0.3.3:8000"
+
+
 # ---------------------------------------------------------------------------
 # ConnectionService.find_node_presence (M2-R3) — Task 28's bridge calls this
 # directly to learn which task accepted the owner's desktop node socket.

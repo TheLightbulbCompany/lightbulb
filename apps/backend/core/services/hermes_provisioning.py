@@ -5,33 +5,50 @@ hard-requires an existing EFS access point and a ``stopped`` ECS row (agentcore_
 which a fresh workspace has never had. Patching it in place would inherit "must come from ECS" into
 new-workspace provisioning (report 04, risk 5).
 
+Two steps, in order, both fenced on the SAME claim/attempt-token lease ``provision_runner.run``
+already holds (M4-R28/M4-R33):
+
+1. ``prepare_hermes_workspace`` — mints (or reuses) ``hook_token``/``gateway_token``, mints a fresh
+   gate bearer, writes the ONE JSON boot secret, and writes the two tokens onto the containers row.
+   Runs BEFORE step 0 (the Paperclip seed): the seed's starter-agent loop bakes ``hook_token`` into
+   the ``http`` adapter's ``Authorization`` header at seed time
+   (``paperclip_adapter_config.build_http_adapter_config``), so a fresh Hermes provision that seeded
+   before minting a token shipped every starter agent with an EMPTY bearer — the exact bug M4-R33
+   fixes. A NON-terminal, lease-REFRESHING write (``release_lease=False``): the provision is not
+   done yet.
+2. ``provision_hermes_runtime`` — writes the Hermes profiles to S3, creates the AgentCore runtime,
+   waits for it to reach READY, and writes the TERMINAL row fields. Idempotent-return on an existing
+   ``agentcore_runtime_arn`` (also short-circuits step 1 above, via the same check).
+
 What is reused verbatim: the IAM/naming scaffolding (``runtime_name_for``, ``ensure_agentcore_trust``),
 the owner's AIPs and Bedrock role, ``mint_gate_token``, the boot-secret writer, and the lifecycle
 constants. What is dropped: ``filesystemConfigurations`` (no EFS — profiles are S3), the OpenClaw env
 builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``CreateAgentRuntime`` is
 one synchronous call; the only wait here is the runtime's own short startup to ``READY``).
 
-Fencing (M4-R28): called from inside ``provision_runner.run()``'s single outer ``try``, under the
-SAME claim/attempt-token lease step 0 already runs under. The terminal row write goes through
-``container_repo.update_container_leased`` — the exact fenced primitive ``ecs_manager.wait_for_running``
-uses for its own terminal write — so a straggler from a superseded attempt can never clobber a
-takeover's row; a lost fence raises ``ProvisionSuperseded`` and writes nothing (the caller's existing
-handler for that exception, from Task 18, already covers this branch). No ``generation`` fence: that
-concept is ECS-incarnation-specific (a container recreate mid-provision) and has no Hermes analogue —
-a fresh runtime has nothing to fence a generation against.
+Fencing (M4-R28): the terminal row write goes through ``container_repo.update_container_leased`` —
+the exact fenced primitive ``ecs_manager.wait_for_running`` uses for its own terminal write — so a
+straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
+``ProvisionSuperseded`` and writes nothing (``provision_runner.run``'s existing handler for that
+exception, from Task 18, already covers both call sites). No ``generation`` fence: that concept is
+ECS-incarnation-specific (a container recreate mid-provision) and has no Hermes analogue.
 
 Boot secret (M4-R4/R5): the runtime's ``environmentVariables`` carry NO credential value. One JSON
 secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}``,
 is written via ``agentcore_runtime.write_boot_secret`` and only its NAME travels in the env, under
 ``agentcore_runtime.BOOT_SECRET_ENV_VAR`` — the bridge resolves it at boot with the runtime's own
-execution role.
+execution role. ``provision_hermes_runtime`` never re-fetches this name from anywhere: it is a pure
+function of ``owner_id`` (``boot_secret_name``), so it is recomputed, not looked up — the only writer
+of the secret's CONTENTS is ``prepare_hermes_workspace``, which MUST have already run for this owner
+(``provision_runner.run`` always calls it first when ``settings.HERMES_RUNTIME`` is on).
 
-Rotation (M4-R16): this module never rotates an already-provisioned owner's bearer — it is
-idempotent-return on an existing ``agentcore_runtime_arn`` and mints fresh tokens only for a
-never-provisioned row. The ``StopRuntimeSession`` call the ruling requires before revoking an old
-token generation is therefore OWED WHEREVER an already-Hermes owner's gate token is rotated
-(``core.billing.bedrock_gate_tokens.mint_gate_token`` / the revoke-restore paths that call it) — not
-implemented in this task.
+Rotation (M4-R16): this module never rotates an already-provisioned owner's bearer —
+``prepare_hermes_workspace`` no-ops once the owner already has an ``agentcore_runtime_arn`` (avoids
+rotating a live bearer on every reconcile dispatch against an already-Hermes owner), and
+``provision_hermes_runtime`` is idempotent-return on the same field. The ``StopRuntimeSession`` call
+the ruling requires before revoking an old token generation is therefore OWED WHEREVER an
+already-Hermes owner's gate token is rotated (``core.billing.bedrock_gate_tokens.mint_gate_token`` /
+the revoke-restore paths that call it) — not implemented in this module.
 
 BYO key (M4-R32): the plaintext value is read from Secrets Manager at provision time via
 ``core.services.key_service.read_byo_key`` — the same ``lightbulb/{env}/user-keys/{user}/{provider}``
@@ -42,7 +59,6 @@ secret the ECS path references by ARN, but read back directly here (AgentCore ha
 from __future__ import annotations
 
 import logging
-from typing import NamedTuple
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -51,6 +67,7 @@ from core.services.agentcore_runtime import (
     IDLE_TIMEOUT_S,
     MAX_LIFETIME_S,
     BOOT_SECRET_ENV_VAR,
+    boot_secret_name,
     ensure_agentcore_trust,
     runtime_name_for,
     write_boot_secret,
@@ -155,29 +172,37 @@ def _wait_for_runtime_ready(runtime_arn: str) -> None:
     raise RuntimeError(f"AgentCore runtime {runtime_arn} did not reach READY within the poll window")
 
 
-class _OwnerPrep(NamedTuple):
-    role_arn: str
-    aip_arns: dict[str, str]
-    hook_token: str
-    gateway_token: str
-    boot_secret_id: str
+async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> None:
+    """M4-R33: mint the owner's hook/gateway tokens + a fresh gate bearer, write the ONE JSON boot
+    secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
+    roster, so the ``http`` adapter's ``Authorization`` header
+    (``paperclip_adapter_config.build_http_adapter_config``) bakes in a REAL token instead of the
+    empty string a missing row field falls back to.
 
-
-async def _prepare_owner_aws(owner_id: str) -> _OwnerPrep:
-    """AIPs, the per-owner Bedrock role, AgentCore trust, fresh hook/gateway tokens, and the ONE
-    JSON boot secret naming them plus a freshly minted gate bearer (M4-R4/R5).
+    Idempotent: a no-op (no AWS call, no row write) once the owner already has an
+    ``agentcore_runtime_arn`` — the whole workspace, tokens included, is already provisioned by
+    then, so re-running this on every reconcile dispatch would otherwise rotate a LIVE gate bearer
+    for no reason. NOT idempotent on the bearer itself while unprovisioned: a retry of a
+    still-unprovisioned owner re-mints (``mint_gate_token`` always rotates), which is safe — nothing
+    ever presented the prior one, since the runtime was never created.
 
     ``hook_token``/``gateway_token`` are re-minted only when the row does not already carry one —
     mirrors ``ecs_manager``'s own "reuse if present" convention (``container.get("hook_token") or
-    secrets.token_urlsafe(32)``) — so a retry of a partially-failed provision never orphans a token
-    some other seam already handed out.
+    secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already handed
+    out.
+
+    Fenced the same way as the terminal write (M4-R28), but NON-terminal: ``release_lease=False``,
+    since the provision is not done yet.
     """
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    if row.get("agentcore_runtime_arn"):
+        return
+
     import secrets as _secrets
 
     from core.billing.bedrock_aip import _owner_role_name, ensure_owner_aips, ensure_owner_bedrock_role
     from core.billing.bedrock_gate_tokens import mint_gate_token
 
-    row = await container_repo.get_by_owner_id(owner_id) or {}
     hook_token = row.get("hook_token") or _secrets.token_urlsafe(32)
     gateway_token = row.get("gateway_token") or _secrets.token_urlsafe(32)
 
@@ -185,16 +210,29 @@ async def _prepare_owner_aws(owner_id: str) -> _OwnerPrep:
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
     bedrock_bearer = await mint_gate_token(owner_id, aip_arns)
-    boot_secret_id = await write_boot_secret(
-        owner_id, hook_token=hook_token, gateway_token=gateway_token, bedrock_bearer=bedrock_bearer
+    await write_boot_secret(owner_id, hook_token=hook_token, gateway_token=gateway_token, bedrock_bearer=bedrock_bearer)
+
+    await container_repo.update_container_leased(
+        owner_id,
+        claim_id,
+        {"hook_token": hook_token, "gateway_token": gateway_token},
+        attempt_token=attempt_token,
+        release_lease=False,
     )
-    return _OwnerPrep(
-        role_arn=role_arn,
-        aip_arns=aip_arns,
-        hook_token=hook_token,
-        gateway_token=gateway_token,
-        boot_secret_id=boot_secret_id,
-    )
+
+
+async def _load_role_and_aips(owner_id: str) -> tuple[str, dict[str, str]]:
+    """Idempotently re-derive ``(role_arn, aip_arns)`` — both are stable and deterministic per
+    owner (``ensure_owner_aips``/``ensure_owner_bedrock_role`` only ever create-or-reuse), so
+    ``provision_hermes_runtime`` can call this independently of ``prepare_hermes_workspace``
+    without re-minting anything sensitive (the gate bearer / boot secret are NOT re-derived here —
+    only ``prepare_hermes_workspace`` mints those).
+    """
+    from core.billing.bedrock_aip import ensure_owner_aips, ensure_owner_bedrock_role
+
+    aip_arns = await ensure_owner_aips(owner_id)
+    role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
+    return role_arn, aip_arns
 
 
 async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
@@ -256,6 +294,11 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
 async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> str:
     """Create this workspace's AgentCore runtime and point its container row at it.
 
+    REQUIRES ``prepare_hermes_workspace`` to have already run for this owner — it writes the boot
+    secret this reads the NAME of (not the contents) and the ``hook_token``/``gateway_token`` this
+    never re-writes. ``provision_runner.run`` always calls it first when ``settings.HERMES_RUNTIME``
+    is on.
+
     Idempotent: a row that already carries ``agentcore_runtime_arn`` is returned as-is, with no
     AWS call and no row write.
 
@@ -269,24 +312,24 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     if existing:
         return existing
 
-    prep = await _prepare_owner_aws(owner_id)
-    await _write_profiles(owner_id, prep.aip_arns)
+    role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    await _write_profiles(owner_id, aip_arns)
 
     from core.billing.bedrock_gate_url import gate_url
 
     request = build_hermes_runtime_request(
         owner_id=owner_id,
         image_uri=settings.AGENTCORE_HERMES_IMAGE,
-        role_arn=prep.role_arn,
+        role_arn=role_arn,
         subnets=[s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()],
         security_groups=[settings.ECS_SECURITY_GROUP_ID] if settings.ECS_SECURITY_GROUP_ID else [],
         environment=build_hermes_runtime_env(
             owner_id=owner_id,
             api_base=settings.PUBLIC_API_BASE,
             bucket=settings.OWNER_STATE_BUCKET,
-            boot_secret_id=prep.boot_secret_id,
+            boot_secret_id=boot_secret_name(owner_id),
             gate_endpoint=gate_url(),
-            sonnet_aip_arn=prep.aip_arns["sonnet"],
+            sonnet_aip_arn=aip_arns["sonnet"],
         ),
     )
     arn = await run_in_thread(_create_runtime, request)
@@ -297,16 +340,12 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     # Fenced write (M4-R28) — mirrors ecs_manager.wait_for_running's terminal transition. A lost
     # fence raises ProvisionSuperseded here and writes NOTHING (DynamoDB's conditional write is
     # atomic); provision_runner.run's existing handler for that exception covers this call.
+    # hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace already wrote
+    # them, and re-asserting them here would gain nothing.
     await container_repo.update_container_leased(
         owner_id,
         claim_id,
-        {
-            "runtime_host": "agentcore",
-            "agentcore_runtime_arn": arn,
-            "status": "running",
-            "hook_token": prep.hook_token,
-            "gateway_token": prep.gateway_token,
-        },
+        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running"},
         attempt_token=attempt_token,
         release_lease=True,
     )

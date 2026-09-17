@@ -262,6 +262,15 @@ async def run(owner_id: str, claim_id: str) -> int:
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
 
+        if settings.HERMES_RUNTIME:
+            # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0
+            # seeds the roster. Step 0's starter-agent loop bakes hook_token into the http
+            # adapter's Authorization header at seed time — seeding first shipped every starter
+            # agent with an EMPTY bearer, since nothing had minted one yet. Fenced, NON-terminal
+            # (the provision isn't done): a lost fence here raises ProvisionSuperseded, caught by
+            # the same handler as every other checkpoint in this function.
+            await hermes_provisioning.prepare_hermes_workspace(owner_id, claim_id=claim_id, attempt_token=attempt_token)
+
         # Step 0: the OWNER Paperclip seed runs HERE, under the executor's
         # single-flight (this is the ONLY runner for this owner's claim),
         # BEFORE the container work — killing the duplicate-company race

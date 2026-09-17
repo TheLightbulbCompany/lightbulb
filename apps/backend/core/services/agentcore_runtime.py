@@ -317,14 +317,12 @@ async def ensure_runtime(owner_id: str) -> dict:
 # both modules treat it as a stable, external contract string shared with the
 # bridge, not an implementation detail either module owns.
 #
-# NOTE (owed, not done in this task): ``ensure_runtime``/``build_runtime_env``
-# above still embed the plaintext ``AWS_BEARER_TOKEN_BEDROCK``/
-# ``OPENCLAW_HOOK_TOKEN`` for the ECS→AgentCore MIGRATION path, unlike the
-# fresh-provision path (``hermes_provisioning.py``, Task 17) which uses this
-# boot secret exclusively. Retrofitting the migration path is a separate,
-# larger change (it touches ~15 tests in test_agentcore_runtime.py that pin
-# the current plaintext contract) and is out of this task's scope — flagged
-# for a follow-up rather than rushed here.
+# NOTE: ``ensure_runtime``/``build_runtime_env`` above still embed the plaintext
+# ``AWS_BEARER_TOKEN_BEDROCK``/``OPENCLAW_HOOK_TOKEN`` — that is the OTHER stream's
+# OpenClaw-gateway migration path (ECS -> AgentCore for an EXISTING owner), not this one.
+# The Hermes fresh-provision path (``hermes_provisioning.py``) uses this boot secret +
+# ``BOOT_SECRET_ENV_VAR`` exclusively. ``ensure_runtime``'s plaintext path is scheduled for
+# deletion at cutover (M6), not retrofitted onto the boot secret.
 BOOT_SECRET_ENV_VAR = "LIGHTBULB_SECRET_ID"
 
 

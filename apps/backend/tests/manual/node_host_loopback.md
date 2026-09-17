@@ -28,8 +28,10 @@ cd /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend
 export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1
 export EFS_MOUNT_PATH=/tmp/node-loopback-efs   # default /mnt/efs/users doesn't exist locally
 mkdir -p "$EFS_MOUNT_PATH"
-uv run uvicorn main:app --port 8000
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+**Use `--host 0.0.0.0`, not the uvicorn default.** `task_address.own_address()` (`core/services/task_address.py`) writes this task's *LAN* IP (`socket.gethostbyname(socket.gethostname())`) into the presence row — correct for a real Fargate task's single ENI, but a bare `uvicorn main:app --port 8000` binds loopback-only, so nothing (not even this same Mac) can reach that LAN IP. Checklist item 7 (cross-instance forwarding) then fails `409 NODE_NOT_ATTACHED` from the second instance with no clue why: the presence row exists and is fresh, but `_forward_node_invoke`'s connect to `http://<lan-ip>:8000` just times out/refuses. Confirmed by `curl http://<lan-ip>:8000/health` failing against a loopback-only bind and succeeding once both instances add `--host 0.0.0.0` (lane hermes-m2-laneN7, run 2).
 
 ### 2. Confirm the org is AgentCore-hosted (terminal 2, same exports)
 
@@ -96,6 +98,7 @@ async def pipe(src, dst):
         await dst.send(msg)
 async def handler(ws):
     async with websockets.connect(UPSTREAM, max_size=26_214_400) as up:
+        print("[proxy] upstream WS open", flush=True)
         tasks = [asyncio.create_task(pipe(ws, up)), asyncio.create_task(pipe(up, ws))]
         _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending: t.cancel()
@@ -137,10 +140,10 @@ curl -sX POST http://127.0.0.1:8000/api/v1/internal/node/invoke/$ORG \
 - [ ] clean connect — `/tmp/node-loopback/cli.log` shows no `1008`/`1012`/`4000`
 - [ ] the curl above returns `{"ok":true,"payload":{...}}` with this Mac's `uname -a` in `payload.stdout` and `payload.exitCode: 0`
 - [ ] **ten minutes, no reconnect**: `grep -c 'WS open' /tmp/node-loopback-proxy.log` stays at 1 for 10 minutes (the relay's 15s tick keeps the CLI's 30s watchdog from firing — `node_broker.TICK_INTERVAL_MS`)
-- [ ] a `"timeoutMs":2000` invoke of `["bash","-lc","sleep 30"]` returns `payload.timedOut: true` on the raw route (the plugin, `.../lightbulb_node/__init__.py::execute`, is what turns this into `returncode: 124` — that translation is plugin-side, not on this route)
+- [ ] a `"timeoutMs":2000` invoke of `["bash","-lc","sleep 30"]` returns `payload.timedOut: true` on the raw route (the plugin, `.../lightbulb_node/__init__.py::execute`, is what turns this into `returncode: 124` — that translation is plugin-side, not on this route). **The `timeoutMs` that the node's own `system.run` handler enforces is a `paramsJSON` field, separate from the top-level invoke-body `timeoutMs`** (`core/services/node_broker.py::NodeSession.invoke` has zero grace beyond the top-level value, so it always wins the race and the caller gets a bare `504 NODE_TIMEOUT` — no `payload` at all, and the CLI never kills the child process — unless the node is *also* told its own bound via `paramsJSON`). Give the top-level value real headroom over it, e.g. `-d '{"command":"system.run","paramsJSON":"{\"command\":[\"bash\",\"-lc\",\"sleep 30\"],\"timeoutMs\":2000}","timeoutMs":8000}'`.
 - [ ] an exec-approval prompt on the Mac (if the CLI's local policy asks) is honoured; a denial surfaces in `payload.error`/`error.message`, never a hang to `NODE_TIMEOUT` (exact denial string is upstream's own, not defined in this repo)
 - [ ] `camera.capture` (undeclared by node-host) → **403 COMMAND_NOT_ALLOWED** before it reaches the socket: `curl ... -d '{"command":"camera.capture","paramsJSON":"{}"}'`
-- [ ] **cross-instance forwarding** (M2-R23): third terminal, `PORT=8001 AWS_PROFILE=isol8-admin EFS_MOUNT_PATH=/tmp/node-loopback-efs uv run uvicorn main:app --port 8001` (`PORT` env, not just `--port` — `task_address.own_address()` reads `PORT`). Point the step-6 curl at `:8001`; it must still return the same payload, forwarded once to `:8000` (which holds the socket) — confirm `:8000`'s own log shows the forwarded request carrying `X-Lightbulb-Node-Forwarded`, and it never bounces to a third instance
+- [ ] **cross-instance forwarding** (M2-R23): third terminal, `PORT=8001 AWS_PROFILE=isol8-admin EFS_MOUNT_PATH=/tmp/node-loopback-efs uv run uvicorn main:app --host 0.0.0.0 --port 8001` (`PORT` env, not just `--port` — `task_address.own_address()` reads `PORT`; `--host 0.0.0.0` on **both** instances, terminal 1 included — see the note under step 1). Point the step-6 curl at `:8001`; it must still return the same payload, forwarded once to `:8000` (which holds the socket) — confirm `:8000`'s own access log shows the forwarded request's source IP is the *other* instance's LAN address, not `127.0.0.1` (uvicorn's default access-log line doesn't include headers, so this is the visible proxy for `X-Lightbulb-Node-Forwarded` from a log line alone), and it never bounces to a third instance
 
 **Failure map:** `1008` at connect → Task 26's challenge/deadline; `4000` → Task 26's ticker; `INVALID_REQUEST: paramsJSON required` → Task 25's schema; a request that bounces forever → Task 28's single-hop rule (`NODE_FORWARD_HEADER`).
 

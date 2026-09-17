@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect } from "react";
 import { Loader2, RefreshCw, Save, AlertCircle, ToggleLeft, ToggleRight } from "lucide-react";
+import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -89,10 +90,23 @@ function isToolAllowed(
 }
 
 export function AgentToolsTab({ agentId }: { agentId: string }) {
+  // Hermes gates by TOOLSET, not per tool -- there is no allow/deny list to edit, and the
+  // backend now refuses `agents.update {tools}` on this runtime instead of confirming a write
+  // it never performs (M6 task 10, row 12; the toolset remap is a later lane). The RPCs are
+  // nulled too, not just the editor: `tools.catalog` is stubbed on the bridge, so firing it
+  // would start a microVM and spin ~55s only to render an error.
+  //
+  // Fix round 1 (review I1): the RPCs wait for a DEFINITE "ecs", never merely "not agentcore".
+  // `undefined` is "not known for this workspace" -- no status has landed, or one just switched
+  // -- and firing on a guess is the one mistake with a ~55s bill attached. Same shape as
+  // `useSystemHealth`'s `container && ...` hold.
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
+  const rpcReady = runtimeHost === "ecs";
   const { data: catalogData, error: catalogError, isLoading: catalogLoading, mutate: mutateCatalog } =
-    useRuntimeRpc<ToolsCatalogResponse>("tools.catalog", { agentId, includePlugins: true });
+    useRuntimeRpc<ToolsCatalogResponse>(rpcReady ? "tools.catalog" : null, { agentId, includePlugins: true });
   const { data: configSnapshot, mutate: mutateConfig } =
-    useRuntimeRpc<ConfigSnapshot>("config.get");
+    useRuntimeRpc<ConfigSnapshot>(rpcReady ? "config.get" : null);
   const callRpc = useRuntimeRpcMutation();
 
   const [localProfile, setLocalProfile] = useState<string | null>(null);
@@ -243,7 +257,21 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
     }
   }, [callRpc, agentId, localProfile, localAlsoAllow, localDeny, mutateConfig]);
 
-  if (catalogLoading) {
+  if (onAgentCore) {
+    return (
+      <div className="mt-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-cream border border-[var(--cream-deep)]">
+        <AlertCircle size={12} strokeWidth={1.75} className="text-[var(--midnight-muted)] shrink-0 mt-0.5" />
+        <p className="text-xs text-[var(--midnight-muted)]">
+          Per-tool access isn&apos;t available on this runtime. Tools are granted by toolset here,
+          not one by one.
+        </p>
+      </div>
+    );
+  }
+
+  // Unknown runtime: the same spinner a loading catalog shows. The editor cannot be drawn
+  // honestly yet, and its RPCs are held above.
+  if (catalogLoading || !rpcReady) {
     return <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)] mt-4" />;
   }
 

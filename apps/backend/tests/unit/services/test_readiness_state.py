@@ -670,3 +670,38 @@ class TestGenerationThreading:
         container_fresh = {"status": "running"}
         contract2 = await _compute("user_x", container=container_fresh, account=_account(), gateway_connected=True)
         assert contract2["onboarded"] is False
+
+
+class TestRuntimeHost:
+    """M6 task 10, row 0 -- the runtime capability signal. Before this the frontend had no
+    way at all to tell an AgentCore workspace from an ECS one, so every remapped control
+    panel had nothing to branch on."""
+
+    @pytest.mark.asyncio
+    async def test_an_ecs_row_reports_ecs(self):
+        contract = await _compute(
+            "org_x",
+            container={"status": "running", "runtime_host": "ecs"},
+            account=_account(),
+            gateway_connected=True,
+        )
+        assert contract["runtime_host"] == "ecs"
+
+    @pytest.mark.asyncio
+    async def test_an_agentcore_row_reports_agentcore(self):
+        contract = await _compute(
+            "org_x",
+            container={"status": "running", "runtime_host": "agentcore"},
+            account=_account(),
+        )
+        assert contract["runtime_host"] == "agentcore"
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_no_runtime_host_fails_closed_to_ecs(self):
+        """host_for's own default -- a pre-migration row, and a poll with no container row at
+        all, must both read as the runtime every workspace was on before M6."""
+        contract = await _compute("org_x", container={"status": "running"}, account=_account(), gateway_connected=True)
+        assert contract["runtime_host"] == "ecs"
+
+        no_row = await _compute("org_x", container=None, account=_account())
+        assert no_row["runtime_host"] == "ecs"

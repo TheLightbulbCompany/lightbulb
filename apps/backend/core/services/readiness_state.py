@@ -182,6 +182,8 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     in ``packages/shared/src/hooks/statusContract.ts`` -- keep the two in
     lockstep.
     """
+    from core.services.runtime_transport import host_for
+
     if container is _NOT_GIVEN:
         try:
             container = await container_repo.get_by_owner_id(owner_id)
@@ -247,8 +249,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
                 lifecycle = "parked"
                 runtime_phase = "provisioning"
             else:
-                from core.services.runtime_transport import host_for
-
                 # Never probe a running AgentCore row: AgentCore wakes the microVM on ANY
                 # invoke, so a health RPC here would wake a parked box the poll is supposed
                 # to leave alone. resolve_runtime_phase reports "ready" for it unconditionally.
@@ -288,6 +288,11 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         "chat_available": chat_available,
         "container_status": (container or {}).get("status"),
         "container_substatus": (container or {}).get("substatus"),
+        # Which runtime hosts this owner. The capability signal every migrated-workspace
+        # surface branches on (M6 task 10, row 0) -- before this the frontend had NO way to
+        # tell an AgentCore workspace from an ECS one. `host_for` fails closed to "ecs", so a
+        # row with no container (or an unknown value) reads as the pre-migration default.
+        "runtime_host": host_for(container or {}),
         "parked": parked,
         "onboarded": onboarded,
         "last_error": (container or {}).get("last_error"),

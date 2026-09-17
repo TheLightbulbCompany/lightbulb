@@ -27,7 +27,7 @@
  * still gets `chatAvailable: true` and `uiPhase: "ready"`.
  */
 
-import type { BlockedPayload } from "./containerStatus";
+import type { BlockedPayload, RuntimeHost } from "./containerStatus";
 
 /** Chat availability's SOLE input (INV-6). */
 export type RuntimePhase = "provisioning" | "starting" | "ready";
@@ -65,6 +65,10 @@ export interface StatusContract {
   container_status: string | null;
   container_substatus: string | null;
   parked: boolean;
+  /** Which runtime hosts this workspace — the capability signal migrated-workspace
+   * surfaces branch on. Optional: absent on a backend older than M6 task 10, which
+   * is indistinguishable from `"ecs"` and must be read as such. */
+  runtime_host?: RuntimeHost;
   onboarded: boolean;
   last_error: string | null;
   last_error_at: string | null;

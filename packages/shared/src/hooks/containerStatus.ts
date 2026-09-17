@@ -18,6 +18,15 @@
  * status-code table below.
  */
 
+import { useSyncExternalStore } from "react";
+
+/**
+ * Which runtime hosts this workspace — `containers.runtime_host`, via
+ * `core/services/runtime_transport.host_for`, which fails closed to `"ecs"`.
+ * A workspace moves ECS -> AgentCore once, one way, and never back.
+ */
+export type RuntimeHost = "ecs" | "agentcore";
+
 /**
  * The 200 body — the composed `StatusContract` (see `statusContract.ts` and
  * `core/services/readiness_state.compute_status`/
@@ -44,6 +53,9 @@ export interface ContainerStatusBody {
   onboarded?: boolean;
   /** Set alongside `lifecycle: "parked"` on a deliberately-asleep, wake-gated trial box. */
   parked?: boolean;
+  /** Runtime capability signal — absent on a backend older than M6 task 10, which is
+   * indistinguishable from `"ecs"` and must be treated as such. */
+  runtime_host?: RuntimeHost;
   /** Non-blocking Paperclip (Teams) seed health — `"failed"` is the only
    * value any binding acts on today. */
   teams_state?: string | null;
@@ -151,4 +163,89 @@ export function classifyContainerStatus(res: {
   }
 
   return { kind: "unrecognized", status };
+}
+
+/* ---------------------------------------------------------------------------
+ * The runtime capability signal (M6 task 10, row 0)
+ *
+ * `runtime_host` arrives on the `/container/status` body, but the surfaces that
+ * need it (control panels, deep leaf components) do not hold that body and must
+ * not open a second poll to get it. So the ONE reader of that endpoint —
+ * `useOnboardingStatus` — publishes the field here and `useRuntimeHost()` is a
+ * parameterless subscriber. Module state + a listener set + `useSyncExternalStore`
+ * is the pattern `workspaceController.ts` and `lampStore.ts` already use.
+ *
+ * **The value is SCOPED, and that is the whole safety property.** A workspace
+ * switch is client-side (`setActive` + `router.replace`, never a reload), so this
+ * module — and anything cached in it — survives it. An unscoped singleton would
+ * keep serving the PREVIOUS workspace's runtime until the new one's status fetch
+ * resolved, and a panel reading it would open ECS-only surfaces on an AgentCore
+ * workspace (or fire an RPC that wakes and bills a microVM). So the reader
+ * declares which workspace it is polling (`setRuntimeHostScope`, during render,
+ * in the same pass that clears its own sticky body), the publish carries that
+ * same scope, and a host from any other scope reads as unknown.
+ *
+ * `undefined` therefore means NOT KNOWN *FOR THIS WORKSPACE* — no status has
+ * landed yet, a switch is in flight, the poll is disabled, or the backend is
+ * older than this change. Every caller must treat it as "hold", never as "this is
+ * ECS": the two states differ precisely when guessing wrong is expensive. A
+ * caller that ALREADY holds the status body should read `body.runtime_host`
+ * directly instead of subscribing here — it gets the answer in the same render
+ * with no unknown window at all (`useSystemHealth` does exactly that).
+ * ------------------------------------------------------------------------- */
+
+/** The status key the one reader is currently polling — see `setRuntimeHostScope`. */
+let activeStatusScope: string | null = null;
+let publishedHost: { scope: string; host: RuntimeHost } | null = null;
+const runtimeHostListeners = new Set<() => void>();
+
+function notifyRuntimeHost(): void {
+  for (const listener of runtimeHostListeners) listener();
+}
+
+/**
+ * Declare which workspace the status poll is currently for. Called by
+ * `useOnboardingStatus` DURING RENDER, alongside the branch that drops its own sticky
+ * last-good body on a key change, so the host goes unknown in the same pass the body does —
+ * an effect would leave one commit in which a panel still sees the old workspace's runtime.
+ *
+ * Deliberately does NOT notify: React forbids updating another component from a render phase,
+ * and `useSyncExternalStore` re-reads the snapshot every render and re-checks it after commit,
+ * so a plain mutation is picked up without one. `null` (the poll is disabled — signed out)
+ * matches no published scope, so it reads as unknown.
+ */
+export function setRuntimeHostScope(scope: string | null): void {
+  activeStatusScope = scope;
+}
+
+/** Called by `useOnboardingStatus` when a status body for `scope` names a host. Never
+ * publishes `undefined`: within one workspace, a failing or disabled poll must not blank a
+ * host we already know — going unknown is `setRuntimeHostScope`'s job, and only on a switch. */
+export function publishRuntimeHost(scope: string, host: RuntimeHost): void {
+  if (publishedHost?.scope === scope && publishedHost.host === host) return;
+  publishedHost = { scope, host };
+  notifyRuntimeHost();
+}
+
+function subscribeRuntimeHost(listener: () => void): () => void {
+  runtimeHostListeners.add(listener);
+  return () => {
+    runtimeHostListeners.delete(listener);
+  };
+}
+
+function readRuntimeHost(): RuntimeHost | undefined {
+  return publishedHost && publishedHost.scope === activeStatusScope ? publishedHost.host : undefined;
+}
+
+/** Test-only reset — this module's state outlives any one test's renders. */
+export function __resetRuntimeHost(): void {
+  activeStatusScope = null;
+  publishedHost = null;
+  runtimeHostListeners.clear();
+}
+
+/** This workspace's runtime, or `undefined` while unknown (see the block comment above). */
+export function useRuntimeHost(): RuntimeHost | undefined {
+  return useSyncExternalStore(subscribeRuntimeHost, readRuntimeHost, readRuntimeHost);
 }

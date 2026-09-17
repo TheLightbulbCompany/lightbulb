@@ -244,9 +244,28 @@ async def test_agents_list_returns_the_defaultId_and_agents_shape_useagents_read
     out = await runtime_rpc.execute_sync(
         owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
     )
-    assert out["agents"] == [{"id": "a2", "role": "engineering"}, {"id": "a1", "role": "ceo"}]
+    # M6 task 10, row 29: every row also carries its model TIER -- Paperclip roster rows carry
+    # no model field at all, so without this the model label is blank on every agent surface.
+    assert out["agents"] == [
+        {"id": "a2", "role": "engineering", "model": "standard"},
+        {"id": "a1", "role": "ceo", "model": "premium"},
+    ]
     assert out["defaultId"] == "a1"
     assert "forwarded" not in called
+
+
+async def test_agents_list_model_tier_uses_the_same_vocabulary_agents_update_accepts(monkeypatch):
+    """The tier a row REPORTS must be one agents.update would ACCEPT -- otherwise the picker
+    round-trip 400s on the value it was just handed."""
+    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
+    _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "finance"}, {"id": "a3"}])
+    out = await runtime_rpc.execute_sync(
+        owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
+    )
+    tiers = {row["id"]: row["model"] for row in out["agents"]}
+    assert tiers == {"a1": "premium", "a2": "standard", "a3": "standard"}
+    for tier in tiers.values():
+        assert tier in runtime_rpc._AGENTCORE_MODEL_TIERS
 
 
 async def test_agents_list_defaults_to_the_first_roster_row_when_no_one_is_ceo(monkeypatch):

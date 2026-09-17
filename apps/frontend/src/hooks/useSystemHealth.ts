@@ -42,10 +42,21 @@ export function useSystemHealth(): SystemHealth {
   const [isRecovering, setIsRecovering] = useState(false);
   const isRecoveringRef = useRef(false);
   const api = useApi();
-  const { data: health } = useRuntimeRpc<HealthData>("health", undefined, {
+  const { container } = useProvisioningState();
+  // Never probe an AgentCore workspace (M6 task 10, row 6). The backend composer makes the
+  // same call for the same reason -- "never probe a running AgentCore row" in
+  // readiness_state.compute_status: AgentCore parks an idle microVM invisibly and wakes it on
+  // ANY invoke, so this 60s poll would hold a box awake (and billed) for a dot whose answer
+  // `runtime_phase` already gives unconditionally. `container.runtime_host` rather than the
+  // shared `useRuntimeHost()` subscription, because this hook already HOLDS the status body:
+  // it gets the host in the same render as `lifecycle`, with no unknown-on-first-render window
+  // in which SWR would fire exactly the one invoke we are avoiding. A null method nulls the
+  // SWR key, so nothing is fetched at all.
+  const healthMethod =
+    container && container.runtime_host !== "agentcore" ? "health" : null;
+  const { data: health } = useRuntimeRpc<HealthData>(healthMethod, undefined, {
     refreshInterval: (latest: HealthData | undefined) => latest?.ok === false ? HEALTH_POLL_DEGRADED : HEALTH_POLL_STEADY,
   });
-  const { container } = useProvisioningState();
 
   let state: HealthState;
   let reason: string;

@@ -359,6 +359,43 @@ def _sanitize_agent_update(params: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+#: Everything the AgentCore ``agents.update`` intercept actually WRITES: ``agentId`` addresses
+#: the row, ``name`` + ``params.paperclip`` mirror to Paperclip (and refresh ``SOUL.md``), and
+#: ``model`` re-derives ``config.yaml``'s model block. See ``_mirror_agent_update``.
+_AGENTCORE_AGENT_UPDATE_FIELDS = frozenset({"agentId", "name", "model", "params"})
+
+
+def _reject_unsupported_agentcore_update(params: dict[str, Any]) -> None:
+    """M6 task 10, row 12 -- the worst failure class in the scan: ``agents.update`` answered
+    ``{"ok": True}`` for an AgentCore row while ``_mirror_agent_update`` early-returned and
+    wrote NOTHING, so the Tools tab's Save confirmed a change that never happened. Anything
+    outside the writable vocabulary above is now refused.
+
+    The error shape is the module's existing one -- ``ApiProblem`` + an ``upstreamCode`` in
+    ``details`` -- which is exactly what ``_normalize_gateway_error`` produces for the bridge's
+    own ``{"ok": false, "code": ...}`` refusals, so every stubbed-on-Hermes method already
+    reaches the client this way. No second error shape is invented here.
+    """
+    unsupported = sorted(set(params) - _AGENTCORE_AGENT_UPDATE_FIELDS)
+    inner = params.get("params")
+    if isinstance(inner, dict):
+        unsupported += [f"params.{key}" for key in sorted(set(inner) - {"paperclip"})]
+    if not unsupported:
+        return
+    put_metric("rpc.refused", dimensions={"method": "agents.update", "reason": "unsupported_on_agentcore"})
+    raise ApiProblem(
+        "INVALID_REQUEST",
+        "Per-tool allow/deny lists are not available on this runtime."
+        if "tools" in unsupported
+        else f"agents.update cannot change {', '.join(unsupported)} on this runtime.",
+        details={
+            "method": "agents.update",
+            "upstreamCode": "UNSUPPORTED_ON_AGENTCORE",
+            "fields": unsupported,
+        },
+    )
+
+
 async def execute(
     auth: AuthContext, request: RuntimeRpcRequest
 ) -> tuple[int, RuntimeRpcResponse | RuntimeOperationAccepted]:
@@ -442,6 +479,10 @@ async def execute_sync(
             ) from exc
     if method == "agents.update":
         is_agentcore_owner = await _is_agentcore(owner_id)
+        if is_agentcore_owner:
+            # BEFORE any mirror work: refuse the fields this intercept cannot persist rather
+            # than answering {"ok": True} to a write that never happened (M6 task 10, row 12).
+            _reject_unsupported_agentcore_update(params)
         try:
             await _mirror_agent_update(owner_id, params, agentcore=is_agentcore_owner)
         except AgentLifecycleConflict as exc:
@@ -467,7 +508,10 @@ async def execute_sync(
         # useAgents.ts reads data.agents/data.defaultId.
         if method == "agents.list":
             roster = await load_agent_roster(owner_id)
-            return {"defaultId": _default_agent_id(roster), "agents": roster}
+            return {
+                "defaultId": _default_agent_id(roster),
+                "agents": [{**row, "model": _agentcore_model_tier(row)} for row in roster],
+            }
         agent_id = params.get("agentId")
         has_agent_id = isinstance(agent_id, str) and bool(agent_id)
         # hermes_profiles.{config_snapshot,patch,set}_profile_config are plain sync functions
@@ -653,6 +697,17 @@ async def _mirror_paperclip_update_with_retry(
 #: BYO/OAuth vocabulary entirely, and the bridge answers models.list with UNAVAILABLE so there
 #: is no picker to validate a free-form choice against in the first place.
 _AGENTCORE_MODEL_TIERS: dict[str, bool] = {"standard": False, "premium": True}
+#: The same map read the other way, so the tier a roster row REPORTS can never drift from the
+#: tier ``agents.update`` ACCEPTS.
+_AGENTCORE_TIER_BY_IS_CEO: dict[bool, str] = {is_ceo: tier for tier, is_ceo in _AGENTCORE_MODEL_TIERS.items()}
+
+
+def _agentcore_model_tier(row: dict[str, Any]) -> str:
+    """The tier an ``agents.list`` row reports (M6 task 10, row 29). Keyed off the SAME
+    ``role == "ceo"`` notion ``_mirror_agent_update`` passes to ``model_block`` as ``is_ceo``
+    and ``_default_agent_id`` uses to pick the default -- never a raw model ref, which a
+    Paperclip roster row does not carry and the AgentCore door would reject anyway."""
+    return _AGENTCORE_TIER_BY_IS_CEO[row.get("role") == "ceo"]
 
 
 def _agentcore_model_tier_is_ceo(model: str) -> bool:

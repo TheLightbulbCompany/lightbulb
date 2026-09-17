@@ -176,12 +176,33 @@ def build_hermes_runtime_request(
     }
 
 
+#: M6-R44: ``ensure_agentcore_trust`` updates the owner role's trust policy seconds before
+#: CreateAgentRuntime, and IAM propagates trust changes with a delay, so AgentCore's role
+#: validation rejects a freshly trusted role on the first call (seen on the first fresh-org dev
+#: migration: "Role validation failed ... verify that the role exists and its trust policy
+#: allows assumption by this service"; the retry a minute later succeeded). Bounded retry of
+#: that ONE ValidationException; every other error raises at once.
+_ROLE_PROPAGATION_ATTEMPTS = 12
+_ROLE_PROPAGATION_INTERVAL_S = 5.0
+
+
 def _create_runtime(request: dict) -> str:
+    """Sync — call via ``run_in_thread``. Retries only the IAM trust-propagation rejection
+    (M6-R44, see the constants above)."""
+    import time
+
     import boto3
 
-    return boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION).create_agent_runtime(**request)[
-        "agentRuntimeArn"
-    ]
+    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
+        try:
+            return client.create_agent_runtime(**request)["agentRuntimeArn"]
+        except client.exceptions.ValidationException as exc:
+            if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
+                raise
+            logger.info("hermes provision: role not yet visible to AgentCore (attempt %d) -- retrying", attempt)
+            time.sleep(_ROLE_PROPAGATION_INTERVAL_S)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _find_existing_runtime_arn(name: str) -> str | None:

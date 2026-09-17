@@ -1468,3 +1468,66 @@ def test_runtime_image_uri_raises_gone_on_not_found_and_on_deleting(monkeypatch)
             hermes_provisioning._runtime_image_uri("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
     monkeypatch.setattr(boto3, "client", lambda *a, **k: _Client("READY"))
     assert hermes_provisioning._runtime_image_uri("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1") == "img"
+
+
+# --- M6-R44: CreateAgentRuntime retries only the IAM trust-propagation rejection ----------------
+
+
+class _ValidationException(Exception):
+    pass
+
+
+class _CreateClient:
+    exceptions = SimpleNamespace(ValidationException=_ValidationException)
+
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.calls = 0
+
+    def create_agent_runtime(self, **request):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return {"agentRuntimeArn": "arn:created"}
+
+
+def test_create_runtime_retries_the_role_propagation_rejection_then_succeeds(monkeypatch):
+    import boto3
+
+    rejection = _ValidationException(
+        "An error occurred (ValidationException) when calling the CreateAgentRuntime operation: Role validation "
+        "failed for 'arn:aws:iam::1:role/r'. Please verify that the role exists and its trust policy allows "
+        "assumption by this service"
+    )
+    client = _CreateClient([rejection, rejection])
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+
+    assert hermes_provisioning._create_runtime({"agentRuntimeName": "x"}) == "arn:created"
+    assert client.calls == 3 and slept == [hermes_provisioning._ROLE_PROPAGATION_INTERVAL_S] * 2
+
+
+def test_create_runtime_raises_other_validation_errors_at_once(monkeypatch):
+    import boto3
+
+    client = _CreateClient([_ValidationException("agentRuntimeName does not match the pattern")])
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(AssertionError("must not sleep")))
+
+    with pytest.raises(_ValidationException):
+        hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
+    assert client.calls == 1
+
+
+def test_create_runtime_gives_up_after_the_bound(monkeypatch):
+    import boto3
+
+    rejection = _ValidationException("Role validation failed for 'arn:aws:iam::1:role/r'.")
+    client = _CreateClient([rejection] * hermes_provisioning._ROLE_PROPAGATION_ATTEMPTS)
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    with pytest.raises(_ValidationException):
+        hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
+    assert client.calls == hermes_provisioning._ROLE_PROPAGATION_ATTEMPTS

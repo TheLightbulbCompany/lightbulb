@@ -271,7 +271,7 @@ def _tail_eligible(row: dict) -> bool:
 
 
 async def _check_preconditions(
-    owner_id: str,
+    owner_id: str, *, company=None
 ) -> tuple[int | None, str | None, list[dict] | None, dict | None]:
     """Ruling M6-R1 step 1 / Ruling M6-R16 / Ruling M6-R19 / Ruling M6-R20. Returns
     ``(exit_code, None, None, None)`` on failure, or ``(None, mode, roster, row)`` where ``mode``
@@ -279,7 +279,12 @@ async def _check_preconditions(
     reached READY — the row is an ECS workspace now on agentcore but carries no
     ``hermes_migrated_at`` stamp yet, so only the tail remains). ``row`` is returned so the tail
     can read ``agentcore_runtime_arn`` off it directly in ``_MODE_TAIL`` (Ruling M6-R18) without
-    a second read."""
+    a second read.
+
+    ``company``: when given (``migrate_all`` already read it to decide whether to call
+    ``migrate()`` at all), it is used as-is instead of a second ``_load_company`` read for the
+    SAME owner — a fleet-wide ``--all`` run must not double every Paperclip-company lookup.
+    """
     if owner_id == REFERENCE_ORG_ID:
         logger.error("migrate: %s is the reference org (M6-R2) — refusing", owner_id)
         return EXIT_REFERENCE_ORG, None, None, None
@@ -311,7 +316,7 @@ async def _check_preconditions(
         mode = _MODE_TAIL
     else:
         mode = _MODE_FULL
-    company = await _load_company(owner_id)
+    company = company if company is not None else await _load_company(owner_id)
     if not company or company.status != "active":
         logger.error("migrate: owner=%s has no active Paperclip company row", owner_id)
         return EXIT_PRECONDITION, None, None, None
@@ -437,8 +442,11 @@ async def _stamp_migrated(owner_id: str) -> None:
     )
 
 
-async def migrate(owner_id: str, *, dry_run: bool) -> int:
-    exit_code, mode, roster, row = await _check_preconditions(owner_id)
+async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
+    """``_company``: internal — ``migrate_all`` passes its own already-read Paperclip company
+    row through here so ``_check_preconditions`` never reads it a second time for the same
+    owner (Ruling M6-R6 minors)."""
+    exit_code, mode, roster, row = await _check_preconditions(owner_id, company=_company)
     if exit_code is not None:
         return exit_code
 
@@ -509,6 +517,12 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
         # runtime_host=agentcore, which would otherwise make this call a no-op forever.
         await get_ecs_manager().stop_user_service(owner_id, reason="hermes_migration", force=True)
         await _stamp_migrated(owner_id)
+    except ProvisionSuperseded:
+        # _stamp_migrated's own fenced write lost the race to a concurrent takeover -- a genuine
+        # lost claim (Ruling M6-R6 minors), not a generic transient failure: classify_provision_error
+        # has no special case for this exception and would otherwise call it retryable (11).
+        logger.warning("migrate: lost the provision claim for owner=%s during the tail stamp", owner_id)
+        return EXIT_LOST_CLAIM
     except Exception as exc:  # noqa: BLE001 — the runtime is already live; safe for --all to retry
         logger.exception("migrate: post-provision step failed for owner=%s (runtime is already live)", owner_id)
         _, retryable = classify_provision_error(exc)
@@ -546,13 +560,22 @@ async def _teardown_agentcore(owner_id: str, row: dict) -> None:
         logger.warning("rollback: could not delete boot secret for owner=%s", owner_id, exc_info=True)
 
 
-async def rollback(owner_id: str) -> int:
+async def rollback(owner_id: str, *, dry_run: bool = False) -> int:
     """Ruling M6-R3 — undo a migration in progress or already landed: tear down the AgentCore
     side (session stop THEN delete, per Ruling M4-R16 — see ``_stop_runtime_session``), revoke
     the Hermes-minted bearer generation, delete the boot secret, flip the row back onto ECS
     (fenced, same lease mechanic as ``migrate``), and restart the ECS service. S3 profiles are
     left in place — cheap, and the next ``migrate()`` attempt overwrites them anyway.
+
+    ``dry_run`` performs none of the above — it exists so an operator can run ``--rollback
+    --dry-run`` to confirm which owner they are about to target before actually doing it.
     """
+    if dry_run:
+        print(
+            f"DRY RUN: would roll back {owner_id} (tear down its AgentCore runtime, revoke its "
+            "minted bearer, delete its boot secret, flip it back onto ECS, restart it) -- nothing done"
+        )
+        return EXIT_OK
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     await _teardown_agentcore(owner_id, row)
 
@@ -586,9 +609,13 @@ async def migrate_all(*, dry_run: bool) -> int:
     ``service_name``/ARN, i.e. a natively provisioned Hermes workspace) is also skipped — mirrors
     ``_check_preconditions``'s own refusal so ``--all`` never regenerates a native Hermes owner's
     live profiles over themselves.
+
+    ``_load_company`` is read exactly ONCE per owner here (never again inside ``migrate()`` —
+    it is passed through as ``_company``), and its ``reconnect_chatgpt`` status is looked up
+    once more per owner purely for the summary table below.
     """
     rows = await container_repo.scan_all()
-    results: list[tuple[str, int]] = []
+    results: list[tuple[str, int, bool]] = []
     for row in rows:
         owner_id = row.get("owner_id")
         if not owner_id or owner_id.startswith(PASS_KEY_PREFIX) or owner_id == REFERENCE_ORG_ID:
@@ -601,17 +628,27 @@ async def migrate_all(*, dry_run: bool) -> int:
         if not company or company.status != "active":
             logger.info("migrate_all: skipping owner=%s — no active Paperclip company", owner_id)
             continue
-        code = await migrate(owner_id, dry_run=dry_run)
+        code = await migrate(owner_id, dry_run=dry_run, _company=company)
         if code == EXIT_TRANSIENT:
             logger.warning("migrate_all: owner=%s exited transient — retrying once", owner_id)
-            code = await migrate(owner_id, dry_run=dry_run)
-        results.append((owner_id, code))
+            code = await migrate(owner_id, dry_run=dry_run, _company=company)
+        provider_choice, _ = await resolve_provider_choice(owner_id)
+        results.append((owner_id, code, provider_choice == "chatgpt_oauth"))
 
     tag = "DRY RUN " if dry_run else ""
     print(f"{tag}migrate_all summary:")
-    for owner_id, code in results:
-        print(f"  {owner_id}: exit={code}")
-    return max((code for _, code in results), default=EXIT_OK)
+    for owner_id, code, reconnect_chatgpt in results:
+        suffix = " reconnect_chatgpt" if reconnect_chatgpt else ""
+        print(f"  {owner_id}: exit={code}{suffix}")
+    # Ruling M6-R6 minors: never max(codes) -- 1 (a real failure) always wins over 11 (merely
+    # retry-able), and anything else present with neither is a clean 0. max() would let a
+    # meaningless numeral ordering (e.g. 10 > 1) misreport a run that actually failed hard.
+    codes = [code for _, code, _ in results]
+    if EXIT_OTHER in codes:
+        return EXIT_OTHER
+    if EXIT_TRANSIENT in codes:
+        return EXIT_TRANSIENT
+    return EXIT_OK
 
 
 def main() -> int:
@@ -629,7 +666,7 @@ def main() -> int:
     if args.rollback:
         if not args.owner_id:
             parser.error("--rollback requires --owner-id")
-        return asyncio.run(rollback(args.owner_id))
+        return asyncio.run(rollback(args.owner_id, dry_run=args.dry_run))
     if args.all:
         return asyncio.run(migrate_all(dry_run=args.dry_run))
     return asyncio.run(migrate(args.owner_id, dry_run=args.dry_run))

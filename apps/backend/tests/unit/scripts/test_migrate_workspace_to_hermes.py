@@ -620,13 +620,14 @@ async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_
     ]
     migrated: list[str] = []
 
-    async def fake_migrate(owner_id, *, dry_run):
+    async def fake_migrate(owner_id, *, dry_run, _company=None):
         migrated.append(owner_id)
         return mod.EXIT_OK
 
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "migrate", fake_migrate)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
 
     assert await mod.migrate_all(dry_run=False) == mod.EXIT_OK
     assert migrated == ["a", "b"]
@@ -636,13 +637,14 @@ async def test_all_flag_skips_pass_admission_rows(monkeypatch):
     rows = [{"owner_id": f"{mod.PASS_KEY_PREFIX}nightly-sweep"}, {"owner_id": "a", "runtime_host": "ecs"}]
     migrated: list[str] = []
 
-    async def fake_migrate(owner_id, *, dry_run):
+    async def fake_migrate(owner_id, *, dry_run, _company=None):
         migrated.append(owner_id)
         return mod.EXIT_OK
 
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "migrate", fake_migrate)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
 
     await mod.migrate_all(dry_run=False)
     assert migrated == ["a"]
@@ -652,7 +654,7 @@ async def test_all_flag_skips_rows_with_no_active_paperclip_company(monkeypatch)
     rows = [{"owner_id": "no-company", "runtime_host": "ecs"}, {"owner_id": "a", "runtime_host": "ecs"}]
     migrated: list[str] = []
 
-    async def fake_migrate(owner_id, *, dry_run):
+    async def fake_migrate(owner_id, *, dry_run, _company=None):
         migrated.append(owner_id)
         return mod.EXIT_OK
 
@@ -662,6 +664,7 @@ async def test_all_flag_skips_rows_with_no_active_paperclip_company(monkeypatch)
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
     monkeypatch.setattr(mod, "_load_company", fake_company)
     monkeypatch.setattr(mod, "migrate", fake_migrate)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
 
     await mod.migrate_all(dry_run=False)
     assert migrated == ["a"]
@@ -671,13 +674,14 @@ async def test_all_flag_retries_a_transient_exit_exactly_once(monkeypatch):
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     attempts: list[str] = []
 
-    async def flaky_then_ok(owner_id, *, dry_run):
+    async def flaky_then_ok(owner_id, *, dry_run, _company=None):
         attempts.append(owner_id)
         return mod.EXIT_TRANSIENT if len(attempts) == 1 else mod.EXIT_OK
 
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "migrate", flaky_then_ok)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
 
     assert await mod.migrate_all(dry_run=False) == mod.EXIT_OK
     assert attempts == ["a", "a"]
@@ -687,13 +691,111 @@ async def test_all_flag_reports_a_persistent_transient_failure(monkeypatch):
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     attempts: list[str] = []
 
-    async def always_transient(owner_id, *, dry_run):
+    async def always_transient(owner_id, *, dry_run, _company=None):
         attempts.append(owner_id)
         return mod.EXIT_TRANSIENT
 
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "migrate", always_transient)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
 
     assert await mod.migrate_all(dry_run=False) == mod.EXIT_TRANSIENT
     assert attempts == ["a", "a"]  # retried exactly once, not looped forever
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 minors
+# ---------------------------------------------------------------------------
+
+
+async def test_rollback_dry_run_performs_no_rollback(monkeypatch, capsys):
+    monkeypatch.setattr(
+        mod.container_repo, "get_by_owner_id", AsyncMock(side_effect=AssertionError("dry-run must not read the row"))
+    )
+    monkeypatch.setattr(
+        mod.container_repo, "takeover_provision", AsyncMock(side_effect=AssertionError("dry-run must not claim"))
+    )
+    ecs = SimpleNamespace(start_user_service=AsyncMock(side_effect=AssertionError("dry-run must not start ECS")))
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
+
+    assert await mod.rollback(OWNER, dry_run=True) == mod.EXIT_OK
+    assert "DRY RUN" in capsys.readouterr().out
+
+
+async def test_all_flag_summary_includes_reconnect_chatgpt(monkeypatch, capsys):
+    rows = [{"owner_id": "a", "runtime_host": "ecs"}]
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", AsyncMock(return_value=mod.EXIT_OK))
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("chatgpt_oauth", None)))
+
+    await mod.migrate_all(dry_run=False)
+    assert "reconnect_chatgpt" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "codes,expected_attr",
+    [
+        (["EXIT_OK", "EXIT_OTHER", "EXIT_TRANSIENT"], "EXIT_OTHER"),  # 1 wins over 11
+        (["EXIT_OK", "EXIT_TRANSIENT"], "EXIT_TRANSIENT"),
+        (["EXIT_OK", "EXIT_PRECONDITION", "EXIT_LOST_CLAIM"], "EXIT_OK"),  # neither 1 nor 11 -> 0, never max()
+    ],
+)
+async def test_all_flag_exit_code_prefers_1_then_11_never_max(monkeypatch, codes, expected_attr):
+    rows = [{"owner_id": f"o{i}", "runtime_host": "ecs"} for i in range(len(codes))]
+    code_by_owner = {f"o{i}": getattr(mod, name) for i, name in enumerate(codes)}
+
+    async def fake_migrate(owner_id, *, dry_run, _company=None):
+        return code_by_owner[owner_id]
+
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", fake_migrate)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
+
+    assert await mod.migrate_all(dry_run=False) == getattr(mod, expected_attr)
+
+
+async def test_check_preconditions_uses_the_passed_in_company_without_a_second_read(
+    efs_ready, settings_ok, monkeypatch
+):
+    monkeypatch.setattr(
+        mod.container_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": OWNER, "runtime_host": "ecs"})
+    )
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    load_company = AsyncMock(side_effect=AssertionError("must not read company -- one was passed in"))
+    monkeypatch.setattr(mod, "_load_company", load_company)
+
+    exit_code, _mode, _roster, _row = await mod._check_preconditions(OWNER, company=SimpleNamespace(status="active"))
+    assert exit_code is None
+    load_company.assert_not_called()
+
+
+async def test_all_flag_passes_the_loaded_company_into_migrate(monkeypatch):
+    rows = [{"owner_id": "a", "runtime_host": "ecs"}]
+    company = SimpleNamespace(status="active")
+    monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=company))
+    migrate = AsyncMock(return_value=mod.EXIT_OK)
+    monkeypatch.setattr(mod, "migrate", migrate)
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
+
+    await mod.migrate_all(dry_run=False)
+    migrate.assert_awaited_once_with("a", dry_run=False, _company=company)
+
+
+async def test_a_provision_superseded_from_the_stamp_maps_to_lost_claim(precondition_ok, monkeypatch, tmp_path):
+    """A concurrent takeover racing _stamp_migrated's own fenced write is a genuine lost claim
+    (exit 10), not a generic transient failure (11) -- classify_provision_error has no special
+    case for ProvisionSuperseded, so it must be caught explicitly."""
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
+    monkeypatch.setattr(mod, "_apply_efs_overrides", AsyncMock())
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(stop_user_service=AsyncMock()))
+    monkeypatch.setattr(mod, "_stamp_migrated", AsyncMock(side_effect=ProvisionSuperseded("taken")))
+
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_LOST_CLAIM

@@ -287,6 +287,8 @@ async def prepare_hermes_workspace(
     from core.billing.bedrock_aip import _owner_role_name, ensure_owner_aips, ensure_owner_bedrock_role
     from core.billing.bedrock_gate_tokens import mint_gate_token
 
+    hook_token_reused = bool(row.get("hook_token"))
+    gateway_token_reused = bool(row.get("gateway_token"))
     hook_token = row.get("hook_token") or _secrets.token_urlsafe(32)
     gateway_token = row.get("gateway_token") or _secrets.token_urlsafe(32)
 
@@ -295,6 +297,16 @@ async def prepare_hermes_workspace(
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
     bedrock_bearer = await mint_gate_token(owner_id, aip_arns)
     await write_boot_secret(owner_id, hook_token=hook_token, gateway_token=gateway_token, bedrock_bearer=bedrock_bearer)
+
+    # m2: the one step that mints three credentials and writes a secret was otherwise invisible
+    # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
+    logger.info(
+        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=minted migrate=%s",
+        owner_id,
+        "reused" if hook_token_reused else "minted",
+        "reused" if gateway_token_reused else "minted",
+        migrate,
+    )
 
     await container_repo.update_container_leased(
         owner_id,
@@ -407,6 +419,13 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     """
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
+    if not settings.OWNER_STATE_BUCKET:
+        # m3: an empty bucket is not a loud failure anywhere downstream -- upload_profile
+        # silently no-ops on it (hermes_profiles.py), so the runtime would come up with
+        # S3_BUCKET="", restore_profile would no-op on every boot, and every agent would run on
+        # Hermes's own DEFAULT_CONFIG (the unpinned auto-chain) with no error anywhere. Same
+        # loud guard as the image, one line up.
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
     if arn and row.get("status") == "running":

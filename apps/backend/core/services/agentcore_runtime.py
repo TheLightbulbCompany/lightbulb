@@ -37,7 +37,12 @@ _MAX_NAME_LEN = 48
 
 
 def _env() -> str:
-    return settings.ENVIRONMENT
+    # m5: an unset ENVIRONMENT (empty string is Settings' own default) must never silently
+    # produce a double-slash name/secret path (e.g. "lightbulb//hermes/<owner>/boot") -- that
+    # falls outside every environment-scoped IAM grant. Matches the fallback the original brief
+    # snippet already had for boot_secret_name; centralized here since runtime_name_for shares
+    # this same helper.
+    return settings.ENVIRONMENT or "dev"
 
 
 def runtime_name_for(owner_id: str) -> str:

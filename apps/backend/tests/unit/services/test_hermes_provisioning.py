@@ -8,6 +8,13 @@ from core.services import hermes_provisioning
 HERMES_IMAGE = "acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-v1"
 
 
+def _configure_hermes_settings(monkeypatch):
+    """Both loud-failure guards provision_hermes_runtime checks on entry (m3: OWNER_STATE_BUCKET
+    got the same guard AGENTCORE_HERMES_IMAGE already had)."""
+    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
+
+
 def _row(value):
     async def _get(owner_id, *, consistent=False):
         return value
@@ -293,7 +300,7 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
         ),
     )
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
 
@@ -314,13 +321,28 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
 @pytest.mark.asyncio
 async def test_provision_refuses_without_a_configured_image(monkeypatch):
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", "")
+    # m7: explicit rather than relying on the image guard firing before this is ever read --
+    # brittle if the guard order ever changes.
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _explode)
     with pytest.raises(RuntimeError, match="AGENTCORE_HERMES_IMAGE"):
         await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
 
 
 @pytest.mark.asyncio
-async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monkeypatch):
+async def test_provision_refuses_without_a_configured_bucket(monkeypatch):
+    """m3: the same loud-failure guard AGENTCORE_HERMES_IMAGE has -- an empty bucket is
+    otherwise silent all the way down (upload_profile no-ops, restore_profile no-ops, every
+    agent boots on Hermes's own unpinned auto-chain)."""
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "")
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _explode)
+    with pytest.raises(RuntimeError, match="OWNER_STATE_BUCKET"):
+        await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+
+
+@pytest.mark.asyncio
+async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monkeypatch):
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(
         hermes_provisioning.container_repo,
         "get_by_owner_id",
@@ -336,7 +358,7 @@ async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monke
 async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_arn(monkeypatch):
     """M4-R35/C1: a retry after a create-but-not-yet-ready runtime must reuse the recorded ARN,
     not hit CreateAgentRuntime again (which would 409 on the unique runtime name)."""
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(
         hermes_provisioning.container_repo,
         "get_by_owner_id",
@@ -378,7 +400,7 @@ async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatc
     """M4-R35/C1: no ARN on the row at all, but AgentCore already has a runtime under this
     owner's derived name -- a prior attempt's row write was lost. Reuse it instead of hitting
     CreateAgentRuntime (which would 409 on the name)."""
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
         hermes_provisioning,
@@ -412,7 +434,7 @@ async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatc
 async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monkeypatch):
     """A reused runtime (found by name, not on the row) whose configured image no longer matches
     settings.AGENTCORE_HERMES_IMAGE gets UpdateAgentRuntime before the READY poll."""
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
         hermes_provisioning,
@@ -454,7 +476,7 @@ async def test_create_record_poll_happen_in_that_order(monkeypatch):
         _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
     )
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
 
@@ -485,7 +507,7 @@ async def test_provision_writes_through_the_fenced_lease_helper_not_a_bare_updat
         ),
     )
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
 
@@ -524,7 +546,7 @@ async def test_a_lost_fence_propagates_and_leaves_the_row_untouched(monkeypatch)
         ),
     )
     monkeypatch.setattr(hermes_provisioning, "_write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
+    _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     _no_runtime_found_by_name(monkeypatch)
 

@@ -24,6 +24,12 @@ export interface Agent {
   name?: string;
   identity?: { name?: string; emoji?: string; avatar?: string };
   model?: AgentModelRef;
+  /** Paperclip roster fields an AgentCore `agents.list` row carries (the roster IS the row
+   *  there — there is no `agent.identity.get` on this runtime). */
+  role?: string;
+  title?: string;
+  capabilities?: string;
+  icon?: string;
 }
 
 export interface AgentsListResponse {
@@ -32,18 +38,34 @@ export interface AgentsListResponse {
 }
 
 /**
- * On an AgentCore (Hermes) workspace there are no model refs on the wire at all: the roster
- * intercept reports a closed TIER vocabulary, and `agents.update {model}` accepts only those
- * two values (`runtime_rpc._AGENTCORE_MODEL_TIERS`). A raw ref could point outside the owner's
- * own Bedrock grant, so one is never stored. These are the display labels for them — no ECS
- * model ref collides, since every ECS ref is `provider/model`-shaped.
+ * One entry of `models.list` — the models this workspace can actually invoke (M6 task 10-C).
+ * On a Bedrock-managed workspace the backend builds it from the owner's own application
+ * inference profiles (the only ones the bedrock-gate admits); on BYO-key / ChatGPT-OAuth it is
+ * Hermes's own provider catalog, via the bridge. `id` is what the picker sends back.
  */
-const MODEL_TIER_LABELS: Readonly<Record<string, string>> = {
-  standard: "Standard",
-  premium: "Premium",
-};
+export interface RuntimeModel {
+  id: string;
+  name?: string;
+  provider?: string;
+  tier?: string;
+}
 
-/** Normalize an `Agent.model` field to a plain string (or undefined). */
+export interface ModelsListResponse {
+  models?: RuntimeModel[];
+  /** The model a fresh agent is provisioned with — the roster-wide default. */
+  defaultId?: string;
+}
+
+/**
+ * Normalize an `Agent.model` field to a plain string (or undefined).
+ *
+ * Every runtime now reports a real model ID here — on AgentCore it is the profile's own
+ * `model.default` (a Bedrock application-inference-profile ARN, or a Hermes catalog id on
+ * BYO/OAuth). The transitional `"standard"`/`"premium"` tier words this used to translate are
+ * gone (M6 task 10-C, M6-R50): a tier word named no model the owner could look up, and the
+ * picker now sends the same ids `models.list` offers. Resolve the ID to a display name through
+ * that list (`buildModelNameMap`), not here.
+ */
 export function getAgentModelString(agent: Pick<Agent, "model"> | undefined): string | undefined {
   const model = agent?.model;
   const ref =
@@ -52,8 +74,7 @@ export function getAgentModelString(agent: Pick<Agent, "model"> | undefined): st
       : model && typeof model === "object"
         ? model.primary?.trim()
         : undefined;
-  if (!ref) return undefined;
-  return MODEL_TIER_LABELS[ref] ?? ref;
+  return ref || undefined;
 }
 
 /** Resolve the human-readable label for an agent. Prefers ``identity.name``

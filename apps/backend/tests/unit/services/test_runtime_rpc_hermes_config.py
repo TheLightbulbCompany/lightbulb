@@ -230,6 +230,16 @@ async def test_config_set_still_requires_an_agent_id(monkeypatch):
         await runtime_rpc.execute_sync(owner_id="org_a", user_id="u1", request_id="r1", method="config.set", params={})
 
 
+def _fake_profile_models(monkeypatch, models: dict):
+    """``read_profile_config`` for each roster row -- what ``agents.list`` reads each agent's
+    pinned ``model.default`` out of (M6 task 10-C, row 29)."""
+    monkeypatch.setattr(
+        runtime_rpc.hermes_profiles,
+        "read_profile_config",
+        lambda owner_id, agent_id: {"model": {"default": models[agent_id]}} if models.get(agent_id) else {},
+    )
+
+
 async def test_agents_list_returns_the_defaultId_and_agents_shape_useagents_reads(monkeypatch):
     """packages/shared/src/hooks/useAgents.ts:57 reads ``data.agents``/``data.defaultId`` -- the
     CEO row (or the first roster row with no CEO) is the default."""
@@ -240,32 +250,33 @@ async def test_agents_list_returns_the_defaultId_and_agents_shape_useagents_read
         return [{"id": "a2", "role": "engineering"}, {"id": "a1", "role": "ceo"}]
 
     monkeypatch.setattr(runtime_rpc, "load_agent_roster", fake_roster)
+    _fake_profile_models(monkeypatch, {"a2": "arn:son", "a1": "arn:opu"})
     monkeypatch.setattr(runtime_rpc.container_rpc, "call", lambda *a, **k: called.setdefault("forwarded", True))
     out = await runtime_rpc.execute_sync(
         owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
     )
-    # M6 task 10, row 29: every row also carries its model TIER -- Paperclip roster rows carry
-    # no model field at all, so without this the model label is blank on every agent surface.
+    # M6 task 10-C (row 29): every row also carries the REAL model id its own profile pins --
+    # Paperclip roster rows carry no model field at all, so without this the model label is blank
+    # on every agent surface, and a tier word would name no model the owner could look up.
     assert out["agents"] == [
-        {"id": "a2", "role": "engineering", "model": "standard"},
-        {"id": "a1", "role": "ceo", "model": "premium"},
+        {"id": "a2", "role": "engineering", "model": "arn:son"},
+        {"id": "a1", "role": "ceo", "model": "arn:opu"},
     ]
     assert out["defaultId"] == "a1"
     assert "forwarded" not in called
 
 
-async def test_agents_list_model_tier_uses_the_same_vocabulary_agents_update_accepts(monkeypatch):
-    """The tier a row REPORTS must be one agents.update would ACCEPT -- otherwise the picker
-    round-trip 400s on the value it was just handed."""
+async def test_agents_list_model_is_the_id_models_list_offers_not_a_tier_word(monkeypatch):
+    """The id a row REPORTS must be one ``models.list`` names and ``agents.update`` would ACCEPT
+    -- otherwise the picker round-trip 400s on the value it was just handed."""
     monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "finance"}, {"id": "a3"}])
+    _fake_profile_models(monkeypatch, {"a1": "arn:opu", "a2": "arn:son"})
     out = await runtime_rpc.execute_sync(
         owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
     )
-    tiers = {row["id"]: row["model"] for row in out["agents"]}
-    assert tiers == {"a1": "premium", "a2": "standard", "a3": "standard"}
-    for tier in tiers.values():
-        assert tier in runtime_rpc._AGENTCORE_MODEL_TIERS
+    # a3's profile pins nothing -- "" is the honest answer, never a made-up tier.
+    assert {row["id"]: row["model"] for row in out["agents"]} == {"a1": "arn:opu", "a2": "arn:son", "a3": ""}
 
 
 async def test_agents_list_defaults_to_the_first_roster_row_when_no_one_is_ceo(monkeypatch):
@@ -275,6 +286,7 @@ async def test_agents_list_defaults_to_the_first_roster_row_when_no_one_is_ceo(m
         return [{"id": "a3", "role": "engineering"}]
 
     monkeypatch.setattr(runtime_rpc, "load_agent_roster", fake_roster)
+    _fake_profile_models(monkeypatch, {"a3": "arn:son"})
     out = await runtime_rpc.execute_sync(
         owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
     )

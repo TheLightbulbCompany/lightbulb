@@ -340,30 +340,55 @@ async def test_rename_still_writes_soul_md_when_there_is_nothing_to_preserve(mon
     upload_soul.assert_called_once()
 
 
+def _wire_owner_models(monkeypatch, *, provider_choice="bedrock_claude", aip_arns=None):
+    """The two reads ``_agentcore_models_list`` makes -- the owner's provider choice and the
+    container row's AIP map. With them, ``agents.update {model}`` validates against exactly the
+    ids ``models.list`` would have offered this owner (M6 task 10-C)."""
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice",
+        AsyncMock(return_value=(provider_choice, None)),
+    )
+    monkeypatch.setattr(
+        rpc.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"bedrock_aip_arns": _BEDROCK_INPUTS.aip_arns if aip_arns is None else aip_arns}),
+    )
+
+
 @pytest.mark.asyncio
-async def test_mirror_agent_update_rejects_a_raw_model_ref_on_an_agentcore_row():
-    """M6-R29: a raw ref is never stored verbatim -- only the writer's own tier vocabulary."""
+async def test_mirror_agent_update_rejects_a_model_outside_the_owners_own_list(monkeypatch):
+    """M6-R29/M6-R50: the fence survives the move from a closed tier vocabulary to the real list
+    -- a Bedrock ref outside this owner's own AIP grant makes the gate refuse every turn."""
+    _wire_owner_models(monkeypatch)
     with pytest.raises(ApiProblem) as exc_info:
         await rpc._mirror_agent_update(
-            "org_1", {"agentId": "a1", "model": "amazon-bedrock/arn:aws:bedrock:us-east-1::x"}, agentcore=True
+            "org_1", {"agentId": "a1", "model": "arn:aws:bedrock:us-east-1::somebody-elses"}, agentcore=True
         )
     assert exc_info.value.error.code == "INVALID_REQUEST"
+    assert exc_info.value.error.details["upstreamCode"] == "MODEL_NOT_OFFERED"
 
 
 @pytest.mark.asyncio
-async def test_mirror_agent_update_accepts_a_known_tier_and_re_derives_the_block_via_the_writer(monkeypatch):
-    monkeypatch.setattr(rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
+async def test_mirror_agent_update_accepts_an_offered_id_and_writes_it_through_the_writer(monkeypatch):
+    """The picked id lands as ``model.default``; ``provider`` and the Bedrock ``context_length``
+    pin still come from ``model_block``, never from the client."""
+    _wire_owner_models(monkeypatch)
     monkeypatch.setattr(
         "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
 
-    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "standard"}, agentcore=True)
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "arn:aip:opus"}, agentcore=True)
 
     expected_model, _aux_model, _aux_provider = model_block(
-        provider_choice="bedrock_claude", byo_provider=None, aip_arns=_BEDROCK_INPUTS.aip_arns, is_ceo=False
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        aip_arns=_BEDROCK_INPUTS.aip_arns,
+        is_ceo=False,
+        default_id="arn:aip:opus",
     )
+    assert expected_model["default"] == "arn:aip:opus" and expected_model["provider"] == "bedrock"
     patch_config.assert_called_once_with("org_1", "a1", {"model": expected_model})
 
 
@@ -371,7 +396,7 @@ async def test_mirror_agent_update_accepts_a_known_tier_and_re_derives_the_block
 async def test_mirror_agent_update_model_only_never_touches_paperclip_even_on_agentcore(monkeypatch):
     """Unchanged pre-existing behaviour (test_noop_update_skips_paperclip's own assertion): a
     model-only update never touches Paperclip, regardless of transport."""
-    monkeypatch.setattr(rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
+    _wire_owner_models(monkeypatch)
     monkeypatch.setattr(
         "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
     )
@@ -379,7 +404,7 @@ async def test_mirror_agent_update_model_only_never_touches_paperclip_even_on_ag
     client = MagicMock()
     monkeypatch.setattr(rpc.httpx, "AsyncClient", client)
 
-    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "standard"}, agentcore=True)
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "arn:aip:sonnet"}, agentcore=True)
 
     client.assert_not_called()
 
@@ -512,7 +537,7 @@ async def test_agents_update_still_accepts_what_the_intercept_actually_writes(mo
         user_id="user_1",
         request_id="r1",
         method="agents.update",
-        params={"agentId": "a1", "name": "Ada", "model": "premium", "params": {"paperclip": {"role": "ceo"}}},
+        params={"agentId": "a1", "name": "Ada", "model": "arn:aip:opus", "params": {"paperclip": {"role": "ceo"}}},
     )
 
     assert result == {"ok": True}

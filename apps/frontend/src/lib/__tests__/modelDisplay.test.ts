@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildModelNameMap, displayModelName } from "../modelDisplay";
+import { buildModelNameMap, displayModelName, listCatalogModels } from "../modelDisplay";
 
 const ARN = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/ykpc0bdu467l";
 
@@ -43,5 +43,40 @@ describe("modelDisplay", () => {
     expect(displayModelName(undefined, {})).toBeNull();
     expect(buildModelNameMap(null)).toEqual({});
     expect(buildModelNameMap({ models: { providers: "junk" } })).toEqual({});
+  });
+});
+
+/**
+ * M6 task 10-C (scan rows 2/27). On AgentCore there is no providers catalog to walk — a Hermes
+ * config has no `models` key at all — so the same walkers take the `models.list` payload: the
+ * owner's own Bedrock inference profiles, or Hermes's catalog via the bridge.
+ */
+describe("modelDisplay over the models.list payload", () => {
+  const list = {
+    models: [
+      { id: ARN, name: "Claude Opus", provider: "bedrock", tier: "premium" },
+      { id: "claude-sonnet-5", name: "claude-sonnet-5", provider: "anthropic" },
+      { id: "", name: "dropped" },
+    ],
+    defaultId: ARN,
+  };
+
+  it("names an AIP ARN, so the sidebar stops rendering the opaque suffix", () => {
+    const names = buildModelNameMap(list);
+    expect(displayModelName(ARN, names)).toBe("Claude Opus");
+  });
+
+  it("offers each id verbatim as the ref the picker sends back", () => {
+    // No provider prefix is rebuilt: a Hermes profile stores `model.default` bare, and the
+    // backend refuses any id it did not itself offer.
+    expect(listCatalogModels(list)).toEqual([
+      { ref: ARN, bareId: ARN, name: "Claude Opus" },
+      { ref: "claude-sonnet-5", bareId: "claude-sonnet-5", name: "claude-sonnet-5" },
+    ]);
+  });
+
+  it("is empty, never a providers walk, for an empty list", () => {
+    expect(listCatalogModels({ models: [] })).toEqual([]);
+    expect(buildModelNameMap({ models: [] })).toEqual({});
   });
 });

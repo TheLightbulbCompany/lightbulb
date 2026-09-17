@@ -15,7 +15,7 @@ import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
 import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
-import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
+import { useModelCatalog } from "@/hooks/useConfigPatch";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -90,10 +90,12 @@ export function ChatLayout({
   const { user } = useUser();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { account, isSubscribed } = useBilling();
-  // Models catalog for the sidebar agent rows: resolves Bedrock
-  // application-inference-profile ARNs to display names ("Claude Opus 4.6")
-  // — the raw ARN's last segment is an opaque random suffix.
-  const { data: configSnapshot } = useRuntimeRpc<{ config?: unknown }>("config.get");
+  // Model list for the sidebar agent rows: resolves Bedrock
+  // application-inference-profile ARNs to display names ("Claude Sonnet")
+  // — the raw ARN's last segment is an opaque random suffix. Source depends on
+  // the runtime (M6 task 10-C, scan row 27): `models.list` on AgentCore, the
+  // gateway config's providers catalog on ECS.
+  const { source: modelCatalogSource } = useModelCatalog();
   // Per-agent runtime state for the roster (Teams roster status ∪ live gateway
   // runs). Shares the `/teams/agents` SWR key the pause/resume control below
   // already reads, so this adds no request on this shell.
@@ -325,7 +327,7 @@ export function ChatLayout({
                 defaultAgentId={defaultId}
                 publishedAgentIds={publishedAgentIds}
                 freshlyInstalledAgentId={drawerState.freshlyInstalledAgentId}
-                configSnapshot={configSnapshot?.config}
+                configSnapshot={modelCatalogSource}
                 onSelect={handleSelectAgent}
                 onOpenWork={(id) => openAgentIssues?.(id)}
                 onInspect={(id) => openAgentInspector?.(id)}

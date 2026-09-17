@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
   buildAgentHeartbeatPatch,
   buildDefaultModelPatch,
+  buildHermesOverheadModelPatch,
   buildOverheadModelPatch,
   readAgentHeartbeat,
   readDefaultHeartbeat,
   readDefaultModelPrimary,
+  readHermesOverheadModel,
   readOverheadModel,
 } from "../modelRouting";
 
@@ -91,5 +93,38 @@ describe("modelRouting patch builders", () => {
         },
       },
     });
+  });
+});
+
+/**
+ * M6 task 10-C (scan rows 4/23). Hermes has no `agents.defaults` — overhead work is the
+ * `auxiliary.<task>` block. The browser sends ONE id and the backend expands it across every
+ * task with the provider its own writer derives; a block built here would drift from the one
+ * provisioning writes, and the browser knows neither the task list nor the provider.
+ */
+describe("modelRouting on AgentCore", () => {
+  const AIP_HAIKU = "arn:aws:bedrock:us-east-1:1:application-inference-profile/hk";
+
+  it("sends one id, never a hand-built auxiliary block", () => {
+    expect(buildHermesOverheadModelPatch(AIP_HAIKU)).toEqual({ auxiliary: { model: AIP_HAIKU } });
+  });
+
+  it("reads the pinned model back off any auxiliary task", () => {
+    expect(
+      readHermesOverheadModel({
+        auxiliary: {
+          free_only: true,
+          transient_retries: 2,
+          compression: { provider: "bedrock", model: AIP_HAIKU, fallback_chain: [] },
+          curator: { provider: "bedrock", model: AIP_HAIKU, fallback_chain: [] },
+        },
+      }),
+    ).toBe(AIP_HAIKU);
+  });
+
+  it("is undefined — not a crash — for a profile with no auxiliary block", () => {
+    expect(readHermesOverheadModel({})).toBeUndefined();
+    expect(readHermesOverheadModel(null)).toBeUndefined();
+    expect(readHermesOverheadModel({ auxiliary: { free_only: true } })).toBeUndefined();
   });
 });

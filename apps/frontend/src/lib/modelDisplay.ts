@@ -4,18 +4,40 @@
  * Bedrock model ids are per-owner application-inference-profile ARNs
  * (`amazon-bedrock/arn:aws:bedrock:…:application-inference-profile/ykpc0bdu467l`),
  * so the old "last path segment" display rendered AWS's opaque random
- * suffix in the agent sidebar. The authoritative display names live in the
- * gateway config's models catalog (`models.providers[*].models[]`, each
- * entry `{id, name}` — e.g. "Claude Opus 4.6"); resolve through that, and
- * when a model isn't in the catalog, hide ARN-shaped ids entirely rather
- * than show garbage.
+ * suffix in the agent sidebar. Resolve through the owner's model list
+ * instead, and when a model isn't in it, hide ARN-shaped ids entirely
+ * rather than show garbage.
+ *
+ * Two sources carry that list, and every walker below takes EITHER (M6 task
+ * 10-C, scan rows 2/27): on ECS the gateway config's catalog
+ * (`{models: {providers: {…: {models: [{id, name}]}}}}`), on AgentCore the
+ * `models.list` RPC (`{models: [{id, name}], defaultId}`) — the owner's own
+ * Bedrock inference profiles, or Hermes's provider catalog on BYO/OAuth. A
+ * Hermes config has no `models` key at all, so there is no third shape and
+ * nothing to branch on beyond "is it an array".
  */
 
-/** Walk `config.models.providers` and map every model id (bare AND
- *  provider-prefixed) to its display name. Tolerates any malformed shape —
- *  the config is runtime data from the container, not a typed contract. */
+/** The `models.list` entries, when `source` is that payload rather than a gateway config. */
+function runtimeModelList(source: unknown): { id: string; name?: string }[] | null {
+  const models = (source as { models?: unknown } | null | undefined)?.models;
+  return Array.isArray(models)
+    ? (models.filter(
+        (entry) => typeof (entry as { id?: unknown } | null)?.id === "string" && (entry as { id: string }).id,
+      ) as { id: string; name?: string }[])
+    : null;
+}
+
+/** Map every model id (bare AND provider-prefixed) to its display name. Tolerates any
+ *  malformed shape — both sources are runtime data, not a typed contract. */
 export function buildModelNameMap(config: unknown): Record<string, string> {
   const names: Record<string, string> = {};
+  const runtimeModels = runtimeModelList(config);
+  if (runtimeModels) {
+    for (const entry of runtimeModels) {
+      if (typeof entry.name === "string" && entry.name) names[entry.id] = entry.name;
+    }
+    return names;
+  }
   const models = (config as { models?: unknown } | null | undefined)?.models;
   const providers = (models as { providers?: unknown } | null | undefined)?.providers;
   if (!providers || typeof providers !== "object") return names;
@@ -43,12 +65,18 @@ export type CatalogModel = {
   name: string;
 };
 
-/** Flatten `config.models.providers` into selectable models. The catalog is
- *  the ONLY legitimate option source for routing dropdowns: per-owner IAM
- *  scopes Bedrock invokes to exactly these AIPs, so anything outside the
- *  catalog would fail closed at AccessDenied anyway. */
+/** Flatten either source into selectable models. The list is the ONLY legitimate option
+ *  source for routing dropdowns: per-owner IAM scopes Bedrock invokes to exactly these AIPs,
+ *  so anything outside it would fail closed at AccessDenied anyway — and on AgentCore the
+ *  backend refuses an id it did not offer before it can reach a profile. */
 export function listCatalogModels(config: unknown): CatalogModel[] {
   const out: CatalogModel[] = [];
+  const runtimeModels = runtimeModelList(config);
+  if (runtimeModels) {
+    // `models.list` ids are already the exact ref the picker sends back — no provider prefix
+    // to rebuild (a Hermes profile stores `model.default` bare, with `model.provider` beside it).
+    return runtimeModels.map((entry) => ({ ref: entry.id, bareId: entry.id, name: entry.name || entry.id }));
+  }
   const models = (config as { models?: unknown } | null | undefined)?.models;
   const providers = (models as { providers?: unknown } | null | undefined)?.providers;
   if (!providers || typeof providers !== "object") return out;

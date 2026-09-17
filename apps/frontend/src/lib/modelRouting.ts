@@ -119,3 +119,30 @@ export function readOverheadModel(config: unknown): string | undefined {
   const m = defaults?.compaction?.model;
   return typeof m === "string" && m ? m : undefined;
 }
+
+/* --------------------------------------------------------------------------
+ * AgentCore (Hermes). `agents.defaults.*` does not exist there — the overhead
+ * work is the `auxiliary.<task>` block, one entry per Hermes auxiliary task
+ * (compression, curator, title_generation, …). M6 task 10-C, scan rows 4/23.
+ * ------------------------------------------------------------------------ */
+
+/** The pseudo-key the intercept expands. The browser sends ONE id; the backend rewrites it
+ *  into every `auxiliary.<task>` entry with the provider `hermes_profiles.model_block`
+ *  derives, and never stores the key itself. The task list and the provider are the backend
+ *  writer's to know — a hand-built block here would drift from the one provisioning writes. */
+export function buildHermesOverheadModelPatch(modelId: string): Record<string, unknown> {
+  return { auxiliary: { model: modelId } };
+}
+
+/** The model every auxiliary task is pinned to, read back off the profile. Takes the first
+ *  task entry that carries one: we always write them together, and a partially-written block
+ *  should still show something rather than an empty select. */
+export function readHermesOverheadModel(config: unknown): string | undefined {
+  const auxiliary = (config as { auxiliary?: unknown } | null | undefined)?.auxiliary;
+  if (!auxiliary || typeof auxiliary !== "object") return undefined;
+  for (const entry of Object.values(auxiliary as Record<string, unknown>)) {
+    const model = (entry as { model?: unknown } | null | undefined)?.model;
+    if (typeof model === "string" && model) return model;
+  }
+  return undefined;
+}

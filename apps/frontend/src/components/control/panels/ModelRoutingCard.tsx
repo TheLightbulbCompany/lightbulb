@@ -2,13 +2,16 @@
 
 import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { useConfigPatch } from "@/hooks/useConfigPatch";
+import { useRuntimeHost } from "@lightbulb/shared";
+import { useConfigPatch, useModelCatalog } from "@/hooks/useConfigPatch";
 import { notifyApiError } from "@/lib/notify";
 import { listCatalogModels } from "@/lib/modelDisplay";
 import {
   buildDefaultModelPatch,
+  buildHermesOverheadModelPatch,
   buildOverheadModelPatch,
   readDefaultModelPrimary,
+  readHermesOverheadModel,
   readOverheadModel,
 } from "@/lib/modelRouting";
 
@@ -28,10 +31,14 @@ const SELECT_CLS =
  * Writes go through config.patch and may briefly restart the gateway.
  */
 export function ModelRoutingCard({ providerChoice }: { providerChoice?: ProviderChoice | null }) {
+  // Owner-level card: no agentId, so an AgentCore write fans out to every profile — which is
+  // exactly right for the auxiliary block (M6 task 10-C, rows 4/23).
   const { config, configReady, patchConfig } = useConfigPatch();
-  const catalogModels = useMemo(() => listCatalogModels(config), [config]);
+  const onAgentCore = useRuntimeHost() === "agentcore";
+  const { source: catalogSource } = useModelCatalog();
+  const catalogModels = useMemo(() => listCatalogModels(catalogSource), [catalogSource]);
   const currentDefault = readDefaultModelPrimary(config);
-  const currentOverhead = readOverheadModel(config);
+  const currentOverhead = onAgentCore ? readHermesOverheadModel(config) : readOverheadModel(config);
 
   const [saving, setSaving] = useState<"default" | "overhead" | null>(null);
   const [restartNotice, setRestartNotice] = useState(false);
@@ -74,7 +81,11 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
     setRestartNotice(false);
     try {
       const res = await patchConfig(
-        kind === "default" ? buildDefaultModelPatch(ref) : buildOverheadModelPatch(ref),
+        kind === "default"
+          ? buildDefaultModelPatch(ref)
+          : onAgentCore
+            ? buildHermesOverheadModelPatch(ref)
+            : buildOverheadModelPatch(ref),
       );
       if (res?.restart) setRestartNotice(true);
     } catch (err) {
@@ -88,24 +99,29 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
     <div className={CARD}>
       <span className={EYEBROW}>MODEL ROUTING</span>
 
-      <div className="grid grid-cols-2 gap-4">
-        <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
-          Default model
-          <select
-            className={SELECT_CLS}
-            value={currentDefault ?? ""}
-            disabled={!configReady || saving !== null}
-            onChange={(e) => void apply("default", e.target.value)}
-          >
-            {!currentDefault && <option value="">Select…</option>}
-            {catalogModels.map((m) => (
-              <option key={m.ref} value={m.ref}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-          <span>What agents use unless overridden per-agent.</span>
-        </label>
+      <div className={onAgentCore ? "grid grid-cols-1 gap-4" : "grid grid-cols-2 gap-4"}>
+        {/* No owner-level default on AgentCore: every agent has its own Hermes profile with its
+            own `model.default`, set on that agent's own Model card. A roster-wide write here
+            would silently flatten each of those picks — including the CEO's premium tier. */}
+        {!onAgentCore && (
+          <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
+            Default model
+            <select
+              className={SELECT_CLS}
+              value={currentDefault ?? ""}
+              disabled={!configReady || saving !== null}
+              onChange={(e) => void apply("default", e.target.value)}
+            >
+              {!currentDefault && <option value="">Select…</option>}
+              {catalogModels.map((m) => (
+                <option key={m.ref} value={m.ref}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <span>What agents use unless overridden per-agent.</span>
+          </label>
+        )}
 
         <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
           Overhead model
@@ -123,8 +139,9 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
             ))}
           </select>
           <span>
-            Maintenance work — compaction, memory flush, heartbeats. Cheapest
-            tier recommended.
+            {onAgentCore
+              ? "Background work — compaction, memory, titles, reviews. Cheapest tier recommended."
+              : "Maintenance work — compaction, memory flush, heartbeats. Cheapest tier recommended."}
           </span>
         </label>
       </div>

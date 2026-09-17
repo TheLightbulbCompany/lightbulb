@@ -140,15 +140,27 @@ def _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo):
     return (premium or default) if is_ceo else default, cheap or default
 
 
-def model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
+def model_block(provider_choice, byo_provider, aip_arns, is_ceo, *, default_id=None) -> tuple[dict, str, str]:
     """(model block, aux model id, aux provider).
 
     Public (Q9a fix round 1, M6-R28): this is the ONE place that decides an agent's
     ``config.yaml`` ``model`` key from ``(provider_choice, byo_provider, aip_arns, is_ceo)`` --
     ``build_profile_config`` uses it for a fresh profile write, and ``runtime_rpc``'s
-    ``agents.update`` door (an AgentCore role/model-tier change) re-derives the same block
+    ``agents.update`` door (an AgentCore role/model change) re-derives the same block
     through this function rather than hand-rolling or trusting a client-supplied ref.
+
+    ``default_id`` (M6 task 10-C) pins the resolved default to a model the caller has ALREADY
+    validated against this owner's own ``models.list`` -- the owner's own AIPs on a
+    Bedrock-managed workspace, Hermes's provider catalog otherwise. Only ``default`` moves:
+    ``provider`` and Bedrock's ``context_length`` pin still come from here, so a picker choice
+    can never invent a provider or silently drop the pin. Without it the caller could express
+    only the two ``is_ceo`` tiers, so a paid owner could never pick their haiku profile.
     """
+    block, aux_model, aux_provider = _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo)
+    return ({**block, "default": default_id} if default_id else block), aux_model, aux_provider
+
+
+def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
     if provider_choice in ("bedrock_claude", "bedrock_trial"):
         if not aip_arns:
             raise ValueError(f"{provider_choice} requires aip_arns")
@@ -177,6 +189,17 @@ def model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, 
     return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "gpt-5.6-sol", "openai-codex"
 
 
+def auxiliary_tasks_block(model_id: str, provider: str) -> dict:
+    """Every ``AUXILIARY_TASKS`` entry pinned to one model + provider.
+
+    The ONE builder for those entries (M6 task 10-C, scan rows 4/23): the fresh-profile write
+    below and ``runtime_rpc``'s AgentCore overhead-model door both go through it, so the
+    18-task list and the ``fallback_chain: []`` fence (see ``AUXILIARY_TASKS``' own note --
+    it is the fence, not a preference) can never drift between them.
+    """
+    return {task: {"provider": provider, "model": model_id, "fallback_chain": []} for task in AUXILIARY_TASKS}
+
+
 def build_profile_config(
     *,
     agent_role: str,
@@ -187,9 +210,7 @@ def build_profile_config(
     is_ceo: bool = False,
 ) -> dict:
     model, aux_model, aux_provider = model_block(provider_choice, byo_provider, aip_arns, is_ceo)
-    aux: dict = {"free_only": True, "transient_retries": 2}
-    for task in AUXILIARY_TASKS:
-        aux[task] = {"provider": aux_provider, "model": aux_model, "fallback_chain": []}
+    aux: dict = {"free_only": True, "transient_retries": 2, **auxiliary_tasks_block(aux_model, aux_provider)}
     config: dict = {
         "model": model,
         "auxiliary": aux,

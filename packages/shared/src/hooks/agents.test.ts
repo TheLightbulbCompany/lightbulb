@@ -13,12 +13,14 @@ describe("getAgentModelString", () => {
     expect(getAgentModelString({ model: "  openai/gpt-5  " })).toBe("openai/gpt-5");
   });
 
-  it("renders the AgentCore tier vocabulary as a label (M6 task 10, row 29)", () => {
-    // A migrated workspace's roster rows carry a TIER, never a ref — rendering the raw
-    // "premium" would read as a model name the owner could go looking for.
-    expect(getAgentModelString({ model: "standard" })).toBe("Standard");
-    expect(getAgentModelString({ model: "premium" })).toBe("Premium");
-    expect(getAgentModelString({ model: { primary: "premium" } })).toBe("Premium");
+  it("passes an AgentCore model id through untouched (M6 task 10-C, row 29)", () => {
+    // A migrated workspace's roster rows carry the profile's own `model.default` — a real id
+    // `models.list` names. The transitional tier words ("standard"/"premium") are gone, and
+    // nothing here rewrites an id into a label: `buildModelNameMap` does that from the list.
+    expect(getAgentModelString({ model: "arn:aws:bedrock:us-east-1:1:application-inference-profile/x" })).toBe(
+      "arn:aws:bedrock:us-east-1:1:application-inference-profile/x",
+    );
+    expect(getAgentModelString({ model: "claude-sonnet-5" })).toBe("claude-sonnet-5");
   });
 
   it("is undefined when there is no model at all", () => {

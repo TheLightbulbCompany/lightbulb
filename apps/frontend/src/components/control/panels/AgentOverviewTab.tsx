@@ -2,7 +2,9 @@
 
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
+import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
+import { useModelCatalog } from "@/hooks/useConfigPatch";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { buildModelNameMap, displayModelName, listCatalogModels } from "@/lib/modelDisplay";
 import { AgentHeartbeatCard } from "@/components/control/agents/AgentHeartbeatCard";
@@ -10,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import {
   PAPERCLIP_AGENT_ROLES,
+  PAPERCLIP_ROLE_LABELS,
   type PaperclipMeta,
   type PaperclipRole,
 } from "@/lib/paperclipMeta";
@@ -31,11 +34,22 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string; agent?: AgentEntry; onAgentUpdated?: () => void }) {
+  // M6 task 10-C (scan rows 1/8/9): on AgentCore the identity, the model and the Paperclip meta
+  // all come from the roster row `agents.list` already returned. `agent.identity.get` is stubbed
+  // on the bridge (a ~55s microVM start to render an error) and `config.agents.list` does not
+  // exist in a Hermes config, so neither RPC is dialled there. Both are held while the runtime
+  // host is unknown — guessing costs that same cold start.
+  const runtimeHost = useRuntimeHost();
+  const onAgentCore = runtimeHost === "agentcore";
+  const rpcReady = runtimeHost === "ecs";
   const { data } = useRuntimeRpc<Record<string, unknown>>(
-    "agent.identity.get",
+    rpcReady ? "agent.identity.get" : null,
     { agentId },
   );
-  const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<ConfigSnapshot>("config.get");
+  const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<ConfigSnapshot>(
+    rpcReady ? "config.get" : null,
+  );
+  const { source: catalogSource } = useModelCatalog();
   const callRpc = useRuntimeRpcMutation();
   const [updatingModel, setUpdatingModel] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -51,17 +65,27 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   const defaultModelPrimary = resolveModelPrimary(configInner?.agents?.defaults?.model);
   const agentConfigEntry = configInner?.agents?.list?.find(a => a?.id === agentId);
   const agentModelPrimary = resolveModelPrimary(agentConfigEntry?.model);
-  const currentModel = agentModelPrimary || defaultModelPrimary || "";
+  const currentModel = onAgentCore
+    ? (agent?.model ?? "")
+    : agentModelPrimary || defaultModelPrimary || "";
 
   // Paperclip meta — role/title/capabilities. Persisted on the agent
   // entry under params.paperclip and mirrored to Paperclip via
   // _intercept_agents_update on the backend. Initial value seeded from
-  // the agent's existing params.paperclip block if present.
+  // the agent's existing params.paperclip block if present — or, on
+  // AgentCore, from the roster row, which IS the Paperclip row. Without
+  // that the form would seed "general" for every agent and Save would
+  // silently demote an engineer's role.
   const existingPaperclip = useMemo(() => {
+    if (onAgentCore) {
+      return agent?.role
+        ? ({ role: agent.role, title: agent.title, capabilities: agent.capabilities, icon: agent.icon } as Partial<PaperclipMeta>)
+        : undefined;
+    }
     const block = (agentConfigEntry?.params as Record<string, unknown> | undefined)?.paperclip;
     if (!block || typeof block !== "object") return undefined;
     return block as Partial<PaperclipMeta>;
-  }, [agentConfigEntry]);
+  }, [agentConfigEntry, onAgentCore, agent?.role, agent?.title, agent?.capabilities, agent?.icon]);
 
   const [meta, setMeta] = useState<PaperclipMeta>(() => ({
     role:
@@ -184,17 +208,17 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     }
   }, [callRpc, agentId, onAgentUpdated, mutateConfig]);
 
-  // Display names from the providers catalog (models.providers[*].models[]
-  // carries {id, name}) — Bedrock ids are application-inference-profile
-  // ARNs whose last segment is an opaque random suffix, so the old
-  // split("/").pop() fallback rendered garbage like "ykpc0bdu467l".
-  const modelNames = useMemo(() => buildModelNameMap(configInner), [configInner]);
+  // Display names from the owner's model list — the `models.list` RPC on AgentCore, the
+  // gateway config's providers catalog on ECS. Bedrock ids are application-inference-profile
+  // ARNs whose last segment is an opaque random suffix, so the old split("/").pop() fallback
+  // rendered garbage like "ykpc0bdu467l".
+  const modelNames = useMemo(() => buildModelNameMap(catalogSource), [catalogSource]);
 
   const selectorModels = useMemo(() => {
-    // Primary source: the providers catalog (provision always writes it).
+    // Primary source: the owner's model list (see above).
     // agents.defaults.models is a per-deployment alias map that provision
-    // does NOT write — kept as a secondary source for hand-edited configs.
-    const models: { id: string; name: string }[] = listCatalogModels(configInner).map((m) => ({
+    // does NOT write — kept as a secondary source for hand-edited ECS configs.
+    const models: { id: string; name: string }[] = listCatalogModels(catalogSource).map((m) => ({
       id: m.ref,
       name: m.name,
     }));
@@ -211,17 +235,32 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
       });
     }
     return models;
-  }, [configInner, modelsCatalog, currentModel, modelNames]);
+  }, [catalogSource, modelsCatalog, currentModel, modelNames]);
+
+  // Hermes has no emoji/theme \u2014 identity there is the Paperclip row plus SOUL.md, so the two
+  // rows that would always read "\u2014" are replaced by the two that carry the answer (row 8).
+  const identityRows: [string, string][] = onAgentCore
+    ? [
+        ["Agent ID", agentId],
+        ["Name", agent?.name || "\u2014"],
+        ["Role", PAPERCLIP_ROLE_LABELS[agent?.role as PaperclipRole] || agent?.role || "\u2014"],
+        ["Title", agent?.title || "\u2014"],
+      ]
+    : [
+        ["Agent ID", agentId],
+        ["Name", identity?.name || agent?.name || "\u2014"],
+        ["Emoji", identity?.emoji || "\u2014"],
+        ["Theme", identity?.theme || "\u2014"],
+      ];
 
   return (
     <div className="space-y-4 mt-2">
       <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
         <h3 className="text-sm font-medium text-[var(--midnight)]">Identity</h3>
         <div className="grid grid-cols-2 gap-3">
-          <InfoRow label="Agent ID" value={agentId} />
-          <InfoRow label="Name" value={identity?.name || agent?.name || "\u2014"} />
-          <InfoRow label="Emoji" value={identity?.emoji || "\u2014"} />
-          <InfoRow label="Theme" value={identity?.theme || "\u2014"} />
+          {identityRows.map(([label, value]) => (
+            <InfoRow key={label} label={label} value={value} />
+          ))}
         </div>
       </div>
 
@@ -232,13 +271,15 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
             models={selectorModels}
             selectedModel={currentModel}
             onModelChange={handleModelChange}
-            disabled={updatingModel || !configSnapshot?.hash}
+            // On AgentCore the write is an `agents.update`, gated on nothing but the list —
+            // there is no config hash in play (the profile is CAS'd server-side).
+            disabled={updatingModel || (!onAgentCore && !configSnapshot?.hash)}
           />
         ) : (
           <p className="text-xs text-[var(--midnight-muted)]">
             {currentModel
               ? displayModelName(currentModel, modelNames) || "Custom model"
-              : "No models configured in gateway"}
+              : "No models available for this workspace"}
           </p>
         )}
         {updatingModel && <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)]" />}

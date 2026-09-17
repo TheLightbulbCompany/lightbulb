@@ -240,7 +240,8 @@ interface AgentRosterProps {
   publishedAgentIds: ReadonlySet<string>;
   /** Marketplace hire that just landed — plays the `slideIn` arrival animation. */
   freshlyInstalledAgentId?: string | null;
-  /** `config.get` snapshot, for resolving Bedrock AIP ARNs to display names. */
+  /** The owner's model list, for resolving Bedrock AIP ARNs to display names — either source
+   *  `buildModelNameMap` takes (`models.list` on AgentCore, a `config.get` snapshot on ECS). */
   configSnapshot?: unknown;
   onSelect: (agentId: string) => void;
   onOpenWork: (agentId: string) => void;

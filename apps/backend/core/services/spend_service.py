@@ -36,7 +36,10 @@ _spend_cache: dict[str, tuple[float, "BilledSpend"]] = {}
 
 # tier (Metronome pricing-group value) -> display name. Tiers are the model
 # families the meter Lambda prices by; unknown tiers fall back to the raw key.
-_TIER_DISPLAY_NAMES = {
+# PUBLIC (M6 task 10-C): the one place the platform names a Bedrock tier. The AgentCore
+# ``models.list`` intercept (``runtime_rpc``) reads it for the model picker's labels rather
+# than starting a second copy that can drift from the usage panel's.
+TIER_DISPLAY_NAMES = {
     "opus": "Claude Opus",
     "sonnet": "Claude Sonnet",
     "haiku": "Claude Haiku",
@@ -184,7 +187,7 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
             by_tier[tier] = by_tier.get(tier, 0) + round(float(item.get("total") or 0))
 
     by_model = [
-        {"model": _TIER_DISPLAY_NAMES.get(tier, tier), "tier": tier, "cents": cents}
+        {"model": TIER_DISPLAY_NAMES.get(tier, tier), "tier": tier, "cents": cents}
         for tier, cents in sorted(by_tier.items(), key=lambda kv: -kv[1])
     ]
     billed = BilledSpend(

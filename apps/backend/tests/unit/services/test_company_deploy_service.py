@@ -693,11 +693,14 @@ async def test_missing_gateway_token_creates_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agentcore_row_with_runtime_arn_deploys_agents(monkeypatch):
-    """An AgentCore row is reachable once it holds a minted runtime ARN -- no
-    ECS task IP or gateway_token gate applies (any invoke wakes the microVM,
-    M4 Task 22). resolve_running_container already returns this row
-    unconditionally; the gate must not additionally demand a gateway_token."""
+async def test_agentcore_row_with_runtime_arn_is_refused_not_half_run(monkeypatch, caplog):
+    """Ruling M6-R26 (fix round 1, Important 5): an AgentCore row IS reachable
+    once it holds a minted runtime ARN (any invoke wakes the microVM, M4 Task
+    22) -- but the per-agent loop below (pair_with_openclaw's container_rpc
+    call into the microVM, materialize_agent's EFS-only writes) has no
+    AgentCore equivalent yet. Proceeding would create N Paperclip agents,
+    retry pairing, then raise and roll back. Refuse cleanly instead: zero
+    Paperclip creates, a clear reason logged, no rollback needed."""
     plan = _simple_plan()
     h = Harness()
     h.container = {
@@ -707,10 +710,13 @@ async def test_agentcore_row_with_runtime_arn_deploys_agents(monkeypatch):
     h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+    with caplog.at_level("WARNING"):
+        await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
-    assert h.admin.create_calls  # the gate did not bail early -- agents were created
+    assert h.admin.create_calls == []  # zero Paperclip creates
     assert h.deleted == []
+    assert "runtime_unsupported" in caplog.text
+    assert "company deploy on AgentCore lands in the next lane" in caplog.text
 
 
 @pytest.mark.asyncio

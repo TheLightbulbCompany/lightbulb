@@ -48,8 +48,8 @@ import httpx
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
-from core.services import runtime_transport
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import runtime_transport
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import get_catalog_service
 from core.services.company_agent_materializer import materialize_agent
@@ -268,16 +268,31 @@ async def _run_company_deploy(
     if container and runtime_transport.host_for(container) == "agentcore":
         # Any InvokeAgentRuntime call wakes the microVM (M4 Task 22) — there is
         # no task IP to discover and no gateway_token gate to clear; the row
-        # existing with a minted runtime ARN IS "reachable".
+        # existing with a minted runtime ARN IS "reachable". Keep this gate —
+        # it's the right readiness check.
         if not container.get("agentcore_runtime_arn"):
             logger.warning("company_deploy: owner=%s agentcore row has no runtime ARN yet — creating nothing", owner_id)
             return
-        gateway_token = container.get("gateway_token")
-    else:
-        gateway_token = container.get("gateway_token") if isinstance(container, dict) else None
-        if not container or not ip or not gateway_token:
-            logger.warning("company_deploy: owner=%s container unreachable — creating nothing", owner_id)
-            return
+        # Ruling M6-R26 (fix round 1, Important 5): reachable, but the per-agent
+        # loop below has no AgentCore equivalent yet -- pair_with_openclaw is a
+        # container_rpc "agents.create" call into the microVM, and
+        # materialize_agent writes workspace-{id}/AGENTS.md onto a nonexistent
+        # EFS tree (raising ConfigPatchError). Proceeding would create N
+        # Paperclip agents, retry pairing, then raise and roll back -- a
+        # half-run, not a clean refusal. Until the loop is ported (lane Q9c,
+        # onto hermes_provisioning.write_profile_for_agent +
+        # catalog_service.deploy_tarball_to_profile), refuse up front with a
+        # clear reason and create NOTHING.
+        logger.warning(
+            "company_deploy: owner=%s runtime_unsupported: company deploy on AgentCore lands in the "
+            "next lane — creating nothing",
+            owner_id,
+        )
+        return
+    gateway_token = container.get("gateway_token") if isinstance(container, dict) else None
+    if not container or not ip or not gateway_token:
+        logger.warning("company_deploy: owner=%s container unreachable — creating nothing", owner_id)
+        return
 
     http, admin, cookie = await _open_admin_session()
     try:

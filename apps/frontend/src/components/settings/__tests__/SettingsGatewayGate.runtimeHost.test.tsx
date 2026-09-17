@@ -91,4 +91,33 @@ describe("a hard load of /settings resolves the runtime host", () => {
     // Before the fix this stayed "unknown" forever — no error, no retry, no timeout.
     await waitFor(() => expect(screen.getByTestId("host")).toHaveTextContent(host));
   });
+
+  /**
+   * Review N1. Before this publisher existed, `/settings` issued ZERO `/container/status`
+   * requests. The default `wake: () => isPresent()` would have made merely opening Settings —
+   * Billing included, which talks to no runtime — send `wake=1`, and `wake_policy` suppresses
+   * only `wake=0`, so a free-trial owner checking their plan would have started a Fargate task
+   * or a microVM. This reader wants to KNOW the runtime, not to be a reason to spend on it.
+   */
+  it("never asks the backend to wake a parked container", async () => {
+    auth.orgId = "org_nowake";
+    auth.uiOrgId = "org_nowake";
+    auth.getToken.mockResolvedValue(token("org_nowake"));
+    const fetchMock = vi.fn().mockResolvedValue(statusBody("ecs"));
+    global.fetch = fetchMock;
+
+    render(
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <SettingsGatewayGate>
+          <HostProbe />
+        </SettingsGatewayGate>
+      </SWRConfig>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("host")).toHaveTextContent("ecs"));
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.every((url) => url.includes("wake=0"))).toBe(true);
+    expect(urls.some((url) => url.includes("wake=1"))).toBe(false);
+  });
 });

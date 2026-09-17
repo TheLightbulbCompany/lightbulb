@@ -95,15 +95,16 @@ describe("SkillsTab on an AgentCore workspace", () => {
     });
   });
 
-  it("falls back to the rendered rows when an older bridge sends no disabledNames", () => {
+  // Review N3. Falling back to the rendered rows IS the truncating path I3 closed, so a
+  // runtime that reports no `disabledNames` gets a refusal, not a guess at the right list.
+  it("refuses the toggle when the runtime reports no disabledNames", async () => {
     rpcData.mockReturnValue({
       skills: [hermesSkill(), hermesSkill({ name: "shopify", skillKey: "shopify", disabled: true })],
     });
     render(<SkillsTab />);
     fireEvent.click(screen.getByRole("button", { name: /^disable$/i }));
-    expect(mockCallRpc).toHaveBeenCalledWith("config.patch", {
-      patch: { skills: { disabled: ["pdf", "shopify"] } },
-    });
+    expect(await screen.findByText(/could silently re-enable another/i)).toBeInTheDocument();
+    expect(mockCallRpc).not.toHaveBeenCalled();
   });
 
   it("still sends skills.update on ECS", () => {

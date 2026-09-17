@@ -19,13 +19,22 @@ import { useProvisioningState } from "@/hooks/useProvisioningState";
  * the host gets a real answer here, and the panels keep one rule ("hold until definite")
  * instead of one rule plus a per-route exception.
  *
- * Cost: one `/container/status` read. `cadenceFor` returns 0 once the container is ready, so
- * a settled workspace polls once and stops; an unready one polls at the same 5 s/15 s
- * cadence `/chat` uses — which the Overview panel already started on this route whenever it
- * was the selected tab, so this generalizes existing behaviour rather than adding a kind.
+ * **`wake: false` is load-bearing.** Before this publisher existed, `/settings` issued ZERO
+ * `/container/status` requests — no caller of this hook is reachable from that route. The
+ * default `wake: () => isPresent()` would therefore have made merely opening Settings (the
+ * Billing tab included, which talks to no runtime at all) send `wake=1`, and `wake_policy`
+ * suppresses only `wake=0`: a free-trial owner checking their plan would have started a
+ * Fargate task or a microVM cold start, then polled at 5 s until it came up, because a parked
+ * row is not `ready`. This reader wants to KNOW the runtime, not to be a reason to spend on
+ * it. On a ready workspace `cadenceFor` returns 0, so it reads once and stops.
  */
 function RuntimeHostPublisher() {
-  useProvisioningState();
+  // `wake: false` rather than a bare `useOnboardingStatus` call (the reviewer's suggestion):
+  // that hook needs the workspace-token plumbing this one already owns — a forced-fresh mint
+  // whose `o.id` is verified against the active org before a single fetch. Re-deriving it here
+  // would duplicate ~60 lines whose failure mode is publishing another workspace's host, and
+  // the scope is the whole safety property of `useRuntimeHost`. One option, no duplication.
+  useProvisioningState({ wake: false });
   return null;
 }
 

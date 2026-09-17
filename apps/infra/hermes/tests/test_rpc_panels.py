@@ -157,6 +157,32 @@ def test_status_returns_the_STORED_disabled_list_not_just_what_rendered(home, fa
     assert "not-on-this-disk" not in {s["name"] for s in payload["skills"]}
 
 
+def test_disabled_names_are_the_UNION_across_the_roster(home, fake_hermes):
+    """Ruling M6-R57 / review N2. Profiles genuinely diverge: `agents.create` ->
+    `hermes_profiles.write_agent_profile` -> `build_profile_config` writes a fresh `skills`
+    block with NO `disabled` key. `_roster()` sorts UUIDs, so that empty profile can land
+    first — and reading only it would hand the panel `[]`, whose next wholesale patch would
+    re-enable every skill the owner had turned off, on every profile."""
+    for name, disabled in (("a-new-agent", None), ("ceo", ["shopify"]), ("growth", ["pdf"])):
+        (home / "profiles" / name).mkdir(parents=True)
+        sync.write_profile_config(name, {"skills": {"disabled": disabled} if disabled else {}})
+    # The scanned profile is roster[0] — the one with no disabled key at all.
+    assert server._roster()[0] == "a-new-agent"
+    assert call("skills.status")[1]["payload"]["disabledNames"] == ["pdf", "shopify"]
+
+
+def test_toggling_one_skill_off_leaves_another_profiles_entry_intact(home, fake_hermes):
+    """The union IS the next patch. Whatever the client removes from it, every other
+    profile's entry has to still be in what it sends back."""
+    for name, disabled in (("ceo", ["shopify"]), ("growth", ["pdf"])):
+        (home / "profiles" / name).mkdir(parents=True)
+        sync.write_profile_config(name, {"skills": {"disabled": disabled}})
+    names = call("skills.status")[1]["payload"]["disabledNames"]
+    # What SkillsTab.toggleSkill does when the owner re-enables "pdf".
+    next_patch = sorted(set(names) - {"pdf"})
+    assert next_patch == ["shopify"]  # growth's entry went, ceo's survived
+
+
 def test_a_disabled_list_stored_as_a_json_string_is_unpacked(home, fake_hermes):
     """Review I6.1: `hermes config set` writes a list as a quoted literal. Read as one name it
     would show every skill enabled AND let the next toggle wipe the real list."""

@@ -230,12 +230,17 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   // roster-wide `config.patch` (no agentId) is the door, and because a deep merge
   // replaces a list wholesale the patch has to carry every name that stays off.
   //
-  // That list is `disabledNames` — the STORED list the bridge read out of config.yaml —
-  // never "which rendered rows are off" (review I3). A disabled skill that is not on the
-  // profile the bridge scanned renders in no row at all, so rebuilding from rows would
-  // drop it, and a wholesale list replace turns that drop into a silent RE-ENABLE of a
-  // skill somebody deliberately turned off. Falls back to the rows only if an older
-  // bridge image sends no `disabledNames`.
+  // That list is `disabledNames` — the STORED names the bridge read out of config.yaml,
+  // unioned across the roster — never "which rendered rows are off" (reviews I3/N2). A
+  // disabled skill that is not on the profile the bridge scanned renders in no row at all,
+  // and a profile written by `agents.create` carries no `disabled` key; either omission
+  // would ride this wholesale list replace into a silent RE-ENABLE of a skill somebody
+  // deliberately turned off.
+  //
+  // No fallback to the rows (review N3): that IS the truncating path, so guessing with it
+  // would write the wrong list on the one image where it could fire. Refusing is safer —
+  // and no shippable image can reach it, since every older bridge stubs `skills.status`
+  // and the panel renders an error with no toggle at all.
   const storedDisabled = Array.isArray(raw) ? undefined : raw?.disabledNames;
   const toggleSkill = async (skill: SkillStatusEntry) => {
     if (!onAgentCore) {
@@ -245,9 +250,13 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
       });
       return;
     }
-    const disabled = new Set(
-      storedDisabled ?? skills.filter((s) => s.disabled).map((s) => s.name),
-    );
+    if (!storedDisabled) {
+      throw new Error(
+        "This runtime did not report which skills are off, so changing one could silently " +
+          "re-enable another. Reload, and update the agent runtime if it persists.",
+      );
+    }
+    const disabled = new Set(storedDisabled);
     if (skill.disabled) disabled.delete(skill.name);
     else disabled.add(skill.name);
     await callRpc("config.patch", {

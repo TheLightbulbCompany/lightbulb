@@ -450,8 +450,8 @@ def _profile_scope(agent_id: str):
     return turn._hermes_home_scope(agent_id)
 
 
-def _disabled_names(config: dict) -> list[str]:
-    """The profile's STORED `skills.disabled`, normalized by Hermes's own
+def _disabled_names(config: dict) -> set[str]:
+    """One profile's STORED `skills.disabled`, normalized by Hermes's own
     `parse_config_string_list` -- `hermes config set` writes a list as a quoted JSON/Python
     literal STRING, and reading that as one skill literally named `["pdf","shopify"]` would
     show every skill enabled and let the next toggle wipe the real list (review I6.1).
@@ -459,26 +459,67 @@ def _disabled_names(config: dict) -> list[str]:
 
     Deliberately NOT `agent.skill_utils.get_disabled_skill_names`, whose extra behaviours are
     wrong for a list we hand back to be re-written: it unions `skills.platform_disabled[…]`
-    (promoting a platform-scoped disable to a global one on the next write) and reads
-    `gateway.session_context`, which has no session outside a turn. Neither divergence is
-    reachable -- nothing on this platform writes `platform_disabled` -- and both are recorded
-    in the task report as review I6.2/I6.3.
-
-    Sorted and de-duplicated, because this list IS the next patch the client sends back.
+    (promoting a platform-scoped disable to a global one on the next write) and subtracts
+    `ESSENTIAL_SKILLS` (silently deleting a stored name). Both would corrupt the round trip.
+    Recorded in the task report as review I6.2/I6.3.
     """
     from agent.skill_utils import parse_config_string_list
 
     raw = (config.get("skills") or {}).get("disabled")
-    return sorted({v.strip() for v in parse_config_string_list(raw) if v.strip()})
+    return {v.strip() for v in parse_config_string_list(raw) if v.strip()}
+
+
+def _config_yaml_from_s3(agent_id: str) -> dict:
+    """One profile's `config.yaml`, read by KEY. Not `ensure_profile`, which falls through to
+    `_download_profile` -- a full prefix LIST plus a recency pull of nearly every object (the
+    cost review I2 removed from `models.authStatus`). This is one small GetObject.
+
+    Falls back to whatever is on local disk when S3 is unreachable or the object is absent.
+    """
+    if not sync.S3_BUCKET:
+        return sync.read_profile_config(agent_id)
+    try:
+        import yaml
+
+        key = f"{sync.S3_PREFIX}/{agent_id}/{sync.CONFIG_NAME}"
+        body = sync._s3().get_object(Bucket=sync.S3_BUCKET, Key=key)["Body"].read()
+        return yaml.safe_load(body.decode("utf-8")) or {}
+    except Exception:  # noqa: BLE001 -- a missing/unreadable profile must not empty the union
+        log.debug("config.yaml read failed for %s", agent_id, exc_info=True)
+        return sync.read_profile_config(agent_id)
+
+
+def _roster_disabled_names(scanned_agent_id: str) -> list[str]:
+    """The UNION of `skills.disabled` across every profile in the roster (ruling M6-R57).
+
+    The panel is workspace-level and its patch fans out to every profile, replacing the list
+    wholesale -- so whatever this returns IS the next write for all of them, and a name missing
+    from it is not merely unchanged, it is DELETED. Reading one profile was wrong because
+    profiles genuinely diverge: `agents.create` -> `hermes_profiles.write_agent_profile` ->
+    `build_profile_config` emits a FRESH `skills` block with no `disabled` key and never reads
+    the owner's current list, so a newly created agent has an empty one. `_roster()` sorts UUIDs,
+    so that agent can land first -- and the next toggle would then re-enable every skill the
+    owner had turned off, everywhere (review N2).
+
+    A union can only ever over-disable, never under-disable, which is the safe direction for an
+    action whose whole purpose is turning something off.
+    """
+    names = _disabled_names(sync.read_profile_config(scanned_agent_id))
+    for agent_id in _roster():
+        if agent_id != scanned_agent_id:
+            names |= _disabled_names(_config_yaml_from_s3(agent_id))
+    return sorted(names)
 
 
 def _skills_status(params: dict, **_kwargs) -> dict:
     """Hermes's installed skills, in the shape the Skills panel already reads.
 
-    Scanned from ONE profile when the caller names none: the skills a workspace has are the
-    image's `/opt/hermes-skills` external dir plus what the migration copied into each profile,
-    and `skills.disabled` is written by the roster-wide `config.patch` fan-out -- so every
-    profile answers the same, and restoring all six for a read would not.
+    The skill ROWS are scanned from one profile when the caller names none: the skills a
+    workspace has are the image's `/opt/hermes-skills` external dir plus what the migration
+    copied into each profile, so restoring all six to list them would buy nothing.
+
+    The DISABLED list is the roster-wide union instead (`_roster_disabled_names`), because
+    unlike the rows it is written back.
     """
     from agent.skill_utils import ESSENTIAL_SKILLS
     from tools.skills_tool import _find_all_skills
@@ -490,16 +531,17 @@ def _skills_status(params: dict, **_kwargs) -> dict:
     with _profile_scope(agent_id):
         found = _find_all_skills(skip_disabled=True)
         skills_dir = str(sync.HOME / "profiles" / agent_id / "skills")
-    disabled = _disabled_names(sync.read_profile_config(agent_id))
+    disabled = set(_roster_disabled_names(agent_id))
     empty = {"bins": [], "env": [], "config": [], "os": []}
     return {"ok": True, "payload": {
         "managedSkillsDir": skills_dir,
-        # Review I3: the STORED list, not "which rendered rows are off". A disabled name whose
-        # skill is not on THIS profile's disk (another agent wrote it) appears in no row, so a
-        # client rebuilding the list from rows would drop it -- and because a deep merge
-        # replaces a list wholesale, dropping it silently RE-ENABLES that skill everywhere.
-        # The panel patches this list, not its own rows.
-        "disabledNames": disabled,
+        # Reviews I3 + N2: the STORED names, unioned across the roster -- never "which rendered
+        # rows are off", and never one profile's list. A disabled name whose skill is not on the
+        # scanned profile's disk appears in no row, and a profile written by `agents.create`
+        # carries no `disabled` key at all; either omission would ride the panel's wholesale
+        # list replace straight into a silent RE-ENABLE on every profile. The panel patches
+        # this list, not its own rows.
+        "disabledNames": sorted(disabled),
         "skills": [{
             "name": s["name"], "description": s.get("description") or "",
             "skillKey": s["name"], "source": s.get("category") or "hermes",

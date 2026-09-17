@@ -514,3 +514,85 @@ async def test_apply_update_returns_false_when_claim_is_not_acquired():
 
     assert result is False
     repo.claim_apply.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Row #14 — a Hermes image bump is not an ECS task-definition change.
+# queue_fleet_image_update skips AgentCore owners at enqueue time;
+# _apply_claimed_update refuses defensively for any ECS-shaped change that
+# reaches it anyway (e.g. a single-owner admin POST bypassing the fleet filter).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_queue_fleet_image_update_skips_agentcore_owners():
+    scan_result = {
+        "Items": [{"owner_id": "owner_ecs"}, {"owner_id": "owner_agentcore"}],
+    }
+
+    async def fake_is_agentcore(owner_id):
+        return owner_id == "owner_agentcore"
+
+    with (
+        patch("core.dynamodb.get_table"),
+        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value=scan_result)),
+        patch.object(update_service.runtime_transport, "is_agentcore_owner", new=fake_is_agentcore),
+        patch.object(update_service, "queue_image_update", new=AsyncMock()) as mock_queue,
+    ):
+        queued, skipped = await update_service.queue_fleet_image_update("ecr/openclaw-extended:new")
+
+    assert queued == 1
+    assert skipped == 1
+    mock_queue.assert_awaited_once_with("owner_ecs", "ecr/openclaw-extended:new", None)
+
+
+@pytest.mark.asyncio
+async def test_apply_claimed_update_refuses_image_roll_for_agentcore_owner():
+    owner_id, update_id = "owner_agentcore", "upd_agentcore"
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": "image_update",
+        "changes": {"new_image": "ecr/openclaw-extended:2026.9.1-abc"},
+    }
+    repo = _claimed_repo(update_item)
+    ecs = MagicMock()
+    ecs.resize_user_container = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service.runtime_transport, "is_agentcore_owner", new=AsyncMock(return_value=True)),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is False
+    ecs.resize_user_container.assert_not_awaited()
+    repo.finish_claimed_apply.assert_awaited_once()
+    assert repo.finish_claimed_apply.await_args.kwargs["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_apply_claimed_update_config_patch_only_is_unaffected_for_agentcore_owner():
+    """A config_patch-only change (not this row's ECS-shaped set) must not be
+    refused just because the owner happens to be AgentCore -- that's row
+    #12/#13's door, not this one."""
+    owner_id, update_id = "owner_agentcore", "upd_cfg"
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": "config_patch",
+        "changes": {"config_patch": {"tools": {"profile": "full"}}},
+    }
+    repo = _claimed_repo(update_item)
+    patcher = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service.runtime_transport, "is_agentcore_owner", new=AsyncMock(return_value=True)),
+        patch.object(update_service, "patch_openclaw_config", patcher),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is True
+    patcher.assert_awaited_once_with(owner_id, {"tools": {"profile": "full"}})

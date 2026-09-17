@@ -30,7 +30,7 @@ from core.repositories import billing_repo, container_repo, update_repo
 from core import openclaw_version
 from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
-from core.services import config_schema
+from core.services import config_schema, runtime_transport
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
 
 logger = logging.getLogger(__name__)
@@ -98,16 +98,23 @@ async def queue_image_update(owner_id: str, new_image: str, description: str | N
     return item
 
 
-async def queue_fleet_image_update(new_image: str, description: str | None = None) -> int:
-    """Queue an image update for every owner in the billing-accounts table.
+async def queue_fleet_image_update(new_image: str, description: str | None = None) -> tuple[int, int]:
+    """Queue an image update for every ECS-hosted owner in the billing-accounts table.
 
-    Scans the billing-accounts DynamoDB table and creates one pending update per owner.
-    Returns the count of updates created.
+    Scans the billing-accounts DynamoDB table and creates one pending update per
+    ECS owner. An AgentCore owner is skipped (not queued, not counted as
+    failed): a Hermes image bump is not an ECS task-definition change -- the
+    runtime's image moves with hermes-version.json + provisioning's own drift
+    branch, never a queued `image_update` row applied via `_apply_claimed_update`'s
+    ECS-only resize path (row #14).
+
+    Returns (queued, skipped_agentcore).
     """
     from core.dynamodb import get_table, run_in_thread
 
     table = get_table("billing-accounts")
     count = 0
+    skipped_agentcore = 0
     last_key = None
 
     while True:
@@ -122,6 +129,9 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
             owner_id = item.get("owner_id")
             if not owner_id:
                 continue
+            if await runtime_transport.is_agentcore_owner(owner_id):
+                skipped_agentcore += 1
+                continue
             await queue_image_update(owner_id, new_image, description)
             count += 1
 
@@ -129,8 +139,13 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
         if not last_key:
             break
 
-    logger.info("Queued fleet image update for %d owners, image=%s", count, new_image)
-    return count
+    logger.info(
+        "Queued fleet image update for %d owners (%d agentcore skipped), image=%s",
+        count,
+        skipped_agentcore,
+        new_image,
+    )
+    return count, skipped_agentcore
 
 
 async def queue_fleet_task_definition_refresh(description: str | None = None) -> tuple[int, int]:
@@ -489,6 +504,34 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
     try:
         changes = update.get("changes", {})
         update_type = update.get("update_type", "")
+
+        ecs_shaped = bool(
+            changes.get("new_image")
+            or changes.get("new_cpu")
+            or changes.get("new_memory")
+            or changes.get(TASK_DEFINITION_REFRESH_CHANGE)
+        )
+        if ecs_shaped and await runtime_transport.is_agentcore_owner(owner_id):
+            # Row #14 defensive backstop: the primary control is the enqueue-time
+            # filter (queue_fleet_image_update/queue_task_definition_refresh_for_owner
+            # skip AgentCore owners outright), but this refuses ANY other path that
+            # queued an ECS-shaped change for one (e.g. a single-owner admin POST
+            # /updates that bypassed the fleet filter) -- there is no ECS service for
+            # ecs.resize_user_container/prepare_config_lock_protocol_task_definition
+            # below to find.
+            logger.warning(
+                "Refusing ECS-shaped update %s for AgentCore owner=%s -- no ECS service to update",
+                update_id,
+                owner_id,
+            )
+            await update_repo.finish_claimed_apply(
+                owner_id,
+                update_id,
+                claim_id,
+                status="failed",
+                failure_reason="owner runtime is agentcore; this update only applies to ECS",
+            )
+            return False
 
         # Step 2: apply config patch if present
         config_patch = changes.get("config_patch")

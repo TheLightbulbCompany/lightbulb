@@ -145,6 +145,61 @@ def test_wait_for_runtime_ready_raises_on_window_timeout(monkeypatch):
         hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
 
 
+# --- N2/M4-R40: _update_runtime_image sends the FULL spec, validated by real botocore --------
+
+
+def test_update_runtime_image_sends_the_full_create_spec_not_just_the_image(monkeypatch):
+    """A MagicMock client can't catch this class of bug -- botocore's OWN parameter validator
+    (which runs on a real client before any network call) is what proves roleArn/network/env/
+    lifecycle are all present, not just agentRuntimeId + agentRuntimeArtifact. Verified against
+    the installed botocore service model: UpdateAgentRuntime REQUIRES agentRuntimeId,
+    agentRuntimeArtifact AND roleArn, and does NOT accept agentRuntimeName or tags."""
+    import boto3
+    from botocore.stub import Stubber
+
+    request = hermes_provisioning.build_hermes_runtime_request(
+        owner_id="org_a",
+        image_uri="877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-v2",
+        role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a",
+        subnets=["subnet-1"],
+        security_groups=["sg-1"],
+        environment={"ISOL8_OWNER_ID": "org_a"},
+    )
+
+    client = boto3.client("bedrock-agentcore-control", region_name="us-east-1")
+    stubber = Stubber(client)
+    expected_params = {k: v for k, v in request.items() if k not in ("agentRuntimeName", "tags")}
+    expected_params["agentRuntimeId"] = "r1"
+    import datetime
+
+    stubber.add_response(
+        "update_agent_runtime",
+        {
+            "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/r1",
+            "agentRuntimeId": "r1",
+            "agentRuntimeVersion": "2",
+            "createdAt": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            "lastUpdatedAt": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            "status": "UPDATING",
+        },
+        expected_params,
+    )
+    stubber.activate()
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
+
+    hermes_provisioning._update_runtime_image("arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/r1", request)
+
+    stubber.assert_no_pending_responses()
+    # agentRuntimeName/tags are CREATE-only members -- UpdateAgentRuntime's model rejects both.
+    assert "agentRuntimeName" not in expected_params
+    assert "tags" not in expected_params
+    assert expected_params["roleArn"] == request["roleArn"]
+    assert expected_params["networkConfiguration"] == request["networkConfiguration"]
+    assert expected_params["environmentVariables"] == request["environmentVariables"]
+    assert expected_params["protocolConfiguration"] == request["protocolConfiguration"]
+    assert expected_params["lifecycleConfiguration"] == request["lifecycleConfiguration"]
+
+
 # --- prepare_hermes_workspace (M4-R33): tokens + boot secret BEFORE step 0 -----------------
 
 
@@ -448,16 +503,25 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
 
     updated = {}
 
-    def _fake_update_image(arn, image_uri):
+    def _fake_update_image(arn, request):
         updated["arn"] = arn
-        updated["image_uri"] = image_uri
+        updated["request"] = request
 
     monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _fake_update_image)
     monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
     monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
 
     await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
-    assert updated == {"arn": "arn:found-by-name", "image_uri": HERMES_IMAGE}
+    assert updated["arn"] == "arn:found-by-name"
+    # N2/M4-R40: the FULL create spec, not just the image -- this is what proves the drift path
+    # can never omit roleArn/network/env/lifecycle again.
+    request = updated["request"]
+    assert request["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == HERMES_IMAGE
+    assert request["roleArn"] == "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"
+    assert request["networkConfiguration"]["networkMode"] == "VPC"
+    assert request["environmentVariables"]
+    assert request["protocolConfiguration"] == {"serverProtocol": "HTTP"}
+    assert request["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 4 * 60 * 60
 
 
 # --- N1/M4-R39: provision_hermes_runtime gets the same freshness guard as prepare -----------

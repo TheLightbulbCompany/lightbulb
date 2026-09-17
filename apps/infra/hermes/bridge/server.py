@@ -133,6 +133,36 @@ def _rpc(body) -> tuple[int, dict]:
     return 200, result
 
 
+def _require_profile(params: dict) -> str:
+    agent_id = str(params.get("agentId") or "")
+    if agent_id not in _profiles():
+        raise LookupError(agent_id)
+    return agent_id
+
+
+def _config_get(params: dict) -> dict:
+    if params.get("agentId"):
+        return {"ok": True, "payload": {"config": sync.read_profile_config(_require_profile(params))}}
+    return {"ok": True, "payload": {"config": {name: sync.read_profile_config(name) for name in _profiles()}}}
+
+
+def _config_patch(params: dict) -> dict:
+    agent_id = _require_profile(params)
+    merged = sync.deep_merge(sync.read_profile_config(agent_id), params.get("patch") or {})
+    sync.write_profile_config(agent_id, merged)
+    return {"ok": True, "payload": {"config": merged}}
+
+
+def _config_set(params: dict) -> dict:
+    agent_id = _require_profile(params)
+    config = params.get("config") or {}
+    sync.write_profile_config(agent_id, config)
+    return {"ok": True, "payload": {"config": config}}
+
+
+RPC_METHODS.update({"config.get": _config_get, "config.patch": _config_patch, "config.set": _config_set})
+
+
 # ---- /ws door probe (throwaway: M2 replaces this echo with the node protocol) ----------------
 _ws_seen: list[dict] = []
 

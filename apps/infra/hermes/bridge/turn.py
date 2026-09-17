@@ -691,7 +691,12 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                     _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
                 frames.started()
                 threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
-            turn_session_id = f"{room.get('id')}:{agent_id}"
+            # Fix round (Critical 1): must equal the session_id _construct_agent hands the
+            # AIAgent (both derived from the same `session_key` this function already
+            # computed above) -- the plugin's tool handler reads this file back by the
+            # session_id Hermes gives it, so a different value here means the plugin looks
+            # in a location the bridge never writes to.
+            turn_session_id = session_key
             write_turn_context(_profile_dir(agent_id), turn_session_id, {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),

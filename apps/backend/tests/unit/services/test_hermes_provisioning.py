@@ -515,8 +515,86 @@ async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_a
 
 
 @pytest.mark.asyncio
+async def test_a_create_failed_runtime_is_deleted_arn_cleared_and_the_failure_raised(monkeypatch):
+    """F1 (predeploy review, M6-R34): a CREATE_FAILED/UPDATE_FAILED runtime is dead -- AWS
+    refuses UpdateAgentRuntime against it, so every retry that found this ARN on the row would
+    otherwise call Update on a terminal runtime forever. The terminal branch must delete it and
+    clear the row's ARN (same fenced write the ARN record used) before re-raising."""
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
+
+    def _fake_wait(arn):
+        raise hermes_provisioning.AgentCoreRuntimeCreateFailed(
+            f"AgentCore runtime {arn} failed to start: CREATE_FAILED"
+        )
+
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", _fake_wait)
+    deleted = {}
+    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda arn: deleted.setdefault("arn", arn))
+
+    writes: list[dict] = []
+
+    async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
+        writes.append(fields)
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
+
+    with pytest.raises(hermes_provisioning.AgentCoreRuntimeCreateFailed, match="CREATE_FAILED"):
+        await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", attempt_token="tok-1")
+
+    assert deleted["arn"] == "arn:dead"
+    # writes[0] is the pre-poll ARN record (M4-R35/C1); writes[1] is this fix's clear.
+    assert writes[0]["agentcore_runtime_arn"] == "arn:dead"
+    assert writes[-1]["agentcore_runtime_arn"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_create_failed_runtime_delete_is_best_effort(monkeypatch):
+    """The runtime may already be gone (a concurrent operator cleanup, a prior attempt's own
+    delete) -- a failed DeleteAgentRuntime must not stop the row's ARN from being cleared or
+    the original failure from being raised."""
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_wait_for_runtime_ready",
+        lambda arn: (_ for _ in ()).throw(hermes_provisioning.AgentCoreRuntimeCreateFailed("CREATE_FAILED")),
+    )
+
+    def _explode_delete(arn):
+        raise RuntimeError("already gone")
+
+    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", _explode_delete)
+    writes: list[dict] = []
+
+    async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
+        writes.append(fields)
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
+
+    with pytest.raises(hermes_provisioning.AgentCoreRuntimeCreateFailed):
+        await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", attempt_token="tok-1")
+
+    assert writes[-1]["agentcore_runtime_arn"] is None
+
+
+@pytest.mark.asyncio
 async def test_provision_skips_write_profiles_for_an_arn_row_in_error(monkeypatch):
-    """N4/M4-R42: _write_profiles runs BEFORE CreateAgentRuntime, so an ARN row already has its
+    """N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so an ARN row already has its
     profiles in S3. Idempotence keys on status == "running" (M4-R35/C1), so an ARN row sitting in
     error (which C2's release-to-error path now produces routinely) must NOT re-run the profile
     fan-out and overwrite owner-edited profiles / bump .revision -- it only recovers the runtime."""

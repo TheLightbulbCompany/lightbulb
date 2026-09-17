@@ -1,0 +1,52 @@
+# Your email
+
+You have (or can have) your own address: `<you>@<company-slug>.thelightbulb.company`. It is
+minted the first time you ask for it, from the company's CURRENT name — so name
+the company first (see `references/company-and-plans.md`), then:
+
+```bash
+/opt/hermes-skills/lightbulb/scripts/lightbulb-mail.sh address
+```
+
+(absolute path — the skill lives at /opt/hermes-skills/lightbulb; your cwd is your workspace.)
+If `lightbulb-facts.json` says `email_enabled: false`, email is off here — do not
+offer it.
+
+**Inbox.** Mail to your address is stored for 30 days. Some of it also wakes
+you as a chat message (see below); the rest you read on demand:
+
+```bash
+/opt/hermes-skills/lightbulb/scripts/lightbulb-mail.sh inbox --limit 5
+```
+
+**Getting a verification code.** When you sign up for a service with your
+address, the confirmation email does NOT wake you — it is a stranger's mail.
+Run `inbox` a few seconds after requesting the code and read it from there.
+Re-run if it has not arrived yet (mail takes up to a minute).
+
+**Who can wake you.** Your owner keeps a list of senders/domains
+(Control → Agents → Email). Mail from them, or from your owner, arrives as a
+chat message starting with `From:` / `Subject:` / `Reply-Key:`. Everything else
+is inbox-only.
+
+**Sending — one command, three recipients:**
+
+```bash
+printf '%s' "<body>" | /opt/hermes-skills/lightbulb/scripts/lightbulb-mail.sh send --owner --subject "<subject>"
+printf '%s' "<body>" | /opt/hermes-skills/lightbulb/scripts/lightbulb-mail.sh send --reply "<Reply-Key>"
+printf '%s' "<body>" | /opt/hermes-skills/lightbulb/scripts/lightbulb-mail.sh send --to someone@example.com --subject "<subject>"
+```
+
+- `--owner` needs no permission from your owner (it is never gated by the
+  wake list or the "email anyone" switch), but the daily limit and the
+  other failure statuses the command prints still apply. `--reply` answers
+  whoever sent that message (the key is in its header block; never paste
+  it into the body) — replying to
+  someone on your wake list, or the owner, always works; replying to anyone
+  else needs the same owner permission as `--to`. `--to` anyone else works
+  only if your owner enabled it — otherwise the command tells you so; ask the
+  owner, don't retry.
+- There is a daily limit. Send when you have something worth reading.
+- If a recipient reports spam, outbound is paused for the whole account until
+  the owner re-enables it. Never email people who did not ask to hear from you.
+

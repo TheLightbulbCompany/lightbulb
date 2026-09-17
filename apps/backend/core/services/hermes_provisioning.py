@@ -64,6 +64,7 @@ secret the ECS path references by ARN, but read back directly here (AgentCore ha
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -348,16 +349,104 @@ async def _load_role_and_aips(owner_id: str) -> tuple[str, dict[str, str]]:
     return role_arn, aip_arns
 
 
+class HermesProfileError(RuntimeError):
+    """A Hermes profile's owner-level inputs, or a per-agent Paperclip API key
+    mint, failed hard (fix round 3, M6-R13). A profile that boots but cannot
+    authenticate -- to its own LLM provider or to Paperclip -- is a failed
+    install, not a degrade, so this is raised instead of shipping an empty
+    credential.
+
+    Subclasses ``RuntimeError`` (not a bare ``Exception``) so
+    ``container_repo.classify_provision_error``'s treatment of the
+    provisioning-runner path is UNCHANGED: none of that function's branches
+    single out ``RuntimeError`` by exact type, so a ``HermesProfileError``
+    classifies identically to a plain ``RuntimeError`` (retryable, per its
+    "everything else" default) — asserted directly in
+    ``test_classify_provision_error_treats_hermes_profile_error_like_runtime_error``.
+    Also lets every existing ``pytest.raises(RuntimeError, ...)`` /
+    ``except RuntimeError`` in this module and its callers keep working
+    unchanged.
+    """
+
+
+@dataclass(frozen=True)
+class ProfileInputs:
+    """The owner-level Hermes profile writer inputs, sourced IDENTICALLY by
+    every caller of ``hermes_profiles.write_agent_profile`` (fix round 3,
+    M6-R10). Before this, ``catalog_service._build_and_upload_agent_profile``
+    hand-rolled its own version of this sourcing that diverged from
+    ``_write_profiles``'s in three ways: it skipped
+    ``provider_choice_from_row``'s ``trial_local`` branch (a card-less trial
+    owner's marketplace deploy would land the full paid model ladder instead
+    of ``BEDROCK_TRIAL_CHOICE``), it returned ``None`` for an unset
+    ``byo_provider`` on a ``byo_key`` owner instead of the ``"anthropic"``
+    default this module reads, and it degraded a roster-read failure to a
+    manifest-derived stand-in agent row instead of hard-failing.
+
+    Per-agent inputs (the Paperclip API key mint, the agent row itself) are
+    deliberately NOT here — both callers resolve those per agent, not per
+    owner, and mint/lookup them differently (a six-agent fan-out here vs. a
+    single freshly-deployed agent in catalog_service).
+    """
+
+    provider_choice: str
+    byo_provider: str | None
+    byo_api_key: str | None
+    aip_arns: dict[str, str]
+    integrations: dict[str, dict]
+    env_vars: dict[str, str]
+
+
+async def resolve_profile_inputs(owner_id: str, *, container_row: dict) -> ProfileInputs:
+    """The six owner-level Hermes profile writer inputs (fix round 3, M6-R10)
+    — the ONE function every caller of ``write_agent_profile`` sources them
+    through, so they can never diverge again.
+
+    ``container_row`` supplies ``aip_arns`` (the containers table's
+    ``bedrock_aip_arns`` field) — the same source ``catalog_service`` always
+    read directly. ``_write_profiles``'s own caller
+    (``provision_hermes_runtime``) already has a real ``aip_arns`` value from
+    its own ``_load_role_and_aips`` call by the time it calls this (that
+    call's ``ensure_owner_aips`` is what persists ``bedrock_aip_arns`` onto
+    the row in the first place), so it passes a lightweight
+    ``{"bedrock_aip_arns": aip_arns}`` here rather than re-reading the row —
+    the row it read at its own entry was captured BEFORE that write landed,
+    so trusting it here would silently reintroduce a stale/empty AIP map.
+
+    Raises ``HermesProfileError`` when ``provider_choice == "byo_key"`` and
+    no readable key exists for ``byo_provider or "anthropic"`` — a profile
+    with no LLM credential at all is a failed install, not a degrade
+    (M6-R11, folded into this shared helper by M6-R10).
+    """
+    from core.services.container_provision import resolve_provider_choice
+    from core.services.credentials.mcp_server import build_connected_integration_servers
+    from core.services.key_service import read_byo_key
+    from core.services.provisioning_landing import build_provisioned_env
+
+    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+    byo_api_key = await read_byo_key(owner_id, byo_provider or "anthropic") if provider_choice == "byo_key" else None
+    if provider_choice == "byo_key" and not byo_api_key:
+        raise HermesProfileError(f"hermes profile for owner={owner_id}: byo api key read failed")
+    integrations = await build_connected_integration_servers(owner_id)
+    env_vars = await build_provisioned_env(owner_id)
+    return ProfileInputs(
+        provider_choice=provider_choice,
+        byo_provider=byo_provider,
+        byo_api_key=byo_api_key,
+        aip_arns=container_row.get("bedrock_aip_arns") or {},
+        integrations=integrations,
+        env_vars=env_vars,
+    )
+
+
 async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     """Step 1's profile fan-out: one Hermes profile (config.yaml + .env + SOUL.md) per starter
     agent, uploaded to S3.
 
+    Owner-level inputs via ``resolve_profile_inputs`` (M6-R10) — see its docstring.
+
     Roster via ``core.services.messaging.load_agent_roster`` (M4-R10) — the same normalized,
     UUID-validated shape ``write_agent_profile``'s ``agent`` parameter expects.
-
-    BYO key (M4-R32): the plaintext value is read back from Secrets Manager
-    (``key_service.read_byo_key``) only when ``provider_choice == "byo_key"`` — every other
-    provider choice never touches it.
 
     Writer failure handling: ``write_agent_profile`` (via ``render_dotenv``) raises ``ValueError``
     on an illegal dotenv value (a newline, an illegal key). Caught PER AGENT and re-raised as a
@@ -365,28 +454,21 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     integration/env value fails this provision attempt with a diagnosable error instead of leaving
     a six-agent roster half profiled with no indication which agent or variable broke it.
 
-    I2: ``ensure_paperclip_api_key`` returns ``None`` on ANY failure — its documented contract is
-    "skip staging this agent's identity file this provision; try again next time" (a poll-thread
-    ECS caller gets exactly that next time, on its next ~3s poll). This path has no next time
-    once ``provision_hermes_runtime`` idempotent-returns on the ARN, so a bare ``or ""`` used to
-    bake ``PAPERCLIP_API_KEY=`` into the agent's ``.env`` permanently. A ``None`` here now raises
-    a named ``RuntimeError`` instead — caught by C2's release-to-error wrapper in
-    ``provision_runner.run``, so the provision fails retryably rather than shipping a silently
-    unauthenticated agent.
+    I2/M6-R13: ``ensure_paperclip_api_key`` returns ``None`` on ANY failure — its documented
+    contract is "skip staging this agent's identity file this provision; try again next time" (a
+    poll-thread ECS caller gets exactly that next time, on its next ~3s poll). This path has no
+    next time once ``provision_hermes_runtime`` idempotent-returns on the ARN, so a bare ``or ""``
+    used to bake ``PAPERCLIP_API_KEY=`` into the agent's ``.env`` permanently. A ``None`` here now
+    raises ``HermesProfileError`` instead — caught by C2's release-to-error wrapper in
+    ``provision_runner.run`` (it subclasses ``RuntimeError``, so that classification is unchanged),
+    so the provision fails retryably rather than shipping a silently unauthenticated agent.
     """
-    from core.services.container_provision import resolve_provider_choice
-    from core.services.credentials.mcp_server import build_connected_integration_servers
     from core.services.hermes_profiles import upload_profile, write_agent_profile
-    from core.services.key_service import read_byo_key
     from core.services.messaging import load_agent_roster
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_api_key import ensure_paperclip_api_key
-    from core.services.provisioning_landing import build_provisioned_env
 
-    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-    byo_api_key = await read_byo_key(owner_id, byo_provider or "anthropic") if provider_choice == "byo_key" else None
-    integrations = await build_connected_integration_servers(owner_id)
-    env_vars = await build_provisioned_env(owner_id)
+    inputs = await resolve_profile_inputs(owner_id, container_row={"bedrock_aip_arns": aip_arns})
     admin_client = shared_admin_client()
     for agent in await load_agent_roster(owner_id):
         agent_id = agent["id"]
@@ -394,22 +476,22 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
             owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=admin_client
         )
         if paperclip_api_key is None:
-            # I2: never bake an empty credential. See the module docstring's note above --
+            # I2/M6-R13: never bake an empty credential. See the module docstring's note above --
             # there is no "next provision" here to retry into, unlike the ECS poll-thread caller.
-            raise RuntimeError(
+            raise HermesProfileError(
                 f"hermes profile for owner={owner_id} agent={agent_id}: paperclip API key mint/read failed"
             )
         try:
             files = write_agent_profile(
                 owner_id,
                 agent,
-                provider_choice=provider_choice,
-                aip_arns=aip_arns,
+                provider_choice=inputs.provider_choice,
+                aip_arns=inputs.aip_arns,
                 paperclip_api_key=paperclip_api_key,
-                integrations=integrations,
-                env_vars=env_vars,
-                byo_provider=byo_provider,
-                byo_api_key=byo_api_key,
+                integrations=inputs.integrations,
+                env_vars=inputs.env_vars,
+                byo_provider=inputs.byo_provider,
+                byo_api_key=inputs.byo_api_key,
             )
         except ValueError as exc:
             raise RuntimeError(

@@ -174,6 +174,14 @@ export function NavIcon({ icon }: { icon: string }) {
           <path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8" />
         </svg>
       );
+    case "desktop":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="2" y="3" width="20" height="18" rx="2" />
+          <path d="m7 8 3 3-3 3" />
+          <path d="M13 15h4" />
+        </svg>
+      );
     case "marketplace":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

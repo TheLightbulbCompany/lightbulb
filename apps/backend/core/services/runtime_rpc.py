@@ -251,6 +251,13 @@ def _sanitize_agent_create(params: dict[str, Any]) -> dict[str, Any]:
                     raise ApiProblem("INVALID_REQUEST", "Invalid Paperclip agent metadata.")
                 sanitized[key] = value.strip()
             clean["params"] = {"paperclip": sanitized}
+    # `workspace` is never required or derived here: an ECS agent's EFS path is
+    # assigned downstream from the Paperclip agent's own id (see
+    # paperclip_openclaw_pairing's `workspace=f"/home/node/.openclaw/workspace-{pc_uuid}"`),
+    # and a Hermes/AgentCore agent has no EFS path at all. `clean` is built
+    # from an explicit allowlist above, so a client-supplied `workspace` (or
+    # any other unrecognized key) is already dropped, not merely ignored —
+    # this is never trusted or forwarded.
     return clean
 
 

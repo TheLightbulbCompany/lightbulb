@@ -532,13 +532,58 @@ async def _write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     agent's ``write_profile_for_agent`` call via its ``inputs`` parameter — not once per agent
     (six billing/Secrets/integrations/env reads for a six-agent starter roster, and a risk that
     the roster diverges on those inputs mid-fan-out).
+
+    Fix round 1, Important 2: after every agent has its profile, ``_stage_owner_facts`` uploads
+    ``lightbulb-facts.json`` to each one too — see its own docstring for why this must happen
+    HERE rather than by simply calling ``owner_facts.write_owner_facts``.
     """
     from core.services.messaging import load_agent_roster
 
     container_row = {"bedrock_aip_arns": aip_arns}
     inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
-    for agent in await load_agent_roster(owner_id):
+    roster = await load_agent_roster(owner_id)
+    for agent in roster:
         await write_profile_for_agent(owner_id, agent, container_row=container_row, inputs=inputs)
+    await _stage_owner_facts(owner_id, [agent["id"] for agent in roster], inputs)
+
+
+async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
+    """Fix round 1, Important 2: a freshly provisioned AgentCore workspace never runs
+    ``ecs_manager.write_user_configs`` (the ONLY caller of ``owner_facts.write_owner_facts``
+    today), so it had NO ``lightbulb-facts.json`` at all while the bundled skill tells every
+    agent to read it. Stages the SAME facts file directly into every roster profile instead of
+    calling ``write_owner_facts`` itself: at this point in provisioning the row's
+    ``runtime_host`` has NOT yet flipped to ``"agentcore"`` (``_write_profiles`` runs BEFORE
+    ``CreateAgentRuntime`` records the ARN -- N4/M4-R42, above), so ``write_owner_facts``'s own
+    ``is_agentcore_owner`` check would take the wrong (EFS) branch here and write nothing
+    anyone will ever read.
+
+    Sources plan/provider the same way ``ecs_manager.write_user_configs``'s own
+    ``write_owner_facts`` call does (as ``account_overrides``): this provision's OWN
+    just-resolved ``inputs.provider_choice``/``inputs.byo_provider``, not a re-read that could
+    race an in-flight billing write. Email + provisioning-workflow lookups reuse
+    ``owner_facts``'s own private helpers so this can never diverge from what the ECS path
+    renders. Best-effort, matching ``write_owner_facts``'s own contract -- a facts-file hiccup
+    must never fail provisioning."""
+    import json
+
+    from core.repositories import billing_repo
+    from core.services import hermes_profiles
+    from core.services.owner_facts import _lookup_email_address, _lookup_provisioning, build_owner_facts
+
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+        account = {**account, "provider_choice": inputs.provider_choice, "byo_provider": inputs.byo_provider}
+        facts = build_owner_facts(
+            owner_id,
+            account,
+            email_address=await _lookup_email_address(owner_id),
+            provisioning=await _lookup_provisioning(owner_id),
+        )
+        facts_json = json.dumps(facts, indent=2) + "\n"
+        await run_in_thread(hermes_profiles.write_facts_to_profiles, owner_id, agent_ids, facts_json)
+    except Exception:  # noqa: BLE001 — a facts-file hiccup must never fail provisioning
+        logger.exception("hermes profile facts staging failed for owner=%s", owner_id)
 
 
 async def provision_hermes_runtime(

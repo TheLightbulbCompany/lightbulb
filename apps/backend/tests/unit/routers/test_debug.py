@@ -949,3 +949,153 @@ class TestAgentCoreProvision:
 
         assert res.status_code == 403
         ensure.assert_not_called()
+
+
+class TestAgentCoreDebugRoutes:
+    """Row #18: /debug/provision on an existing AgentCore row.
+
+    PATCH gets the S3-profile twin of the ECS wholesale-rewrite (_write_profiles
+    + best-effort session stop); POST/DELETE 409 with a pointer at the real
+    AgentCore doors (POST /debug/agentcore/provision, the migration script's
+    --rollback) instead of writing ECS-shaped config or tearing down an ECS
+    service that does not exist.
+    """
+
+    @staticmethod
+    def _agentcore_row(**overrides):
+        row = {
+            "owner_id": "org_test_456",
+            "status": "running",
+            "runtime_host": "agentcore",
+            "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x",
+            "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/sonnet"},
+        }
+        row.update(overrides)
+        return row
+
+    @pytest.mark.asyncio
+    async def test_post_provision_409s_on_existing_agentcore_row(self, async_client):
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=self._agentcore_row())
+        with patch("routers.debug.container_repo", repo):
+            res = await async_client.post("/api/v1/debug/provision")
+        assert res.status_code == 409
+        assert "agentcore/provision" in res.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_delete_provision_409s_on_existing_agentcore_row(self, async_client):
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=self._agentcore_row())
+        ecs = MagicMock()
+        ecs.delete_user_service = AsyncMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("routers.debug.get_ecs_manager", return_value=ecs),
+        ):
+            res = await async_client.delete("/api/v1/debug/provision")
+        assert res.status_code == 409
+        assert "--rollback" in res.json()["detail"]
+        ecs.delete_user_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_provision_still_idempotent_for_a_missing_row(self, async_client):
+        """No row at all (owner never provisioned) must still reach the ordinary
+        idempotent ECS delete -- the AgentCore check must not require a row to
+        exist for the normal ECS path to keep working."""
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        ecs = MagicMock()
+        ecs.delete_user_service = AsyncMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("routers.debug.get_ecs_manager", return_value=ecs),
+        ):
+            res = await async_client.delete("/api/v1/debug/provision")
+        assert res.status_code == 200
+        ecs.delete_user_service.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_patch_provision_rewrites_profiles_and_stops_the_session(self, async_client):
+        row = self._agentcore_row()
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=row)
+        write_profiles = AsyncMock()
+        stop_session = MagicMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("core.services.hermes_provisioning._write_profiles", write_profiles),
+            patch("scripts.migrate_workspace_to_hermes._stop_runtime_session", stop_session),
+        ):
+            res = await async_client.patch("/api/v1/debug/provision")
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["status"] == "profiles_rewritten"
+        assert body["runtime_host"] == "agentcore"
+        write_profiles.assert_awaited_once_with("org_test_456", row["bedrock_aip_arns"])
+        stop_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_patch_provision_never_touches_ecs_for_agentcore_row(self, async_client):
+        row = self._agentcore_row()
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=row)
+        ecs = MagicMock()
+        ecs.write_user_configs = AsyncMock()
+        ecs.start_user_service = AsyncMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("routers.debug.get_ecs_manager", return_value=ecs),
+            patch("core.services.hermes_provisioning._write_profiles", AsyncMock()),
+            patch("scripts.migrate_workspace_to_hermes._stop_runtime_session", MagicMock()),
+        ):
+            await async_client.patch("/api/v1/debug/provision")
+        ecs.write_user_configs.assert_not_awaited()
+        ecs.start_user_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_patch_provision_stop_session_failure_is_best_effort(self, async_client):
+        row = self._agentcore_row()
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=row)
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("core.services.hermes_provisioning._write_profiles", AsyncMock()),
+            patch(
+                "scripts.migrate_workspace_to_hermes._stop_runtime_session",
+                MagicMock(side_effect=RuntimeError("unknown session")),
+            ),
+        ):
+            res = await async_client.patch("/api/v1/debug/provision")
+        assert res.status_code == 200, res.text
+
+    @pytest.mark.asyncio
+    async def test_patch_provision_ecs_row_keeps_the_original_redeploy_behaviour(self, async_client):
+        row = {
+            "owner_id": "org_test_456",
+            "status": "running",
+            "service_name": "openclaw-org_test_456-abc",
+            "gateway_token": "gw-tok",
+            "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/sonnet"},
+        }
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=row)
+        ecs = MagicMock()
+        ecs.write_user_configs = AsyncMock()
+        ecs.start_user_service = AsyncMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("routers.debug.get_ecs_manager", return_value=ecs),
+            patch("core.services.container_provision.billing_repo") as mock_billing,
+        ):
+            mock_billing.get_by_owner_id = AsyncMock(
+                return_value={
+                    "owner_id": "org_test_456",
+                    "subscription_status": "active",
+                    "provider_choice": "bedrock_claude",
+                }
+            )
+            res = await async_client.patch("/api/v1/debug/provision")
+        assert res.status_code == 200, res.text
+        assert res.json()["status"] == "redeploying"
+        ecs.write_user_configs.assert_awaited_once()
+        ecs.start_user_service.assert_awaited_once()

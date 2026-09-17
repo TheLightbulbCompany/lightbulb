@@ -30,8 +30,9 @@ from core.repositories import billing_repo, container_repo, update_repo
 from core import openclaw_version
 from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
-from core.services import config_schema
+from core.services import config_schema, runtime_transport
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
+from core.services.runtime_rpc import _config_patch_roster
 
 logger = logging.getLogger(__name__)
 
@@ -98,16 +99,23 @@ async def queue_image_update(owner_id: str, new_image: str, description: str | N
     return item
 
 
-async def queue_fleet_image_update(new_image: str, description: str | None = None) -> int:
-    """Queue an image update for every owner in the billing-accounts table.
+async def queue_fleet_image_update(new_image: str, description: str | None = None) -> tuple[int, int]:
+    """Queue an image update for every ECS-hosted owner in the billing-accounts table.
 
-    Scans the billing-accounts DynamoDB table and creates one pending update per owner.
-    Returns the count of updates created.
+    Scans the billing-accounts DynamoDB table and creates one pending update per
+    ECS owner. An AgentCore owner is skipped (not queued, not counted as
+    failed): a Hermes image bump is not an ECS task-definition change -- the
+    runtime's image moves with hermes-version.json + provisioning's own drift
+    branch, never a queued `image_update` row applied via `_apply_claimed_update`'s
+    ECS-only resize path (row #14).
+
+    Returns (queued, skipped_agentcore).
     """
     from core.dynamodb import get_table, run_in_thread
 
     table = get_table("billing-accounts")
     count = 0
+    skipped_agentcore = 0
     last_key = None
 
     while True:
@@ -122,6 +130,9 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
             owner_id = item.get("owner_id")
             if not owner_id:
                 continue
+            if await runtime_transport.is_agentcore_owner(owner_id):
+                skipped_agentcore += 1
+                continue
             await queue_image_update(owner_id, new_image, description)
             count += 1
 
@@ -129,8 +140,13 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
         if not last_key:
             break
 
-    logger.info("Queued fleet image update for %d owners, image=%s", count, new_image)
-    return count
+    logger.info(
+        "Queued fleet image update for %d owners (%d agentcore skipped), image=%s",
+        count,
+        skipped_agentcore,
+        new_image,
+    )
+    return count, skipped_agentcore
 
 
 async def queue_fleet_task_definition_refresh(description: str | None = None) -> tuple[int, int]:
@@ -490,10 +506,52 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
         changes = update.get("changes", {})
         update_type = update.get("update_type", "")
 
-        # Step 2: apply config patch if present
+        ecs_shaped = bool(
+            changes.get("new_image")
+            or changes.get("new_cpu")
+            or changes.get("new_memory")
+            or changes.get(TASK_DEFINITION_REFRESH_CHANGE)
+        )
         config_patch = changes.get("config_patch")
+        # One read serves both the ECS-shaped guard below AND the config-patch branch --
+        # fix round 1, item 3 added the second consumer, so this is no longer paid only
+        # when ecs_shaped is already true.
+        is_agentcore = (ecs_shaped or config_patch) and await runtime_transport.is_agentcore_owner(owner_id)
+        if ecs_shaped and is_agentcore:
+            # Row #14 defensive backstop. queue_fleet_image_update skips AgentCore owners
+            # outright (an explicit is_agentcore_owner check at enqueue time). Fix round 1,
+            # minor: queue_task_definition_refresh_for_owner does NOT -- it has no runtime_host
+            # check at all, and only happens to exclude a NATIVE (never-ECS) AgentCore row
+            # because that row's complete check requires service_name/access_point_id/
+            # task_definition_arn. A MIGRATED row (scripts/migrate_workspace_to_hermes.py)
+            # keeps those stale ECS fields, so it passes `complete` and CAN be queued a
+            # task_definition_refresh row -- this guard, not that door, is what actually
+            # refuses it before ecs.resize_user_container/prepare_config_lock_protocol_
+            # task_definition below would find no ECS service.
+            logger.warning(
+                "Refusing ECS-shaped update %s for AgentCore owner=%s -- no ECS service to update",
+                update_id,
+                owner_id,
+            )
+            await update_repo.finish_claimed_apply(
+                owner_id,
+                update_id,
+                claim_id,
+                status="failed",
+                failure_reason="owner runtime is agentcore; this update only applies to ECS",
+            )
+            return False
+
+        # Step 2: apply config patch if present
         if config_patch:
-            await patch_openclaw_config(owner_id, config_patch)
+            # Fix round 1, item 3: a queued config_patch row for an AgentCore owner used to
+            # fall straight through to patch_openclaw_config, which raises ConfigPatchError
+            # (no openclaw.json to find) -- same S3-profile fan-out row #12/#13's config-patch
+            # doors already use.
+            if is_agentcore:
+                await _config_patch_roster(owner_id, config_patch, None)
+            else:
+                await patch_openclaw_config(owner_id, config_patch)
             logger.info("Applied config patch for update %s (owner=%s)", update_id, owner_id)
 
         # Step 3: apply ECS changes if present

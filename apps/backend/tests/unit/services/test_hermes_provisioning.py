@@ -917,6 +917,87 @@ async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six
     assert calls == ["org_a"]
 
 
+# --- owner facts staged at provision (fix round 1, Important 2) --------------------------------
+# A freshly provisioned AgentCore workspace never runs ecs_manager.write_user_configs (the only
+# caller of owner_facts.write_owner_facts), so it had no lightbulb-facts.json at all while the
+# bundled skill tells every agent to read it. _write_profiles now stages it directly.
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent_roster(monkeypatch):
+    roster = [
+        {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
+    ]
+    _patch_write_profiles_collaborators(monkeypatch, provider_choice="bedrock_claude")
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
+    monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
+    monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
+
+    uploaded = {}
+
+    def _fake_write_facts(owner_id, agent_ids, facts_json):
+        uploaded["owner_id"] = owner_id
+        uploaded["agent_ids"] = agent_ids
+        uploaded["facts_json"] = facts_json
+
+    monkeypatch.setattr("core.services.hermes_profiles.write_facts_to_profiles", _fake_write_facts)
+
+    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+    assert uploaded["owner_id"] == "org_a"
+    assert uploaded["agent_ids"] == [row["id"] for row in roster]
+    assert len(uploaded["agent_ids"]) == 6
+    assert '"provider_choice": "bedrock_claude"' in uploaded["facts_json"]
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_choice(monkeypatch):
+    """Sourced as account_overrides, the same way ecs_manager.write_user_configs's own
+    write_owner_facts call does -- this provision's just-resolved provider_choice/byo_provider,
+    not a stale/racing billing-row re-read."""
+    _patch_write_profiles_collaborators(
+        monkeypatch,
+        provider_choice="byo_key",
+        byo_provider="anthropic",
+        read_byo_key=AsyncMock(return_value="sk-real-byo-key"),
+    )
+    monkeypatch.setattr(
+        # The billing row itself still says bedrock_claude (an eventually-consistent read racing
+        # this provision's own provider switch) -- the override must still win.
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
+    monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
+
+    captured = {}
+    monkeypatch.setattr(
+        "core.services.hermes_profiles.write_facts_to_profiles",
+        lambda owner_id, agent_ids, facts_json: captured.update(facts_json=facts_json),
+    )
+
+    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+    assert '"provider_choice": "byo_key"' in captured["facts_json"]
+    assert "BYO Anthropic key" in captured["facts_json"]
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_facts_staging_is_best_effort(monkeypatch):
+    """A facts-file hiccup must never fail provisioning -- write_profile_for_agent's own
+    per-agent writes already succeeded by the time this runs."""
+    _patch_write_profiles_collaborators(monkeypatch)
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb down"))
+    )
+
+    await hermes_provisioning._write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})  # must not raise
+
+
 # --- write_profile_for_agent (M6-R23) -----------------------------------------------------------
 # Moved, unchanged in behaviour, from catalog_service._build_and_upload_agent_profile -- the
 # shared per-agent "write this agent's profile" seam _write_profiles (above) now delegates to,

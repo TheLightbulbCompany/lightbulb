@@ -514,8 +514,9 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
         await _apply_efs_overrides(owner_id, plan)
         if reconnect_chatgpt:
             await _reconcile_chatgpt_oauth(owner_id)
-        # Ruling M6-R18: the bridge's ensure_profile only re-pulls the four backend-owned files
-        # (config.yaml/.env/SOUL.md/.revision) on a revision change, and save_profile syncs the
+        # Ruling M6-R18: the bridge's ensure_profile only re-pulls the backend-owned files
+        # (config.yaml/.env/SOUL.md/.revision/lightbulb-facts.json) on a revision change, and
+        # save_profile syncs the
         # AGENT-owned files (memory/**, skills/**, AGENTS.md, MEMORY.md) back FROM the local
         # dir -- so a warm process that took a turn during the brief vanilla window (Ruling
         # M6-R14) would sync vanilla agent-owned content OVER what was just uploaded above.

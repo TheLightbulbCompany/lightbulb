@@ -116,6 +116,31 @@ async def build_connected_integration_servers(owner_id: str, *, pending: str | N
     return servers
 
 
+async def integration_owned_server_keys(owner_id: str) -> dict[str, str]:
+    """``{server_key: provider}`` for every CONNECTED integration that owns an ``mcp.servers``
+    entry -- the same three server-owning shapes ``build_connected_integration_servers``
+    recognizes, but without touching Secrets Manager: a manual-server collision check (M6-R32)
+    only needs to know WHICH keys are integration-owned, never the credential value, so this
+    skips the ``integration_secret_store.get`` round trip that function pays per ``mcp_server``
+    row."""
+    owned: dict[str, str] = {}
+    for row in await integrations_repo.list_for_owner(owner_id):
+        provider = row.get("provider")
+        if not provider or row.get("status", "connected") != "connected":
+            continue
+        try:
+            prov = registry.get_provider(provider)
+        except KeyError:
+            continue
+        if prov.mcp_remote is not None:
+            owned[prov.mcp_remote.key] = provider
+        elif prov.mcp_stdio is not None:
+            owned[prov.mcp_stdio.key] = provider
+        elif prov.wiring.mcp_server is not None:
+            owned[prov.wiring.mcp_server.key] = provider
+    return owned
+
+
 async def reconcile_integrations(owner_id: str, *, agentcore: bool | None = None, pending: str | None = None) -> None:
     """Re-assert every connected integration's config into the LIVE openclaw.json
     from the durable sources (registry spec x Secrets-Manager secret). Both

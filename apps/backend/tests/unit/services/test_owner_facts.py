@@ -1,6 +1,7 @@
 """Tests for core.services.owner_facts."""
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -313,3 +314,73 @@ def test_email_enabled_and_minted(monkeypatch):
 
     assert facts["email_enabled"] is True
     assert facts["email_address"] == "friday@acme.isol8.co"
+
+
+# ---------------------------------------------------------------------------
+# Row #15 / Ruling M6-R30 — an AgentCore owner has no EFS: write_owner_facts
+# stages the file into every roster profile in S3 instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_agentcore_owner_stages_every_profile(monkeypatch):
+    from core.services import hermes_profiles
+
+    async def fake_get(owner_id, *, consistent_read=False):
+        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+
+    async def fake_roster(owner_id):
+        return [{"id": "agent-ceo"}, {"id": "agent-eng"}]
+
+    calls = []
+
+    def fake_write_facts(owner_id, agent_ids, facts_json):
+        calls.append((owner_id, agent_ids, facts_json))
+
+    ws_calls = []
+
+    class FakeWs:
+        def write_file(self, *a, **k):
+            ws_calls.append("write_file")
+
+        def delete_file(self, *a, **k):
+            ws_calls.append("delete_file")
+
+    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_get)
+    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
+    monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
+    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
+
+    await owner_facts.write_owner_facts("org_agentcore")
+
+    assert len(calls) == 1
+    owner_id, agent_ids, facts_json = calls[0]
+    assert owner_id == "org_agentcore"
+    assert agent_ids == ["agent-ceo", "agent-eng"]
+    facts = json.loads(facts_json)
+    assert facts["provider_choice"] == "bedrock_claude"
+    # EFS is never touched for an AgentCore owner.
+    assert ws_calls == []
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_agentcore_write_failure_is_swallowed(monkeypatch):
+    async def fake_get(owner_id, *, consistent_read=False):
+        return {"subscription_status": "active"}
+
+    async def fake_roster(owner_id):
+        return [{"id": "agent-ceo"}]
+
+    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_get)
+    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
+
+    def boom(*a, **k):
+        raise RuntimeError("s3 down")
+
+    from core.services import hermes_profiles
+
+    monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", boom)
+
+    await owner_facts.write_owner_facts("org_agentcore")  # must not raise

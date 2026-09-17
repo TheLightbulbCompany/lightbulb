@@ -23,7 +23,8 @@ import logging
 from core.config import settings
 from core.containers.workspace import get_workspace
 from core.repositories import agent_email_repo, billing_repo
-from core.dynamodb import utc_now_iso
+from core.dynamodb import run_in_thread, utc_now_iso
+from core.services import runtime_transport
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,19 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
             email_address=await _lookup_email_address(owner_id),
             provisioning=await _lookup_provisioning(owner_id),
         )
-        get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
+        facts_json = json.dumps(facts, indent=2) + "\n"
+        if await runtime_transport.is_agentcore_owner(owner_id):
+            # Ruling M6-R30: an AgentCore agent has no EFS path at all -- stage the facts
+            # file into every roster profile in S3 instead (hermes_profiles.write_facts_to_
+            # profiles), one shared boto3 client, bumping each profile's .revision last so
+            # the bridge's ensure_profile() re-pull picks it up before the agent's next turn.
+            from core.services import hermes_profiles
+            from core.services.messaging import load_agent_roster
+
+            agent_ids = [agent["id"] for agent in await load_agent_roster(owner_id)]
+            await run_in_thread(hermes_profiles.write_facts_to_profiles, owner_id, agent_ids, facts_json)
+            return
+        get_workspace().write_file(owner_id, FACTS_FILENAME, facts_json)
         # Delete the pre-rename file rather than leaving it behind. A stale
         # facts file is worse than a missing one: an agent that found it would
         # act on frozen plan/provider/email state. Safe to delete outright

@@ -105,7 +105,7 @@ from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
 from core.repositories.container_repo import PASS_KEY_PREFIX, ProvisionSuperseded, classify_provision_error
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.dynamodb import run_in_thread
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.services import runtime_transport
 from core.services.container_provision import resolve_provider_choice
 from core.services.hermes_profiles import profile_prefix, upload_profile, write_agent_profile
@@ -128,6 +128,12 @@ EXIT_PRECONDITION = 2
 EXIT_REFERENCE_ORG = 3
 EXIT_LOST_CLAIM = 10
 EXIT_TRANSIENT = 11
+
+#: Ruling M6-R16 — which leg of the job a row needs. _MODE_FULL provisions from scratch;
+#: _MODE_TAIL means a prior attempt already reached READY (row on agentcore, no stamp yet) and
+#: only the EFS-override/stop-ECS/stamp tail remains.
+_MODE_FULL = "full"
+_MODE_TAIL = "tail"
 
 _PAPERCLIP_TABLE = "paperclip-companies"
 _SOUL_FILE = "SOUL.md"
@@ -233,31 +239,35 @@ def _print_plan(owner_id: str, plan, *, dry_run: bool, reconnect_chatgpt: bool) 
         print(f"{tag}{owner_id} reconnect_chatgpt")
 
 
-async def _check_preconditions(owner_id: str) -> tuple[int | None, list[dict] | None]:
-    """Ruling M6-R1 step 1. Returns ``(exit_code, None)`` on failure, or ``(None, roster)``."""
+async def _check_preconditions(owner_id: str) -> tuple[int | None, str | None, list[dict] | None]:
+    """Ruling M6-R1 step 1 / Ruling M6-R16. Returns ``(exit_code, None, None)`` on failure, or
+    ``(None, mode, roster)`` where ``mode`` is ``_MODE_FULL`` (provision from scratch) or
+    ``_MODE_TAIL`` (a prior attempt already reached READY — the row is on agentcore but carries
+    no ``hermes_migrated_at`` stamp yet, so only the tail remains)."""
     if owner_id == REFERENCE_ORG_ID:
         logger.error("migrate: %s is the reference org (M6-R2) — refusing", owner_id)
-        return EXIT_REFERENCE_ORG, None
+        return EXIT_REFERENCE_ORG, None, None
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     if not row:
         logger.error("migrate: no container row for owner=%s", owner_id)
-        return EXIT_PRECONDITION, None
-    if runtime_transport.host_for(row) == "agentcore":
-        logger.info("migrate: owner=%s is already on agentcore — nothing to do", owner_id)
-        return EXIT_PRECONDITION, None
+        return EXIT_PRECONDITION, None, None
+    if row.get("hermes_migrated_at"):
+        logger.info("migrate: owner=%s is already migrated (hermes_migrated_at stamped)", owner_id)
+        return EXIT_PRECONDITION, None, None
+    mode = _MODE_TAIL if runtime_transport.host_for(row) == "agentcore" else _MODE_FULL
     company = await _load_company(owner_id)
     if not company or company.status != "active":
         logger.error("migrate: owner=%s has no active Paperclip company row", owner_id)
-        return EXIT_PRECONDITION, None
+        return EXIT_PRECONDITION, None, None
     try:
         roster = await load_agent_roster(owner_id)
     except Exception:  # noqa: BLE001 — a roster fetch failure is Paperclip being unreachable, not ineligibility
         logger.exception("migrate: roster fetch failed for owner=%s — treating as transient", owner_id)
-        return EXIT_TRANSIENT, None
+        return EXIT_TRANSIENT, None, None
     if not roster:
         logger.error("migrate: owner=%s has an empty agent roster", owner_id)
-        return EXIT_PRECONDITION, None
-    return None, roster
+        return EXIT_PRECONDITION, None, None
+    return None, mode, roster
 
 
 def _map_release_exit(runner_exit_code: int) -> int:
@@ -335,8 +345,29 @@ async def _reconcile_chatgpt_oauth(owner_id: str) -> None:
     await revoke_user_oauth(user_id=connector_user_id)
 
 
+async def _stamp_migrated(owner_id: str) -> None:
+    """Ruling M6-R16 — the job's LAST fenced write. ``provision_hermes_runtime`` already
+    released the lease this job's earlier claim held (its own terminal write uses
+    ``release_lease=True``), so there is nothing left to reuse — this re-claims via
+    ``takeover_provision`` purely to make this a FENCED write like every other terminal
+    transition in this job. Stamps ``hermes_migrated_at`` (what makes the tail re-enterable: a
+    later run's precondition check treats a stamped row as done) and re-asserts
+    ``status="running"`` — ``stop_user_service``'s own row write (still needed for its ECS
+    ``desiredCount=0`` side effect) unconditionally sets ``status="stopped"``, which is wrong for
+    a workspace that is actually live on AgentCore; this stamp corrects it as the final word.
+    """
+    claim_id = await container_repo.takeover_provision(owner_id)
+    await container_repo.update_container_leased(
+        owner_id,
+        claim_id,
+        {"hermes_migrated_at": utc_now_iso(), "status": "running"},
+        attempt_token=claim_id,
+        release_lease=True,
+    )
+
+
 async def migrate(owner_id: str, *, dry_run: bool) -> int:
-    exit_code, roster = await _check_preconditions(owner_id)
+    exit_code, mode, roster = await _check_preconditions(owner_id)
     if exit_code is not None:
         return exit_code
 
@@ -347,40 +378,42 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
     if dry_run:
         return EXIT_OK
 
-    try:
-        claim_id = await container_repo.takeover_provision(owner_id)
-    except ProvisionSuperseded:
-        logger.warning("migrate: lost the provision claim for owner=%s before starting", owner_id)
-        return EXIT_LOST_CLAIM
-    except Exception as exc:  # noqa: BLE001 — a genuine claim failure, not a lost race
-        logger.exception("migrate: could not claim owner=%s", owner_id)
-        _, retryable = classify_provision_error(exc)
-        return EXIT_TRANSIENT if retryable else EXIT_OTHER
+    if mode == _MODE_FULL:
+        try:
+            claim_id = await container_repo.takeover_provision(owner_id)
+        except ProvisionSuperseded:
+            logger.warning("migrate: lost the provision claim for owner=%s before starting", owner_id)
+            return EXIT_LOST_CLAIM
+        except Exception as exc:  # noqa: BLE001 — a genuine claim failure, not a lost race
+            logger.exception("migrate: could not claim owner=%s", owner_id)
+            _, retryable = classify_provision_error(exc)
+            return EXIT_TRANSIENT if retryable else EXIT_OTHER
 
-    try:
-        await prepare_hermes_workspace(owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True)
-    except ProvisionSuperseded:
-        logger.warning("migrate: lost the provision claim for owner=%s during prepare", owner_id)
-        return EXIT_LOST_CLAIM
-    except Exception as exc:  # noqa: BLE001 — classified + released, mirrors provision_runner.run
-        released = await _release_hermes_failure_to_error(owner_id, claim_id, claim_id, exc, "migrate prepare")
-        return _map_release_exit(released)
+        try:
+            await prepare_hermes_workspace(owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True)
+        except ProvisionSuperseded:
+            logger.warning("migrate: lost the provision claim for owner=%s during prepare", owner_id)
+            return EXIT_LOST_CLAIM
+        except Exception as exc:  # noqa: BLE001 — classified + released, mirrors provision_runner.run
+            released = await _release_hermes_failure_to_error(owner_id, claim_id, claim_id, exc, "migrate prepare")
+            return _map_release_exit(released)
 
-    try:
-        await provision_hermes_runtime(owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True)
-    except ProvisionSuperseded:
-        logger.warning("migrate: lost the provision claim for owner=%s during runtime provision", owner_id)
-        return EXIT_LOST_CLAIM
-    except Exception as exc:  # noqa: BLE001
-        released = await _release_hermes_failure_to_error(
-            owner_id, claim_id, claim_id, exc, "migrate runtime provision"
-        )
-        return _map_release_exit(released)
+        try:
+            await provision_hermes_runtime(owner_id, claim_id=claim_id, attempt_token=claim_id, migrate=True)
+        except ProvisionSuperseded:
+            logger.warning("migrate: lost the provision claim for owner=%s during runtime provision", owner_id)
+            return EXIT_LOST_CLAIM
+        except Exception as exc:  # noqa: BLE001
+            released = await _release_hermes_failure_to_error(
+                owner_id, claim_id, claim_id, exc, "migrate runtime provision"
+            )
+            return _map_release_exit(released)
 
-    # The runtime is READY and the row is terminal (runtime_host=agentcore, status=running) --
-    # nothing above this line can clobber the EFS overrides below (see the module docstring's
-    # ordering note). A failure from here on is a live-workspace cleanup step, not a lost
-    # migration, so it is classified rather than treated as a lost claim.
+    # mode == _MODE_TAIL (a prior attempt already reached here) or mode == _MODE_FULL (just
+    # reached it above): run the tail. Ruling M6-R16 — this is RE-ENTERABLE: nothing here
+    # depends on the claim/lease the block above held, which provision_hermes_runtime already
+    # released on its own terminal write. A failure from here on is a live-workspace cleanup
+    # step, not a lost migration, so it is classified rather than treated as a lost claim.
     try:
         await _apply_efs_overrides(owner_id, plan, provider_choice=provider_choice, byo_provider=byo_provider)
         if reconnect_chatgpt:
@@ -390,6 +423,7 @@ async def migrate(owner_id: str, *, dry_run: bool) -> int:
         # (Ruling M6-R15) bypasses the AgentCore no-op guard -- by now the row already reads
         # runtime_host=agentcore, which would otherwise make this call a no-op forever.
         await get_ecs_manager().stop_user_service(owner_id, reason="hermes_migration", force=True)
+        await _stamp_migrated(owner_id)
     except Exception as exc:  # noqa: BLE001 — the runtime is already live; safe for --all to retry
         logger.exception("migrate: post-provision step failed for owner=%s (runtime is already live)", owner_id)
         _, retryable = classify_provision_error(exc)
@@ -441,7 +475,9 @@ async def rollback(owner_id: str) -> int:
     await container_repo.update_container_leased(
         owner_id,
         claim_id,
-        {"runtime_host": "ecs", "agentcore_runtime_arn": None, "status": "stopped"},
+        # hermes_migrated_at cleared with the flip (Ruling M6-R16) -- a rolled-back owner is not
+        # "already migrated" any more, and a later migrate() must run the full path again.
+        {"runtime_host": "ecs", "agentcore_runtime_arn": None, "status": "stopped", "hermes_migrated_at": None},
         attempt_token=claim_id,
         release_lease=True,
     )
@@ -456,6 +492,10 @@ async def migrate_all(*, dry_run: bool) -> int:
     migration is an operator-watched event, not a background job, and nothing here has load-
     tested AgentCore's per-account ``CreateAgentRuntime`` rate. The founder/reference org is
     never included (Ruling M6-R2) — Task 2 runs it explicitly via ``--owner-id`` first.
+
+    Ruling M6-R16: skips only STAMPED rows (``hermes_migrated_at``) — an unstamped agentcore row
+    (a prior attempt that crashed after READY but before its tail finished) is INCLUDED, since
+    ``migrate()`` on that row runs only the remaining tail rather than re-provisioning.
     """
     rows = await container_repo.scan_all()
     results: list[tuple[str, int]] = []
@@ -463,7 +503,7 @@ async def migrate_all(*, dry_run: bool) -> int:
         owner_id = row.get("owner_id")
         if not owner_id or owner_id.startswith(PASS_KEY_PREFIX) or owner_id == REFERENCE_ORG_ID:
             continue
-        if runtime_transport.host_for(row) == "agentcore":
+        if row.get("hermes_migrated_at"):
             continue
         company = await _load_company(owner_id)
         if not company or company.status != "active":

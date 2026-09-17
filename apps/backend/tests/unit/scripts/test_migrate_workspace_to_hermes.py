@@ -145,15 +145,26 @@ async def test_migrate_uploads_every_agent_provisions_then_stops_ecs_after_ready
     ecs = SimpleNamespace(stop_user_service=AsyncMock(side_effect=lambda *a, **kw: calls.append("stop")))
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
 
+    leased = AsyncMock(side_effect=lambda *a, **kw: calls.append("stamp"))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", leased)
+
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
 
-    # Ordering (Ruling M6-R1): provision only after prepare, stop only after provision.
-    assert calls == ["prepare", "provision", "stop"]
+    # Ordering (Ruling M6-R1/M6-R16): provision only after prepare, stop only after provision,
+    # the hermes_migrated_at stamp only after the stop.
+    assert calls == ["prepare", "provision", "stop", "stamp"]
     prepare.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
     provision.assert_awaited_once_with(OWNER, claim_id="claim-1", attempt_token="claim-1", migrate=True)
     # force=True (Ruling M6-R15): bypasses the AgentCore no-op guard -- the row already reads
     # runtime_host=agentcore by the time this call happens.
     ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
+
+    # Ruling M6-R16: the LAST fenced write stamps hermes_migrated_at and re-asserts
+    # status="running" (correcting stop_user_service's own status="stopped" row write).
+    leased.assert_awaited_once()
+    stamped_fields = leased.await_args.args[2]
+    assert stamped_fields["hermes_migrated_at"]
+    assert stamped_fields["status"] == "running"
 
     # Every agent got a profile prefix, the SOUL.md override, and the carried EFS content --
     # each agent's .revision write is the LAST key for that agent.
@@ -182,7 +193,14 @@ async def test_reference_org_is_refused_outright(monkeypatch):
     "row,company,roster",
     [
         (None, SimpleNamespace(status="active"), ROSTER),
-        ({"owner_id": OWNER, "runtime_host": "agentcore"}, SimpleNamespace(status="active"), ROSTER),
+        # Ruling M6-R16: a STAMPED row -- already migrated, full stop -- not merely "on agentcore"
+        # (see test_an_unstamped_agentcore_row_runs_only_the_tail for that case, which is NOT a
+        # precondition failure any more).
+        (
+            {"owner_id": OWNER, "runtime_host": "agentcore", "hermes_migrated_at": "2026-09-17T00:00:00Z"},
+            SimpleNamespace(status="active"),
+            ROSTER,
+        ),
         ({"owner_id": OWNER, "runtime_host": "ecs"}, None, ROSTER),
         ({"owner_id": OWNER, "runtime_host": "ecs"}, SimpleNamespace(status="seeding"), ROSTER),
         ({"owner_id": OWNER, "runtime_host": "ecs"}, SimpleNamespace(status="active"), []),
@@ -196,6 +214,53 @@ async def test_precondition_failures_exit_2_and_claim_nothing(monkeypatch, row, 
         mod.container_repo, "takeover_provision", AsyncMock(side_effect=AssertionError("must not claim"))
     )
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
+
+
+async def test_an_unstamped_agentcore_row_runs_only_the_tail(tmp_path, monkeypatch):
+    """Ruling M6-R16: a row already on agentcore but with no hermes_migrated_at stamp is a prior
+    attempt that crashed after READY but before its tail finished. Re-running must NOT call
+    prepare_hermes_workspace or provision_hermes_runtime again -- only the EFS-override pass,
+    the forced ECS stop, and the stamp."""
+    _fake_workspace(tmp_path)
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(
+        mod.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": OWNER, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}),
+    )
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
+    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "")
+
+    prepare = AsyncMock(side_effect=AssertionError("must not re-prepare"))
+    provision = AsyncMock(side_effect=AssertionError("must not re-provision"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", prepare)
+    monkeypatch.setattr(mod, "provision_hermes_runtime", provision)
+    monkeypatch.setattr(
+        mod.container_repo, "takeover_provision", AsyncMock(side_effect=AssertionError("must not claim the lease"))
+    )
+
+    monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
+    )
+    ecs = SimpleNamespace(stop_user_service=AsyncMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
+
+    stamp = AsyncMock()
+    monkeypatch.setattr(mod, "_stamp_migrated", stamp)
+
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
+    prepare.assert_not_called()
+    provision.assert_not_called()
+    ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
+    stamp.assert_awaited_once_with(OWNER)
 
 
 async def test_a_lost_claim_exits_10_and_writes_nothing(precondition_ok, monkeypatch, tmp_path):
@@ -255,6 +320,7 @@ async def test_chatgpt_oauth_owner_migrates_without_staging_and_removes_the_stal
     monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "")  # no S3 traffic needed for this test
 
     monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())
     monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
     monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
     monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
@@ -313,6 +379,9 @@ async def test_rollback_order_and_row_flip(monkeypatch):
     _, kwargs_or_fields = leased.await_args.args[0], leased.await_args.args[2]
     assert kwargs_or_fields["runtime_host"] == "ecs"
     assert kwargs_or_fields["agentcore_runtime_arn"] is None
+    # Ruling M6-R16: the stamp is cleared with the flip -- a rolled-back owner is not "already
+    # migrated" any more.
+    assert kwargs_or_fields["hermes_migrated_at"] is None
     ecs.start_user_service.assert_awaited_once_with(OWNER, force=True)
 
 
@@ -338,10 +407,13 @@ async def test_rollback_tolerates_a_missing_runtime_and_secret(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_all_flag_migrates_every_non_agentcore_non_reference_row(monkeypatch):
+async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_agentcore(monkeypatch):
+    """Ruling M6-R16: an unstamped agentcore row (a crashed prior attempt's tail) is INCLUDED --
+    migrate() on it just runs the tail. Only a STAMPED row is skipped."""
     rows = [
         {"owner_id": "a", "runtime_host": "ecs"},
-        {"owner_id": "b", "runtime_host": "agentcore"},  # already migrated -- skipped
+        {"owner_id": "b", "runtime_host": "agentcore"},  # unstamped -- tail-only, INCLUDED
+        {"owner_id": "c", "runtime_host": "agentcore", "hermes_migrated_at": "2026-09-17T00:00:00Z"},  # skipped
         {"owner_id": mod.REFERENCE_ORG_ID, "runtime_host": "ecs"},  # reference org -- skipped
     ]
     migrated: list[str] = []
@@ -355,7 +427,7 @@ async def test_all_flag_migrates_every_non_agentcore_non_reference_row(monkeypat
     monkeypatch.setattr(mod, "migrate", fake_migrate)
 
     assert await mod.migrate_all(dry_run=False) == mod.EXIT_OK
-    assert migrated == ["a"]
+    assert migrated == ["a", "b"]
 
 
 async def test_all_flag_skips_pass_admission_rows(monkeypatch):

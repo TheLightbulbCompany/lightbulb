@@ -157,15 +157,24 @@ _ROSTER_TTL_S = 60.0
 _roster_cache: tuple[float, tuple[str, ...]] = (0.0, ())
 
 
-def _roster() -> list[str]:
-    """Every agent id this owner has, local dirs UNION the S3 prefix. Falls back to the local
-    dirs alone when S3 is unreachable -- a listing blip must not empty a panel."""
+def _roster_listing() -> tuple[list[str], bool]:
+    """(every agent id this owner has, whether that list is AUTHORITATIVE).
+
+    Local dirs UNION the S3 prefix. A listing blip must not empty a panel, so the fallback is
+    still the local view -- but a short roster is only safe to DISPLAY, never to write back
+    from, so the second element says which one this is (review N5). With no bucket configured
+    the local dirs are the whole truth, so that answer is complete.
+    """
     global _roster_cache
     names = set(_profiles())
     if not sync.S3_BUCKET:
-        return sorted(names)
+        return sorted(names), True
     expires, cached = _roster_cache
-    if time.time() >= expires:
+    # A cached listing that has not expired was obtained successfully, so it is authoritative.
+    # A failed refresh deliberately does NOT advance `expires`, so it stays incomplete and
+    # retries rather than serving a stale list as fact for the rest of the TTL.
+    complete = time.time() < expires
+    if not complete:
         try:
             prefix = f"{sync.S3_PREFIX}/"
             pages = sync._s3().get_paginator("list_objects_v2").paginate(
@@ -175,9 +184,15 @@ def _roster() -> list[str]:
                 for page in pages for p in page.get("CommonPrefixes", [])
             ))
             _roster_cache = (time.time() + _ROSTER_TTL_S, cached)
+            complete = True
         except Exception:  # noqa: BLE001 -- keep serving the local view on an S3 blip
             log.warning("roster listing failed", exc_info=True)
-    return sorted(names | set(cached))
+    return sorted(names | set(cached)), complete
+
+
+def _roster() -> list[str]:
+    """The agent ids alone, for readers that only display them."""
+    return _roster_listing()[0]
 
 
 def _boot_ready() -> bool:
@@ -469,28 +484,38 @@ def _disabled_names(config: dict) -> set[str]:
     return {v.strip() for v in parse_config_string_list(raw) if v.strip()}
 
 
-def _config_yaml_from_s3(agent_id: str) -> dict:
-    """One profile's `config.yaml`, read by KEY. Not `ensure_profile`, which falls through to
-    `_download_profile` -- a full prefix LIST plus a recency pull of nearly every object (the
-    cost review I2 removed from `models.authStatus`). This is one small GetObject.
+def _config_yaml_from_s3(agent_id: str) -> tuple[dict, bool]:
+    """(one profile's `config.yaml`, whether that read is TRUSTWORTHY), read by KEY.
 
-    Falls back to whatever is on local disk when S3 is unreachable or the object is absent.
+    Not `ensure_profile`, which falls through to `_download_profile` -- a full prefix LIST plus
+    a recency pull of nearly every object (the cost review I2 removed from
+    `models.authStatus`). This is one small GetObject.
+
+    A 404 is complete: a profile mid-provision legitimately has no `config.yaml` yet, and it
+    contributes nothing to the union either way. Any OTHER error (throttle, timeout, denied)
+    falls back to the local copy -- which for a profile this process never restored is `{}` --
+    and reports `False`, because a silently SHORTENED union is a wrong write waiting to happen
+    (review N5), not a cosmetic gap.
     """
     if not sync.S3_BUCKET:
-        return sync.read_profile_config(agent_id)
+        return sync.read_profile_config(agent_id), True
     try:
         import yaml
 
         key = f"{sync.S3_PREFIX}/{agent_id}/{sync.CONFIG_NAME}"
         body = sync._s3().get_object(Bucket=sync.S3_BUCKET, Key=key)["Body"].read()
-        return yaml.safe_load(body.decode("utf-8")) or {}
-    except Exception:  # noqa: BLE001 -- a missing/unreadable profile must not empty the union
-        log.debug("config.yaml read failed for %s", agent_id, exc_info=True)
-        return sync.read_profile_config(agent_id)
+        return (yaml.safe_load(body.decode("utf-8")) or {}), True
+    except Exception as exc:  # noqa: BLE001 -- classified below, never re-raised into a panel
+        absent = sync._is_absent(exc)
+        log.log(logging.DEBUG if absent else logging.WARNING,
+                "config.yaml read %s for %s", "found nothing" if absent else "failed", agent_id,
+                exc_info=not absent)
+        return sync.read_profile_config(agent_id), absent
 
 
-def _roster_disabled_names(scanned_agent_id: str) -> list[str]:
-    """The UNION of `skills.disabled` across every profile in the roster (ruling M6-R57).
+def _roster_disabled_names(scanned_agent_id: str) -> tuple[list[str], bool]:
+    """(the UNION of `skills.disabled` across every profile in the roster, whether it is
+    COMPLETE) -- ruling M6-R57.
 
     The panel is workspace-level and its patch fans out to every profile, replacing the list
     wholesale -- so whatever this returns IS the next write for all of them, and a name missing
@@ -501,14 +526,22 @@ def _roster_disabled_names(scanned_agent_id: str) -> list[str]:
     so that agent can land first -- and the next toggle would then re-enable every skill the
     owner had turned off, everywhere (review N2).
 
-    A union can only ever over-disable, never under-disable, which is the safe direction for an
-    action whose whole purpose is turning something off.
+    A union can only over-disable, never under-disable -- **but only when the read is
+    complete** (review N5). Both sources can fail soft: a failed roster LIST serves the local
+    dirs alone, and a throttled per-profile GetObject falls back to a local copy that may not
+    exist. Either produces a SHORT list that is indistinguishable from the truth, and the next
+    toggle would write it to every profile, deleting the entries it never saw. So the caller is
+    told, and omits the list rather than shipping a plausible lie.
     """
+    roster, complete = _roster_listing()
     names = _disabled_names(sync.read_profile_config(scanned_agent_id))
-    for agent_id in _roster():
-        if agent_id != scanned_agent_id:
-            names |= _disabled_names(_config_yaml_from_s3(agent_id))
-    return sorted(names)
+    for agent_id in roster:
+        if agent_id == scanned_agent_id:
+            continue
+        config, trusted = _config_yaml_from_s3(agent_id)
+        names |= _disabled_names(config)
+        complete = complete and trusted
+    return sorted(names), complete
 
 
 def _skills_status(params: dict, **_kwargs) -> dict:
@@ -531,9 +564,10 @@ def _skills_status(params: dict, **_kwargs) -> dict:
     with _profile_scope(agent_id):
         found = _find_all_skills(skip_disabled=True)
         skills_dir = str(sync.HOME / "profiles" / agent_id / "skills")
-    disabled = set(_roster_disabled_names(agent_id))
+    disabled_names, complete = _roster_disabled_names(agent_id)
+    disabled = set(disabled_names)
     empty = {"bins": [], "env": [], "config": [], "os": []}
-    return {"ok": True, "payload": {
+    payload = {
         "managedSkillsDir": skills_dir,
         # Reviews I3 + N2: the STORED names, unioned across the roster -- never "which rendered
         # rows are off", and never one profile's list. A disabled name whose skill is not on the
@@ -541,7 +575,11 @@ def _skills_status(params: dict, **_kwargs) -> dict:
         # carries no `disabled` key at all; either omission would ride the panel's wholesale
         # list replace straight into a silent RE-ENABLE on every profile. The panel patches
         # this list, not its own rows.
-        "disabledNames": sorted(disabled),
+        #
+        # OMITTED when the read was partial (review N5): an S3 blip in either source yields a
+        # SHORT union that looks exactly like the truth, and the panel would write it to every
+        # profile. Absent, the panel refuses the toggle with a readable error -- the rows still
+        # render, so the surface degrades to read-only rather than to a wrong write.
         "skills": [{
             "name": s["name"], "description": s.get("description") or "",
             "skillKey": s["name"], "source": s.get("category") or "hermes",
@@ -553,7 +591,10 @@ def _skills_status(params: dict, **_kwargs) -> dict:
             "blockedByAllowlist": False, "eligible": True,
             "requirements": dict(empty), "missing": dict(empty), "install": [],
         } for s in found],
-    }}
+    }
+    if complete:
+        payload["disabledNames"] = sorted(disabled)
+    return {"ok": True, "payload": payload}
 
 
 def _skills_update(_params: dict, **_kwargs) -> dict:

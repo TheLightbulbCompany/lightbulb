@@ -183,6 +183,103 @@ def test_toggling_one_skill_off_leaves_another_profiles_entry_intact(home, fake_
     assert next_patch == ["shopify"]  # growth's entry went, ceo's survived
 
 
+class _FakeS3:
+    """Enough of the S3 client for the roster LIST and the by-key config.yaml GET.
+
+    `conftest.py` pins `S3_BUCKET=""` for the whole suite, so until this existed the by-key
+    read and its `except` were executed by NO test at all (review N5). Each hook can be told to
+    raise, which is the only way to reach the fallbacks that caused the finding.
+    """
+
+    def __init__(self, configs, *, list_error=None, get_errors=None):
+        self.configs, self.list_error = configs, list_error
+        self.get_errors = get_errors or {}
+
+    def get_paginator(self, _name):
+        if self.list_error:
+            raise self.list_error
+        prefixes = [{"Prefix": f"{sync.S3_PREFIX}/{a}/"} for a in sorted(self.configs)]
+        return types.SimpleNamespace(paginate=lambda **_kw: [{"CommonPrefixes": prefixes}])
+
+    def get_object(self, **kwargs):  # botocore's kwargs are PascalCase; read them, don't name them
+        agent_id = kwargs["Key"][len(f"{sync.S3_PREFIX}/"):].split("/", 1)[0]
+        if agent_id in self.get_errors:
+            raise self.get_errors[agent_id]
+        body = f"skills:\n  disabled: {self.configs[agent_id]}\n".encode()
+        return {"Body": types.SimpleNamespace(read=lambda: body)}
+
+
+class _ClientError(Exception):
+    """botocore's shape, as `sync._is_absent` reads it: `.response["Error"]["Code"]`."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+@pytest.fixture
+def s3(monkeypatch):
+    """Point the bridge at a fake bucket. Returns a factory for the client."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(sync, "S3_PREFIX", "org_1/hermes")
+
+    def _install(configs, **kwargs):
+        client = _FakeS3(configs, **kwargs)
+        monkeypatch.setattr(sync, "_s3", lambda: client)
+        return client
+
+    return _install
+
+
+def test_the_union_reads_each_other_profile_by_key_from_s3(home, fake_hermes, s3):
+    """The by-key GetObject path, which no test reached before. `ceo` is scanned (local); the
+    other two are S3-only and must still contribute."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
+    s3({"ceo": ["shopify"], "growth": ["pdf"], "finance": ["xlsx"]})
+    payload = call("skills.status")[1]["payload"]
+    assert payload["disabledNames"] == ["pdf", "shopify", "xlsx"]
+
+
+def test_a_throttled_profile_read_omits_the_list_rather_than_shortening_it(home, fake_hermes, s3):
+    """Review N5. A short union is indistinguishable from the truth, and the panel would write
+    it to EVERY profile — deleting the entries it never saw. Omitting the field makes the panel
+    refuse the toggle instead; the rows still render, so the surface degrades to read-only."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
+    s3({"ceo": ["shopify"], "growth": ["pdf"]},
+       get_errors={"growth": _ClientError("SlowDown")})
+    payload = call("skills.status")[1]["payload"]
+    assert "disabledNames" not in payload
+    assert [s["name"] for s in payload["skills"]]  # the rows are still served
+
+
+def test_a_profile_with_no_config_yaml_yet_is_not_a_partial_read(home, fake_hermes, s3):
+    """A 404 is complete: a profile mid-provision legitimately has none, and it contributes
+    nothing to the union either way. Blocking the toggle on that would be a permanent refusal."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
+    s3({"ceo": ["shopify"], "brand-new": []},
+       get_errors={"brand-new": _ClientError("NoSuchKey")})
+    assert call("skills.status")[1]["payload"]["disabledNames"] == ["shopify"]
+
+
+def test_a_failed_roster_listing_omits_the_list_too(home, fake_hermes, s3):
+    """The other half of N5: `_roster()` falls back to the LOCAL dirs when the LIST fails, so
+    the union silently covers only the profiles this microVM happens to hold.
+
+    Staged as the review describes it — a WARM process that restored one profile for a turn
+    (hence `_restored`) and whose listing then blips. A cold one raises out of
+    `restore_profile` instead and the RPC answers UNAVAILABLE, which is already honest."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
+    sync._restored.add("ceo")
+    s3({"ceo": ["shopify"], "growth": ["pdf"]}, list_error=_ClientError("SlowDown"))
+    payload = call("skills.status")[1]["payload"]
+    assert "disabledNames" not in payload
+    assert [s["name"] for s in payload["skills"]]  # rows still served, toggle refused
+
+
 def test_a_disabled_list_stored_as_a_json_string_is_unpacked(home, fake_hermes):
     """Review I6.1: `hermes config set` writes a list as a quoted literal. Read as one name it
     would show every skill enabled AND let the next toggle wipe the real list."""

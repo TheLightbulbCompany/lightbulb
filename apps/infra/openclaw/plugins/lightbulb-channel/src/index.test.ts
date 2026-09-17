@@ -1677,7 +1677,11 @@ describe("async turn ack and run controls", () => {
     const steer = responseRecorder();
     await handler(at("steer", { text: "shorter" }), steer);
     expect(steer.statusCode).toBe(202);
-    expect(runs.steer).toHaveBeenCalledWith(RUN_ID, "shorter");
+    expect(runs.steer).toHaveBeenCalledWith(RUN_ID, "shorter", undefined);
+    const retry = responseRecorder();
+    await handler(at("steer", { text: "shorter", idempotencyKey: "steer-1" }), retry);
+    expect(retry.statusCode).toBe(202);
+    expect(runs.steer).toHaveBeenLastCalledWith(RUN_ID, "shorter", "steer-1");
     const bad = responseRecorder();
     await handler(at("steer", {}), bad);
     expect(bad.statusCode).toBe(400);

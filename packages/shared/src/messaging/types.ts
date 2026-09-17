@@ -233,6 +233,7 @@ export interface RunStatusResponse {
 
 export interface SteerRunRequest {
   text: string;
+  idempotencyKey?: string;
 }
 
 export interface SteerRunResponse {

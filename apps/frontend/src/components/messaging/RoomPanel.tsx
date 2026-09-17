@@ -87,7 +87,7 @@ export interface RoomPanelProps {
   onSetTopic?: (topic: string | null) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
   onAbortRun?: (runId: string) => void;
-  onSteerRun?: (runId: string, text: string) => void;
+  onSteerRun?: (runId: string, text: string, idempotencyKey: string) => void | Promise<unknown>;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   resourceSource?: RoomResourceSource;
@@ -119,6 +119,57 @@ function WorkStatus({ state }: { state: WorkState }) {
     : state === "working" || state === "queued" ? "text-info" : state === "needs-approval" || state === "paused" ? "text-warn" : "text-muted-foreground";
   const Icon = state === "completed" ? Check : state === "failed" || state === "needs-approval" ? CircleAlert : Circle;
   return <span role="status" aria-label="Work status" className={`inline-flex items-center gap-1 text-sm ${tone}`}><Icon size={14} aria-hidden="true" />{workLabel[state]}</span>;
+}
+
+function SteerControl({ id, runId, agentName, actionable, onSteer }: {
+  id: string; runId: string; agentName: string; actionable: boolean;
+  onSteer: (runId: string, text: string, idempotencyKey: string) => void | Promise<unknown>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [error, setError] = useState("");
+  const input = useRef<HTMLTextAreaElement>(null);
+  const pending = useRef<{ text: string; idempotencyKey: string } | undefined>(undefined);
+
+  async function submit() {
+    const text = draft.trim();
+    if (!text || status === "sending") return;
+    const request = pending.current?.text === text ? pending.current : {
+      text,
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    };
+    pending.current = request;
+    setStatus("sending");
+    setError("");
+    try {
+      await onSteer(runId, text, request.idempotencyKey);
+      setDraft((current) => current.trim() === text ? "" : current);
+      pending.current = undefined;
+      setStatus("sent");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "";
+      setError(/timeout|timed out/i.test(message)
+        ? "Steer timed out. It was not confirmed as sent."
+        : "Steer was not sent. Check the connection and try again.");
+      setStatus("failed");
+    } finally {
+      input.current?.focus({ preventScroll: true });
+    }
+  }
+
+  return <div className="room-steer-control">
+    <form className="room-run-controls" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <label className="sr-only" htmlFor={`${id}-${runId}-steer`}>Steer {agentName}</label>
+      <textarea ref={input} id={`${id}-${runId}-steer`} name="steer" rows={1} className="room-input" placeholder="Steer this run…"
+        value={draft} onChange={(event) => { setDraft(event.target.value); if (status === "sent") setStatus("idle"); }}
+        onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} />
+      <Button type="submit" variant="outline" disabled={!actionable || !draft.trim() || status === "sending"}>{status === "sending" ? "Sending…" : "Steer"}</Button>
+    </form>
+    <p role={status === "failed" ? "alert" : "status"} aria-live="polite" className={cn("text-sm", status === "failed" ? "text-err" : "text-muted-foreground")}>
+      {status === "sending" ? "Sending…" : status === "sent" ? "Sent" : status === "failed" ? error : ""}
+    </p>
+    {status === "failed" && <Button type="button" variant="outline" onClick={() => void submit()} disabled={!actionable || !draft.trim()}>Retry</Button>}
+  </div>;
 }
 
 const roomMarkdown: Partial<Components> = {
@@ -287,6 +338,18 @@ function RoomContent({
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
+  const thinkingPreferenceKey = `lightbulb:messaging:thinking-collapsed:${ownerScopeId}:${currentUserId}`;
+  const [thinkingCollapsed, setThinkingCollapsed] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const stored = sessionStorage.getItem(thinkingPreferenceKey);
+    return stored === null ? true : stored === "true";
+  });
+  const [thinkingOverrides, setThinkingOverrides] = useState(() => new Map<string, boolean>());
+  useEffect(() => {
+    const stored = sessionStorage.getItem(thinkingPreferenceKey);
+    setThinkingCollapsed(stored === null ? true : stored === "true");
+    setThinkingOverrides(new Map());
+  }, [thinkingPreferenceKey]);
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
   const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
@@ -510,23 +573,17 @@ function RoomContent({
     const workState = run.state === "running" ? "working" : run.state === "aborted" ? "paused" : run.state;
     return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
       <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} /></div>
-        {run.thinking && <details><summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
+        {run.thinking && <details open={thinkingOverrides.get(run.runId) ?? !thinkingCollapsed}
+          onToggle={(event) => {
+            const open = event.currentTarget.open;
+            setThinkingOverrides((current) => new Map(current).set(run.runId, open));
+          }}>
+          <summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
-        {run.state === "running" && (onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
-          event.preventDefault();
-          if (!onSteerRun) return;
-          const input = event.currentTarget.elements.namedItem("steer") as HTMLInputElement | null;
-          const text = input?.value.trim();
-          if (!text) return;
-          onSteerRun(run.runId, text);
-          event.currentTarget.reset();
-        }}>
-          {onSteerRun && <><label className="sr-only" htmlFor={`${id}-${run.runId}-steer`}>Steer {agent?.displayName ?? "agent"}</label>
-            <input id={`${id}-${run.runId}-steer`} name="steer" className="room-input" placeholder="Steer this run…" /></>}
-          {onSteerRun && <Button type="submit" variant="outline" disabled={!actionable}>Steer</Button>}
-          {onAbortRun && <Button type="button" variant="outline" disabled={!actionable} onClick={() => onAbortRun(run.runId)}>Stop</Button>}
-        </form>}
+        {run.state === "running" && onSteerRun && <SteerControl id={id} runId={run.runId} agentName={agent?.displayName ?? "agent"}
+          actionable={actionable} onSteer={onSteerRun} />}
+        {run.state === "running" && onAbortRun && <Button type="button" variant="outline" disabled={!actionable} onClick={() => onAbortRun(run.runId)}>Stop</Button>}
       </div>
     </article>;
   }
@@ -578,6 +635,14 @@ function RoomContent({
       </nav>
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
+      {runs.some((run) => !!run.thinking) && <div className="room-thinking-controls">
+        <Button type="button" variant="ghost" aria-pressed={thinkingCollapsed} onClick={() => {
+          const next = !thinkingCollapsed;
+          setThinkingCollapsed(next);
+          setThinkingOverrides(new Map());
+          sessionStorage.setItem(thinkingPreferenceKey, String(next));
+        }}>{thinkingCollapsed ? "Expand all thinking" : "Collapse all thinking"}</Button>
+      </div>}
       <div ref={historyRef} className="contents">
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}

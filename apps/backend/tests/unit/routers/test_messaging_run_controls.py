@@ -112,6 +112,20 @@ async def test_steer_gates_then_posts_text():
 
 
 @pytest.mark.asyncio
+async def test_steer_passes_idempotency_key_to_runtime():
+    from routers.messaging import steer_run
+
+    with _common() as (post, _):
+        request = SteerRunRequest(text="focus", idempotencyKey="steer-1")
+        assert await steer_run("run-1", request, auth=_auth()) == SteerRunResponse(run_id="run-1")
+    post.assert_awaited_once_with(
+        "http://10.0.0.9:18789/plugins/lightbulb-channel/runs/run-1/steer",
+        "gw",
+        {"text": "focus", "idempotencyKey": "steer-1"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_abort_on_an_agentcore_row_goes_through_the_runtime_transport_seam():
     """An owner on AgentCore is addressed by runtime, not by a dialled IP --
     ``_post_run_control`` (the ECS httpx path) must never be touched."""

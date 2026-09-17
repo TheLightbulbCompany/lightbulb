@@ -22,7 +22,7 @@ const narrowViewport = () => {
     dispatchEvent: vi.fn(),
   })) as unknown as typeof window.matchMedia;
 };
-afterEach(() => { window.matchMedia = wideMatchMedia; });
+afterEach(() => { window.matchMedia = wideMatchMedia; sessionStorage.clear(); });
 
 const owner: RoomParticipant = { kind: "human", id: "owner", displayName: "Owner", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
 const friday: RoomParticipant = { ...owner, kind: "agent", id: "friday", displayName: "Friday", role: "member", agentActivity: "running" };
@@ -424,6 +424,65 @@ it("renders a running run that has no text yet as a working bubble with Stop", (
   expect(within(article).getByRole("button", { name: "Stop" })).toBeInTheDocument();
   expect(within(article).getByRole("button", { name: "Steer" })).toBeInTheDocument();
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
+});
+
+it("keeps a steer draft until transport acceptance, announces progress, and restores focus", async () => {
+  let accept!: () => void;
+  const onSteerRun = vi.fn(() => new Promise<void>((resolve) => { accept = resolve; }));
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "running", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} onSteerRun={onSteerRun} />);
+  const input = screen.getByRole("textbox", { name: "Steer Friday" });
+  await userEvent.type(input, "focus on tests{enter}");
+  expect(onSteerRun).toHaveBeenCalledWith("run-1", "focus on tests", expect.any(String));
+  expect(input).toHaveValue("focus on tests");
+  expect(screen.getByText("Sending…", { selector: "p" })).toHaveAttribute("role", "status");
+  await act(async () => accept());
+  expect(input).toHaveValue("");
+  expect(input).toHaveFocus();
+  expect(screen.getByText("Sent")).toHaveAttribute("role", "status");
+});
+
+it("retains timed-out steers for an editable retry", async () => {
+  const onSteerRun = vi.fn().mockRejectedValueOnce(new Error("transport timeout")).mockResolvedValueOnce(undefined);
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "running", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} onSteerRun={onSteerRun} />);
+  const input = screen.getByRole("textbox", { name: "Steer Friday" });
+  await userEvent.type(input, "be concise{enter}");
+  expect(await screen.findByRole("alert")).toHaveTextContent("timed out");
+  expect(input).toHaveValue("be concise");
+  expect(input).toBeEnabled();
+  const idempotencyKey = onSteerRun.mock.calls[0]?.[2];
+  await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(onSteerRun).toHaveBeenCalledTimes(2);
+  expect(onSteerRun).toHaveBeenLastCalledWith("run-1", "be concise", idempotencyKey);
+  await waitFor(() => expect(input).toHaveValue(""));
+});
+
+it("globally controls existing and streamed thinking while allowing individual overrides", async () => {
+  const makeRun = (runId: string, thinking: string): RoomRunView => ({ roomId: "room", agentId: "friday", runId, text: "answer", thinking, state: "running", tools: [] });
+  const view = render(<RoomPanel {...props} runs={[makeRun("one", "first thought")]} />);
+  const first = screen.getByText("first thought").closest("details")!;
+  expect(first).not.toHaveAttribute("open");
+  await userEvent.click(screen.getByRole("button", { name: "Expand all thinking" }));
+  expect(first).toHaveAttribute("open");
+  view.rerender(<RoomPanel {...props} runs={[makeRun("one", "first thought"), makeRun("two", "streamed thought")]} />);
+  expect(screen.getByText("streamed thought").closest("details")).toHaveAttribute("open");
+  await userEvent.click(within(first).getByText("Thinking"));
+  expect(first).not.toHaveAttribute("open");
+  expect(screen.getByText("streamed thought").closest("details")).toHaveAttribute("open");
+  await userEvent.click(screen.getByRole("button", { name: "Collapse all thinking" }));
+  expect(first).not.toHaveAttribute("open");
+  expect(screen.getByText("streamed thought").closest("details")).not.toHaveAttribute("open");
+});
+
+it("preserves thinking preference across room switches without cross-account leakage", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "answer", thinking: "thought", state: "running", tools: [] };
+  const view = render(<RoomPanel {...props} runs={[run]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Expand all thinking" }));
+  view.rerender(<RoomPanel {...props} roomId="other" room={{ ...props.room!, roomId: "other" }} messages={[]} runs={[{ ...run, roomId: "other" }]} />);
+  expect(screen.getByText("thought").closest("details")).toHaveAttribute("open");
+  view.rerender(<RoomPanel {...props} ownerScopeId="another-org" runs={[run]} />);
+  expect(screen.getByText("thought").closest("details")).not.toHaveAttribute("open");
 });
 
 it("keeps rendering a finished run's text instead of collapsing it", () => {

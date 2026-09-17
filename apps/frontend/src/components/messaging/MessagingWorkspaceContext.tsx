@@ -689,7 +689,7 @@ export function MessagingWorkspaceProvider({
       } : {}),
     } : {}),
     onAbortRun: (runId) => void rooms.abortRun(runId),
-    onSteerRun: (runId, text) => void rooms.steerRun(runId, text),
+    onSteerRun: (runId, text, idempotencyKey) => rooms.steerRun(runId, text, idempotencyKey),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
   } : null;

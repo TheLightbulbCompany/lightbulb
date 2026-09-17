@@ -897,7 +897,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))),
   [runs, messages]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
-  const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
+  const steerRun = useCallback((runId: string, text: string, idempotencyKey?: string) => messaging.steerRun(
+    runId,
+    { text, ...(idempotencyKey ? { idempotencyKey } : {}) },
+  ), [messaging]);
 
   return {
     rooms,

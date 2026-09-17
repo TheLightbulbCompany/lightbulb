@@ -55,6 +55,7 @@ type ActiveRun = RunStart & {
   heartbeat?: ReturnType<typeof setInterval>;
   text: { done: string; current: string };
   terminal?: { phase: "end" | "error"; aborted: boolean; error?: string; stopReason?: string };
+  acceptedSteerKeys: Set<string>;
 };
 
 /** Port of the backend's GatewayConnection._transform_agent_event (the frames clients render). */
@@ -351,7 +352,7 @@ export function createRunSupervisor(deps: {
      */
     async start(spec: RunStart, turn: () => Promise<AmbientGateOutcome>): Promise<void> {
       unsubscribe ??= deps.sdk.onAgentEvent(onEvent);
-      const run: ActiveRun = { ...spec, started: false, text: { done: "", current: "" } };
+      const run: ActiveRun = { ...spec, started: false, text: { done: "", current: "" }, acceptedSteerKeys: new Set() };
       runs.set(spec.runId, run);
       // Accepted is started: the host serializes a second turn on this session behind the
       // first, and a run that reported nothing until its first agent event is closed by the
@@ -383,9 +384,13 @@ export function createRunSupervisor(deps: {
     },
     // ponytail: queueAgentHarnessMessage is deprecated upstream; if it stops queuing,
     // dispatch the steer text as a second inbound turn on the same session instead.
-    steer(runId: string, text: string): "accepted" | "not_found" {
+    steer(runId: string, text: string, idempotencyKey?: string): "accepted" | "not_found" {
+      const run = runs.get(runId);
+      if (run && idempotencyKey && run.acceptedSteerKeys.has(idempotencyKey)) return "accepted";
       const sessionId = sessionIdFor(runId);
-      return sessionId && deps.sdk.queueAgentHarnessMessage(sessionId, text) ? "accepted" : "not_found";
+      if (!sessionId || !deps.sdk.queueAgentHarnessMessage(sessionId, text)) return "not_found";
+      if (idempotencyKey) run?.acceptedSteerKeys.add(idempotencyKey);
+      return "accepted";
     },
     runIdForSession(sessionKey: string): string | undefined {
       return bySession.get(sessionKey);

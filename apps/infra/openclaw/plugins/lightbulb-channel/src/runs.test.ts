@@ -158,6 +158,14 @@ describe("run supervisor", () => {
     expect(h.runs.runIdForSession(RUN.sessionKey)).toBe(RUN.runId);
   });
 
+  it("does not enqueue an accepted steer twice when its idempotency key is retried", () => {
+    const h = harness();
+    h.runs.start(RUN, () => new Promise(() => {}));
+    expect(h.runs.steer(RUN.runId, "focus", "steer-1")).toBe("accepted");
+    expect(h.runs.steer(RUN.runId, "focus", "steer-1")).toBe("accepted");
+    expect(h.sdk.queueAgentHarnessMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("serializes a second turn on the same session behind the first", async () => {
     const h = harness();
     let finishFirst!: (v: "dispatched") => void;

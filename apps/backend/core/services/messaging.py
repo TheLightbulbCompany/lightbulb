@@ -525,6 +525,7 @@ class UsageReportResponse(ContractModel):
 
 class SteerRunRequest(ContractModel):
     text: str
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("text")
     @classmethod

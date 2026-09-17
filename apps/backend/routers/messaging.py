@@ -556,7 +556,12 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
         raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "Steering is blocked."))
     await container_repo.touch_last_interactive(owner_id)
     try:
-        status = await _run_control(owner_id, run_id, "steer", {"text": request.text})
+        status = await _run_control(
+            owner_id,
+            run_id,
+            "steer",
+            {"text": request.text, **({"idempotencyKey": request.idempotency_key} if request.idempotency_key else {})},
+        )
     except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
     if status == 202:

@@ -7,6 +7,7 @@ are patched out so the router-level test stays isolated from relay_hooks' own (D
 AgentCore guard; that guard is covered separately in test_relay_hooks_agentcore.py.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,17 @@ from starlette.websockets import WebSocketDisconnect
 from core.services import node_broker, runtime_transport
 from core.services.machine_auth import MachineIdentity
 from routers import gateway_relay
+
+
+async def _poll_until(predicate, *, timeout: float = 1.0, interval: float = 0.005) -> None:
+    """Small deterministic wait for tests driving `_serve_node_protocol` concurrently as a
+    background task -- there is no other signal for "the handshake has reached point X"."""
+
+    async def _wait() -> None:
+        while not predicate():
+            await asyncio.sleep(interval)
+
+    await asyncio.wait_for(_wait(), timeout=timeout)
 
 
 class _FakeSocket:
@@ -41,6 +53,33 @@ class _FakeSocket:
         if not self._received:
             raise WebSocketDisconnect(code=1000)
         return self._received.pop(0)
+
+
+class _FeedableSocket:
+    """Like `_FakeSocket`, but the incoming queue can be fed live and `receive_text` BLOCKS
+    (rather than immediately disconnecting) when nothing has been fed yet -- needed for any
+    test that must observe a mid-connection state (a session that stays registered, an
+    outbound frame the pump sent) rather than the handshake completing and tearing back down
+    within a single scheduling tick. Mirrors test_gateway_relay.py's FakeUpstream."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def feed(self, frame: str | None) -> None:
+        self._queue.put_nowait(frame)
+
+    async def accept(self) -> None:
+        return None
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    async def receive_text(self) -> str:
+        frame = await self._queue.get()
+        if frame is None:
+            raise WebSocketDisconnect(code=1000)
+        return frame
 
 
 def _identity(**overrides) -> MachineIdentity:
@@ -171,12 +210,12 @@ async def test_the_relay_speaks_first_and_answers_a_valid_connect_with_hello_ok(
 
 @pytest.mark.asyncio
 async def test_a_declared_command_outside_the_paired_record_is_dropped_from_the_allowlist():
-    seen_commands: dict[str, set[str]] = {}
+    seen_commands: dict[tuple[str, str], set[str]] = {}
 
     async def _capture_ready(owner_id, user_id, device_id):
         # Snapshot the session's commands while it is still registered -- on_node_ready
         # fires after the session is stored and before the socket is ever pumped/closed.
-        seen_commands[owner_id] = set(gateway_relay.node_sessions[owner_id].commands)
+        seen_commands[(owner_id, device_id)] = set(gateway_relay.node_sessions[(owner_id, device_id)].commands)
 
     received = [_connect_frame("c-2", ["system.run", "camera.capture"])]
     with (
@@ -188,7 +227,64 @@ async def test_a_declared_command_outside_the_paired_record_is_dropped_from_the_
 
     # The declared set is intersected with the paired record: a client that declares more
     # than the owner approved gets the intersection, never the union.
-    assert seen_commands["org_1"] == {"system.run"}
+    assert seen_commands[("org_1", "dev-1")] == {"system.run"}
+
+
+@pytest.mark.asyncio
+async def test_two_devices_for_one_owner_coexist_and_closing_one_leaves_the_other():
+    """Fix round 1, item 2 (critical): a paired Mac runs TWO node sockets at once -- the
+    Tauri device client (clientId=openclaw-macos) and the CLI (clientId=node-host), each a
+    separate device id. Keying node_sessions by owner_id alone means the second connect
+    silently evicts the first's session; keying by (owner_id, device_id) lets both live."""
+    mac_socket, cli_socket = _FeedableSocket(), _FeedableSocket()
+    mac_socket.feed(_connect_frame("c-mac", ["device.info"]))
+    cli_socket.feed(_connect_frame("c-cli", ["system.run"]))
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(
+            gateway_relay.desktop_pair,
+            "declared_commands_for",
+            AsyncMock(side_effect=lambda owner, device: {"device.info"} if device == "mac-1" else {"system.run"}),
+        ),
+    ):
+        mac_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(mac_socket, _identity(device_id="mac-1"), {"runtime_host": "agentcore"})
+        )
+        cli_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(cli_socket, _identity(device_id="cli-1"), {"runtime_host": "agentcore"})
+        )
+        await _poll_until(lambda: ("org_1", "mac-1") in gateway_relay.node_sessions)
+        await _poll_until(lambda: ("org_1", "cli-1") in gateway_relay.node_sessions)
+
+        # Both sessions are live at once, with their OWN declared commands -- neither
+        # evicted the other.
+        assert gateway_relay.node_sessions[("org_1", "mac-1")].commands == {"device.info"}
+        assert gateway_relay.node_sessions[("org_1", "cli-1")].commands == {"system.run"}
+
+        # Closing the Mac's socket (a normal client disconnect) must not touch the CLI's
+        # still-live session.
+        mac_socket.feed(None)
+        await asyncio.wait_for(mac_task, timeout=1.0)
+        await _poll_until(lambda: ("org_1", "mac-1") not in gateway_relay.node_sessions)
+        assert ("org_1", "cli-1") in gateway_relay.node_sessions
+
+        cli_socket.feed(None)
+        await asyncio.wait_for(cli_task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_find_node_session_picks_the_device_that_declared_the_command():
+    gateway_relay.node_sessions[("org_1", "mac-1")] = node_broker.NodeSession("mac-1", {"device.info"})
+    gateway_relay.node_sessions[("org_1", "cli-1")] = node_broker.NodeSession("cli-1", {"system.run"})
+    try:
+        found = gateway_relay.find_node_session("org_1", command="system.run")
+        assert found is not None and found.node_id == "cli-1"
+        assert gateway_relay.find_node_session("org_1", command="camera.capture") is None
+        assert gateway_relay.find_node_session("other_org", command="system.run") is None
+        assert gateway_relay.find_node_session("org_1") is not None  # no command filter: any live session
+    finally:
+        gateway_relay.node_sessions.pop(("org_1", "mac-1"), None)
+        gateway_relay.node_sessions.pop(("org_1", "cli-1"), None)
 
 
 @pytest.mark.asyncio

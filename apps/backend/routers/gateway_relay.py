@@ -32,10 +32,27 @@ _WS_MAX_FRAME_SIZE = 10 * 1024 * 1024
 _PARSE_LIMIT = 64 * 1024
 _REFRESH_SECONDS = 60
 
-# One live AgentCore node socket per owner, keyed by owner id -- Task 28's route (the
-# in-process invoke door) imports this to reach the accepted NodeSession on this same
-# backend task. Populated/cleared around the socket's life in `_serve_node_protocol`.
-node_sessions: dict[str, node_broker.NodeSession] = {}
+# Live AgentCore node sockets, keyed by (owner_id, device_id) -- a paired Mac holds TWO at
+# once (the Tauri device client `openclaw-macos` and the CLI `node-host`), each declaring a
+# disjoint command set (desktop_pair.DESKTOP_MAC_COMMANDS / DESKTOP_CLI_COMMANDS never
+# overlap), so keying by owner_id alone would let the second connect evict the first's
+# session (fix round 1, item 2). Task 28's route (the in-process invoke door) reaches a
+# session through `find_node_session` below, never this dict directly. Populated/cleared
+# around each socket's life in `_serve_node_protocol`.
+node_sessions: dict[tuple[str, str], node_broker.NodeSession] = {}
+
+
+def find_node_session(owner_id: str, *, command: str | None = None) -> node_broker.NodeSession | None:
+    """The live session for this owner that declares `command` (or, with no `command`,
+    any live session for the owner). Returns None when no such session is attached."""
+    for (session_owner_id, _device_id), session in node_sessions.items():
+        if session_owner_id != owner_id:
+            continue
+        if command is None or command in session.commands:
+            return session
+    return None
+
+
 # relay.close's `code` dimension: bucket to the codes this relay actually
 # distinguishes plus one 4xxx catch-all. A raw code would blow up dimension
 # cardinality — upstream can close with any of ~70 defined codes plus
@@ -363,12 +380,14 @@ async def _serve_node_protocol(
     # The declared set is intersected with the owner's backend-written paired record: a
     # client that declares more than the owner approved gets the intersection, never the
     # union (node_broker.CommandNotAllowed is the enforcement at invoke time).
-    allowed = declared & await desktop_pair.declared_commands_for(identity.owner_id, identity.device_id or "")
-    session = node_broker.NodeSession(identity.device_id or "", allowed)
-    node_sessions[identity.owner_id] = session
+    device_id = identity.device_id or ""
+    allowed = declared & await desktop_pair.declared_commands_for(identity.owner_id, device_id)
+    session = node_broker.NodeSession(device_id, allowed)
+    key = (identity.owner_id, device_id)
+    node_sessions[key] = session
     await websocket.send_text(json.dumps(node_broker.hello_ok(str(body.get("id")), str(uuid.uuid4()))))
     try:
-        await relay_hooks.on_node_ready(identity.owner_id, identity.user_id, identity.device_id or "")
+        await relay_hooks.on_node_ready(identity.owner_id, identity.user_id, device_id)
     except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
         logger.warning("relay on_node_ready hook failed owner=%s", identity.owner_id, exc_info=True)
     refresher = (
@@ -381,7 +400,10 @@ async def _serve_node_protocol(
     finally:
         if refresher is not None and not refresher.done():
             refresher.cancel()
-        node_sessions.pop(identity.owner_id, None)
+        # Only pop THIS socket's own entry -- a second device for the same owner may have
+        # registered its own (owner_id, device_id) key since, and must not be evicted here.
+        if node_sessions.get(key) is session:
+            node_sessions.pop(key, None)
         try:
             await relay_hooks.on_node_closed(identity.owner_id, identity.user_id)
         except Exception:  # noqa: BLE001

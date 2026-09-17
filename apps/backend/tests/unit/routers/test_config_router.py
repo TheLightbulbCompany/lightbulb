@@ -322,3 +322,54 @@ def test_get_config_returns_null_when_missing(client):
         assert body["config"] is None
     finally:
         cleanup()
+
+
+# ---------------------------------------------------------------------------
+# M6 row #12 — AgentCore rows are served from the S3 profile roster map,
+# never EFS, via the SAME _config_get_roster_map/_config_patch_roster the
+# config.get/config.patch RPC intercept uses.
+# ---------------------------------------------------------------------------
+
+
+def test_get_config_agentcore_owner_reads_roster_map_not_efs(client):
+    cleanup = _patch_auth(_org_admin_auth())
+    try:
+        with (
+            patch("routers.config.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch(
+                "routers.config._config_get_roster_map",
+                AsyncMock(return_value={"config": {"agent-1": {"model": {"default": "x"}}}, "hash": "h1"}),
+            ) as mock_roster,
+            patch("routers.config.read_openclaw_config_from_efs", AsyncMock()) as mock_efs,
+        ):
+            resp = client.get("/api/v1/config")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["owner_id"] == "org_1"
+        assert body["config"] == {"agent-1": {"model": {"default": "x"}}}
+        assert body["hash"] == "h1"
+        mock_roster.assert_awaited_once_with("org_1")
+        mock_efs.assert_not_awaited()
+    finally:
+        cleanup()
+
+
+def test_patch_config_agentcore_owner_fans_out_via_config_patcher_roster(client):
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with (
+            patch("routers.config.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
+            patch(
+                "routers.config._config_patch_roster",
+                AsyncMock(return_value={"config": {}, "hash": "h2"}),
+            ) as mock_patch_roster,
+            patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_ecs_patch,
+        ):
+            resp = client.patch("/api/v1/config", json={"patch": {"tools": {"profile": "full"}}})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"status": "patched", "owner_id": "user_personal", "hash": "h2"}
+        mock_patch_roster.assert_awaited_once_with("user_personal", {"tools": {"profile": "full"}}, None)
+        mock_ecs_patch.assert_not_awaited()
+    finally:
+        cleanup()

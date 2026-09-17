@@ -18,11 +18,13 @@ from core.auth import (
 )
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import billing_repo
+from core.services import runtime_transport
 from core.services.config_patcher import (
     ConfigPatchError,
     patch_openclaw_config,
 )
 from core.services.provision_gate import has_always_on_entitlement
+from core.services.runtime_rpc import _config_get_roster_map, _config_patch_roster
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,13 @@ async def get_config(
     # button even though they can't manage them via PATCH /config.
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # M6 row #12: an AgentCore owner's config lives in per-agent S3 profiles, not
+        # openclaw.json on EFS -- reuse the SAME roster-map read runtime_rpc's own
+        # config.get intercept serves (_config_get_roster_map), so this raw editor and
+        # the settings-panel RPC path can never disagree about what "the config" is.
+        roster_map = await _config_get_roster_map(owner_id)
+        return {"owner_id": owner_id, "config": roster_map["config"], "hash": roster_map["hash"]}
     config = await read_openclaw_config_from_efs(owner_id)
     return {"owner_id": owner_id, "config": config}
 
@@ -158,6 +167,14 @@ async def patch_config(
 
         # Bot token collision pre-check
         await _check_token_collision(owner_id, body.patch)
+
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # M6 row #12: fan the patch out to every roster profile via the same
+        # _config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
+        # router's ConfigPatchRequest carries no baseHash, so CAS is skipped (None),
+        # matching this door's own pre-existing no-CAS behaviour on the ECS path.
+        result = await _config_patch_roster(owner_id, body.patch, None)
+        return {"status": "patched", "owner_id": owner_id, "hash": result["hash"]}
 
     try:
         await patch_openclaw_config(owner_id, body.patch)

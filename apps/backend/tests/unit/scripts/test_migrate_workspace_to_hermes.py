@@ -8,6 +8,7 @@ monkeypatched stand-in.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -69,7 +70,27 @@ class _FakeS3Client:
 
 
 @pytest.fixture
-def precondition_ok(monkeypatch):
+def efs_ready(tmp_path, monkeypatch):
+    """Ruling M6-R20(a): the EFS-presence precondition needs ``get_workspace().user_path(owner)``
+    to resolve to a real, EXISTING directory -- on a test runner the untouched default
+    (``/mnt/efs/users``) never exists, so every ``migrate()`` call would otherwise fail this
+    check first, before reaching whatever the test actually means to exercise. Most
+    precondition-path tests don't care about the directory's CONTENT (see ``_fake_workspace``
+    for tests that do)."""
+    (tmp_path / OWNER).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def settings_ok(monkeypatch):
+    """Ruling M6-R20(b): the two settings ``provision_hermes_runtime`` hard-requires."""
+    monkeypatch.setattr(mod.settings, "AGENTCORE_HERMES_IMAGE", "hermes:test")
+    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "test-hermes-bucket")
+
+
+@pytest.fixture
+def precondition_ok(efs_ready, settings_ok, monkeypatch):
     """Wires every precondition check to pass for OWNER with ROSTER, without touching AWS."""
     monkeypatch.setattr(
         mod.container_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": OWNER, "runtime_host": "ecs"})
@@ -209,7 +230,9 @@ async def test_reference_org_is_refused_outright(monkeypatch):
         ({"owner_id": OWNER, "runtime_host": "ecs"}, SimpleNamespace(status="active"), []),
     ],
 )
-async def test_precondition_failures_exit_2_and_claim_nothing(monkeypatch, row, company, roster):
+async def test_precondition_failures_exit_2_and_claim_nothing(
+    efs_ready, settings_ok, monkeypatch, row, company, roster
+):
     monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=company))
     monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=roster))
@@ -219,7 +242,58 @@ async def test_precondition_failures_exit_2_and_claim_nothing(monkeypatch, row, 
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
 
 
-async def test_a_natively_provisioned_hermes_row_is_refused_not_tailed(monkeypatch):
+async def test_missing_efs_workspace_directory_exits_precondition(settings_ok, tmp_path, monkeypatch):
+    """Ruling M6-R20(a): an operator laptop with no /mnt/efs mount must never "migrate" with
+    efs_files=0 -- get_workspace().user_path(owner).is_dir() being False refuses outright."""
+    # tmp_path itself exists, but the owner subdirectory is never created -- exactly what a
+    # missing EFS mount looks like from this job's point of view.
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(
+        mod.container_repo, "get_by_owner_id", AsyncMock(side_effect=AssertionError("must not read the row"))
+    )
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
+
+
+@pytest.mark.parametrize(
+    "image,bucket",
+    [
+        ("", "test-hermes-bucket"),
+        ("hermes:test", ""),
+        ("", ""),
+    ],
+)
+async def test_missing_required_settings_exits_precondition(efs_ready, monkeypatch, caplog, image, bucket):
+    """Ruling M6-R20(b): AGENTCORE_HERMES_IMAGE and OWNER_STATE_BUCKET are checked ONCE before
+    any row is read (before get_by_owner_id, per efs_ready/this test's own row guard) -- an
+    unset value refuses instantly, by name, rather than --all sweeping the whole fleet into
+    provision_hermes_runtime's own less friendly RuntimeError one owner at a time."""
+    monkeypatch.setattr(mod.settings, "AGENTCORE_HERMES_IMAGE", image)
+    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", bucket)
+    monkeypatch.setattr(
+        mod.container_repo, "get_by_owner_id", AsyncMock(side_effect=AssertionError("must not read the row"))
+    )
+    with caplog.at_level("ERROR"):
+        assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
+    if not image:
+        assert "AGENTCORE_HERMES_IMAGE" in caplog.text
+    if not bucket:
+        assert "OWNER_STATE_BUCKET" in caplog.text
+
+
+def test_rollback_and_all_is_rejected_at_argument_parsing(monkeypatch, capsys):
+    """Ruling M6-R20(d): --rollback --all is nonsensical (rollback takes one owner) and must be
+    caught with its OWN message -- not conflated with the pre-existing "--rollback requires
+    --owner-id" guard, which a bare --rollback --all would also trip (--owner-id is absent
+    either way, since it is mutually exclusive with --all at the argparse level)."""
+    monkeypatch.setattr(sys, "argv", ["migrate_workspace_to_hermes.py", "--rollback", "--all"])
+    with pytest.raises(SystemExit):
+        mod.main()
+    # The usage banner always lists --all regardless of which check fired, so assert on the
+    # specific combination message rather than mere substring presence of an option name.
+    assert "cannot be combined with --all" in capsys.readouterr().err
+
+
+async def test_a_natively_provisioned_hermes_row_is_refused_not_tailed(efs_ready, settings_ok, monkeypatch):
     """Ruling M6-R19: a row on agentcore with NO service_name never went through ECS at all --
     the fresh-provision path (settings.HERMES_RUNTIME) never touches the ECS manager. Running
     the tail on it would regenerate its live profiles over themselves for nothing, so it is
@@ -237,7 +311,7 @@ async def test_a_natively_provisioned_hermes_row_is_refused_not_tailed(monkeypat
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_PRECONDITION
 
 
-async def test_an_unstamped_agentcore_row_runs_only_the_tail(tmp_path, monkeypatch):
+async def test_an_unstamped_agentcore_row_runs_only_the_tail(settings_ok, tmp_path, monkeypatch):
     """Ruling M6-R16: a row already on agentcore but with no hermes_migrated_at stamp is a prior
     attempt that crashed after READY but before its tail finished. Re-running must NOT call
     prepare_hermes_workspace or provision_hermes_runtime again -- only the EFS-override pass,
@@ -261,7 +335,6 @@ async def test_an_unstamped_agentcore_row_runs_only_the_tail(tmp_path, monkeypat
     monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
     monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
     monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
-    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "")
 
     prepare = AsyncMock(side_effect=AssertionError("must not re-prepare"))
     provision = AsyncMock(side_effect=AssertionError("must not re-provision"))
@@ -280,6 +353,8 @@ async def test_an_unstamped_agentcore_row_runs_only_the_tail(tmp_path, monkeypat
     monkeypatch.setattr(
         "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
     )
+    monkeypatch.setattr(mod, "_s3_client", lambda: _FakeS3Client([]))
+    monkeypatch.setattr("core.services.hermes_profiles._new_s3_client", lambda: _FakeS3Client([]))
     ecs = SimpleNamespace(stop_user_service=AsyncMock())
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
 
@@ -347,7 +422,8 @@ async def test_chatgpt_oauth_owner_migrates_without_staging_and_removes_the_stal
     _fake_workspace(tmp_path)
     monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
     monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("chatgpt_oauth", None)))
-    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "")  # no S3 traffic needed for this test
+    monkeypatch.setattr(mod, "_s3_client", lambda: _FakeS3Client([]))
+    monkeypatch.setattr("core.services.hermes_profiles._new_s3_client", lambda: _FakeS3Client([]))
 
     monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
     monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())

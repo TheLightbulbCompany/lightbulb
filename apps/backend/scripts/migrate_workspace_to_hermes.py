@@ -9,6 +9,12 @@ and ``.provision_hermes_runtime`` — both called with ``migrate=True`` (M4-R37/
 both REFUSE a row that still carries an ECS ``service_name``, which is the correct behaviour for
 every OTHER caller and exactly wrong for this one.
 
+Ruling M6-R20(c): this job runs INSIDE the backend ECS task (the EFS mount + the backend's own
+settings/env) — never from an operator's laptop. ``_preflight_settings``/the EFS-directory check
+(Ruling M6-R20a/b) exist precisely to fail loudly and instantly in the wrong environment, rather
+than silently "migrating" an owner with zero EFS files or letting ``provision_hermes_runtime``'s
+own less friendly ``RuntimeError`` be the first sign of a misconfigured one.
+
 Ordering invariant (Ruling M6-R1): the ECS service is stopped ONLY after the AgentCore runtime is
 confirmed READY (``provision_hermes_runtime``'s own internal poll) — never before, and never
 concurrently — so two runtimes never serve one owner's EFS-adjacent state at once.
@@ -239,6 +245,20 @@ def _print_plan(owner_id: str, plan, *, dry_run: bool, reconnect_chatgpt: bool) 
         print(f"{tag}{owner_id} reconnect_chatgpt")
 
 
+def _preflight_settings() -> list[str]:
+    """Ruling M6-R20(b): the settings ``provision_hermes_runtime`` hard-requires (it raises
+    ``RuntimeError`` on either being unset), checked ONCE per ``migrate()``/``migrate_all()``
+    call, BEFORE any row is read — an unset value must refuse instantly, with the missing
+    names, rather than ``--all`` sweeping the whole fleet into that RuntimeError one owner at a
+    time. Returns the names that are missing (empty when the preflight passes)."""
+    missing = []
+    if not settings.AGENTCORE_HERMES_IMAGE:
+        missing.append("AGENTCORE_HERMES_IMAGE")
+    if not settings.OWNER_STATE_BUCKET:
+        missing.append("OWNER_STATE_BUCKET")
+    return missing
+
+
 def _tail_eligible(row: dict) -> bool:
     """Ruling M6-R19: tail mode requires an ECS-provenance row — ``service_name`` AND an ARN —
     not merely ``runtime_host == "agentcore"``. A natively provisioned Hermes row (the ordinary
@@ -250,14 +270,25 @@ def _tail_eligible(row: dict) -> bool:
 
 
 async def _check_preconditions(owner_id: str) -> tuple[int | None, str | None, list[dict] | None]:
-    """Ruling M6-R1 step 1 / Ruling M6-R16 / Ruling M6-R19. Returns ``(exit_code, None, None)``
-    on failure, or ``(None, mode, roster)`` where ``mode`` is ``_MODE_FULL`` (provision from
-    scratch) or ``_MODE_TAIL`` (a prior attempt already reached READY — the row is an ECS
-    workspace now on agentcore but carries no ``hermes_migrated_at`` stamp yet, so only the tail
-    remains)."""
+    """Ruling M6-R1 step 1 / Ruling M6-R16 / Ruling M6-R19 / Ruling M6-R20. Returns
+    ``(exit_code, None, None)`` on failure, or ``(None, mode, roster)`` where ``mode`` is
+    ``_MODE_FULL`` (provision from scratch) or ``_MODE_TAIL`` (a prior attempt already reached
+    READY — the row is an ECS workspace now on agentcore but carries no ``hermes_migrated_at``
+    stamp yet, so only the tail remains)."""
     if owner_id == REFERENCE_ORG_ID:
         logger.error("migrate: %s is the reference org (M6-R2) — refusing", owner_id)
         return EXIT_REFERENCE_ORG, None, None
+    missing = _preflight_settings()
+    if missing:
+        logger.error("migrate: refusing owner=%s — missing required settings: %s", owner_id, ", ".join(missing))
+        return EXIT_PRECONDITION, None, None
+    if not get_workspace().user_path(owner_id).is_dir():
+        logger.error(
+            "migrate: no EFS workspace directory for owner=%s — refusing (M6-R20a: this job runs "
+            "inside the backend task, never from an operator laptop with no /mnt/efs mount)",
+            owner_id,
+        )
+        return EXIT_PRECONDITION, None, None
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     if not row:
         logger.error("migrate: no container row for owner=%s", owner_id)
@@ -560,6 +591,8 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
+    if args.rollback and args.all:
+        parser.error("--rollback cannot be combined with --all (rollback takes exactly one owner)")
     if args.rollback:
         if not args.owner_id:
             parser.error("--rollback requires --owner-id")

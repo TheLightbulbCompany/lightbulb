@@ -42,6 +42,27 @@ async def _call_gateway_rpc(owner_id: str, method: str, params: dict | None = No
     return await container_rpc.call(owner_id, method, params, timeout_s=10.0)
 
 
+def _health_verdict(health) -> bool | None:
+    """True healthy / False unhealthy / **None: a payload shape this backend does not know**.
+
+    The OpenClaw gateway answers ``{"ok": ...}``; the Hermes bridge answers
+    ``{"ready": true, "runtime": …, "uptimeS": …, "busy": …, "agents": …}`` and carries no ``ok``
+    at all (``apps/infra/hermes/bridge/server.py``). Reading only ``ok`` therefore made every
+    HEALTHY AgentCore workspace look dead: this door fell through to ``update.run`` (also absent
+    from the bridge), wrote ``status="error"`` on a perfectly good row and dispatched a full
+    reprovision — while answering ``200 {"action":"reprovision"}`` (task-14 row 6).
+
+    An unrecognised payload is NOT "unhealthy": assuming the worst is what made that a
+    destructive read. The caller turns ``None`` into a 502 instead of a reprovision.
+    """
+    if not isinstance(health, dict):
+        return None
+    for key in ("ok", "ready"):
+        if key in health:
+            return bool(health[key])
+    return None
+
+
 @router.post(
     "/recover",
     summary="Recover container or gateway",
@@ -184,14 +205,22 @@ async def container_recover(
     # Try gateway health check
     try:
         health = await _call_gateway_rpc(owner_id, "health")
-        if health.get("ok"):
+    except Exception:
+        health = None  # Gateway is down, proceed to restart
+    if health is not None:
+        verdict = _health_verdict(health)
+        if verdict is None:
+            # Fail loudly rather than escalate: the runtime ANSWERED, in a shape we do not
+            # recognise, so "restart then reprovision" would be destroying a workspace on a
+            # guess. Nothing is written and nothing is dispatched.
+            logger.error("Owner %s: unrecognised gateway health payload; refusing to recover", owner_id)
+            raise HTTPException(status_code=502, detail="Unrecognised gateway health response")
+        if verdict:
             return {
                 "action": "none",
                 "state": "HEALTHY",
                 "reason": "System is healthy",
             }
-    except Exception:
-        pass  # Gateway is down, proceed to restart
 
     # 4. Gateway is down -> try restart via update.run RPC
     logger.info("Recovering owner %s: gateway restart", owner_id)

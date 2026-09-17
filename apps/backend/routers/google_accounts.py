@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import google_accounts_repo
+from core.services import runtime_transport
 from core.services.google_identity import seed_agent_google_identity
 
 router = APIRouter(prefix="/google", tags=["google-accounts"])
@@ -53,6 +54,12 @@ async def assign_account(email: str, body: AssignBody, auth: AuthContext = Depen
     accounts = await google_accounts_repo.list_accounts(owner_id)
     if not any(a["email"] == email for a in accounts):
         raise HTTPException(status_code=404, detail=f"google account not connected: {email}")
+    # Task-14 row 4: the binding is only ever delivered as a `gog -a <email>` instruction, and
+    # neither the `gog` binary nor its EFS-resident keyring exists on a Hermes microVM (see
+    # `google_identity.seed_agent_google_identity`). Refuse instead of storing a row and
+    # answering 200 — same shape as the Shopify container-login refusal (M6 task 10-D).
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        raise HTTPException(status_code=422, detail="unsupported_on_agentcore")
     await google_accounts_repo.set_assignment(owner_id, body.agent_id, email)
     # Project the new binding into the agent's IDENTITY.md so it acts as the
     # right account on its next run, without waiting for a reprovision.

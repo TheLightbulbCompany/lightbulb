@@ -433,6 +433,42 @@ async def test_deploy_from_artifact_mints_profiles_then_content_for_a_fresh_agen
 
 
 @pytest.mark.asyncio
+async def test_deploy_from_artifact_reads_the_row_when_no_container_is_threaded():
+    """M6 task-14 row 19: the branch used to key on the ``container`` PARAMETER, defaulting to
+    the EFS path on ``None`` — correct only while every caller remembered to pass it. A caller
+    that forgot would extract a marketplace agent onto a tree no migrated agent reads and report
+    a successful deploy. The runtime seam, not the argument, decides."""
+    svc, workspace, pair_fn, _apply_aux = _make_service_for_deploy()
+    call_order: list[str] = []
+    with contextlib.ExitStack() as stack:
+        _patch_agentcore_collaborators(stack, call_order)
+        stack.enter_context(
+            patch(
+                "core.services.runtime_transport.is_agentcore_owner",
+                new=AsyncMock(return_value=True),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "core.repositories.container_repo.get_by_owner_id",
+                new=AsyncMock(return_value={"runtime_host": "agentcore"}),
+            )
+        )
+        result = await svc.deploy_from_artifact(
+            owner_id="user_buyer",
+            slug="demo",
+            manifest={"name": "Demo", "version": 1},
+            slice_={"agent": {"name": "Demo"}},
+            tar_bytes=_make_tar_gz({}),
+            new_agent_id=None,
+        )
+
+    assert result["runtimeHost"] == "agentcore"
+    workspace.extract_tarball_to_workspace.assert_not_called()
+    pair_fn.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deploy_from_artifact_does_not_re_mint_a_pre_supplied_agentcore_id():
     """Every real caller (marketplace deploy, hire, agent builder) already
     minted the Paperclip agent before calling deploy_from_artifact -- a

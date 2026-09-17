@@ -1265,3 +1265,45 @@ def stage_codex_auth(owner_id: str, tokens: dict) -> None:
     blob["active_provider"] = "openai-codex"
     _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json", _json.dumps(blob))
     _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.revision", uuid.uuid4().hex)
+
+
+def unstage_codex_auth(owner_id: str) -> bool:
+    """Remove the owner's ChatGPT grant from the ROOT ``auth.json`` — ``stage_codex_auth``'s
+    missing twin (M6 task-14 row 3 / task-15 item 2).
+
+    Without it, "Disconnect ChatGPT" reported success and disconnected nothing on an AgentCore
+    workspace: the DDB token row went, both EFS unlinks hit a tree nothing reads, and the live
+    ``models.authLogout`` RPC does not exist on the bridge — so the agents kept running on, and
+    billing to, the account the owner had just revoked. A credential revoke that silently no-ops
+    is the one failure in that audit that is not merely a broken feature.
+
+    Same read-modify-write posture as ``stage_codex_auth``: only the ``openai-codex`` entry is
+    dropped, any other provider's state in the document survives, and ``auth.revision`` is
+    written LAST so the bridge's ``restore_root_auth`` never sees a bump before the file it
+    describes has landed. Returns True when a grant was actually removed (False when there was
+    none, or no bucket is configured). Sync — call via ``run_in_thread``.
+    """
+    import json as _json
+
+    if not settings.OWNER_STATE_BUCKET:
+        return False
+    prefix = root_home_prefix(owner_id)
+    existing = _s3_get(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json")
+    if not existing:
+        return False
+    try:
+        blob = _json.loads(existing)
+    except ValueError:
+        blob = None
+    if not isinstance(blob, dict):
+        return False
+    providers = blob.get("providers")
+    providers = dict(providers) if isinstance(providers, dict) else {}
+    if providers.pop("openai-codex", None) is None:
+        return False
+    blob["providers"] = providers
+    if blob.get("active_provider") == "openai-codex":
+        blob.pop("active_provider", None)
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json", _json.dumps(blob))
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.revision", uuid.uuid4().hex)
+    return True

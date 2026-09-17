@@ -68,3 +68,55 @@ def test_stage_writes_a_uuid4_revision_last(monkeypatch):
 
 def test_root_home_prefix_is_owner_first_no_profile_segment():
     assert hermes_profiles.root_home_prefix("org_a") == "org_a/hermes/"
+
+
+# ---- unstage (M6 task-14 row 3 / task-15 item 2) -------------------------------------------
+
+
+def _wire(monkeypatch, existing):
+    puts = {}
+    monkeypatch.setattr(hermes_profiles, "_s3_get", lambda bucket, key: existing)
+    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.update({key: body}))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "b")
+    return puts
+
+
+def test_unstage_removes_the_grant_and_bumps_the_revision_last(monkeypatch):
+    """There was no unstage at all, so "Disconnect ChatGPT" left the staged grant in S3 and the
+    agents kept running on the account the owner had just revoked."""
+    puts = _wire(monkeypatch, json.dumps({"active_provider": "openai-codex", "providers": {"openai-codex": {"t": 1}}}))
+
+    assert hermes_profiles.unstage_codex_auth("org_a") is True
+
+    blob = json.loads(puts["org_a/hermes/auth.json"])
+    assert blob["providers"] == {}
+    assert "active_provider" not in blob
+    assert list(puts)[-1] == "org_a/hermes/auth.revision"
+
+
+def test_unstage_preserves_other_providers_state(monkeypatch):
+    """Mirror of the stage side: only ``openai-codex`` leaves."""
+    puts = _wire(
+        monkeypatch,
+        json.dumps({"active_provider": "anthropic", "providers": {"anthropic": {"k": 1}, "openai-codex": {"t": 1}}}),
+    )
+
+    assert hermes_profiles.unstage_codex_auth("org_a") is True
+
+    blob = json.loads(puts["org_a/hermes/auth.json"])
+    assert blob["providers"] == {"anthropic": {"k": 1}}
+    assert blob["active_provider"] == "anthropic"
+
+
+def test_unstage_writes_nothing_when_there_is_no_grant(monkeypatch):
+    for existing in (None, "", "not json", json.dumps({"providers": {"anthropic": {}}})):
+        puts = _wire(monkeypatch, existing)
+        assert hermes_profiles.unstage_codex_auth("org_a") is False
+        assert puts == {}
+
+
+def test_unstage_is_a_no_op_without_a_bucket(monkeypatch):
+    puts = _wire(monkeypatch, json.dumps({"providers": {"openai-codex": {}}}))
+    monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "")
+    assert hermes_profiles.unstage_codex_auth("org_a") is False
+    assert puts == {}

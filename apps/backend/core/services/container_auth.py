@@ -46,7 +46,32 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     EFS seed-file delete is the authoritative cleanup; a transient RPC failure
     (or a pre-4.5 row with no paired operator device) is logged and self-heals
     on the next reprovision.
+
+    On an AgentCore workspace there is no live gateway auth store and no
+    ``models.authLogout`` on the bridge — the grant is a file, staged into the
+    ROOT ``auth.json`` in S3 by ``hermes_profiles.stage_codex_auth``. Deleting
+    it there IS the revoke, so this branch is authoritative rather than
+    best-effort (task-14 row 3: without it a disconnect reported success while
+    the agents kept using the revoked account).
     """
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        from core.dynamodb import run_in_thread
+        from core.services.hermes_profiles import unstage_codex_auth
+
+        try:
+            removed = await run_in_thread(unstage_codex_auth, owner_id)
+        except Exception:  # noqa: BLE001 — never-raises contract: the whole disconnect chain
+            # after this point (harness cleanup, clear_provider_choice) is best-effort, so a
+            # transient S3 failure must not half-finish it. ERROR, not a warning: unlike the ECS
+            # leg below there is no reprovision that self-heals this, and the grant is still live.
+            logger.exception("revoke_provider_auth: could not unstage the AgentCore grant for %s", owner_id)
+            return False
+        logger.info(
+            "revoke_provider_auth: unstaged the AgentCore ChatGPT grant",
+            extra={"owner_id": owner_id, "provider": provider, "removed": removed},
+        )
+        return removed
+
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
     except Exception as exc:  # noqa: BLE001 — best-effort

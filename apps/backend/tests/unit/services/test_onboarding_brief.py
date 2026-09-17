@@ -316,7 +316,7 @@ async def test_seed_goal_cleanup_failure_does_not_mask_the_original_error():
     admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
 
 
-def test_staging_overwrites_a_partial_prior_attempt():
+async def test_staging_overwrites_a_partial_prior_attempt(monkeypatch):
     """The claim decides one-shot-ness now, so staging always writes both.
 
     A prior attempt that staged files and then failed leaves BRIEF.md behind.
@@ -324,8 +324,11 @@ def test_staging_overwrites_a_partial_prior_attempt():
     seeded, so we overwrite instead.
     """
     ws = MagicMock()
+    monkeypatch.setattr(
+        "core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False), raising=False
+    )
 
-    stage_first_run_files(
+    await stage_first_run_files(
         workspace=ws,
         owner_id="user_abc",
         friday_agent_id="friday-uuid",
@@ -334,3 +337,25 @@ def test_staging_overwrites_a_partial_prior_attempt():
 
     assert ws.write_file.call_count == 1
     ws.write_file_if_missing.assert_not_called()
+
+
+async def test_staging_writes_the_profile_not_efs_on_an_agentcore_workspace(monkeypatch):
+    """Task-14 row 5: ``Workspace.write_file`` mkdirs its parents, so the EFS write SUCCEEDED
+    into a tree no Hermes agent reads — the founder's own description of the company they want
+    run never reached the CEO's first turn, while the funnel reported complete."""
+    ws = MagicMock()
+    monkeypatch.setattr(
+        "core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True), raising=False
+    )
+    write_profile_file = AsyncMock(return_value="BRIEF.md")
+    monkeypatch.setattr("core.services.hermes_profiles.write_profile_file", write_profile_file)
+
+    await stage_first_run_files(
+        workspace=ws,
+        owner_id="org_abc",
+        friday_agent_id="friday-uuid",
+        brief_md="brief",
+    )
+
+    write_profile_file.assert_awaited_once_with("org_abc", "friday-uuid", "BRIEF.md", "brief")
+    ws.write_file.assert_not_called()

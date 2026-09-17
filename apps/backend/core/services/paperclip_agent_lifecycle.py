@@ -31,6 +31,7 @@ from core.services.paperclip_agent_idempotency import (
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_adapter_config import (
     HTTP_ADAPTER_TYPE,
+    OPENCLAW_GATEWAY_TYPE,
     adapter_type_for,
     build_http_adapter_config,
     synthesize_openclaw_adapter,
@@ -86,6 +87,71 @@ async def resolve_agent_adapter(
         service_token=service_token.mint(owner_id),
         user_id=gateway_user_id,
     )
+
+
+async def repoint_agent_adapter(
+    owner_id: str, agent: dict[str, Any], *, runtime_host: str, gateway_token: str | None = None
+) -> bool:
+    """Move ONE **existing** agent's Paperclip adapter onto ``runtime_host``'s transport.
+
+    ``resolve_agent_adapter`` above picks the adapter at agent-CREATE time and nothing had ever
+    re-picked it, so a workspace that MOVES between ECS and AgentCore kept whatever its agents
+    were created with (M6 task-14 row 1, the founder blocker): every migrated workspace's agents
+    went on dialling an operator WebSocket at an address that no longer resolves, so each routine
+    fire, issue run and Teams Run/Retry died inside ``gateway_relay``'s ``except`` while room chat
+    — which rides the WORK bus, not the adapter — kept working. Nothing looked broken.
+
+    Deliberately the SAME resolver a fresh create uses, with ``runtime_host`` passed explicitly so
+    it never re-reads a row that may be mid-flip. ``agent_label`` is the agent's REAL id here (a
+    create cannot know it yet; a re-point always does).
+
+    Returns True when a patch landed, False when the agent was already on the target adapter —
+    i.e. idempotent, so a re-entered migration tail or a re-run rollback re-points only what is
+    still wrong. **Raises** on any failure: a half-re-pointed workspace looks healthy, which is
+    the entire defect this closes.
+
+    ``gateway_token``: the owner's container gateway token, required only when re-pointing BACK to
+    ``openclaw_gateway`` (rollback). A freshly synthesized gateway adapter carries the service JWT
+    as ``authToken`` and an unregistered device, neither of which the live gateway accepts — so the
+    per-agent bind + ``paired.json`` merge (``ensure_operator_device_paired``, the same seam agent
+    create uses) runs right after the patch. Omitting it leaves the adapter unusable until the next
+    provision, so callers on the ECS leg must pass it.
+    """
+    from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
+
+    agent_id = agent.get("id")
+    if not agent_id:
+        raise ValueError(f"repoint_agent_adapter: agent row for owner={owner_id} has no id")
+    target_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
+    if agent.get("adapterType") == target_type:
+        return False
+    _, adapter_config = await resolve_agent_adapter(
+        owner_id, agent_label=agent_id, gateway_user_id=owner_id, runtime_host=runtime_host
+    )
+    if target_type == HTTP_ADAPTER_TYPE and (adapter_config.get("headers") or {}).get("Authorization") == "Bearer ":
+        # build_http_adapter_config accepts an empty hook token and would mint an adapter whose
+        # every run 401s at `/internal/paperclip/runs/{owner}` -- exactly the silent shape above.
+        raise RuntimeError(f"repoint_agent_adapter: owner={owner_id} has no hook_token to authorize the http adapter")
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        await admin.patch_agent(
+            session_cookie=cookie,
+            agent_id=agent_id,
+            body={
+                "adapterType": target_type,
+                "adapterConfig": adapter_config,
+                "replaceAdapterConfig": True,
+            },
+        )
+    if target_type == OPENCLAW_GATEWAY_TYPE and gateway_token:
+        await ensure_operator_device_paired(
+            owner_id=owner_id,
+            paperclip_agent={**agent, "adapterType": target_type, "adapterConfig": adapter_config},
+            gateway_token=gateway_token,
+        )
+    logger.info("repoint_agent_adapter: owner=%s agent=%s -> %s", owner_id, agent_id, target_type)
+    return True
 
 
 _ISSUE_PAGE_SIZE = 1000

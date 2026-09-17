@@ -28,7 +28,11 @@ class TestContainerRecover:
     @pytest.fixture
     def mock_call_gateway_rpc(self):
         with patch("routers.container_recover._call_gateway_rpc", new_callable=AsyncMock) as mock_rpc:
-            mock_rpc.return_value = {}
+            # An EXPLICITLY unhealthy gateway. Was a bare ``{}``, which only read as unhealthy
+            # because the route used to do ``health.get("ok")`` — a payload carrying neither
+            # ``ok`` nor ``ready`` is now "shape we do not recognise" and refuses (502) rather
+            # than escalating a workspace it cannot classify (task-15 item 3).
+            mock_rpc.return_value = {"ok": False}
             yield mock_rpc
 
     @pytest.fixture
@@ -186,6 +190,42 @@ class TestContainerRecover:
         assert data["action"] == "none"
         assert data["state"] == "HEALTHY"
         mock_dispatch_provision.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recover_reads_the_hermes_bridge_ready_payload_as_healthy(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+    ):
+        """Task-14 row 6 / task-15 item 3: the bridge answers ``ready``, not ``ok``. Reading only
+        ``ok`` made every HEALTHY AgentCore workspace fall through to ``update.run`` (absent on
+        the bridge), get ``status="error"`` written on its row and a full reprovision dispatched
+        — while still answering 200."""
+        container = {"owner_id": "user_test_123", "gateway_token": "test-token", "status": "running"}
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "agentcore"))
+        mock_call_gateway_rpc.return_value = {"ready": True, "runtime": "hermes", "uptimeS": 12, "busy": False}
+
+        response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "none"
+        mock_dispatch_provision.assert_not_called()
+        mock_container_repo.update_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recover_refuses_an_unrecognised_health_payload(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+    ):
+        """A runtime that ANSWERED, in a shape carrying neither ``ok`` nor ``ready``, must not be
+        assumed broken: "assume the worst" is what turned this door into a landmine. Refuse
+        loudly and write nothing."""
+        container = {"owner_id": "user_test_123", "gateway_token": "test-token", "status": "running"}
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        mock_call_gateway_rpc.return_value = {"runtime": "something-new"}
+
+        response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 502
+        mock_dispatch_provision.assert_not_called()
+        mock_container_repo.update_status.assert_not_called()
 
     # --- No container ---
 

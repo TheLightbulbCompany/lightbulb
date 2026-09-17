@@ -292,10 +292,26 @@ _ROOT_AUTH_REVISION: str | None = None
 _ROOT_AUTH_HASH: str | None = None
 
 
+#: Sentinel _ROOT_AUTH_REVISION value meaning "checked once, found absent" -- distinct from the
+#: real `None` starting value so the short-circuit below can tell "never checked" (must try the
+#: download once) apart from "checked and there is nothing there" (must stop trying).
+_ROOT_AUTH_ABSENT = ""
+
+
 def restore_root_auth() -> None:
     """Pull ``<owner>/hermes/auth.json`` into the root home when the backend's
     ``auth.revision`` marker has moved since our last restore — per-turn, the same shape as
-    ``ensure_profile``'s hot-patch re-pull (Task 13a)."""
+    ``ensure_profile``'s hot-patch re-pull (Task 13a).
+
+    NEW minor (fix round 2 continuation): almost every owner never connects ChatGPT OAuth, so
+    ``auth.revision`` never exists. Recording the sentinel ``_ROOT_AUTH_ABSENT`` after the first
+    check (instead of leaving ``_ROOT_AUTH_REVISION`` at ``None``) lets the guard below
+    short-circuit on turn 2 onward instead of attempting a doomed download forever; a revision
+    that later appears (the owner's first-ever ChatGPT connect) still differs from the sentinel
+    and triggers the download. One ``get_object`` of ``auth.revision`` per turn remains
+    (accepted cost, same as a profile's own ``.revision`` poll) — only the download attempt is
+    what gets skipped.
+    """
     global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
     if not S3_BUCKET:
         return
@@ -306,7 +322,7 @@ def restore_root_auth() -> None:
         _download_object("auth.json", HOME / "auth.json")
     except Exception as exc:  # noqa: BLE001 -- no root auth.json yet (never connected) is not an error
         log.debug("restore_root_auth: no root auth.json to restore: %s", exc)
-    _ROOT_AUTH_REVISION = revision
+    _ROOT_AUTH_REVISION = revision if revision is not None else _ROOT_AUTH_ABSENT
     _ROOT_AUTH_HASH = _local_auth_hash()
 
 

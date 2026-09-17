@@ -25,6 +25,42 @@ def test_a_grant_staged_between_two_turns_is_restored_on_the_second_turn(monkeyp
     assert downloads == ["auth.json", "auth.json"]
 
 
+def test_restore_root_auth_short_circuits_after_the_first_check_for_an_owner_with_no_revision(monkeypatch, home):
+    """NEW minor (fix round 2 continuation): almost every owner never connected ChatGPT, so
+    auth.revision never exists and _ROOT_AUTH_REVISION started life staying None -- the guard
+    (`_ROOT_AUTH_REVISION is not None`) never tripped, so every turn attempted a doomed
+    download forever. The first check may still try once (there's no way to know in advance);
+    every one after that must short-circuit."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    monkeypatch.setattr(sync, "_root_auth_revision", lambda: None)
+    downloads = []
+    monkeypatch.setattr(sync, "_download_object", lambda key, dest: downloads.append(key))
+
+    sync.restore_root_auth()
+    sync.restore_root_auth()
+    sync.restore_root_auth()
+
+    assert downloads == ["auth.json"]  # only the cold-start attempt
+
+
+def test_restore_root_auth_still_catches_a_revision_that_first_appears(monkeypatch, home):
+    """An owner who just connected ChatGPT for the FIRST time -- the sentinel from prior absent
+    turns must not permanently suppress the eventual real revision."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    revisions = iter([None, None, "r1"])
+    monkeypatch.setattr(sync, "_root_auth_revision", lambda: next(revisions))
+    downloads = []
+    monkeypatch.setattr(sync, "_download_object", lambda key, dest: downloads.append(key))
+
+    sync.restore_root_auth()  # cold, absent
+    sync.restore_root_auth()  # still absent -- short-circuits
+    sync.restore_root_auth()  # first staging -- must download
+
+    assert downloads == ["auth.json", "auth.json"]
+
+
 def test_a_stale_local_copy_never_overwrites_a_newer_staged_grant(monkeypatch, home):
     """C3: Hermes rotated the token locally, but the backend staged an even newer grant mid-
     turn -- uploading over it would silently discard the fresher one. The next turn's restore

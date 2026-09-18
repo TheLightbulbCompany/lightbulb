@@ -115,8 +115,8 @@ async def migrate_removed_config_keys(owner_id: str) -> None:
 # Top-level subtrees that runtime writers CO-OWN with the config generator:
 # the generator emits the subtree's skeleton, but other writers add entries
 # inside it after provision that the generator does not know about —
-# channel pairing accounts/allowFrom (channel_link_service), marketplace
-# skill entries/allowBundled (deploy's skills_patch), deployed-agent MCP
+# channel pairing accounts/allowFrom (ecs_manager._provision_channel_accounts),
+# marketplace skill entries/allowBundled (deploy's skills_patch), deployed-agent MCP
 # servers (catalog deploy slice). Only these subtrees get the recursive
 # "preserve what the regen omits" treatment. Everywhere else a fresh render
 # WINS WHOLESALE: recursing into arbitrary generator-owned dicts would

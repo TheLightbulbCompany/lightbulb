@@ -176,12 +176,13 @@ async def remove_container(
     "/user-data",
     summary="DEV/TEST ONLY: atomically delete all per-user data",
     description=(
-        "Tears down ECS service, EFS access point, EFS folder, all "
-        "per-user task-def revisions, and rows from all 9 per-user "
-        "DDB tables (including paperclip-companies, whose row carries the "
-        "onboarding generation/funnel/bootstrap fields — see INV-10). "
-        "Used by the e2e harness at the end of each run. "
-        "Caller can only delete their own data (owner_id derived from JWT)."
+        "Tears down the owner's AgentCore runtime and every S3 Hermes profile under "
+        "their prefix, then rows from all 9 per-user DDB tables (including "
+        "paperclip-companies, whose row carries the onboarding "
+        "generation/funnel/bootstrap fields — see INV-10). Leaves an empty slate: the "
+        "e2e harness calls it at the end of each run and the next provision must not "
+        "restore anything. Caller can only delete their own data (owner_id derived from "
+        "JWT)."
     ),
     operation_id="debug_delete_user_data",
     responses={
@@ -223,11 +224,11 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # it replaces: the owner's S3 profile prefix IS their workspace content, and the
     # e2e harness's empty-slate contract breaks silently if the next provision restores
     # it. Only a terminal wipe passes True (see ``delete_user_service``'s docstring).
-    ecs_succeeded = False
+    runtime_succeeded = False
     try:
         await get_ecs_manager().delete_user_service(owner_id, delete_hermes_profiles=True)
         deleted["runtime"] = True
-        ecs_succeeded = True
+        runtime_succeeded = True
     except Exception as e:
         logger.warning("runtime teardown failed for %s: %s", owner_id, e)
         failures.append(f"runtime: {e}")
@@ -270,7 +271,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             await svc.delete_key(owner_id, provider)
 
     ddb_steps = []
-    if ecs_succeeded:
+    if runtime_succeeded:
         ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
     ddb_steps.extend(
         [

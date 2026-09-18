@@ -79,7 +79,13 @@ class FakeS3:
 
 
 @pytest.fixture
-def client(tmp_path: Path):
+def export_calls() -> list[dict]:
+    """Every kwarg dict ``_export`` handed ``export_built_agent_from_staging``."""
+    return []
+
+
+@pytest.fixture
+def client(tmp_path: Path, export_calls: list[dict]):
     app = FastAPI()
     app.include_router(marketplace_import.router)
     app.dependency_overrides[get_current_user] = _auth
@@ -91,15 +97,15 @@ def client(tmp_path: Path):
         patch("routers.marketplace_import._s3", return_value=s3),
         patch("routers.marketplace_import.settings") as settings,
         patch("routers.marketplace_import.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-        # Every owner is on AgentCore, so agent_export reads the agent's Hermes
-        # profile out of S3 (``<owner>/hermes/<id>/``) rather than the EFS
-        # staging dir these tests write. The export itself is covered by its own
-        # unit file; stub it here so the HTTP contract this file pins -- preview
-        # shape, confirm wiring, staging cleanup -- is what's under test. A test
-        # that needs a specific package re-patches this inside its own body.
+        # The export reads the staging dir these tests write -- the backend extracted
+        # the upload into it -- NOT the owner's Hermes profile. The export itself is
+        # covered by its own unit file; stub it here so the HTTP contract this file pins
+        # (preview shape, confirm wiring, staging cleanup) is what's under test, and
+        # record its kwargs so ``export_calls`` can pin WHICH location it was pointed at.
+        # A test that needs a specific package re-patches this inside its own body.
         patch(
             "routers.marketplace_import.agent_export.export_built_agent_from_staging",
-            side_effect=lambda **_kwargs: _stub_package(),
+            side_effect=lambda **kwargs: (export_calls.append(kwargs), _stub_package())[1],
         ),
     ):
         settings.MARKETPLACE_ARTIFACTS_BUCKET = "bkt"
@@ -279,6 +285,38 @@ def test_confirm_registers_each_selected_agent_and_removes_staging(client):
     assert first["package"].openclaw_slice.get("mcp") in (None, {"servers": {}})  # mcp deselected
     assert reg.await_args_list[1].kwargs["payload"].staging_agent_id == f"{import_id}-work"
     assert not (user_root / f"workspace-{import_id}").exists()
+
+
+def test_confirm_exports_the_staging_dir_not_the_owners_hermes_profile(client, export_calls):
+    """``_export`` must NOT hand the container row to ``export_built_agent_from_staging``.
+
+    The row is what ``agent_export._resolve_agent_location`` branches on: given one it
+    resolves ``<owner>/hermes/<staging_agent_id>/`` in S3 -- a profile prefix nothing ever
+    writes, because ``_stage_from_s3`` extracted this upload into the staging dir on disk.
+    Passing it made the export read an empty location and 400 every import. Without the
+    kwarg the export resolves the staging dir it was actually written to.
+    """
+    c, _, s3, _ = client
+    s3.objects[KEY] = _archive(agents_list=[{"id": "main", "default": True}])
+    import_id = _start(c)
+    with patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg:
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"agent_ids": ["main"]})
+
+    assert r.status_code == 200, r.text
+    assert export_calls, "the confirm leg must reach the staging export"
+    for kwargs in export_calls:
+        assert "container" not in kwargs, (
+            "a container row routes the export at the owner's Hermes profile prefix, which this import never wrote to"
+        )
+        assert kwargs["owner_id"] == OWNER
+        assert kwargs["staging_agent_id"].startswith(import_id)
 
 
 def test_confirm_partial_failure_keeps_staging_and_reports(client):

@@ -25,10 +25,11 @@ import {
  * lands on a failure or on the answer. Layout follows the editorial system in
  * globals.css (borders, not surface shifts).
  *
- * Nothing is destroyed, only folded: a settled trace collapses to one summary
- * line, expanding restores every row, and expanding a row still shows the raw
- * args and output. That invariant is what makes aggressive collapsing safe and
- * what lets a production agent be debugged from a screenshot.
+ * Nothing is destroyed, only folded: any multi-step trace — running or settled
+ * — collapses to one summary line, expanding restores every row, and expanding
+ * a row still shows the raw args and output. That invariant is what makes
+ * aggressive collapsing safe and what lets a production agent be debugged from
+ * a screenshot.
  */
 
 export interface ToolCall {
@@ -60,9 +61,14 @@ const STALL_MS = 90_000;
 /** Below this, a duration is noise — a 40ms read would jitter the column. */
 const DURATION_FLOOR_MS = 2_000;
 
-/** Turns with more calls than this fold when settled. Three or fewer stay open:
- *  folding something that short costs a click to reveal nothing. */
-const FOLD_THRESHOLD = 3;
+/**
+ * Turns with more calls than this fold — running or settled. One is the floor,
+ * not a taste knob: a lone call is ALREADY one quiet line, and its row says
+ * more than the summary would ("Read src/app.tsx" vs "Read 1 file"), so folding
+ * it costs a click to reveal less. Everything above that collapses to a single
+ * line by default, which is the whole point of this component.
+ */
+const FOLD_THRESHOLD = 1;
 
 function formatDuration(ms: number): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -81,6 +87,31 @@ function formatDuration(ms: number): string {
  */
 function activityDisplay(name: string): ToolDisplay {
   return { title: name, gerund: name, past: name, kind: "generic" };
+}
+
+/**
+ * The folded line for a turn that is STILL RUNNING.
+ *
+ * A settled turn summarises what happened ("Read 6 files · ran 3 commands");
+ * mid-run that phrasing reads as a finished report of a thing that is still
+ * moving. So the live line is the step happening RIGHT NOW, in the present
+ * tense — the same sentence its row would carry — with failures so far kept
+ * visible, since folding must never be the reason a user misses one.
+ */
+function summarizeLiveToolRun(calls: ToolCall[], displays: ToolDisplay[]): string {
+  let current = -1;
+  for (let i = calls.length - 1; i >= 0; i -= 1) {
+    if (calls[i]!.status === "running") {
+      current = i;
+      break;
+    }
+  }
+  const base =
+    current >= 0
+      ? toolRowLabel(displays[current]!, true)
+      : summarizeToolRun(calls.map((c, i) => ({ display: displays[i]!, failed: c.status === "error" })));
+  const failures = calls.filter((c) => c.status === "error").length;
+  return failures > 0 ? `${base} · ${failures} failed` : base;
 }
 
 /** Renders a tool_result payload as text. Mirrors the old ToolPill's reader. */
@@ -266,7 +297,11 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
   // right (and vacuously true for an empty list, harmless since that also
   // short-circuits to `null` below).
   const settled = calls.every((c) => c.status !== "running");
-  const shouldFold = settled && calls.length > FOLD_THRESHOLD;
+  // Folding no longer waits for the turn to settle. A running turn is exactly
+  // when the trace is at its ugliest — rows arrive one by one, the block grows,
+  // then collapses under the reader — so it folds from the first extra call and
+  // the one line it leaves behind narrates the live step instead.
+  const shouldFold = calls.length > FOLD_THRESHOLD;
   const [userOpened, setUserOpened] = React.useState(false);
   // A turn that folds while the user has it open stays open — the fold is a
   // default, not an override of an explicit choice.
@@ -282,9 +317,18 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
   })();
 
   if (folded) {
-    const summary = summarizeToolRun(
-      calls.map((c, i) => ({ display: displays[i]!, failed: c.status === "error" })),
-    );
+    const summary = settled
+      ? summarizeToolRun(
+          calls.map((c, i) => ({ display: displays[i]!, failed: c.status === "error" })),
+        )
+      : summarizeLiveToolRun(calls, displays);
+    // The trailing slot is one number, never two: a finished turn is worth a
+    // duration, a live one is worth knowing how much is hiding behind the line.
+    const meta = settled
+      ? totalMs !== undefined && totalMs >= DURATION_FLOOR_MS
+        ? formatDuration(totalMs)
+        : null
+      : `${calls.length} steps`;
     return (
       <button
         type="button"
@@ -292,25 +336,29 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
         aria-expanded={false}
         className="mb-3.5 mt-0.5 flex items-center gap-1.5 text-left text-ui text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
       >
+        {!settled && (
+          // Same brass pulse a running row wears, so a folded live turn still
+          // reads as motion rather than a finished sentence.
+          <span
+            aria-hidden
+            className="h-[5px] w-[5px] shrink-0 rounded-full bg-[var(--brass)] motion-safe:animate-pulse"
+          />
+        )}
         <ChevronRight aria-hidden className="h-3 w-3 shrink-0 text-[var(--midnight-faint)]" />
         {summary}
-        {totalMs !== undefined && totalMs >= DURATION_FLOOR_MS && (
-          <span className="text-caption tabular-nums text-[var(--midnight-muted)]">
-            {formatDuration(totalMs)}
-          </span>
-        )}
+        {meta && <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{meta}</span>}
       </button>
     );
   }
 
   return (
     <>
-      {/* Folding is a default, not a one-way trip: a settled trace over the
-          fold threshold that the user opened (userOpened) can still be sent
-          back to its one-line summary. Only shown when it would actually
-          re-fold (shouldFold) — a short or still-running trace was never
-          folded, so there's nothing to collapse it back to. Sits OUTSIDE the
-          `<ul>` below — it's a trace-level control, not a row. */}
+      {/* Folding is a default, not a one-way trip: a trace over the fold
+          threshold that the user opened (userOpened) can still be sent back to
+          its one-line summary. Only shown when it would actually re-fold
+          (shouldFold) — a lone call was never folded, so there's nothing to
+          collapse it back to. Sits OUTSIDE the `<ul>` below — it's a
+          trace-level control, not a row. */}
       {shouldFold && (
         <button
           type="button"

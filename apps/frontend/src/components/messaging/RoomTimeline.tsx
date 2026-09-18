@@ -34,6 +34,10 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   const atBottom = useRef(true);
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
   const handled = useRef<string | null>(null);
+  // Wraps the live region (pending sends + in-flight runs) so a ResizeObserver
+  // has a box to watch: it is the only part of the timeline whose height moves
+  // without a new message seq.
+  const live = useRef<HTMLDivElement>(null);
   const [unseen, setUnseen] = useState(0);
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const items = useMemo(() => buildTimeline(messages, { readSeq }), [messages, readSeq]);
@@ -83,6 +87,25 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     return () => clearTimeout(timer);
   }, [targetMessageId, targetToken, messages.length]);
 
+  // Height, not just sequence. A live run grows the timeline as its tool rows
+  // arrive and shrinks it again when the trace folds on settle — all within one
+  // already-present item, so the growth effect above (keyed on the newest seq)
+  // never fires and the reader is left parked above the reply. Re-pin on every
+  // resize of the live region, but only for someone already at the bottom:
+  // `atBottom` is the same flag the "new messages" pill respects, so a reader
+  // who deliberately scrolled up is never yanked.
+  useEffect(() => {
+    const content = live.current;
+    const node = region.current;
+    if (!content || !node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (!atBottom.current) return;
+      node.scrollTop = node.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+
   function onScroll() {
     const node = region.current;
     if (!node) return;
@@ -100,7 +123,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
           {renderMessage(item.message, item.collapsed)}
         </div>;
       })}
-      {children}
+      <div ref={live} className="room-live-content">{children}</div>
     </div>
     {unseen > 0 && <Button type="button" variant="outline" className="room-new-pill" onClick={scrollToBottom} aria-label={`${unseen} new ${unseen === 1 ? "message" : "messages"}`}>
       <ArrowDown size={14} aria-hidden="true" />{unseen} new {unseen === 1 ? "message" : "messages"}

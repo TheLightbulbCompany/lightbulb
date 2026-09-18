@@ -15,6 +15,7 @@
 
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MessageList } from "../MessageList";
 import type { RenderGroup } from "@/hooks/internal/types";
 
@@ -50,7 +51,7 @@ const props = {
 };
 
 describe("MessageList — tool run coalescing", () => {
-  it("merges separate consecutive tool messages into ONE trace", () => {
+  it("merges separate consecutive tool messages into ONE trace", async () => {
     render(
       <MessageList
         renderGroups={renderGroup([
@@ -61,6 +62,9 @@ describe("MessageList — tool run coalescing", () => {
         {...props}
       />,
     );
+    // A multi-step trace folds to one summary line by default; open it to see
+    // the rows this test is about.
+    await userEvent.click(screen.getByRole("button", { expanded: false }));
     // One list, three rows — not three separate indicators.
     expect(screen.getAllByRole("list")).toHaveLength(1);
     expect(screen.getAllByRole("listitem")).toHaveLength(3);

@@ -30,6 +30,9 @@
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
+/* The live region (pending sends + in-flight runs). flex-shrink: 0 keeps its box
+   at content height so the ResizeObserver in RoomTimeline sees real growth. */
+.room-live-content { display: flex; flex-direction: column; flex-shrink: 0; }
 .room-timeline-item[data-highlight="true"] { background: var(--accent); }
 .room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 0; padding: 12px 0 4px; background: var(--background); font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
 .room-date-divider::before, .room-date-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
@@ -234,7 +237,8 @@
 .room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
 /* left padding aligns with the avatar column (36px .room-message-gutter + 12px .room-message gap = 48px) */
 .room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 48px; font-size: .875rem; }
-.room-run-line details { flex-basis: 100%; }
+/* The run line wraps; its tool trace takes a full row of its own. */
+.room-run-line .room-run-trace { flex-basis: 100%; }
 .room-run-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .room-run-controls .room-input { flex: 1; }
 .messaging-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100%; min-height: 0; }

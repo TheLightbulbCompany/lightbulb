@@ -7,13 +7,19 @@ wrote -- an in-progress clone, an uncommitted ``git add``, a test run's output. 
 """
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
-from core.services import container_rpc, hermes_provisioning
+from core.services import container_rpc, hermes_provisioning, runtime_transport
 from core.services.messaging import ApiProblem
 
 from tests.unit.services.test_hermes_provisioning_roll import _wire
+
+#: Captured at import, before any test's ``_wire`` replaces it: the S1-b test needs the REAL
+#: fold (transport error -> chained ApiProblem), not the stub every other test here installs.
+_REAL_CONTAINER_RPC_CALL = container_rpc.call
 
 
 def _health(monkeypatch, *answers):
@@ -87,3 +93,40 @@ async def test_a_slow_or_failing_probe_is_never_read_as_idle(monkeypatch, raised
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
     assert [c[0] for c in calls] == ["update", "ready"]  # no stop
     assert probes == ["org_a"]
+
+
+@pytest.mark.asyncio
+async def test_a_starved_microvm_arrives_as_an_apiproblem_and_is_not_idle(monkeypatch):
+    """S1-b. ``runtime_transport._request_agentcore`` normalises EVERY AgentCore timeout to
+    ``httpx.ReadTimeout``, and ``container_rpc.call`` folds ``httpx.HTTPError`` into the same
+    ``ApiProblem`` it raises for an absent runtime -- so the founder-freeze shape never reaches
+    the guard as ``asyncio.TimeoutError``. Only the chained ``__cause__`` separates them.
+
+    Exercised THROUGH that fold, not around it: ``container_rpc.call`` is the real one and only
+    ``runtime_transport.request`` is stubbed, so a change to either layer's normalisation fails
+    this test rather than silently reopening the hole."""
+    calls = _wire(monkeypatch, current_image="x:old")
+    monkeypatch.setattr(container_rpc, "call", _REAL_CONTAINER_RPC_CALL)
+    monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
+
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(
+        return_value=(
+            {
+                "gateway_token": "gw",
+                "runtime_host": "agentcore",
+                "agentcore_runtime_arn": "arn:rt",
+                "status": "running",
+            },
+            runtime_transport.AGENTCORE_ADDRESS,
+        )
+    )
+    monkeypatch.setattr(container_rpc, "get_ecs_manager", lambda: manager)
+
+    async def _timed_out(*args, **kwargs):
+        raise httpx.ReadTimeout("agentcore invoke exceeded 90s")
+
+    monkeypatch.setattr(runtime_transport, "request", _timed_out)
+
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
+    assert [c[0] for c in calls] == ["update", "ready"]  # no stop

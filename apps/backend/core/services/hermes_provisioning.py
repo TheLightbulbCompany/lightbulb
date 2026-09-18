@@ -567,17 +567,30 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     """Poll the bridge's ``health`` RPC (which reports ``turn._busy``) until no turn is in
     flight, up to ``ROLL_IDLE_WAIT_S``. False means still busy at the deadline.
 
-    FAILS CLOSED, and only ``ApiProblem`` is treated as idle. That one is the transport's real
-    answer for "no reachable runtime", the common case, and must not become a ten-minute stall
-    on every parked owner. Everything else -- an ``asyncio.TimeoutError`` from the plugin's own
-    504, a botocore read timeout, a ``RuntimeError`` from ``ok:false`` -- is NOT proof a turn
-    isn't running: a CPU-starved microVM answers ``/health`` slowly precisely BECAUSE a turn is
-    hammering it (the 2026-09-14 founder-container freeze shape), and reading that as "idle" is
-    how this guard would authorise the exact mid-turn stop it exists to prevent.
+    FAILS CLOSED: nothing short of a clean ``busy: 0`` — or a positive "there is no runtime
+    here" — releases the stop. A CPU-starved microVM answers ``/health`` slowly precisely
+    BECAUSE a turn is hammering it (the 2026-09-14 founder-container freeze shape), so reading
+    a timeout as "idle" is how this guard would authorise the exact mid-turn stop it exists to
+    prevent.
+
+    **Exception TYPE cannot make that call, so the chained cause does.**
+    ``runtime_transport._request_agentcore`` deliberately normalises EVERY AgentCore failure to
+    an httpx shape (a botocore ``ReadTimeoutError`` and the outer ``wait_for``'s
+    ``asyncio.TimeoutError`` both become ``httpx.ReadTimeout``; ``ClientError``/``BotoCoreError``
+    become ``httpx.ConnectError``), and ``container_rpc.call`` folds ``httpx.HTTPError`` into
+    the SAME ``ApiProblem`` it raises for a genuinely absent runtime. A starved microVM
+    therefore never reaches us as ``asyncio.TimeoutError`` — it is an ``ApiProblem``. What
+    separates the two is that ``container_rpc``'s transport fold is its ONLY chaining raise
+    (``raise _unavailable() from exc``); every no-runtime raise leaves ``__cause__`` as None.
+
+    ``httpx.ConnectError`` (a throttle, or a genuine ResourceNotFound) is left on the idle side
+    by ruling — the timeout is the one that must not be.
 
     The probe is an ``InvokeAgentRuntime`` (``wake=False`` cannot suppress it: AgentCore rows
     resolve to a sentinel address, not a task IP), so on a parked workspace it starts a session
     -- on the NEW image, since the update has already landed, and the stop tears it back down."""
+    import httpx
+
     from core.services import container_rpc
     from core.services.messaging import ApiProblem
 
@@ -585,9 +598,11 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     while True:
         try:
             payload = await container_rpc.call(owner_id, "health", wake=False)
-        except ApiProblem:
-            return True  # no reachable runtime: there is no warm session to protect
-        except Exception:  # noqa: BLE001 -- a slow or failing answer is not proof of idle
+        except ApiProblem as exc:
+            if not isinstance(exc.__cause__, httpx.TimeoutException):
+                return True  # no reachable runtime: there is no warm session to protect
+            payload = {"busy": 1}  # it did not answer in ~95 s, which is not proof it is idle
+        except Exception:  # noqa: BLE001 -- a 504 or an ok:false is not proof of idle either
             payload = {"busy": 1}
         if not (payload or {}).get("busy"):
             return True

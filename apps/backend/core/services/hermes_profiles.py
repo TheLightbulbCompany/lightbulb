@@ -116,7 +116,7 @@ _DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
 
 #: M4-R3: the opt-in is a flat allow-list (``plugins.enabled``), never ``plugins.entries`` —
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.
-_LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
+_LIGHTBULB_PLUGINS = ("lightbulb",)
 
 #: Fix round 1, I4: ONLY the Hermes provider NAME (a namespace this module alone owns — Hermes's
 #: own "openai-api" differs from the openclaw-style "openai" ref prefix ``core.containers.config``

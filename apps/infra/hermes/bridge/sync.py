@@ -894,7 +894,7 @@ def cli_credential_env(agent_id: str) -> dict[str, str]:
     return env
 
 
-LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
+LIGHTBULB_PLUGINS = ("lightbulb",)
 
 
 def plugins_pin(existing: dict) -> dict:

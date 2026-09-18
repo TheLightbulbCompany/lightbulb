@@ -163,7 +163,7 @@ def test_terminal_runs_locally_without_an_attached_node():
 
 def test_plugins_enabled_is_a_flat_list_never_entries():
     c = cfg()
-    assert c["plugins"] == {"enabled": ["lightbulb", "lightbulb_node"]}
+    assert c["plugins"] == {"enabled": ["lightbulb"]}
 
 
 def test_dotenv_carries_the_resolved_paperclip_key_value_and_the_provisioned_env():

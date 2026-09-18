@@ -90,7 +90,11 @@ def test_room_context_and_system_prompt_carry_the_media_list():
     ctx = turn.room_context(f.ingress(), "ceo", media=["/mnt/a1.png"])
     assert ctx["media"] == ["/mnt/a1.png"]
     assert turn.room_context(f.ingress(), "ceo")["media"] == []
-    block = turn.system_prompt(f.ingress(), "ceo", media=["/mnt/a1.png"]).split("```json", 1)[1].split("```", 1)[0]
+    prompt = turn.system_prompt(f.ingress(), "ceo", media=["/mnt/a1.png"])
+    # Bug fix: the model picked a stale historical attachment via vision_analyze even though the
+    # current message's own image already rode along natively -- this sentence tells it not to.
+    assert "use vision_analyze only for files not shown" in prompt
+    block = prompt.split("```json", 1)[1].split("```", 1)[0]
     assert json.loads(block)["media"] == ["/mnt/a1.png"]
 
 
@@ -106,10 +110,43 @@ def test__run_hermes_materializes_attachments_before_building_the_system_prompt(
             return {"api_calls": 1, "final_response": "ok"}
 
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _FakeAgent())
-    monkeypatch.setattr(sync, "materialize_attachments", lambda body: ["/mnt/a1.png"])
-    turn._run_hermes("ceo", f.ingress(), None)
+    # A PDF, deliberately -- it is in `media` but never native `_message_image_paths` content,
+    # so this test does not also need the native-vision stub just to reach the system prompt.
+    attachment = {"id": "a1", "fileName": "a1.pdf", "contentType": "application/pdf", "size": 5}
+    body = f.ingress(message=f.message(attachments=[attachment]))
+    expected_path = str(sync.attachment_path(f.ROOM, attachment))
+    monkeypatch.setattr(sync, "materialize_attachments", lambda body: [expected_path])
+
+    turn._run_hermes("ceo", body, None)
+
     block = seen["system_message"].split("```json", 1)[1].split("```", 1)[0]
-    assert json.loads(block)["media"] == ["/mnt/a1.png"]
+    assert json.loads(block)["media"] == [expected_path]
+
+
+# ---- fix round: the model answered about the WRONG image -----------------------------------
+# `media` used to be sync.materialize_attachments(body) verbatim -- every materialized path,
+# history included, with no marker for which belongs to the current message. With the current
+# message's image already embedded natively in `user_message`, the model still called
+# vision_analyze on a path from this list and picked a STALE historical attachment instead.
+def test__run_hermes_lists_only_the_current_messages_media_not_history(home, monkeypatch):
+    _install_native_vision_stub(monkeypatch)
+    seen = _capture_agent_call(monkeypatch)
+    monkeypatch.setattr(sync, "_get_backend_bytes", lambda path: _RED_PNG if "current" in path else _BLUE_PNG)
+
+    current = f.message(messageId="current", text="now", attachments=[
+        {"id": "current-image", "fileName": "now.png", "contentType": "image/png", "size": len(_RED_PNG)},
+    ])
+    history = f.message(messageId="history", messageSeq=5, text="earlier", attachments=[
+        {"id": "history-image", "fileName": "past.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
+    ])
+    body = f.ingress(message=current, recentHistory=[history])
+
+    turn._run_hermes("ceo", body, None)
+
+    block = seen["system_message"].split("```json", 1)[1].split("```", 1)[0]
+    media = json.loads(block)["media"]
+    assert len(media) == 1
+    assert media[0].endswith("current-image.png")
 
 
 def test__run_hermes_sends_a_current_image_as_native_user_content(home, monkeypatch):

@@ -219,20 +219,27 @@ async def get_primary_email(user_id: str) -> str:
     raise RuntimeError(f"clerk user {user_id} has no email address")
 
 
-async def get_organization(org_id: str) -> dict | None:
+async def get_organization(org_id: str, *, include_members_count: bool = False) -> dict | None:
     """Single Clerk organization by org_id. Returns None on 404 / no key.
 
     Mirrors get_user's defensive posture: catches network errors, logs,
     returns None. Callers should handle None as "no metadata available"
     rather than as failure.
+
+    ``include_members_count`` asks Clerk for the org's ``members_count``, which
+    the endpoint omits by default. ``scripts/wipe_org.py`` uses it as an
+    independent cross-check on ``list_organization_members``, which returns []
+    on ANY error and so cannot distinguish "empty org" from "Clerk unreachable"
+    on its own. Off by default so existing callers pay nothing extra.
     """
     if not settings.CLERK_SECRET_KEY:
         return None
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    params = {"include_members_count": "true"} if include_members_count else None
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            response = await client.get(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers)
+            response = await client.get(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers, params=params)
     except Exception as e:  # noqa: BLE001
         logger.warning("clerk_admin.get_organization network error: %s", e)
         return None

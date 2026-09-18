@@ -10,24 +10,27 @@ than an admin route: it composes the SAME teardown step functions
 — and adds only what an org needs that a user does not: the per-member loop,
 the Clerk organization delete, and the org-specific refusals.
 
-Runs INSIDE the backend task (ECS exec), same convention as
-``roll_hermes_runtimes``/``migrate_workspace_to_hermes`` — it needs the EFS
-mount for the ECS-era workspace delete, the VPC for Aurora/RDS Data API, and
-the task role for ECS/S3/Secrets Manager:
+Runs INSIDE the backend task (ECS exec) — it needs the EFS mount for the
+ECS-era workspace delete, the VPC for Aurora/RDS Data API, and the task role
+for ECS/S3/Secrets Manager. Both invocations work:
 
-    uv run python -m scripts.wipe_org --org org_XXX                    # preview
-    uv run python -m scripts.wipe_org --org org_XXX --execute
-    uv run python -m scripts.wipe_org --org org_XXX --execute --delete-clerk-users
+    uv run python -m scripts.wipe_org --org org_XXX          # from apps/backend
+    uv run python /tmp/wipe_org.py    --org org_XXX          # copied file, cwd /app
+
+    ... --execute                       # commit
+    ... --execute --delete-clerk-users  # also delete each member's Clerk user
 
 PREVIEW IS THE DEFAULT. Without ``--execute`` nothing is deleted: every step
-goes through ``_do`` below, which is the ONE call site that decides between
-"print what I would touch" and "touch it", so the preview and the execution
-can never disagree about what is in scope.
+that touches anything goes through ``_do`` below, which is the ONE call site
+deciding between "print what I would touch" and "touch it", so the preview and
+the execution can never disagree about scope. The single exception is
+``_clerk_user_step``'s two REFUSED lines, which are report entries for a
+delete that is never attempted in either mode (``_do`` has no "refused" case).
 
-Exit codes: 0 all steps ok/skipped, 1 at least one step failed (each step is
-isolated — a failure never stops the ones after it), 2 a refusal (checked for
-EVERY named org before ANY org's first step, so a run either starts clean or
-does nothing).
+Exit codes: 0 all steps ok/skipped, 1 at least one step failed OR the
+Paperclip side could not be resolved (see ``_NO_PAPERCLIP_ROW``), 2 a refusal
+(checked for EVERY named org before ANY org's first step, so a run either
+starts clean or does nothing).
 
 Idempotent: every collaborator here already treats "already gone" as success
 (they were written for a retryable wipe), and the inventory read decides only
@@ -42,16 +45,29 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-from core.auth import is_org_owner_id
-from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
-from core.config import settings
-from core.containers import get_ecs_manager, get_workspace
-from core.repositories import (
+# Make ``core.*`` importable however this file is invoked. Two shapes matter:
+# ``python -m scripts.wipe_org`` from apps/backend (parent of this file's dir
+# holds ``core/``), and a COPY of this single file dropped somewhere else and
+# run from the deployed backend's /app (``uv run python /tmp/wipe_org.py``),
+# where the file's own location says nothing — the cwd is the backend root.
+# Same shim as scripts/bootstrap_paperclip_admin.py, plus the cwd fallback.
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if not os.path.isdir(os.path.join(_BACKEND_ROOT, "core")):
+    _BACKEND_ROOT = os.getcwd()
+if _BACKEND_ROOT not in sys.path:
+    sys.path.insert(0, _BACKEND_ROOT)
+
+from core.auth import is_org_owner_id  # noqa: E402
+from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes  # noqa: E402
+from core.config import settings  # noqa: E402
+from core.containers import get_ecs_manager, get_workspace  # noqa: E402
+from core.repositories import (  # noqa: E402
     admin_actions_repo,
     agent_email_repo,
     billing_repo,
@@ -64,9 +80,10 @@ from core.repositories import (
     usage_repo,
     user_repo,
 )
-from core.repositories.paperclip_repo import PaperclipRepo, _org_create_claim_key
-from core.services import clerk_admin, runtime_transport
-from core.services.account_wipe import (
+from core.repositories.paperclip_repo import PaperclipRepo, _org_create_claim_key  # noqa: E402
+from core.services import clerk_admin, runtime_transport  # noqa: E402
+from core.services.account_wipe import (  # noqa: E402
+    _NO_PAPERCLIP_ROW,
     WipeReport,
     WipeStep,
     _archive_metronome_customer,
@@ -75,13 +92,14 @@ from core.services.account_wipe import (
     _skip,
     _step,
     _wipe_company_stripe,
+    cancel_open_workflows,
 )
-from core.services.billing_service import delete_stripe_customer
-from core.services.litestream_replicas import delete_replica_prefix
-from core.services.oauth_service import PURPOSE_HARNESS, revoke_user_oauth
-from core.services.owner_secret_sweep import delete_owner_secrets
-from core.services.paperclip_api_key import delete_owner_agent_key_secrets
-from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
+from core.services.billing_service import delete_stripe_customer  # noqa: E402
+from core.services.litestream_replicas import delete_replica_prefix  # noqa: E402
+from core.services.oauth_service import PURPOSE_HARNESS, revoke_user_oauth  # noqa: E402
+from core.services.owner_secret_sweep import delete_owner_secrets  # noqa: E402
+from core.services.paperclip_api_key import delete_owner_agent_key_secrets  # noqa: E402
+from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +131,9 @@ class _Inventory:
 
     org_id: str
     org: dict | None
-    """The Clerk organization, or None (404 / already deleted / no Clerk key)."""
+    """The Clerk organization, or None (404 / already deleted / unreachable —
+    ``get_organization`` collapses all three). ``check_refusals`` is what
+    separates them; nothing downstream may assume which it was."""
 
     members: list[dict]
     """Clerk memberships — ``{"user_id", "email", ...}``, see clerk_admin."""
@@ -125,6 +145,12 @@ class _Inventory:
     container: dict | None = None
     billing: dict | None = None
     user_rows: dict[str, dict] = field(default_factory=dict)
+
+    member_orgs: dict[str, list[str]] = field(default_factory=dict)
+    """Per member, the ids of EVERY Clerk org they belong to — read BEFORE this
+    org is deleted, so the list containing ``org_id`` is the proof the lookup
+    worked. An empty list is therefore "Clerk did not answer", not "no orgs",
+    and the Clerk-user delete refuses on it."""
 
     @property
     def member_ids(self) -> list[str]:
@@ -142,45 +168,57 @@ class _Inventory:
                 ids.append(row["user_id"])
         return ids
 
-    @property
-    def emails(self) -> list[str]:
-        out = [m["email"] for m in self.members if m.get("email")]
-        out += [r["paperclip_email"] for r in self.paperclip_rows if r.get("paperclip_email")]
-        return out
-
     def paperclip_row_for(self, user_id: str) -> dict | None:
         return next((r for r in self.paperclip_rows if r.get("user_id") == user_id), None)
 
     def email_for(self, user_id: str) -> str:
-        """The member's address, Better Auth's copy first, Clerk's as fallback.
+        """The member's address — Better Auth's copy, then Clerk's, then the
+        users row. Empty only when NONE of the three knows it.
 
-        Better Auth's ``user.email`` is written once at sign-up and never
-        updated, so it is the one that matches the Aurora row — but rows
-        written before ``paperclip_email`` existed carry "", and feeding that
-        to ``delete_paperclip_user`` silently disarms ITS bootstrap-admin
-        guard (the second line of defence behind ``check_refusals``).
+        Three sources because each fails independently and the answer feeds a
+        safety guard: ``delete_paperclip_user``'s bootstrap-admin refusal keys
+        on this string, so a "" makes that guard a silent no-op. Better Auth's
+        copy comes first because it is the one that matches the Aurora row
+        (``user.email`` is written once at sign-up and never updated).
         """
         row = self.paperclip_row_for(user_id) or {}
         if row.get("paperclip_email"):
             return row["paperclip_email"]
-        return next((m.get("email") or "" for m in self.members if m.get("user_id") == user_id), "")
+        clerk = next((m.get("email") or "" for m in self.members if m.get("user_id") == user_id), "")
+        return clerk or (self.user_rows.get(user_id) or {}).get("email") or ""
+
+    @property
+    def company_ids(self) -> list[str]:
+        """Every distinct Paperclip company named by this org's rows. More than
+        one is a data defect, not a wipe target — see ``check_refusals``."""
+        return list(dict.fromkeys(r["company_id"] for r in self.paperclip_rows if r.get("company_id")))
 
     @property
     def company_id(self) -> str:
         """The org's Paperclip company. Empty when the org has no rows (the
         member-less orphans) or only a bare seed-claim marker (company_id="")."""
-        return next((r["company_id"] for r in self.paperclip_rows if r.get("company_id")), "")
+        return self.company_ids[0] if self.company_ids else ""
 
     @property
     def runtime_host(self) -> str:
         return runtime_transport.host_for(self.container or {})
+
+    @property
+    def ecs_hosted(self) -> bool:
+        """Has a live ECS service to drain. AgentCore rows never did."""
+        return self.container is not None and self.runtime_host == "ecs"
+
+    @property
+    def has_ddb_footprint(self) -> bool:
+        """Any durable row that proves this workspace still owns something."""
+        return bool(self.container or self.billing or self.paperclip_rows)
 
 
 async def read_inventory(org_id: str) -> _Inventory:
     repo = PaperclipRepo(table_name=_PAPERCLIP_TABLE)
     inv = _Inventory(
         org_id=org_id,
-        org=await clerk_admin.get_organization(org_id),
+        org=await clerk_admin.get_organization(org_id, include_members_count=True),
         members=await clerk_admin.list_organization_members(org_id),
         paperclip_rows=await repo.list_by_org_id(org_id),
         container=await container_repo.get_by_owner_id(org_id, consistent=True),
@@ -190,6 +228,8 @@ async def read_inventory(org_id: str) -> _Inventory:
         row = await user_repo.get(user_id)
         if row:
             inv.user_rows[user_id] = row
+        # Read while this org still EXISTS: see _Inventory.member_orgs.
+        inv.member_orgs[user_id] = [o["id"] for o in await clerk_admin.list_user_organizations(user_id) if o.get("id")]
     return inv
 
 
@@ -201,6 +241,37 @@ async def check_refusals(inv: _Inventory, *, allow_multi_member: bool) -> None:
     if org_id in PROTECTED_ORG_IDS:
         raise Refusal(f"{org_id} is a protected org (founder / internal team) — never wiped by this script")
 
+    # Clerk has to be demonstrably reachable before its roster may be trusted.
+    # get_organization returns None for 404, for a network error and for an
+    # unset key alike, so "no org" alone proves nothing. members_count is the
+    # independent second read: Clerk answered, and this is how many members it
+    # says there are. A mismatch means list_organization_members came back
+    # short — which it does silently, on ANY error.
+    if inv.org is None:
+        if inv.has_ddb_footprint:
+            raise Refusal(
+                f"Clerk returned no organization for {org_id}, and this workspace still has rows "
+                "(container / billing / paperclip). That is either a deleted org with live residue or "
+                "an unreachable Clerk — refusing rather than wiping against an unverifiable roster"
+            )
+        logger.warning(
+            "wipe_org: %s has no Clerk organization and no DDB rows — treating as an already-torn-down "
+            "workspace; nothing downstream depends on the roster",
+            org_id,
+        )
+    else:
+        count = inv.org.get("members_count")
+        if count is None:
+            raise Refusal(
+                f"Clerk did not return members_count for {org_id} — cannot verify the member roster is "
+                "complete, and list_organization_members reports an error as an empty list"
+            )
+        if int(count) != len(inv.members):
+            raise Refusal(
+                f"{org_id}: Clerk says {count} member(s) but the roster listed {len(inv.members)} — "
+                "the member read came back short; refusing rather than wiping a roster we cannot see"
+            )
+
     member_ids = inv.member_ids
     if len(member_ids) > 1 and not allow_multi_member:
         raise Refusal(
@@ -208,23 +279,42 @@ async def check_refusals(inv: _Inventory, *, allow_multi_member: bool) -> None:
             "pass --allow-multi-member to wipe a shared workspace"
         )
 
-    protected = sorted({e for e in inv.emails if e.strip().lower() in BOOTSTRAP_EMAILS})
+    # An unknown address disarms delete_paperclip_user's bootstrap guard, which
+    # tests the email string. Refuse rather than delete past a guard that
+    # cannot fire.
+    unknown = sorted(uid for uid in member_ids if not inv.email_for(uid))
+    if unknown:
+        raise Refusal(
+            f"{org_id}: no email resolvable for {', '.join(unknown)} (not in Clerk, the paperclip row, or "
+            "the users row) — the bootstrap-admin guard keys on the address and cannot fire without it"
+        )
+
+    protected = sorted({e for e in (inv.email_for(uid) for uid in member_ids) if e.strip().lower() in BOOTSTRAP_EMAILS})
     if protected:
         raise Refusal(
             f"{org_id} has a bootstrap Paperclip admin member ({', '.join(protected)}) — "
             "deleting it breaks the admin session every provision depends on"
         )
 
+    if len(inv.company_ids) > 1:
+        raise Refusal(
+            f"{org_id}'s paperclip rows name {len(inv.company_ids)} different companies "
+            f"({', '.join(inv.company_ids)}) — that is a data defect; resolve it by hand rather than "
+            "letting this script delete whichever one it happened to read first"
+        )
+
     # Never delete a Paperclip company a SECOND workspace also names. Same
-    # signal ``account_wipe._shared_company`` uses: the by-company-id GSI's
-    # ACTIVE rows. Any active row belonging to a user who is not one of this
-    # org's own members means another workspace is living in this company.
+    # signal ``account_wipe._shared_company`` uses (the by-company-id GSI), but
+    # WITHOUT its active-only filter: a disabled row is a member whose access
+    # can come back (entitlement_teardown disables with a 30-day grace), so it
+    # still counts as "somebody else lives here".
     if inv.company_id:
         repo = PaperclipRepo(table_name=_PAPERCLIP_TABLE)
-        outsiders = sorted(set(await repo.get_user_ids_for_company(inv.company_id)) - set(member_ids))
+        rows_for_company = await repo.get_user_ids_for_company(inv.company_id, include_inactive=True)
+        outsiders = sorted(set(rows_for_company) - set(member_ids))
         if outsiders:
             raise Refusal(
-                f"{org_id}'s Paperclip company {inv.company_id} is also named by active row(s) for "
+                f"{org_id}'s Paperclip company {inv.company_id} is also named by row(s) for "
                 f"{', '.join(outsiders)} — refusing to delete a company two workspaces share"
             )
 
@@ -260,13 +350,34 @@ async def _do(
         await _step(steps, system=system, action=action, fn=fn)
 
 
+def _status_of(steps: list[WipeStep], system: str) -> str:
+    return next((s.status for s in steps if s.system == system), "skipped")
+
+
 async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) -> WipeReport:
     """The ordered teardown. Mirrors ``account_wipe.wipe_account``'s step order
     and system names wherever the resource is the same, so a reader who knows
     one knows the other."""
     org_id = inv.org_id
     steps: list[WipeStep] = []
-    env = settings.ENVIRONMENT or "dev"
+    env = settings.ENVIRONMENT
+
+    # --- Step 0: stop the workspace regrowing under the teardown -----------
+    # Every member's /container/status poll re-runs ensure_user_ready, which
+    # re-provisions. Killing their Clerk sessions first makes that poll 401
+    # instead of racing steps 1-8. Not a delete — a live session is not a
+    # resource this script owns, so it is execute-only like everything else
+    # but has nothing to preview beyond "these are the members".
+    for user_id in inv.member_ids:
+        await _do(
+            steps,
+            system="clerk_sessions",
+            action="revoke_sessions",
+            execute=execute,
+            present=True,
+            detail=f"user_id={user_id}",
+            fn=lambda user_id=user_id: _revoke_sessions(user_id),
+        )
 
     # --- Step 1: per Clerk member ----------------------------------------
     # Membership archive BEFORE the Better Auth delete, not after: archiving
@@ -291,8 +402,8 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
             present=bool((row or {}).get("paperclip_user_id")),
             detail=(
                 f"user_id={user_id} paperclip_user_id={(row or {}).get('paperclip_user_id')}"
-                if row
-                else f"user_id={user_id}: no paperclip-companies row"
+                if (row or {}).get("paperclip_user_id")
+                else f"user_id={user_id}: no paperclip_user_id on the row"
             ),
             fn=lambda user_id=user_id, row=row: _delete_better_auth_user(
                 user_id, row or {}, inv.email_for(user_id), env
@@ -309,23 +420,25 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
         )
 
     # --- Step 2: the Paperclip company (hard delete) ----------------------
+    # A missing row is NOT proof the Paperclip side is gone — the handle to it
+    # may simply be absent (partial provision, prior partial wipe, or a re-run
+    # after step 8 deleted the rows while THIS step failed). Reported loudly
+    # with account_wipe's own wording and counted toward a non-zero exit.
+    if not inv.company_id:
+        logger.warning("wipe_org: %s — %s", org_id, _NO_PAPERCLIP_ROW)
     await _do(
         steps,
         system="paperclip_company",
         action="delete_company",
         execute=execute,
         present=bool(inv.company_id),
-        detail=(
-            f"company_id={inv.company_id}"
-            if inv.company_id
-            else "no paperclip-companies row for this org — nothing to resolve a company from"
-        ),
+        detail=f"company_id={inv.company_id}" if inv.company_id else _NO_PAPERCLIP_ROW,
         fn=lambda: _delete_company(inv.company_id),
     )
 
     # --- Step 3: the runtime ----------------------------------------------
     # Gate-token rows FIRST: the table is keyed on the token hash with no owner
-    # index, so the containers row is the only handle on them — and the next
+    # index, so the containers row is the only handle on them — and the runtime
     # step destroys that row. A stranded row is unreachable forever, at
     # denied=False. (The row's own ALL_OLD image is swept again inside the
     # runtime step, which closes the mint-in-between window.)
@@ -344,11 +457,38 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
         fn=lambda: _delete_gate_tokens(org_id, snapshot_hashes),
     )
 
+    # DRAIN BEFORE DELETE. delete_user_service issues desiredCount=0 and
+    # delete_service(force=True) back to back and returns — it does not wait.
+    # Worse, a DELETED service describes as absent while its last task is still
+    # STOPPING (_tasks_fully_stopped_blocking reads ServiceNotFoundException as
+    # drained), so waiting afterwards can return True over a container that is
+    # still running its 120s stopTimeout — exactly when litestream performs its
+    # FINAL replica sync. Deleting the replica prefix in that window lets the
+    # late upload repopulate it with live OAuth refresh tokens, which the next
+    # provision would restore. Scaling to zero first gives the drain wait a
+    # service that is genuinely going away and a signal that means what it says.
+    await _do(
+        steps,
+        system="container_drain",
+        action="stop_and_wait_until_drained",
+        execute=execute,
+        present=inv.ecs_hosted,
+        detail=(
+            f"scale {(inv.container or {}).get('service_name', '')} to 0 and wait for the task to STOP"
+            if inv.ecs_hosted
+            else f"runtime_host={inv.runtime_host}: no ECS service to drain"
+        ),
+        fn=lambda: _drain_container(org_id),
+    )
+    # A failed drain must still block the replica delete — _step keeps going
+    # after a failure by design, so the decision is carried here.
+    drain_ok = (not inv.ecs_hosted) or _status_of(steps, "container_drain") in ("ok", "would_delete")
+
     # ONE call for both hosts: delete_user_service branches on runtime_host and
     # for an AgentCore row runs teardown_hermes_runtime (StopRuntimeSession,
     # DeleteAgentRuntime, revoke the bearer, delete the boot secret) plus — because
     # we pass delete_hermes_profiles=True, the terminal-caller flag — the whole
-    # <org>/hermes/ S3 prefix. For an ECS row it scales to 0, deletes the service,
+    # <org>/hermes/ S3 prefix. For an ECS row it deletes the service,
     # deregisters the task def, deletes the EFS access point, and sweeps
     # channel-links. Both paths delete the containers row and reap the owner's
     # Bedrock footprint (AIPs + IAM role) at the shared seam.
@@ -392,7 +532,7 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
             if settings.LITESTREAM_BUCKET
             else "LITESTREAM_BUCKET unset (EFS layout)"
         ),
-        fn=lambda: _delete_replicas(org_id),
+        fn=lambda: _delete_replicas(org_id, drained=drain_ok),
     )
 
     # --- Step 4: Metronome (AIPs + gate token already reaped above) -------
@@ -416,6 +556,19 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
     # Google's remote revoke does not run on either path — neither this nor
     # _disconnect_teardown calls it (see revoke_user_oauth's docstring: our
     # stored tokens are deleted, the upstream grant is not).
+    #
+    # Open provisioning workflows are CANCELLED FIRST — never deprovisioned
+    # (spec §3.6) — so a reader advancing a workflow mid-wipe cannot land a
+    # fresh secret after the sweeps below have already run.
+    await _do(
+        steps,
+        system="provisioning",
+        action="cancel_open_workflows",
+        execute=execute,
+        present=True,
+        detail="close every non-terminal provisioning workflow (never deprovisions)",
+        fn=lambda: _cancel_workflows(org_id),
+    )
     await _do(
         steps,
         system="owner_secrets",
@@ -466,19 +619,16 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
     )
     # The company's OWN Stripe account is never deleted — it is their business
     # account. This only releases the platform's authorization on it.
-    if execute:
-        await _wipe_company_stripe(steps, owner_id=org_id)
-    else:
-        company_account_id = (inv.billing or {}).get("company_stripe_account_id") or ""
-        await _do(
-            steps,
-            system="stripe",
-            action="deauthorize_company_account",
-            execute=False,
-            present=bool(company_account_id),
-            detail=company_account_id or "no company_stripe_account_id on billing row",
-            fn=_noop,
-        )
+    company_account_id = (inv.billing or {}).get("company_stripe_account_id") or ""
+    await _do(
+        steps,
+        system="stripe",
+        action="deauthorize_company_account",
+        execute=execute,
+        present=bool(company_account_id),
+        detail=company_account_id or "no company_stripe_account_id on billing row",
+        fn=lambda: _deauthorize_company_stripe(org_id),
+    )
     await _do(
         steps,
         system="billing_row",
@@ -577,28 +727,94 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
         fn=lambda: _delete_clerk_org(org_id),
     )
     for user_id in inv.member_ids:
-        await _do(
-            steps,
-            system="clerk_user",
-            action="delete_user",
-            execute=execute and delete_clerk_users,
-            present=delete_clerk_users,
-            detail=(user_id if delete_clerk_users else f"{user_id}: kept (pass --delete-clerk-users to delete)"),
-            fn=lambda user_id=user_id: _delete_clerk_user(user_id),
-        )
+        await _clerk_user_step(steps, inv, user_id, execute=execute, delete_clerk_users=delete_clerk_users)
 
     return WipeReport(owner_id=org_id, steps=steps, dry_run=not execute)
+
+
+async def _clerk_user_step(
+    steps: list[WipeStep],
+    inv: _Inventory,
+    user_id: str,
+    *,
+    execute: bool,
+    delete_clerk_users: bool,
+) -> None:
+    """Queue (or refuse) one member's Clerk-user delete.
+
+    A Clerk user is a HUMAN, not a workspace resource: the same person may own
+    or belong to another workspace, and deleting their account here would take
+    that with it. So the delete is refused outright for anyone who belongs to
+    any org besides this one — and equally for anyone whose org list we could
+    not read, because ``list_user_organizations`` reports an error as an empty
+    list and this lookup ran while they were still a member of ``inv.org_id``.
+    Seeing that id is the proof the lookup worked; not seeing it means the
+    answer is unusable, and an unusable answer is never grounds to delete a
+    person's account.
+
+    The two refusals are emitted directly rather than through ``_do`` because a
+    guard keeping a resource on purpose is ``account_wipe``'s "refused" status
+    — neither a success nor a failure, and never a delete — which ``_do`` has
+    no case for. The delete itself still goes through ``_do``.
+    """
+    if not delete_clerk_users:
+        _skip(steps, "clerk_user", "delete_user", f"{user_id}: kept (pass --delete-clerk-users to delete)")
+        return
+
+    orgs = inv.member_orgs.get(user_id) or []
+    if inv.org_id not in orgs:
+        steps.append(
+            WipeStep(
+                "clerk_user",
+                "delete_user",
+                "refused",
+                f"{user_id}: could not confirm this human's org memberships — Clerk listed "
+                f"{len(orgs)} org(s) and none of them is {inv.org_id}, which they are a member of. "
+                "Keeping the user.",
+            )
+        )
+        return
+
+    others = sorted(o for o in orgs if o != inv.org_id)
+    if others:
+        steps.append(
+            WipeStep(
+                "clerk_user",
+                "delete_user",
+                "refused",
+                f"{user_id}: member of {len(others)} other org(s) ({', '.join(others)}) — "
+                "deleting this Clerk user would take their other workspace(s) with it. Keeping the user.",
+            )
+        )
+        return
+
+    await _do(
+        steps,
+        system="clerk_user",
+        action="delete_user",
+        execute=execute,
+        present=True,
+        detail=f"{user_id}: sole org is {inv.org_id}",
+        fn=lambda: _delete_clerk_user(user_id),
+    )
 
 
 # ---------------------------------------------------------------------------
 # One thin wrapper per collaborator: each returns the report detail string.
 # Module-level so a test can monkeypatch the name it wants without reaching
-# into a closure.
+# into a closure. They exist because ``_do`` takes a zero-argument async
+# callable and a Python lambda cannot contain ``await``.
 # ---------------------------------------------------------------------------
 
 
-async def _noop() -> str:  # pragma: no cover - preview-only placeholder, never called
-    return ""
+async def _revoke_sessions(user_id: str) -> str:
+    result = await clerk_admin.revoke_sessions(user_id)
+    if result.get("error"):
+        # revoke_sessions swallows failures into {"error": ...} for its UX
+        # callers. Here a silent failure means the workspace can regrow under
+        # the teardown, so surface it as a failed step.
+        raise RuntimeError(f"clerk revoke_sessions failed for {user_id}: {result['error']}")
+    return f"{user_id}: sessions revoked" + (" (stubbed — no Clerk key)" if result.get("stubbed") else "")
 
 
 async def _archive_member(user_id: str) -> str:
@@ -636,6 +852,16 @@ async def _delete_gate_tokens(org_id: str, snapshot_hashes: list[str]) -> str:
     return f"deleted {deleted} of {len(hashes)} gate-token row(s)"
 
 
+async def _drain_container(org_id: str) -> str:
+    ecs = get_ecs_manager()
+    await ecs.stop_user_service(org_id, reason="wipe_org")
+    # Budget exceeds the container's 120s stopTimeout so a normal full-length
+    # drain (litestream's final replica sync) does not read as a timeout.
+    if not await ecs.wait_until_drained(org_id, timeout_s=180.0):
+        raise RuntimeError("container did not drain within 180s — a litestream writer may still be live")
+    return "scaled to 0 and every task reached STOPPED"
+
+
 async def _delete_runtime(org_id: str, runtime_host: str) -> str:
     row_at_death = await get_ecs_manager().delete_user_service(org_id, delete_hermes_profiles=True)
     detail = f"runtime_host={runtime_host}: runtime, per-owner resources, containers row and Bedrock footprint removed"
@@ -655,12 +881,11 @@ async def _delete_workspace_dir(org_id: str) -> str:
     return str(workspace.user_path(org_id))
 
 
-async def _delete_replicas(org_id: str) -> str:
-    # Drain first, and fail rather than delete on a timeout: delete_user_service
-    # only SUBMITS the scale-to-zero, and a still-live litestream can land an
-    # upload AFTER the delete — silently repopulating the prefix so the next
-    # provision restores state this script reported as erased.
-    if not await get_ecs_manager().wait_until_drained(org_id, timeout_s=180.0):
+async def _delete_replicas(org_id: str, *, drained: bool) -> str:
+    # The drain is a PRIOR step; refuse if it did not succeed. A visible,
+    # retryable failure beats deleting a prefix a live writer can repopulate
+    # with the owner's rotated OAuth refresh tokens.
+    if not drained:
         raise RuntimeError("container did not drain; refusing to delete replicas while a writer may still be live")
     if not await delete_replica_prefix(org_id):
         raise RuntimeError("replica prefix delete failed")
@@ -670,6 +895,11 @@ async def _delete_replicas(org_id: str) -> str:
 async def _archive_metronome(customer_id: str) -> str:
     await _archive_metronome_customer(customer_id)
     return customer_id
+
+
+async def _cancel_workflows(org_id: str) -> str:
+    cancelled, open_count = await cancel_open_workflows(org_id)
+    return f"cancelled {cancelled} of {open_count} open provisioning workflow(s)"
 
 
 async def _delete_secrets(org_id: str) -> str:
@@ -696,6 +926,18 @@ async def _revoke_oauth(org_id: str) -> str:
 
 async def _delete_stripe(org_id: str, stripe_customer_id: str) -> str:
     return f"stripe_customer_id={stripe_customer_id} deleted={await delete_stripe_customer(org_id)}"
+
+
+async def _deauthorize_company_stripe(org_id: str) -> str:
+    """account_wipe's own step 8b, which appends its result to a step list.
+    Run it against a scratch list and re-raise its failure so this script's
+    single ``_do`` seam reports it like every other step."""
+    scratch: list[WipeStep] = []
+    await _wipe_company_stripe(scratch, owner_id=org_id)
+    outcome = scratch[-1]
+    if outcome.status == "failed":
+        raise RuntimeError(outcome.error or "company stripe deauthorize failed")
+    return outcome.detail
 
 
 async def _delete_billing_row(org_id: str) -> str:
@@ -769,6 +1011,14 @@ async def _delete_clerk_user(user_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def unresolved_paperclip(report: WipeReport) -> bool:
+    """Whether the Paperclip company could not be resolved at all. NOT the same
+    as "this owner had no Paperclip side": the handle (the DDB row) may simply
+    be missing, including on a re-run where step 8 deleted the rows while step
+    2 failed. Drives a non-zero exit so it cannot be read as a clean wipe."""
+    return any(s.system == "paperclip_company" and s.detail == _NO_PAPERCLIP_ROW for s in report.steps)
+
+
 def print_report(report: WipeReport) -> None:
     mode = "PREVIEW (nothing deleted)" if report.dry_run else "EXECUTED"
     print(f"\n=== {report.owner_id} — {mode} ===")
@@ -781,6 +1031,8 @@ def print_report(report: WipeReport) -> None:
         print(line)
     statuses = sorted({s.status for s in report.steps})
     print("  -- " + ", ".join(f"{sum(1 for s in report.steps if s.status == st)} {st}" for st in statuses))
+    if unresolved_paperclip(report):
+        print(f"  !! WARNING: {_NO_PAPERCLIP_ROW}")
 
 
 async def _audit(report: WipeReport, elapsed_ms: int) -> None:
@@ -814,6 +1066,14 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-multi-member", action="store_true", help="permit an org with more than one member")
     args = parser.parse_args(argv)
 
+    # Which Aurora cluster, which Secrets Manager prefix, which everything. An
+    # unset ENVIRONMENT silently defaults to "dev" all over this codebase — on
+    # a laptop that means a prod-shaped command quietly hitting dev, and in the
+    # prod task it would mean the reverse. Name it or do not run.
+    if not settings.ENVIRONMENT:
+        print("REFUSED: ENVIRONMENT is unset — run this inside the backend task, not on a laptop", file=sys.stderr)
+        return 2
+
     # Validate EVERY org before touching ANY of them: a run starts clean or does nothing.
     inventories: list[_Inventory] = []
     refusals: list[str] = []
@@ -831,17 +1091,18 @@ async def main(argv: list[str] | None = None) -> int:
             print(f"REFUSED: {r}", file=sys.stderr)
         return 2
 
-    failed = 0
+    problems = 0
     for inv in inventories:
         started = time.monotonic()
         report = await wipe_org(inv, execute=args.execute, delete_clerk_users=args.delete_clerk_users)
         print_report(report)
         if args.execute:
             await _audit(report, int((time.monotonic() - started) * 1000))
-        failed += sum(1 for s in report.steps if s.status == "failed")
+        problems += sum(1 for s in report.steps if s.status == "failed")
+        problems += 1 if unresolved_paperclip(report) else 0
     if not args.execute:
         print("\nPreview only — nothing was deleted. Re-run with --execute to commit.")
-    return 1 if failed else 0
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

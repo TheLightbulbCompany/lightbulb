@@ -658,14 +658,22 @@ async def set_pending_checkout(
 ) -> None:
     """Record the owner's OPEN Stripe Checkout session (at most one).
 
-    Written by workspace Checkout right after session creation and
-    read by the ``/trial-checkout`` router so a second upgrade click returns
+    Written by workspace Checkout right after session creation and read back
+    by its only reader, ``billing_service.create_workspace_checkout`` (the
+    ``/trial-checkout`` router this once named is gone; the other
+    ``/trial-checkout`` mentions in this file are stale the same way), so a
+    second upgrade click returns
     the SAME hosted session instead of minting a parallel one — completing
-    two open sessions would create two charged subscriptions. Never cleared:
-    a stale marker self-heals because the router re-checks the session's live
-    status with Stripe (open → reuse, complete → 409 until the webhook flips
-    the row, expired → mint fresh; sessions are created with a ~31-minute
-    ``expires_at``). ``provider_choice`` is stored so a provider SWITCH can
+    two open sessions would create two charged subscriptions. Never cleared,
+    only OVERWRITTEN: a stale marker self-heals because the caller re-checks
+    the session's live status with Stripe and every outcome other than a
+    reusable open session falls through to minting a fresh one, whose write
+    here retires the old id (open+ours → reuse; open+foreign → fail closed,
+    the one terminal case; complete or expired → supersede; sessions are
+    created with a ~31-minute ``expires_at``). A `complete` marker used to
+    raise instead, which stranded any owner whose subscription was gone —
+    canceled or `incomplete_expired` — since nothing here clears the field.
+    ``provider_choice`` is stored so a provider SWITCH can
     expire the old session rather than reuse it with the wrong metadata.
     Same existing-row condition as the other billing-row setters.
     """

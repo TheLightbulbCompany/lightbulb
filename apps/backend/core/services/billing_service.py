@@ -266,8 +266,73 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
             pending = None
         if pending is not None:
             if pending.get("status") == "complete":
-                raise BillingServiceError("already_subscribed:checkout_completed")
-            if pending.get("status") == "open":
+                # SUPERSEDE, never raise. Control reaches here only after the
+                # authoritative Subscription.list above found NO live
+                # subscription on this customer, so this completed session
+                # produced nothing that can bill: the owner is unsubscribed and
+                # asking to subscribe. Ways in — a subscription since canceled
+                # (the common one, cancel then re-subscribe), one that reached
+                # `incomplete_expired` after a failed first payment, or a
+                # session whose subscription never materialised.
+                #
+                # Raising stranded them PERMANENTLY. Nothing clears
+                # `pending_checkout_session_id` — not this function, not any
+                # webhook handler, not `cancel_subscription` — so every retry
+                # re-read the same marker, re-retrieved the same forever-
+                # `complete` session, and re-raised. Only a manual DynamoDB
+                # edit got the owner out.
+                #
+                # Superseding takes exactly the path an `expired` marker
+                # already takes: fall through, take the claim, mint a fresh
+                # session, and let the post-create `set_pending_checkout` retire
+                # this id. No separate clearing write, so no new failure mode.
+                # Nothing to sync from Stripe either — it just told us there is
+                # no billable subscription, so adopting this session's dead one
+                # would grant no entitlement.
+                #
+                # Unlike the `open` branch below, this path deliberately does
+                # NOT re-validate that the session belongs to this workspace.
+                # Failing closed on a mismatch here would just re-strand the
+                # owner, which is the bug. It stays safe because superseding has
+                # no effect ON the session: we never return its URL and never
+                # call Session.expire on it, so a corrupt or foreign marker is
+                # only overwritten locally. Double-subscribing is fenced by the
+                # Subscription.list check above — the sole guard on every path
+                # into Checkout, marker or no marker — and the marker's own
+                # customer cannot drift from the row's, because this field has
+                # one writer (below, with the id it just minted) and
+                # set_stripe_customer_id is write-once.
+                #
+                # Known, bounded: the idempotency key is bucketed per 5 minutes,
+                # so a subscription that dies WITHIN 5 minutes of its session
+                # being created replays that same complete session instead of
+                # minting a new one, leaving the owner stranded until the bucket
+                # rolls. A replay creates nothing, so this is no charge risk,
+                # and it self-heals — unlike the permanent strand it replaces.
+                #
+                # `paid` here means money moved and the subscription is gone;
+                # `unpaid` means it was authorized and never settled. Both are
+                # worth alarming on. `owner_id` is a DENIED metric dimension,
+                # so it rides the log line instead. The dimension is keyed
+                # `status` for the same reason metronome_webhook.py keys a
+                # payment status that way: as the metric's ONLY dimension the
+                # name is free (put_metric publishes [env, service, <name>] plus
+                # the fleet rollup whatever it is called), but `status` is on
+                # _ROLLUP_DIMENSIONS, so it keeps its single-qualifier rollup if
+                # a second dimension is ever added here.
+                put_metric(
+                    "stripe.checkout.superseded_complete_marker",
+                    dimensions={"status": pending.get("payment_status") or "unknown"},
+                )
+                logger.warning(
+                    "Superseding complete checkout session %s for owner %s "
+                    "(payment_status=%s): no live subscription on customer %s",
+                    pending_id,
+                    owner_id,
+                    pending.get("payment_status"),
+                    account["stripe_customer_id"],
+                )
+            elif pending.get("status") == "open":
                 metadata = pending.get("metadata") or {}
                 if (
                     metadata.get("purpose") == "workspace_subscription_v2"

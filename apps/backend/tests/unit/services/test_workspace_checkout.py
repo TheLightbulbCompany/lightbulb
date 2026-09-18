@@ -261,6 +261,160 @@ async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_workspace_checkout_supersedes_a_complete_marker_with_no_live_subscription(monkeypatch):
+    """The stranded owner: a `complete` session Stripe has no subscription for.
+
+    Reached only after ``Subscription.list`` already reported zero live
+    subscriptions, so there is nothing to double-charge and nothing to sync.
+    Cancel-then-resubscribe is the common way in; ``incomplete_expired`` after
+    a failed first payment is the other. Raising here left the owner with no
+    way to subscribe ever again, because no writer anywhere clears
+    ``pending_checkout_session_id``.
+    """
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_stranded",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        MagicMock(
+            return_value={
+                "id": "cs_stranded",
+                "status": "complete",
+                # `complete` says nothing about settlement — Stripe documents it
+                # as "payment processing may still be in progress" — so an
+                # unpaid complete session is a legitimate shape here.
+                "payment_status": "unpaid",
+                "customer": "cus_1",
+                "mode": "subscription",
+                "metadata": {
+                    "purpose": "workspace_subscription_v2",
+                    "plan": "workspace",
+                    "workspace_id": "org_1",
+                    "owner_id": "org_1",
+                },
+            }
+        ),
+    )
+    create = MagicMock(return_value={"id": "cs_fresh", "url": "https://checkout.test/cs_fresh"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert result == {"checkout_url": "https://checkout.test/cs_fresh"}
+    create.assert_called_once()
+    # The claim is taken, not bypassed, and the superseding marker write is the
+    # one that retires the stale id.
+    billing_service.billing_repo.try_claim_checkout_slot.assert_awaited_once_with("org_1")
+    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with(
+        "org_1", session_id="cs_fresh", provider_choice=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_never_expires_a_foreign_complete_marker(monkeypatch):
+    """Superseding a complete marker must not touch the session it names.
+
+    The `open` branch fails closed precisely because a corrupt or foreign
+    marker is "not ours to disclose or expire". Superseding keeps both halves
+    of that promise: the foreign session's URL is never returned and
+    ``Session.expire`` is never called on it.
+    """
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_foreign",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        MagicMock(
+            return_value={
+                "id": "cs_foreign",
+                "status": "complete",
+                "payment_status": "paid",
+                "url": "https://checkout.test/cs_foreign",
+                "customer": "cus_other",
+                "mode": "subscription",
+                "metadata": {"purpose": "workspace_subscription_v2", "workspace_id": "org_other"},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "create",
+        MagicMock(return_value={"id": "cs_fresh", "url": "https://checkout.test/cs_fresh"}),
+    )
+    expire = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", expire)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert result == {"checkout_url": "https://checkout.test/cs_fresh"}
+    expire.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_with_a_complete_marker_never_double_subscribes(monkeypatch):
+    """A complete marker on a PAYING owner must still take the modify path."""
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_complete",
+            }
+        ),
+    )
+    subscription = {
+        "id": "sub_live",
+        "customer": "cus_1",
+        "status": "active",
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+    }
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([subscription]))),
+    )
+    retrieve = MagicMock(return_value={"id": "cs_complete", "status": "complete", "payment_status": "paid"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", retrieve)
+    create = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+
+    assert result == {"updated": True}
+    assert modify.call_args.args == ("sub_live",)
+    create.assert_not_called()
+    # The live-subscription branch returns before the marker is ever read.
+    retrieve.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_workspace_checkout_rejects_pending_marker_with_conflicting_legacy_owner(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(

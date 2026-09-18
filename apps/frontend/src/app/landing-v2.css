@@ -206,6 +206,25 @@
 .ld-page .lb-face { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--cream); margin-left: -6px; display: grid; place-items: center; font-size: 0.6rem; font-weight: 700; background: var(--cream-deeper); color: var(--lb-ink-soft); }
 .ld-page .lb-face.ag { background: #0f1a2b; color: #f0c34e; border-color: color-mix(in srgb, #b68235 55%, transparent); }
 
+/* ---------- proof band ----------
+   Ground + hairlines only: the band is a beat between the hero and the steps,
+   so it borrows `--cream-deep` (the steps' own ground) and separates with the
+   same `--rule` hairline every other boundary uses. No new surface step.
+
+   The figure reuses `.lb-price-hero`'s idiom (Lora, superscript unit, tight
+   tracking) at a smaller size, so it reads as a sibling of the price without
+   competing with it. */
+.ld-page .lb-proof { background: var(--cream-deep); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: clamp(44px,4.8vw,72px) 0; }
+.ld-page .lb-proof-line {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-weight: 400; text-align: center; color: var(--lb-ink);
+  font-size: clamp(1.5rem, 2.3vw, 2.25rem); line-height: 1.22;
+  letter-spacing: -0.004em; margin: 0 auto; max-width: 30ch;
+}
+/* `white-space: nowrap` so the amount can never wrap away from its own $. */
+.ld-page .lb-proof-line b { font-weight: 500; letter-spacing: -0.012em; white-space: nowrap; }
+.ld-page .lb-proof-line b sup { font-size: 0.55em; line-height: 1; vertical-align: baseline; position: relative; top: -0.42em; font-weight: 400; margin-right: 0.02em; }
+
 /* ---------- how it works ---------- */
 .ld-page .lb-steps { background: var(--cream-deep); border-top: 1px solid var(--rule); padding: clamp(64px,7vw,108px) 0 clamp(70px,8vw,116px); }
 .ld-page .lb-cards3 { display: grid; grid-template-columns: repeat(3,1fr); gap: clamp(16px,1.6vw,26px); margin-top: clamp(36px,4vw,60px); }

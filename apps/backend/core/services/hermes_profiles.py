@@ -858,6 +858,27 @@ def _s3_get_bytes(bucket: str, key: str) -> bytes | None:
         raise
 
 
+def put_owner_object(key: str, body: bytes) -> None:
+    """PUT one object into the owner-state bucket by absolute key.
+
+    The seam for owner-scoped blobs that are NOT part of an agent profile (messaging
+    attachments). Raises rather than no-op when the bucket is unset, so a caller never
+    reports a write that did not happen. Sync -- call via ``run_in_thread``."""
+    _s3_put_bytes(_require_owner_bucket(), key, body)
+
+
+def get_owner_object(key: str) -> bytes | None:
+    """``put_owner_object``'s reader. ``None`` means genuinely ABSENT."""
+    return _s3_get_bytes(_require_owner_bucket(), key)
+
+
+def _require_owner_bucket() -> str:
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured")
+    return bucket
+
+
 def _s3_list_keys(bucket: str, prefix: str) -> list[str]:
     pages = _shared_s3_client().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
     return [obj["Key"] for page in pages for obj in page.get("Contents", []) if not obj["Key"].endswith("/")]

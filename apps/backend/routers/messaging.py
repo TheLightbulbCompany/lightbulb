@@ -18,14 +18,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_ecs_manager
 from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import chat_gate
 from core.services import messaging as service
 from core.services import local_sessions
 from core.services import local_session_grants
-from core.services import runtime_transport
+from core.services import container_rpc, runtime_transport
 from core.services.live_events import get_live_event_publisher
 from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
@@ -490,9 +489,10 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
 
 
 async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
-    """202 accepted, 404 not active, None when no container is running."""
-    container, address = await get_ecs_manager().resolve_running_container(owner_id)
-    if not container or not address:
+    """202 accepted, 404 not active, None when the owner has no addressable runtime."""
+    try:
+        container, _address = await container_rpc.running_container(owner_id, wake=False)
+    except ApiProblem:
         return None
     response = await runtime_transport.request(
         container,

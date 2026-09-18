@@ -29,9 +29,7 @@ def _auth():
 def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
     """The run-control doors over the AgentCore transport seam: `captured` is what
     `runtime_transport.request` was handed."""
-    container = {"gateway_token": "gw", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
-    manager = MagicMock()
-    manager.resolve_running_container = AsyncMock(return_value=(container, "agentcore"))
+    container = {"gateway_token": "gw", "agentcore_runtime_arn": "arn:x"}
     captured = {}
 
     async def fake_request(
@@ -45,7 +43,11 @@ def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
         patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=row),
         patch("routers.messaging.service.require_room_member", new_callable=AsyncMock, side_effect=member_error),
         patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=member),
-        patch("routers.messaging.get_ecs_manager", return_value=manager),
+        patch(
+            "routers.messaging.container_rpc.running_container",
+            new_callable=AsyncMock,
+            return_value=(container, "agentcore"),
+        ),
         patch(
             "routers.messaging.chat_gate.gate_chat", new_callable=AsyncMock, return_value={"blocked": False}
         ) as gate_chat_mock,
@@ -118,9 +120,7 @@ async def test_abort_goes_through_the_runtime_transport_seam():
     """A run-control call is addressed by runtime, not by a dialled IP."""
     from routers.messaging import abort_run
 
-    agentcore_container = {"gateway_token": "gw", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
-    manager = MagicMock()
-    manager.resolve_running_container = AsyncMock(return_value=(agentcore_container, "agentcore"))
+    agentcore_container = {"gateway_token": "gw", "agentcore_runtime_arn": "arn:x"}
     captured = {}
 
     async def fake_request(
@@ -137,7 +137,11 @@ async def test_abort_goes_through_the_runtime_transport_seam():
         patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=ROW),
         patch("routers.messaging.service.require_room_member", new_callable=AsyncMock),
         patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value={"id": AGENT_ID}),
-        patch("routers.messaging.get_ecs_manager", return_value=manager),
+        patch(
+            "routers.messaging.container_rpc.running_container",
+            new_callable=AsyncMock,
+            return_value=(agentcore_container, "agentcore"),
+        ),
         patch("routers.messaging.runtime_transport.request", fake_request),
     ):
         result = await abort_run("run-1", auth=_auth())

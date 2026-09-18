@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import UploadFile
-from core.containers.workspace import Workspace
 from core.services import messaging
 from routers.messaging import get_room_attachment, upload_room_attachment
 
@@ -22,6 +21,15 @@ from core.services.messaging import (
     get_agent_receipt,
     mark_room_unread,
 )
+
+
+@pytest.fixture
+def owner_objects(monkeypatch):
+    """An in-memory stand-in for the owner-state bucket, keyed by absolute S3 key."""
+    store: dict[str, bytes] = {}
+    monkeypatch.setattr(messaging.hermes_profiles, "put_owner_object", lambda key, body: store.__setitem__(key, body))
+    monkeypatch.setattr(messaging.hermes_profiles, "get_owner_object", store.get)
+    return store
 
 
 @pytest.mark.asyncio
@@ -265,10 +273,7 @@ def test_message_attachment_enforces_per_type_size_cap():
         )
 
 
-def test_attachment_filename_matches_plugin_utf8_contract(tmp_path, monkeypatch):
-    workspace = Workspace(str(tmp_path))
-    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
-    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+def test_attachment_filename_matches_plugin_utf8_contract(owner_objects):
     attachment = messaging.store_attachment(
         "owner", str(uuid.uuid4()), "🙂" * 200 + "\x7f.png", "image/png", b"\x89PNG\r\n\x1a\nrest"
     )
@@ -276,37 +281,32 @@ def test_attachment_filename_matches_plugin_utf8_contract(tmp_path, monkeypatch)
     assert "/" not in attachment.file_name and "\\" not in attachment.file_name and "\x7f" not in attachment.file_name
 
 
-def test_attachment_load_rejects_metadata_id_mismatch(tmp_path, monkeypatch):
-    workspace = Workspace(str(tmp_path))
-    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
-    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+def test_attachment_load_rejects_metadata_id_mismatch(owner_objects):
     room_id = str(uuid.uuid4())
     attachment = messaging.store_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
-    sidecar = tmp_path / "owner" / messaging.attachment_dir(room_id) / f"{attachment.id}.json"
-    sidecar.write_text(sidecar.read_text().replace(str(attachment.id), str(uuid.uuid4())))
+    key = messaging.attachment_key("owner", room_id, f"{attachment.id}.json")
+    owner_objects[key] = owner_objects[key].replace(str(attachment.id).encode(), str(uuid.uuid4()).encode())
     with pytest.raises(ApiProblem):
         messaging.load_attachment("owner", room_id, str(attachment.id))
 
 
-def test_attachment_store_rejects_symlink_to_another_room(tmp_path, monkeypatch):
-    workspace = Workspace(str(tmp_path))
-    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
-    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+def test_attachment_keys_are_scoped_to_the_owners_hermes_home_and_room(owner_objects):
+    """The wipe deletes everything under ``<owner>/hermes/``, so attachments have to live
+    there or they orphan; and every path segment is a parsed UUID, so one room's key can
+    never name another's."""
     room_id = str(uuid.uuid4())
-    room_path = tmp_path / "owner" / messaging.attachment_dir(room_id)
-    sibling_path = room_path.parent / str(uuid.uuid4())
-    sibling_path.mkdir(parents=True)
-    room_path.symlink_to(sibling_path, target_is_directory=True)
+    attachment = messaging.store_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
 
-    with pytest.raises(ValueError, match="escapes its room"):
-        messaging.store_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
-    assert list(sibling_path.iterdir()) == []
+    assert all(key.startswith(f"owner/hermes/attachments/{room_id}/") for key in owner_objects)
+    assert set(owner_objects) == {
+        messaging.attachment_key("owner", room_id, f"{attachment.id}.png"),
+        messaging.attachment_key("owner", room_id, f"{attachment.id}.json"),
+    }
+    with pytest.raises(ValueError):
+        messaging.attachment_key("owner", "../other", "x.png")
 
 
-def test_pdf_attachment_round_trips_through_store_and_load(tmp_path, monkeypatch):
-    workspace = Workspace(str(tmp_path))
-    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
-    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+def test_pdf_attachment_round_trips_through_store_and_load(owner_objects):
     room_id = str(uuid.uuid4())
     pdf_bytes = b"%PDF-1.7\n" + b"content" * 100
     stored = messaging.store_attachment("owner", room_id, "contract.pdf", "application/pdf", pdf_bytes)
@@ -317,10 +317,7 @@ def test_pdf_attachment_round_trips_through_store_and_load(tmp_path, monkeypatch
     assert loaded.file_name == "contract.pdf"
 
 
-def test_zip_attachment_round_trips_with_canonical_persisted_mime(tmp_path, monkeypatch):
-    workspace = Workspace(str(tmp_path))
-    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
-    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+def test_zip_attachment_round_trips_with_canonical_persisted_mime(owner_objects):
     room_id = str(uuid.uuid4())
     zip_bytes = b"PK\x03\x04" + b"opaque archive bytes"
     stored = messaging.store_attachment("owner", room_id, "bundle.zip", "application/x-zip-compressed", zip_bytes)
@@ -332,10 +329,7 @@ def test_zip_attachment_round_trips_with_canonical_persisted_mime(tmp_path, monk
     assert data == zip_bytes
 
 
-def test_pdf_attachment_store_rejects_oversized_upload(tmp_path, monkeypatch):
-    workspace = Workspace(str(tmp_path))
-    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
-    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+def test_pdf_attachment_store_rejects_oversized_upload(owner_objects):
     room_id = str(uuid.uuid4())
     oversized = b"%PDF-1.7\n" + b"0" * (messaging.PDF_MAX_BYTES + 1)
     with pytest.raises(ValueError):

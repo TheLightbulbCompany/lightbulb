@@ -1,8 +1,14 @@
-"""File uploads into the user's OpenClaw agent workspace.
+"""File uploads into an agent's Hermes profile.
 
-Single endpoint: POST /files writes uploaded files to the user's EFS workspace
-under ``workspace-{agent_id}/uploads/`` so the agent can read them. This is a
-plain EFS write — no gateway WebSocket is involved.
+Single endpoint: POST /container/files writes uploaded files into the target agent's
+profile under ``home/uploads/``. ``home/`` is the shell's ``$HOME`` for every turn
+(``TERMINAL_HOME_MODE: profile``), and ``write_profile_subtree`` bumps the profile's
+``.revision`` last, so the bridge re-pulls the new objects on the agent's next turn --
+warm microVM included. The returned ``path`` is therefore ``uploads/<name>``, relative
+to the agent's own home.
+
+The mobile composer is the live caller: it uploads first, then prepends a notice
+naming these paths to the outgoing message (``apps/mobile/src/lib/attachments.ts``).
 """
 
 import logging
@@ -12,7 +18,10 @@ from typing import List
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.containers import get_ecs_manager, get_workspace
+from core.dynamodb import run_in_thread
+from core.repositories import container_repo
+from core.services import hermes_profiles
+from core.services.credentials.hermes_cli import HOME_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +31,8 @@ router = APIRouter()
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB per file
 MAX_FILES_PER_REQUEST = 10
 SAFE_FILENAME_RE = re.compile(r"^[\w\-. ]+$")
+#: Relative to the profile root; ``home/`` is what the turn's shell sees as ``$HOME``.
+UPLOAD_DIR = "uploads"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -36,17 +47,15 @@ def _sanitize_filename(name: str) -> str:
 
 @router.post(
     "/files",
-    summary="Upload files to the user's agent workspace",
+    summary="Upload files into an agent's workspace",
     description=(
-        "Uploads one or more files to the user's workspace on EFS. "
-        "Files are placed in the agent's `workspace-{agent_id}/uploads/` directory "
-        "and are accessible to the user's OpenClaw agent. "
-        "Max 10MB per file, 10 files per request."
+        "Uploads one or more files into the agent's profile under `uploads/`, relative to "
+        "the agent's home. Max 10MB per file, 10 files per request."
     ),
     operation_id="upload_files",
     responses={
         400: {"description": "File too large or too many files"},
-        404: {"description": "No container for this user"},
+        404: {"description": "No workspace for this user"},
     },
 )
 async def upload_files(
@@ -64,16 +73,10 @@ async def upload_files(
         raise HTTPException(status_code=400, detail="Invalid agent_id")
 
     owner_id = resolve_owner_id(auth)
+    if not await container_repo.get_by_owner_id(owner_id):
+        raise HTTPException(status_code=404, detail="No workspace found")
 
-    # Verify user has a container
-    ecs_manager = get_ecs_manager()
-    container = await ecs_manager.get_service_status(owner_id)
-    if not container:
-        raise HTTPException(status_code=404, detail="No container found")
-
-    workspace = get_workspace()
-    workspace.ensure_user_dir(owner_id)
-
+    payload: dict[str, bytes] = {}
     uploaded = []
     for f in files:
         data = await f.read()
@@ -84,12 +87,13 @@ async def upload_files(
             )
 
         safe_name = _sanitize_filename(f.filename or "upload")
-        dest_path = f"workspace-{agent_id}/uploads/{safe_name}"
-        workspace.write_bytes(owner_id, dest_path, data)
-        # The agent's working dir is $HOME (/home/node) but EFS is mounted
-        # at $HOME/.openclaw, so the agent sees uploads relative to that mount.
-        agent_path = f".openclaw/{dest_path}"
-        uploaded.append({"filename": safe_name, "path": agent_path, "size": len(data)})
-        logger.info("Uploaded %s (%d bytes) for user %s", dest_path, len(data), owner_id)
+        # The agent's shell home is the profile's `home/`, so the path it is told to read
+        # is relative to that -- not to the profile root the object key names.
+        payload[f"{HOME_DIR}/{UPLOAD_DIR}/{safe_name}"] = data
+        uploaded.append({"filename": safe_name, "path": f"{UPLOAD_DIR}/{safe_name}", "size": len(data)})
+
+    # One revision bump for the whole request: the bridge re-pulls everything that changed.
+    await run_in_thread(hermes_profiles.write_profile_subtree, owner_id, agent_id, payload, ())
+    logger.info("Uploaded %d file(s) into %s/%s for owner %s", len(payload), agent_id, UPLOAD_DIR, owner_id)
 
     return {"uploaded": uploaded}

@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import os
 import tempfile
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +26,36 @@ from core.config import settings
 NODE_UID = 1000
 NODE_GID = 1000
 
+#: An AgentCore owner has no EFS at all. ``credentials.hermes_cli`` runs these same
+#: materializers verbatim against a throwaway directory and then uploads the tree into every
+#: Hermes profile in S3, so the one thing that has to change is where ``owner_efs_root``
+#: points. A ContextVar rather than a settings/env swap because the backend serves many owners
+#: concurrently: the override must be scoped to the one call that set it.
+_PROJECTION_ROOT: ContextVar[Path | None] = ContextVar("materializer_projection_root", default=None)
+
+
+@contextlib.contextmanager
+def materialize_into(root: Path) -> Iterator[None]:
+    """Point every materializer in this context at ``root`` instead of the owner's EFS home."""
+    token = _PROJECTION_ROOT.set(root)
+    try:
+        yield
+    finally:
+        _PROJECTION_ROOT.reset(token)
+
+
+def is_projecting() -> bool:
+    """True while ``materialize_into`` is active — i.e. the files are bound for a Hermes
+    profile, not EFS. The two materializers that do something other than write files under
+    the owner's home (aws_cli's in-container helper path, instagram_cli's openclaw.json
+    skills switch) branch on it; nothing else needs to care."""
+    return _PROJECTION_ROOT.get() is not None
+
 
 def owner_efs_root(owner_id: str) -> Path:
-    return Path(settings.EFS_MOUNT_PATH) / owner_id
+    root = _PROJECTION_ROOT.get()
+    # The scratch root already stands for exactly this owner's home, so owner_id is spent.
+    return root if root is not None else Path(settings.EFS_MOUNT_PATH) / owner_id
 
 
 def atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:

@@ -61,6 +61,22 @@ def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
 
+#: The profile paths the backend's CLI-connector projection owns -- mirrors
+#: ``core/services/credentials/hermes_cli.py``'s OWNED_PATHS + its ``cli-env.json``. They are
+#: BACKEND-OWNED: pulled by name on every revision bump (_pull_cli_credentials) and never
+#: uploaded (see EXCLUDE_GLOBS below). An in-microVM rotation of one of these therefore lives
+#: only as long as the warm profile; the backend's copy is authoritative on the next cold
+#: restore, which is what keeps an agent from writing a credential every later turn inherits.
+CLI_CREDENTIAL_PREFIXES = (
+    ".aws/",
+    ".config/gh/",
+    ".config/gogcli/",
+    ".local/share/gogcli/",
+    "skills/instagram/",
+    ".xurl",
+    "cli-env.json",
+)
+
 # Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch
 # (report 01 §1). The body is redacted but the file must never reach S3; logs/ likewise;
 # .lightbulb-turn/ holds the per-turn local-session JWT (Task 11). WAL/SHM are skipped
@@ -91,6 +107,13 @@ EXCLUDE_GLOBS = (
     # hermes_profiles.write_facts_to_profiles (owner_facts.write_owner_facts's AgentCore
     # branch) on every plan/provider change -- same clobber risk as the four above.
     "lightbulb-facts.json",
+    # Backend-projected CLI connector credentials (backend credentials/hermes_cli.py). Same
+    # class as the five above: the backend is the only writer, so an upload from here could
+    # only ever revert a connect/disconnect the owner just made -- and would let a turn push
+    # whatever it wrote into these paths back into the profile every later turn inherits.
+    # They are pulled by NAME instead (_pull_cli_credentials), which bypasses these globs.
+    *(f"{_p}*" if _p.endswith("/") else _p for _p in CLI_CREDENTIAL_PREFIXES),
+    *(f"{_p}**/*" for _p in CLI_CREDENTIAL_PREFIXES if _p.endswith("/")),
 )
 
 
@@ -350,6 +373,10 @@ def _download_profile(agent_id: str) -> bool:
     # Deliberately not part of the verdict: the mcp-tokens seed is best-effort by design
     # (seeded-only, F2 / M6-R35) and its failure mode is a dead tool, not stale instructions.
     _pull_new_mcp_token_files(agent_id)
+    # Same: a CLI connector the owner just connected/disconnected is a dead (or stale) binary,
+    # not stale instructions. Unlike mcp-tokens this OVERWRITES -- the backend is the only
+    # writer, so its object is always the newer truth.
+    _pull_cli_credentials(agent_id)
     return complete
 
 
@@ -453,6 +480,46 @@ def _pull_new_mcp_token_files(agent_id: str) -> None:
                 s3.download_file(S3_BUCKET, obj["Key"], str(target))
     except Exception:  # noqa: BLE001 -- a listing/download blip must not abort ensure_profile
         log.warning("ensure_profile: mcp-tokens re-pull failed for %s", agent_id)
+
+
+def _pull_cli_credentials(agent_id: str) -> None:
+    """Re-pull the backend's projected CLI connector credentials by name.
+
+    They sit in EXCLUDE_GLOBS so ``save_profile`` never pushes them, which also takes them out
+    of ``_pull_changed_objects``'s recency walk -- so without this an owner connecting GitHub
+    (or disconnecting AWS) mid-session would never reach an already-warm microVM, exactly the
+    hole ``_pull_new_mcp_token_files`` exists to close for MCP tokens.
+
+    Overwrites rather than seeding once: the backend is the sole writer of these paths (an
+    agent's own edits are never uploaded), so its object is by construction the newer one.
+    A local file the backend has since DELETED is removed too -- a disconnected connector must
+    not keep working for the life of the warm profile."""
+    dest = _profile_dir(agent_id)
+    base = f"{S3_PREFIX}/{agent_id}/"
+    try:
+        s3 = _s3()
+        for prefix in CLI_CREDENTIAL_PREFIXES:
+            remote: set[str] = set()
+            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=f"{base}{prefix}"):
+                for obj in page.get("Contents", []):
+                    rel = obj["Key"][len(base):]
+                    if not rel or rel.endswith("/"):
+                        continue
+                    remote.add(rel)
+                    target = dest / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    s3.download_file(S3_BUCKET, obj["Key"], str(target))
+            local_root = dest / prefix.rstrip("/")
+            locals_ = (
+                [p for p in local_root.rglob("*") if p.is_file()]
+                if local_root.is_dir()
+                else ([local_root] if local_root.is_file() else [])
+            )
+            for path in locals_:
+                if path.relative_to(dest).as_posix() not in remote:
+                    path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001 -- a listing/download blip must not abort ensure_profile
+        log.warning("ensure_profile: CLI credential re-pull failed for %s", agent_id)
 
 
 def ensure_profile(agent_id: str) -> None:

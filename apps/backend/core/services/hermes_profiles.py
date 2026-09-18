@@ -43,8 +43,9 @@ import hashlib
 import mimetypes
 import re
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -731,6 +732,87 @@ def _s3_put(bucket: str, key: str, body: str) -> None:
 
 def _s3_delete(bucket: str, key: str) -> None:
     _shared_s3_client().delete_object(Bucket=bucket, Key=key)
+
+
+def _s3_put_bytes(bucket: str, key: str, body: bytes) -> None:
+    """``_s3_put``'s binary twin. The CLI-connector projection (``credentials.hermes_cli``)
+    copies whatever a materializer produced verbatim, and gog's keyring is an encrypted JWE
+    blob, not text."""
+    _shared_s3_client().put_object(Bucket=bucket, Key=key, Body=body)
+
+
+def _s3_get_bytes(bucket: str, key: str) -> bytes | None:
+    """``_s3_get``'s binary twin, with the same "None means genuinely ABSENT" contract."""
+    import botocore.exceptions
+
+    try:
+        return _shared_s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
+    except botocore.exceptions.ClientError as exc:
+        code = (exc.response or {}).get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            return None
+        raise
+
+
+def _s3_list_keys(bucket: str, prefix: str) -> list[str]:
+    pages = _shared_s3_client().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
+    return [obj["Key"] for page in pages for obj in page.get("Contents", []) if not obj["Key"].endswith("/")]
+
+
+# ---- CLI-connector credential projection (supersedes the M6-R24 skip) --------------------------
+# The mcp-tokens rail's shape, one level up: the unit is a SUBTREE of the profile rather than a
+# single ``<server>.json``, because a CLI materializer owns a little directory (``.aws/``,
+# ``.config/gh/``, gog's config + keyring, ``skills/instagram/``) or a single dotfile
+# (``.xurl``). Per-agent for the same reason mcp-tokens is: ``sync.ensure_profile`` only ever
+# pulls the agent's OWN prefix, so an owner-level object would never reach a microVM.
+
+
+def fetch_profile_subtree(owner_id: str, agent_id: str, prefixes: Iterable[str], dest: Path) -> None:
+    """Copy every object under each of ``prefixes`` in one profile down into ``dest``.
+
+    The projector seeds its scratch root with this before running a materializer, so the
+    materializers that OWN one entry inside a shared file still see the rest of it: gog's single
+    keyring holds every Google account the owner has connected, and ``~/.xurl`` holds the
+    owner's other xurl apps. Without the seed, connecting a second Google account would upload a
+    keyring containing only that account."""
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return
+    base = profile_prefix(owner_id, agent_id)
+    for prefix in prefixes:
+        for key in _s3_list_keys(bucket, f"{base}{prefix}"):
+            body = _s3_get_bytes(bucket, key)
+            if body is None:
+                continue
+            target = dest / key[len(base) :]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+
+
+def write_profile_subtree(
+    owner_id: str,
+    agent_id: str,
+    files: dict[str, bytes],
+    removed: Iterable[str],
+    env_updates: dict[str, str] | None = None,
+) -> None:
+    """Land a projected CLI subtree in one profile: write, then delete what the materializer
+    dropped, then merge ``env_updates`` into ``.env``, then bump ``.revision`` LAST -- the same
+    "content, then revision" discipline as ``_refresh_one_profile``/``write_facts_to_profiles``,
+    so the bridge's re-pull never sees a bumped revision before the bytes it announces."""
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return
+    prefix = profile_prefix(owner_id, agent_id)
+    for rel, body in sorted(files.items()):
+        _s3_put_bytes(bucket, f"{prefix}{rel}", body)
+    for rel in sorted(removed):
+        _s3_delete(bucket, f"{prefix}{rel}")
+    if env_updates:
+        dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
+        live = {k: v for k, v in env_updates.items() if v}
+        _s3_put(bucket, f"{prefix}.env", _rewrite_named_env_lines(dotenv_text, set(env_updates), live))
+    _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
 
 
 def _s3_get(bucket: str, key: str) -> str | None:

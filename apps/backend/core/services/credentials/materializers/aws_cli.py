@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 
 from core.config import settings
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root
+from core.services.credentials.materializers.base import atomic_write, is_projecting, owner_efs_root
 
 # Must match the baked aws-exec-profile plugin's AWS_CONNECTOR_PROFILE
 # (apps/infra/openclaw/plugins/aws-exec-profile/dist/resolve.js): the plugin
@@ -42,6 +42,16 @@ CACHE_FILENAME = "cache.json"
 
 # In-container absolute path of the .aws dir (see module docstring).
 _CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
+
+# The AgentCore/Hermes form of the same line. There the .aws dir lives inside the agent's OWN
+# profile dir, whose absolute path differs per agent, so the only stable way to name it is
+# $HOME -- the bridge's terminal env_overlay (bridge/turn.py::_terminal_scope) points HOME at
+# the profile. botocore runs credential_process through ``shlex.split`` + ``Popen`` with NO
+# shell and NO variable expansion, so the expansion has to be asked for explicitly; ``exec``
+# keeps it to one process. Everything else about the rail is unchanged: `node` is in the
+# Hermes base image (/usr/local/bin/node) and the helper reads its sibling ``token``/
+# ``cache.json`` from its own dirname, which resolves inside the profile either way.
+_HERMES_CREDENTIAL_PROCESS = f"""sh -c 'exec /usr/bin/env node "$HOME/.aws/{HELPER_FILENAME}"'"""
 
 _HELPER_TEMPLATE = r"""#!/usr/bin/env node
 // Lightbulb AWS credential_process helper — materialized by the Lightbulb backend.
@@ -127,11 +137,12 @@ emit(creds);
 
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
     aws_dir = owner_efs_root(owner_id) / ".aws"
-    config = (
-        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
-        f"region = {credential['region']}\n"
-        f"credential_process = /usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}\n"
+    process = (
+        _HERMES_CREDENTIAL_PROCESS
+        if is_projecting()
+        else f"/usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}"
     )
+    config = f"[profile {AWS_CONNECTOR_PROFILE}]\nregion = {credential['region']}\ncredential_process = {process}\n"
     helper = _HELPER_TEMPLATE.replace("__API_BASE__", settings.PUBLIC_API_BASE)
     token = json.dumps({"owner_id": owner_id, "token": credential["cli_token"]})
     atomic_write(aws_dir / "config", config.encode())

@@ -835,6 +835,55 @@ def _secret_scope(agent_id: str):
     return _scope()
 
 
+def _terminal_env(home) -> dict[str, str]:
+    """The shell's environment for this turn: the profile as cwd, plus every CLI connector's OWN
+    config-location variable pointed inside the profile, where the backend projects that CLI's
+    credentials (backend ``credentials/hermes_cli.py``; ``bridge.sync.CLI_CREDENTIAL_PREFIXES``
+    is the same list on this side).
+
+    An overlay, not ``os.environ`` -- the process serves every agent on the roster, so a global
+    would leak one profile's credentials into another's shell.
+
+    Why each one:
+
+    * ``HOME`` -- xurl has NO config-location variable at all: ``store/tokens.go`` resolves
+      ``$HOME/.xurl`` and nothing else. It also gives gh/gog/aws their documented XDG defaults,
+      which the explicit variables below then pin regardless.
+    * ``XDG_CONFIG_HOME`` / ``XDG_DATA_HOME`` -- gog splits its OAuth client config from its file
+      KEYRING and needs both (see the backend gog_cli materializer's module docstring).
+    * ``GH_CONFIG_DIR`` -- gh's first-choice lookup, ahead of XDG and ``~/.config/gh``.
+    * ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` -- the shared-credentials path is
+      pinned at a file the projection never writes, so ``aws`` can only resolve through the
+      projected ``config``'s ``credential_process``, never a stray file.
+    * ``AWS_PROFILE`` -- the projected profile is NAMED (``lightbulb-connector``), so without
+      this ``aws`` would use ``default`` and find nothing. Set only when the owner has actually
+      connected AWS: the baked ``aws-exec-profile`` plugin applies the same
+      "only when the config is there" rule on ECS, and pinning a non-existent profile would
+      break every other AWS credential source for an owner who has not connected.
+
+    ``cli-env.json`` carries backend-owned values a projected CLI needs in the SHELL (today just
+    gog's shared keyring password, the ECS task-def secret's equivalent). It is NOT the profile
+    ``.env``: that one feeds Hermes's in-process secret scope, which never reaches a subprocess.
+    """
+    env = {
+        "TERMINAL_CWD": str(home),
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "GH_CONFIG_DIR": str(home / ".config" / "gh"),
+        "AWS_CONFIG_FILE": str(home / ".aws" / "config"),
+        "AWS_SHARED_CREDENTIALS_FILE": str(home / ".aws" / "credentials"),
+    }
+    if (home / ".aws" / "config").is_file():
+        env["AWS_PROFILE"] = "lightbulb-connector"
+    try:
+        extra = json.loads((home / "cli-env.json").read_text(encoding="utf-8"))
+        env.update({str(k): str(v) for k, v in extra.items()})
+    except Exception:  # noqa: BLE001 -- absent (no such connector) or unreadable: not a turn failure
+        pass
+    return env
+
+
 def _terminal_scope(agent_id: str):
     """Use Hermes's profile-local policy and default shell cwd, never process globals."""
     from contextlib import contextmanager
@@ -847,7 +896,7 @@ def _terminal_scope(agent_id: str):
             yield
             return
         home = _profile_dir(agent_id)
-        token = install_profile_terminal_scope(home, env_overlay={"TERMINAL_CWD": str(home)})
+        token = install_profile_terminal_scope(home, env_overlay=_terminal_env(home))
         try:
             yield
         finally:

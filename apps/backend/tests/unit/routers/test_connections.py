@@ -33,11 +33,15 @@ def _owner_lifecycle_guard_efs_scratch(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _ecs_owner_by_default(monkeypatch):
-    """_disconnect_teardown checks runtime_transport.is_agentcore_owner (a real
-    DynamoDB read when unmocked). Default every test in this file to the ECS
-    runtime; the AgentCore-specific tests below override this per test."""
-    monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
+def hermes_clear(monkeypatch):
+    """``hermes_cli.clear`` reads the owner's roster and talks to S3. Every disconnect
+    door calls it, and no test in this file is about that projection, so stub it once and
+    hand the mock to the tests that assert on WHAT was cleared."""
+    from routers import connections
+
+    mock = AsyncMock()
+    monkeypatch.setattr(connections.hermes_cli, "clear", mock)
+    return mock
 
 
 class TestValidateToken:
@@ -650,13 +654,12 @@ class TestConnectPaste:
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_rolls_back_secret_when_wiring_fails(
-        self, mock_validate, mock_repo, mock_store, mock_apply, mock_removers, async_client
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client, hermes_clear
     ):
         mock_validate.return_value = True
         mock_store.put = AsyncMock()
@@ -673,8 +676,8 @@ class TestConnectPaste:
         mock_store.delete.assert_awaited_once_with("org_test_456", "parallel")
         # Status is written only after a clean apply -> never on the failure path.
         mock_repo.put_status.assert_not_called()
-        # parallel rides openclaw_paths (no materializer) -> the EFS-artifact rollback is a no-op.
-        mock_removers.get.assert_not_called()
+        # parallel rides openclaw_paths (no materializer) -> the projection rollback is a no-op.
+        hermes_clear.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("routers.connections.integration_secret_store")
@@ -700,7 +703,6 @@ class TestConnectPaste:
             wiring=Wiring(openclaw_paths=[OpenclawPath(path="a.b.c", source="input.token")]),
         )
         monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
-        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
         mock_validate.return_value = True
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
@@ -764,22 +766,16 @@ class TestConnectionWriteOrgAdminGate:
         mock_dance.start.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
-    async def test_disconnect_non_admin_member_forbidden(
-        self, mock_repo, mock_store, mock_patcher, async_client_org_member
-    ):
+    async def test_disconnect_non_admin_member_forbidden(self, mock_repo, mock_store, async_client_org_member):
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
-        mock_patcher.set_openclaw_config_path = AsyncMock()
-
         response = await async_client_org_member.delete("/api/v1/connections/stripe")
         assert response.status_code == 403
         # Nothing deleted / unwired for a non-admin member.
         mock_repo.delete.assert_not_called()
         mock_store.delete.assert_not_called()
-        mock_patcher.set_openclaw_config_path.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
@@ -819,202 +815,11 @@ class TestDisconnect:
     """DELETE /api/v1/connections/{provider} — disconnect + unwire."""
 
     @pytest.mark.asyncio
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_deletes_and_blanks_openclaw_path(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
-    ):
-        from routers import connections
-        from core.services.credentials.registry import OpenclawPath, Provider, Wiring
-
-        # No live provider uses the openclaw_paths rail anymore, so exercise the
-        # disconnect-time blanking of that rail via a synthetic provider.
-        synthetic = Provider(
-            key="synth",
-            display_name="Synthetic",
-            acquisition="paste_token",
-            actor="mcp",
-            refresh_owner="none",
-            wiring=Wiring(
-                openclaw_paths=[OpenclawPath(path="mcp.servers.synth.env.SYNTH_API_KEY", source="input.token")]
-            ),
-        )
-        monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
-
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-        mock_patcher.set_openclaw_config_path = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/synth")
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "synth"}
-
-        # Both the retained secret and the status row are removed.
-        mock_store.delete.assert_awaited_once_with("org_test_456", "synth")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "synth")
-        # openclaw_paths wiring: mcp.servers.synth.env.SYNTH_API_KEY -> blanked.
-        mock_patcher.set_openclaw_config_path.assert_awaited_once_with(
-            "org_test_456",
-            ["mcp", "servers", "synth", "env", "SYNTH_API_KEY"],
-            "",
-        )
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_materializer_provider_removes_materialized_creds(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
-    ):
-        # google is a materializer-backed (gog_cli) actor-refresh provider. It
-        # never stored a Secrets Manager credential, so get() returns None. A
-        # provider-level disconnect signals disconnect_all (so the gog remover
-        # wipes the keyring rather than treating it as a failed-connect rollback)
-        # and carries the account inventory so each grant is revoked at Google.
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-        mock_store.get = AsyncMock(return_value=None)
-        remover = mock_removers.get.return_value
-        mock_patcher.set_openclaw_config_path = AsyncMock()
-        # Empty inventory keeps the focus on the materializer-cleanup assertions.
-        mock_accounts.list_accounts = AsyncMock(return_value=[])
-        mock_accounts.list_assignments = AsyncMock(return_value={})
-        mock_accounts.remove_account = AsyncMock()
-        mock_accounts.remove_assignment = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/google")
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "google"}
-
-        # Materialized credential files cleaned up; no SM secret -> base cred is
-        # empty, plus the provider-level disconnect_all signal + (empty) inventory.
-        mock_removers.get.assert_called_once_with("gog_cli")
-        remover.assert_called_once_with("org_test_456", "google", {"disconnect_all": True, "accounts": []})
-        # Secret + status row both dropped (actor provider stored no secret -> no-op delete).
-        mock_store.delete.assert_awaited_once_with("org_test_456", "google")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "google")
-        # No openclaw_paths on a materializer provider -> nothing blanked.
-        mock_patcher.set_openclaw_config_path.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_materializer_passes_retained_secret_to_remover(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
-    ):
-        # Regression guard: some removers locate the on-disk artifact by a
-        # credential field (e.g. toml_cli uses credential["cli"]). disconnect must
-        # fetch the retained Secrets Manager credential and hand it to the remover
-        # — passing an empty {} would leave the credential file on EFS. Uses the
-        # google/gog_cli wiring as a stand-in materializer provider; the assertion
-        # is that whatever get() returns is what the remover receives.
-        retained = {"cli": "outlook", "access_token": "tok", "refresh_token": "r"}
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-        mock_store.get = AsyncMock(return_value=retained)
-        remover = mock_removers.get.return_value
-        mock_patcher.set_openclaw_config_path = AsyncMock()
-        mock_accounts.list_accounts = AsyncMock(return_value=[])
-        mock_accounts.list_assignments = AsyncMock(return_value={})
-        mock_accounts.remove_account = AsyncMock()
-        mock_accounts.remove_assignment = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/google")
-        assert response.status_code == 200
-
-        mock_store.get.assert_awaited_once_with("org_test_456", "google")
-        # The retained credential fields reach the remover — not {} — alongside the
-        # provider-level disconnect_all signal + google's (empty) account inventory.
-        remover.assert_called_once_with("org_test_456", "google", {**retained, "disconnect_all": True, "accounts": []})
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_removes_mcp_server_block(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
-    ):
-        # No catalog provider rides the stdio mcp_server rail today (stripe moved
-        # to the hosted mcp_oauth rail), but the rail is still a legal wiring
-        # shape: disconnect must remove the whole mcp.servers.<key> block so no
-        # live-token server block lingers on EFS.
-        from routers import connections
-        from core.services.credentials.registry import Provider
-
-        p = Provider(
-            key="fakemcp",
-            display_name="Fake MCP",
-            acquisition="paste_token",
-            actor="mcp",
-            refresh_owner="none",
-            wiring={"mcp_server": {"key": "fakemcp", "command": "npx", "args": [], "env": {"K": "input.token"}}},
-        )
-        monkeypatch.setattr(connections.registry, "get_provider", lambda key: p)
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-        mock_patcher.delete_openclaw_config_path = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/fakemcp")
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "fakemcp"}
-
-        # Secret + status row dropped, and the integration-owned server removed.
-        mock_store.delete.assert_awaited_once_with("org_test_456", "fakemcp")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "fakemcp")
-        mock_patcher.delete_openclaw_config_path.assert_awaited_once_with("org_test_456", ["mcp", "servers", "fakemcp"])
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_mcp_oauth_provider_does_not_raise(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch, tmp_path
-    ):
-        # attio rides the mcp_oauth materializer, whose remover drives the async
-        # config_patcher via asyncio.run. The disconnect handler runs on the request
-        # loop, so the remover MUST be offloaded to a worker thread or asyncio.run
-        # raises RuntimeError. This drives the REAL mcp_oauth remover (not a mock)
-        # end-to-end so an un-offloaded call would surface as a 500.
-        from core.services.credentials.materializers import mcp_oauth
-
-        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
-        # The remover's asyncio.run targets mcp_oauth's own config_patcher import —
-        # stub it with an async no-op so the offloaded asyncio.run has work to drive.
-        deleted: list = []
-
-        async def _fake_delete(owner_id, path):
-            deleted.append((owner_id, path))
-
-        monkeypatch.setattr(mcp_oauth.config_patcher, "delete_openclaw_config_path", _fake_delete)
-
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-        mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
-        mock_patcher.delete_openclaw_config_path = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/attio")
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "attio"}
-
-        # The real remover ran on a worker thread (no RuntimeError) and dropped the
-        # live server block via its own config_patcher.
-        assert deleted == [("org_test_456", ["mcp", "servers", "attio"])]
-        mock_store.delete.assert_awaited_once_with("org_test_456", "attio")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "attio")
-
-    @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_leaves_dcr_client_intact(
-        self, mock_repo, mock_store, mock_patcher, mock_app_store, async_client, monkeypatch, tmp_path
+        self, mock_repo, mock_store, mock_app_store, async_client, monkeypatch, tmp_path
     ):
         # attio is a DCR provider. Disconnect must NOT delete the cached DCR client:
         # a delete+recreate of the same Secrets Manager name races AWS's async name
@@ -1031,7 +836,6 @@ class TestDisconnect:
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
-        mock_patcher.delete_openclaw_config_path = AsyncMock()
         mock_app_store.delete = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/attio")
@@ -1046,20 +850,16 @@ class TestDisconnect:
     @pytest.mark.asyncio
     @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_all_clears_google_inventory(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
+        self, mock_repo, mock_store, mock_accounts, mock_seed, async_client, hermes_clear
     ):
         # A provider-level disconnect (no ?account=) must drop the whole keyring
         # AND clear every account + assignment from the owner's inventory.
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)
-        mock_patcher.set_openclaw_config_path = AsyncMock()
-        remover = mock_removers.get.return_value
         mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}, {"email": "b@x.com"}])
         mock_accounts.list_assignments = AsyncMock(return_value={"agent_1": "a@x.com"})
         mock_accounts.remove_account = AsyncMock()
@@ -1070,9 +870,9 @@ class TestDisconnect:
         assert response.json() == {"status": "disconnected", "provider": "google"}
 
         # Whole-keyring remove: provider-level disconnect_all + the account
-        # inventory, so the remover revokes each grant at Google before the wipe.
-        remover.assert_called_once_with(
-            "org_test_456", "google", {"disconnect_all": True, "accounts": ["a@x.com", "b@x.com"]}
+        # inventory, so gog revokes each grant at Google before the wipe.
+        hermes_clear.assert_awaited_once_with(
+            "org_test_456", "google", "gog_cli", {"disconnect_all": True, "accounts": ["a@x.com", "b@x.com"]}
         )
         # Provider-level status row + secret dropped.
         mock_repo.delete.assert_awaited_once_with("org_test_456", "google")
@@ -1088,18 +888,15 @@ class TestDisconnect:
     @pytest.mark.asyncio
     @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_single_google_account_removes_account_and_assignments(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
+        self, mock_repo, mock_store, mock_accounts, mock_seed, async_client, hermes_clear
     ):
         # ?account=<email> removes ONLY that account from the keyring + inventory,
         # and drops only the assignments pointing at it — other accounts and the
         # provider-level status row are untouched.
         mock_store.get = AsyncMock(return_value=None)
-        remover = mock_removers.get.return_value
         mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}, {"email": "b@x.com"}])
         assignments = {"agent_1": "a@x.com", "agent_2": "b@x.com"}
         mock_accounts.list_assignments = AsyncMock(side_effect=lambda owner_id: dict(assignments))
@@ -1109,14 +906,13 @@ class TestDisconnect:
         )
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
-        mock_patcher.set_openclaw_config_path = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
 
-        # Per-account remove: remover called with the single email.
-        remover.assert_called_once_with("org_test_456", "google", {"email": "a@x.com"})
+        # Per-account remove: gog run against a scratch copy, with the single email.
+        hermes_clear.assert_awaited_once_with("org_test_456", "google", "gog_cli", {"email": "a@x.com"})
         # Only that account removed from inventory.
         mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
         # Only the assignment pointing at a@x.com dropped; agent_2 (b@x.com) kept.
@@ -1135,12 +931,10 @@ class TestDisconnect:
     @pytest.mark.asyncio
     @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnecting_one_google_account_reprojects_the_survivors(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
+        self, mock_repo, mock_store, mock_accounts, mock_seed, async_client
     ):
         """On AgentCore the binding lives as GOG_ACCOUNT in each agent's profile
         ``cli-env.json``, which the PROVIDER-keyed projection deletes on any google
@@ -1153,7 +947,6 @@ class TestDisconnect:
         mock_accounts.list_assignments = AsyncMock(return_value={"agent_2": "b@x.com"})
         mock_accounts.remove_account = AsyncMock()
         mock_accounts.remove_assignment = AsyncMock()
-        mock_patcher.set_openclaw_config_path = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
         assert response.status_code == 200
@@ -1163,17 +956,14 @@ class TestDisconnect:
 
     @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_single_google_account_is_idempotent_when_absent(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
+        self, mock_repo, mock_store, mock_accounts, async_client, hermes_clear
     ):
         # A repeat disconnect of an already-gone account must succeed, not 500 —
         # the account isn't in the inventory, so the keyring remove is skipped.
         mock_store.get = AsyncMock(return_value=None)
-        remover = mock_removers.get.return_value
         mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "b@x.com"}])
         mock_accounts.list_assignments = AsyncMock(return_value={})
         mock_accounts.remove_account = AsyncMock()
@@ -1184,35 +974,8 @@ class TestDisconnect:
         assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
 
         # Account absent -> no keyring remove attempted.
-        remover.assert_not_called()
+        hermes_clear.assert_not_awaited()
         # remove_account is still issued (a delete of an absent row is itself a no-op).
-        mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_single_google_account_tolerates_remover_not_found(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
-    ):
-        # If the keyring remove races (gog exits 1 for an account it can't find),
-        # the CalledProcessError is treated as already-gone success, not a 500.
-        import subprocess
-
-        mock_store.get = AsyncMock(return_value=None)
-        remover = mock_removers.get.return_value
-        remover.side_effect = subprocess.CalledProcessError(1, ["gog", "auth", "remove"])
-        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}])
-        mock_accounts.list_assignments = AsyncMock(return_value={})
-        mock_accounts.remove_account = AsyncMock()
-        mock_accounts.remove_assignment = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
-        # Despite the remover error, the inventory row is still cleaned up.
         mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
 
     @pytest.mark.asyncio
@@ -1231,17 +994,14 @@ class TestDisconnect:
 
     @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_agentcore_cli_skill_materializer_is_skipped(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client, monkeypatch
+        self, mock_repo, mock_store, mock_accounts, async_client, monkeypatch
     ):
         # google (gog_cli) has no mcp_remote/mcp_stdio -- on an AgentCore owner
         # the materializer remover never runs (no EFS keyring to touch), but the
         # row is still recorded as disconnected.
-        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)
@@ -1252,16 +1012,14 @@ class TestDisconnect:
 
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "google"}
-        mock_removers.get.assert_not_called()
         mock_store.delete.assert_awaited_once_with("org_test_456", "google")
         mock_repo.delete.assert_awaited_once_with("org_test_456", "google")
 
     @pytest.mark.asyncio
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_agentcore_mcp_shaped_provider_refreshes_hermes_profiles(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
+        self, mock_repo, mock_store, async_client, monkeypatch
     ):
         # An mcp_server-wiring provider is MCP-shaped: on an AgentCore owner the
         # teardown re-projects the (now-disconnected) set via reconcile_integrations
@@ -1277,10 +1035,8 @@ class TestDisconnect:
             wiring={"mcp_server": {"key": "fakemcp", "command": "npx", "args": [], "env": {"K": "input.token"}}},
         )
         monkeypatch.setattr(connections.registry, "get_provider", lambda key: p)
-        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
-        mock_patcher.delete_openclaw_config_path = AsyncMock()
         refreshed = []
 
         async def fake_reconcile(owner_id, *, agentcore=None, pending=None):
@@ -1293,14 +1049,12 @@ class TestDisconnect:
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "fakemcp"}
         assert refreshed == ["org_test_456"]
-        mock_patcher.delete_openclaw_config_path.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_agentcore_openclaw_paths_provider_clears_hermes_projection(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
+        self, mock_repo, mock_store, async_client, monkeypatch
     ):
         """M6-R31: reconcile_integrations has no fan-out for an openclaw_paths provider at
         all -- disconnecting one on an AgentCore owner must clear its own Hermes projection
@@ -1308,7 +1062,6 @@ class TestDisconnect:
         call or the ECS-only openclaw.json blank."""
         from routers import connections
 
-        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         cleared = []
@@ -1326,26 +1079,6 @@ class TestDisconnect:
         assert response.json() == {"status": "disconnected", "provider": "parallel"}
         assert cleared == [("org_test_456", "parallel")]
         mock_reconcile.assert_not_awaited()  # openclaw_paths never reaches the MCP reconcile branch
-        mock_patcher.set_openclaw_config_path.assert_not_called()
-        mock_patcher.delete_openclaw_config_path.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.google_accounts_repo")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    async def test_disconnect_single_google_account_skips_materializer_on_agentcore(
-        self, mock_removers, mock_accounts, async_client, monkeypatch
-    ):
-        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
-        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}])
-        mock_accounts.list_assignments = AsyncMock(return_value={})
-        mock_accounts.remove_account = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
-        mock_removers.get.assert_not_called()
-        mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
 
 
 class TestAuthorize:
@@ -1582,13 +1315,12 @@ class TestOAuthCallback:
         assert "error=oauth_exchange" in response.headers["location"]
 
     @pytest.mark.asyncio
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
-    async def test_callback_rolls_back_and_removes_efs_when_wiring_fails(
-        self, mock_dance, mock_repo, mock_store, mock_apply, mock_removers, async_client
+    async def test_callback_rolls_back_and_clears_the_projection_when_wiring_fails(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client, hermes_clear
     ):
         # google is materializer-backed (gog_cli). If apply fails after the
         # materializer already wrote a partial keyring/client file, the rollback
@@ -1601,7 +1333,6 @@ class TestOAuthCallback:
         mock_store.delete = AsyncMock()
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
-        remover = mock_removers.get.return_value
 
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
@@ -1611,9 +1342,8 @@ class TestOAuthCallback:
         # Redirect surfaces the apply failure rather than a false "connected".
         assert "error=apply_failed" in response.headers["location"]
 
-        # EFS artifact removed (gog_cli remover) with the exchanged credential.
-        mock_removers.get.assert_called_once_with("gog_cli")
-        remover.assert_called_once_with("org_1", "google", cred)
+        # The profile projection is cleared (gog_cli) with the exchanged credential.
+        hermes_clear.assert_awaited_once_with("org_1", "google", "gog_cli", cred)
         # Actor-refresh provider never retained a secret -> nothing to put or delete.
         mock_store.put.assert_not_called()
         mock_store.delete.assert_not_called()
@@ -2750,26 +2480,27 @@ class TestDisconnectAws:
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
-    @patch("routers.connections.MATERIALIZER_REMOVERS")
-    @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_aws_drops_secret_and_status(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_aip, async_client
+        self, mock_repo, mock_store, mock_aip, async_client, hermes_clear
     ):
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(
             return_value={"role_arn": "arn:aws:iam::123456789012:role/ro", "external_id": "e", "region": "us-east-1"}
         )
-        mock_patcher.set_openclaw_config_path = AsyncMock()
-
         resp = await async_client.delete("/api/v1/connections/aws")
         assert resp.status_code == 200
         assert resp.json() == {"status": "disconnected", "provider": "aws"}
 
-        # aws_cli materializer remover ran (drops the ~/.aws bundle).
-        mock_removers.get.assert_called_once_with("aws_cli")
+        # aws_cli projection cleared (drops the ~/.aws bundle from every profile).
+        hermes_clear.assert_awaited_once_with(
+            "org_test_456",
+            "aws",
+            "aws_cli",
+            {"role_arn": "arn:aws:iam::123456789012:role/ro", "external_id": "e", "region": "us-east-1"},
+        )
         # Secret delete IS the revocation: the cli_token_hash goes with it, so
         # the vend endpoint 401s the container's next fetch. Status row too.
         mock_store.delete.assert_awaited_once_with("org_test_456", "aws")
@@ -3048,138 +2779,3 @@ class TestProjectsRailNamespaceIsInvisibleHere:
         )
         monkeypatch.setattr(mcp_server.integration_secret_store, "get", AsyncMock(return_value={"token": "leaked"}))
         assert await mcp_server.build_connected_integration_servers("org_a") == {}
-
-
-class TestContainerLogin:
-    """POST /connections/{provider}/login + GET …/login/status — the Shopify row."""
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
-    async def test_login_normalizes_the_store_and_starts_the_container_flow(self, start, async_client):
-        start.return_value = "https://mystore.myshopify.com/admin/oauth/authorize?x"
-        response = await async_client.post(
-            "/api/v1/connections/shopify/login", json={"store": "https://admin.shopify.com/store/mystore/orders"}
-        )
-        assert response.status_code == 200
-        assert response.json() == {"status": "awaiting_login", "provider": "shopify", "store": "mystore.myshopify.com"}
-        assert start.await_args.args[1] == "mystore.myshopify.com"
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
-    async def test_login_422s_anything_but_the_shop_host_before_touching_the_container(self, start, async_client):
-        response = await async_client.post("/api/v1/connections/shopify/login", json={"store": "shop.example.com"})
-        assert response.status_code == 422
-        assert "myshopify.com" in response.json()["detail"]
-        start.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_login_400s_a_provider_that_does_not_sign_in_from_the_container(self, async_client):
-        response = await async_client.post("/api/v1/connections/google/login", json={"store": "mystore.myshopify.com"})
-        assert response.status_code == 400
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.shopify_login.start_login", new_callable=AsyncMock)
-    async def test_login_422s_on_agentcore_before_touching_the_container(self, start, async_client, monkeypatch):
-        """M6 task 10-D, row 26: no exec shell and no container browser to finish the
-        CLI's OAuth grant in, so AgentCore refuses outright rather than starting a login
-        the owner could never complete."""
-        monkeypatch.setattr(connections.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
-        response = await async_client.post("/api/v1/connections/shopify/login", json={"store": "mystore.myshopify.com"})
-        assert response.status_code == 422
-        assert response.json()["detail"] == "unsupported_on_agentcore"
-        start.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.integrations_repo")
-    @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
-    async def test_status_marks_the_row_connected_with_the_store_as_identity(self, status, mock_repo, async_client):
-        status.return_value = {
-            "connected": True,
-            "pending": False,
-            "error": None,
-            "session": {"store": "mystore.myshopify.com"},
-        }
-        mock_repo.put_status = AsyncMock()
-        response = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
-        assert response.status_code == 200
-        assert response.json() == {"status": "connected", "provider": "shopify", "store": "mystore.myshopify.com"}
-        assert mock_repo.put_status.await_args.args[1:] == ("shopify", "connected")
-        assert mock_repo.put_status.await_args.kwargs == {"identity": "mystore.myshopify.com"}
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.integrations_repo")
-    @patch("routers.connections.shopify_login.login_status", new_callable=AsyncMock)
-    async def test_status_reports_pending_and_failed_without_writing_the_row(self, status, mock_repo, async_client):
-        mock_repo.put_status = AsyncMock()
-        status.return_value = {"connected": False, "pending": True, "error": None, "session": None}
-        pending = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
-        assert pending.json()["status"] == "pending"
-        status.return_value = {
-            "connected": False,
-            "pending": False,
-            "error": "Timed out waiting for OAuth callback.",
-            "session": None,
-        }
-        failed = await async_client.get("/api/v1/connections/shopify/login/status?store=mystore.myshopify.com")
-        assert failed.json() == {
-            "status": "failed",
-            "provider": "shopify",
-            "store": "mystore.myshopify.com",
-            "error": "Timed out waiting for OAuth callback.",
-        }
-        mock_repo.put_status.assert_not_awaited()
-
-
-class TestDisconnectContainerLogin:
-    """DELETE /api/v1/connections/shopify — the CLI session goes before the row."""
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.shopify_login.logout", new_callable=AsyncMock)
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_drops_the_cli_session_for_the_row_s_store_before_deleting_the_row(
-        self, mock_repo, mock_store, mock_patcher, logout, async_client
-    ):
-        # The store is the row's identity, so the plugin must be asked to drop the
-        # CLI session BEFORE the row goes — afterwards nothing remembers which
-        # store to log out.
-        order: list[str] = []
-        mock_repo.get = AsyncMock(
-            return_value={
-                "owner_id": "o",
-                "provider": "shopify",
-                "status": "connected",
-                "identity": "mystore.myshopify.com",
-            }
-        )
-        mock_repo.delete = AsyncMock(side_effect=lambda *a, **k: order.append("delete"))
-        mock_store.delete = AsyncMock()
-        logout.side_effect = lambda *a, **k: order.append("logout")
-
-        response = await async_client.delete("/api/v1/connections/shopify")
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "shopify"}
-        assert logout.await_args.args[1] == "mystore.myshopify.com"
-        assert order == ["logout", "delete"]
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.shopify_login.logout", new_callable=AsyncMock)
-    @patch("routers.connections.config_patcher")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_without_a_store_identity_skips_the_plugin(
-        self, mock_repo, mock_store, mock_patcher, logout, async_client
-    ):
-        # A row written before identities existed (or never connected) has no
-        # store to log out; the disconnect still clears the row.
-        mock_repo.get = AsyncMock(return_value=None)
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-
-        response = await async_client.delete("/api/v1/connections/shopify")
-
-        assert response.status_code == 200
-        logout.assert_not_awaited()
-        mock_repo.delete.assert_awaited_once()

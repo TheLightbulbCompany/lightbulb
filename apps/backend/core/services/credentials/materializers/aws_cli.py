@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 
 from core.config import settings
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root
+from core.services.credentials.materializers.base import atomic_write, is_projecting, owner_efs_root
 
 # Must match the baked aws-exec-profile plugin's AWS_CONNECTOR_PROFILE
 # (apps/infra/openclaw/plugins/aws-exec-profile/dist/resolve.js): the plugin
@@ -42,6 +42,38 @@ CACHE_FILENAME = "cache.json"
 
 # In-container absolute path of the .aws dir (see module docstring).
 _CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
+
+# The AgentCore/Hermes form of the same line. botocore runs credential_process through
+# ``shlex.split`` + ``Popen`` with NO shell and NO variable expansion, so an expansion has to be
+# asked for explicitly; ``exec`` keeps it to one process. `node` is in the Hermes base image
+# (/usr/local/bin/node), so the rail is otherwise unchanged.
+#
+# ``$HOME`` here is NOT this agent's profile home in general. It FREEZES at the first profile to
+# run a shell in the microVM's process -- ``HOME`` is in ``agent.secret_scope._GLOBAL_ENV_EXACT``,
+# so it resolves from ``os.environ`` rather than the per-profile scope (measured in the pinned
+# image; see ``bridge/sync.py::cli_credential_env``). The FILE the CLI opens is pinned correctly
+# per profile by ``AWS_CONFIG_FILE``, which rides ``terminal.env_passthrough`` and does
+# re-resolve; but the helper, its ``token`` and its ``cache.json`` are reached from this line, so
+# they are read off the FROZEN home -- i.e. possibly a sibling profile's copy.
+#
+# That is bounded, and only because the projection writes byte-identical copies to every roster
+# profile (see ``credentials/hermes_cli.py``'s invariant): the sibling's helper, bearer token and
+# cache are the SAME owner-level credential, and the token authorizes by owner, not by agent. If
+# that invariant ever breaks, this line breaks with it and the helper must be reached by an
+# absolute per-profile path instead.
+_HERMES_CREDENTIAL_PROCESS = f"""sh -c 'exec /usr/bin/env node "$HOME/.aws/{HELPER_FILENAME}"'"""
+
+# On AgentCore the projected profile is ``[default]``, NOT the named one the module docstring
+# above insists on for ECS -- and the reason that rule exists does not carry here. On ECS the
+# fear is "a default profile would be picked up by the in-process Bedrock SDK's default chain":
+# the OpenClaw process's own $HOME IS the EFS root holding this file, so a [default] section
+# would silently re-credential OpenClaw's own Bedrock calls. In the microVM the bridge process's
+# $HOME is ``/`` (verified in the pinned image) and only the CHILD shell's HOME is rewritten to
+# ``<profile>/home`` -- so no in-process SDK can ever read this file, and there is nothing for a
+# [default] section to capture. Making it the default is what lets the shell work with NO
+# ``AWS_PROFILE`` at all, which is the whole point: a variable nothing has to deliver cannot be
+# dropped by a filter, cached stale, or forgotten on a new rail.
+_HERMES_SECTION = "default"
 
 _HELPER_TEMPLATE = r"""#!/usr/bin/env node
 // Lightbulb AWS credential_process helper — materialized by the Lightbulb backend.
@@ -127,11 +159,10 @@ emit(creds);
 
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
     aws_dir = owner_efs_root(owner_id) / ".aws"
-    config = (
-        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
-        f"region = {credential['region']}\n"
-        f"credential_process = /usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}\n"
-    )
+    projecting = is_projecting()
+    process = _HERMES_CREDENTIAL_PROCESS if projecting else f"/usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}"
+    section = _HERMES_SECTION if projecting else f"profile {AWS_CONNECTOR_PROFILE}"
+    config = f"[{section}]\nregion = {credential['region']}\ncredential_process = {process}\n"
     helper = _HELPER_TEMPLATE.replace("__API_BASE__", settings.PUBLIC_API_BASE)
     token = json.dumps({"owner_id": owner_id, "token": credential["cli_token"]})
     atomic_write(aws_dir / "config", config.encode())

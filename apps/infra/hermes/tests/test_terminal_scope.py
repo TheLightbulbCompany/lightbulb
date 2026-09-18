@@ -29,7 +29,9 @@ def test_profile_terminal_scope_covers_construction_and_run_and_resets(home, mon
     process_cwd = os.getcwd()
 
     def check_scope():
-        assert active.get() == {"TERMINAL_CWD": str(home / "profiles" / "ceo")}
+        # The overlay also carries the CLI-connector config-location vars (test_cli_credentials);
+        # what this test guards is that it is an OVERLAY, never a process global.
+        assert active.get()["TERMINAL_CWD"] == str(home / "profiles" / "ceo")
         assert os.environ["TERMINAL_CWD"] == "/not-this-profile"
         assert os.getcwd() == process_cwd
 
@@ -70,10 +72,12 @@ def test_env_overlay_carries_only_terminal_policy_not_arbitrary_child_env(home, 
     with turn._terminal_scope("ceo"):
         pass
 
-    assert set(seen) == {"TERMINAL_CWD"}, (
-        f"only TERMINAL_* survives Hermes's overlay filter; {sorted(set(seen) - {'TERMINAL_CWD'})} "
-        "would be silently dropped"
-    )
+    dropped = sorted(k for k in seen if not k.startswith("TERMINAL_"))
+    assert not dropped, f"only TERMINAL_* survives Hermes's overlay filter; {dropped} would be silently dropped"
+    # TERMINAL_HOME_MODE is the CLI-connector lane's whole discovery mechanism: it puts $HOME at
+    # <profile>/home, where the backend projects each CLI's own dotfiles (bridge/sync.py's
+    # PROFILE_HOME). It is a policy key Hermes owns, which is exactly why it may ride here.
+    assert set(seen) == {"TERMINAL_CWD", "TERMINAL_HOME_MODE"}
 
 
 def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(home, monkeypatch):
@@ -129,8 +133,24 @@ def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(ho
     assert seen["scope"]["PAPERCLIP_API_KEY"] == "pcp_live_x"
     assert seen["scope"]["PAPERCLIP_RUN_ID"] == "run-1"
     # Present (so Hermes's filter walks them) but VALUE-FREE: the value comes from the scope.
-    assert set(seen["env"]) == seen["passthrough"]
+    # A contract name this turn holds no value for (the CLI lane's GOG_* on a profile with no
+    # Google connected) is still listed and still declared -- it just resolves to nothing.
+    assert set(seen["env"]) <= seen["passthrough"]
     assert set(seen["env"].values()) == {""}
+
+    # Reviewer's finding on #2754, cheapest to pin here: every name the bridge puts in the
+    # per-turn OVERLAY (the scope minus the profile's own static .env) must also be in the fixed
+    # contract. Without this, a lane that adds an overlay name and forgets the tuple still
+    # passes every test -- and then fails only under room-turn-first ordering in a warm microVM,
+    # where Hermes has already cached a name list that does not contain it.
+    static_env_names = {
+        line.split("=", 1)[0] for line in (profile / ".env").read_text().splitlines() if "=" in line
+    }
+    overlay_names = set(seen["scope"]) - static_env_names
+    assert overlay_names <= set(turn.sync.BRIDGE_CHILD_ENV_NAMES), (
+        f"{sorted(overlay_names - set(turn.sync.BRIDGE_CHILD_ENV_NAMES))} reach the scope per-turn but are "
+        "missing from BRIDGE_CHILD_ENV_NAMES -- they would be dropped whenever a room turn runs first"
+    )
 
 
 def test_the_declared_name_list_does_not_depend_on_what_this_turn_happens_to_hold(home, monkeypatch):

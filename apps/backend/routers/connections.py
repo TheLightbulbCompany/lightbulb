@@ -38,6 +38,7 @@ from core.services.credentials import (
 # whole `routers.connections.apply_connection` module out — the class object
 # itself never changes underneath that patch.
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
+from core.services.credentials import hermes_cli
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 from core.services.credentials.mcp_server import reconcile_integrations
 from core.services import shopify_login
@@ -71,7 +72,8 @@ def _retains_secret(p: registry.Provider) -> bool:
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
     """On a FAILED apply, remove any partially-materialized on-disk artifacts so a
-    failed connect leaves no durable credential residue on EFS (the row is deleted
+    failed connect leaves no durable credential residue on EFS -- or, for an AgentCore
+    owner, in the Hermes profiles ``hermes_cli`` projects into (the row is deleted
     separately). A materializer can write one file before a later step raises — e.g.
     gog's `credentials set` succeeds but `tokens import` fails — and without this the
     artifact lingers while the UI shows disconnected and no row remains to clean it up
@@ -82,6 +84,16 @@ async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, cr
     request loop — offloading gives it a thread with no running loop, matching the
     write path's run_in_thread offload. Pure file-op removers are unaffected."""
     if not p.wiring.materializer:
+        return
+    # Deliberately NOT fail_closed, unlike every other mutating caller on this door (#2759):
+    # this IS the rollback, so raising here would replace the connect's real error with a
+    # RuntimeHostUnknownError and lose it. The cost of guessing ECS on a throttle is residue
+    # from a connect that already failed — inert (the row is gone) and overwritten by the next
+    # successful connect — which is the same class of loss the surrounding except already
+    # accepts.
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # The residue is in S3, not on EFS — and hermes_cli.clear is already best-effort.
+        await hermes_cli.clear(owner_id, p.key, p.wiring.materializer, credential)
         return
     remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
     if not remover:
@@ -820,14 +832,13 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     tolerate the remover's not-found error (gog exits non-zero for an account it
     can't find) for the case where the keyring drifted from the inventory."""
     accounts = await google_accounts_repo.list_accounts(owner_id)
-    # google is a pure CLI-skill materializer (gog_cli) with no Hermes
-    # equivalent — an AgentCore owner has no EFS keyring for the remover to
-    # touch (M6-R24, "same for revoke/disconnect").
-    if any(a["email"] == account for a in accounts) and not await runtime_transport.is_agentcore_owner(
-        owner_id, fail_closed=True
-    ):
-        remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None
-        if remover:
+    if any(a["email"] == account for a in accounts):
+        if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
+            # An AgentCore owner's keyring lives in every Hermes profile, not on EFS. Running
+            # gog against a scratch copy of it is what keeps the owner's OTHER Google accounts
+            # (the founder has four) when one is disconnected.
+            await hermes_cli.clear(owner_id, p.key, p.wiring.materializer or "", {"email": account})
+        elif remover := (MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None):
             try:
                 # Offload to a worker thread so a remover that drives an async
                 # config_patcher via asyncio.run isn't called on the request loop
@@ -896,12 +907,25 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
     # mcp-tokens/*.json cleanup happens inside reconcile_integrations below,
     # once the row this function deletes is gone from the connected set.
     if p.wiring.materializer and agentcore:
-        logger.info(
-            "agentcore: skipping %s materializer teardown for owner=%s — exec runs on the owner's "
-            "Mac, no Hermes equivalent",
-            provider,
-            owner_id,
-        )
+        # Symmetric with the connect projection (credentials.hermes_cli): run the materializer's
+        # own remover against a scratch copy of the profile state and sync the result, so a
+        # provider-level disconnect drops exactly what it owns. google carries the same
+        # disconnect_all + inventory the ECS branch below builds.
+        if hermes_cli.supports(p.wiring.materializer):
+            cred = await integration_secret_store.get(owner_id, provider) or {}
+            if provider == "google":
+                cred = {
+                    **cred,
+                    "disconnect_all": True,
+                    "accounts": [a["email"] for a in await google_accounts_repo.list_accounts(owner_id)],
+                }
+            await hermes_cli.clear(owner_id, provider, p.wiring.materializer, cred)
+        else:
+            logger.info(
+                "agentcore: skipping %s materializer teardown for owner=%s — no Hermes projection for this rail",
+                provider,
+                owner_id,
+            )
     elif p.wiring.materializer:
         remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
         if remover:

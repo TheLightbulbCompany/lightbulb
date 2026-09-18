@@ -364,22 +364,56 @@ async def test_clear_hermes_openclaw_paths_projection_no_ops_for_an_unlisted_pro
 
 
 @pytest.mark.asyncio
-async def test_apply_agentcore_cli_skill_materializer_is_skipped(monkeypatch, caplog):
-    """google (gog_cli) is a pure CLI-skill materializer with no mcp_remote/
-    mcp_stdio -- on AgentCore the materializer never runs (exec is the owner's
-    Mac, not the microVM) and the call still returns cleanly."""
+async def test_apply_agentcore_cli_skill_materializer_is_projected(monkeypatch):
+    """SUPERSEDES the original "...is_skipped" test. google (gog_cli) is a pure CLI-skill
+    materializer with no mcp_remote/mcp_stdio, and the M6-R24 ruling skipped it on AgentCore
+    because exec was going to run on the owner's Mac. Since #2749 the shell runs in the
+    microVM, so it is projected into every Hermes profile instead (credentials.hermes_cli) and
+    the materializer's own return value (gog's connected account email) still surfaces."""
     from core.services.credentials import apply_connection as ac
+    from core.services.credentials import hermes_cli
 
     monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    projected = []
+
+    async def fake_project(owner_id, provider_key, materializer, credential):
+        projected.append((owner_id, provider_key, materializer, credential))
+        return "a@b.co"
+
+    monkeypatch.setattr(hermes_cli, "project", fake_project)
+
+    result = await ac.apply_connection("org_1", "google", {"access_token": "a", "refresh_token": "r"})
+
+    assert result == "a@b.co"
+    assert projected == [("org_1", "google", "gog_cli", {"access_token": "a", "refresh_token": "r"})]
+
+
+@pytest.mark.asyncio
+async def test_apply_agentcore_materializer_with_no_projection_is_still_skipped(monkeypatch, caplog):
+    """A materializer outside hermes_cli.OWNED_PATHS keeps the old skip -- the branch is
+    narrowed, not deleted."""
+    from core.services.credentials import apply_connection as ac
+    from core.services.credentials.registry import Provider, Wiring
+
+    provider = Provider(
+        key="synth",
+        display_name="Synthetic",
+        acquisition="paste_token",
+        actor="cli",
+        refresh_owner="none",
+        wiring=Wiring(materializer="toml_cli"),
+    )
+    monkeypatch.setattr(ac.registry, "get_provider", lambda key: provider)
+    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     mat_called = []
-    monkeypatch.setitem(ac.MATERIALIZERS, "gog_cli", lambda *a: mat_called.append(a))
+    monkeypatch.setitem(ac.MATERIALIZERS, "toml_cli", lambda *a: mat_called.append(a))
 
     with caplog.at_level("INFO"):
-        result = await ac.apply_connection("org_1", "google", {"access_token": "a", "refresh_token": "r"})
+        result = await ac.apply_connection("org_1", "synth", {"token": "t"})
 
     assert result is None
     assert mat_called == []
-    assert "google" in caplog.text
+    assert "synth" in caplog.text
 
 
 @pytest.mark.asyncio

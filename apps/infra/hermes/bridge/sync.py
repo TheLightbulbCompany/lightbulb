@@ -61,6 +61,50 @@ def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
 
+#: ``$HOME`` for a turn's shell. ``hermes_constants.get_subprocess_home`` returns
+#: ``{HERMES_HOME}/home`` under ``TERMINAL_HOME_MODE: profile`` (turn.py sets it), and
+#: ``_hermes_home_scope`` makes ``HERMES_HOME`` the profile dir for the turn -- so this is where
+#: every CLI's own default lookup goes, and where the backend projects their credentials.
+#: It must EXIST: ``auto`` mode falls back to ``/`` when it does not.
+PROFILE_HOME = "home"
+
+#: Backend-owned VALUES a projected CLI needs in the shell, written by
+#: ``core/services/credentials/hermes_cli.py`` and read by ``cli_credential_env`` below.
+CLI_ENV_FILE = "cli-env.json"
+
+#: The profile paths the backend's CLI-connector projection owns -- mirrors
+#: ``core/services/credentials/hermes_cli.py``'s ``profile_paths()`` + its ``cli-env.json``.
+#: They are BACKEND-OWNED: pulled by name on every revision bump (_pull_cli_credentials) and
+#: never uploaded (see EXCLUDE_GLOBS below). An in-microVM rotation of one of these therefore
+#: lives only as long as the warm profile; the backend's copy is authoritative on the next cold
+#: restore, which is what keeps an agent from writing a credential every later turn inherits.
+CLI_CREDENTIAL_PREFIXES = (
+    f"{PROFILE_HOME}/.aws/",
+    f"{PROFILE_HOME}/.config/gh/",
+    f"{PROFILE_HOME}/.config/gogcli/",
+    f"{PROFILE_HOME}/.local/share/gogcli/",
+    f"{PROFILE_HOME}/.xurl",
+    "skills/instagram/",
+    CLI_ENV_FILE,
+)
+
+#: Hazard of putting ``$HOME`` inside the profile: every tool's dotfiles and caches now sit in
+#: the dir ``save_profile`` walks, so an `npm install` or a `git clone` would start uploading
+#: package caches and agent-written credentials to S3 on every turn. These never go up.
+#: ``.cache`` is also in #2756's profile-wide ``_REPRODUCIBLE_DIRS`` below, and ``.ssh``-shaped
+#: files in its ``_CREDENTIAL_FILES``. That overlap is deliberate and left standing, for the
+#: reason that block gives about the mirror case: ``is_excluded`` is an ``any()``, and each list
+#: stays readable on its own terms -- theirs is profile-wide and push-only, this one is anchored
+#: at the projected ``home/`` and pairs with a pull-by-name that UNLINKS. The two must not be
+#: folded together: ``_pull_cli_credentials`` deletes local files under ITS prefixes that S3
+#: lacks, which must never be pointed at an agent-owned path.
+#: NB ``fnmatch``'s ``*`` spans ``/``, so one pattern per name covers the whole subtree.
+_HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state")
+HOME_EXCLUDE_GLOBS = (
+    f"{PROFILE_HOME}/.gitconfig",
+    *(f"{PROFILE_HOME}/{name}/*" for name in _HOME_UNSYNCED),
+)
+
 #: Hazard 4 (local-exec persistence report): ``terminal.backend: local`` runs the agent's shell
 #: IN its profile dir, so a build drops whole dependency/output trees into what save_profile
 #: rglobs. PUSH-side only (see is_reproducible) -- ``.git/`` is deliberately absent, a fresh
@@ -127,6 +171,13 @@ EXCLUDE_GLOBS = (
     # hermes_profiles.write_facts_to_profiles (owner_facts.write_owner_facts's AgentCore
     # branch) on every plan/provider change -- same clobber risk as the four above.
     "lightbulb-facts.json",
+    # Backend-projected CLI connector credentials (backend credentials/hermes_cli.py). Same
+    # class as the five above: the backend is the only writer, so an upload from here could
+    # only ever revert a connect/disconnect the owner just made -- and would let a turn push
+    # whatever it wrote into these paths back into the profile every later turn inherits.
+    # They are pulled by NAME instead (_pull_cli_credentials), which bypasses these globs.
+    *(f"{_p}*" if _p.endswith("/") else _p for _p in CLI_CREDENTIAL_PREFIXES),
+    *HOME_EXCLUDE_GLOBS,
 )
 
 
@@ -175,6 +226,17 @@ def _profile_dir(agent_id: str) -> Path:
     return HOME / "profiles" / agent_id
 
 
+def ensure_profile_home(agent_id: str) -> Path:
+    """Create the profile's ``home/`` -- the shell's ``$HOME`` for every turn under
+    ``TERMINAL_HOME_MODE: profile``. Called from ``restore_profile`` (both paths), so it exists
+    before the first turn of a process whether or not S3 had anything to restore: an absent dir
+    silently degrades ``hermes_constants.get_subprocess_home`` back to ``/``, where every
+    projected credential is invisible."""
+    home = _profile_dir(agent_id) / PROFILE_HOME
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
 def _modified_at(obj: dict) -> float | None:
     """Epoch seconds for a ``list_objects_v2`` entry, or None when the listing carried no
     LastModified. Real S3 always carries it; "unknown" has to fail OPEN (download) because
@@ -206,12 +268,12 @@ def _change_stamp(path: Path) -> int:
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     if agent_id in _restored or not S3_BUCKET:
-        _profile_dir(agent_id).mkdir(parents=True, exist_ok=True)
+        ensure_profile_home(agent_id)  # also mkdirs the profile dir itself
         _restored.add(agent_id)
         return 0.0
     t0 = time.time()
     dest = _profile_dir(agent_id)
-    dest.mkdir(parents=True, exist_ok=True)
+    ensure_profile_home(agent_id)
     prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
     n = 0
@@ -397,6 +459,10 @@ def _download_profile(agent_id: str) -> bool:
     # Deliberately not part of the verdict: the mcp-tokens seed is best-effort by design
     # (seeded-only, F2 / M6-R35) and its failure mode is a dead tool, not stale instructions.
     _pull_new_mcp_token_files(agent_id)
+    # Same: a CLI connector the owner just connected/disconnected is a dead (or stale) binary,
+    # not stale instructions. Unlike mcp-tokens this OVERWRITES -- the backend is the only
+    # writer, so its object is always the newer truth.
+    _pull_cli_credentials(agent_id)
     return complete
 
 
@@ -500,6 +566,57 @@ def _pull_new_mcp_token_files(agent_id: str) -> None:
                 s3.download_file(S3_BUCKET, obj["Key"], str(target))
     except Exception:  # noqa: BLE001 -- a listing/download blip must not abort ensure_profile
         log.warning("ensure_profile: mcp-tokens re-pull failed for %s", agent_id)
+
+
+def _pull_cli_credentials(agent_id: str) -> None:
+    """Re-pull the backend's projected CLI connector credentials by name.
+
+    They sit in EXCLUDE_GLOBS so ``save_profile`` never pushes them, which also takes them out
+    of ``_pull_changed_objects``'s recency walk -- so without this an owner connecting GitHub
+    (or disconnecting AWS) mid-session would never reach an already-warm microVM, exactly the
+    hole ``_pull_new_mcp_token_files`` exists to close for MCP tokens.
+
+    Overwrites rather than seeding once: the backend is the sole writer of these paths (an
+    agent's own edits are never uploaded), so its object is by construction the newer one.
+    A local file the backend has since DELETED is removed too.
+
+    Scope of that last claim: the prune is PER AGENT, on that agent's next turn. A disconnect
+    therefore lands immediately for whichever agents take a turn after it and LAGS for the rest
+    until they do — so "a disconnected connector stops working" is eventually-consistent across
+    the roster, not atomic. Bounded by the life of the warm process (a cold restore re-pulls the
+    whole prefix, where the object is already gone), and the server side is the real fence
+    anyway: the AWS bearer token is revoked at the backend the moment the row is deleted, and a
+    pasted PAT is revoked at the vendor, not here."""
+    dest = _profile_dir(agent_id)
+    base = f"{S3_PREFIX}/{agent_id}/"
+    try:
+        s3 = _s3()
+        for prefix in CLI_CREDENTIAL_PREFIXES:
+            remote: set[str] = set()
+            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=f"{base}{prefix}"):
+                for obj in page.get("Contents", []):
+                    rel = obj["Key"][len(base):]
+                    if not rel or rel.endswith("/"):
+                        continue
+                    # A prefix with no trailing "/" names one FILE: "home/.xurl" must not pull
+                    # a hypothetical "home/.xurlfoo" (matches the backend's own fetch rule).
+                    if not prefix.endswith("/") and rel != prefix:
+                        continue
+                    remote.add(rel)
+                    target = dest / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    s3.download_file(S3_BUCKET, obj["Key"], str(target))
+            local_root = dest / prefix.rstrip("/")
+            locals_ = (
+                [p for p in local_root.rglob("*") if p.is_file()]
+                if local_root.is_dir()
+                else ([local_root] if local_root.is_file() else [])
+            )
+            for path in locals_:
+                if path.relative_to(dest).as_posix() not in remote:
+                    path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001 -- a listing/download blip must not abort ensure_profile
+        log.warning("ensure_profile: CLI credential re-pull failed for %s", agent_id)
 
 
 def ensure_profile(agent_id: str) -> None:
@@ -722,7 +839,68 @@ BRIDGE_CHILD_ENV_NAMES: tuple[str, ...] = (
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_TASK_ID",
+    # The CLI-connector lane (backend credentials/hermes_cli.py). Each names an ABSOLUTE
+    # per-profile path, because $HOME cannot be relied on to be this profile's -- see
+    # cli_credential_env below for the measurement that forced that.
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "GH_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    # gog's file keyring is a password-derived JWE blob and the password has no file to live
+    # in; on ECS the same two arrive as task-def secrets.
+    "GOG_KEYRING_PASSWORD",
+    "GOG_KEYRING_BACKEND",
 )
+
+
+def cli_credential_env(agent_id: str) -> dict[str, str]:
+    """The CLI-connector VALUES this profile's children need, for the turn's secret scope.
+
+    **Why these are ABSOLUTE paths and not just ``$HOME``.** ``TERMINAL_HOME_MODE: profile``
+    does put ``$HOME`` at ``<profile>/home`` — for the FIRST profile to run a shell in the
+    process, and then it stops moving. Measured in the pinned image (two profiles, one process,
+    fresh child PIDs each time, so this is not shell reuse)::
+
+        ceo          -> PID=24 HOME=.../profiles/ceo/home  PAPERCLIP_API_KEY=key-ceo
+        engineering  -> PID=33 HOME=.../profiles/ceo/home  PAPERCLIP_API_KEY=key-engineering
+
+    ``HOME`` is in ``agent.secret_scope._GLOBAL_ENV_EXACT``, so every reader resolves it from
+    ``os.environ`` rather than the per-profile scope, and the child inherits whatever the first
+    turn left there. A passthrough name is not global, so it resolves through the scope and is
+    correct for every profile — which the same run proves in the right-hand column.
+
+    An AgentCore runtime is per-OWNER and serves the whole roster in one process, so relying on
+    ``$HOME`` would have given every agent after the first the FIRST agent's ``~/.aws``,
+    ``~/.config/gh`` and ``~/.xurl``. Hence: one absolute path per CLI, carried on the channel
+    that demonstrably re-resolves per turn.
+
+    ``TERMINAL_HOME_MODE`` stays set — an unset ``$HOME`` is ``/``, which is root-owned, so
+    ``git config --global`` and friends fail outright — but nothing here DEPENDS on it.
+
+    ``HOME`` itself is never returned here and must never be added: it is ``_is_global_env``
+    (so ``resolve_passthrough_value`` hands back the process value) AND owned by
+    ``hermes_constants.apply_subprocess_home_env``.
+
+    ``AWS_PROFILE`` is absent because the projection writes ``[default]`` on this rail
+    (materializers/aws_cli.py) — one name that genuinely did become unnecessary.
+    """
+    home = _profile_dir(agent_id) / PROFILE_HOME
+    env = {
+        "AWS_CONFIG_FILE": str(home / ".aws" / "config"),
+        # Pinned at a file the projection never writes, so `aws` can only resolve through the
+        # projected config's credential_process, never a stray shared-credentials file.
+        "AWS_SHARED_CREDENTIALS_FILE": str(home / ".aws" / "credentials"),
+        "GH_CONFIG_DIR": str(home / ".config" / "gh"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+    }
+    try:
+        raw = json.loads((_profile_dir(agent_id) / CLI_ENV_FILE).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 -- absent (no gog connected) or unreadable: not a turn failure
+        return env
+    env.update({str(k): str(v) for k, v in raw.items() if k in BRIDGE_CHILD_ENV_NAMES})
+    return env
 
 
 def profile_child_env_names() -> list[str]:

@@ -70,8 +70,10 @@ def is_mcp_shaped(p: registry.Provider) -> bool:
     own an ``mcp.servers.<key>`` entry, so they are MCP-shaped despite not
     using the ``mcp_server`` wiring. Everything else that only carries a
     materializer (gh_cli/xurl_cli/skill_cli/instagram_cli/gog_cli/aws_cli) is a
-    CLI-skill provider with no Hermes equivalent: its exec target is the
-    OWNER'S MAC via the lightbulb_node terminal backend, never the microVM."""
+    CLI-skill provider: not MCP-shaped, so ``reconcile_integrations`` has no
+    fan-out for it. Since #2749 a Hermes turn's shell runs INSIDE the microVM,
+    so those five are projected into the profile by
+    ``credentials.hermes_cli`` instead of skipped -- see that module."""
     return bool(p.mcp_remote or p.mcp_stdio or p.wiring.mcp_server)
 
 
@@ -133,8 +135,10 @@ async def _apply_connection_agentcore(
 ) -> None:
     """M6-R24: the AgentCore projection step for a connect/reconnect.
 
-    Never touches EFS. A pure CLI-skill materializer has no Hermes equivalent and is skipped
-    with an INFO log naming the provider and the reason; every mcp_server/mcp_remote/mcp_stdio
+    Never touches EFS. A pure CLI-skill materializer is projected into every Hermes profile by
+    ``credentials.hermes_cli`` (which supersedes this branch's original blanket skip -- shell
+    commands run in the microVM since #2749, not on the owner's Mac); one whose materializer has
+    no projection is still skipped with an INFO log. Every mcp_server/mcp_remote/mcp_stdio
     rail gets every one of the owner's connected integrations re-projected into every Hermes
     profile in ONE shot via the existing ``reconcile_integrations`` AgentCore branch — not a
     per-provider write — and never raises for that path (a self-healing re-assert exists).
@@ -146,8 +150,12 @@ async def _apply_connection_agentcore(
     this rail, so the caller's rollback must actually see the failure); one without raises
     ``RuntimeUnsupportedError`` so the caller never marks the row connected either way."""
     if p.wiring.materializer and not is_mcp_shaped(p):
+        from core.services.credentials import hermes_cli
+
+        if hermes_cli.supports(p.wiring.materializer):
+            return await hermes_cli.project(owner_id, provider_key, p.wiring.materializer, credential)
         logger.info(
-            "agentcore: skipping %s materializer for owner=%s — exec runs on the owner's Mac, no Hermes equivalent",
+            "agentcore: skipping %s materializer for owner=%s — no Hermes projection for this rail",
             provider_key,
             owner_id,
         )

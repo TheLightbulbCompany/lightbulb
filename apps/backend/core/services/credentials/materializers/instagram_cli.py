@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 
 from core.services import config_patcher
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root
+from core.services.credentials.materializers.base import atomic_write, is_projecting, owner_efs_root
 
 _SKILL_KEY = "instagram"
 _SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / _SKILL_KEY
@@ -90,10 +90,17 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     }
     atomic_write(_skill_dir(owner_id) / "credentials.json", json.dumps(creds, indent=2).encode())
 
-    _run_sync(config_patcher.set_openclaw_config_path(owner_id, ["skills", "entries", _SKILL_KEY], {"enabled": True}))
+    # (d) is an openclaw.json switch, and an AgentCore owner has no openclaw.json: Hermes finds
+    # a skill by scanning the profile the three files above have just landed in. Patching EFS
+    # from here would write into a dead (or missing) config for that owner and can raise.
+    if not is_projecting():
+        _run_sync(
+            config_patcher.set_openclaw_config_path(owner_id, ["skills", "entries", _SKILL_KEY], {"enabled": True})
+        )
     return username
 
 
 def remove(owner_id: str, provider_key: str, credential: dict) -> None:
-    _run_sync(config_patcher.delete_openclaw_config_path(owner_id, ["skills", "entries", _SKILL_KEY]))
+    if not is_projecting():  # see write(): no openclaw.json exists on the Hermes side
+        _run_sync(config_patcher.delete_openclaw_config_path(owner_id, ["skills", "entries", _SKILL_KEY]))
     shutil.rmtree(_skill_dir(owner_id), ignore_errors=True)

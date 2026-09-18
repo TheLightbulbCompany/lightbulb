@@ -10,7 +10,7 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
     validate_gateway_url,
     AdapterConfigError,
-    HTTP_ADAPTER_TYPE,
+    HERMES_GATEWAY_TYPE,
     OPENCLAW_GATEWAY_TYPE,
     PAPERCLIP_OPERATOR_CLIENT_ID,
     claimed_api_key_path,
@@ -302,7 +302,7 @@ async def test_adapter_type_for_an_explicit_hint_wins_with_no_db_read(monkeypatc
         raise AssertionError("must not read the container row when a hint is given")
 
     monkeypatch.setattr(cfg_module.container_repo, "get_by_owner_id", boom)
-    assert await cfg_module.adapter_type_for("org_1", runtime_host="agentcore") == HTTP_ADAPTER_TYPE
+    assert await cfg_module.adapter_type_for("org_1", runtime_host="agentcore") == HERMES_GATEWAY_TYPE
     assert await cfg_module.adapter_type_for("org_1", runtime_host="ecs") == OPENCLAW_GATEWAY_TYPE
 
 
@@ -312,7 +312,7 @@ async def test_adapter_type_for_reads_the_row_when_no_hint_is_given(monkeypatch)
         return {"runtime_host": "agentcore"}
 
     monkeypatch.setattr(cfg_module.container_repo, "get_by_owner_id", agentcore_row)
-    assert await cfg_module.adapter_type_for("org_1") == HTTP_ADAPTER_TYPE
+    assert await cfg_module.adapter_type_for("org_1") == HERMES_GATEWAY_TYPE
 
 
 @pytest.mark.asyncio
@@ -340,20 +340,33 @@ async def test_adapter_type_for_propagates_a_read_failure(monkeypatch):
         await cfg_module.adapter_type_for("org_1")
 
 
-def test_the_http_adapter_config_points_at_the_backend_door_with_the_hook_token(monkeypatch):
-    # NOTE: the brief for this task named the setting `settings.API_URL`; the
-    # actual field (core/config.py) is `PUBLIC_API_BASE` -- the same "public
-    # origin of this API" setting every other absolute-URL builder in this repo
-    # uses (routers/hooks_credentials.py, routers/connections.py, ...).
+def test_the_hermes_gateway_config_points_at_the_native_backend_facade(monkeypatch):
     monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
-    built = cfg_module.build_http_adapter_config("org_1", "ceo", hook_token="hook-abc")
-    assert built["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/org_1"
-    assert built["headers"]["Authorization"] == "Bearer hook-abc"
-    assert built["headers"]["X-Lightbulb-Agent"] == "ceo"
-    assert built["timeoutSec"] == 900
+    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
+    built = cfg_module.build_hermes_gateway_adapter_config("org_1", hook_token="hook-abc")
+    assert built == {
+        "apiBaseUrl": "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/org_1",
+        "apiKey": "hook-abc",
+        "sessionKeyStrategy": "issue",
+        "timeoutSec": 900,
+        # Both sit at the native adapter's own clamp ceiling on purpose: every poll and every
+        # reconnect is an InvokeAgentRuntime into the owner's microVM, and the adapter's
+        # defaults (2s / 1s) would cost ~900 invokes on one 900s run instead of ~90.
+        "eventReconnectMs": 30_000,
+        "pollIntervalMs": 10_000,
+        "paperclipApiUrl": "http://paperclip.internal:3100",
+    }
 
 
-def test_the_http_adapter_config_strips_a_trailing_slash_on_the_base_url(monkeypatch):
+def test_the_hermes_gateway_config_rejects_an_empty_hook_token(monkeypatch):
+    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
+    with pytest.raises(AdapterConfigError, match="hook_token"):
+        cfg_module.build_hermes_gateway_adapter_config("org_1", hook_token="")
+
+
+def test_the_hermes_gateway_config_strips_a_trailing_slash_on_the_base_url(monkeypatch):
     monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/")
-    built = cfg_module.build_http_adapter_config("org_1", "ceo", hook_token="hook-abc")
-    assert built["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/org_1"
+    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "")
+    built = cfg_module.build_hermes_gateway_adapter_config("org_1", hook_token="hook-abc")
+    assert built["apiBaseUrl"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/org_1"
+    assert "paperclipApiUrl" not in built

@@ -165,8 +165,10 @@ async def test_with_the_flag_off_step_0_gets_no_runtime_host_hint(monkeypatch, r
 @pytest.mark.asyncio
 async def test_with_the_flag_on_hook_token_exists_before_step_0_seeds_the_roster(monkeypatch, runner_env):
     """The exact bug: a fresh Hermes provision's step-0 seed must see a REAL hook_token on the
-    row (not the empty-string fallback), because build_http_adapter_config bakes it into the
-    Authorization header at seed time -- and step 0 used to run before anything minted one."""
+    row (not the empty-string fallback), because build_hermes_gateway_adapter_config bakes it
+    in as the native adapter's ``apiKey`` at seed time -- and step 0 used to run before
+    anything minted one. It now REFUSES the empty string outright (AdapterConfigError), so the
+    failure is loud rather than a roster of agents whose every run 401s."""
     import core.repositories.container_repo as repo_mod
 
     row: dict = {}

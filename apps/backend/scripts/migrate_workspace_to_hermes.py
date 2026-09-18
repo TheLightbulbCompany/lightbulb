@@ -769,6 +769,42 @@ async def migrate_all(*, dry_run: bool) -> int:
     return EXIT_OK
 
 
+async def repoint_adapters_only(owner_id: str, *, dry_run: bool) -> int:
+    """Re-point an ALREADY-migrated owner's Paperclip adapters, and nothing else.
+
+    ``migrate()`` re-points as one step of its tail, behind ``_check_preconditions``, which
+    exits 2 for any row already carrying ``hermes_migrated_at``. Every owner that needs the
+    native ``hermes_gateway`` re-point is by definition already migrated, so that gate locks
+    out exactly the population this has to reach — hence a separate door rather than a flag
+    threaded through the migration.
+
+    It does no EFS copy, writes no profile, stamps no row and stops nothing: it loads the
+    live roster and calls the same ``_repoint_paperclip_adapters`` the tail does, which is
+    idempotent per agent (an agent already on the target type is skipped) and re-readable,
+    so a partial run converges on a re-run.
+
+    The ROW decides, not the flag: an owner whose ``runtime_host`` is not ``agentcore`` is
+    refused, because pointing its agents at the native facade would aim every run at a
+    runtime that owner does not have.
+    """
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    host = (row or {}).get("runtime_host")
+    if host != "agentcore":
+        logger.error("repoint: owner=%s is runtime_host=%r, not agentcore — refusing", owner_id, host)
+        return 2
+    roster = await load_agent_roster(owner_id)
+    if not roster:
+        logger.error("repoint: owner=%s has an empty agent roster", owner_id)
+        return 2
+    if dry_run:
+        print(f"Would re-point {len(roster)} Paperclip adapters for {owner_id} to the native Hermes adapter:")
+        for agent in roster:
+            print(f"  - {agent.get('name') or agent.get('id')} ({agent.get('id')})")
+        return 0
+    await _repoint_paperclip_adapters(owner_id, roster, runtime_host="agentcore")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     target = parser.add_mutually_exclusive_group(required=True)
@@ -776,9 +812,19 @@ def main() -> int:
     target.add_argument("--all", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument(
+        "--repoint-adapters-only",
+        action="store_true",
+        help="Re-point an already-migrated AgentCore owner's Paperclip adapters onto the native "
+        "hermes_gateway adapter. No EFS copy, no profile write, no row stamp.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
+    if args.repoint_adapters_only:
+        if args.all or args.rollback:
+            parser.error("--repoint-adapters-only takes exactly one --owner-id")
+        return asyncio.run(repoint_adapters_only(args.owner_id, dry_run=args.dry_run))
     if args.rollback and args.all:
         parser.error("--rollback cannot be combined with --all (rollback takes exactly one owner)")
     if args.rollback:

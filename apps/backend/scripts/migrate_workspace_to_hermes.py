@@ -98,6 +98,14 @@ reimplemented here):
     # Dispatch the promotion only when this reads 0.
     gh workflow run deploy.yml --ref main
 
+Connected integrations (``credentials.reproject``): both Hermes projection rails — the CLI
+materializer fan-out and ``reconcile_integrations`` — run ONLY on a fresh connect, and the
+profile writer emits only its five backend-owned files. So the tail re-projects every connected
+integration the backend still holds a credential for, right after the EFS overrides and before
+the session stop (the cold restore is what picks the files up). Providers the backend retains
+nothing for (``refresh_owner: actor`` — google, x, apollo, stripe, …) are printed as
+``needs_reconnect``: only the owner can fix those, by Disconnect → Connect.
+
 Ruling M6-R12 (ChatGPT OAuth owners): this job never stages a ChatGPT grant onto the new runtime.
 The DDB copy of an owner's OAuth tokens is a connect-time SEED — the ECS container's own OpenAI
 client rotates the refresh token in place on first use, and OpenAI refresh tokens are single-use,
@@ -125,6 +133,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.services import runtime_transport
 from core.services.container_provision import resolve_provider_choice
+from core.services.credentials.reproject import reproject_connections
 from core.services.hermes_memory_migration import build_memory_files
 from core.services.hermes_profiles import profile_prefix, upload_profile, write_agent_profile
 from core.services.hermes_provisioning import (
@@ -576,6 +585,14 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
     # step, not a lost migration, so it is classified rather than treated as a lost claim.
     try:
         await _apply_efs_overrides(owner_id, plan)
+        # Neither Hermes projection rail runs on this path (see reproject_connections' own
+        # docstring), so without this the workspace lands with every integration row reading
+        # "connected" and no `home/`/`mcp-tokens/` in any profile. BEFORE the session stop
+        # below, so the cold restore picks the files up on the next turn. Providers reported
+        # `needs_reconnect` are the ones the backend holds no credential for — printed, not
+        # merely logged, because only the owner can fix those.
+        for provider, outcome in sorted((await reproject_connections(owner_id)).items()):
+            print(f"{owner_id} reproject {provider}={outcome}")
         if reconnect_chatgpt:
             await _reconcile_chatgpt_oauth(owner_id)
         # Ruling M6-R18: the bridge's ensure_profile only re-pulls the backend-owned files

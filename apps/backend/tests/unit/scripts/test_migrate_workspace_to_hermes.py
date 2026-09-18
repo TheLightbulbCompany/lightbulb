@@ -115,6 +115,14 @@ def adapter_repoint_stub(monkeypatch):
     return real
 
 
+@pytest.fixture(autouse=True)
+def reproject_stub(monkeypatch):
+    """The tail re-projects the owner's connected integrations, which reads the integrations
+    table and Secrets Manager. Stub it everywhere by default — same reasoning (and same
+    re-patching escape hatch) as ``adapter_repoint_stub`` above."""
+    monkeypatch.setattr(mod, "reproject_connections", AsyncMock(return_value={}))
+
+
 @pytest.fixture
 def settings_ok(monkeypatch):
     """Ruling M6-R20(b): the two settings ``provision_hermes_runtime`` hard-requires."""
@@ -1172,3 +1180,55 @@ async def test_repoint_adapters_only_dry_run_writes_nothing(monkeypatch, capsys)
 
     repoint.assert_not_awaited()
     assert "Ada" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Connected integrations — re-projected into the new profiles (credentials.reproject)
+# ---------------------------------------------------------------------------
+
+
+async def test_reproject_runs_after_the_efs_overrides_and_before_the_session_stop(
+    tmp_path, precondition_ok, monkeypatch, capsys
+):
+    """Neither Hermes projection rail runs on the migration path, so the tail re-projects. It
+    must land AFTER the last override upload and BEFORE the session stop: the cold restore that
+    stop forces is what puts the projected files in front of the next turn."""
+    _fake_workspace(tmp_path)
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "test-hermes-bucket")
+
+    calls: list[str] = []
+    uploaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
+    monkeypatch.setattr(mod, "_s3_client", lambda: _FakeS3Client(uploaded, order_sink=calls))
+    monkeypatch.setattr(
+        "core.services.hermes_profiles._new_s3_client", lambda: _FakeS3Client(uploaded, order_sink=calls)
+    )
+    monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_PROFILE_INPUTS)
+    )
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
+    )
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(stop_user_service=AsyncMock()))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock(side_effect=lambda *a: calls.append("session_stop")))
+
+    async def _reproject(owner_id):
+        calls.append("reproject")
+        return {"github": "projected", "google": "needs_reconnect"}
+
+    monkeypatch.setattr(mod, "reproject_connections", _reproject)
+
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
+
+    upload_indices = [i for i, c in enumerate(calls) if c.startswith("upload:")]
+    assert max(upload_indices) < calls.index("reproject") < calls.index("session_stop")
+    # Printed, not merely logged: `needs_reconnect` is the operator's whole to-do list.
+    out = capsys.readouterr().out
+    assert f"{OWNER} reproject github=projected" in out
+    assert f"{OWNER} reproject google=needs_reconnect" in out

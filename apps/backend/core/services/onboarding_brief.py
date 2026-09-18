@@ -15,7 +15,6 @@ import logging
 from datetime import datetime, timezone
 from enum import Enum
 
-from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.repositories import messaging_repo
@@ -456,7 +455,6 @@ async def _drain_until_settled(owner_id: str) -> None:
 async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     """One fulfilment pass. May raise; ``_drain_until_settled`` counts that as
     a FAILED attempt exactly like a returned FAILED."""
-    from core.containers import get_workspace
     from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
     from core.services.clerk_admin import get_primary_email
     from core.services.paperclip_admin_client import shared_admin_client
@@ -571,7 +569,6 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             owner_id=owner_id,
         )
         await stage_first_run_files(
-            workspace=get_workspace(),
             owner_id=owner_id,
             friday_agent_id=assigned_agent_id,
             brief_md=render_brief_md(
@@ -695,12 +692,11 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
 
 async def stage_first_run_files(
     *,
-    workspace: Workspace,
     owner_id: str,
     friday_agent_id: str,
     brief_md: str,
 ) -> None:
-    """Write BRIEF.md, unconditionally, wherever this owner's agents actually read.
+    """Write BRIEF.md, unconditionally, into the CEO agent's Hermes profile.
 
     Used to be write-if-missing because its existence WAS the one-shot
     marker for the flow. The generation-fenced ``funnel_state`` claim on the
@@ -710,20 +706,11 @@ async def stage_first_run_files(
     Stopping there would strand the goal and project the caller seeded
     moments earlier.
 
-    On AgentCore the EFS write still SUCCEEDS (``Workspace.write_file`` mkdirs its parents) into
-    a tree no Hermes agent ever reads, so the founder's own description of the company they want
-    run never reached the CEO's first turn while the funnel reported complete (task-14 row 5).
     The profile prefix is that workspace's home — the bridge pulls it down beside ``SOUL.md``/
-    ``AGENTS.md`` — so the same file lands in the same place relative to the agent.
+    ``AGENTS.md`` — so the file lands where the agent reads.
     ``write_profile_file`` raises rather than no-op when ``OWNER_STATE_BUCKET`` is unset, which
     is what keeps this the LAST fallible step the caller's rollback depends on.
     """
-    from core.services import runtime_transport
+    from core.services.hermes_profiles import write_profile_file
 
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        from core.services.hermes_profiles import write_profile_file
-
-        await write_profile_file(owner_id, friday_agent_id, "BRIEF.md", brief_md)
-        return
-    base = f"workspace-{friday_agent_id}"
-    workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
+    await write_profile_file(owner_id, friday_agent_id, "BRIEF.md", brief_md)

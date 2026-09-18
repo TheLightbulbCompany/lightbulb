@@ -35,7 +35,7 @@ from core.services.provision_gate import has_always_on_entitlement
 from core.services.push_service import send_push_to_user
 from core.services import run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
-from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
+from core.services.paperclip_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
 
 logger = logging.getLogger(__name__)

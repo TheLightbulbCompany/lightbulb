@@ -50,10 +50,88 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from core.config import settings
-from core.containers.config import cheap_model_ref, premium_model_ref
 from core.dynamodb import run_in_thread
 
 _BEDROCK = "bedrock"
+_BEDROCK_TRIAL_CHOICE = "bedrock_trial"
+_BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", _BEDROCK_TRIAL_CHOICE)
+
+
+def premium_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
+    """The premium model ref reserved for the CEO agent (Friday), per provider
+    path — or ``None`` when there is no premium tier to reserve.
+
+    The default agent runs on the cheaper standard tier; only the CEO is pinned
+    to the top tier. ``chatgpt_oauth`` returns ``None`` because it's a flat-rate
+    plan — there's no cheaper tier to demote the default to, so the CEO inherits
+    the same model as everyone else.
+
+    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``opus``
+    — also returns ``None``: their IAM role is pinned to the AIPs they actually
+    hold, so pinning Friday to an opus profile they don't own would
+    AccessDeniedException on every one of the CEO's turns. A missing map still
+    raises: that's a provisioning bug, not a one-tier owner.
+
+    Returns ``<provider>/<id>``; ``_strip_provider_prefix`` takes the id half.
+    """
+    if provider_choice in _BEDROCK_PROVIDER_CHOICES:
+        if not aip_arns:
+            raise ValueError(f"{provider_choice} premium_model_ref requires aip_arns")
+        if provider_choice == _BEDROCK_TRIAL_CHOICE or "opus" not in aip_arns:
+            return None
+        return f"amazon-bedrock/{aip_arns['opus']}"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp. The CEO
+            # pin has NO per-agent fallback, so a ref the catalog cannot resolve
+            # does not degrade — it fails every Friday run.
+            return "anthropic/claude-opus-5"
+        if byo_provider == "openai":
+            return "openai/gpt-5.6-sol"
+    return None
+
+
+def cheap_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
+    """The cheapest model ref per provider path, routed to pure-overhead aux
+    operations — or ``None`` when there is no cheaper tier to route to.
+
+    History compaction, memory-flush and the maintenance heartbeat are overhead
+    that doesn't need the premium default model. Routing them to the cheapest
+    tier cuts spend — compaction especially, since it processes the largest
+    contexts.
+
+    ``chatgpt_oauth`` returns ``None``: its agents run on the Codex runtime,
+    which uses native server-side compaction and does NOT honour an
+    OpenClaw-side summarizer override — the aux call fails, compaction never
+    runs, and the turn dies on a context overflow. ``None`` lets aux work
+    inherit the primary, which the OAuth token can actually invoke.
+
+    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``haiku``
+    — returns ``None`` for the reason ``premium_model_ref`` does: the owner's
+    IAM role can only invoke the AIPs they hold.
+
+    Returns ``<provider>/<id>``; ``_strip_provider_prefix`` takes the id half.
+    """
+    if provider_choice in _BEDROCK_PROVIDER_CHOICES:
+        if not aip_arns:
+            raise ValueError(f"{provider_choice} cheap_model_ref requires aip_arns")
+        if provider_choice == _BEDROCK_TRIAL_CHOICE or "haiku" not in aip_arns:
+            return None
+        return f"amazon-bedrock/{aip_arns['haiku']}"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            return "anthropic/claude-haiku-4-5"
+        if byo_provider == "openai":
+            # byo_key openai is the DIRECT OpenAI API (not Codex) — the owner's
+            # key CAN invoke the mini tier as a summarizer.
+            return "openai/gpt-5.4-mini"
+    return None
+
+
 _BEDROCK_CLAUDE_CONTEXT = 200_000  # Claude 4.x on Bedrock
 
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
@@ -145,11 +223,11 @@ SKILLS_DIR_HERMES_BUNDLED = "/opt/hermes/skills"
 SKILLS_EXTERNAL_DIRS = [SKILLS_DIR_LIGHTBULB, SKILLS_DIR_HERMES_BUNDLED]
 
 #: Fix round 1, I4: ONLY the Hermes provider NAME (a namespace this module alone owns — Hermes's
-#: own "openai-api" differs from the openclaw-style "openai" ref prefix ``core.containers.config``
+#: own "openai-api" differs from the "openai" ref prefix ``premium_model_ref``/``cheap_model_ref``
 #: uses) and the "standard" (non-premium, non-cheap) default-tier id, which has no standalone
 #: function anywhere — it only lives inline inside ``build_provider_block``'s ``byo_key`` branch.
 #: The premium/cheap ids themselves are NOT duplicated here any more: they come straight from
-#: ``premium_model_ref``/``cheap_model_ref`` below, the same functions the Bedrock branch already
+#: ``premium_model_ref``/``cheap_model_ref`` above, the same functions the Bedrock branch already
 #: calls — those two have already broken a hardcoded ref across two catalog rotations (see their
 #: own docstrings), and a second local copy is exactly the class of bug that causes.
 _BYO_HERMES_PROVIDER = {"anthropic": ("anthropic", "claude-sonnet-5"), "openai": ("openai-api", "gpt-5.4")}

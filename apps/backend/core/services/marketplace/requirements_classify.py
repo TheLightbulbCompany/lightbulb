@@ -15,7 +15,7 @@ classified against the platform's integration rail:
 
 from __future__ import annotations
 
-from core.containers.config import CHANNEL_PROVIDER_IDS
+from core.constants import CHANNEL_PROVIDER_IDS
 from core.services.marketplace.requirements import Disposition, Requirement
 from core.services.marketplace.requirements_detect import Hit, identify_service
 

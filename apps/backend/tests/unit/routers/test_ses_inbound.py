@@ -17,10 +17,9 @@ missing/GRAY verdict set that is stored but not woken), the sender-identity
 alignment gate on WAKING (an allowlisted `From` backed only by an unaligned
 SPF-passing envelope is stored, not woken; an aligned DKIM signature with no
 DMARC verdict still wakes), the auto-submitted loop guard, the happy path, and the transient-vs-terminal outcome split: an
-unexpected exception, a "error" delivery result, or a "woken" result (an
-asleep container was just cold-started -- 503 so SES's own retry lands after
-it finishes booting) return 503, while "container_not_running" (now: the
-owner was over cap) and every deterministic drop stay 200.
+unexpected exception or an "error" delivery result returns 503, while
+"container_not_running" (the owner was over cap, or has no runtime row) and
+every deterministic drop stay 200.
 
 The 503 branches also ROLL BACK the dedup row they recorded at the top of the
 request, and that is covered here with a real in-memory dedup store across
@@ -682,22 +681,6 @@ def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
     assert resp.json()["status"] == "container_not_running"
 
 
-def test_deliver_woken_returns_503_so_ses_retries_after_cold_start(client, monkeypatch):
-    """`deliver_to_agent` returning "woken" means it just cold-started an
-    asleep, under-cap owner's container -- 503 so the ingest Lambda re-raises
-    and SES's own async retry lands after the Fargate cold start finishes."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="woken"))
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 503
-    assert resp.json()["status"] == "woken"
-
-
 def _real_dedup(monkeypatch):
     """A real (in-memory) dedup store across BOTH seams, so a test can send two
     requests with the same message_id and observe what the second one actually
@@ -721,31 +704,6 @@ def _real_dedup(monkeypatch):
         ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
     )
     return seen
-
-
-def test_woken_rolls_back_dedup_so_the_ses_retry_is_not_swallowed(client, monkeypatch):
-    """THE point of the 503 on "woken": SES re-invokes with the SAME
-    message_id once the container is up. If the dedup row recorded at the top
-    of the first request survives, that retry short-circuits as a `duplicate`,
-    `deliver_to_agent` is never reached, and the mail is dropped for good --
-    with a real Fargate cold start paid for nothing."""
-    _enable(monkeypatch)
-    _real_dedup(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(side_effect=["woken", "delivered"])
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    first = _post(client, _body())
-    assert first.status_code == 503
-    assert first.json()["status"] == "woken"
-
-    # SES's retry: same message_id, container now up.
-    second = _post(client, _body())
-
-    assert second.status_code == 200
-    assert second.json()["status"] == "delivered"
-    assert deliver_mock.await_count == 2
 
 
 def test_deliver_error_rolls_back_dedup_so_the_ses_retry_is_not_swallowed(client, monkeypatch):

@@ -84,6 +84,10 @@ STARTER_ROSTER = (
     ("customer_operations", "Customer Operations", "general", "Customer Operations", "ceo"),
 )
 
+#: The starter roles, in seed order. ``messaging``/``user_provision`` check a company's
+#: ``starter_agent_ids`` against exactly this set.
+STARTER_ROLE_KEYS = tuple(row[0] for row in STARTER_ROSTER)
+
 
 # The onboarding attribute names carried on ``PaperclipCompany`` -- the exact
 # set of ``PaperclipCompany`` fields listed under "Onboarding" in

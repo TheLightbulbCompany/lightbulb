@@ -26,7 +26,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import core.containers as containers_mod
 import core.repositories.paperclip_repo as repo_mod
 import core.services.onboarding_brief as brief_mod
 import core.services.clerk_admin as clerk_mod
@@ -75,14 +74,6 @@ def _owner_row(**overrides):
     return SimpleNamespace(**base)
 
 
-@pytest.fixture(autouse=True)
-def _ecs_owner_by_default(monkeypatch):
-    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
-    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
-    the AgentCore tests override it per test."""
-    monkeypatch.setattr("core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False))
-
-
 @pytest.fixture
 def env(monkeypatch):
     repo = MagicMock()
@@ -106,9 +97,8 @@ def env(monkeypatch):
     monkeypatch.setattr(session_mod, "get_user_session_cookie", AsyncMock(return_value="cookie"))
     monkeypatch.setattr(clerk_mod, "get_primary_email", AsyncMock(return_value="max@acme.com"))
 
-    ws = MagicMock()
-    ws.write_file = MagicMock()
-    monkeypatch.setattr(containers_mod, "get_workspace", lambda: ws)
+    stage = AsyncMock(return_value="BRIEF.md")
+    monkeypatch.setattr("core.services.hermes_profiles.write_profile_file", stage)
 
     repo.record_pending_brief_failure = AsyncMock(return_value=1)
     repo.fail_pending_brief = AsyncMock()
@@ -119,7 +109,7 @@ def env(monkeypatch):
     # that raises mid-drain must not leave an owner poisoned for the next one.
     brief_mod._draining.clear()
 
-    return SimpleNamespace(repo=repo, admin=admin, ws=ws)
+    return SimpleNamespace(repo=repo, admin=admin, stage=stage)
 
 
 # --- Nothing to do -----------------------------------------------------------
@@ -184,7 +174,7 @@ async def test_legacy_targetless_pending_brief_uses_existing_root_ceo(env):
     env.admin.create_project.assert_awaited_once()
     assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == FRIDAY["id"]
     assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == FRIDAY["id"]
-    assert env.ws.write_file.call_args.args[1] == "workspace-friday-uuid/BRIEF.md"
+    assert env.stage.await_args.args[1:3] == ("friday-uuid", "BRIEF.md")
 
 
 async def test_legacy_targetless_pending_without_root_keeps_the_brief(env):
@@ -287,7 +277,7 @@ async def test_goal_and_project_use_captured_dispatch_target_not_starter_ceo(env
     env.admin.create_project.assert_awaited_once()
     assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == specialist["id"]
     assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == specialist["id"]
-    assert env.ws.write_file.call_args.args[1] == "workspace-engineering-uuid/BRIEF.md"
+    assert env.stage.await_args.args[1:3] == ("engineering-uuid", "BRIEF.md")
 
 
 async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic_dispatch(env):
@@ -311,10 +301,10 @@ async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic
         project_id="proj-1",
         owner_id="user_abc",
     )
-    brief_call = env.ws.write_file.call_args_list[0]
-    assert brief_call.args[0] == "user_abc"  # owner id -- the workspace path
-    assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
-    assert "acme.com" in brief_call.args[2]
+    brief_call = env.stage.await_args_list[0]
+    assert brief_call.args[0] == "user_abc"  # owner id -- the profile prefix
+    assert brief_call.args[1:3] == ("friday-uuid", "BRIEF.md")
+    assert "acme.com" in brief_call.args[3]
     env.repo.complete_funnel_submission.assert_awaited_once_with(
         "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
     )
@@ -449,7 +439,7 @@ async def test_seed_failure_reverts_the_claim_and_keeps_the_brief(env):
     env.repo.revert_funnel_submission.assert_awaited_with(
         "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
     )
-    env.ws.write_file.assert_not_called()
+    env.stage.assert_not_awaited()
     env.repo.delete_pending_brief.assert_not_awaited()
 
 

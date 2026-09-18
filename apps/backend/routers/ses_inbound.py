@@ -32,15 +32,13 @@ that.
 
 TRANSIENT failures return 503 so SES/the Lambda's own (bounded) retry policy
 gets a chance to succeed later: a ``deliver_to_agent`` outcome of ``"error"``
-(e.g. a delivery error talking to a running container) or ``"woken"`` (an
-under-cap owner's scaled-to-zero container was just started — the 503 is
-what makes the Lambda re-raise so SES's own async retry, ~1 minute later,
-lands after the Fargate cold start finishes and delivery actually happens),
+(a delivery error talking to the runtime; the invoke itself holds through a
+cold microVM start, so a parked workspace is not a transient failure),
 and the top-level catch-all for an unexpected exception (e.g. a DynamoDB
 blip). Dedup is keyed on ``message_id`` and recorded BEFORE delivery is
 attempted, so a retry that later succeeds cannot double-deliver — the second
 attempt short-circuits at the ``duplicate`` check. EVERY 503 return
-(``woken``, ``error``, the catch-all) ROLLS THAT DEDUP ROW BACK first
+(``error``, the catch-all) ROLLS THAT DEDUP ROW BACK first
 (``_rollback_dedup``): a dedup record must never outlive a request we are
 explicitly asking SES to retry, or the retry short-circuits as a
 ``duplicate``, the mail is dropped for good, and the Fargate cold start the
@@ -91,7 +89,7 @@ router = APIRouter()
 # The outcomes worth counting individually. Everything else — every
 # deterministic drop, plus the transient `error` — collapses to `dropped` so
 # the dimension stays bounded.
-_METRIC_RESULTS = ("delivered", "woken", "capped_notified", "stored_not_woken")
+_METRIC_RESULTS = ("delivered", "capped_notified", "stored_not_woken")
 
 
 def _final(status: str, *, code: int = 200):
@@ -322,16 +320,6 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             # message-id) keeps the old per-message throwaway session.
             session_key=thread_session_key(body.headers),
         )
-        if result == "woken":
-            # deliver_to_agent just started an asleep, under-cap owner's
-            # container -- signal transient so the ingest Lambda re-raises and
-            # its async SES invocation is retried once the container is up.
-            # See the module docstring: delivery completes on that retry, not
-            # in this request -- which is exactly why the dedup row has to go
-            # first, or that retry never gets past the duplicate check and the
-            # cold start we just paid for is wasted.
-            await _rollback_dedup(body.message_id)
-            return _final(result, code=503)
         if result == "error":
             # Transient delivery failure (e.g. a running container's RPC
             # errored) — 503 so SES/the Lambda retries. `container_not_running`

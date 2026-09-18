@@ -955,6 +955,7 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         secrets.update(sync.cli_credential_env(agent_id))
         secrets.update(overlay or {})
         _declare_child_env_names(secrets)
+        _allow_child_env_names(secrets)
         token = set_secret_scope(secrets)
         try:
             yield
@@ -981,13 +982,41 @@ def _declare_child_env_names(secrets: dict) -> None:
 
     An EXISTING value is never overwritten -- ``AWS_BEARER_TOKEN_BEDROCK`` and friends are
     genuinely process-wide, and blanking one would break the very turn this is preparing.
-
-    Seeds the bridge's whole fixed contract, not just this turn's scope keys, for the same
-    reason ``sync.profile_child_env_names`` unions it: whichever turn runs first must not leave
-    a later turn's names invisible to the filter.
     """
-    for name in {*sync.BRIDGE_CHILD_ENV_NAMES, *secrets}:
+    for name in secrets:
         os.environ.setdefault(name, "")
+
+
+def _allow_child_env_names(secrets: dict) -> None:
+    """Allow this turn's names through Hermes's child-env secret filter.
+
+    ``tools/env_passthrough.register_env_passthrough`` is Hermes's own API for exactly this and
+    is **ContextVar-scoped, per session** -- ``is_env_passthrough`` consults it FIRST
+    (``env_passthrough.py:117``) and it is not cached. The `terminal.env_passthrough` key in
+    `config.yaml` is the other door, and that one IS cached per Hermes home for the process
+    lifetime with no invalidation, which is why the bridge used to carry a FIXED name contract
+    and rewrite `config.yaml` every turn: whichever turn ran a shell command first froze the
+    list, and a room turn's scope holds only the static `.env`, so a later native turn received
+    the five per-turn identity names as empty strings. Registering per turn has no such
+    ordering problem, so the contract, the union helper and the per-turn `config.yaml` rewrite
+    are all gone.
+
+    Not cleared afterwards: a turn runs on its own thread, so it has its own ContextVar
+    context. Even if a context were shared, only NAMES are registered -- the VALUE resolves
+    through the per-profile secret scope (``resolve_passthrough_value``), which IS reset on
+    exit, so a name left behind resolves to that profile's value or to nothing. Same property
+    ``_declare_child_env_names``'s placeholders already rely on.
+
+    Hermes refuses to register its own provider credentials (GHSA-rhgp-j443-p4rf); the
+    `config.yaml` door applied the identical filter, so nothing changes there.
+
+    No-ops outside the Hermes image, same convention as the scopes above.
+    """
+    try:
+        from tools.env_passthrough import register_env_passthrough
+    except ImportError:
+        return
+    register_env_passthrough(secrets.keys())
 
 
 def _terminal_scope(agent_id: str):
@@ -999,10 +1028,10 @@ def _terminal_scope(agent_id: str):
     (``tools/terminal_scope.py:137``, verified in ``lightbulb/hermes-spike:m1-rc4``), so
     ``TERMINAL_CWD`` and ``TERMINAL_HOME_MODE`` ride and anything else is silently dropped.
     Per-profile credentials, CLI config paths and run identity reach a child through
-    ``terminal.env_passthrough`` + the secret scope instead — see ``sync.BRIDGE_CHILD_ENV_NAMES``,
-    ``sync.cli_credential_env``, ``sync.profile_child_env_names`` and
-    ``_declare_child_env_names``. ``TERMINAL_HOME_MODE`` sets a usable ``$HOME``; it does not
-    make ``$HOME`` per-profile (see the comment on the call below).
+    Hermes's own per-session env passthrough + the secret scope instead — see
+    ``sync.cli_credential_env``, ``_allow_child_env_names`` and ``_declare_child_env_names``.
+    ``TERMINAL_HOME_MODE`` sets a usable ``$HOME``; it does not make ``$HOME`` per-profile
+    (see the comment on the call below).
     """
     from contextlib import contextmanager
 
@@ -1233,7 +1262,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # so this identity has to reach a SHELL, not just config.yaml's `${VAR}` resolver. Putting
     # it in the secret scope IS the mechanism: `_declare_child_env_names` makes the names
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
-    # `terminal.env_passthrough`, and Hermes resolves each value back out of this same scope.
+    # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
+    # same scope.
     with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id):
         agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
         attach_agent(run_id, agent)

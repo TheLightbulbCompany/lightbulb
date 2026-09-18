@@ -818,40 +818,14 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
             "bedrock": {"discovery": {"enabled": False}}}
 
 
-#: Every name the BRIDGE itself can ever supply to a child, whether or not this turn has a
-#: value for it. It has to be a FIXED CONTRACT rather than a read of the live scope, because
-#: Hermes caches the config list per home for the PROCESS LIFETIME with no invalidation
-#: (``tools/env_passthrough.py::_load_config_passthrough`` stores ``_config_passthrough
-#: [home_key]`` on first read). One warm microVM serves room turns AND Paperclip runs, and
-#: rooms are the front door — so the first turn to run a shell command is usually a ROOM turn,
-#: whose scope holds only the static ``.env``. A list derived from that scope froze without the
-#: five per-turn identity names, and the later native turn then received them as EMPTY strings
-#: even though its own ``config.yaml`` listed them correctly (reproduced in the pinned image).
-#:
-#: Only NAMES belong here; values stay per-turn in the secret scope, and a name with no value
-#: this turn simply resolves to nothing. These six are already a published contract with the
-#: bundled paperclip skill (``skills/paperclip/SKILL.md``), which reads exactly these.
-#: A sibling lane adding child-visible names (e.g. CLI path vars) APPENDS to this tuple.
-BRIDGE_CHILD_ENV_NAMES: tuple[str, ...] = (
-    "PAPERCLIP_API_KEY",
-    "PAPERCLIP_API_URL",
-    "PAPERCLIP_AGENT_ID",
-    "PAPERCLIP_COMPANY_ID",
-    "PAPERCLIP_RUN_ID",
-    "PAPERCLIP_TASK_ID",
-    # The CLI-connector lane (backend credentials/hermes_cli.py). Each names an ABSOLUTE
-    # per-profile path, because $HOME cannot be relied on to be this profile's -- see
-    # cli_credential_env below for the measurement that forced that.
-    "AWS_CONFIG_FILE",
-    "AWS_SHARED_CREDENTIALS_FILE",
-    "GH_CONFIG_DIR",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    # gog's file keyring is a password-derived JWE blob and the password has no file to live
-    # in; on ECS the same two arrive as task-def secrets.
-    "GOG_KEYRING_PASSWORD",
-    "GOG_KEYRING_BACKEND",
-)
+#: The only names the backend's CLI-connector lane writes into a profile's ``cli-env.json``
+#: (``credentials/hermes_cli._shell_env``). It is an allowlist on a file that lives inside the
+#: profile dir, which ``terminal.backend: local`` also lets the AGENT write -- so an unfiltered
+#: read would let a turn inject any name it liked into its own secret scope and passthrough.
+#: gog is the only member: its file keyring is a password-derived JWE blob and the container's
+#: gog must decrypt it with the SAME shared password the backend encrypted it with (on ECS the
+#: same two arrive as task-def secrets).
+CLI_ENV_FILE_NAMES: tuple[str, ...] = ("GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND")
 
 
 def cli_credential_env(agent_id: str) -> dict[str, str]:
@@ -899,44 +873,8 @@ def cli_credential_env(agent_id: str) -> dict[str, str]:
         raw = json.loads((_profile_dir(agent_id) / CLI_ENV_FILE).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 -- absent (no gog connected) or unreadable: not a turn failure
         return env
-    env.update({str(k): str(v) for k, v in raw.items() if k in BRIDGE_CHILD_ENV_NAMES})
+    env.update({str(k): str(v) for k, v in raw.items() if k in CLI_ENV_FILE_NAMES})
     return env
-
-
-def profile_child_env_names() -> list[str]:
-    """The names this profile's SANDBOXED CHILDREN (terminal, execute_code) may see.
-
-    The bridge's fixed contract (``BRIDGE_CHILD_ENV_NAMES``) UNION the profile's active secret
-    scope — its own ``.env`` merged with whatever the bridge supplies for this turn. The union
-    is what makes the list stable across turns (see the constant's note: Hermes caches it once
-    per process) while still carrying owner-provisioned names the bridge cannot know ahead of
-    time, such as ``env_vars`` and translated MCP secrets.
-
-    This is the list Hermes's ``terminal.env_passthrough`` wants. Its child envs strip
-    secrets by default (``tools/environments/local.py::_filter_secret_env``) and consult
-    this allowlist for the exceptions, resolving each name's VALUE back through the profile
-    secret scope (``tools/env_passthrough.py::resolve_passthrough_value``) rather than the
-    process env — so listing a name here grants that profile's child its OWN value and
-    never another profile's.
-
-    Outside the Hermes image (no ``agent.secret_scope``), or with no scope installed, this is
-    the contract alone — never nothing, because an empty first read is exactly what gets cached
-    for the life of the process.
-    """
-    names = set(BRIDGE_CHILD_ENV_NAMES)
-    try:
-        from agent.secret_scope import current_secret_scope
-    except ImportError:  # dev/test environments outside the Hermes image
-        return sorted(names)
-    return sorted(names | set(current_secret_scope() or {}))
-
-
-def env_passthrough_pin(existing: dict, names: list[str]) -> dict:
-    """UNION ``terminal.env_passthrough``, for the same reason ``plugins_pin`` unions
-    ``plugins.enabled``: ``deep_merge`` replaces lists wholesale, so an operator- or
-    agent-added name would be dropped by a plain merge."""
-    current = ((existing.get("terminal") or {}).get("env_passthrough")) or []
-    return {"terminal": {"env_passthrough": list(dict.fromkeys([*current, *names]))}}
 
 
 LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
@@ -1013,10 +951,6 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     existing = normalize_legacy_terminal_backend(agent_id)
     config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
-    # Same merge direction and reason as plugins_pin: a UNION that must win over `existing`.
-    # This runs INSIDE the turn's secret scope (see _construct_agent's caller), which is what
-    # makes profile_child_env_names() see this profile's env rather than another's.
-    config = deep_merge(config, env_passthrough_pin(existing, profile_child_env_names()))
     write_profile_config(agent_id, config)
     return config
 

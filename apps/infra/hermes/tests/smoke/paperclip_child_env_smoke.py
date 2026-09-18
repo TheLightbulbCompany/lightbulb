@@ -5,8 +5,11 @@ pinned image: the mechanism is Hermes's, and a mock of it proves nothing. Two ea
 attempts at this leg passed their unit tests and delivered nothing -- first because
 ``install_profile_terminal_scope``'s ``env_overlay`` keeps only ``TERMINAL_*`` keys
 (``tools/terminal_scope.py:137``), then because ``tools/env_passthrough.py`` caches the
-config list per home FOR THE PROCESS LIFETIME, so whichever turn ran a shell command first
-froze it. Run it from ``apps/infra/hermes``:
+**config.yaml** list per home FOR THE PROCESS LIFETIME, so whichever turn ran a shell command
+first froze it. The bridge now registers names through that module's own ContextVar-scoped
+``register_env_passthrough`` instead, which ``is_env_passthrough`` consults FIRST and never
+caches -- so this smoke is the proof that the per-session door actually delivers. Run it from
+``apps/infra/hermes``:
 
     docker run --rm --network none \
       -v "$PWD/bridge:/opt/bridge/bridge:ro" \
@@ -59,7 +62,8 @@ with tempfile.TemporaryDirectory() as temp:
         root.mkdir(parents=True)
         (root / "config.yaml").write_text("terminal:\n  backend: local\n")
         # The per-profile env dict. It carries the STATIC secret only -- the run identity is
-        # per-turn, which is exactly why the NAME list cannot be derived from it alone.
+        # per-turn, and a room turn's scope holds only this, which is what froze the old
+        # config.yaml list under room-first ordering.
         (root / ".env").write_text(f"PAPERCLIP_API_KEY=key-{profile}\nUNRELATED=nope-{profile}\n")
 
     def identity(profile):
@@ -91,8 +95,9 @@ with tempfile.TemporaryDirectory() as temp:
     label = {"value": ""}
 
     def construct(agent_id, body, frames, session_key):
-        # Keep the REAL pin_profile_defaults on the path -- it is what writes
-        # terminal.env_passthrough -- then hand back a stub agent instead of a model call.
+        # Keep the REAL pin_profile_defaults on the path (it is what the turn runs) -- then
+        # hand back a stub agent instead of a model call. The passthrough registration itself
+        # happens in turn._secret_scope, which wraps this call, so it is on the path either way.
         sync.pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or turn.MODEL)
         return Agent(label["value"])
 
@@ -137,9 +142,12 @@ with tempfile.TemporaryDirectory() as temp:
         assert seen_by_label[profile] == expected(profile), (
             f"{profile}: got {seen_by_label[profile]}\n   want {expected(profile)}"
         )
+        # The names must NOT have been written into config.yaml: that door is cached per home
+        # for the process lifetime, which is the freeze this smoke caught. The bridge registers
+        # them per session through `tools.env_passthrough.register_env_passthrough` instead --
+        # and the real assertion is the one above, that the child actually received the values.
         cfg = sync.read_profile_config(profile)
-        listed = (cfg.get("terminal") or {}).get("env_passthrough") or []
-        assert set(NAMES) <= set(listed), f"{profile}: config.yaml passthrough is {listed}"
+        assert "env_passthrough" not in (cfg.get("terminal") or {}), cfg.get("terminal")
 
     # The room turn must not see another turn's identity, and must not be handed the static
     # key of a different profile.

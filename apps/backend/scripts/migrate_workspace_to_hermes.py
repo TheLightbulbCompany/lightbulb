@@ -162,6 +162,30 @@ _SOUL_FILE = "SOUL.md"
 #: NOT here -- they go through ``build_memory_files`` (Ruling M6-R47) instead of a verbatim copy.
 _CARRY_TOP_LEVEL_FILES = ("AGENTS.md",)
 _CARRY_DIRS = ("skills",)
+#: Reproducible dependency/build/cache directories, refused AT THE SOURCE. A skill that vendors
+#: ``node_modules/`` or ships a built ``dist/`` would otherwise be uploaded file-by-file into the
+#: profile prefix and re-downloaded on every cold start for the life of the workspace -- the
+#: bridge's ``save_profile`` refuses the same names (``bridge/sync.py``'s
+#: ``_REPRODUCIBLE_DIRS``), but nothing the MIGRATION writes goes through it. Duplicated rather
+#: than imported: the bridge ships inside the Hermes image and is not importable from here.
+_SKIP_CARRY_DIR_NAMES = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".next",
+        "dist",
+        "build",
+        "target",
+        "coverage",
+        ".turbo",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+    }
+)
 
 
 def _s3_client():
@@ -219,7 +243,7 @@ def _collect_carry_files(agent_dir: Path) -> dict[str, Path | bytes]:
         if not base.is_dir():
             continue
         for f in base.rglob("*"):
-            if f.is_file():
+            if f.is_file() and _SKIP_CARRY_DIR_NAMES.isdisjoint(f.relative_to(base).parts[:-1]):
                 out[str(f.relative_to(agent_dir))] = f
     out.update(build_memory_files(agent_dir))
     return out

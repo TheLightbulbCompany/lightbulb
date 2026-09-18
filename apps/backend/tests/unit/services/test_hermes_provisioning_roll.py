@@ -3,7 +3,7 @@ session; no-op when current; dry-run touches nothing; refuses non-AgentCore rows
 
 import pytest
 
-from core.services import hermes_provisioning
+from core.services import container_rpc, hermes_provisioning
 
 IMAGE = "acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-new"
 ROW = {"owner_id": "org_a", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:rt", "status": "running"}
@@ -32,6 +32,16 @@ def _wire(monkeypatch, *, current_image, row=ROW):
     )
     monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: calls.append(("ready", arn)))
     monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", lambda arn, sid: calls.append(("stop", arn, sid)))
+
+    # The busy probe is part of the sequence now (Hazard 2). Stubbed here so these tests never
+    # traverse the real container_rpc -> runtime_transport stack and attempt an outbound call;
+    # the busy BEHAVIOUR is asserted in test_hermes_provisioning_roll_busy.py, where it is the
+    # subject. An idle answer keeps every assertion below about update/ready/stop.
+    async def _health(owner_id, method, params=None, **kwargs):
+        calls.append(("health", owner_id))
+        return {"busy": 0}
+
+    monkeypatch.setattr(container_rpc, "call", _health)
     return calls
 
 
@@ -39,9 +49,9 @@ def _wire(monkeypatch, *, current_image, row=ROW):
 async def test_roll_updates_waits_and_stops_the_session_on_drift(monkeypatch):
     calls = _wire(monkeypatch, current_image="acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-old")
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["update", "ready", "health", "stop"]
     assert calls[0] == ("update", "arn:rt", {"req": "org_a"})
-    assert calls[2][1] == "arn:rt" and calls[2][2].startswith("lb-org_a-")
+    assert calls[3][1] == "arn:rt" and calls[3][2].startswith("lb-org_a-")
 
 
 @pytest.mark.asyncio
@@ -55,7 +65,7 @@ async def test_roll_is_a_noop_when_the_runtime_is_already_on_the_image(monkeypat
 async def test_roll_dry_run_reports_without_touching_the_runtime(monkeypatch):
     calls = _wire(monkeypatch, current_image="x:old")
     assert await hermes_provisioning.roll_runtime_image("org_a", dry_run=True) == "would-update"
-    assert calls == []
+    assert calls == []  # no update, no stop -- and no busy probe, which invokes the runtime
 
 
 @pytest.mark.asyncio
@@ -67,7 +77,7 @@ async def test_roll_tolerates_no_warm_session(monkeypatch):
 
     monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _no_session)
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready"]
+    assert [c[0] for c in calls] == ["update", "ready", "health"]
 
 
 @pytest.mark.asyncio

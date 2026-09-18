@@ -984,22 +984,15 @@ class TestAccountResendVerification:
 class TestConfigPatch:
     """PATCH /api/v1/admin/users/{user_id}/config body: {patch}.
 
-    Wraps the existing core.services.config_patcher.patch_openclaw_config.
+    Fans the patch out to every roster profile via ``config_patch_roster``.
     Patch body field ('patch') must be REDACTED in the audit row — config
     patches frequently contain BYOK/api keys and other secrets.
     """
 
-    @pytest.fixture(autouse=True)
-    def _ecs_owner_by_default(self):
-        """This door asks ``is_agentcore_owner(fail_closed=True)``, which raises rather than
-        guessing when the container read fails -- and there is no DynamoDB here."""
-        with patch("routers.admin.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
-            yield
-
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
         with patch(
-            "routers.admin.patch_openclaw_config",
+            "routers.admin.config_patch_roster",
             new=AsyncMock(return_value=None),
         ) as mock_patch:
             res = await async_client.patch(
@@ -1024,7 +1017,7 @@ class TestConfigPatch:
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
         with patch(
-            "routers.admin.patch_openclaw_config",
+            "routers.admin.config_patch_roster",
             new=AsyncMock(return_value=None),
         ):
             res = await async_client.patch(
@@ -1039,7 +1032,7 @@ class TestConfigPatch:
         """The decorator's redact_paths=['patch'] hides the patch contents from
         the audit row — config patches commonly contain BYOK keys / secrets."""
         with patch(
-            "routers.admin.patch_openclaw_config",
+            "routers.admin.config_patch_roster",
             new=AsyncMock(return_value=None),
         ):
             res = await async_client.patch(

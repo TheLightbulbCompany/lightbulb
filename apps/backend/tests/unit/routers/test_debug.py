@@ -39,7 +39,6 @@ class TestDebugEnvironmentAllowlist:
             ("post", "/api/v1/debug/provision", None),
             # Inline call-sites, one per endpoint metric label
             ("delete", "/api/v1/debug/user-data", None),
-            ("get", "/api/v1/debug/efs-exists", {"path": "/mnt/efs/users/org_test_456"}),
             ("get", "/api/v1/debug/ddb-rows", {"owner_id": "org_test_456"}),
         ],
     )
@@ -48,24 +47,6 @@ class TestDebugEnvironmentAllowlist:
             mock_settings.ENVIRONMENT = "staging"
             res = await getattr(async_client, method)(path, params=params)
         assert res.status_code == 403, f"{method.upper()} {path} served in staging"
-
-    @pytest.mark.asyncio
-    async def test_dev_still_reaches_the_handler(self, async_client, tmp_path, monkeypatch):
-        """Sanity check on the other side of the allowlist: dev is unaffected."""
-        from core.containers import get_workspace
-
-        ws = get_workspace()
-        monkeypatch.setattr(ws, "_mount", tmp_path)
-        (tmp_path / "org_test_456").mkdir()
-
-        with patch("routers.debug.settings") as mock_settings:
-            mock_settings.ENVIRONMENT = "dev"
-            res = await async_client.get(
-                "/api/v1/debug/efs-exists",
-                params={"path": str(tmp_path / "org_test_456")},
-            )
-        assert res.status_code == 200
-        assert res.json() == {"exists": True}
 
 
 class TestDeleteUserData:
@@ -104,10 +85,8 @@ class TestDeleteUserData:
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.get_workspace")
     async def test_full_teardown_returns_summary(
         self,
-        mock_workspace,
         mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
@@ -142,16 +121,11 @@ class TestDeleteUserData:
         ecs_mgr._deregister_task_definition = MagicMock()
         mock_ecs_mgr.return_value = ecs_mgr
 
-        ws = MagicMock()
-        ws.delete_user_dir = MagicMock()
-        mock_workspace.return_value = ws
-
         res = await async_client.delete("/api/v1/debug/user-data")
 
         assert res.status_code == 200
         body = res.json()
-        assert body["deleted"]["ecs"] is True
-        assert body["deleted"]["efs"] is True
+        assert body["deleted"]["runtime"] is True
         assert "users" in body["deleted"]["ddb"]
         assert "containers" in body["deleted"]["ddb"]
         assert "billing-accounts" in body["deleted"]["ddb"]
@@ -174,8 +148,7 @@ class TestDeleteUserData:
         # brief.
         assert "paperclip-companies:pending-brief" in body["deleted"]["ddb"]
 
-        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456")
-        ws.delete_user_dir.assert_called_once_with("org_test_456")
+        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456", delete_hermes_profiles=True)
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
         mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("org_test_456")
@@ -190,14 +163,12 @@ class TestDeleteUserData:
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.get_workspace")
     @patch("routers.debug.integration_secret_store")
     @patch("routers.debug.integrations_repo")
     async def test_wipe_skips_secret_delete_for_hash_namespaced_rows(
         self,
         mock_integrations_repo,
         mock_secret_store,
-        mock_workspace,
         mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
@@ -236,10 +207,6 @@ class TestDeleteUserData:
         ecs_mgr = MagicMock()
         ecs_mgr.delete_user_service = AsyncMock()
         mock_ecs_mgr.return_value = ecs_mgr
-        ws = MagicMock()
-        ws.delete_user_dir = MagicMock()
-        mock_workspace.return_value = ws
-
         with patch("core.services.key_service.KeyService") as key_service_cls:
             key_service_cls.return_value.delete_key = AsyncMock(return_value=True)
             res = await async_client.delete("/api/v1/debug/user-data")
@@ -269,10 +236,8 @@ class TestDeleteUserData:
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.get_workspace")
     async def test_org_context_uses_user_id_for_user_scoped_tables(
         self,
-        mock_workspace,
         mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
@@ -302,9 +267,6 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
         mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
-        ws = MagicMock()
-        ws.delete_user_dir = MagicMock()
-        mock_workspace.return_value = ws
         ecs_mgr = MagicMock()
         ecs_mgr.delete_user_service = AsyncMock()
         mock_ecs_mgr.return_value = ecs_mgr
@@ -338,10 +300,8 @@ class TestDeleteUserData:
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.get_workspace")
     async def test_returns_500_when_destructive_step_fails(
         self,
-        mock_workspace,
         mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
@@ -378,10 +338,6 @@ class TestDeleteUserData:
         ecs_mgr._deregister_task_definition = MagicMock()
         mock_ecs_mgr.return_value = ecs_mgr
 
-        ws = MagicMock()
-        ws.delete_user_dir = MagicMock()
-        mock_workspace.return_value = ws
-
         res = await async_client.delete("/api/v1/debug/user-data")
 
         assert res.status_code == 500
@@ -395,7 +351,7 @@ class TestDeleteUserData:
         assert "containers" not in body["deleted"]["ddb"]
         # The failure list surfaces the ECS error so the caller knows what leaked.
         assert any("ecs" in f.lower() for f in body["failures"])
-        assert body["deleted"]["ecs"] is False  # ECS step did NOT complete
+        assert body["deleted"]["runtime"] is False  # the teardown step did NOT complete
 
     @pytest.mark.asyncio
     @patch("routers.debug.PaperclipRepo")
@@ -407,10 +363,8 @@ class TestDeleteUserData:
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.get_workspace")
-    async def test_attempts_ecs_teardown_when_ddb_row_already_gone(
+    async def test_attempts_runtime_teardown_when_ddb_row_already_gone(
         self,
-        mock_workspace,
         mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
@@ -422,11 +376,10 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls,
         async_client,
     ):
-        """Regression: a previous partial run that failed at ECS but
-        succeeded at the DDB sweep would leave the row gone but the ECS
-        service orphaned. The next retry must still attempt ECS teardown
-        (service name is derived from owner_id alone) instead of skipping
-        it because `container is None`."""
+        """Regression: a previous partial run that failed at teardown but succeeded at
+        the DDB sweep would leave the row gone and the runtime orphaned. The next retry
+        must still attempt teardown (everything is derived from owner_id alone) instead
+        of skipping it because `container is None`."""
         # No container row — simulates the partial-cleanup state.
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
@@ -446,16 +399,12 @@ class TestDeleteUserData:
         ecs_mgr.delete_user_service = AsyncMock()
         mock_ecs_mgr.return_value = ecs_mgr
 
-        ws = MagicMock()
-        ws.delete_user_dir = MagicMock()
-        mock_workspace.return_value = ws
-
         res = await async_client.delete("/api/v1/debug/user-data")
 
         assert res.status_code == 200
-        # Critical: ECS teardown WAS attempted despite no container row.
-        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456")
-        assert res.json()["deleted"]["ecs"] is True
+        # Critical: teardown WAS attempted despite no container row.
+        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456", delete_hermes_profiles=True)
+        assert res.json()["deleted"]["runtime"] is True
 
     @pytest.mark.asyncio
     async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
@@ -472,93 +421,6 @@ class TestDeleteUserData:
             app.dependency_overrides.clear()
 
         assert res.status_code == 403
-
-
-class TestEfsExists:
-    """Test GET /api/v1/debug/efs-exists — read-only EFS path probe."""
-
-    @pytest.mark.asyncio
-    async def test_efs_exists_true_for_present_path(self, async_client, tmp_path, monkeypatch):
-        from core.containers import get_workspace
-
-        ws = get_workspace()
-        # Point the workspace mount at a temp dir we control. Path layout:
-        # `<mount>/<owner_id>/...` (matches workspace.user_path in prod).
-        monkeypatch.setattr(ws, "_mount", tmp_path)
-        owner_dir = tmp_path / "org_test_456"
-        owner_dir.mkdir()
-        (owner_dir / "agents").mkdir()
-
-        res = await async_client.get(
-            "/api/v1/debug/efs-exists",
-            params={"path": str(owner_dir / "agents")},
-        )
-        assert res.status_code == 200
-        assert res.json() == {"exists": True}
-
-    @pytest.mark.asyncio
-    async def test_efs_exists_false_for_absent_path(self, async_client, tmp_path, monkeypatch):
-        from core.containers import get_workspace
-
-        ws = get_workspace()
-        monkeypatch.setattr(ws, "_mount", tmp_path)
-        # owner_root must exist for path.resolve() to succeed.
-        (tmp_path / "org_test_456").mkdir()
-        res = await async_client.get(
-            "/api/v1/debug/efs-exists",
-            params={"path": str(tmp_path / "org_test_456" / "nope")},
-        )
-        assert res.status_code == 200
-        assert res.json() == {"exists": False}
-
-    @pytest.mark.asyncio
-    async def test_efs_exists_rejects_path_outside_users_dir(self, async_client):
-        """Server-side guard: path must be inside the caller's owner_root."""
-        res = await async_client.get(
-            "/api/v1/debug/efs-exists",
-            params={"path": "/etc/passwd"},
-        )
-        assert res.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_efs_exists_rejects_other_owners_workspace(self, async_client, tmp_path, monkeypatch):
-        """Caller cannot probe another owner's workspace. Even though the
-        requested path is under the shared mount root, it belongs to a
-        different owner_id so the endpoint must 400."""
-        from core.containers import get_workspace
-
-        ws = get_workspace()
-        monkeypatch.setattr(ws, "_mount", tmp_path)
-        (tmp_path / "user_test_123").mkdir()  # caller's own dir
-        other_owner_dir = tmp_path / "user_someone_else"
-        other_owner_dir.mkdir()
-        (other_owner_dir / "secret").touch()
-
-        res = await async_client.get(
-            "/api/v1/debug/efs-exists",
-            params={"path": str(other_owner_dir / "secret")},
-        )
-        assert res.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_efs_exists_rejects_traversal_under_owner_prefix(self, async_client, tmp_path, monkeypatch):
-        """Path traversal must be canonicalized — `<owner_root>/../<other>`
-        passes a naive string-prefix check but resolves outside the
-        owner_root."""
-        from core.containers import get_workspace
-
-        ws = get_workspace()
-        monkeypatch.setattr(ws, "_mount", tmp_path)
-        owner_dir = tmp_path / "user_test_123"
-        owner_dir.mkdir()
-        (tmp_path / "user_someone_else").mkdir()  # traversal target
-
-        traversal = f"{owner_dir}/../user_someone_else"
-        res = await async_client.get(
-            "/api/v1/debug/efs-exists",
-            params={"path": traversal},
-        )
-        assert res.status_code == 400
 
 
 class TestDdbRows:
@@ -758,151 +620,6 @@ class TestDdbRows:
             app.dependency_overrides.clear()
         assert res.status_code == 403
 
-
-class TestDeleteThenPostReprovision:
-    """The DELETE-then-POST reprovision CLAUDE.md documents, tested as the state
-    transition it actually is.
-
-    DELETE does not merely drop the containers row: delete_user_service's
-    teardown seam (reap_owner_bedrock_resources) destroys the owner's AIPs,
-    gate-token rows and per-owner IAM role, because that row was the only handle
-    naming them. The POST used to hand-roll create_user_service ->
-    write_user_configs -> start_user_service and thread ``bedrock_aip_arns`` off
-    the row, so after a DELETE it had none and build_provider_block fail-closed
-    ("bedrock_claude requires aip_arns with at least a 'sonnet' key") — a 500
-    that left the owner with no container and no documented way back.
-
-    Carrying the ARNs across the DELETE is not the fix either: they name deleted
-    profiles. The POST has to RE-MINT, which is why it goes through
-    provision_user_container.
-
-    THE TRAP that re-mint has to dodge: ensure_owner_aips stamps a ``plan`` onto
-    the reverse-index rows the meter Lambda reads to arm the $3/day trial cap —
-    "paid" for the default three-tier mint, "trial" for the sonnet-only one. The
-    tier set follows provider_choice, so RESOLVING provider_choice from billing
-    instead of hardcoding "bedrock_claude" is what leaves a trial owner's plan
-    exactly where it was.
-    """
-
-    @pytest.fixture
-    def container_rows(self):
-        """One containers row, in a box the DELETE can actually empty — the whole
-        defect lives in what the POST sees afterwards."""
-        return {
-            "row": {
-                "owner_id": "user_test_123",
-                "status": "running",
-                "service_name": "openclaw-user_test_123-abc",
-                "gateway_token": "gw-tok",
-                "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"},
-            }
-        }
-
-    @pytest.fixture
-    def fake_container_repo(self, container_rows):
-        repo = MagicMock()
-        repo.get_by_owner_id = AsyncMock(side_effect=lambda *_a, **_k: container_rows["row"])
-        return repo
-
-    @pytest.fixture
-    def fake_ecs(self, container_rows):
-        mgr = MagicMock()
-
-        async def _delete(owner_id):
-            # Stands in for the real teardown: the row goes, and with it the
-            # AIPs / gate-token rows / IAM role the reap destroys.
-            container_rows["row"] = None
-
-        mgr.delete_user_service = AsyncMock(side_effect=_delete)
-        mgr.provision_user_container = AsyncMock(return_value="openclaw-user_test_123-new")
-        # Stubbed so a regression back to the hand-rolled provision is caught by
-        # the assertions below rather than by an AttributeError.
-        mgr.create_user_service = AsyncMock(return_value="openclaw-user_test_123-new")
-        mgr.write_user_configs = AsyncMock()
-        mgr.start_user_service = AsyncMock()
-        return mgr
-
-    @pytest.mark.asyncio
-    async def test_delete_then_post_reprovisions_a_bedrock_owner(
-        self, container_rows, fake_container_repo, fake_ecs, async_client
-    ):
-        """DELETE itself now 409s for ANY existing row -- `host_for` is pinned to
-        "agentcore" fleet-wide, so `container_repo`'s row (ECS-shaped or not) is always
-        treated as an AgentCore one, and TestAgentCoreDebugRoutes covers that 409 directly.
-        What this test still guards is the re-mint trap in the POST leg, which fires
-        whenever `existing` is None -- exactly the state a real DELETE used to leave
-        behind -- so it drives the fixture straight to that state instead of going
-        through the (now-blocked) DELETE call."""
-        billing_row = {
-            "owner_id": "user_test_123",
-            "subscription_status": "active",
-            "provider_choice": "bedrock_claude",
-        }
-        before = dict(billing_row)
-        container_rows["row"] = None  # the post-DELETE state
-
-        with (
-            patch("routers.debug.container_repo", fake_container_repo),
-            patch("routers.debug.get_ecs_manager", return_value=fake_ecs),
-            patch("core.services.container_provision.billing_repo") as mock_billing,
-        ):
-            mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
-
-            provisioned = await async_client.post("/api/v1/debug/provision")
-
-        # The cycle ends with a container, not the 500.
-        assert provisioned.status_code == 200, provisioned.text
-        assert provisioned.json()["status"] == "provisioned"
-        assert provisioned.json()["service_name"] == "openclaw-user_test_123-new"
-
-        # And with a VALID provider block, because provisioning ran the path that
-        # mints the AIPs BEFORE writing the config — not the router writing a
-        # config with aip_arns=None.
-        fake_ecs.provision_user_container.assert_awaited_once()
-        kwargs = fake_ecs.provision_user_container.await_args.kwargs
-        assert kwargs["provider_choice"] == "bedrock_claude"
-        assert kwargs["byo_provider"] is None
-        fake_ecs.write_user_configs.assert_not_awaited()
-        fake_ecs.create_user_service.assert_not_awaited()
-
-        # Plan/trial state is untouched across the cycle.
-        assert billing_row == before
-
-    @pytest.mark.asyncio
-    async def test_delete_then_post_keeps_a_trial_owner_on_the_trial_mint(
-        self, container_rows, fake_container_repo, fake_ecs, async_client
-    ):
-        """The guard on the trap.
-
-        provider_choice picks ensure_owner_aips' tier set, and the tier set picks
-        the reverse-index ``plan`` stamp. A trial_local owner must reach the
-        sonnet-only ``bedrock_trial`` mint (plan="trial"); the old hardcoded
-        "bedrock_claude" would have minted all three tiers, stamped plan="paid",
-        disarmed the meter Lambda's $3/day cap kill and handed a card-less owner
-        Opus.
-        """
-        from core.containers.config import BEDROCK_TRIAL_CHOICE
-
-        billing_row = {"owner_id": "user_test_123", "subscription_status": "trial_local"}
-        before = dict(billing_row)
-        # Same reasoning as test_delete_then_post_reprovisions_a_bedrock_owner above: DELETE
-        # now 409s for any existing row, so drive straight to the post-DELETE state (no row).
-        container_rows["row"] = None
-
-        with (
-            patch("routers.debug.container_repo", fake_container_repo),
-            patch("routers.debug.get_ecs_manager", return_value=fake_ecs),
-            patch("core.services.container_provision.billing_repo") as mock_billing,
-        ):
-            mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
-            provisioned = await async_client.post("/api/v1/debug/provision")
-
-        assert provisioned.status_code == 200, provisioned.text
-        choice = fake_ecs.provision_user_container.await_args.kwargs["provider_choice"]
-        assert choice == BEDROCK_TRIAL_CHOICE
-        assert choice != "bedrock_claude"
-        assert billing_row == before
-
     # NOTE: `test_patch_redeploy_resolves_the_provider_and_reuses_row_aips` was deleted. Its
     # point -- PATCH must RESOLVE provider_choice rather than hardcode "bedrock_claude" when
     # rewriting the ECS config via `write_user_configs` -- is unreachable now: `host_for` is
@@ -938,14 +655,8 @@ class TestAgentCoreProvision:
 
 
 class TestAgentCoreDebugRoutes:
-    """Row #18: /debug/provision on an existing AgentCore row.
-
-    PATCH gets the S3-profile twin of the ECS wholesale-rewrite (write_profiles
-    + best-effort session stop); POST/DELETE 409 with a pointer at the real
-    AgentCore doors (POST /debug/agentcore/provision, the migration script's
-    --rollback) instead of writing ECS-shaped config or tearing down an ECS
-    service that does not exist.
-    """
+    """/debug/provision: POST runs the canonical provision funnel, DELETE tears the
+    runtime down, PATCH rewrites the roster profiles and stops the session."""
 
     @staticmethod
     def _agentcore_row(**overrides):
@@ -960,16 +671,37 @@ class TestAgentCoreDebugRoutes:
         return row
 
     @pytest.mark.asyncio
-    async def test_post_provision_409s_on_existing_agentcore_row(self, async_client):
+    async def test_post_provision_stands_down_for_a_live_row(self, async_client):
         repo = MagicMock()
         repo.get_by_owner_id = AsyncMock(return_value=self._agentcore_row())
-        with patch("routers.debug.container_repo", repo):
+        dispatch = AsyncMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("routers.debug.dispatch_provision", dispatch),
+        ):
             res = await async_client.post("/api/v1/debug/provision")
-        assert res.status_code == 409
-        assert "agentcore/provision" in res.json()["detail"]
+        assert res.status_code == 200
+        assert res.json()["status"] == "already_running"
+        dispatch.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_delete_provision_409s_on_existing_agentcore_row(self, async_client):
+    async def test_post_provision_dispatches_the_canonical_funnel(self, async_client):
+        """Not a hand-rolled provision: the runner owns the AIP/role/gate-token mint, the
+        roster profiles and the runtime, in that order."""
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        dispatch = AsyncMock()
+        with (
+            patch("routers.debug.container_repo", repo),
+            patch("routers.debug.dispatch_provision", dispatch),
+        ):
+            res = await async_client.post("/api/v1/debug/provision")
+        assert res.status_code == 200
+        assert res.json()["status"] == "provisioning"
+        dispatch.assert_awaited_once_with("org_test_456")
+
+    @pytest.mark.asyncio
+    async def test_delete_provision_tears_the_runtime_down(self, async_client):
         repo = MagicMock()
         repo.get_by_owner_id = AsyncMock(return_value=self._agentcore_row())
         ecs = MagicMock()
@@ -979,15 +711,14 @@ class TestAgentCoreDebugRoutes:
             patch("routers.debug.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.delete("/api/v1/debug/provision")
-        assert res.status_code == 409
-        assert "--rollback" in res.json()["detail"]
-        ecs.delete_user_service.assert_not_awaited()
+        assert res.status_code == 200
+        assert res.json() == {"status": "removed"}
+        ecs.delete_user_service.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     async def test_delete_provision_still_idempotent_for_a_missing_row(self, async_client):
-        """No row at all (owner never provisioned) must still reach the ordinary
-        idempotent ECS delete -- the AgentCore check must not require a row to
-        exist for the normal ECS path to keep working."""
+        """No row at all (owner never provisioned) must still reach the idempotent
+        teardown -- ``delete_user_service`` treats "already gone" as success."""
         repo = MagicMock()
         repo.get_by_owner_id = AsyncMock(return_value=None)
         ecs = MagicMock()
@@ -1021,24 +752,6 @@ class TestAgentCoreDebugRoutes:
         stop_session.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_patch_provision_never_touches_ecs_for_agentcore_row(self, async_client):
-        row = self._agentcore_row()
-        repo = MagicMock()
-        repo.get_by_owner_id = AsyncMock(return_value=row)
-        ecs = MagicMock()
-        ecs.write_user_configs = AsyncMock()
-        ecs.start_user_service = AsyncMock()
-        with (
-            patch("routers.debug.container_repo", repo),
-            patch("routers.debug.get_ecs_manager", return_value=ecs),
-            patch("core.services.hermes_provisioning.write_profiles", AsyncMock()),
-            patch("scripts.migrate_workspace_to_hermes._stop_runtime_session", MagicMock()),
-        ):
-            await async_client.patch("/api/v1/debug/provision")
-        ecs.write_user_configs.assert_not_awaited()
-        ecs.start_user_service.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_patch_provision_stop_session_failure_is_best_effort(self, async_client):
         row = self._agentcore_row()
         repo = MagicMock()
@@ -1053,9 +766,3 @@ class TestAgentCoreDebugRoutes:
         ):
             res = await async_client.patch("/api/v1/debug/provision")
         assert res.status_code == 200, res.text
-
-    # NOTE: `test_patch_provision_ecs_row_keeps_the_original_redeploy_behaviour` was deleted.
-    # Its premise -- "the ECS branch stays byte-identical" for a row with no explicit
-    # `runtime_host` -- is exactly what this deletion PR ends: `host_for` no longer reads the
-    # row, so this same row now takes the AgentCore PATCH branch (write_profiles) instead of
-    # `write_user_configs`/`start_user_service`, just like every other row in this class.

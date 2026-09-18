@@ -78,10 +78,6 @@ def _billing(status="active"):
     )
 
 
-def _ip(ip="10.0.42.17"):
-    return patch("routers.slack_app.ecs_manager.discover_ip", return_value=ip)
-
-
 class _Upstream(httpx.AsyncBaseTransport):
     def __init__(self, status=200, raise_exc=None):
         self.status, self.raise_exc, self.seen = status, raise_exc, []
@@ -136,7 +132,6 @@ def test_duplicate_event_is_200_and_not_forwarded(client):
         _install(),
         _container(),
         _billing(),
-        _ip(),
         _upstream(t),
     ):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
@@ -153,7 +148,7 @@ def test_unknown_team_is_200(client):
 def test_own_bot_echo_is_dropped(client):
     body = _event(user="U_BOT")
     t = _Upstream()
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+    with _app_store(), _dedup(), _install(), _container(), _billing(), _upstream(t):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200 and t.seen == []
 
@@ -165,7 +160,7 @@ def test_bot_own_reaction_is_still_dropped_as_an_echo(client):
     reaction on the bot's own message — so forwarding it invites a self-trigger."""
     body = _event(type="reaction_added", user="U_BOT", reaction="eyes", text=None)
     t = _Upstream()
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+    with _app_store(), _dedup(), _install(), _container(), _billing(), _upstream(t):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200 and t.seen == []
 
@@ -239,7 +234,6 @@ def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
     ):
         captured["container"] = container
         captured["path"] = path
-        captured["ip"] = ip
         captured["content"] = content
         captured["headers"] = headers
         captured["timeout_s"] = timeout_s
@@ -251,17 +245,14 @@ def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
         _install(),
         _container(agentcore_container),
         _billing(),
-        patch("routers.slack_app.ecs_manager.discover_ip") as discover_ip,
         patch("routers.slack_app.runtime_transport.request", fake_request),
     ):
         r = client.post("/api/v1/slack/events", content=body, headers=sent)
 
     assert r.status_code == 200
     assert r.content == b'{"ok":true}'
-    discover_ip.assert_not_called()
     assert captured["container"] is agentcore_container
     assert captured["path"] == f"/slack/events/{TEAM}"
-    assert captured["ip"] == runtime_transport.AGENTCORE_ADDRESS
     from routers.slack_app import FORWARD_TIMEOUT_S
 
     assert captured["timeout_s"] == FORWARD_TIMEOUT_S

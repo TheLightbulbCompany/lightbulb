@@ -13,14 +13,6 @@ class TestIntegrationsRouter:
     """Test /integrations/mcp/servers CRUD endpoints."""
 
     @pytest.fixture(autouse=True)
-    def _ecs_owner_by_default(self):
-        """The write endpoints now check runtime_transport.is_agentcore_owner (a
-        real DynamoDB read when unmocked). Default every test in this class to
-        the ECS runtime; the AgentCore-specific tests below override it."""
-        with patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False)):
-            yield
-
-    @pytest.fixture(autouse=True)
     def _no_connected_integrations_by_default(self):
         """PUT/PATCH now check integration_owned_server_keys (M6-R32), a real DynamoDB read
         (integrations_repo.list_for_owner) when unmocked. Default every test in this class to
@@ -29,47 +21,24 @@ class TestIntegrationsRouter:
             yield
 
     @pytest.fixture
-    def fake_config(self):
-        """In-memory openclaw.json that the patched helpers operate on."""
-        store = {"config": {"mcp": {"servers": {}}}}
+    def patched_router(self):
+        """In-memory stand-in for the reserved manual-MCP row, plus a no-op profile
+        refresh. Yields ``{"store": {...}}`` so a test can read back what landed."""
+        store: dict = {}
 
-        async def read_config(owner_id: str):
-            # Deep-copy to mimic real I/O semantics — the router shouldn't
-            # mutate the underlying store directly.
-            return copy.deepcopy(store["config"])
+        async def get_manual(owner_id: str):
+            return copy.deepcopy(store)
 
-        async def set_path(owner_id: str, path: list[str], value):
-            cursor = store["config"]
-            for seg in path[:-1]:
-                if not isinstance(cursor.get(seg), dict):
-                    cursor[seg] = {}
-                cursor = cursor[seg]
-            cursor[path[-1]] = copy.deepcopy(value)
+        async def set_manual(owner_id: str, servers: dict):
+            store.clear()
+            store.update(copy.deepcopy(servers))
 
-        async def delete_path(owner_id: str, path: list[str]):
-            cursor = store["config"]
-            for seg in path[:-1]:
-                if not isinstance(cursor.get(seg), dict):
-                    return
-                cursor = cursor[seg]
-            cursor.pop(path[-1], None)
-
-        return {
-            "store": store,
-            "read": read_config,
-            "set": set_path,
-            "delete": delete_path,
-        }
-
-    @pytest.fixture
-    def patched_router(self, fake_config):
-        """Patches all three config helpers used by integrations.py."""
         with (
-            patch("routers.integrations.read_openclaw_config_from_efs", side_effect=fake_config["read"]),
-            patch("routers.integrations.set_openclaw_config_path", side_effect=fake_config["set"]),
-            patch("routers.integrations.delete_openclaw_config_path", side_effect=fake_config["delete"]),
+            patch("routers.integrations.integrations_repo.get_manual_mcp_servers", get_manual),
+            patch("routers.integrations.integrations_repo.set_manual_mcp_servers", set_manual),
+            patch("routers.integrations.reconcile_integrations", AsyncMock()),
         ):
-            yield fake_config
+            yield {"store": store}
 
     @pytest.fixture
     def auth_override(self):
@@ -114,83 +83,11 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
 
     @pytest.mark.asyncio
-    async def test_put_servers_reasserts_connected_integration(self, app, patched_router, auth_override):
-        """A whole-dict PUT that omits an integration-owned key (e.g. `stripe`)
-        would drop it. The handler must re-assert integration-owned servers
-        after the user's write so a manual edit can't clobber a connected
-        integration's MCP block.
-        """
-        app.dependency_overrides[get_current_user] = auth_override
-        with patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.put(
-                    "/api/v1/integrations/mcp/servers",
-                    json={
-                        "servers": {
-                            "my-custom": {"command": "node", "args": ["x.js"], "env": {}},
-                        }
-                    },
-                )
-            assert resp.status_code == 200
-            reconcile.assert_awaited_once_with("user_integ_test")
-        app.dependency_overrides.pop(get_current_user, None)
-
-    @pytest.mark.asyncio
-    async def test_put_response_reflects_reconciled_on_disk_state(self, app, patched_router, auth_override):
-        """The PUT response must mirror the post-reconcile on-disk state, not the
-        submitted body. After reconcile re-asserts integration-owned keys (e.g.
-        `stripe`), returning `body.servers` would omit `stripe` and misrepresent
-        what's actually in openclaw.json. Re-read like PATCH does.
-        """
-        app.dependency_overrides[get_current_user] = auth_override
-        reread = {
-            "stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"], "env": {}},
-            "my-custom": {"command": "node", "args": ["x.js"], "env": {}},
-        }
-        with (
-            patch("routers.integrations.reconcile_integrations", AsyncMock()),
-            patch("routers.integrations._read_mcp_servers", AsyncMock(return_value=reread)),
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.put(
-                    "/api/v1/integrations/mcp/servers",
-                    json={"servers": {"my-custom": {"command": "node", "args": ["x.js"], "env": {}}}},
-                )
-            assert resp.status_code == 200
-            body = resp.json()["servers"]
-            assert body == reread
-            assert "stripe" in body, "PUT response must include reconcile-reasserted integration keys"
-        app.dependency_overrides.pop(get_current_user, None)
-
-    @pytest.mark.asyncio
-    async def test_delete_reasserts_connected_integration(self, app, patched_router, auth_override):
-        """Deleting an integration-owned key via the manual panel must not silently
-        break a still-connected integration. DELETE is a manual-panel write like
-        PUT/PATCH, so it re-asserts integration-owned keys and the response mirrors
-        the post-reconcile on-disk state (`stripe` still present).
-        """
-        app.dependency_overrides[get_current_user] = auth_override
-        reread = {"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"], "env": {}}}
-        with (
-            patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
-            patch("routers.integrations._read_mcp_servers", AsyncMock(return_value=reread)),
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.delete("/api/v1/integrations/mcp/servers/stripe")
-            assert resp.status_code == 200
-            reconcile.assert_awaited_once()
-            assert resp.json()["servers"] == reread
-            assert "stripe" in resp.json()["servers"], "DELETE must re-assert integration-owned keys"
-        app.dependency_overrides.pop(get_current_user, None)
-
-    @pytest.mark.asyncio
     async def test_put_wipes_removed_entries(self, app, patched_router, auth_override):
         """PUT semantics: keys not present in the new dict are deleted."""
         app.dependency_overrides[get_current_user] = auth_override
         # Seed an existing server.
-        patched_router["store"]["config"]["mcp"]["servers"] = {
-            "old": {"command": "old-cmd"},
-        }
+        patched_router["store"].update({"old": {"command": "old-cmd"}})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.put(
                 "/api/v1/integrations/mcp/servers",
@@ -219,9 +116,7 @@ class TestIntegrationsRouter:
     async def test_patch_preserves_other_servers(self, app, patched_router, auth_override):
         """PATCH must not affect other server entries."""
         app.dependency_overrides[get_current_user] = auth_override
-        patched_router["store"]["config"]["mcp"]["servers"] = {
-            "existing": {"command": "keep"},
-        }
+        patched_router["store"].update({"existing": {"command": "keep"}})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             await client.patch(
                 "/api/v1/integrations/mcp/servers/added",
@@ -240,9 +135,7 @@ class TestIntegrationsRouter:
         in commit 01c19bf5).
         """
         app.dependency_overrides[get_current_user] = auth_override
-        patched_router["store"]["config"]["mcp"]["servers"] = {
-            "linear": {"command": "npx", "args": [], "env": {"LINEAR_TOKEN": "stale"}},
-        }
+        patched_router["store"].update({"linear": {"command": "npx", "args": [], "env": {"LINEAR_TOKEN": "stale"}}})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.patch(
                 "/api/v1/integrations/mcp/servers/linear",
@@ -397,29 +290,6 @@ class TestIntegrationsRouter:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_container_not_ready_returns_503(self, app, auth_override):
-        """When the patcher raises ConfigPatchError (container not provisioned),
-        the endpoint returns 503 with a structured detail."""
-        from core.services.config_patcher import ConfigPatchError
-
-        async def _raise(*args, **kwargs):
-            raise ConfigPatchError("Config not found for owner ...")
-
-        app.dependency_overrides[get_current_user] = auth_override
-        with (
-            patch("routers.integrations.read_openclaw_config_from_efs", return_value=None),
-            patch("routers.integrations.set_openclaw_config_path", side_effect=_raise),
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.patch(
-                    "/api/v1/integrations/mcp/servers/x",
-                    json={"command": "y", "args": [], "env": {}},
-                )
-        app.dependency_overrides.pop(get_current_user, None)
-        assert resp.status_code == 503
-        assert "container_not_ready" in resp.json()["detail"]
-
-    @pytest.mark.asyncio
     async def test_put_injects_stdio_connect_timeout_default(self, app, patched_router, auth_override):
         """A user-added stdio server gets connectionTimeoutMs=120000 injected —
         npx cold starts on the 0.5-vCPU container reliably exceed OpenClaw's
@@ -433,7 +303,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["linear"]
+        stored = patched_router["store"]["linear"]
         assert stored["connectionTimeoutMs"] == 120000
 
     @pytest.mark.asyncio
@@ -447,7 +317,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["fast"]
+        stored = patched_router["store"]["fast"]
         assert stored["connectionTimeoutMs"] == 5000
 
     @pytest.mark.asyncio
@@ -465,7 +335,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["notion"]
+        stored = patched_router["store"]["notion"]
         assert stored["url"] == "https://mcp.notion.com/mcp"
         assert stored["requestTimeoutMs"] == 60000
         assert "command" not in stored
@@ -515,7 +385,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["linear"]
+        stored = patched_router["store"]["linear"]
         assert "transport" not in stored
         assert "url" not in stored
         assert stored["connectionTimeoutMs"] == 120000
@@ -541,7 +411,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["context7"]
+        stored = patched_router["store"]["context7"]
         assert stored["requestTimeoutMs"] == 60000
         assert stored["headers"] == {"X-API-Key": "k"}
         assert "command" not in stored
@@ -612,7 +482,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["slowlist"]
+        stored = patched_router["store"]["slowlist"]
         assert stored["requestTimeoutMs"] == 90000
 
     @pytest.mark.asyncio
@@ -648,7 +518,7 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        stored = patched_router["store"]["config"]["mcp"]["servers"]["big-remote"]
+        stored = patched_router["store"]["big-remote"]
         assert stored["toolFilter"] == {"include": ["query-*"]}
 
     # -------------------------------------------------------------------
@@ -661,14 +531,12 @@ class TestIntegrationsRouter:
         Hermes profiles instead of touching openclaw.json."""
         app.dependency_overrides[get_current_user] = auth_override
         with (
-            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
             patch(
                 "routers.integrations.build_connected_integration_servers",
                 AsyncMock(return_value={"github": {"command": "npx"}}),
             ),
             patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
-            patch("routers.integrations.set_openclaw_config_path") as set_path,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.put(
@@ -681,14 +549,12 @@ class TestIntegrationsRouter:
         stored_servers = set_manual.await_args.args[1]
         assert "github" in stored_servers
         reconcile.assert_awaited_once()
-        set_path.assert_not_called()
         assert resp.json()["servers"] == {"github": {"command": "npx"}}
 
     @pytest.mark.asyncio
     async def test_patch_agentcore_owner_stores_manual_and_refreshes_hermes(self, app, auth_override):
         app.dependency_overrides[get_current_user] = auth_override
         with (
-            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch("routers.integrations.integrations_repo.get_manual_mcp_servers", AsyncMock(return_value={})),
             patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
             patch(
@@ -696,7 +562,6 @@ class TestIntegrationsRouter:
                 AsyncMock(return_value={"linear": {"command": "npx"}}),
             ),
             patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
-            patch("routers.integrations.set_openclaw_config_path") as set_path,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.patch(
@@ -709,14 +574,12 @@ class TestIntegrationsRouter:
         stored_servers = set_manual.await_args.args[1]
         assert "linear" in stored_servers
         reconcile.assert_awaited_once()
-        set_path.assert_not_called()
         assert resp.json()["servers"] == {"linear": {"command": "npx"}}
 
     @pytest.mark.asyncio
     async def test_delete_agentcore_owner_pops_manual_and_refreshes_hermes(self, app, auth_override):
         app.dependency_overrides[get_current_user] = auth_override
         with (
-            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch(
                 "routers.integrations.integrations_repo.get_manual_mcp_servers",
                 AsyncMock(return_value={"stale": {"command": "old"}}),
@@ -724,7 +587,6 @@ class TestIntegrationsRouter:
             patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
             patch("routers.integrations.build_connected_integration_servers", AsyncMock(return_value={})),
             patch("routers.integrations.reconcile_integrations", AsyncMock()) as reconcile,
-            patch("routers.integrations.delete_openclaw_config_path") as delete_path,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.delete("/api/v1/integrations/mcp/servers/stale")
@@ -732,7 +594,6 @@ class TestIntegrationsRouter:
         assert resp.status_code == 200
         set_manual.assert_awaited_once_with("user_integ_test", {})
         reconcile.assert_awaited_once()
-        delete_path.assert_not_called()
         assert resp.json()["servers"] == {}
 
     @pytest.mark.asyncio
@@ -745,11 +606,9 @@ class TestIntegrationsRouter:
         openclaw.json."""
         app.dependency_overrides[get_current_user] = auth_override
         with (
-            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch("routers.integrations.integrations_repo.set_manual_mcp_servers", AsyncMock()) as set_manual,
             patch("routers.integrations.build_connected_integration_servers", AsyncMock(return_value={})),
             patch("routers.integrations.reconcile_integrations", AsyncMock()),
-            patch("routers.integrations.set_openclaw_config_path") as set_path,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.put(
@@ -766,7 +625,6 @@ class TestIntegrationsRouter:
                 )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
-        set_path.assert_not_called()
         stored_servers = set_manual.await_args.args[1]
         assert stored_servers["acme"]["headers"]["Authorization"] == "Bearer sk_live_x"
 
@@ -788,7 +646,6 @@ class TestIntegrationsRouter:
             store.update(servers)
 
         with (
-            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch("routers.integrations.integrations_repo.get_manual_mcp_servers", fake_get_manual),
             patch("routers.integrations.integrations_repo.set_manual_mcp_servers", fake_set_manual),
             patch(
@@ -889,7 +746,6 @@ class TestIntegrationsRouter:
         """The check runs before the runtime branch, so it applies on AgentCore too."""
         app.dependency_overrides[get_current_user] = auth_override
         with (
-            patch("routers.integrations.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True)),
             patch(
                 "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
                 AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),

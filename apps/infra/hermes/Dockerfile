@@ -79,8 +79,11 @@ RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/
-# Task 24: bundled agent-facing skills, tool names swapped for Hermes/our plugin's.
-# Path matches config.yaml's skills.external_dirs (Task 7).
+# Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build
+# context by ../build-skills.sh (run by build-hermes-image.yml before `docker build`) from
+# apps/infra/openclaw/skills + skills-overlay/, with tool names swapped for Hermes/our
+# plugin's. If this COPY fails, that script has not been run. Path matches config.yaml's
+# skills.external_dirs (Task 7).
 COPY skills/ /opt/hermes-skills/
 
 # Managed overlay (Task 11) — non-negotiables an agent's own profile config cannot undo.

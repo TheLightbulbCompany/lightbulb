@@ -23,9 +23,21 @@ function onBlock(yaml: string): string {
 describe("build-hermes-image workflow", () => {
   const triggers = onBlock(workflow);
 
-  it("is path-filtered on the hermes directory only", () => {
+  it("is path-filtered on the hermes directory and the skills tree it is built from", () => {
     expect(triggers).toContain("apps/infra/hermes/**");
+    // The bundled skills are derived from the OpenClaw tree by build-skills.sh, so an edit
+    // there changes this image. Without this path the Hermes copy silently drifts.
+    expect(triggers).toContain("apps/infra/openclaw/skills/**");
     expect(triggers).not.toContain("apps/backend/**");
+  });
+
+  it("materializes the derived skills tree into the build context before docker build", () => {
+    // The Dockerfile's context is apps/infra/hermes, which cannot reach the OpenClaw tree,
+    // and apps/infra/hermes/skills is gitignored — so without this step COPY skills/ fails.
+    const buildStep = workflow.indexOf("apps/infra/hermes/build-skills.sh");
+    const dockerStep = workflow.indexOf("docker/build-push-action");
+    expect(buildStep).toBeGreaterThan(-1);
+    expect(buildStep).toBeLessThan(dockerStep);
   });
 
   it("triggers on push to main and workflow_dispatch, never the spike branch", () => {

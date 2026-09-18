@@ -1,11 +1,20 @@
+"""The Hermes image's bundled skills are BUILT, not checked in: apps/infra/hermes/
+build-skills.sh derives them from apps/infra/openclaw/skills plus a small overlay. So this
+suite runs that script and asserts on its OUTPUT -- the same artefact the image bakes --
+rather than on a second copy of the tree in the repo.
+"""
+
+import subprocess
 from pathlib import Path
+
+import pytest
 
 # NOTE: parents[4] from this file is apps/backend/tests/unit/services -> apps/backend/tests/unit
 # -> ... ; the repo root is one hop further up (verified with Path(...).resolve().parents[i]).
 # The brief's own snippet used parents[4], which resolves to the `apps/` dir, not the repo
-# root, and silently doubles "apps" in SKILLS below. Fixed to parents[5].
+# root, and silently doubled "apps" in the path below. Fixed to parents[5].
 REPO = Path(__file__).resolve().parents[5]
-SKILLS = REPO / "apps/infra/hermes/skills"
+BUILD = REPO / "apps/infra/hermes/build-skills.sh"
 
 #: Names that must not survive the swap, with what replaced them.
 RETIRED = {
@@ -25,32 +34,68 @@ _TODO_NEEDLE = "`todo`"
 _TODO_STATUS_EXEMPT_PREFIX = "paperclip/"
 
 
-def _texts():
-    return {path: path.read_text() for path in SKILLS.rglob("*.md")}
+@pytest.fixture(scope="module")
+def skills(tmp_path_factory) -> Path:
+    """The built tree, exactly as `docker build` bakes it into /opt/hermes-skills."""
+    out = tmp_path_factory.mktemp("hermes-skills") / "skills"
+    subprocess.run([str(BUILD), str(out)], check=True, capture_output=True)
+    return out
 
 
-def test_the_skills_were_copied_into_the_hermes_image_tree():
-    assert (SKILLS / "lightbulb/SKILL.md").exists()
-    assert (SKILLS / "paperclip/SKILL.md").exists()
+def _texts(skills: Path):
+    return {path: path.read_text() for path in skills.rglob("*.md")}
 
 
-def test_no_retired_tool_name_survives():
+def test_the_build_produces_the_hermes_image_tree(skills):
+    assert (skills / "lightbulb/SKILL.md").exists()
+    assert (skills / "paperclip/SKILL.md").exists()
+    # The three things the Hermes build deliberately does not ship: the Shopify recipe
+    # (OpenClaw-only plugin routes), the follow-ups reference (no routing row in the
+    # Hermes SKILL.md), and the engineer-facing MAINTENANCE.md files.
+    assert not (skills / "shopify").exists()
+    assert not (skills / "lightbulb/references/follow-ups.md").exists()
+    assert not list(skills.rglob("MAINTENANCE.md"))
+
+
+def test_no_retired_tool_name_survives(skills):
     offenders = {
-        f"{path.relative_to(SKILLS)}: {needle} -> {replacement}"
-        for path, text in _texts().items()
+        f"{path.relative_to(skills)}: {needle} -> {replacement}"
+        for path, text in _texts(skills).items()
         for needle, replacement in RETIRED.items()
         if needle in text
-        if not (needle == _TODO_NEEDLE and str(path.relative_to(SKILLS)).startswith(_TODO_STATUS_EXEMPT_PREFIX))
+        if not (needle == _TODO_NEEDLE and str(path.relative_to(skills)).startswith(_TODO_STATUS_EXEMPT_PREFIX))
     }
     assert not offenders, offenders
 
 
-def test_our_own_plugin_tool_names_are_still_referenced():
-    joined = "\n".join(_texts().values())
-    assert "lightbulb_local_sessions" in joined
-    assert "send_room_message" in joined
+def test_our_own_plugin_tool_names_are_still_referenced(skills):
+    """`lightbulb_local_sessions` is named in the skill BODY, so a rename has to land here.
+
+    `send_room_message` and `hire_suggestion` are not: no skill text names them (the agent
+    just has the tools). They are pinned in the source tree's MAINTENANCE.md anchor list
+    instead, which is what a renamer is meant to read -- asserting them against the built
+    tree only ever matched that same maintainer note, which the image does not ship.
+    """
+    assert "lightbulb_local_sessions" in "\n".join(_texts(skills).values())
+
+    anchors = (REPO / "apps/infra/openclaw/skills/lightbulb/MAINTENANCE.md").read_text()
+    assert "send_room_message" in anchors
+    assert "hire_suggestion" in anchors
 
 
-def test_the_paperclip_helper_path_points_at_the_baked_skills_dir():
-    text = (SKILLS / "paperclip/SKILL.md").read_text()
+def test_the_paperclip_helper_path_points_at_the_baked_skills_dir(skills):
+    text = (skills / "paperclip/SKILL.md").read_text()
     assert "/opt/hermes-skills/paperclip/scripts/paperclip-api.sh" in text
+
+
+def test_the_overlay_only_holds_files_the_source_tree_also_has(skills):
+    """An overlay file with no counterpart in apps/infra/openclaw/skills is a file that
+    silently stopped tracking its source -- the drift this build exists to prevent."""
+    overlay = REPO / "apps/infra/hermes/skills-overlay"
+    source = REPO / "apps/infra/openclaw/skills"
+    missing = [
+        str(path.relative_to(overlay))
+        for path in overlay.rglob("*")
+        if path.is_file() and not (source / path.relative_to(overlay)).is_file()
+    ]
+    assert not missing, missing

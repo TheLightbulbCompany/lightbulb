@@ -144,6 +144,20 @@ _CREDENTIAL_GLOBS = tuple(
 # (report 01 §1). The body is redacted but the file must never reach S3; logs/ likewise;
 # .lightbulb-turn/ holds the per-turn local-session JWT (Task 11). WAL/SHM are skipped
 # because save_profile snapshots SQLite through the backup API instead.
+#: Hermes's own zero-byte lock sidecars beside state.db (observed in prod S3:
+#: ``state.db.fts_rebuild.lock``, ``state.db.quarantine.lock``). A lock file means "a process
+#: HERE holds this", so neither pushing one to S3 nor restoring one onto a fresh microVM is ever
+#: right -- which is why this is checked on the restore side too (``restore_profile`` otherwise
+#: downloads the whole prefix unfiltered, because EXCLUDE_GLOBS also names backend-owned files
+#: that a cold start MUST pull). Deliberately not a bare ``*.lock``: an agent's own working tree
+#: legitimately carries ``Cargo.lock`` / ``uv.lock`` / ``yarn.lock``.
+LOCK_SIDECAR_GLOBS = ("state.db.*.lock", "*/state.db.*.lock")
+
+
+def is_lock_sidecar(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in LOCK_SIDECAR_GLOBS)
+
+
 EXCLUDE_GLOBS = (
     *_CREDENTIAL_GLOBS,
     "sessions/request_dump_*.json",
@@ -154,6 +168,7 @@ EXCLUDE_GLOBS = (
     "*.db-shm",
     "*.sqlite-wal",
     "*.sqlite-shm",
+    *LOCK_SIDECAR_GLOBS,
     # Task 25: attachments materialized locally for a turn (media/messaging/attachments/...)
     # are re-fetched from the backend on the next process, not synced to S3.
     "media/messaging/*",
@@ -287,6 +302,8 @@ def restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
+            if is_lock_sidecar(rel):
+                continue  # a lock nobody holds; see LOCK_SIDECAR_GLOBS
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(S3_BUCKET, obj["Key"], str(target))

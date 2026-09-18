@@ -26,12 +26,16 @@ def test_health_answers_not_ready_as_ok_false_while_boot_secrets_are_missing(hom
     assert obj == {"ok": False, "error": {"code": "NOT_READY", "message": "ingress cannot be accepted yet"}}
 
 
-def test_every_ui_only_method_answers_the_same_stable_shape():
-    for method in sorted(server.UI_ONLY_METHODS):
+def test_an_unregistered_method_answers_the_stable_unavailable_shape():
+    """Every control-panel surface this runtime does not serve arrives here: they are not
+    registered, and `_rpc`'s `handler is None` branch is the one place that answers them."""
+    for method in ("tools.catalog", "sessions.list", "skills.install", "browser.request",
+                   "doctor.memory.status", "chat.history"):
         code, obj = call(method)
         assert code == 200
         assert obj == {"ok": False, "error": {"code": "UNAVAILABLE",
                                               "message": f"{method} is not available on the Hermes runtime"}}
+        assert method not in server.RPC_METHODS
 
 
 def test_an_empty_method_or_non_object_params_is_invalid_request():

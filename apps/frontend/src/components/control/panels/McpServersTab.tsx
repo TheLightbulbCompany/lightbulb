@@ -45,6 +45,7 @@ export function McpServersTab(props: { agentId?: string }) {
   const [servers, setServers] = useState<Record<string, McpServer>>({});
   const [loading, setLoading] = useState(true);
   const [forbidden, setForbidden] = useState(false);
+  const [fetchError, setFetchError] = useState(false);
   const [configInput, setConfigInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -53,6 +54,7 @@ export function McpServersTab(props: { agentId?: string }) {
   const fetchServers = useCallback(async () => {
     setLoading(true);
     setForbidden(false);
+    setFetchError(false);
     try {
       const resp = (await api.get("/integrations/mcp/servers")) as ServersResponse;
       setServers(resp.servers ?? {});
@@ -64,7 +66,11 @@ export function McpServersTab(props: { agentId?: string }) {
         setForbidden(true);
         setServers({});
       } else {
+        // H4: this used to be console.error-only, rendering the same empty
+        // list a first-load spinner shows — surface it so a broken fetch
+        // reads as an error, not "no servers configured".
         console.error("Failed to fetch MCP servers:", err);
+        setFetchError(true);
       }
     } finally {
       setLoading(false);
@@ -156,6 +162,21 @@ export function McpServersTab(props: { agentId?: string }) {
             MCP server entries carry per-server <code>env</code> secrets only
             the admin set up. Ask your org admin to manage them.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="p-6 space-y-3">
+        <h2 className="font-editorial-serif text-title">MCP Servers</h2>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-err">
+          <AlertCircle size={16} className="text-err shrink-0" />
+          <span className="text-xs text-err">Failed to load MCP servers.</span>
+          <Button variant="outline" size="sm" className="ml-auto h-6 text-xs" onClick={fetchServers}>
+            Retry
+          </Button>
         </div>
       </div>
     );

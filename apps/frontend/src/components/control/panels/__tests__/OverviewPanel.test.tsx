@@ -71,10 +71,12 @@ describe("OverviewPanel", () => {
     expect(screen.getByText("System Healthy")).toBeInTheDocument();
   });
 
-  // M6 task 10-E, row 7. The Hermes bridge sends a plain agent count and `uptimeS`.
+  // M6 task 10-E, row 7. The Hermes bridge sends a plain agent count and `uptimeS`, and its
+  // payload has no `ok` key at all (`apps/infra/hermes/bridge/server.py::_health`) — only
+  // `ready`. A fixture that adds `ok: true` back in would hide a regression of H1.
   it("reads Hermes's numeric count and uptime, and drops the rows Hermes has no answer for", () => {
     runtimeHost = "agentcore";
-    healthPayload = { ok: true, ready: true, uptimeS: 7_200, agents: 6 };
+    healthPayload = { ready: true, uptimeS: 7_200, agents: 6 };
     render(<OverviewPanel />);
     expect(screen.getByText("2h 0m")).toBeInTheDocument();
     expect(screen.getByText("6")).toBeInTheDocument();
@@ -82,11 +84,21 @@ describe("OverviewPanel", () => {
     expect(screen.queryByText("Last Channels")).toBeNull();
   });
 
+  // H1: the bridge's health payload is `{ready, ...}` with no `ok` key. The Snapshot card must
+  // still read the workspace as online.
+  it("renders online from a Hermes-shaped `{ready: true}` payload with no `ok` key", () => {
+    runtimeHost = "agentcore";
+    healthPayload = { ready: true, uptimeS: 60, agents: 6 };
+    render(<OverviewPanel />);
+    expect(screen.getByText("OK")).toBeInTheDocument();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
   // Ruling M6-R54: the Sessions panel is hidden on AgentCore, so its summary card — a count
   // Hermes does not send, deep-linking to a panel that is not there — goes with it.
   it("drops the Sessions card on AgentCore and keeps it on ECS", () => {
     runtimeHost = "agentcore";
-    healthPayload = { ok: true, ready: true, uptimeS: 60, agents: 6 };
+    healthPayload = { ready: true, uptimeS: 60, agents: 6 };
     const { unmount } = render(<OverviewPanel />);
     expect(screen.queryByText("Sessions")).toBeNull();
     unmount();

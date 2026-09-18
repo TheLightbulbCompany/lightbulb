@@ -63,6 +63,8 @@ vi.mock("@/hooks/useChatGPTOAuth", () => ({
 const mockAuthStatusData = vi.fn();
 const mockRpcMutation = vi.fn();
 const mockReadMutate = vi.fn();
+// H4: undefined unless a test opts in — the RPC error the "grey dot" bug hid.
+let mockAuthStatusError: Error | undefined;
 // The read is held until the runtime is DEFINITE, so these tests declare one.
 // The panel does NOT branch on it beyond that: the Hermes bridge reports the same
 // provider ids llm-auth-status.ts already resolves (M6 task 10, row 22).
@@ -74,7 +76,7 @@ vi.mock("@/hooks/useRuntimeRpc", () => ({
     authStatusMethods.push(method);
     return {
       data: method === null ? undefined : mockAuthStatusData(),
-      error: undefined,
+      error: method === null ? undefined : mockAuthStatusError,
       isLoading: false,
       mutate: mockReadMutate,
     };
@@ -131,6 +133,7 @@ describe("LLMPanel", () => {
     mockDisconnect.mockReset();
     mockAuthStatusData.mockReset();
     mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
+    mockAuthStatusError = undefined;
     mockRpcMutation.mockReset();
     // The refresh handler chains ``.then(revalidate)`` off the mutation, so
     // the mutation mock must resolve or the chain throws on undefined.
@@ -438,6 +441,23 @@ describe("LLMPanel", () => {
     expect(mockRpcMutation.mock.invocationCallOrder[0]).toBeLessThan(
       mockReadMutate.mock.invocationCallOrder[0],
     );
+  });
+
+  // H4: a models.authStatus RPC failure used to be silent — resolveProviderStatus
+  // fell through to undefined, rendering the same neutral dot as "still loading".
+  it("surfaces a models.authStatus RPC failure with a retry, instead of failing silently", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockAuthStatusError = new Error("gateway unreachable");
+    render(<LLMPanel />);
+    expect(screen.getByText("Couldn't check provider status.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    expect(mockReadMutate).toHaveBeenCalled();
+  });
+
+  it("shows no error state when models.authStatus has not failed", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    render(<LLMPanel />);
+    expect(screen.queryByText("Couldn't check provider status.")).toBeNull();
   });
 });
 

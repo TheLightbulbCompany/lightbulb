@@ -3,9 +3,11 @@ import { render, screen, within } from "@testing-library/react";
 import React from "react";
 
 /**
- * M6 task 10-D, rows 18/24. Dreams / Memory and Channel Status have no
- * Hermes/AgentCore equivalent — they drop off the Settings nav on a confirmed
- * AgentCore workspace and stay while the host isn't known yet.
+ * M6 task 10-D, rows 18/24, plus H3/H6: Dreams / Memory, Channel Status, and
+ * the WIRING "Channels" row (MyChannelsSection — distinct from Channel
+ * Status) have no Hermes/AgentCore equivalent — they drop off the Settings
+ * nav on a confirmed AgentCore workspace and stay while the host isn't known
+ * yet.
  */
 
 const nav = vi.hoisted(() => ({ panel: null as string | null, replace: vi.fn() }));
@@ -54,29 +56,33 @@ describe("Settings nav — Dreams/Channel Status on AgentCore", () => {
     gate = "hidden";
   });
 
-  it("drops Dreams / Memory and Channel Status once AgentCore is confirmed", () => {
+  it("drops Dreams / Memory, Channel Status, and Channels (WIRING) once AgentCore is confirmed", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).queryByText("Dreams / Memory")).toBeNull();
     expect(within(navEl).queryByText("Channel Status")).toBeNull();
-    // WIRING's Channels row is a different key — untouched by this hide.
-    expect(within(navEl).getByText("Channels")).toBeInTheDocument();
+    // H3: the WIRING "Channels" row (MyChannelsSection) has its own id and was
+    // missing from HIDDEN_ON_AGENTCORE_PANELS, so it used to stay in the nav
+    // and wake a parked microVM to render an empty list.
+    expect(within(navEl).queryByText("Channels")).toBeNull();
   });
 
-  it("still lists both rows while the host isn't known yet", () => {
+  it("still lists all three rows while the host isn't known yet", () => {
     gate = "loading";
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Dreams / Memory")).toBeInTheDocument();
     expect(within(navEl).getByText("Channel Status")).toBeInTheDocument();
+    expect(within(navEl).getByText("Channels")).toBeInTheDocument();
   });
 
-  it("lists both rows on ECS", () => {
+  it("lists all three rows on ECS", () => {
     gate = "shown";
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Dreams / Memory")).toBeInTheDocument();
     expect(within(navEl).getByText("Channel Status")).toBeInTheDocument();
+    expect(within(navEl).getByText("Channels")).toBeInTheDocument();
   });
 
   it("a stale ?panel=channel-status deep link still resolves to the panel (which self-gates)", () => {
@@ -85,6 +91,13 @@ describe("Settings nav — Dreams/Channel Status on AgentCore", () => {
     nav.panel = "channel-status";
     const { container } = render(<SettingsPage />);
     expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
+    expect(container.querySelector("#panel-profile")).not.toBeInTheDocument();
+  });
+
+  it("a stale ?panel=channels deep link resolves to MyChannelsSection's own runtime notice (H3)", () => {
+    nav.panel = "channels";
+    const { container } = render(<SettingsPage />);
+    expect(screen.getByText("Channels isn't available on this runtime.")).toBeInTheDocument();
     expect(container.querySelector("#panel-profile")).not.toBeInTheDocument();
   });
 });

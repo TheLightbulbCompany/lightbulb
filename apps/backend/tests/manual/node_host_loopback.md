@@ -1,5 +1,15 @@
 # Node-host loopback + dev proof (M2 Task 30)
 
+> **PARTLY STALE.** The `POST /internal/node/invoke/{owner_id}` route and the Hermes
+> `lightbulb_node` plugin were removed — node/Mac execution is deferred by owner ruling and
+> nothing could select the backend (the bridge normalizes a legacy `terminal.backend:
+> lightbulb_node` to `local` before every turn). Every step below that curls that route, or
+> patches a profile onto that backend, no longer applies. The relay half — `node_broker.py`
+> and `routers/gateway_relay.py`'s node branch, which the desktop still uses — is unchanged
+> and still exercised by the loopback setup. Recover the removed halves from git history if
+> the deferral is reversed.
+
+
 Proves spec §6 M2's pass criteria: the backend's node protocol (`node_broker.py` + `routers/gateway_relay.py`'s node branch) against the **real vendored upstream node-host CLI**, not the Rust client — it has its own tick watchdog, protocol renegotiation, and a 15s post-connect deadline the Rust client doesn't (report 02 R6: "a bridge tested only against the Tauri path will pass and then fail on every Mac") — then a real Hermes turn on dev.
 
 ## Part A — loopback proof (no dev deploy needed)

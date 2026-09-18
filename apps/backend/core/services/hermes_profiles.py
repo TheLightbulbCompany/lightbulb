@@ -116,7 +116,7 @@ _DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
 
 #: M4-R3: the opt-in is a flat allow-list (``plugins.enabled``), never ``plugins.entries`` —
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.
-_LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
+_LIGHTBULB_PLUGINS = ("lightbulb",)
 
 #: ``skills.external_dirs`` — public (not ``_``-prefixed): the ops entry point
 #: (``scripts/reapply_hermes_skills_dirs.py``) imports this same list so a re-apply can never

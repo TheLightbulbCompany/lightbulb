@@ -44,10 +44,10 @@ if _secret_id:
     _boot_secrets = _load_boot_secrets(_secret_id)
     HOOK_TOKEN = _boot_secrets.get("hookToken") or HOOK_TOKEN
     GATEWAY_TOKEN = _boot_secrets.get("gatewayToken") or GATEWAY_TOKEN
-    # M2-R12: exec (lightbulb_node) is not turn-scoped, so it has no per-turn context file to
-    # read a hook token from -- it reads the process env directly, on its own authority, the
-    # same way this module's own module-level defaults above do. Mirror the boot-fetched value
-    # into the process env so that read sees it too, not just `from bridge import HOOK_TOKEN`.
+    # M2-R12: a reader that is not turn-scoped has no per-turn context file to take a hook
+    # token from and reads the process env directly, the same way this module's own
+    # module-level defaults above do. Mirror the boot-fetched values into the process env so
+    # those reads see them too, not just `from bridge import HOOK_TOKEN`.
     os.environ["OPENCLAW_HOOK_TOKEN"] = HOOK_TOKEN
     os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):

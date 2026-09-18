@@ -10,7 +10,6 @@ RUN uv pip install --python "$(command -v python3)" --upgrade "anthropic>=1.0" \
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/lightbulb /opt/hermes/plugins/lightbulb
-COPY plugins/lightbulb_node /opt/hermes/plugins/lightbulb_node
 # Task 24: bundled agent-facing skills, tool names swapped for Hermes/our plugin's.
 # Path matches config.yaml's skills.external_dirs (Task 7).
 COPY skills /opt/hermes-skills

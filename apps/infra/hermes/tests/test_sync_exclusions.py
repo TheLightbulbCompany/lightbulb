@@ -119,3 +119,27 @@ def test_a_backend_written_build_dir_still_re_pulls_on_a_revision_bump(home, mon
 
     assert sync._pull_changed_objects("a1") is True
     assert fake.downloaded == [prefix + "dist/report.html"]
+
+
+def test_hermes_lock_sidecars_never_sync_in_either_direction(home, monkeypatch):
+    """A lock file means "a process HERE holds this". Prod S3 carried two zero-byte ones next to
+    state.db; restoring either onto a fresh microVM asserts a lock nobody holds. The restore leg
+    needs its own check because that walk deliberately has no EXCLUDE_GLOBS filter (the test
+    above) -- and an agent's own Cargo.lock/uv.lock must keep syncing."""
+    assert sync.is_excluded("state.db.fts_rebuild.lock")
+    assert sync.is_excluded("state.db.quarantine.lock")
+    assert sync.is_lock_sidecar("state.db.quarantine.lock")
+    for source in ("Cargo.lock", "repo/uv.lock", "repo/web/yarn.lock"):
+        assert not sync.is_excluded(source), source
+        assert not sync.is_lock_sidecar(source), source
+
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    sync._restored.discard("a1")
+    now = time.time()
+    prefix = f"{sync.S3_PREFIX}/a1/"
+    fake = FakeS3({prefix + key: ("x", now)
+                   for key in ("state.db.quarantine.lock", "repo/Cargo.lock")})
+    monkeypatch.setattr(sync, "_s3", lambda: fake)
+
+    sync.restore_profile("a1")
+    assert [key[len(prefix):] for key in fake.downloaded] == ["repo/Cargo.lock"]

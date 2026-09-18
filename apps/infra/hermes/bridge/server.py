@@ -195,34 +195,10 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
 RPC_DEFAULT_TIMEOUT_MS = 30_000
 RPC_MAX_TIMEOUT_MS = 120_000
 
-# Control-panel surfaces only. Stubbing them keeps the panels rendering an explicit
-# "unavailable" instead of spinning; each gets a real implementation when its Hermes home
-# exists. The SHAPE is the contract — container_rpc unwraps {ok:false} into a RuntimeError
-# carrying this exact JSON, so it must never wobble.
-UI_ONLY_METHODS = frozenset({
-    # `models.list` is served for real by task 10-C's `_models_list` below.
-    "tools.catalog", "commands.list", "chat.history", "agent.identity.get",
-    "skills.proposals.apply", "skills.proposals.inspect", "skills.proposals.reject",
-    # Ruling M6-R56: hub search + install are cut. Both ran Hermes's hub machinery inside one
-    # turn-free RPC, and that machinery does not fit here: `tools/skills_hub.py` resolves its
-    # HUB_DIR from the LIVE hermes home, so the index cache (tens of MB) lands inside the
-    # profile and syncs to S3; the GitHub adapter reads GITHUB_TOKEN through the secret scope,
-    # which a settings RPC has no business installing; and a cold fetch + scan + upload cannot
-    # fit the 90 s AgentCore ingress cap the brief set. The Skills panel is a READ on Hermes.
-    "skills.install", "skills.search",
-    # Ruling M6-R54: sessions stay stubbed. The backend's session guard is a PRIVACY rule
-    # (a person sees only their own personal sessions) and Hermes has no personal session --
-    # every one of ours is room- or event-scoped -- so there is no AgentCore shape for this
-    # surface that does not widen that rule. The panel is hidden instead.
-    "sessions.list", "sessions.patch", "sessions.delete",
-    "sessions.rewind", "sessions.search",
-    "sessions.branches.list", "sessions.branches.switch",
-    "doctor.memory.status", "doctor.memory.dreamDiary", "doctor.memory.resetDreamDiary",
-    "doctor.memory.backfillDreamDiary", "doctor.memory.dedupeDreamDiary",
-    "doctor.memory.repairDreamingArtifacts", "doctor.memory.resetGroundedShortTerm",
-    # browser.request is retired with the container browser (spec §5).
-    "browser.request",
-})
+# Control-panel surfaces this runtime does not serve (models/skills panels, sessions, doctor
+# memory, browser.request) are simply NOT REGISTERED in RPC_METHODS: `_rpc`'s `handler is None`
+# branch answers them with `_unavailable(method)`, the same {ok:false, code:"UNAVAILABLE"} shape
+# container_rpc unwraps into a RuntimeError. The SHAPE is the contract; it must never wobble.
 
 
 def _profiles() -> list[str]:
@@ -305,10 +281,6 @@ RPC_METHODS: dict = {"health": _health}
 def _unavailable(method: str) -> dict:
     return {"ok": False, "error": {"code": "UNAVAILABLE",
                                    "message": f"{method} is not available on the Hermes runtime"}}
-
-
-for _m in UI_ONLY_METHODS:
-    RPC_METHODS.setdefault(_m, (lambda m: lambda _p, **_kwargs: _unavailable(m))(_m))
 
 
 def _rpc(body) -> tuple[int, dict]:
@@ -529,7 +501,8 @@ RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update
 # `hermes_cli.skills_hub` -- never a parser of our own, because the format (SKILL.md front
 # matter) is Hermes's to change. Those imports only resolve inside the real image, so each entry
 # point degrades to UNAVAILABLE outside it; that is also what lets this suite run without Hermes
-# installed. Sessions are deliberately NOT here -- see UI_ONLY_METHODS (M6-R54).
+# installed. Sessions are deliberately NOT here: nothing registers them, so `_rpc` answers them
+# UNAVAILABLE on its own (M6-R54).
 
 
 def _unsupported(message: str) -> dict:

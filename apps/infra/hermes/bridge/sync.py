@@ -527,8 +527,15 @@ def _pull_cli_credentials(agent_id: str) -> None:
 
     Overwrites rather than seeding once: the backend is the sole writer of these paths (an
     agent's own edits are never uploaded), so its object is by construction the newer one.
-    A local file the backend has since DELETED is removed too -- a disconnected connector must
-    not keep working for the life of the warm profile."""
+    A local file the backend has since DELETED is removed too.
+
+    Scope of that last claim: the prune is PER AGENT, on that agent's next turn. A disconnect
+    therefore lands immediately for whichever agents take a turn after it and LAGS for the rest
+    until they do — so "a disconnected connector stops working" is eventually-consistent across
+    the roster, not atomic. Bounded by the life of the warm process (a cold restore re-pulls the
+    whole prefix, where the object is already gone), and the server side is the real fence
+    anyway: the AWS bearer token is revoked at the backend the moment the row is deleted, and a
+    pasted PAT is revoked at the vendor, not here."""
     dest = _profile_dir(agent_id)
     base = f"{S3_PREFIX}/{agent_id}/"
     try:

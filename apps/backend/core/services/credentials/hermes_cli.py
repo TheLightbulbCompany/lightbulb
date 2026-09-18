@@ -27,7 +27,18 @@ every CLI's own default lookup goes. ``instagram_cli`` is the exception: its out
 
 **Per-agent, like mcp-tokens (M4-R47).** ``sync.ensure_profile``/``restore_profile`` only ever
 read the agent's OWN prefix, so an owner-level object would never reach a microVM. Every roster
-profile therefore gets an identical copy. Unlike mcp-tokens this is NOT write-once: a connect is
+profile therefore gets an identical copy.
+
+**That identity is LOAD-BEARING, not an implementation detail.** ``$HOME`` inside the microVM
+freezes at the first profile to run a shell in the process (``agent.secret_scope``'s
+``_GLOBAL_ENV_EXACT``), so anything reached through ``$HOME`` rather than through one of
+``sync.cli_credential_env``'s path variables — ``xurl``'s ``~/.xurl``, and ``aws_cli``'s helper
+beside its ``token``/``cache.json`` — can be read from a SIBLING profile. That is harmless only
+because the bytes there are the same: these are OWNER-level credentials and ``_run_and_sync``
+fans ONE ``files`` dict out to the whole roster. **Adding a materializer to ``OWNED_PATHS``/
+``ROOT_DIR`` whose output differs per agent breaks that, and turns a sibling read into one
+agent reading another's credential.** Such a materializer needs a per-profile path variable on
+the passthrough rail first. Unlike mcp-tokens this is NOT write-once: a connect is
 an explicit owner action delivering a fresh credential and must win, exactly as the ECS rail's
 ``write`` overwrites the EFS copy. The cost is that a token one agent's container has since
 rotated in place is replaced by the newly connected one on the next connect/disconnect — the

@@ -43,14 +43,24 @@ CACHE_FILENAME = "cache.json"
 # In-container absolute path of the .aws dir (see module docstring).
 _CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
 
-# The AgentCore/Hermes form of the same line. There the .aws dir lives inside the agent's OWN
-# profile dir, whose absolute path differs per agent, so the only stable way to name it is
-# $HOME -- which ``TERMINAL_HOME_MODE: profile`` points at ``<profile>/home`` for every shell
-# the turn spawns. botocore runs credential_process through ``shlex.split`` + ``Popen`` with NO
-# shell and NO variable expansion, so the expansion has to be asked for explicitly; ``exec``
-# keeps it to one process. Everything else about the rail is unchanged: `node` is in the
-# Hermes base image (/usr/local/bin/node) and the helper reads its sibling ``token``/
-# ``cache.json`` from its own dirname, which resolves inside the profile either way.
+# The AgentCore/Hermes form of the same line. botocore runs credential_process through
+# ``shlex.split`` + ``Popen`` with NO shell and NO variable expansion, so an expansion has to be
+# asked for explicitly; ``exec`` keeps it to one process. `node` is in the Hermes base image
+# (/usr/local/bin/node), so the rail is otherwise unchanged.
+#
+# ``$HOME`` here is NOT this agent's profile home in general. It FREEZES at the first profile to
+# run a shell in the microVM's process -- ``HOME`` is in ``agent.secret_scope._GLOBAL_ENV_EXACT``,
+# so it resolves from ``os.environ`` rather than the per-profile scope (measured in the pinned
+# image; see ``bridge/sync.py::cli_credential_env``). The FILE the CLI opens is pinned correctly
+# per profile by ``AWS_CONFIG_FILE``, which rides ``terminal.env_passthrough`` and does
+# re-resolve; but the helper, its ``token`` and its ``cache.json`` are reached from this line, so
+# they are read off the FROZEN home -- i.e. possibly a sibling profile's copy.
+#
+# That is bounded, and only because the projection writes byte-identical copies to every roster
+# profile (see ``credentials/hermes_cli.py``'s invariant): the sibling's helper, bearer token and
+# cache are the SAME owner-level credential, and the token authorizes by owner, not by agent. If
+# that invariant ever breaks, this line breaks with it and the helper must be reached by an
+# absolute per-profile path instead.
 _HERMES_CREDENTIAL_PROCESS = f"""sh -c 'exec /usr/bin/env node "$HOME/.aws/{HELPER_FILENAME}"'"""
 
 # On AgentCore the projected profile is ``[default]``, NOT the named one the module docstring

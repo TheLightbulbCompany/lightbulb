@@ -974,9 +974,11 @@ def _terminal_scope(agent_id: str):
     ``build_profile_terminal_scope`` keeps only keys prefixed ``TERMINAL_``
     (``tools/terminal_scope.py:137``, verified in ``lightbulb/hermes-spike:m1-rc4``), so
     ``TERMINAL_CWD`` and ``TERMINAL_HOME_MODE`` ride and anything else is silently dropped.
-    Per-profile credentials and run identity reach a child through ``terminal.env_passthrough``
-    + the secret scope instead — see ``sync.BRIDGE_CHILD_ENV_NAMES``,
-    ``sync.profile_child_env_names`` and ``_declare_child_env_names``.
+    Per-profile credentials, CLI config paths and run identity reach a child through
+    ``terminal.env_passthrough`` + the secret scope instead — see ``sync.BRIDGE_CHILD_ENV_NAMES``,
+    ``sync.cli_credential_env``, ``sync.profile_child_env_names`` and
+    ``_declare_child_env_names``. ``TERMINAL_HOME_MODE`` sets a usable ``$HOME``; it does not
+    make ``$HOME`` per-profile (see the comment on the call below).
     """
     from contextlib import contextmanager
 
@@ -994,12 +996,25 @@ def _terminal_scope(agent_id: str):
         #
         # TERMINAL_HOME_MODE=profile makes hermes_constants.get_subprocess_home resolve $HOME to
         # <profile>/home (sync.ensure_profile_home creates it) instead of the runtime's default
-        # `/`. That is the whole discovery mechanism for the backend's projected CLI credentials:
-        # with $HOME right, aws/gh/gog/xurl each find their own dotfiles by their own default
-        # lookup, with no per-CLI variable at all. The few that still need one (AWS_PROFILE,
-        # GOG_KEYRING_PASSWORD) ride terminal.env_passthrough, which #2754 is building --
-        # `HOME` itself must NOT go there, because apply_subprocess_home_env recomputes it on
-        # every spawn.
+        # `/`, which is root-owned -- so `git config --global` and friends fail outright without
+        # it. It is NOT the discovery mechanism for the projected CLI credentials, and nothing
+        # may be built on the assumption that it is:
+        #
+        #   $HOME FREEZES AT THE FIRST PROFILE TO RUN A SHELL IN THIS PROCESS.
+        #
+        # It is in agent.secret_scope._GLOBAL_ENV_EXACT, so every reader resolves it from
+        # os.environ rather than the per-profile scope. Measured in the pinned image -- two
+        # profiles, one process, FRESH child PIDs, so not shell reuse:
+        #     ceo         -> PID=24 HOME=.../profiles/ceo/home PAPERCLIP_API_KEY=key-ceo
+        #     engineering -> PID=33 HOME=.../profiles/ceo/home PAPERCLIP_API_KEY=key-engineering
+        # A passthrough name is not global, so it DOES re-resolve per turn (right-hand column).
+        # An AgentCore runtime serves a whole roster in one process, so aws/gh/gog are pointed by
+        # sync.cli_credential_env's absolute path variables instead, carried on
+        # terminal.env_passthrough. Only xurl rides $HOME, because it has no config-location
+        # variable at all -- see cli_credential_env for why that stays bounded.
+        #
+        # `HOME` itself must NEVER go on the passthrough list: it is global by that same
+        # classification, and apply_subprocess_home_env owns it on every spawn.
         token = install_profile_terminal_scope(
             profile,
             env_overlay={"TERMINAL_CWD": str(profile), "TERMINAL_HOME_MODE": "profile"},

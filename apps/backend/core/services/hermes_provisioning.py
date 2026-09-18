@@ -189,11 +189,8 @@ _ROLE_PROPAGATION_INTERVAL_S = 5.0
 def _create_runtime(request: dict) -> str:
     """Sync — call via ``run_in_thread``. Retries only the IAM trust-propagation rejection
     (M6-R44, see the constants above)."""
-    import time
 
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client = _agentcore_control_client()
     for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
         try:
             return client.create_agent_runtime(**request)["agentRuntimeArn"]
@@ -216,9 +213,7 @@ def _find_existing_runtime_arn(name: str) -> str | None:
     outgrows page 1 eventually, and this recovery lookup would then silently miss every runtime
     past it, forever hitting a name conflict on create instead of finding the existing one.
     """
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client = _agentcore_control_client()
     paginator = client.get_paginator("list_agent_runtimes")
     for page in paginator.paginate():
         for runtime in page.get("agentRuntimes", []):
@@ -241,9 +236,7 @@ def _runtime_image_uri(runtime_arn: str) -> str | None:
     delete is in flight (``list_agent_runtimes`` lists DELETING runtimes). Neither is a runtime
     to reuse: reusing it 404s on the READY poll the moment the delete completes.
     """
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
     try:
         desc = client.get_agent_runtime(agentRuntimeId=runtime_id)
@@ -258,11 +251,8 @@ def _wait_for_runtime_gone(runtime_arn: str) -> None:
     """Poll ``GetAgentRuntime`` until it 404s. Sync — call via ``run_in_thread``. Runtime names
     are unique per account, so ``CreateAgentRuntime`` under the same name conflicts until a
     DELETING predecessor is fully gone (M6-R43). Same bound as the READY poll."""
-    import time
 
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
     for _ in range(_READY_POLL_ATTEMPTS):
         try:
@@ -287,9 +277,7 @@ def _update_runtime_image(runtime_arn: str, request: dict) -> None:
     and create can never drift apart; strips ``agentRuntimeName``/``tags``, which the model does
     NOT accept on update (confirmed: neither is a member of ``UpdateAgentRuntime``'s input shape).
     """
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
     update_kwargs = {k: v for k, v in request.items() if k not in ("agentRuntimeName", "tags")}
     client.update_agent_runtime(agentRuntimeId=runtime_id, **update_kwargs)
@@ -298,11 +286,8 @@ def _update_runtime_image(runtime_arn: str, request: dict) -> None:
 def _wait_for_runtime_ready(runtime_arn: str) -> None:
     """Poll ``GetAgentRuntime`` until READY (or a terminal failure). Sync — call via
     ``run_in_thread``. Bounded per ``_READY_POLL_ATTEMPTS``/``_READY_POLL_INTERVAL_S`` above."""
-    import time
 
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+    client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
     for _ in range(_READY_POLL_ATTEMPTS):
         status = client.get_agent_runtime(agentRuntimeId=runtime_id)["status"]
@@ -314,7 +299,21 @@ def _wait_for_runtime_ready(runtime_arn: str) -> None:
     raise RuntimeError(f"AgentCore runtime {runtime_arn} did not reach READY within the poll window")
 
 
+def _agentcore_control_client():
+    """The AgentCore CONTROL plane (runtime create/update/delete/describe).
+
+    Built per call, deliberately: every test in this module's suite monkeypatches
+    ``boto3.client`` globally, which a module-level cached client would outlive.
+    Construction is a few hundred microseconds and none of these paths is hot.
+    """
+    import boto3
+
+    return boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
+
+
 def _agentcore_data_client():
+    """The AgentCore DATA plane (InvokeAgentRuntime, StopRuntimeSession) -- a different
+    service name from the control client above, not an alias for it."""
     import boto3
 
     return boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION)
@@ -323,10 +322,7 @@ def _agentcore_data_client():
 def _delete_runtime(runtime_arn: str) -> None:
     """``DeleteAgentRuntime``. Sync — call via ``run_in_thread``. Shared by F1's terminal-runtime
     cleanup (below) and ``teardown_hermes_runtime`` (F5)."""
-    import boto3
-
-    client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
-    client.delete_agent_runtime(agentRuntimeId=runtime_arn.rsplit("/", 1)[-1])
+    _agentcore_control_client().delete_agent_runtime(agentRuntimeId=runtime_arn.rsplit("/", 1)[-1])
 
 
 def _stop_runtime_session(runtime_arn: str, session_id: str) -> None:

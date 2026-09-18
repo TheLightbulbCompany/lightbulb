@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 
 from core.repositories import integrations_repo
-from core.services import config_patcher
+from core.services import config_patcher, runtime_transport
 from core.services.config_patcher import ConfigPatchError
 from core.services.credentials import integration_secret_store
 
@@ -55,6 +55,16 @@ logger = logging.getLogger(__name__)
 
 
 async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]) -> None:
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        # The locked RMW below into openclaw.json["env"]["vars"] is a dead write on
+        # AgentCore -- there is no delivery mechanism yet (the profile .env/secret-scope
+        # mechanism, deliberately out of scope here). Refuse the whole landing rather than
+        # silently mark the workflow "active" with a credential nothing can reach.
+        from core.services.provisioning_workflow import WorkflowRefused
+
+        raise WorkflowRefused(
+            "unsupported_on_agentcore", "Provisioning services for this workspace isn't available yet"
+        )
     provider = resource["provider"]
     key = integrations_repo.projects_key(provider)
     # The blob is per-(owner, provider) and a provider can hold several
@@ -137,6 +147,13 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
                 await integration_secret_store.put(owner_id, secret_key, blob)
             else:
                 await integration_secret_store.delete(owner_id, secret_key)
+        # This is a pure EFS locked-RMW file op -- it never talks to the container, so unlike
+        # the RPC calls elsewhere in the AgentCore rollout there is no "dead write" cost to
+        # avoid here. Always attempt it: a workspace that migrated ECS->AgentCore still has a
+        # real openclaw.json on EFS (migration doesn't delete that tree) and may still hold the
+        # plaintext secret value in it -- skipping this scrub would leave that plaintext
+        # resident indefinitely. The existing ConfigPatchError catch below already no-ops
+        # gracefully for a native AgentCore owner with no openclaw.json at all.
         try:
             for key in env_keys:
                 # One locked RMW per var, same reasoning as land_credentials:

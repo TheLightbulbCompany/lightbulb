@@ -741,6 +741,41 @@ async def test_list_user_agents_returns_agents_on_running_container():
     assert result["agents"][0]["agent_id"] == "a"
 
 
+@pytest.mark.asyncio
+async def test_list_user_agents_agentcore_owner_never_invokes_runtime():
+    """Parity audit row 80: an AgentCore invoke wakes a parked microVM (90s floor,
+    container_rpc.call) -- admin inspection must answer from the Paperclip roster instead."""
+    from core.services import admin_service
+
+    never_call = AsyncMock(side_effect=AssertionError("container_rpc.call must not be invoked for an agentcore owner"))
+    roster_listing = AsyncMock(
+        return_value={
+            "defaultId": "a1",
+            "agents": [{"id": "a1", "name": "Agent A", "role": "ceo", "model": "m1", "modelName": "Sonnet"}],
+        }
+    )
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(
+        side_effect=AssertionError("ECS resolution must not run for an agentcore owner")
+    )
+
+    with (
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running", "runtime_host": "agentcore"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
+        patch("core.services.admin_service.container_rpc.call", never_call),
+        patch("core.services.admin_service.runtime_rpc.agentcore_agents_list", roster_listing),
+    ):
+        result = await admin_service.list_user_agents("u1")
+
+    assert result["container_status"] == "running"
+    assert result["agents"] == [{"id": "a1", "name": "Agent A", "role": "ceo", "model": "m1", "modelName": "Sonnet"}]
+    roster_listing.assert_awaited_once_with("u1")
+    never_call.assert_not_awaited()
+
+
 # ---- get_agent_detail -----------------------------------------------------
 
 
@@ -793,6 +828,64 @@ async def test_get_agent_detail_returns_error_when_container_not_running():
 
     assert result["error"] == "container_not_running"
     assert result["container_status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_agentcore_owner_never_invokes_runtime():
+    """Parity audit row 80: identity comes from the roster/model listing, config from the
+    agent's own Hermes profile in S3 -- zero container_rpc calls, sessions/skills come back
+    empty rather than waking a parked microVM."""
+    from core.services import admin_service
+
+    never_call = AsyncMock(side_effect=AssertionError("container_rpc.call must not be invoked for an agentcore owner"))
+    roster_listing = AsyncMock(
+        return_value={
+            "defaultId": "a1",
+            "agents": [{"id": "a1", "name": "Agent A", "role": "ceo", "model": "m1", "modelName": "Sonnet"}],
+        }
+    )
+    config_snapshot = MagicMock(return_value=({"providers": {"anthropic_api_key": "sk-secret-shh"}}, "hash123"))
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(
+        side_effect=AssertionError("ECS resolution must not run for an agentcore owner")
+    )
+
+    with (
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running", "runtime_host": "agentcore"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
+        patch("core.services.admin_service.container_rpc.call", never_call),
+        patch("core.services.admin_service.runtime_rpc.agentcore_agents_list", roster_listing),
+        patch("core.services.admin_service.hermes_profiles.config_snapshot", config_snapshot),
+    ):
+        result = await admin_service.get_agent_detail("u1", "a1")
+
+    assert result["agent"] == {"id": "a1", "name": "Agent A", "role": "ceo", "model": "m1", "modelName": "Sonnet"}
+    assert result["sessions"] == []
+    assert result["skills"] == []
+    assert result["config_redacted"]["providers"]["anthropic_api_key"] == "***redacted***"
+    config_snapshot.assert_called_once_with("u1", "a1")
+    never_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_agentcore_owner_unknown_agent_id():
+    from core.services import admin_service
+
+    roster_listing = AsyncMock(return_value={"defaultId": "a1", "agents": [{"id": "a1", "name": "Agent A"}]})
+
+    with (
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running", "runtime_host": "agentcore"}),
+        ),
+        patch("core.services.admin_service.runtime_rpc.agentcore_agents_list", roster_listing),
+    ):
+        result = await admin_service.get_agent_detail("u1", "does-not-exist")
+
+    assert result["error"] == "agent_not_found"
 
 
 # ---- pass-through delegations ---------------------------------------------

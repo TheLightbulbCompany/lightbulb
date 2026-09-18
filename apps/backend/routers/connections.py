@@ -85,6 +85,12 @@ async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, cr
     write path's run_in_thread offload. Pure file-op removers are unaffected."""
     if not p.wiring.materializer:
         return
+    # Deliberately NOT fail_closed, unlike every other mutating caller on this door (#2759):
+    # this IS the rollback, so raising here would replace the connect's real error with a
+    # RuntimeHostUnknownError and lose it. The cost of guessing ECS on a throttle is residue
+    # from a connect that already failed — inert (the row is gone) and overwritten by the next
+    # successful connect — which is the same class of loss the surrounding except already
+    # accepts.
     if await runtime_transport.is_agentcore_owner(owner_id):
         # The residue is in S3, not on EFS — and hermes_cli.clear is already best-effort.
         await hermes_cli.clear(owner_id, p.key, p.wiring.materializer, credential)
@@ -582,7 +588,7 @@ async def container_login(provider: str, body: ContainerLoginBody, auth: AuthCon
     # container and the owner finishes it in the Browser panel — neither exists on
     # AgentCore (no exec shell, no container browser), so there is nothing this could
     # even start.
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         raise HTTPException(status_code=422, detail="unsupported_on_agentcore")
     try:
         store = shopify_login.normalize_store(body.store)
@@ -827,7 +833,7 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     can't find) for the case where the keyring drifted from the inventory."""
     accounts = await google_accounts_repo.list_accounts(owner_id)
     if any(a["email"] == account for a in accounts):
-        if await runtime_transport.is_agentcore_owner(owner_id):
+        if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
             # An AgentCore owner's keyring lives in every Hermes profile, not on EFS. Running
             # gog against a scratch copy of it is what keeps the owner's OTHER Google accounts
             # (the founder has four) when one is disconnected.
@@ -891,7 +897,7 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
     # M6-R24 ("same for revoke/disconnect"): an AgentCore owner has no EFS —
     # neither a materializer's on-disk artifact nor an openclaw.json to patch.
-    agentcore = await runtime_transport.is_agentcore_owner(owner_id)
+    agentcore = await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True)
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.

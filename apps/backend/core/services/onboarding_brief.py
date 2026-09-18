@@ -720,7 +720,7 @@ async def stage_first_run_files(
     """
     from core.services import runtime_transport
 
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         from core.services.hermes_profiles import write_profile_file
 
         await write_profile_file(owner_id, friday_agent_id, "BRIEF.md", brief_md)

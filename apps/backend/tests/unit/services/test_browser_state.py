@@ -157,6 +157,25 @@ async def test_snapshot_both_gets_fail_is_noop():
     ws.write_file.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_snapshot_agentcore_owner_is_noop_before_any_rpc():
+    """A pre-migration snapshot leaves a stale EFS file behind; the container's
+    real browser.request stub would otherwise be invoked at the AgentCore
+    ingress floor (90s) for nothing. Refuse before touching container_rpc."""
+    ws = _workspace()
+    with (
+        patch.object(bs.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)) as is_ac,
+        patch.object(bs.container_rpc, "running_container") as running,
+        patch.object(bs.container_rpc, "call") as call,
+        patch.object(bs, "get_workspace", return_value=ws),
+    ):
+        assert await bs.snapshot_browser_state("org_1") is False
+    is_ac.assert_awaited_once_with("org_1")
+    running.assert_not_called()
+    call.assert_not_called()
+    ws.write_file.assert_not_called()
+
+
 # --------------------------------------------------------------------------
 # restore
 # --------------------------------------------------------------------------
@@ -244,6 +263,26 @@ async def test_restore_is_best_effort_per_cookie():
         assert await bs.restore_browser_state("org_1") is False
     assert len([c for c in call._calls if c["key"] == ("POST", "/cookies/set")]) == 2
     ws.delete_file.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_restore_agentcore_owner_is_noop_before_any_rpc():
+    """Up to _MAX_COOKIES sequential 90s runtime invokes each hitting the
+    bridge's browser.request stub is the exact defect this refusal kills --
+    it must fire before even reading the EFS snapshot."""
+    ws = _workspace()
+    with (
+        patch.object(bs.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)) as is_ac,
+        patch.object(bs.container_rpc, "running_container") as running,
+        patch.object(bs.container_rpc, "call") as call,
+        patch.object(bs, "get_workspace", return_value=ws),
+    ):
+        assert await bs.restore_browser_state("org_1") is False
+    is_ac.assert_awaited_once_with("org_1")
+    running.assert_not_called()
+    call.assert_not_called()
+    ws.read_file.assert_not_called()
+    ws.delete_file.assert_not_called()
 
 
 @pytest.mark.asyncio

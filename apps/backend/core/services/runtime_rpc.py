@@ -160,6 +160,25 @@ def _default_agent_id(roster: list[dict[str, Any]]) -> str | None:
     return roster[0].get("id") if roster else None
 
 
+async def agentcore_agents_list(owner_id: str) -> dict[str, Any]:
+    """``agents.list`` for an AgentCore owner: the Paperclip roster plus each profile's real
+    model id and display name (M6 task 10-C, row 29), with no runtime invoke -- see
+    ``_HERMES_PROFILE_METHODS``'s docstring above ``execute_sync``'s dispatch.
+
+    Public (not ``_``-prefixed) because ``core.services.admin_service`` reuses it verbatim for
+    ``list_user_agents``/``get_agent_detail`` (parity audit row 80): admin inspection of an
+    AgentCore owner must never wake a parked microVM either.
+    """
+    roster = await load_agent_roster(owner_id)
+    models = await _agentcore_roster_models(owner_id, roster)
+    return {
+        "defaultId": _default_agent_id(roster),
+        "agents": [
+            {**row, "model": model, "modelName": model_name} for row, (model, model_name) in zip(roster, models)
+        ],
+    }
+
+
 async def _config_get_roster_map(owner_id: str) -> dict[str, Any]:
     """``config.get`` with no ``agentId`` — the shape the real browser client actually sends
     (``useConfigPatch.ts``/``PluginsTab.tsx`` never pass one). ``hash`` is the sha256 of the
@@ -514,17 +533,7 @@ async def execute_sync(
         # send an agentId and read snapshot.config/snapshot.hash, and packages/shared's
         # useAgents.ts reads data.agents/data.defaultId.
         if method == "agents.list":
-            roster = await load_agent_roster(owner_id)
-            # M6 task 10-C (row 29): each row carries its REAL model id -- a Paperclip roster row
-            # has no model field at all -- plus the display name for it (M6-R53), so the sidebar
-            # never dials models.list just to render a label.
-            models = await _agentcore_roster_models(owner_id, roster)
-            return {
-                "defaultId": _default_agent_id(roster),
-                "agents": [
-                    {**row, "model": model, "modelName": model_name} for row, (model, model_name) in zip(roster, models)
-                ],
-            }
+            return await agentcore_agents_list(owner_id)
         agent_id = params.get("agentId")
         has_agent_id = isinstance(agent_id, str) and bool(agent_id)
         # hermes_profiles.{config_snapshot,patch,set}_profile_config are plain sync functions

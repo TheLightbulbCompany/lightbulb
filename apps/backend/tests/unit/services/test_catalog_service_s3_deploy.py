@@ -546,7 +546,10 @@ async def test_deploy_from_artifact_keeps_efs_path_when_container_omitted():
     the EFS/gateway-RPC path byte-for-byte."""
     svc, workspace, pair_fn, apply_aux = _make_service_for_deploy()
 
-    with patch("core.services.catalog_service.deploy_tarball_to_profile", new=AsyncMock(return_value=None)) as mocked:
+    with (
+        patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.catalog_service.deploy_tarball_to_profile", new=AsyncMock(return_value=None)) as mocked,
+    ):
         await svc.deploy_from_artifact(
             owner_id="user_buyer",
             slug="demo",

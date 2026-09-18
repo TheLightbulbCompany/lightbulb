@@ -57,7 +57,7 @@ import logging
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.observability.metrics import put_metric
-from core.services import container_rpc
+from core.services import container_rpc, runtime_transport
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,12 @@ async def snapshot_browser_state(owner_id: str) -> bool:
     no running container, the browser is unreachable, or nothing was captured.
 
     Call BEFORE the roll stops the old task — the old task must still be up.
+
+    AgentCore has no ``browser.request`` bridge yet -- refuse before the first
+    invoke rather than pay the 90s AgentCore ingress floor for a stub call.
     """
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return False
     try:
         await container_rpc.running_container(owner_id, wake=False)
     except Exception as exc:  # noqa: BLE001 — best-effort; covers ApiProblem (cold/unreachable) and a raw resolve failure
@@ -160,7 +165,14 @@ async def restore_browser_state(owner_id: str) -> bool:
     (``runtime_phase == "ready"``), so the mutation POSTs land and consuming the
     file does not discard a snapshot the browser never received. Restoring
     cookies again is idempotent, so a duplicate concurrent call is harmless.
+
+    AgentCore has no ``browser.request`` bridge yet -- a pre-migration snapshot
+    left on EFS would otherwise fire up to ``_MAX_COOKIES`` sequential 90s
+    AgentCore-ingress-floor invokes against the bridge's stub. Refuse before
+    even reading the snapshot.
     """
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        return False
     ws = get_workspace()
     try:
         raw = ws.read_file(owner_id, STATE_PATH)

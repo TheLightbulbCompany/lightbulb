@@ -299,7 +299,7 @@ async def replace_mcp_servers(
         require_org_admin(auth)
     servers = _validate_servers(body.servers)
     await _reject_integration_owned_key_collisions(owner_id, set(servers))
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         # No openclaw.json to write into -- the manual bucket IS the whole
         # replace target, mirroring PUT's "keys not present are deleted"
         # semantics for the manual-only dict.
@@ -343,7 +343,7 @@ async def upsert_mcp_server(
         require_org_admin(auth)
     entry = _normalize_entry(body)
     await _reject_integration_owned_key_collisions(owner_id, {name})
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         manual = await integrations_repo.get_manual_mcp_servers(owner_id)
         manual[name] = entry
         await integrations_repo.set_manual_mcp_servers(owner_id, manual)
@@ -382,7 +382,7 @@ async def delete_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         manual = await integrations_repo.get_manual_mcp_servers(owner_id)
         manual.pop(name, None)
         await integrations_repo.set_manual_mcp_servers(owner_id, manual)

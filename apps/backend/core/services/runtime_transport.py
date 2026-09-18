@@ -98,7 +98,15 @@ def host_for(container: dict) -> str:
     return host if host in ("ecs", "agentcore") else "ecs"
 
 
-async def is_agentcore_owner(owner_id: str) -> bool:
+class RuntimeHostUnknownError(RuntimeError):
+    """``containers.runtime_host`` could not be read, and the caller cannot afford a guess.
+
+    Raised only by ``is_agentcore_owner(..., fail_closed=True)``. ``main.py`` answers it with a
+    503 so a router that does nothing but pass the flag still returns "retry", not a 500.
+    """
+
+
+async def is_agentcore_owner(owner_id: str, *, fail_closed: bool = False) -> bool:
     """``host_for`` for a call site that only has an owner id (the relay hooks, which fire
     from ``owner_id``/``user_id``/``device_id`` alone). A caller that already has the
     container row in hand — the relay's own transport branch — should call
@@ -111,12 +119,22 @@ async def is_agentcore_owner(owner_id: str) -> bool:
     check; before that rollout NOTHING on the connect/disconnect/manual-MCP
     doors read this table at all, so a transient throttle must not turn into
     a hard failure (``apply_failed``/502) for an ECS owner who paid no read
-    here previously."""
+    here previously.
+
+    ``fail_closed=True`` (predeploy review, before global ``HERMES_RUNTIME``) inverts that for
+    a MUTATING caller, where "probably ECS" is not a safe guess: the migration never deletes
+    the EFS tree, so the ECS branch SUCCEEDS on a migrated workspace — the write lands where no
+    Hermes agent reads and the door answers 200. Raising ``RuntimeHostUnknownError`` instead
+    lands in the caller's existing failure path (rollback/502/503) and the owner retries. Read
+    doors keep the default: their worst case is stale content, not a lost write.
+    """
     from core.repositories import container_repo
 
     try:
         container = await container_repo.get_by_owner_id(owner_id)
-    except Exception:  # noqa: BLE001 — see docstring: default False, never propagate
+    except Exception as exc:  # noqa: BLE001 — see docstring: default False unless fail_closed
+        if fail_closed:
+            raise RuntimeHostUnknownError(f"could not read the runtime host for owner {owner_id}") from exc
         logger.warning("is_agentcore_owner: read failed for owner=%s; defaulting to ecs", owner_id, exc_info=True)
         return False
     return bool(container) and host_for(container) == "agentcore"

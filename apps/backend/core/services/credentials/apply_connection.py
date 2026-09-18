@@ -199,7 +199,7 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
         # Nothing reaches the container. The credential's only custodian is
         # Secrets Manager, written by the caller via `_retains_secret`.
         return None
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         return await _apply_connection_agentcore(owner_id, provider_key, p, credential)
     if w.openclaw_paths:
         for op in w.openclaw_paths:

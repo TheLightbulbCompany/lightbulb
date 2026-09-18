@@ -8,8 +8,17 @@ Runs INSIDE the backend task (ECS exec), like ``migrate_workspace_to_hermes``:
 A ``hermes-version.json`` tag flip changes ``AGENTCORE_HERMES_IMAGE`` for the backend, but an
 existing runtime keeps the image it was created with until ``UpdateAgentRuntime`` moves it --
 that is what ``hermes_provisioning.roll_runtime_image`` does per owner (update on drift, wait
-READY, stop the warm session). Exit 0 when every targeted owner is current or updated, 1 if
-any owner failed (each failure is logged; the rest still roll).
+READY, wait for the bridge to report idle, stop the warm session). Exit 0 when every targeted
+owner is current or updated, 1 if any owner failed (each failure is logged; the rest still roll).
+
+Read the per-owner line this prints, not just the exit code. ``updated-session-busy`` means the
+runtime IS on the new image but a turn was still running at the ten-minute deadline, so the warm
+session was deliberately left alive and keeps serving the OLD image until it ends -- up to its
+4 h idle / 8 h lifetime. That is exit 0 by design (nothing failed), so a roll is only complete
+once every line reads ``current`` or ``updated``; re-run for the stragglers.
+
+This is a SEQUENTIAL loop, and the idle wait is per owner: budget ~55-90 s extra for each parked
+owner (the probe cold-boots its microVM) and up to ~10.5 min for each busy one.
 """
 
 from __future__ import annotations

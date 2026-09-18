@@ -56,6 +56,7 @@ from core.repositories import container_repo
 from core.services import agent_export
 from core.services import claude_code_import
 from core.services import openclaw_backup_import as backup_import
+from core.services import runtime_transport
 from core.services.openclaw_backup_history import stage_history
 from core.services.openclaw_backup_plugins import apply_plugins
 from routers.agent_builder import RegisterBuiltAgentRequest, register_staged_agent_under_claim
@@ -485,36 +486,47 @@ async def confirm_import(
     plugins_installed: list[str] = []
     history_staged: list[str] = []
     restarting = False
+    # Plugins land in openclaw.json, history in EFS sessions/, and the bounce below restarts
+    # an ECS service -- all three are dead writes to a location Hermes never reads, with no
+    # AgentCore-side equivalent yet. Skip them and say so; the agent registration above is
+    # unaffected (agent_export already reads/writes the Hermes S3 profile for this owner).
+    is_agentcore = runtime_transport.host_for(container) == "agentcore"
 
     if registered and payload.plugins != []:
-        plugin_res = await apply_plugins(
-            owner_id=owner_id,
-            plugins=backup_import.list_plugins(source),
-            chosen=set(payload.plugins) if payload.plugins is not None else None,
-        )
-        plugins_installed = plugin_res.installed
-        warnings.extend(plugin_res.warnings)
-        if plugins_installed:
-            restarting = True
+        if is_agentcore:
+            warnings.append("Installing plugins is unsupported_on_agentcore — skipped.")
+        else:
+            plugin_res = await apply_plugins(
+                owner_id=owner_id,
+                plugins=backup_import.list_plugins(source),
+                chosen=set(payload.plugins) if payload.plugins is not None else None,
+            )
+            plugins_installed = plugin_res.installed
+            warnings.extend(plugin_res.warnings)
+            if plugins_installed:
+                restarting = True
 
     if payload.include_history and registered:
-        by_source = {c.id: c for c in candidates}
-        for source_agent_id, new_agent_id in registered:
-            hist = by_source[source_agent_id].history
-            if hist is None:
-                continue
-            warnings.extend(
-                await run_in_thread(
-                    stage_history,
-                    owner_id=owner_id,
-                    source_agent_id=source_agent_id,
-                    new_agent_id=new_agent_id,
-                    history=hist,
+        if is_agentcore:
+            warnings.append("Importing session history is unsupported_on_agentcore — skipped.")
+        else:
+            by_source = {c.id: c for c in candidates}
+            for source_agent_id, new_agent_id in registered:
+                hist = by_source[source_agent_id].history
+                if hist is None:
+                    continue
+                warnings.extend(
+                    await run_in_thread(
+                        stage_history,
+                        owner_id=owner_id,
+                        source_agent_id=source_agent_id,
+                        new_agent_id=new_agent_id,
+                        history=hist,
+                    )
                 )
-            )
-            history_staged.append(new_agent_id)
-        if history_staged:
-            restarting = True
+                history_staged.append(new_agent_id)
+            if history_staged:
+                restarting = True
 
     if restarting:
         try:

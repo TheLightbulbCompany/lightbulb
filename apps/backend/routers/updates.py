@@ -188,7 +188,7 @@ async def patch_single_config(
     # Platform-admin only: the owner_id comes from the path, so any non-admin
     # caller could otherwise patch an arbitrary tenant's config. Self-service
     # config patching is served by the owner-scoped PATCH /api/v1/config.
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         # M6 row #13: same S3-profile fan-out routers/config.py's owner-scoped
         # door uses -- an AgentCore owner has no openclaw.json for patch_openclaw_config
         # to find.
@@ -271,7 +271,7 @@ async def patch_fleet_config(
             # skipped like the ConfigPatchError branch below would otherwise do
             # for a "no config file" owner -- see config_patch_roster's own
             # per-profile fan-out.
-            if await runtime_transport.is_agentcore_owner(oid):
+            if await runtime_transport.is_agentcore_owner(oid, fail_closed=True):
                 await config_patch_roster(oid, body.patch, None)
             else:
                 await patch_openclaw_config(oid, body.patch)

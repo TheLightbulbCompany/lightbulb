@@ -68,6 +68,58 @@ jobs:
         working-directory: apps/infra/hermes
         run: uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q
 
+  # The suite above is unit tests with everything Hermes-shaped mocked out. The
+  # bridge's credential/identity leg only proves anything against the REAL
+  # mechanism inside the pinned image (see apps/infra/hermes/tests/smoke/*.py's
+  # own docstrings) -- two review rounds of that leg passed the suite above
+  # while delivering nothing, because the failure modes (env_overlay filtering,
+  # a passthrough list cached for the process lifetime) don't exist in a mock.
+  # No smoke files exist on main yet, so this job passes trivially until one
+  # lands; it exists so the day one does, CI runs it instead of only a
+  # developer's machine.
+  hermes-image-smokes:
+    name: Hermes bridge image smokes
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # hermes-version.json#base.image is a multi-arch manifest list (verified
+      # via `docker manifest inspect`: linux/amd64 + linux/arm64), so `docker
+      # pull` on this x86_64 runner resolves the amd64 variant with no QEMU.
+      # That's a different image from the arm64-only extended image
+      # build-hermes-image.yml builds for AgentCore -- this job runs the
+      # UPSTREAM base Hermes ships, exactly what each smoke's own `docker run`
+      # example targets.
+      - name: Pull the pinned Hermes base image
+        run: |
+          IMAGE=$(jq -r '.base.image' hermes-version.json)
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker pull "$IMAGE"
+
+      # Only bridge/ is bind-mounted -- tools.* (terminal_tool, env_passthrough,
+      # terminal_scope) ships inside the base image itself, so a smoke exercises
+      # Hermes's real tool code, not a stand-in for it. --network none: no model
+      # call, no egress. The default `bash -eo pipefail` shell already fails the
+      # step on any smoke's non-zero exit.
+      - name: Run bridge smokes in the pinned image
+        run: |
+          shopt -s nullglob
+          smokes=(apps/infra/hermes/tests/smoke/*.py)
+          if [ ${#smokes[@]} -eq 0 ]; then
+            echo "no smokes"
+            exit 0
+          fi
+          for smoke in "${smokes[@]}"; do
+            echo "::group::$smoke"
+            docker run --rm --network none \
+              -v "$PWD/apps/infra/hermes/bridge:/opt/bridge/bridge:ro" \
+              -v "$PWD/$smoke:/opt/bridge/smoke.py:ro" \
+              --entrypoint python "$IMAGE" /opt/bridge/smoke.py
+            echo "::endgroup::"
+          done
+
   test:
     name: Synth & Test
     runs-on: ${{ vars.CI_RUNNER }}

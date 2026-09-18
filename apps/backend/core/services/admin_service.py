@@ -5,8 +5,10 @@ Read-side aggregation for /api/v1/admin/* endpoints. Covers:
 - get_overview (Clerk + Stripe DDB row + container DDB row + usage)
 - get_provisioning (readiness contract + containers row + Paperclip company +
   provision-gate + SFN execution, all allowlist-narrowed)
-- list_user_agents (gateway RPC, with timeout + stopped detection)
-- get_agent_detail (4-way gateway parallel + S3 redaction)
+- list_user_agents (gateway RPC, with timeout + stopped detection; AgentCore owners
+  are answered from the Paperclip roster instead -- see runtime_transport.host_for)
+- get_agent_detail (4-way gateway parallel + S3 redaction; AgentCore owners skip the
+  gateway entirely -- see _get_agentcore_agent_detail)
 - get_logs (delegates to cloudwatch_logs)
 - get_cloudwatch_url (delegates to cloudwatch_url)
 - get_posthog_timeline (delegates to posthog_admin)
@@ -28,8 +30,18 @@ from typing import Any
 
 from core import openclaw_version
 from core.containers import get_ecs_manager
+from core.dynamodb import run_in_thread
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
-from core.services import clerk_admin, cloudwatch_logs, cloudwatch_url, container_rpc, posthog_admin
+from core.services import (
+    clerk_admin,
+    cloudwatch_logs,
+    cloudwatch_url,
+    container_rpc,
+    hermes_profiles,
+    posthog_admin,
+    runtime_rpc,
+    runtime_transport,
+)
 from core.services.admin_redact import redact_openclaw_config
 from core.services.provision_dispatch import describe_dispatch_execution
 from core.services.provision_gate import Gate, probe_provision_gate
@@ -451,6 +463,11 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     Resolves org context first — org-member users' container is keyed by
     org_id, not user_id. ``org`` in the response is null for personal-mode
     users and {id, slug, name, role} otherwise.
+
+    An AgentCore owner never reaches the gateway RPC below (parity audit row 80): a
+    ``container_rpc`` invoke would wake a parked microVM and floor the RPC budget at 90s just to
+    render an admin page. Those owners are answered from ``runtime_rpc.agentcore_agents_list``
+    instead — the Paperclip roster the backend already owns.
     """
     owner_id, org_context = await resolve_admin_owner_id(user_id)
 
@@ -460,6 +477,19 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
             "agents": [],
             "cursor": None,
             "container_status": (container_row or {}).get("status", "none"),
+            "org": org_context,
+        }
+
+    if runtime_transport.host_for(container_row) == "agentcore":
+        # Parity audit row 80: an AgentCore invoke wakes a parked microVM and floors the RPC
+        # budget at 90s (container_rpc.call). Answer from the Paperclip roster + Hermes profile
+        # metadata instead -- the same source `runtime_rpc.execute_sync`'s own agents.list
+        # branch already uses for the live app -- with zero runtime invokes.
+        listing = await runtime_rpc.agentcore_agents_list(owner_id)
+        return {
+            "agents": listing.get("agents", []),
+            "cursor": None,
+            "container_status": "running",
             "org": org_context,
         }
 
@@ -514,6 +544,9 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     Resolves org context first so org-keyed containers are found. ``org`` in
     the response is null for personal-mode users and {id, slug, name, role}
     otherwise.
+
+    An AgentCore owner is answered by ``_get_agentcore_agent_detail`` instead of the four
+    gateway RPCs below (parity audit row 80) -- see its docstring for what that trades away.
     """
     owner_id, org_context = await resolve_admin_owner_id(user_id)
 
@@ -524,6 +557,9 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
             "container_status": (container_row or {}).get("status", "none"),
             "org": org_context,
         }
+
+    if runtime_transport.host_for(container_row) == "agentcore":
+        return await _get_agentcore_agent_detail(owner_id, agent_id, org_context)
 
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
@@ -628,6 +664,30 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         "sessions": agent_sessions,
         "skills": skills_list,
         "config_redacted": redact_openclaw_config(config_to_redact),
+        "org": org_context,
+    }
+
+
+async def _get_agentcore_agent_detail(owner_id: str, agent_id: str, org_context: dict | None) -> dict:
+    """``get_agent_detail`` for an AgentCore owner: identity + config with zero runtime
+    invokes (parity audit row 80). Identity comes from ``runtime_rpc.agentcore_agents_list`` —
+    the same Paperclip-roster-plus-model-metadata source the live app's sidebar reads — and
+    config from the agent's own Hermes profile in S3. ``sessions``/``skills`` have no such
+    backend-owned copy (they live behind a live gateway RPC only), so they come back empty
+    rather than waking a parked microVM for an admin page load.
+    """
+    listing = await runtime_rpc.agentcore_agents_list(owner_id)
+    agent = next((row for row in listing.get("agents", []) if row.get("id") == agent_id), None)
+    if agent is None:
+        return {"error": "agent_not_found", "org": org_context}
+
+    config, _hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
+
+    return {
+        "agent": agent,
+        "sessions": [],
+        "skills": [],
+        "config_redacted": redact_openclaw_config(config),
         "org": org_context,
     }
 

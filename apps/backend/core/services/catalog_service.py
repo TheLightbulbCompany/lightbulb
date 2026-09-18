@@ -658,10 +658,10 @@ class CatalogService:
         branch correct only by caller discipline — a caller that forgot the
         argument would silently extract a marketplace agent onto an EFS tree
         no migrated agent reads, and report a successful deploy (task-14 row
-        19). The seam's own contract carries over: a DynamoDB read failure
-        answers ECS with a warning rather than propagating, which is both the
-        pre-migration default and what keeps a transient throttle from failing
-        an ECS buyer's deploy.
+        19). It asks with ``fail_closed=True``: an install is a write, so a
+        DynamoDB read failure raises ``RuntimeHostUnknownError`` into the deploy
+        router's own rollback envelope rather than defaulting to ECS and
+        extracting the agent onto a tree no migrated agent reads.
 
         Steps:
           1. Extract ``tar_bytes`` into EFS at ``workspace-{new_agent_id}/``.
@@ -703,7 +703,7 @@ class CatalogService:
         # (new_agent_id=None) mints through Paperclip itself rather than
         # generating an orphan local string (see _install_agentcore_deploy).
         # ECS buyers fall through to the unchanged path below.
-        if container is None and await runtime_transport.is_agentcore_owner(owner_id):
+        if container is None and await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
             from core.repositories import container_repo
 
             container = await container_repo.get_by_owner_id(owner_id) or {}

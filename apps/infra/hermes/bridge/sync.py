@@ -61,20 +61,40 @@ def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
 
+#: ``$HOME`` for a turn's shell. ``hermes_constants.get_subprocess_home`` returns
+#: ``{HERMES_HOME}/home`` under ``TERMINAL_HOME_MODE: profile`` (turn.py sets it), and
+#: ``_hermes_home_scope`` makes ``HERMES_HOME`` the profile dir for the turn -- so this is where
+#: every CLI's own default lookup goes, and where the backend projects their credentials.
+#: It must EXIST: ``auto`` mode falls back to ``/`` when it does not.
+PROFILE_HOME = "home"
+
 #: The profile paths the backend's CLI-connector projection owns -- mirrors
-#: ``core/services/credentials/hermes_cli.py``'s OWNED_PATHS + its ``cli-env.json``. They are
-#: BACKEND-OWNED: pulled by name on every revision bump (_pull_cli_credentials) and never
-#: uploaded (see EXCLUDE_GLOBS below). An in-microVM rotation of one of these therefore lives
-#: only as long as the warm profile; the backend's copy is authoritative on the next cold
+#: ``core/services/credentials/hermes_cli.py``'s ``profile_paths()`` + its ``cli-env.json``.
+#: They are BACKEND-OWNED: pulled by name on every revision bump (_pull_cli_credentials) and
+#: never uploaded (see EXCLUDE_GLOBS below). An in-microVM rotation of one of these therefore
+#: lives only as long as the warm profile; the backend's copy is authoritative on the next cold
 #: restore, which is what keeps an agent from writing a credential every later turn inherits.
 CLI_CREDENTIAL_PREFIXES = (
-    ".aws/",
-    ".config/gh/",
-    ".config/gogcli/",
-    ".local/share/gogcli/",
+    f"{PROFILE_HOME}/.aws/",
+    f"{PROFILE_HOME}/.config/gh/",
+    f"{PROFILE_HOME}/.config/gogcli/",
+    f"{PROFILE_HOME}/.local/share/gogcli/",
+    f"{PROFILE_HOME}/.xurl",
     "skills/instagram/",
-    ".xurl",
     "cli-env.json",
+)
+
+#: Hazard of putting ``$HOME`` inside the profile: every tool's dotfiles and caches now sit in
+#: the dir ``save_profile`` walks, so an `npm install` or a `git clone` would start uploading
+#: package caches and agent-written credentials to S3 on every turn. These never go up.
+#: ``.cache``/``node_modules``-shaped dirs are the same class #2756 (hermes/local-exec-hardening)
+#: excludes profile-wide with its own REPRODUCIBLE_GLOBS/CREDENTIAL_GLOBS; when that branch
+#: merges, the overlap here collapses into it rather than being restated.
+#: NB ``fnmatch``'s ``*`` spans ``/``, so one pattern per name covers the whole subtree.
+_HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state")
+HOME_EXCLUDE_GLOBS = (
+    f"{PROFILE_HOME}/.gitconfig",
+    *(f"{PROFILE_HOME}/{name}/*" for name in _HOME_UNSYNCED),
 )
 
 # Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch
@@ -113,7 +133,7 @@ EXCLUDE_GLOBS = (
     # whatever it wrote into these paths back into the profile every later turn inherits.
     # They are pulled by NAME instead (_pull_cli_credentials), which bypasses these globs.
     *(f"{_p}*" if _p.endswith("/") else _p for _p in CLI_CREDENTIAL_PREFIXES),
-    *(f"{_p}**/*" for _p in CLI_CREDENTIAL_PREFIXES if _p.endswith("/")),
+    *HOME_EXCLUDE_GLOBS,
 )
 
 
@@ -151,6 +171,17 @@ def _profile_dir(agent_id: str) -> Path:
     return HOME / "profiles" / agent_id
 
 
+def ensure_profile_home(agent_id: str) -> Path:
+    """Create the profile's ``home/`` -- the shell's ``$HOME`` for every turn under
+    ``TERMINAL_HOME_MODE: profile``. Called from ``restore_profile`` (both paths), so it exists
+    before the first turn of a process whether or not S3 had anything to restore: an absent dir
+    silently degrades ``hermes_constants.get_subprocess_home`` back to ``/``, where every
+    projected credential is invisible."""
+    home = _profile_dir(agent_id) / PROFILE_HOME
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
 def _modified_at(obj: dict) -> float | None:
     """Epoch seconds for a ``list_objects_v2`` entry, or None when the listing carried no
     LastModified. Real S3 always carries it; "unknown" has to fail OPEN (download) because
@@ -182,12 +213,12 @@ def _change_stamp(path: Path) -> int:
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     if agent_id in _restored or not S3_BUCKET:
-        _profile_dir(agent_id).mkdir(parents=True, exist_ok=True)
+        ensure_profile_home(agent_id)  # also mkdirs the profile dir itself
         _restored.add(agent_id)
         return 0.0
     t0 = time.time()
     dest = _profile_dir(agent_id)
-    dest.mkdir(parents=True, exist_ok=True)
+    ensure_profile_home(agent_id)
     prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
     n = 0
@@ -504,6 +535,10 @@ def _pull_cli_credentials(agent_id: str) -> None:
                 for obj in page.get("Contents", []):
                     rel = obj["Key"][len(base):]
                     if not rel or rel.endswith("/"):
+                        continue
+                    # A prefix with no trailing "/" names one FILE: "home/.xurl" must not pull
+                    # a hypothetical "home/.xurlfoo" (matches the backend's own fetch rule).
+                    if not prefix.endswith("/") and rel != prefix:
                         continue
                     remote.add(rel)
                     target = dest / rel

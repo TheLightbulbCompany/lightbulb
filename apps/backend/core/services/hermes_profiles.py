@@ -735,9 +735,9 @@ def _s3_delete(bucket: str, key: str) -> None:
 
 
 def _s3_put_bytes(bucket: str, key: str, body: bytes) -> None:
-    """``_s3_put``'s binary twin. The CLI-connector projection (``credentials.hermes_cli``)
-    copies whatever a materializer produced verbatim, and gog's keyring is an encrypted JWE
-    blob, not text."""
+    """The one PUT (``_s3_put`` encodes and delegates). Bytes rather than text because the
+    CLI-connector projection (``credentials.hermes_cli``) copies whatever a materializer
+    produced verbatim, and gog's keyring is an encrypted JWE blob."""
     _shared_s3_client().put_object(Bucket=bucket, Key=key, Body=body)
 
 
@@ -780,7 +780,11 @@ def fetch_profile_subtree(owner_id: str, agent_id: str, prefixes: Iterable[str],
         return
     base = profile_prefix(owner_id, agent_id)
     for prefix in prefixes:
+        # N4: a trailing "/" means a directory (every key under it); without one the prefix
+        # names a single FILE and must match exactly -- ".xurl" must not pull ".xurlfoo".
         for key in _s3_list_keys(bucket, f"{base}{prefix}"):
+            if not prefix.endswith("/") and key != f"{base}{prefix}":
+                continue
             body = _s3_get_bytes(bucket, key)
             if body is None:
                 continue
@@ -789,17 +793,15 @@ def fetch_profile_subtree(owner_id: str, agent_id: str, prefixes: Iterable[str],
             target.write_bytes(body)
 
 
-def write_profile_subtree(
-    owner_id: str,
-    agent_id: str,
-    files: dict[str, bytes],
-    removed: Iterable[str],
-    env_updates: dict[str, str] | None = None,
-) -> None:
+def write_profile_subtree(owner_id: str, agent_id: str, files: dict[str, bytes], removed: Iterable[str]) -> None:
     """Land a projected CLI subtree in one profile: write, then delete what the materializer
-    dropped, then merge ``env_updates`` into ``.env``, then bump ``.revision`` LAST -- the same
-    "content, then revision" discipline as ``_refresh_one_profile``/``write_facts_to_profiles``,
-    so the bridge's re-pull never sees a bumped revision before the bytes it announces."""
+    dropped, then bump ``.revision`` LAST -- the same "content, then revision" discipline as
+    ``_refresh_one_profile``/``write_facts_to_profiles``, so the bridge's re-pull never sees a
+    bumped revision before the bytes it announces.
+
+    Never touches ``.env``: a projected credential is a FILE the CLI reads, and the profile
+    ``.env`` feeds Hermes's in-process secret scope, which never reaches a subprocess. A value
+    a projected CLI needs in the shell goes to ``hermes_cli.CLI_ENV_FILE`` instead."""
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:
         return
@@ -808,10 +810,6 @@ def write_profile_subtree(
         _s3_put_bytes(bucket, f"{prefix}{rel}", body)
     for rel in sorted(removed):
         _s3_delete(bucket, f"{prefix}{rel}")
-    if env_updates:
-        dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
-        live = {k: v for k, v in env_updates.items() if v}
-        _s3_put(bucket, f"{prefix}.env", _rewrite_named_env_lines(dotenv_text, set(env_updates), live))
     _s3_put(bucket, f"{prefix}.revision", uuid.uuid4().hex)
 
 

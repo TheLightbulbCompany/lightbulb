@@ -45,7 +45,7 @@ async def test_github_connect_lands_hosts_yml_in_every_profile(s3, roster, monke
     await hermes_cli.project("org_1", "github", "gh_cli", {"token": "gho_secret"})
 
     for agent in ("ceo", "eng"):
-        body = s3[f"org_1/hermes/{agent}/.config/gh/hosts.yml"].decode()
+        body = s3[f"org_1/hermes/{agent}/home/.config/gh/hosts.yml"].decode()
         assert "gho_secret" in body and "octo" in body
         # .revision LAST, so the bridge never re-pulls before the bytes landed.
         assert f"org_1/hermes/{agent}/.revision" in s3
@@ -74,12 +74,12 @@ async def test_aws_config_resolves_the_helper_through_the_profile_home(s3, roste
 
     await hermes_cli.project("org_1", "aws", "aws_cli", {"region": "us-east-1", "cli_token": "tok_x"})
 
-    config = s3["org_1/hermes/ceo/.aws/config"].decode()
+    config = s3["org_1/hermes/ceo/home/.aws/config"].decode()
     assert "[profile lightbulb-connector]" in config
     assert "credential_process = sh -c 'exec /usr/bin/env node \"$HOME/.aws/lightbulb-creds.mjs\"'" in config
     assert "/home/node/.openclaw" not in config
-    assert json.loads(s3["org_1/hermes/ceo/.aws/token"].decode())["token"] == "tok_x"
-    assert b"credential_process" not in s3["org_1/hermes/ceo/.aws/lightbulb-creds.mjs"][:1]
+    assert json.loads(s3["org_1/hermes/ceo/home/.aws/token"].decode())["token"] == "tok_x"
+    assert b"credential_process" not in s3["org_1/hermes/ceo/home/.aws/lightbulb-creds.mjs"][:1]
 
 
 @pytest.mark.asyncio
@@ -93,13 +93,13 @@ async def test_xurl_reproject_preserves_the_owners_other_apps(s3, roster, monkey
 
     monkeypatch.setattr(xurl_cli, "_fetch_username", lambda token: "acct")
     existing = yaml.safe_dump({"apps": {"mine": {"client_id": "keep-me"}}, "default_app": "mine"})
-    s3["org_1/hermes/ceo/.xurl"] = existing.encode()
+    s3["org_1/hermes/ceo/home/.xurl"] = existing.encode()
 
     await hermes_cli.project(
         "org_1", "x", "xurl_cli", {"client_id": "cid", "access_token": "at", "refresh_token": "rt"}
     )
 
-    store = yaml.safe_load(s3["org_1/hermes/ceo/.xurl"].decode())
+    store = yaml.safe_load(s3["org_1/hermes/ceo/home/.xurl"].decode())
     assert set(store["apps"]) == {"mine", "lightbulb-x"}
     assert store["apps"]["mine"]["client_id"] == "keep-me"
 
@@ -118,7 +118,7 @@ async def test_gog_projection_carries_the_keyring_password_for_the_shell(s3, ros
     def _fake_run(argv, **kw):
         seen.append(argv[:3])
         # gog writes the keyring itself; stand in for the binary.
-        root = base.owner_efs_root("org_1")
+        root = base.owner_efs_root("org_1")  # == <scratch>/home while projecting
         (root / ".local" / "share" / "gogcli").mkdir(parents=True, exist_ok=True)
         (root / ".local" / "share" / "gogcli" / "keyring").write_bytes(b"\x00jwe-blob")
         return None
@@ -133,7 +133,7 @@ async def test_gog_projection_carries_the_keyring_password_for_the_shell(s3, ros
     )
 
     assert email == "a@b.co"
-    assert s3["org_1/hermes/eng/.local/share/gogcli/keyring"] == b"\x00jwe-blob"
+    assert s3["org_1/hermes/eng/home/.local/share/gogcli/keyring"] == b"\x00jwe-blob"
     assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode())["GOG_KEYRING_PASSWORD"] == "kp"
 
 
@@ -177,3 +177,82 @@ def test_projection_root_is_scoped_and_restored(tmp_path):
         assert base.owner_efs_root("org_1") == tmp_path
     assert not base.is_projecting()
     assert base.owner_efs_root("org_1") != tmp_path
+
+
+@pytest.mark.asyncio
+async def test_a_full_google_disconnect_leaves_no_cli_env_json(s3, roster, monkeypatch):
+    """Review B2. ``cli-env.json`` is written only on the write leg and is not under any
+    OWNED_PATHS, so it was never in the delete set -- the FLEET-SHARED gog keyring password
+    stayed in every profile of every owner who had ever connected Google, permanently."""
+    from core.services.credentials.materializers import gog_cli
+
+    monkeypatch.setattr(hermes_cli.settings, "GOG_KEYRING_PASSWORD", "kp")
+    monkeypatch.setattr(gog_cli, "_fetch_account_email", lambda token: "a@b.co")
+    monkeypatch.setattr(
+        gog_cli,
+        "subprocess",
+        type(
+            "S",
+            (),
+            {
+                "run": staticmethod(
+                    lambda argv, **kw: (base.owner_efs_root("org_1") / ".local" / "share" / "gogcli").mkdir(
+                        parents=True, exist_ok=True
+                    )
+                )
+            },
+        ),
+    )
+    await hermes_cli.project(
+        "org_1",
+        "google",
+        "gog_cli",
+        {"access_token": "at", "client_id": "c", "client_secret": "s", "refresh_token": "r"},
+    )
+    assert "org_1/hermes/ceo/cli-env.json" in s3
+
+    await hermes_cli.clear("org_1", "google", "gog_cli", {"disconnect_all": True, "accounts": []})
+
+    assert not [k for k in s3 if "cli-env.json" in k]
+    assert not [k for k in s3 if "gogcli" in k]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_roster_is_a_no_op_not_an_indexerror(s3, monkeypatch):
+    """Review N2. ``agent_ids[0]`` raised IndexError, which ``project`` does not catch, so an
+    owner with no roster surfaced the connect as a generic ``apply_failed``."""
+
+    async def _none(owner_id):
+        return []
+
+    monkeypatch.setattr(hermes_cli, "_roster", _none)
+    assert await hermes_cli.project("org_1", "github", "gh_cli", {"token": "t"}) is None
+    assert not s3
+
+
+def test_profile_paths_rebase_dotfiles_onto_home_but_not_the_skill_dir():
+    """$HOME is ``<profile>/home`` (TERMINAL_HOME_MODE=profile), so a dotfile tree belongs
+    there. Instagram's output is a Hermes SKILLS dir -- profile-relative, not a home dotfile."""
+    assert hermes_cli.profile_paths("aws_cli") == ("home/.aws/",)
+    assert hermes_cli.profile_paths("gog_cli") == ("home/.config/gogcli/", "home/.local/share/gogcli/")
+    assert hermes_cli.profile_paths("xurl_cli") == ("home/.xurl",)
+    assert hermes_cli.profile_paths("instagram_cli") == ("skills/instagram/",)
+
+
+@pytest.mark.asyncio
+async def test_a_file_prefix_does_not_seed_from_a_longer_sibling(s3, roster, monkeypatch):
+    """Review N4. ``home/.xurl`` names one FILE; listing by raw string prefix also matched
+    ``home/.xurlfoo``, which would have been seeded into the scratch root as if it were ours."""
+    import yaml
+
+    from core.services.credentials.materializers import xurl_cli
+
+    monkeypatch.setattr(xurl_cli, "_fetch_username", lambda token: "acct")
+    s3["org_1/hermes/ceo/home/.xurlfoo"] = b"not ours"
+
+    await hermes_cli.project(
+        "org_1", "x", "xurl_cli", {"client_id": "cid", "access_token": "at", "refresh_token": "rt"}
+    )
+
+    assert s3["org_1/hermes/ceo/home/.xurlfoo"] == b"not ours"
+    assert set(yaml.safe_load(s3["org_1/hermes/ceo/home/.xurl"].decode())["apps"]) == {"lightbulb-x"}

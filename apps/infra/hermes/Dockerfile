@@ -13,21 +13,17 @@
 #   docker image inspect nousresearch/hermes-agent:latest --format '{{join .RepoDigests ","}}'
 # Mirrored in hermes-version.json#base (the promotion record; this line is what actually builds).
 
-# ---- Go-built connector CLIs -----------------------------------------------------------------
-# gog (Google) and xurl (X) are the two CLI-connector binaries with no distro package. The
-# OpenClaw extended image installs gog with this same `go install` line and xurl from npm, whose
-# postinstall just downloads this same Go binary -- building both here keeps node/npm out of the
-# picture and pins the BYTES, since `go install` verifies every module against sum.golang.org.
+# ---- gog (Google CLI) ------------------------------------------------------------------------
+# The one connector binary with no distro package and no npm package: apps/infra/openclaw's
+# Dockerfile installs it with this exact `go install` line, and `go install` verifies the module
+# against sum.golang.org, so the BYTES are pinned even though the tag is not.
 #
 # --platform=$BUILDPLATFORM + GOARCH=arm64 cross-compiles on the amd64 builder instead of running
 # a whole Go toolchain under the QEMU emulation this image's arm64 build uses. golang:1.27.1
-# because gogcli's go.mod declares `toolchain go1.27.1` (xurl needs only 1.24). GOBIN is honoured
-# for a cross build too, so both binaries land in one directory.
+# because gogcli's go.mod declares `toolchain go1.27.1`. GOBIN is honoured for a cross build too.
 FROM --platform=$BUILDPLATFORM golang:1.27.1-trixie AS gocli
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOBIN=/out/bin
-RUN go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 \
- && go install github.com/xdevplatform/xurl@v1.2.3 \
- && test -x /out/bin/gog && test -x /out/bin/xurl
+RUN go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 && test -x /out/bin/gog
 
 FROM nousresearch/hermes-agent@sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103
 
@@ -46,11 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---- CLI connector binaries ------------------------------------------------------------------
 # The binaries behind the five CLI-materializer connectors whose credentials the backend projects
 # into every profile (core/services/credentials/hermes_cli.py). Instagram's "CLI" is curl + jq,
-# already installed above. Each recipe mirrors apps/infra/openclaw/Dockerfile's, with the arm64
-# artefact substituted: this image is built linux/arm64 only (AgentCore runtimes are arm64),
-# where the OpenClaw extended image is amd64. Each layer keeps its own smoke test, so a binary
-# that did not materialise fails the build instead of a turn.
-COPY --from=gocli /out/bin/gog /out/bin/xurl /usr/local/bin/
+# already installed above. Each recipe mirrors apps/infra/openclaw/Dockerfile's, with ONLY the
+# arm64 artefact substituted: this image is built linux/arm64 only (AgentCore runtimes are
+# arm64), where the OpenClaw extended image is amd64. Each layer keeps its own smoke test, so a
+# binary that did not materialise fails the build instead of a turn.
+COPY --from=gocli /out/bin/gog /usr/local/bin/
 
 # AWS CLI v2 -- the official bundled installer (apt and pip ship only v1); aarch64 asset.
 RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-2.17.0.zip" -o /tmp/awscliv2.zip \
@@ -67,7 +63,13 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update -qq && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/* \
- && gh --version && gog --version && xurl --help >/dev/null
+ && gh --version && gog --version
+
+# xurl (X) -- the npm package, exactly as the OpenClaw image installs it. Its native binary
+# arrives in the npm POSTINSTALL, so this must stay outside any --ignore-scripts install; the
+# smoke test is what fails the build if the binary did not materialise for this arch. `node` and
+# `npm` are both in the Hermes base image already.
+RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/

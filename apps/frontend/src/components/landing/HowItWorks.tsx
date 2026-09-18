@@ -13,7 +13,7 @@ export function HowItWorks() {
       <div className="lb-wrap">
         <p className="lb-eyebrow">How it works</p>
         <h2 className="lb-h2">
-          Three steps between you
+          Three steps between you{" "}
           <br className="lb-brk" />
           and your next hire.
         </h2>

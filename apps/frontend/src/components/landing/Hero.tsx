@@ -21,7 +21,7 @@ export function Hero() {
       <div className="lb-hero-copy">
         <div>
           <h1>
-            Your team and your agents,
+            Your team and your agents,{" "}
             <br className="lb-brk" />
             in one place.
           </h1>

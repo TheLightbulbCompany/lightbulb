@@ -33,7 +33,7 @@ export function PricingThreeCard() {
     <section id="pricing" className="lb-pricing">
       <div className="lb-wrap">
         <h2 className="lb-h2">
-          One price.
+          One price.{" "}
           <br className="lb-brk" />
           Three ways to power it.
         </h2>

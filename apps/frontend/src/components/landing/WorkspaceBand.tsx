@@ -17,7 +17,7 @@ export function WorkspaceBand() {
       <div className="lb-wrap">
         <p className="lb-eyebrow">A complete workspace</p>
         <h2 className="lb-h2">
-          Everything you need
+          Everything you need{" "}
           <br className="lb-brk" />
           to run the company.
         </h2>

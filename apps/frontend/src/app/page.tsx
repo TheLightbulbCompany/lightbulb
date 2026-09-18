@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { LaunchRefCapture } from "@/components/launch/LaunchRefCapture";
 import { Navbar } from "@/components/landing/Navbar";
 import { Hero } from "@/components/landing/Hero";
+import { ProofBand } from "@/components/landing/ProofBand";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
@@ -36,6 +37,7 @@ export default function LandingPage() {
       </Suspense>
       <Navbar />
       <Hero />
+      <ProofBand />
       <HowItWorks />
       <WorkspaceBand />
       <Pricing />
